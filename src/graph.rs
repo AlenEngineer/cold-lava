@@ -17,6 +17,7 @@ pub struct Node {
     pub kind: Kind,
     pub path: Option<PathBuf>,
     pub rel: Option<String>,
+    pub tags: Vec<String>,
     pub x: f64,
     pub y: f64,
     vx: f64,
@@ -69,7 +70,7 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
             let a = i as f64 * std::f64::consts::PI * (3.0 - 5f64.sqrt());
             (r * a.cos(), r * a.sin())
         });
-        nodes.push(Node { key: key.clone(), label, kind, path, rel, x, y, vx: 0.0, vy: 0.0, pinned: false });
+        nodes.push(Node { key: key.clone(), label, kind, path, rel, tags: Vec::new(), x, y, vx: 0.0, vy: 0.0, pinned: false });
         index.insert(key, i);
         i
     };
@@ -94,6 +95,9 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
             add(&mut nodes, key, n.name.clone(), Kind::Note, Some(n.path.clone()), Some(n.rel.clone()))
         })
         .collect();
+    for (ni, n) in v.notes.iter().enumerate() {
+        nodes[note_node[ni]].tags = n.tags.clone();
+    }
 
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
     let mut edges = Vec::new();
