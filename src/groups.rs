@@ -288,6 +288,8 @@ mod tests {
                 path: PathBuf::new(),
                 links: vec![],
                 refs: vec![],
+                aliases: vec![],
+                text: String::new(),
                 tags: tags.iter().map(|s| s.to_string()).collect(),
             }],
         };

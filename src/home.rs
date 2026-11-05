@@ -347,6 +347,23 @@ enum Mode {
     NewNote(String),
     AddVault(String),
     Help,
+    /// Quick switcher: jump to a note by (fuzzy) name.
+    Switcher {
+        query: String,
+        sel: usize,
+    },
+    /// Full-text search.
+    Search {
+        query: String,
+        sel: usize,
+    },
+}
+
+/// One row of the search results: a note header, or one of its matching lines.
+#[derive(Clone, Copy)]
+enum SearchRow {
+    Note(usize),
+    Line(usize, usize),
 }
 
 pub struct Home {
@@ -366,6 +383,12 @@ pub struct Home {
     backs: Vec<BackRow>,
     bsel: usize,
     show_backlinks: bool,
+    /// Recently shown notes, most recent first (the quick switcher's starting list).
+    mru: Vec<PathBuf>,
+    results: Vec<crate::search::NoteHits>,
+    result_rows: Vec<SearchRow>,
+    /// The overlay was opened from inside Neovim: give it focus back afterwards.
+    back_to_editor: bool,
     // Right pane
     editor_cmd: Option<String>,
     editor: Option<Embedded>,
@@ -499,6 +522,10 @@ augroup ColdLava
   autocmd BufWritePost *.md call s:Send('saved', expand('%:p'))
 augroup END
 nnoremap <silent> gf :<C-u>call <SID>Gf()<CR>
+" Open cold-lava's quick switcher or search from Vim; map them as you like, e.g.
+"   nnoremap <C-p> <Cmd>ColdLavaSwitcher<CR>
+command! -nargs=0 ColdLavaSwitcher call s:Send('switcher', '')
+command! -nargs=* ColdLavaSearch call s:Send('search', <q-args>)
 if expand('%:e') ==# 'md'
   silent! doautocmd <nomodeline> ColdLava BufEnter
 endif
@@ -537,6 +564,10 @@ impl Home {
             backs: Vec::new(),
             bsel: 0,
             show_backlinks: true,
+            mru: Vec::new(),
+            results: Vec::new(),
+            result_rows: Vec::new(),
+            back_to_editor: false,
             editor_cmd: pick_editor(),
             editor: None,
             shown: None,
@@ -721,6 +752,7 @@ impl Home {
             "open" => {
                 let path = PathBuf::from(payload);
                 if self.shown.as_deref() != Some(path.as_path()) {
+                    self.remember_recent(&path);
                     self.shown = Some(path.clone());
                     self.select_path(&path);
                     self.bsel = 0;
@@ -733,6 +765,14 @@ impl Home {
                 }
             }
             "saved" => self.rescan_at = Some(Instant::now() + Duration::from_millis(150)),
+            "switcher" => self.open_switcher(true),
+            "search" => {
+                self.open_search(true);
+                if let Mode::Search { query, .. } = &mut self.mode {
+                    *query = payload.to_string();
+                }
+                self.run_search();
+            }
             _ => {}
         }
     }
@@ -855,6 +895,7 @@ impl Home {
         if self.shown.as_deref() != Some(path) {
             self.bsel = 0;
         }
+        self.remember_recent(path);
         self.shown = Some(path.to_path_buf());
         self.refresh_backlinks();
         let Some(cmd) = self.editor_cmd.clone() else {
@@ -941,6 +982,14 @@ impl Home {
             }
             return Ok(());
         }
+        if matches!(self.mode, Mode::Switcher { .. }) {
+            self.switcher_key(k);
+            return Ok(());
+        }
+        if matches!(self.mode, Mode::Search { .. }) {
+            self.search_key(k);
+            return Ok(());
+        }
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
@@ -999,6 +1048,7 @@ impl Home {
                 }
                 return Ok(());
             }
+            Mode::Switcher { .. } | Mode::Search { .. } => return Ok(()),
             Mode::Normal => {}
         }
 
@@ -1015,6 +1065,10 @@ impl Home {
                     _ => Focus::Vaults,
                 }
             }
+            KeyCode::Char('p') => self.open_switcher(false),
+            KeyCode::Char('o') if ctrl => self.open_switcher(false),
+            KeyCode::Char('s') => self.open_search(false),
+            KeyCode::Char('f') if ctrl => self.open_search(false),
             KeyCode::Char('b') => {
                 self.show_backlinks = !self.show_backlinks;
                 if !self.show_backlinks && self.focus == Focus::Backlinks {
@@ -1132,6 +1186,219 @@ impl Home {
             _ => {}
         }
         Ok(())
+    }
+
+    // ---------- quick switcher & search ----------
+
+    fn remember_recent(&mut self, path: &Path) {
+        self.mru.retain(|p| p != path);
+        self.mru.insert(0, path.to_path_buf());
+        self.mru.truncate(50);
+    }
+
+    fn open_switcher(&mut self, from_editor: bool) {
+        if self.index.is_none() {
+            return;
+        }
+        self.back_to_editor = from_editor || self.focus == Focus::Editor;
+        if self.focus == Focus::Editor {
+            self.focus = Focus::Notes;
+        }
+        self.mode = Mode::Switcher {
+            query: String::new(),
+            sel: 0,
+        };
+    }
+
+    fn open_search(&mut self, from_editor: bool) {
+        if self.index.is_none() {
+            return;
+        }
+        self.back_to_editor = from_editor || self.focus == Focus::Editor;
+        if self.focus == Focus::Editor {
+            self.focus = Focus::Notes;
+        }
+        self.mode = Mode::Search {
+            query: String::new(),
+            sel: 0,
+        };
+        self.results.clear();
+        self.result_rows.clear();
+    }
+
+    fn close_overlay(&mut self) {
+        self.mode = Mode::Normal;
+        if self.back_to_editor && self.editor.is_some() {
+            self.focus = Focus::Editor;
+        }
+        self.back_to_editor = false;
+    }
+
+    /// The quick switcher's list: (note index, hit). Empty query: recent notes, then the rest.
+    fn switcher_hits(&self, query: &str) -> Vec<crate::search::SwitchHit> {
+        let Some(ix) = &self.index else {
+            return Vec::new();
+        };
+        let mut hits = crate::search::switcher(ix, query);
+        if query.trim().is_empty() {
+            let rank = |h: &crate::search::SwitchHit| {
+                let p = &ix.vault.notes[h.note].path;
+                self.mru.iter().position(|m| m == p).unwrap_or(usize::MAX)
+            };
+            hits.sort_by(|a, b| {
+                rank(a).cmp(&rank(b)).then_with(|| {
+                    ix.vault.notes[a.note]
+                        .rel
+                        .to_lowercase()
+                        .cmp(&ix.vault.notes[b.note].rel.to_lowercase())
+                })
+            });
+        }
+        hits
+    }
+
+    /// Whether the switcher offers "create note" (a query that isn't exactly an existing name).
+    fn offers_create(&self, query: &str) -> bool {
+        let q = vault::search_key(query.trim());
+        !q.is_empty()
+            && self.index.as_ref().is_some_and(|ix| {
+                !ix.vault.notes.iter().any(|n| {
+                    vault::search_key(&n.name) == q
+                        || n.aliases.iter().any(|a| vault::search_key(a) == q)
+                })
+            })
+    }
+
+    fn switcher_key(&mut self, k: KeyEvent) {
+        let Mode::Switcher { query, sel } = &mut self.mode else {
+            return;
+        };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let (mut q, mut s) = (query.clone(), *sel);
+        let total = self.switcher_hits(&q).len() + self.offers_create(&q) as usize;
+        match k.code {
+            KeyCode::Esc => return self.close_overlay(),
+            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(total.saturating_sub(1)),
+            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
+                s = (s + 1).min(total.saturating_sub(1))
+            }
+            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
+            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
+            KeyCode::Backspace => {
+                q.pop();
+                s = 0;
+            }
+            KeyCode::Enter => {
+                let hits = self.switcher_hits(&q);
+                self.mode = Mode::Normal;
+                if let Some(h) = hits.get(s) {
+                    let path = self.index.as_ref().map(|ix| ix.path(h.note)).unwrap();
+                    self.open_found(&path, None);
+                } else if self.offers_create(&q) {
+                    // Same place a new note from a link goes (Obsidian's new-note location setting).
+                    let path = self.index.as_ref().map(|ix| {
+                        let from = self.shown.as_ref().and_then(|p| ix.by_path(p));
+                        ix.new_note_path(q.trim(), from)
+                    });
+                    if let Some(path) = path {
+                        if let Some(dir) = path.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        if path.exists() || std::fs::write(&path, "").is_ok() {
+                            self.flash(format!("created {}", q.trim()));
+                            self.reload_tree();
+                            self.open_found(&path, None);
+                        }
+                    }
+                }
+                self.back_to_editor = false;
+                return;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                q.push(c);
+                s = 0;
+            }
+            _ => {}
+        }
+        self.mode = Mode::Switcher { query: q, sel: s };
+    }
+
+    fn run_search(&mut self) {
+        let Mode::Search { query, sel } = &mut self.mode else {
+            return;
+        };
+        *sel = 0;
+        let q = query.clone();
+        let Some(ix) = &self.index else { return };
+        self.results = crate::search::search(ix, &q, 8);
+        self.result_rows.clear();
+        for (i, r) in self.results.iter().enumerate() {
+            self.result_rows.push(SearchRow::Note(i));
+            for l in 0..r.lines.len() {
+                self.result_rows.push(SearchRow::Line(i, l));
+            }
+        }
+    }
+
+    fn search_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let n = self.result_rows.len();
+        let page = 10;
+        let Mode::Search { query, sel } = &mut self.mode else {
+            return;
+        };
+        match k.code {
+            KeyCode::Esc => self.close_overlay(),
+            KeyCode::Down | KeyCode::Tab => *sel = (*sel + 1).min(n.saturating_sub(1)),
+            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
+                *sel = (*sel + 1).min(n.saturating_sub(1))
+            }
+            KeyCode::Up | KeyCode::BackTab => *sel = sel.saturating_sub(1),
+            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => *sel = sel.saturating_sub(1),
+            KeyCode::PageDown => *sel = (*sel + page).min(n.saturating_sub(1)),
+            KeyCode::PageUp => *sel = sel.saturating_sub(page),
+            KeyCode::Backspace => {
+                query.pop();
+                self.run_search();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                query.push(c);
+                self.run_search();
+            }
+            KeyCode::Enter => {
+                let s = *sel;
+                let target = self.result_rows.get(s).and_then(|row| {
+                    let (ri, li) = match *row {
+                        SearchRow::Note(r) => (r, None),
+                        SearchRow::Line(r, l) => (r, Some(l)),
+                    };
+                    let hit = self.results.get(ri)?;
+                    let line = li
+                        .and_then(|l| hit.lines.get(l))
+                        .or(hit.lines.first())
+                        .map(|l| l.line);
+                    Some((self.index.as_ref()?.path(hit.note), line))
+                });
+                self.mode = Mode::Normal;
+                if let Some((path, line)) = target {
+                    self.open_found(&path, line.map(Jump::Line));
+                }
+                self.back_to_editor = false;
+            }
+            _ => {}
+        }
+    }
+
+    /// Open a note picked in the switcher or search, and give the editor focus.
+    fn open_found(&mut self, path: &Path, jump: Option<Jump>) {
+        self.pending = None;
+        self.show_at(path, jump);
+        self.select_path(path);
+        self.focus = if self.editor.is_some() {
+            Focus::Editor
+        } else {
+            Focus::Notes
+        };
     }
 
     fn backlinks_key(&mut self, k: KeyEvent) {
@@ -1414,6 +1681,12 @@ impl Home {
             self.draw_backlinks(f, ba);
         }
         self.draw_status(f, status);
+        if matches!(self.mode, Mode::Switcher { .. }) {
+            self.draw_switcher(f, main);
+        }
+        if matches!(self.mode, Mode::Search { .. }) {
+            self.draw_search(f, main);
+        }
         match &self.mode {
             Mode::Help => draw_help(f, main),
             Mode::NewNote(name) => prompt(
@@ -1432,6 +1705,223 @@ impl Home {
             ),
             _ => {}
         }
+    }
+
+    fn draw_switcher(&self, f: &mut Frame, area: Rect) {
+        let Mode::Switcher { query, sel } = &self.mode else {
+            return;
+        };
+        let Some(ix) = &self.index else { return };
+        let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
+        let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
+        let r = Rect::new(
+            area.x + (area.width - w) / 2,
+            area.y + area.height / 6,
+            w,
+            h,
+        );
+        f.render_widget(Clear, r);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(ACCENT))
+            .title(Line::styled(
+                " Go to note ",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(Line::styled(
+                " ↑↓ choose · ⏎ open · Esc close ",
+                Style::new().fg(MUTED),
+            ));
+        let inner = block.inner(r);
+        f.render_widget(block, r);
+        let hits = self.switcher_hits(query);
+        let create = self.offers_create(query);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::new().fg(HIT)),
+                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+                Span::styled(
+                    if query.is_empty() {
+                        "  type a name (letters in order are enough)".to_string()
+                    } else {
+                        format!("  {} notes", hits.len())
+                    },
+                    Style::new().fg(MUTED),
+                ),
+            ]),
+            Line::raw(""),
+        ];
+        let rows = inner.height.saturating_sub(2) as usize;
+        let total = hits.len() + create as usize;
+        let start = sel.saturating_sub(rows.saturating_sub(1));
+        let width = inner.width as usize;
+        for i in start..(start + rows).min(total) {
+            let selected = i == *sel;
+            let base = if selected {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else {
+                Style::new().fg(NOTE)
+            };
+            let hl = if selected {
+                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
+            };
+            if i == hits.len() {
+                lines.push(Line::styled(
+                    format!(" + Create note \"{}\"", query.trim()),
+                    if selected { base } else { Style::new().fg(HIT) },
+                ));
+                continue;
+            }
+            let hit = &hits[i];
+            let note = &ix.vault.notes[hit.note];
+            let label = hit.alias.clone().unwrap_or_else(|| note.name.clone());
+            let mut spans = vec![Span::styled(" ", base)];
+            for (ci, ch) in label.chars().enumerate() {
+                spans.push(Span::styled(
+                    ch.to_string(),
+                    if hit.positions.contains(&ci) {
+                        hl
+                    } else {
+                        base
+                    },
+                ));
+            }
+            let mut extra = String::new();
+            if hit.alias.is_some() {
+                extra.push_str(&format!("  → {}", note.name));
+            }
+            let folder = note.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            let (inc, _) = ix.counts(hit.note);
+            let right = format!("{folder}  ←{inc} ");
+            let used = 1 + label.chars().count() + extra.chars().count();
+            let pad = width.saturating_sub(used + right.chars().count());
+            let dim = if selected {
+                base
+            } else {
+                Style::new().fg(MUTED)
+            };
+            spans.push(Span::styled(extra, dim));
+            spans.push(Span::styled(" ".repeat(pad), base));
+            spans.push(Span::styled(right, dim));
+            lines.push(Line::from(spans));
+        }
+        if total == 0 {
+            lines.push(Line::styled(" no notes match", Style::new().fg(MUTED)));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn draw_search(&self, f: &mut Frame, area: Rect) {
+        let Mode::Search { query, sel } = &self.mode else {
+            return;
+        };
+        let Some(ix) = &self.index else { return };
+        let w = (area.width * 4 / 5).clamp(50.min(area.width), 140);
+        let h = area.height.saturating_sub(4).max(8.min(area.height));
+        let r = Rect::new(
+            area.x + (area.width - w) / 2,
+            area.y + 2.min(area.height / 8),
+            w,
+            h,
+        );
+        f.render_widget(Clear, r);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(ACCENT))
+            .title(Line::styled(
+                " Search ",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(Line::styled(
+                " ↑↓ choose · ⏎ open at the match · Esc close ",
+                Style::new().fg(MUTED),
+            ));
+        let inner = block.inner(r);
+        f.render_widget(block, r);
+        let matches: usize = self.results.iter().map(|r| r.count).sum();
+        let summary = if query.trim().is_empty() {
+            "  words must all appear in a note · \"quotes\" for a phrase".to_string()
+        } else if self.results.is_empty() {
+            "  nothing found".to_string()
+        } else {
+            format!(
+                "  {} notes · {} matching lines",
+                self.results.len(),
+                matches
+            )
+        };
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::new().fg(HIT)),
+                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+                Span::styled(summary, Style::new().fg(MUTED)),
+            ]),
+            Line::raw(""),
+        ];
+        let rows = inner.height.saturating_sub(2) as usize;
+        let start = sel.saturating_sub(rows.saturating_sub(1));
+        let width = inner.width as usize;
+        for (i, row) in self.result_rows.iter().enumerate().skip(start).take(rows) {
+            let selected = i == *sel;
+            match *row {
+                SearchRow::Note(ri) => {
+                    let res = &self.results[ri];
+                    let note = &ix.vault.notes[res.note];
+                    let st = if selected {
+                        Style::new()
+                            .fg(Color::Black)
+                            .bg(ACCENT)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD)
+                    };
+                    let folder = note
+                        .rel
+                        .rsplit_once('/')
+                        .map(|(d, _)| format!("  {d}"))
+                        .unwrap_or_default();
+                    let more = if res.count > res.lines.len() {
+                        format!("  +{} more", res.count - res.lines.len())
+                    } else {
+                        String::new()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!(" ▤ {} ", note.name), st),
+                        Span::styled(folder, Style::new().fg(MUTED)),
+                        Span::styled(format!("  {} lines{more}", res.count), Style::new().fg(DIM)),
+                    ]));
+                }
+                SearchRow::Line(ri, li) => {
+                    let l = &self.results[ri].lines[li];
+                    let num = format!("   {:>4}  ", l.line);
+                    let base = if selected {
+                        Style::new().fg(Color::Black).bg(ACCENT)
+                    } else {
+                        Style::new().fg(NOTE)
+                    };
+                    let hl = if selected {
+                        base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    } else {
+                        Style::new().fg(Color::Black).bg(HIT)
+                    };
+                    let mut spans = vec![Span::styled(
+                        num.clone(),
+                        if selected { base } else { Style::new().fg(DIM) },
+                    )];
+                    spans.extend(highlight(
+                        &l.text,
+                        &l.ranges,
+                        base,
+                        hl,
+                        width.saturating_sub(num.chars().count()),
+                    ));
+                    lines.push(Line::from(spans));
+                }
+            }
+        }
+        f.render_widget(Paragraph::new(lines), inner);
     }
 
     fn draw_vaults(&self, f: &mut Frame, area: Rect) {
@@ -1772,7 +2262,7 @@ impl Home {
                     "⏎ open"
                 };
                 format!(
-                    " ↑↓ move  ←→ fold  {edit}  / filter  g graph  w boards  t today  n new note  a add vault  z zoom  ? help  q quit"
+                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  s search  g graph  w boards  t today  n new  z zoom  ? help  q quit"
                 )
             }
         };
@@ -1782,6 +2272,52 @@ impl Home {
         };
         f.render_widget(Paragraph::new(vec![info, second]), area);
     }
+}
+
+/// `text` with `ranges` (char ranges) highlighted, cut to `width` chars around the first match.
+fn highlight(
+    text: &str,
+    ranges: &[(usize, usize)],
+    base: Style,
+    hl: Style,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.trim_start().chars().collect();
+    let shift = text.chars().count() - chars.len();
+    let ranges: Vec<(usize, usize)> = ranges
+        .iter()
+        .map(|&(a, b)| (a.saturating_sub(shift), b.saturating_sub(shift)))
+        .collect();
+    // Start a little before the first match if it would be off-screen.
+    let first = ranges.first().map(|r| r.0).unwrap_or(0);
+    let start = if first + 10 > width {
+        first.saturating_sub(width / 3)
+    } else {
+        0
+    };
+    let mut spans = Vec::new();
+    let mut avail = width;
+    if start > 0 {
+        spans.push(Span::styled("…", base));
+        avail = avail.saturating_sub(1);
+    }
+    let mut cur = String::new();
+    let mut cur_hl = false;
+    for (i, ch) in chars.iter().enumerate().skip(start).take(avail) {
+        let in_hl = ranges.iter().any(|&(a, b)| i >= a && i < b);
+        if in_hl != cur_hl && !cur.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut cur),
+                if cur_hl { hl } else { base },
+            ));
+        }
+        cur_hl = in_hl;
+        cur.push(*ch);
+    }
+    if !cur.is_empty() {
+        spans.push(Span::styled(cur, if cur_hl { hl } else { base }));
+    }
+    spans
 }
 
 fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) {
@@ -1824,6 +2360,8 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ),
         ("Ctrl-o", "in Neovim: back to the previous note"),
         ("b", "show / hide backlinks under the editor"),
+        ("p / Ctrl-o", "quick switcher: jump to any note by name"),
+        ("s / Ctrl-f", "search the text of every note"),
         ("e", "edit the note in $EDITOR, full screen"),
         ("/", "filter notes by name or path"),
         ("g", "graph view of this vault"),

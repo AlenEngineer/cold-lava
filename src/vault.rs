@@ -29,6 +29,10 @@ pub struct Note {
     /// The same links with where they are: for backlinks.
     pub refs: Vec<Ref>,
     pub tags: Vec<String>,
+    /// Frontmatter `aliases:` (other names the quick switcher finds the note by).
+    pub aliases: Vec<String>,
+    /// The note's full text, for full-text search.
+    pub text: String,
 }
 
 /// One link in a note.
@@ -106,7 +110,7 @@ pub fn scan(root: &Path) -> Result<Vault> {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let (refs, tags) = parse(&text, &p);
+        let (refs, tags, aliases) = parse(&text, &p);
         let links = refs.iter().map(|r| r.target.clone()).collect();
         notes.push(Note {
             rel,
@@ -115,6 +119,8 @@ pub fn scan(root: &Path) -> Result<Vault> {
             links,
             refs,
             tags,
+            aliases,
+            text,
         });
     }
     notes.sort_by(|a, b| a.rel.cmp(&b.rel));
@@ -139,9 +145,10 @@ fn clean_target(t: &str) -> Option<String> {
     }
 }
 
-fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>) {
+fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
     let mut refs = Vec::new();
     let mut tags = Vec::new();
+    let mut aliases: Vec<String> = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
     let add = |refs: &mut Vec<Ref>, target: Option<String>, i: usize, line: &str| {
@@ -162,6 +169,7 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>) {
     if lines.first().map(|l| l.trim_end()) == Some("---") {
         i = 1;
         let mut in_tags = false;
+        let mut in_aliases = false;
         while i < lines.len() {
             let line = lines[i];
             let t = line.trim();
@@ -169,8 +177,19 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>) {
                 i += 1;
                 break;
             }
-            if let Some(rest) = t.strip_prefix("tags:").or_else(|| t.strip_prefix("tag:")) {
+            if let Some(rest) = t
+                .strip_prefix("aliases:")
+                .or_else(|| t.strip_prefix("alias:"))
+            {
+                in_aliases = true;
+                in_tags = false;
+                let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
+                aliases.extend(rest.split(',').filter_map(clean_alias));
+            } else if in_aliases && t.starts_with("- ") {
+                aliases.extend(clean_alias(&t[2..]));
+            } else if let Some(rest) = t.strip_prefix("tags:").or_else(|| t.strip_prefix("tag:")) {
                 in_tags = true;
+                in_aliases = false;
                 let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
                 for tag in rest.split(',') {
                     push_tag(&mut tags, tag);
@@ -179,6 +198,7 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>) {
                 push_tag(&mut tags, &t[2..]);
             } else if !t.is_empty() {
                 in_tags = false;
+                in_aliases = false;
             }
             // Wikilinks inside frontmatter properties count too, like in Obsidian.
             for c in p.wikilink.captures_iter(line) {
@@ -209,7 +229,12 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>) {
             push_tag(&mut tags, &c[1]);
         }
     }
-    (refs, tags)
+    (refs, tags, aliases)
+}
+
+fn clean_alias(raw: &str) -> Option<String> {
+    let a = raw.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    (!a.is_empty()).then(|| a.to_string())
 }
 
 fn push_tag(tags: &mut Vec<String>, raw: &str) {
@@ -231,13 +256,13 @@ mod tests {
     use super::*;
 
     fn links_and_tags(text: &str) -> (Vec<String>, Vec<String>) {
-        let (refs, tags) = parse(text, &Parsers::new());
+        let (refs, tags, _) = parse(text, &Parsers::new());
         (refs.into_iter().map(|r| r.target).collect(), tags)
     }
 
     #[test]
     fn link_positions() {
-        let (refs, _) = parse(
+        let (refs, _, _) = parse(
             "---\nup: \"[[Parent]]\"\n---\n\nSee [[A]] and\n[[B|bee]] here",
             &Parsers::new(),
         );
@@ -294,6 +319,26 @@ mod tests {
         let text = "---\ntags: [Project, area/work]\naliases:\n  - x\n---\n# Heading\nText #Idea and #123 and #nested/tag.";
         let (_, tags) = links_and_tags(text);
         assert_eq!(tags, ["project", "area/work", "idea", "nested/tag"]);
+    }
+
+    #[test]
+    fn frontmatter_aliases() {
+        let (_, _, a) = parse(
+            "---\naliases: [Big Island, \"Hawaiʻi\"]\ntags: x\n---\n",
+            &Parsers::new(),
+        );
+        assert_eq!(a, ["Big Island", "Hawaiʻi"]);
+        let (_, t, a) = parse(
+            "---\naliases:\n  - One\n  - 'Two'\ntags:\n  - t\n---\n",
+            &Parsers::new(),
+        );
+        assert_eq!(
+            (a, t),
+            (
+                vec!["One".to_string(), "Two".to_string()],
+                vec!["t".to_string()]
+            )
+        );
     }
 
     #[test]

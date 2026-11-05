@@ -301,6 +301,8 @@ mod tests {
             path: PathBuf::from(format!("{rel}.md")),
             links: links.iter().map(|s| s.to_string()).collect(),
             refs: vec![],
+            aliases: vec![],
+            text: String::new(),
             tags: tags.iter().map(|s| s.to_string()).collect(),
         }
     }

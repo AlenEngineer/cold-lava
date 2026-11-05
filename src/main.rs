@@ -8,6 +8,7 @@ mod home;
 mod index;
 mod kitty;
 mod scene;
+mod search;
 mod tasks;
 mod term;
 mod vault;
@@ -27,6 +28,7 @@ Usage:
   cold-lava board [FILE.canvas|DIR]   whiteboard (Obsidian Canvas); no file = picker
   cold-lava daily VAULT_DIR [DATE]    open a day's daily note (created from your template)
   cold-lava agenda VAULT_DIR          dated tasks and daily notes, for other programs
+  cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
 
 Options:
@@ -36,6 +38,7 @@ Options:
   --json               machine-readable output (agenda, task toggle)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --path               daily: create the note if needed and print its path, no UI
+  --limit N            search: matching lines shown per note (default 5)
   -h, --help           this help
 
 DATE is YYYY-MM-DD, today, tomorrow or yesterday. Press ? inside the app for keys.";
@@ -49,7 +52,7 @@ struct Args {
 
 impl Args {
     fn parse() -> Result<Args> {
-        const WITH_VALUE: &[&str] = &["from", "to", "id"];
+        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit"];
         let mut a = Args {
             words: Vec::new(),
             values: Default::default(),
@@ -149,6 +152,42 @@ fn run() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&agenda)?);
             } else {
                 print_agenda(&agenda);
+            }
+            Ok(())
+        }
+        Some("search") => {
+            let root = PathBuf::from(args.word(1).unwrap_or("."));
+            let query = args.words.get(2..).map(|w| w.join(" ")).unwrap_or_default();
+            if query.trim().is_empty() {
+                anyhow::bail!("usage: cold-lava search VAULT_DIR WORDS… [--json]");
+            }
+            let limit = match args.values.get("limit") {
+                Some(n) => n
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--limit needs a number"))?,
+                None => 5,
+            };
+            let ix = index::Index::build(vault::scan(&root)?);
+            let hits = search::search(&ix, &query, limit);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&search::to_json(&ix, &hits))?
+                );
+            } else {
+                for h in &hits {
+                    let n = &ix.vault.notes[h.note];
+                    for l in &h.lines {
+                        println!("{}.md:{}: {}", n.rel, l.line, l.text.trim());
+                    }
+                    if h.lines.is_empty() {
+                        println!("{}.md: (name matches)", n.rel);
+                    }
+                }
+                if hits.is_empty() {
+                    eprintln!("no matches");
+                    std::process::exit(1);
+                }
             }
             Ok(())
         }

@@ -4,6 +4,7 @@
 use crate::vault::Vault;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Resolves link targets (`Note`, `folder/Note`, `Note.md`) to notes, like Obsidian:
 /// by vault-relative path first, then by file name, preferring the shallowest match.
@@ -51,6 +52,14 @@ pub struct Index {
     pub resolver: Resolver,
     backlinks: Vec<Vec<Backlink>>,
     outgoing: Vec<usize>,
+    folded: OnceLock<Vec<Folded>>,
+}
+
+/// A note's text folded for searching (lowercase, no accents), computed on first use.
+pub struct Folded {
+    pub name: String,
+    pub whole: String,
+    pub lines: Vec<String>,
 }
 
 /// A link as written in a note: target, optional heading or block (`#Heading`, `#^block`).
@@ -118,7 +127,25 @@ impl Index {
             resolver,
             backlinks,
             outgoing,
+            folded: OnceLock::new(),
         }
+    }
+
+    pub fn folded(&self) -> &[Folded] {
+        self.folded.get_or_init(|| {
+            self.vault
+                .notes
+                .iter()
+                .map(|n| {
+                    let lines: Vec<String> = n.text.lines().map(crate::vault::search_key).collect();
+                    Folded {
+                        name: crate::vault::search_key(&n.name),
+                        whole: lines.join("\n"),
+                        lines,
+                    }
+                })
+                .collect()
+        })
     }
 
     /// A note by vault-relative path, with or without `.md`.

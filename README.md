@@ -50,6 +50,7 @@ cold-lava board ~/vault/Plan.canvas     # whiteboard (created if missing)
 cold-lava board ~/vault                 # pick a board
 cold-lava daily ~/vault [DATE]          # open (or create) a day's daily note
 cold-lava agenda ~/vault --json         # dated tasks and daily notes, for other programs
+cold-lava search ~/vault WORDS…         # full-text search
 cold-lava task toggle FILE:LINE         # tick / untick a task
 ```
 
@@ -86,6 +87,8 @@ shows a rendered preview and `Enter` opens your `$EDITOR` full screen.
 | `Ctrl-q` | leave Neovim, back to the menu |
 | `Enter` in Neovim, `Ctrl-o` | follow the `[[link]]` under the cursor · go back |
 | `b` | show / hide backlinks |
+| `p` (or `Ctrl-o`) | quick switcher: jump to any note by name or alias |
+| `s` (or `Ctrl-f`) | search the text of every note |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder / add a vault |
@@ -132,6 +135,23 @@ cold-lava merges instead of overwriting: cards and arrows are matched by id and 
 by field. If Obsidian moves a card while you edit its text, both changes are kept. If the same
 field changed in both places, your cold-lava version wins and you get a notice. A card deleted
 on one side but edited on the other is kept.
+
+**Quick switcher and search.** `p` opens the quick switcher: type a few letters of a note's
+name or one of its `aliases` (in order is enough: `msh` finds Mount St. Helens), `Enter` opens
+it, and a name that doesn't exist yet can be created. `s` searches the text of every note: all
+the words must appear in a note, `"quotes"` keep a phrase together, case and accents are ignored
+(`hawaii` finds Hawaiʻi), and `Enter` opens the note at the matching line. From inside Neovim,
+`:ColdLavaSwitcher` and `:ColdLavaSearch words` open them too; map them to keys you like, e.g.
+`nnoremap <C-p> <Cmd>ColdLavaSwitcher<CR>`.
+
+![search](screenshot-search.png)
+
+Scripts can search as well:
+
+```bash
+cold-lava search ~/vault volcanic winter          # file:line: text
+cold-lava search ~/vault '"ash cloud"' --json      # with match positions, for highlighting
+```
 
 ### Agenda, daily notes and tasks (for scripts and status bars)
 
