@@ -6,6 +6,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+/// Text normalised for searching: lowercase, without accents or Hawaiian ʻokina,
+/// so "kil" finds "Kīlauea" and "cafe" finds "Café".
+pub fn search_key(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.nfd()
+        .filter(|c| {
+            !unicode_normalization::char::is_combining_mark(*c) && !matches!(c, 'ʻ' | 'ʼ' | '‘')
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
 pub struct Note {
     /// Path relative to the vault root, without `.md`, using `/` separators.
     pub rel: String,
@@ -255,5 +267,17 @@ mod tests {
             !kilauea.links.iter().any(|l| l.ends_with(".jpg")),
             "attachments are not links"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    #[test]
+    fn search_ignores_accents_and_case() {
+        use super::search_key as k;
+        assert!(k("Volcanoes/Kīlauea.md").contains(&k("kil")));
+        assert!(k("Eyjafjallajökull").contains(&k("jokull")));
+        assert!(k("ʻAʻā").contains("aa"));
+        assert!(k("Café Notes").contains(&k("cafe")));
     }
 }

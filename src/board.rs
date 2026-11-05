@@ -253,10 +253,10 @@ fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<Path
     let mut query = String::new();
     let mut pos = 0usize;
     loop {
-        let q = query.to_lowercase();
+        let q = crate::vault::search_key(&query);
         let hits: Vec<&String> = boards
             .iter()
-            .filter(|b| b.to_lowercase().contains(&q))
+            .filter(|b| crate::vault::search_key(b).contains(&q))
             .collect();
         let new_name = if query.trim().is_empty() {
             "Untitled".to_string()
@@ -1079,10 +1079,10 @@ impl Board {
     }
 
     fn file_hits(&mut self, query: &str) -> Vec<String> {
-        let q = query.to_lowercase();
+        let q = crate::vault::search_key(query);
         self.vault_notes()
             .iter()
-            .filter(|p| p.to_lowercase().contains(&q))
+            .filter(|p| crate::vault::search_key(p).contains(&q))
             .take(200)
             .cloned()
             .collect()
@@ -2089,7 +2089,7 @@ fn side_point(n: &CNode, side: &str) -> (f64, f64) {
 
 /// Light markdown styling: headings, lists, checkboxes, quotes, code, plus inline
 /// **bold**, *italic*, `code`, [[wikilinks|aliases]] and [links](url).
-fn markdown_text(src: &str) -> Text<'static> {
+pub fn markdown_text(src: &str) -> Text<'static> {
     let note = Style::new().fg(NOTE);
     let mut lines = Vec::new();
     let mut in_code = false;

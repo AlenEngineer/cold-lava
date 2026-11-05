@@ -94,6 +94,7 @@ pub struct App {
     fitting: bool,
 }
 
+#[derive(Clone, Copy)]
 pub enum Render {
     Auto,
     Braille,
@@ -753,7 +754,7 @@ impl App {
 
     fn update_hits(&mut self) {
         let Mode::Search(q) = &self.mode else { return };
-        let q = q.to_lowercase();
+        let q = vault::search_key(q);
         self.hits.clear();
         if q.is_empty() {
             return;
@@ -764,11 +765,11 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                let l = n.label.to_lowercase();
+                let l = vault::search_key(&n.label);
                 let in_path = n
                     .rel
                     .as_ref()
-                    .is_some_and(|r| r.to_lowercase().contains(&q));
+                    .is_some_and(|r| vault::search_key(r).contains(&q));
                 (l.contains(&q) || in_path).then_some((i, l.starts_with(&q)))
             })
             .collect();
@@ -1301,7 +1302,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
     );
 }
 
-fn watch_vault(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
+pub fn watch_vault(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
     let (tx, rx) = mpsc::channel();
     let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res
