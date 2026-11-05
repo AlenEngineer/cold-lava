@@ -239,12 +239,21 @@ mod tests {
     }
 
     #[test]
-    fn scans_demo_vault() {
-        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("demo-vault")).unwrap();
-        assert_eq!(v.name, "demo-vault");
-        assert!(v.notes.len() >= 30);
-        // Hidden folders (.obsidian) are skipped; subfolders are included.
+    fn scans_example_vault() {
+        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault")).unwrap();
+        assert_eq!(v.name, "example-vault");
+        assert_eq!(v.notes.len(), 31);
+        // Hidden folders (.obsidian) are skipped; subfolders and non-ASCII names are included.
         assert!(v.notes.iter().all(|n| !n.rel.starts_with('.')));
-        assert!(v.notes.iter().any(|n| n.rel.starts_with("Projects/")));
+        let kilauea = v
+            .notes
+            .iter()
+            .find(|n| n.rel == "Volcanoes/Kīlauea")
+            .unwrap();
+        assert_eq!(kilauea.tags, ["volcano/shield"]);
+        assert!(
+            !kilauea.links.iter().any(|l| l.ends_with(".jpg")),
+            "attachments are not links"
+        );
     }
 }

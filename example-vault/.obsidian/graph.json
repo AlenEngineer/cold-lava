@@ -1,0 +1,34 @@
+{
+  "colorGroups": [
+    {
+      "query": "path:Guide",
+      "color": {
+        "a": 1,
+        "rgb": 16438874
+      }
+    },
+    {
+      "query": "path:Volcanoes",
+      "color": {
+        "a": 1,
+        "rgb": 15688290
+      }
+    },
+    {
+      "query": "path:Concepts",
+      "color": {
+        "a": 1,
+        "rgb": 5939450
+      }
+    },
+    {
+      "query": "path:People",
+      "color": {
+        "a": 1,
+        "rgb": 7260280
+      }
+    }
+  ],
+  "showTags": false,
+  "showOrphans": true
+}

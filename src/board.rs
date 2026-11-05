@@ -2087,8 +2087,10 @@ fn side_point(n: &CNode, side: &str) -> (f64, f64) {
     }
 }
 
-/// Light markdown styling: headings bold, list bullets, checkboxes, quotes.
+/// Light markdown styling: headings, lists, checkboxes, quotes, code, plus inline
+/// **bold**, *italic*, `code`, [[wikilinks|aliases]] and [links](url).
 fn markdown_text(src: &str) -> Text<'static> {
+    let note = Style::new().fg(NOTE);
     let mut lines = Vec::new();
     let mut in_code = false;
     for raw in src.lines() {
@@ -2098,54 +2100,142 @@ fn markdown_text(src: &str) -> Text<'static> {
             continue;
         }
         let line = if in_code {
-            Line::styled(raw.to_string(), Style::new().fg(Color::Rgb(160, 200, 160)))
+            Line::styled(raw.to_string(), Style::new().fg(CODE))
         } else if let Some(h) = t
             .strip_prefix('#')
             .filter(|_| t.trim_start_matches('#').starts_with(' '))
         {
-            let text = h.trim_start_matches('#').trim().to_string();
-            Line::styled(
-                text,
-                Style::new()
-                    .fg(Color::Rgb(235, 235, 245))
-                    .add_modifier(Modifier::BOLD),
-            )
+            let heading = Style::new()
+                .fg(Color::Rgb(235, 235, 245))
+                .add_modifier(Modifier::BOLD);
+            Line::from(inline(h.trim_start_matches('#').trim(), heading))
         } else if let Some(rest) = t.strip_prefix("- [ ] ") {
-            Line::from(vec![
+            prefixed(
                 Span::styled("☐ ", Style::new().fg(MUTED)),
-                Span::styled(rest.to_string(), Style::new().fg(NOTE)),
-            ])
+                inline(rest, note),
+            )
         } else if let Some(rest) = t
             .strip_prefix("- [x] ")
             .or_else(|| t.strip_prefix("- [X] "))
         {
-            Line::from(vec![
+            let done = Style::new().fg(MUTED).add_modifier(Modifier::CROSSED_OUT);
+            prefixed(
                 Span::styled("☑ ", Style::new().fg(ACCENT)),
-                Span::styled(
-                    rest.to_string(),
-                    Style::new().fg(MUTED).add_modifier(Modifier::CROSSED_OUT),
-                ),
-            ])
+                inline(rest, done),
+            )
         } else if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
             let indent = " ".repeat(raw.len() - t.len());
-            Line::from(vec![
+            prefixed(
                 Span::styled(format!("{indent}• "), Style::new().fg(ACCENT_SOFT)),
-                Span::styled(rest.to_string(), Style::new().fg(NOTE)),
-            ])
+                inline(rest, note),
+            )
         } else if let Some(rest) = t.strip_prefix("> ") {
-            Line::from(vec![
+            let quote = Style::new().fg(MUTED).add_modifier(Modifier::ITALIC);
+            prefixed(
                 Span::styled("▎ ", Style::new().fg(DIM)),
-                Span::styled(
-                    rest.to_string(),
-                    Style::new().fg(MUTED).add_modifier(Modifier::ITALIC),
-                ),
-            ])
+                inline(rest, quote),
+            )
         } else {
-            Line::styled(raw.to_string(), Style::new().fg(NOTE))
+            Line::from(inline(raw, note))
         };
         lines.push(line);
     }
     Text::from(lines)
+}
+
+const CODE: Color = Color::Rgb(160, 200, 160);
+const LINK: Color = Color::Rgb(150, 180, 250);
+
+fn prefixed(first: Span<'static>, rest: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![first];
+    spans.extend(rest);
+    Line::from(spans)
+}
+
+/// Inline markdown for one line of text.
+fn inline(s: &str, base: Style) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut plain = String::new();
+    let mut bold = false;
+    let mut italic = false;
+    let style = |bold: bool, italic: bool| {
+        let mut st = base;
+        if bold {
+            st = st.add_modifier(Modifier::BOLD);
+        }
+        if italic {
+            st = st.add_modifier(Modifier::ITALIC);
+        }
+        st
+    };
+    let mut i = 0;
+    let b = s.as_bytes();
+    while i < s.len() {
+        let rest = &s[i..];
+        // Each marker below is ASCII, so byte offsets stay on char boundaries.
+        let flush = |plain: &mut String, out: &mut Vec<Span<'static>>, bold: bool, italic: bool| {
+            if !plain.is_empty() {
+                out.push(Span::styled(std::mem::take(plain), style(bold, italic)));
+            }
+        };
+        if let Some(code) = rest.strip_prefix('`') {
+            if let Some(end) = code.find('`') {
+                flush(&mut plain, &mut out, bold, italic);
+                out.push(Span::styled(code[..end].to_string(), Style::new().fg(CODE)));
+                i += end + 2;
+                continue;
+            }
+        } else if rest.starts_with("[[") {
+            if let Some(end) = rest.find("]]") {
+                flush(&mut plain, &mut out, bold, italic);
+                let inner = &rest[2..end];
+                let shown = inner.split_once('|').map(|(_, a)| a).unwrap_or(inner);
+                let shown = shown.split('#').next().unwrap_or(shown);
+                out.push(Span::styled(
+                    shown.to_string(),
+                    style(bold, italic).fg(LINK),
+                ));
+                i += end + 2;
+                continue;
+            }
+        } else if rest.starts_with('[') {
+            if let Some(close) = rest.find("](")
+                && let Some(end) = rest[close..].find(')')
+            {
+                flush(&mut plain, &mut out, bold, italic);
+                let text = &rest[1..close];
+                out.push(Span::styled(
+                    text.to_string(),
+                    style(bold, italic)
+                        .fg(LINK)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+                i += close + end + 1;
+                continue;
+            }
+        } else if rest.starts_with("**") || rest.starts_with("__") {
+            flush(&mut plain, &mut out, bold, italic);
+            bold = !bold;
+            i += 2;
+            continue;
+        } else if (b[i] == b'*' || b[i] == b'_')
+            && (italic || rest[1..].contains(b[i] as char))
+            // `_` inside words (snake_case) is not emphasis.
+            && !(b[i] == b'_' && i > 0 && b[i - 1].is_ascii_alphanumeric())
+        {
+            flush(&mut plain, &mut out, bold, italic);
+            italic = !italic;
+            i += 1;
+            continue;
+        }
+        let ch = rest.chars().next().unwrap();
+        plain.push(ch);
+        i += ch.len_utf8();
+    }
+    if !plain.is_empty() {
+        out.push(Span::styled(plain, style(bold, italic)));
+    }
+    out
 }
 
 fn put_str(f: &mut Frame, area: Rect, col: i32, row: i32, s: &str, style: Style) {
@@ -2325,6 +2415,29 @@ mod tests {
             canvas_color(&Some("#ff0000".into())),
             Some(Color::Rgb(255, 0, 0))
         );
+    }
+
+    #[test]
+    fn inline_markdown() {
+        let text = |spans: Vec<Span>| {
+            spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<Vec<_>>()
+        };
+        let base = Style::new();
+        assert_eq!(
+            text(inline("a **b** *c* `d` [[e|E]] [[f#g]] [h](u)", base)),
+            ["a ", "b", " ", "c", " ", "d", " ", "E", " ", "f", " ", "h"]
+        );
+        let spans = inline("**bold**", base);
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        // Lone markers and snake_case stay as text.
+        assert_eq!(
+            text(inline("2 * 3 and snake_case_name", base)).concat(),
+            "2 * 3 and snake_case_name"
+        );
+        assert_eq!(text(inline("Hawaiʻi `x`", base)), ["Hawaiʻi ", "x"]);
     }
 
     #[test]

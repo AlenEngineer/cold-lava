@@ -1,0 +1,165 @@
+{
+	"nodes": [
+		{
+			"id": "grp-tl",
+			"type": "group",
+			"label": "Famous eruptions",
+			"x": -40,
+			"y": -120,
+			"width": 1640,
+			"height": 480
+		},
+		{
+			"id": "y0",
+			"type": "text",
+			"text": "## AD 79",
+			"x": 0,
+			"y": -80,
+			"width": 320,
+			"height": 60,
+			"color": "1"
+		},
+		{
+			"id": "v0",
+			"type": "file",
+			"file": "Volcanoes/Vesuvius.md",
+			"x": 0,
+			"y": 20,
+			"width": 320,
+			"height": 300,
+			"color": "1"
+		},
+		{
+			"id": "y1",
+			"type": "text",
+			"text": "## 1883",
+			"x": 400,
+			"y": -80,
+			"width": 320,
+			"height": 60,
+			"color": "2"
+		},
+		{
+			"id": "v1",
+			"type": "file",
+			"file": "Volcanoes/Krakatoa.md",
+			"x": 400,
+			"y": 20,
+			"width": 320,
+			"height": 300,
+			"color": "2"
+		},
+		{
+			"id": "y2",
+			"type": "text",
+			"text": "## 1980",
+			"x": 800,
+			"y": -80,
+			"width": 320,
+			"height": 60,
+			"color": "3"
+		},
+		{
+			"id": "v2",
+			"type": "file",
+			"file": "Volcanoes/Mount St. Helens.md",
+			"x": 800,
+			"y": 20,
+			"width": 320,
+			"height": 300,
+			"color": "3"
+		},
+		{
+			"id": "y3",
+			"type": "text",
+			"text": "## 2010",
+			"x": 1200,
+			"y": -80,
+			"width": 320,
+			"height": 60,
+			"color": "4"
+		},
+		{
+			"id": "v3",
+			"type": "file",
+			"file": "Volcanoes/Eyjafjallajökull.md",
+			"x": 1200,
+			"y": 20,
+			"width": 320,
+			"height": 300,
+			"color": "4"
+		},
+		{
+			"id": "vei",
+			"type": "file",
+			"file": "Concepts/Volcanic Explosivity Index.md",
+			"x": 400,
+			"y": 420,
+			"width": 720,
+			"height": 260
+		}
+	],
+	"edges": [
+		{
+			"id": "ey0",
+			"fromNode": "y0",
+			"fromSide": "bottom",
+			"toNode": "v0",
+			"toSide": "top",
+			"toEnd": "none"
+		},
+		{
+			"id": "ey1",
+			"fromNode": "y1",
+			"fromSide": "bottom",
+			"toNode": "v1",
+			"toSide": "top",
+			"toEnd": "none"
+		},
+		{
+			"id": "e1",
+			"fromNode": "v0",
+			"fromSide": "right",
+			"toNode": "v1",
+			"toSide": "left"
+		},
+		{
+			"id": "ey2",
+			"fromNode": "y2",
+			"fromSide": "bottom",
+			"toNode": "v2",
+			"toSide": "top",
+			"toEnd": "none"
+		},
+		{
+			"id": "e2",
+			"fromNode": "v1",
+			"fromSide": "right",
+			"toNode": "v2",
+			"toSide": "left"
+		},
+		{
+			"id": "ey3",
+			"fromNode": "y3",
+			"fromSide": "bottom",
+			"toNode": "v3",
+			"toSide": "top",
+			"toEnd": "none"
+		},
+		{
+			"id": "e3",
+			"fromNode": "v2",
+			"fromSide": "right",
+			"toNode": "v3",
+			"toSide": "left"
+		},
+		{
+			"id": "evei",
+			"fromNode": "grp-tl",
+			"fromSide": "bottom",
+			"toNode": "vei",
+			"toSide": "top",
+			"label": "how big?"
+		}
+	]
+}

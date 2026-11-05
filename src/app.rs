@@ -88,6 +88,10 @@ pub struct App {
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<RecommendedWatcher>,
     rescan_at: Option<Instant>,
+    /// The view the last pixel frame was rendered for; any camera move needs a new frame.
+    last_view: (f64, f64, f64, f64),
+    /// The camera is still easing toward a fit.
+    fitting: bool,
 }
 
 pub enum Render {
@@ -150,6 +154,8 @@ impl App {
             fs_events,
             _watcher: watcher,
             rescan_at: None,
+            last_view: (0.0, 0.0, 0.0, 0.0),
+            fitting: true,
         }
     }
 
@@ -175,7 +181,7 @@ impl App {
             term::write_raw(&std::mem::take(&mut self.pending_image));
             self.check_disk();
 
-            let idle = self.paused || self.graph.settled();
+            let idle = (self.paused || self.graph.settled()) && !(self.auto_fit && self.fitting);
             let ms = if idle && self.drag.is_none() {
                 250
             } else if self.pixels {
@@ -409,9 +415,20 @@ impl App {
         let zy = self.area.height as f64 * 2.0 * self.cell_aspect() / (y1 - y0 + pad * 2.0);
         let z = zx.min(zy).clamp(0.02, 4.0);
         let c = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-        self.zoom += (z - self.zoom) * ease;
-        self.cam.0 += (c.0 - self.cam.0) * ease;
-        self.cam.1 += (c.1 - self.cam.1) * ease;
+        // Snap once close, so the camera really stops (and pixel frames stop being re-sent).
+        let close = (z - self.zoom).abs() < z * 1e-3
+            && (c.0 - self.cam.0).abs() * self.zoom < 0.05
+            && (c.1 - self.cam.1).abs() * self.zoom < 0.05;
+        if close {
+            self.zoom = z;
+            self.cam = c;
+            self.fitting = false;
+        } else {
+            self.zoom += (z - self.zoom) * ease;
+            self.cam.0 += (c.0 - self.cam.0) * ease;
+            self.cam.1 += (c.1 - self.cam.1) * ease;
+            self.fitting = true;
+        }
     }
 
     fn ensure_on_screen(&mut self, i: usize) {
@@ -996,8 +1013,14 @@ impl App {
                 style,
             });
         }
-        // Draw selection-related labels last so they win overlaps.
-        labels.sort_by_key(|l| l.style.fg != Some(DIM) && l.style.fg != Some(MUTED));
+        // Most important first: labels that would overlap an earlier one are skipped.
+        labels.sort_by_key(|l| match l.style.fg {
+            Some(ACCENT) => 0,
+            Some(HIT) => 1,
+            Some(ACCENT_SOFT) => 2,
+            Some(MUTED) => 3,
+            _ => 4,
+        });
         Scene {
             view,
             zoom: self.zoom,
@@ -1071,6 +1094,11 @@ impl App {
         }
         self.area = inner;
         let scene = self.scene();
+        if scene.view != self.last_view {
+            // Camera moved (zoom, pan, easing to fit): the image must follow the text labels.
+            self.dirty = true;
+            self.last_view = scene.view;
+        }
 
         if self.pixels {
             block.render(main, f.buffer_mut());

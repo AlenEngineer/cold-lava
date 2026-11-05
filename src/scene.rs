@@ -74,12 +74,14 @@ impl Scene {
         }
     }
 
-    /// Writes labels straight into the cell buffer (both backends).
+    /// Writes labels straight into the cell buffer (both backends). Labels come most important
+    /// first; one that would touch an already placed label is skipped, so text never runs together.
     pub fn draw_labels(&self, buf: &mut Buffer, area: Rect) {
         let (x0, x1, y0, y1) = self.view;
         if area.width == 0 || area.height == 0 {
             return;
         }
+        let mut placed: Vec<(f64, f64, f64)> = Vec::new(); // (row, first col, last col)
         for l in &self.labels {
             let col = (l.x - x0) / (x1 - x0) * area.width as f64;
             // First full cell row below the node's bottom edge.
@@ -90,6 +92,15 @@ impl Scene {
             if row < 0.0 || row >= area.height as f64 {
                 continue;
             }
+            let (first, last) = (start, start + len - 1.0);
+            // One blank cell between labels on the same row.
+            if placed
+                .iter()
+                .any(|&(r, a, b)| r == row && first <= b + 1.0 && last >= a - 1.0)
+            {
+                continue;
+            }
+            placed.push((row, first, last));
             let y = area.y + row as u16;
             for (k, ch) in l.text.chars().enumerate() {
                 let c = start + k as f64;
@@ -101,5 +112,44 @@ impl Scene {
                 cell.set_style(l.style);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Style;
+
+    fn label(x: f64, text: &str) -> Label {
+        Label {
+            x,
+            y: 0.0,
+            r: 0.0,
+            text: text.into(),
+            style: Style::new(),
+        }
+    }
+
+    #[test]
+    fn overlapping_labels_are_skipped_in_priority_order() {
+        let scene = Scene {
+            view: (0.0, 40.0, -10.0, 10.0),
+            zoom: 1.0,
+            layers: vec![],
+            labels: vec![
+                label(10.0, "First"),
+                label(12.0, "Clash"),
+                label(30.0, "Apart"),
+            ],
+        };
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        scene.draw_labels(&mut buf, area);
+        let text: String = (0..10)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(text.contains("First") && text.contains("Apart"));
+        assert!(!text.contains("Clash"));
     }
 }

@@ -1,0 +1,110 @@
+{
+	"nodes": [
+		{
+			"id": "grp-try",
+			"type": "group",
+			"label": "Try these",
+			"x": -40,
+			"y": 260,
+			"width": 1200,
+			"height": 420,
+			"color": "6"
+		},
+		{
+			"id": "hello",
+			"type": "text",
+			"x": 0,
+			"y": 0,
+			"width": 420,
+			"height": 200,
+			"color": "6",
+			"text": "# Welcome to cold-lava\nThis board is an **Obsidian Canvas** file (`Welcome.canvas`).\nEverything you change here is saved straight away, and opens in Obsidian too."
+		},
+		{
+			"id": "start",
+			"type": "file",
+			"file": "Guide/Start Here.md",
+			"x": 520,
+			"y": 0,
+			"width": 400,
+			"height": 220
+		},
+		{
+			"id": "todo",
+			"type": "text",
+			"x": 0,
+			"y": 320,
+			"width": 360,
+			"height": 320,
+			"text": "## Checklist\n- [ ] `Tab` to select a card\n- [ ] `Shift+arrows` to move it\n- [ ] `a` to add a linked card\n- [ ] `c` to connect two cards\n- [ ] `1`–`6` to colour a card\n- [ ] `Enter` to edit text\n- [ ] `u` to undo\n- [ ] `n` or double-click for a new card"
+		},
+		{
+			"id": "mouse",
+			"type": "text",
+			"x": 420,
+			"y": 320,
+			"width": 320,
+			"height": 160,
+			"color": "4",
+			"text": "## Mouse\nDrag cards to move them, drag the ◢ corner to resize, scroll to zoom, and drag empty space to pan."
+		},
+		{
+			"id": "safe",
+			"type": "text",
+			"x": 420,
+			"y": 520,
+			"width": 320,
+			"height": 120,
+			"color": "5",
+			"text": "> Open this board in Obsidian at the same time: edits from both apps are merged."
+		},
+		{
+			"id": "note",
+			"type": "file",
+			"file": "Volcanoes/Kīlauea.md",
+			"x": 840,
+			"y": 320,
+			"width": 280,
+			"height": 200
+		},
+		{
+			"id": "spec",
+			"type": "link",
+			"url": "https://jsoncanvas.org",
+			"x": 840,
+			"y": 560,
+			"width": 280,
+			"height": 80
+		}
+	],
+	"edges": [
+		{
+			"id": "e1",
+			"fromNode": "hello",
+			"fromSide": "right",
+			"toNode": "start",
+			"toSide": "left",
+			"label": "read"
+		},
+		{
+			"id": "e2",
+			"fromNode": "hello",
+			"fromSide": "bottom",
+			"toNode": "todo",
+			"toSide": "top",
+			"label": "then try"
+		},
+		{
+			"id": "e3",
+			"fromNode": "mouse",
+			"toNode": "note",
+			"label": "example"
+		},
+		{
+			"id": "e4",
+			"fromNode": "note",
+			"toNode": "spec",
+			"color": "6"
+		}
+	]
+}

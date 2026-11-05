@@ -22,6 +22,21 @@ Obsidian and the graph updates on its own.
 cargo install --path .
 ```
 
+## Try it
+
+The repo includes a small example vault about volcanoes, built to show every feature: folders
+with Obsidian colour groups, tags, a few unresolved links, an orphan note, and two whiteboards.
+
+```bash
+git clone https://github.com/AlenEngineer/cold-lava
+cd cold-lava
+cargo run --release -- example-vault
+```
+
+Start with the **Start Here** note (press `/`, type `start`, then `Enter`), or press `w` and open
+the **Welcome** board for a guided tour. It's also a normal Obsidian vault: open the
+`example-vault` folder in Obsidian to compare the two side by side.
+
 ## Use
 
 ```bash
