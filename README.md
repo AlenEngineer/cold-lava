@@ -21,6 +21,9 @@ Obsidian and the graph updates on its own.
 
 ## Install
 
+Download a binary for Linux or macOS from the
+[latest release](https://github.com/AlenEngineer/cold-lava/releases/latest), or build it:
+
 ```bash
 cargo install --path .
 ```
@@ -202,6 +205,28 @@ cargo test                                   # unit tests
 cargo clippy --all-targets -- -D warnings    # lints, as in CI
 cargo fmt --check
 ```
+
+## Versions and releases
+
+cold-lava uses [semantic versioning](https://semver.org). Before 1.0, a minor version (0.**2**.0)
+may change commands, keys or file formats; a patch version (0.1.**1**) only fixes things. Every
+release is listed in [CHANGELOG.md](CHANGELOG.md), and `cold-lava --version` prints yours.
+
+To cut a release:
+
+1. Move the changes under `## [Unreleased]` in `CHANGELOG.md` into a new `## [x.y.z] - date`
+   section, and set `version = "x.y.z"` in `Cargo.toml` (then `cargo build` to update
+   `Cargo.lock`).
+2. Commit, then tag and push:
+
+   ```bash
+   git tag vx.y.z
+   git push origin main vx.y.z
+   ```
+
+The [release workflow](.github/workflows/release.yml) checks the tag matches `Cargo.toml`, builds
+Linux and macOS binaries (x86-64 and ARM), and publishes a GitHub Release with that version's
+changelog section as its notes.
 
 ## License
 

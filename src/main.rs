@@ -39,6 +39,7 @@ Options:
   --id ID              task toggle: only if the line still matches this id from the agenda
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
+  -V, --version        print the version
   -h, --help           this help
 
 DATE is YYYY-MM-DD, today, tomorrow or yesterday. Press ? inside the app for keys.";
@@ -73,6 +74,8 @@ impl Args {
                 }
             } else if arg == "-h" {
                 a.switches.insert("help".into());
+            } else if arg == "-V" {
+                a.switches.insert("version".into());
             } else {
                 a.words.push(arg);
             }
@@ -106,6 +109,10 @@ fn run() -> Result<()> {
     let args = Args::parse()?;
     if args.has("help") {
         println!("{USAGE}");
+        return Ok(());
+    }
+    if args.has("version") {
+        println!("cold-lava {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let render = if args.has("braille") {

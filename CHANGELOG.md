@@ -1,0 +1,41 @@
+# Changelog
+
+All notable changes to cold-lava are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0, minor versions may
+change commands, keys and file formats; patch versions only fix things.
+
+## [Unreleased]
+
+## [0.1.0] - 2026-11-05
+
+The first release.
+
+### Added
+
+- **Main menu**: your vaults (found from Obsidian's own vault list, recently opened ones, or
+  added by hand), each vault's notes and whiteboards as a folder tree with backlink counts, and
+  the selected note in an embedded Neovim (or Vim) that follows the selection. A rendered
+  preview is shown when neither is installed.
+- **Links and backlinks**: `Enter` or `gf` on a `[[link]]` in Neovim opens the note, at its
+  `#heading` or `#^block`, or creates it in Obsidian's default new-note location. A backlinks
+  pane lists every note that links to the open one, with the line it's on.
+- **Quick switcher** (`p`) with fuzzy, accent-insensitive matching on names, aliases and paths,
+  and **full-text search** (`s`) with highlighted matches; also from Neovim with
+  `:ColdLavaSwitcher` and `:ColdLavaSearch`, and from scripts with `cold-lava search`.
+- **Graph view**: a live force-directed graph of the vault, drawn with braille characters or, in
+  Ghostty, Kitty and WezTerm, as real pixels through the Kitty graphics protocol. Local graph,
+  search, tags and unresolved links as nodes, and colour groups read from Obsidian's graph
+  settings or made by folder or tag.
+- **Whiteboards** that read and write Obsidian Canvas (`.canvas`) files: text, note, link and
+  group cards, arrows, colours, undo, and three-way merging so edits made in Obsidian at the same
+  time are never overwritten.
+- **Agenda, daily notes and tasks for other programs**: `cold-lava agenda --json` (Obsidian Tasks
+  format, Dataview fields, global filter), `cold-lava daily` (Daily notes settings and
+  templates) and `cold-lava task toggle` (done dates, recurring tasks, a guard against edits in
+  between).
+- Live updates when notes change on disk, accent-insensitive matching everywhere, and an example
+  vault that shows every feature.
+
+[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/AlenEngineer/cold-lava/releases/tag/v0.1.0

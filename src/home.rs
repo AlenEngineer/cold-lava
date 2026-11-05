@@ -2397,7 +2397,10 @@ fn draw_help(f: &mut Frame, area: Rect) {
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().fg(ACCENT))
-                .title(" cold-lava · any key closes "),
+                .title(format!(
+                    " cold-lava {} · any key closes ",
+                    env!("CARGO_PKG_VERSION")
+                )),
         ),
         r,
     );
