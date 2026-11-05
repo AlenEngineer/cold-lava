@@ -5,7 +5,8 @@ use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
 use crate::term;
 use anyhow::{Context as _, Result};
 use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -89,8 +90,13 @@ fn round<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
 
 fn new_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
-    let mut x = t ^ COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut x = t ^ COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
@@ -127,17 +133,36 @@ const PX_ROW: f64 = 20.0;
 
 enum Mode {
     Normal,
-    Edit { id: String, buf: String, is_new: bool },
-    Connect { from: String },
-    PickFile { query: String, pos: usize },
+    Edit {
+        id: String,
+        buf: String,
+        is_new: bool,
+    },
+    Connect {
+        from: String,
+    },
+    PickFile {
+        query: String,
+        pos: usize,
+    },
     Help,
 }
 
 enum Drag {
-    Pan { col: u16, row: u16 },
+    Pan {
+        col: u16,
+        row: u16,
+    },
     /// Moving a card (and, for groups, the cards inside it).
-    Move { offsets: Vec<(String, f64, f64)>, grab: (f64, f64), moved: bool },
-    Resize { id: String, moved: bool },
+    Move {
+        offsets: Vec<(String, f64, f64)>,
+        grab: (f64, f64),
+        moved: bool,
+    },
+    Resize {
+        id: String,
+        moved: bool,
+    },
 }
 
 struct Board {
@@ -163,7 +188,12 @@ struct Board {
 // ---------- entry points ----------
 
 /// Open a board. With no file, show a picker of the vault's `.canvas` files.
-pub fn launch(terminal: &mut DefaultTerminal, vault_root: &Path, file: Option<PathBuf>, _pixels: bool) -> Result<()> {
+pub fn launch(
+    terminal: &mut DefaultTerminal,
+    vault_root: &Path,
+    file: Option<PathBuf>,
+    _pixels: bool,
+) -> Result<()> {
     let path = match file {
         Some(p) => p,
         None => match pick_board(terminal, vault_root)? {
@@ -184,8 +214,16 @@ pub fn launch(terminal: &mut DefaultTerminal, vault_root: &Path, file: Option<Pa
 /// Find the vault for a path: the nearest ancestor containing `.obsidian`, else the folder itself.
 pub fn find_vault_root(p: &Path) -> PathBuf {
     let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let start = if abs.is_dir() { abs.clone() } else { abs.parent().map(Path::to_path_buf).unwrap_or(abs.clone()) };
-    start.ancestors().find(|a| a.join(".obsidian").is_dir()).map(Path::to_path_buf).unwrap_or(start)
+    let start = if abs.is_dir() {
+        abs.clone()
+    } else {
+        abs.parent().map(Path::to_path_buf).unwrap_or(abs.clone())
+    };
+    start
+        .ancestors()
+        .find(|a| a.join(".obsidian").is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or(start)
 }
 
 fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<PathBuf>> {
@@ -194,30 +232,59 @@ fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<Path
         .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "canvas"))
-        .filter_map(|e| e.path().strip_prefix(root).ok().map(|p| p.to_string_lossy().replace('\\', "/")))
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        })
         .collect();
     boards.sort();
     let mut query = String::new();
     let mut pos = 0usize;
     loop {
         let q = query.to_lowercase();
-        let hits: Vec<&String> = boards.iter().filter(|b| b.to_lowercase().contains(&q)).collect();
-        let new_name = if query.trim().is_empty() { "Untitled".to_string() } else { query.trim().to_string() };
+        let hits: Vec<&String> = boards
+            .iter()
+            .filter(|b| b.to_lowercase().contains(&q))
+            .collect();
+        let new_name = if query.trim().is_empty() {
+            "Untitled".to_string()
+        } else {
+            query.trim().to_string()
+        };
         let total = hits.len() + 1;
         pos = pos.min(total - 1);
         terminal.draw(|f| {
-            let area = centered(f.area(), 64, (total as u16 + 4).min(f.area().height.saturating_sub(2)).max(6));
+            let area = centered(
+                f.area(),
+                64,
+                (total as u16 + 4)
+                    .min(f.area().height.saturating_sub(2))
+                    .max(6),
+            );
             let mut lines = vec![Line::from(vec![
                 Span::styled(" ▸ ", Style::new().fg(HIT)),
                 Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
             ])];
             lines.push(Line::raw(""));
             for (i, h) in hits.iter().enumerate() {
-                let st = if i == pos { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new().fg(NOTE) };
+                let st = if i == pos {
+                    Style::new().fg(Color::Black).bg(ACCENT)
+                } else {
+                    Style::new().fg(NOTE)
+                };
                 lines.push(Line::styled(format!("  {h}  "), st));
             }
-            let st = if pos == hits.len() { Style::new().fg(Color::Black).bg(HIT) } else { Style::new().fg(HIT) };
-            lines.push(Line::styled(format!("  + new board \"{new_name}.canvas\"  "), st));
+            let st = if pos == hits.len() {
+                Style::new().fg(Color::Black).bg(HIT)
+            } else {
+                Style::new().fg(HIT)
+            };
+            lines.push(Line::styled(
+                format!("  + new board \"{new_name}.canvas\"  "),
+                st,
+            ));
             f.render_widget(Clear, area);
             f.render_widget(
                 Paragraph::new(lines).block(
@@ -242,7 +309,11 @@ fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<Path
                     pos = 0;
                 }
                 KeyCode::Enter => {
-                    let rel = if pos < hits.len() { hits[pos].clone() } else { format!("{new_name}.canvas") };
+                    let rel = if pos < hits.len() {
+                        hits[pos].clone()
+                    } else {
+                        format!("{new_name}.canvas")
+                    };
                     return Ok(Some(root.join(rel)));
                 }
                 KeyCode::Char(c) => {
@@ -258,8 +329,13 @@ fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<Path
 impl Board {
     fn open(path: PathBuf, vault_root: &Path) -> Result<Board> {
         let doc = load(&path)?;
-        let vault_root = vault_root.canonicalize().unwrap_or_else(|_| vault_root.to_path_buf());
-        let vault_name = vault_root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let vault_root = vault_root
+            .canonicalize()
+            .unwrap_or_else(|_| vault_root.to_path_buf());
+        let vault_name = vault_root
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let mut b = Board {
             path,
             vault_root,
@@ -377,8 +453,10 @@ impl Board {
     fn to_world(&self, col: u16, row: u16) -> (f64, f64) {
         let a = self.area;
         (
-            self.cam.0 + (col as f64 + 0.5 - a.x as f64 - a.width as f64 / 2.0) * PX_COL / self.zoom,
-            self.cam.1 + (row as f64 + 0.5 - a.y as f64 - a.height as f64 / 2.0) * PX_ROW / self.zoom,
+            self.cam.0
+                + (col as f64 + 0.5 - a.x as f64 - a.width as f64 / 2.0) * PX_COL / self.zoom,
+            self.cam.1
+                + (row as f64 + 0.5 - a.y as f64 - a.height as f64 / 2.0) * PX_ROW / self.zoom,
         )
     }
 
@@ -387,7 +465,12 @@ impl Board {
         let (c0, r0) = self.to_screen(n.x, n.y);
         let (c1, r1) = self.to_screen(n.x + n.width, n.y + n.height);
         let (c0, r0) = (c0.round() as i32, r0.round() as i32);
-        (c0, r0, (c1.round() as i32).max(c0 + 1), (r1.round() as i32).max(r0 + 1))
+        (
+            c0,
+            r0,
+            (c1.round() as i32).max(c0 + 1),
+            (r1.round() as i32).max(r0 + 1),
+        )
     }
 
     fn fit_pending(&mut self) {
@@ -400,7 +483,12 @@ impl Board {
     fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
         let mut it = self.doc.nodes.iter();
         let first = it.next()?;
-        let mut b = (first.x, first.y, first.x + first.width, first.y + first.height);
+        let mut b = (
+            first.x,
+            first.y,
+            first.x + first.width,
+            first.y + first.height,
+        );
         for n in it {
             b.0 = b.0.min(n.x);
             b.1 = b.1.min(n.y);
@@ -428,7 +516,11 @@ impl Board {
         let (c0, r0, c1, r1) = self.cell_rect(n);
         let a = self.area;
         let (cx, cy) = (n.x + n.width / 2.0, n.y + n.height / 2.0);
-        if c0 < a.x as i32 || r0 < a.y as i32 || c1 > (a.x + a.width) as i32 || r1 > (a.y + a.height) as i32 {
+        if c0 < a.x as i32
+            || r0 < a.y as i32
+            || c1 > (a.x + a.width) as i32
+            || r1 > (a.y + a.height) as i32
+        {
             self.cam = (cx, cy);
         }
     }
@@ -476,12 +568,22 @@ impl Board {
 
     /// Groups first, then other cards in file order, with the selection on top.
     fn draw_order(&self) -> Vec<&CNode> {
-        let mut v: Vec<&CNode> = self.doc.nodes.iter().filter(|n| n.kind == "group").collect();
-        v.extend(self.doc.nodes.iter().filter(|n| n.kind != "group" && Some(&n.id) != self.sel.as_ref()));
-        if let Some(s) = self.sel.as_ref().and_then(|s| self.node(s)) {
-            if s.kind != "group" {
-                v.push(s);
-            }
+        let mut v: Vec<&CNode> = self
+            .doc
+            .nodes
+            .iter()
+            .filter(|n| n.kind == "group")
+            .collect();
+        v.extend(
+            self.doc
+                .nodes
+                .iter()
+                .filter(|n| n.kind != "group" && Some(&n.id) != self.sel.as_ref()),
+        );
+        if let Some(s) = self.sel.as_ref().and_then(|s| self.node(s))
+            && s.kind != "group"
+        {
+            v.push(s);
         }
         v
     }
@@ -515,7 +617,11 @@ impl Board {
 
     fn reading_order(&self) -> Vec<String> {
         let mut v: Vec<&CNode> = self.doc.nodes.iter().collect();
-        v.sort_by(|a, b| (a.y, a.x).partial_cmp(&(b.y, b.x)).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            (a.y, a.x)
+                .partial_cmp(&(b.y, b.x))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         v.into_iter().map(|n| n.id.clone()).collect()
     }
 
@@ -531,7 +637,10 @@ impl Board {
         if order.is_empty() {
             return;
         }
-        let pos = self.sel.as_ref().and_then(|s| order.iter().position(|x| x == s));
+        let pos = self
+            .sel
+            .as_ref()
+            .and_then(|s| order.iter().position(|x| x == s));
         let next = match (pos, back) {
             (Some(p), false) => (p + 1) % order.len(),
             (Some(p), true) => (p + order.len() - 1) % order.len(),
@@ -555,7 +664,11 @@ impl Board {
                 let mut y = s.y;
                 // Step down until there's a free spot.
                 while self.doc.nodes.iter().any(|n| {
-                    n.kind != "group" && x < n.x + n.width && x + w > n.x && y < n.y + n.height && y + h > n.y
+                    n.kind != "group"
+                        && x < n.x + n.width
+                        && x + w > n.x
+                        && y < n.y + n.height
+                        && y + h > n.y
                 }) {
                     y += h + 40.0;
                     if y > s.y + 4000.0 {
@@ -612,14 +725,20 @@ impl Board {
         }
         self.sel = Some(id.clone());
         self.ensure_visible(&id);
-        self.mode = Mode::Edit { id, buf: String::new(), is_new: true };
+        self.mode = Mode::Edit {
+            id,
+            buf: String::new(),
+            is_new: true,
+        };
     }
 
     fn delete_selected(&mut self) {
         let Some(id) = self.sel.take() else { return };
         self.checkpoint();
         self.doc.nodes.retain(|n| n.id != id);
-        self.doc.edges.retain(|e| e.from_node != id && e.to_node != id);
+        self.doc
+            .edges
+            .retain(|e| e.from_node != id && e.to_node != id);
         self.commit();
         self.flash("deleted");
     }
@@ -630,7 +749,9 @@ impl Board {
         }
         self.checkpoint();
         let before = self.doc.edges.len();
-        self.doc.edges.retain(|e| !((e.from_node == from && e.to_node == to) || (e.from_node == to && e.to_node == from)));
+        self.doc.edges.retain(|e| {
+            !((e.from_node == from && e.to_node == to) || (e.from_node == to && e.to_node == from))
+        });
         if self.doc.edges.len() == before {
             self.add_edge(from, to);
             self.flash("connected");
@@ -676,7 +797,12 @@ impl Board {
         let mut ids = vec![id.to_string()];
         if let Some(g) = self.node(id).filter(|g| g.kind == "group") {
             for n in &self.doc.nodes {
-                if n.id != g.id && n.x >= g.x && n.y >= g.y && n.x + n.width <= g.x + g.width && n.y + n.height <= g.y + g.height {
+                if n.id != g.id
+                    && n.x >= g.x
+                    && n.y >= g.y
+                    && n.x + n.width <= g.x + g.width
+                    && n.y + n.height <= g.y + g.height
+                {
                     ids.push(n.id.clone());
                 }
             }
@@ -696,24 +822,44 @@ impl Board {
             self.doc.nodes.insert(0, g);
         }
         self.sel = Some(id.clone());
-        self.mode = Mode::Edit { id, buf: "Group".into(), is_new: false };
+        self.mode = Mode::Edit {
+            id,
+            buf: "Group".into(),
+            is_new: false,
+        };
     }
 
     fn start_edit(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Some(id) = self.sel.clone() else { return Ok(()) };
-        let Some(n) = self.node(&id) else { return Ok(()) };
+        let Some(id) = self.sel.clone() else {
+            return Ok(());
+        };
+        let Some(n) = self.node(&id) else {
+            return Ok(());
+        };
         match n.kind.as_str() {
             "text" => {
                 let buf = n.text.clone().unwrap_or_default();
-                self.mode = Mode::Edit { id, buf, is_new: false };
+                self.mode = Mode::Edit {
+                    id,
+                    buf,
+                    is_new: false,
+                };
             }
             "group" => {
                 let buf = n.label.clone().unwrap_or_default();
-                self.mode = Mode::Edit { id, buf, is_new: false };
+                self.mode = Mode::Edit {
+                    id,
+                    buf,
+                    is_new: false,
+                };
             }
             "link" => {
                 let buf = n.url.clone().unwrap_or_default();
-                self.mode = Mode::Edit { id, buf, is_new: false };
+                self.mode = Mode::Edit {
+                    id,
+                    buf,
+                    is_new: false,
+                };
             }
             "file" => {
                 let rel = n.file.clone().unwrap_or_default();
@@ -730,8 +876,12 @@ impl Board {
 
     /// Edit a text card's markdown in $EDITOR.
     fn edit_external(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Some(id) = self.sel.clone() else { return Ok(()) };
-        let Some(n) = self.node(&id) else { return Ok(()) };
+        let Some(id) = self.sel.clone() else {
+            return Ok(());
+        };
+        let Some(n) = self.node(&id) else {
+            return Ok(());
+        };
         if n.kind != "text" {
             return self.start_edit(terminal);
         }
@@ -752,7 +902,9 @@ impl Board {
     }
 
     fn finish_edit(&mut self) {
-        let Mode::Edit { id, buf, is_new } = std::mem::replace(&mut self.mode, Mode::Normal) else { return };
+        let Mode::Edit { id, buf, is_new } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return;
+        };
         if is_new && buf.trim().is_empty() {
             // An empty new card is discarded (undo the creation).
             if let Some(d) = self.undo.pop() {
@@ -783,14 +935,28 @@ impl Board {
             let root = self.vault_root.clone();
             let mut v: Vec<String> = WalkDir::new(&root)
                 .into_iter()
-                .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
+                .filter_entry(|e| {
+                    e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.')
+                })
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_type().is_file())
                 .filter(|e| {
-                    let ext = e.path().extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
-                    matches!(ext.as_str(), "md" | "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "pdf")
+                    let ext = e
+                        .path()
+                        .extension()
+                        .map(|x| x.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    matches!(
+                        ext.as_str(),
+                        "md" | "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "pdf"
+                    )
                 })
-                .filter_map(|e| e.path().strip_prefix(&root).ok().map(|p| p.to_string_lossy().replace('\\', "/")))
+                .filter_map(|e| {
+                    e.path()
+                        .strip_prefix(&root)
+                        .ok()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                })
                 .collect();
             v.sort_by_key(|p| (p.matches('/').count(), p.to_lowercase()));
             self.notes = Some(v);
@@ -800,7 +966,12 @@ impl Board {
 
     fn file_hits(&mut self, query: &str) -> Vec<String> {
         let q = query.to_lowercase();
-        self.vault_notes().iter().filter(|p| p.to_lowercase().contains(&q)).take(200).cloned().collect()
+        self.vault_notes()
+            .iter()
+            .filter(|p| p.to_lowercase().contains(&q))
+            .take(200)
+            .cloned()
+            .collect()
     }
 
     fn add_file_card(&mut self, rel: String) {
@@ -821,10 +992,10 @@ impl Board {
         let lines = match std::fs::read_to_string(&path) {
             Ok(t) => {
                 let mut lines: Vec<&str> = t.lines().collect();
-                if lines.first() == Some(&"---") {
-                    if let Some(end) = lines.iter().skip(1).position(|l| *l == "---") {
-                        lines.drain(..end + 2);
-                    }
+                if lines.first() == Some(&"---")
+                    && let Some(end) = lines.iter().skip(1).position(|l| *l == "---")
+                {
+                    lines.drain(..end + 2);
                 }
                 lines.into_iter().take(60).map(String::from).collect()
             }
@@ -963,7 +1134,12 @@ impl Board {
                 Some(from) => self.new_text_card(None, Some(from)),
                 None => self.new_text_card(None, None),
             },
-            KeyCode::Char('f') => self.mode = Mode::PickFile { query: String::new(), pos: 0 },
+            KeyCode::Char('f') => {
+                self.mode = Mode::PickFile {
+                    query: String::new(),
+                    pos: 0,
+                }
+            }
             KeyCode::Char('G') => self.new_group(),
             KeyCode::Char('c') => match self.sel.clone() {
                 Some(from) => self.mode = Mode::Connect { from },
@@ -972,16 +1148,33 @@ impl Board {
             KeyCode::Enter | KeyCode::Char('e') => self.start_edit(terminal)?,
             KeyCode::Char('E') => self.edit_external(terminal)?,
             KeyCode::Char('o') => {
-                let file = self.sel.as_ref().and_then(|s| self.node(s)).and_then(|n| n.file.clone());
+                let file = self
+                    .sel
+                    .as_ref()
+                    .and_then(|s| self.node(s))
+                    .and_then(|n| n.file.clone());
                 match file {
                     Some(rel) => {
                         let ok = term::open_in_obsidian(&self.vault_name, &rel);
-                        self.flash(if ok { "opened in Obsidian" } else { "couldn't launch Obsidian" });
+                        self.flash(if ok {
+                            "opened in Obsidian"
+                        } else {
+                            "couldn't launch Obsidian"
+                        });
                     }
                     None => {
-                        let rel = self.path.strip_prefix(&self.vault_root).unwrap_or(&self.path).to_string_lossy().into_owned();
+                        let rel = self
+                            .path
+                            .strip_prefix(&self.vault_root)
+                            .unwrap_or(&self.path)
+                            .to_string_lossy()
+                            .into_owned();
                         let ok = term::open_in_obsidian(&self.vault_name, &rel);
-                        self.flash(if ok { "opened board in Obsidian" } else { "couldn't launch Obsidian" });
+                        self.flash(if ok {
+                            "opened board in Obsidian"
+                        } else {
+                            "couldn't launch Obsidian"
+                        });
                     }
                 }
             }
@@ -1023,15 +1216,18 @@ impl Board {
             }
         }
         let a = self.area;
-        let in_area = m.column >= a.x && m.row >= a.y && m.column < a.x + a.width && m.row < a.y + a.height;
+        let in_area =
+            m.column >= a.x && m.row >= a.y && m.column < a.x + a.width && m.row < a.y + a.height;
         let world = self.to_world(m.column, m.row);
         match m.kind {
             MouseEventKind::ScrollUp if in_area => self.zoom_by(1.15, Some(world)),
             MouseEventKind::ScrollDown if in_area => self.zoom_by(1.0 / 1.15, Some(world)),
             MouseEventKind::Down(MouseButton::Left) if in_area => {
-                let double = self
-                    .last_click
-                    .is_some_and(|(t, c, r)| t.elapsed() < Duration::from_millis(400) && c.abs_diff(m.column) <= 1 && r == m.row);
+                let double = self.last_click.is_some_and(|(t, c, r)| {
+                    t.elapsed() < Duration::from_millis(400)
+                        && c.abs_diff(m.column) <= 1
+                        && r == m.row
+                });
                 self.last_click = Some((Instant::now(), m.column, m.row));
                 let hit = self.hit(m.column, m.row);
                 if let Mode::Connect { from } = &self.mode {
@@ -1057,7 +1253,11 @@ impl Board {
                                         _ => n.text.clone(),
                                     })
                                     .unwrap_or_default();
-                                self.mode = Mode::Edit { id, buf, is_new: false };
+                                self.mode = Mode::Edit {
+                                    id,
+                                    buf,
+                                    is_new: false,
+                                };
                             }
                             return;
                         }
@@ -1070,7 +1270,11 @@ impl Board {
                                 .into_iter()
                                 .filter_map(|mid| self.node(&mid).map(|n| (mid, n.x, n.y)))
                                 .collect();
-                            self.drag = Some(Drag::Move { offsets, grab: world, moved: false });
+                            self.drag = Some(Drag::Move {
+                                offsets,
+                                grab: world,
+                                moved: false,
+                            });
                         }
                     }
                     None => {
@@ -1078,7 +1282,10 @@ impl Board {
                         if double {
                             self.new_text_card(Some((world.0 - 130.0, world.1 - 50.0)), None);
                         } else {
-                            self.drag = Some(Drag::Pan { col: m.column, row: m.row });
+                            self.drag = Some(Drag::Pan {
+                                col: m.column,
+                                row: m.row,
+                            });
                         }
                     }
                 }
@@ -1090,7 +1297,11 @@ impl Board {
                     *row = m.row;
                     self.pan_cells(dc, dr);
                 }
-                Some(Drag::Move { offsets, grab, moved }) => {
+                Some(Drag::Move {
+                    offsets,
+                    grab,
+                    moved,
+                }) => {
                     let (dx, dy) = (snap(world.0 - grab.0), snap(world.1 - grab.1));
                     *moved = true;
                     let offsets = offsets.clone();
@@ -1128,40 +1339,78 @@ impl Board {
     // ---------- drawing ----------
 
     fn draw(&mut self, f: &mut Frame) {
-        let [main, status] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(f.area());
-        let name = self.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let [main, status] =
+            Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(f.area());
+        let name = self
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(DIM))
             .title(Line::from(vec![
-                Span::styled(" whiteboard ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!("{name} · {} cards · {} arrows ", self.doc.nodes.len(), self.doc.edges.len()),
+                    " whiteboard ",
+                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "{name} · {} cards · {} arrows ",
+                        self.doc.nodes.len(),
+                        self.doc.edges.len()
+                    ),
                     Style::new().fg(MUTED),
                 ),
             ]))
-            .title_top(Line::from(Span::styled(format!(" {:.0}% ", self.zoom * 100.0), Style::new().fg(MUTED))).right_aligned());
+            .title_top(
+                Line::from(Span::styled(
+                    format!(" {:.0}% ", self.zoom * 100.0),
+                    Style::new().fg(MUTED),
+                ))
+                .right_aligned(),
+            );
         self.area = block.inner(main);
         f.render_widget(block, main);
         let area = self.area;
 
         self.draw_grid(f);
-        let groups: Vec<CNode> = self.doc.nodes.iter().filter(|n| n.kind == "group").cloned().collect();
+        let groups: Vec<CNode> = self
+            .doc
+            .nodes
+            .iter()
+            .filter(|n| n.kind == "group")
+            .cloned()
+            .collect();
         for g in &groups {
             self.draw_card(f, g, area);
         }
         self.draw_edges(f);
-        let order: Vec<CNode> = self.draw_order().into_iter().filter(|n| n.kind != "group").cloned().collect();
+        let order: Vec<CNode> = self
+            .draw_order()
+            .into_iter()
+            .filter(|n| n.kind != "group")
+            .cloned()
+            .collect();
         for n in &order {
             self.draw_card(f, n, area);
         }
         if self.doc.nodes.is_empty() {
             let hint = Paragraph::new(vec![
-                Line::styled("empty board", Style::new().fg(MUTED).add_modifier(Modifier::BOLD)),
-                Line::styled("n new card · f add a note · double-click anywhere · ? help", Style::new().fg(DIM)),
+                Line::styled(
+                    "empty board",
+                    Style::new().fg(MUTED).add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(
+                    "n new card · f add a note · double-click anywhere · ? help",
+                    Style::new().fg(DIM),
+                ),
             ])
             .alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(hint, Rect::new(area.x, area.y + area.height / 2, area.width, 2));
+            f.render_widget(
+                hint,
+                Rect::new(area.x, area.y + area.height / 2, area.width, 2),
+            );
         }
 
         self.draw_status(f, status);
@@ -1191,7 +1440,11 @@ impl Board {
             while x <= wx1 {
                 let (c, r) = self.to_screen(x, y);
                 let (c, r) = (c.round() as i32, r.round() as i32);
-                if c >= a.x as i32 && r >= a.y as i32 && c < (a.x + a.width) as i32 && r < (a.y + a.height) as i32 {
+                if c >= a.x as i32
+                    && r >= a.y as i32
+                    && c < (a.x + a.width) as i32
+                    && r < (a.y + a.height) as i32
+                {
                     let cell = &mut buf[(c as u16, r as u16)];
                     cell.set_char('·');
                     cell.set_fg(GRID);
@@ -1216,12 +1469,20 @@ impl Board {
         let mut lines: Vec<(f64, f64, f64, f64, Color, bool, bool)> = Vec::new();
         let mut labels: Vec<(f64, f64, String)> = Vec::new();
         for e in &self.doc.edges {
-            let (Some(from), Some(to)) = (self.node(&e.from_node), self.node(&e.to_node)) else { continue };
+            let (Some(from), Some(to)) = (self.node(&e.from_node), self.node(&e.to_node)) else {
+                continue;
+            };
             let (fs, ts) = sides(from, to, e.from_side.as_deref(), e.to_side.as_deref());
             let (ax, ay) = side_point(from, fs);
             let (bx, by) = side_point(to, ts);
-            let touches = sel.as_deref().is_some_and(|s| s == e.from_node || s == e.to_node);
-            let color = if touches { ACCENT } else { canvas_color(&e.color).unwrap_or(EDGE_COLOR) };
+            let touches = sel
+                .as_deref()
+                .is_some_and(|s| s == e.from_node || s == e.to_node);
+            let color = if touches {
+                ACCENT
+            } else {
+                canvas_color(&e.color).unwrap_or(EDGE_COLOR)
+            };
             let arrow_to = e.to_end.as_deref() != Some("none");
             let arrow_from = e.from_end.as_deref() == Some("arrow");
             lines.push((ax, ay, bx, by, color, arrow_to, arrow_from));
@@ -1230,13 +1491,15 @@ impl Board {
             }
         }
         // Preview arrow while connecting.
-        if let (Some(from), Some(to)) = (connect_from.as_deref().and_then(|i| self.node(i)), sel.as_deref().and_then(|i| self.node(i))) {
-            if from.id != to.id {
-                let (fs, ts) = sides(from, to, None, None);
-                let (ax, ay) = side_point(from, fs);
-                let (bx, by) = side_point(to, ts);
-                lines.push((ax, ay, bx, by, HIT, true, false));
-            }
+        if let (Some(from), Some(to)) = (
+            connect_from.as_deref().and_then(|i| self.node(i)),
+            sel.as_deref().and_then(|i| self.node(i)),
+        ) && from.id != to.id
+        {
+            let (fs, ts) = sides(from, to, None, None);
+            let (ax, ay) = side_point(from, fs);
+            let (bx, by) = side_point(to, ts);
+            lines.push((ax, ay, bx, by, HIT, true, false));
         }
         let alen = 2.2 * PX_COL / self.zoom;
         let canvas = Canvas::default()
@@ -1249,7 +1512,8 @@ impl Board {
                     let mut head = |tx: f64, ty: f64, fx: f64, fy: f64| {
                         let ang = (fy - ty).atan2(fx - tx);
                         for da in [0.45f64, -0.45] {
-                            let (hx, hy) = (tx + alen * (ang + da).cos(), ty + alen * (ang + da).sin());
+                            let (hx, hy) =
+                                (tx + alen * (ang + da).cos(), ty + alen * (ang + da).sin());
                             ctx.draw(&CLine::new(tx, -ty, hx, -hy, color));
                         }
                     };
@@ -1284,7 +1548,13 @@ impl Board {
         let editing = matches!(&self.mode, Mode::Edit { id, .. } if *id == n.id);
         let connecting_from = matches!(&self.mode, Mode::Connect { from } if *from == n.id);
         let base = canvas_color(&n.color).unwrap_or(CARD_BORDER);
-        let border_color = if editing || connecting_from { HIT } else if selected { ACCENT } else { base };
+        let border_color = if editing || connecting_from {
+            HIT
+        } else if selected {
+            ACCENT
+        } else {
+            base
+        };
         let is_group = n.kind == "group";
 
         // Too small to draw a box: a coloured blob.
@@ -1313,10 +1583,18 @@ impl Board {
         if r1 <= ay1 {
             borders |= Borders::BOTTOM;
         }
-        let title_style = Style::new().fg(if selected { ACCENT } else { NOTE }).add_modifier(Modifier::BOLD);
+        let title_style = Style::new()
+            .fg(if selected { ACCENT } else { NOTE })
+            .add_modifier(Modifier::BOLD);
         let mut block = Block::new()
             .borders(borders)
-            .border_type(if selected || editing { BorderType::Thick } else if is_group { BorderType::Plain } else { BorderType::Rounded })
+            .border_type(if selected || editing {
+                BorderType::Thick
+            } else if is_group {
+                BorderType::Plain
+            } else {
+                BorderType::Rounded
+            })
             .border_style(Style::new().fg(border_color));
 
         let edit_buf = match &self.mode {
@@ -1325,7 +1603,10 @@ impl Board {
         };
         let body: Text = match n.kind.as_str() {
             "group" => {
-                let label = edit_buf.map(|b| format!("{b}▏")).or_else(|| n.label.clone()).unwrap_or_default();
+                let label = edit_buf
+                    .map(|b| format!("{b}▏"))
+                    .or_else(|| n.label.clone())
+                    .unwrap_or_default();
                 if r0 >= ay0 {
                     block = block.title(Span::styled(format!(" {label} "), title_style));
                 }
@@ -1333,7 +1614,12 @@ impl Board {
             }
             "file" => {
                 let rel = n.file.clone().unwrap_or_default();
-                let name = rel.rsplit('/').next().unwrap_or(&rel).trim_end_matches(".md").to_string();
+                let name = rel
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&rel)
+                    .trim_end_matches(".md")
+                    .to_string();
                 if r0 >= ay0 {
                     block = block.title(Span::styled(format!(" ▤ {name} "), title_style));
                 }
@@ -1341,11 +1627,19 @@ impl Board {
                 markdown_text(&lines.join("\n"))
             }
             "link" => {
-                let url = edit_buf.map(|b| format!("{b}▏")).or_else(|| n.url.clone()).unwrap_or_default();
+                let url = edit_buf
+                    .map(|b| format!("{b}▏"))
+                    .or_else(|| n.url.clone())
+                    .unwrap_or_default();
                 if r0 >= ay0 {
                     block = block.title(Span::styled(" ↗ link ", title_style));
                 }
-                Text::styled(url, Style::new().fg(Color::Rgb(120, 170, 250)).add_modifier(Modifier::UNDERLINED))
+                Text::styled(
+                    url,
+                    Style::new()
+                        .fg(Color::Rgb(120, 170, 250))
+                        .add_modifier(Modifier::UNDERLINED),
+                )
             }
             _ => match edit_buf {
                 Some(b) => Text::styled(format!("{b}▏"), Style::new().fg(NOTE)),
@@ -1361,11 +1655,18 @@ impl Board {
         // Scroll: hidden rows above the view, and while editing keep the cursor in sight.
         let mut scroll = (ay0 - (r0 + 1)).max(0) as usize;
         if editing {
-            let rows: usize = body.lines.iter().map(|l| l.width().div_ceil(inner_w).max(1)).sum();
+            let rows: usize = body
+                .lines
+                .iter()
+                .map(|l| l.width().div_ceil(inner_w).max(1))
+                .sum();
             scroll = scroll.max(rows.saturating_sub(inner_h));
         }
         f.render_widget(
-            Paragraph::new(body).block(block).wrap(Wrap { trim: false }).scroll((scroll as u16, 0)),
+            Paragraph::new(body)
+                .block(block)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll as u16, 0)),
             rect,
         );
         // Resize handle.
@@ -1382,11 +1683,18 @@ impl Board {
         let pos = pos.min(hits.len().saturating_sub(1));
         let start = pos.saturating_sub(rows.saturating_sub(1));
         let mut lines = vec![
-            Line::from(vec![Span::styled(" ▸ ", Style::new().fg(HIT)), Span::styled(format!("{query}▏"), Style::new().fg(NOTE))]),
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::new().fg(HIT)),
+                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+            ]),
             Line::raw(""),
         ];
         for (i, p) in hits.iter().enumerate().skip(start).take(rows) {
-            let st = if i == pos { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new().fg(NOTE) };
+            let st = if i == pos {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else {
+                Style::new().fg(NOTE)
+            };
             lines.push(Line::styled(format!("  {p}  "), st));
         }
         if hits.is_empty() {
@@ -1407,7 +1715,12 @@ impl Board {
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         let info = match self.sel.as_ref().and_then(|s| self.node(s)) {
             Some(n) => {
-                let links = self.doc.edges.iter().filter(|e| e.from_node == n.id || e.to_node == n.id).count();
+                let links = self
+                    .doc
+                    .edges
+                    .iter()
+                    .filter(|e| e.from_node == n.id || e.to_node == n.id)
+                    .count();
                 let what = match n.kind.as_str() {
                     "file" => format!("note card · {}", n.file.clone().unwrap_or_default()),
                     "group" => format!("group · {}", n.label.clone().unwrap_or_default()),
@@ -1415,24 +1728,44 @@ impl Board {
                     _ => "text card".to_string(),
                 };
                 Line::from(vec![
-                    Span::styled(" ▣ ", Style::new().fg(canvas_color(&n.color).unwrap_or(ACCENT))),
+                    Span::styled(
+                        " ▣ ",
+                        Style::new().fg(canvas_color(&n.color).unwrap_or(ACCENT)),
+                    ),
                     Span::styled(what, Style::new().fg(NOTE).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("  {}×{}  {} arrows", n.width as i64, n.height as i64, links), Style::new().fg(MUTED)),
+                    Span::styled(
+                        format!("  {}×{}  {} arrows", n.width as i64, n.height as i64, links),
+                        Style::new().fg(MUTED),
+                    ),
                 ])
             }
             None => Line::styled(
-                format!(" {}", self.path.strip_prefix(&self.vault_root).unwrap_or(&self.path).display()),
+                format!(
+                    " {}",
+                    self.path
+                        .strip_prefix(&self.vault_root)
+                        .unwrap_or(&self.path)
+                        .display()
+                ),
                 Style::new().fg(MUTED),
             ),
         };
-        if self.msg.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3)) {
+        if self
+            .msg
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3))
+        {
             self.msg = None;
         }
         let second = match (&self.mode, &self.msg) {
-            (Mode::Edit { .. }, _) => Line::styled(" editing · type text · ⏎ new line · Esc done (saves)", Style::new().fg(HIT)),
-            (Mode::Connect { .. }, _) => {
-                Line::styled(" connect · pick the target (arrows/Tab/click) · ⏎ draw arrow (again removes it) · Esc cancel", Style::new().fg(HIT))
-            }
+            (Mode::Edit { .. }, _) => Line::styled(
+                " editing · type text · ⏎ new line · Esc done (saves)",
+                Style::new().fg(HIT),
+            ),
+            (Mode::Connect { .. }, _) => Line::styled(
+                " connect · pick the target (arrows/Tab/click) · ⏎ draw arrow (again removes it) · Esc cancel",
+                Style::new().fg(HIT),
+            ),
             (_, Some((m, _))) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
             _ => Line::styled(
                 " n new  a add linked  f note  G group  c connect  ⏎ edit  1-6 colour  d delete  u undo  ⇧+arrows move  ? help  q back",
@@ -1446,11 +1779,13 @@ impl Board {
 // ---------- helpers ----------
 
 fn load(path: &Path) -> Result<Doc> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     if text.trim().is_empty() {
         return Ok(Doc::default());
     }
-    serde_json::from_str(&text).with_context(|| format!("{} is not a valid canvas file", path.display()))
+    serde_json::from_str(&text)
+        .with_context(|| format!("{} is not a valid canvas file", path.display()))
 }
 
 fn snap(v: f64) -> f64 {
@@ -1460,17 +1795,29 @@ fn snap(v: f64) -> f64 {
 /// Make a text card tall enough for its content (never shrinks it).
 fn grow_to_fit(n: &mut CNode) {
     let cols = ((n.width / PX_COL) as usize).saturating_sub(2).max(1);
-    let rows: usize = n.text.as_deref().unwrap_or("").lines().map(|l| l.chars().count().div_ceil(cols).max(1)).sum();
+    let rows: usize = n
+        .text
+        .as_deref()
+        .unwrap_or("")
+        .lines()
+        .map(|l| l.chars().count().div_ceil(cols).max(1))
+        .sum();
     let need = (rows as f64 + 2.0) * PX_ROW;
     if need > n.height {
         n.height = snap(need + 10.0);
     }
 }
 
-fn sides<'a>(from: &CNode, to: &CNode, fs: Option<&'a str>, ts: Option<&'a str>) -> (&'a str, &'a str) {
+fn sides<'a>(
+    from: &CNode,
+    to: &CNode,
+    fs: Option<&'a str>,
+    ts: Option<&'a str>,
+) -> (&'a str, &'a str) {
     let dx = (to.x + to.width / 2.0) - (from.x + from.width / 2.0);
     let dy = (to.y + to.height / 2.0) - (from.y + from.height / 2.0);
-    let horizontal = dx.abs() / (from.width + to.width).max(1.0) > dy.abs() / (from.height + to.height).max(1.0);
+    let horizontal =
+        dx.abs() / (from.width + to.width).max(1.0) > dy.abs() / (from.height + to.height).max(1.0);
     let (auto_f, auto_t) = match (horizontal, dx > 0.0, dy > 0.0) {
         (true, true, _) => ("right", "left"),
         (true, false, _) => ("left", "right"),
@@ -1501,21 +1848,47 @@ fn markdown_text(src: &str) -> Text<'static> {
         }
         let line = if in_code {
             Line::styled(raw.to_string(), Style::new().fg(Color::Rgb(160, 200, 160)))
-        } else if let Some(h) = t.strip_prefix('#').filter(|_| t.trim_start_matches('#').starts_with(' ')) {
+        } else if let Some(h) = t
+            .strip_prefix('#')
+            .filter(|_| t.trim_start_matches('#').starts_with(' '))
+        {
             let text = h.trim_start_matches('#').trim().to_string();
-            Line::styled(text, Style::new().fg(Color::Rgb(235, 235, 245)).add_modifier(Modifier::BOLD))
+            Line::styled(
+                text,
+                Style::new()
+                    .fg(Color::Rgb(235, 235, 245))
+                    .add_modifier(Modifier::BOLD),
+            )
         } else if let Some(rest) = t.strip_prefix("- [ ] ") {
-            Line::from(vec![Span::styled("☐ ", Style::new().fg(MUTED)), Span::styled(rest.to_string(), Style::new().fg(NOTE))])
-        } else if let Some(rest) = t.strip_prefix("- [x] ").or_else(|| t.strip_prefix("- [X] ")) {
+            Line::from(vec![
+                Span::styled("☐ ", Style::new().fg(MUTED)),
+                Span::styled(rest.to_string(), Style::new().fg(NOTE)),
+            ])
+        } else if let Some(rest) = t
+            .strip_prefix("- [x] ")
+            .or_else(|| t.strip_prefix("- [X] "))
+        {
             Line::from(vec![
                 Span::styled("☑ ", Style::new().fg(ACCENT)),
-                Span::styled(rest.to_string(), Style::new().fg(MUTED).add_modifier(Modifier::CROSSED_OUT)),
+                Span::styled(
+                    rest.to_string(),
+                    Style::new().fg(MUTED).add_modifier(Modifier::CROSSED_OUT),
+                ),
             ])
         } else if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
             let indent = " ".repeat(raw.len() - t.len());
-            Line::from(vec![Span::styled(format!("{indent}• "), Style::new().fg(ACCENT_SOFT)), Span::styled(rest.to_string(), Style::new().fg(NOTE))])
+            Line::from(vec![
+                Span::styled(format!("{indent}• "), Style::new().fg(ACCENT_SOFT)),
+                Span::styled(rest.to_string(), Style::new().fg(NOTE)),
+            ])
         } else if let Some(rest) = t.strip_prefix("> ") {
-            Line::from(vec![Span::styled("▎ ", Style::new().fg(DIM)), Span::styled(rest.to_string(), Style::new().fg(MUTED).add_modifier(Modifier::ITALIC))])
+            Line::from(vec![
+                Span::styled("▎ ", Style::new().fg(DIM)),
+                Span::styled(
+                    rest.to_string(),
+                    Style::new().fg(MUTED).add_modifier(Modifier::ITALIC),
+                ),
+            ])
         } else {
             Line::styled(raw.to_string(), Style::new().fg(NOTE))
         };
@@ -1542,7 +1915,12 @@ fn put_str(f: &mut Frame, area: Rect, col: i32, row: i32, s: &str, style: Style)
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width.saturating_sub(2));
     let h = h.min(area.height);
-    Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h)
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
@@ -1554,8 +1932,14 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ("c", "draw an arrow: pick a target, ⏎ (again removes it)"),
         ("Enter / e", "edit text · open note cards in $EDITOR"),
         ("E", "edit a text card in $EDITOR"),
-        ("↑↓←→ / hjkl, Tab", "select cards (pan when nothing is selected)"),
-        ("Shift+arrows / HJKL", "move the card (groups carry their contents)"),
+        (
+            "↑↓←→ / hjkl, Tab",
+            "select cards (pan when nothing is selected)",
+        ),
+        (
+            "Shift+arrows / HJKL",
+            "move the card (groups carry their contents)",
+        ),
         ("Ctrl+arrows, [ ] { }", "resize (or drag the ◢ corner)"),
         ("1-6 / 0", "colour (Obsidian presets) / clear colour"),
         ("d / Delete", "delete the card and its arrows"),
@@ -1582,7 +1966,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().fg(ACCENT))
-                .title(" whiteboard keys · saved automatically as Obsidian .canvas · any key closes "),
+                .title(
+                    " whiteboard keys · saved automatically as Obsidian .canvas · any key closes ",
+                ),
         ),
         r,
     );

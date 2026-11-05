@@ -8,7 +8,8 @@ use crate::vault::{self, Vault};
 use crate::{board, term};
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -90,11 +91,19 @@ pub enum Render {
 
 impl App {
     pub fn new(vault: Vault, render: Render) -> App {
-        let opts = BuildOpts { unresolved: false, tags: false, orphans: true };
+        let opts = BuildOpts {
+            unresolved: false,
+            tags: false,
+            orphans: true,
+        };
         let graph = graph::build(&vault, opts, &HashMap::new());
         let n = graph.nodes.len();
         let obsidian_groups = groups::load_obsidian(&vault.root);
-        let group_mode = if obsidian_groups.is_empty() { groups::Mode::Off } else { groups::Mode::Obsidian };
+        let group_mode = if obsidian_groups.is_empty() {
+            groups::Mode::Off
+        } else {
+            groups::Mode::Obsidian
+        };
         let assign = groups::assign(group_mode, &graph, &obsidian_groups);
         let kitty = match render {
             Render::Braille => None,
@@ -155,11 +164,19 @@ impl App {
             term::write_raw(&std::mem::take(&mut self.pending_image));
 
             let idle = self.paused || self.graph.settled();
-            let ms = if idle && self.drag.is_none() { 250 } else if self.pixels { 25 } else { 16 };
+            let ms = if idle && self.drag.is_none() {
+                250
+            } else if self.pixels {
+                25
+            } else {
+                16
+            };
             if event::poll(Duration::from_millis(ms))? {
                 loop {
                     match event::read()? {
-                        Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k, terminal)?,
+                        Event::Key(k) if k.kind == KeyEventKind::Press => {
+                            self.on_key(k, terminal)?
+                        }
                         Event::Mouse(m) => self.on_mouse(m),
                         Event::Resize(..) => {
                             if let Some(k) = self.kitty.as_mut() {
@@ -327,7 +344,12 @@ impl App {
     fn view(&self) -> (f64, f64, f64, f64) {
         let hw = self.area.width.max(1) as f64 * 2.0 / 2.0 / self.zoom;
         let hh = self.area.height.max(1) as f64 * 2.0 * self.cell_aspect() / 2.0 / self.zoom;
-        (self.cam.0 - hw, self.cam.0 + hw, self.cam.1 - hh, self.cam.1 + hh)
+        (
+            self.cam.0 - hw,
+            self.cam.0 + hw,
+            self.cam.1 - hh,
+            self.cam.1 + hh,
+        )
     }
 
     fn fit(&mut self, ease: f64) {
@@ -391,7 +413,10 @@ impl App {
         let (x0, x1, y0, y1) = self.view();
         let fx = (col - a.x) as f64 + 0.5;
         let fy = (row - a.y) as f64 + 0.5;
-        Some((x0 + fx / a.width as f64 * (x1 - x0), y1 - fy / a.height as f64 * (y1 - y0)))
+        Some((
+            x0 + fx / a.width as f64 * (x1 - x0),
+            y1 - fy / a.height as f64 * (y1 - y0),
+        ))
     }
 
     fn node_radius(&self, i: usize) -> f64 {
@@ -404,7 +429,11 @@ impl App {
             .map(|i| {
                 let n = &self.graph.nodes[i];
                 let d = ((n.x - wx).powi(2) + (n.y - wy).powi(2)).sqrt();
-                (i, d, self.node_radius(i).max(3.0 / self.zoom) + 2.0 / self.zoom)
+                (
+                    i,
+                    d,
+                    self.node_radius(i).max(3.0 / self.zoom) + 2.0 / self.zoom,
+                )
             })
             .filter(|(_, d, r)| d <= r)
             .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -550,17 +579,29 @@ impl App {
             KeyCode::Char('t') => {
                 self.opts.tags = !self.opts.tags;
                 self.rebuild(false);
-                self.flash(if self.opts.tags { "tags shown" } else { "tags hidden" });
+                self.flash(if self.opts.tags {
+                    "tags shown"
+                } else {
+                    "tags hidden"
+                });
             }
             KeyCode::Char('u') => {
                 self.opts.unresolved = !self.opts.unresolved;
                 self.rebuild(false);
-                self.flash(if self.opts.unresolved { "unresolved links shown" } else { "unresolved links hidden" });
+                self.flash(if self.opts.unresolved {
+                    "unresolved links shown"
+                } else {
+                    "unresolved links hidden"
+                });
             }
             KeyCode::Char('O') => {
                 self.opts.orphans = !self.opts.orphans;
                 self.rebuild(false);
-                self.flash(if self.opts.orphans { "orphans shown" } else { "orphans hidden" });
+                self.flash(if self.opts.orphans {
+                    "orphans shown"
+                } else {
+                    "orphans hidden"
+                });
             }
             KeyCode::Char('a') => {
                 self.labels = match self.labels {
@@ -590,7 +631,9 @@ impl App {
     }
 
     fn cycle_links(&mut self, back: bool) {
-        let Some(s) = self.sel else { return self.select_default() };
+        let Some(s) = self.sel else {
+            return self.select_default();
+        };
         // Cycle through the neighbours of the previously selected node.
         let anchor = self
             .history
@@ -627,12 +670,18 @@ impl App {
             self.kitty = Kitty::new();
         }
         if self.kitty.is_none() {
-            return self.flash("pixel mode needs a terminal that reports its pixel size (Ghostty, Kitty, WezTerm)");
+            return self.flash(
+                "pixel mode needs a terminal that reports its pixel size (Ghostty, Kitty, WezTerm)",
+            );
         }
         // Keep the same visible region when the vertical scale changes.
         self.hide_image();
         self.pixels = !self.pixels;
-        self.flash(if self.pixels { "pixel rendering (Kitty graphics)" } else { "braille rendering" });
+        self.flash(if self.pixels {
+            "pixel rendering (Kitty graphics)"
+        } else {
+            "braille rendering"
+        });
     }
 
     fn hide_image(&mut self) {
@@ -662,7 +711,10 @@ impl App {
             .enumerate()
             .filter_map(|(i, n)| {
                 let l = n.label.to_lowercase();
-                let in_path = n.rel.as_ref().is_some_and(|r| r.to_lowercase().contains(&q));
+                let in_path = n
+                    .rel
+                    .as_ref()
+                    .is_some_and(|r| r.to_lowercase().contains(&q));
                 (l.contains(&q) || in_path).then_some((i, l.starts_with(&q)))
             })
             .collect();
@@ -686,7 +738,12 @@ impl App {
                         self.graph.nodes[i].pinned = true;
                         self.drag = Some(Drag::Node { idx: i });
                     }
-                    None => self.drag = Some(Drag::Pan { col: m.column, row: m.row }),
+                    None => {
+                        self.drag = Some(Drag::Pan {
+                            col: m.column,
+                            row: m.row,
+                        })
+                    }
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => match self.drag {
@@ -694,7 +751,10 @@ impl App {
                     let dx = col as f64 - m.column as f64;
                     let dy = m.row as f64 - row as f64;
                     self.pan(dx, dy);
-                    self.drag = Some(Drag::Pan { col: m.column, row: m.row });
+                    self.drag = Some(Drag::Pan {
+                        col: m.column,
+                        row: m.row,
+                    });
                 }
                 Some(Drag::Node { idx }) => {
                     if let Some((wx, wy)) = world {
@@ -708,10 +768,10 @@ impl App {
                 None => {}
             },
             MouseEventKind::Up(_) => {
-                if let Some(Drag::Node { idx }) = self.drag.take() {
-                    if let Some(n) = self.graph.nodes.get_mut(idx) {
-                        n.pinned = false;
-                    }
+                if let Some(Drag::Node { idx }) = self.drag.take()
+                    && let Some(n) = self.graph.nodes.get_mut(idx)
+                {
+                    n.pinned = false;
                 }
             }
             _ => {}
@@ -754,7 +814,11 @@ impl App {
             return self.flash("select a note first");
         };
         let ok = term::open_in_obsidian(&self.vault.name, &rel);
-        self.flash(if ok { "opened in Obsidian" } else { "couldn't launch Obsidian" });
+        self.flash(if ok {
+            "opened in Obsidian"
+        } else {
+            "couldn't launch Obsidian"
+        });
     }
 
     // ---------- drawing ----------
@@ -775,7 +839,8 @@ impl App {
         let g = &self.graph;
         let sel = self.sel;
         let is_near = |i: usize| sel.is_some_and(|s| s == i || g.adj[s].contains(&i));
-        let in_view = |x: f64, y: f64, m: f64| x >= x0 - m && x <= x1 + m && y >= y0 - m && y <= y1 + m;
+        let in_view =
+            |x: f64, y: f64, m: f64| x >= x0 - m && x <= x1 + m && y >= y0 - m && y <= y1 + m;
         let hit = |i: usize| self.hits.contains(&i);
         let dim_others = (sel.is_some() && !self.local) || !self.hits.is_empty();
         let disc = |i: usize, color: Color, ring: Option<Color>| Disc {
@@ -802,15 +867,29 @@ impl App {
                 }
             }
             let touches = sel.is_some_and(|s| a == s || b == s);
-            let edge = Edge { a: (na.x, na.y), b: (nb.x, nb.y), color: if touches { ACCENT } else { EDGE }, bold: touches };
-            if touches { front.edges.push(edge) } else { back.edges.push(edge) }
+            let edge = Edge {
+                a: (na.x, na.y),
+                b: (nb.x, nb.y),
+                color: if touches { ACCENT } else { EDGE },
+                bold: touches,
+            };
+            if touches {
+                front.edges.push(edge)
+            } else {
+                back.edges.push(edge)
+            }
         }
         for i in 0..g.nodes.len() {
-            if !self.visible[i] || is_near(i) || hit(i) || !in_view(g.nodes[i].x, g.nodes[i].y, 10.0) {
+            if !self.visible[i]
+                || is_near(i)
+                || hit(i)
+                || !in_view(g.nodes[i].x, g.nodes[i].y, 10.0)
+            {
                 continue;
             }
             let c = self.base_color(i);
-            back.discs.push(disc(i, if dim_others { dim(c) } else { c }, None));
+            back.discs
+                .push(disc(i, if dim_others { dim(c) } else { c }, None));
         }
         if let Some(s) = sel {
             for &j in &g.adj[s] {
@@ -831,7 +910,11 @@ impl App {
         }
         if let Some(s) = sel {
             let ring = self.pixels.then_some(ACCENT);
-            let c = if self.pixels { self.assign.color(s).unwrap_or(ACCENT) } else { ACCENT };
+            let c = if self.pixels {
+                self.assign.color(s).unwrap_or(ACCENT)
+            } else {
+                ACCENT
+            };
             front.discs.push(disc(s, c, ring));
         }
 
@@ -868,15 +951,27 @@ impl App {
             } else {
                 Style::new().fg(MUTED)
             };
-            labels.push(Label { x: n.x, y: n.y, r: self.node_radius(i), text, style });
+            labels.push(Label {
+                x: n.x,
+                y: n.y,
+                r: self.node_radius(i),
+                text,
+                style,
+            });
         }
         // Draw selection-related labels last so they win overlaps.
         labels.sort_by_key(|l| l.style.fg != Some(DIM) && l.style.fg != Some(MUTED));
-        Scene { view, zoom: self.zoom, layers: vec![back, front], labels }
+        Scene {
+            view,
+            zoom: self.zoom,
+            layers: vec![back, front],
+            labels,
+        }
     }
 
     fn draw(&mut self, f: &mut Frame) {
-        let [main, status] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(f.area());
+        let [main, status] =
+            Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(f.area());
 
         let mut flags = Vec::new();
         if self.local {
@@ -897,14 +992,28 @@ impl App {
         if self.paused {
             flags.push("paused".into());
         }
-        flags.push(if self.pixels { "pixels".into() } else { "braille".into() });
+        flags.push(if self.pixels {
+            "pixels".into()
+        } else {
+            "braille".into()
+        });
         let shown = self.visible.iter().filter(|v| **v).count();
-        let shown_links =
-            self.graph.edges.iter().filter(|&&(a, b)| self.visible[a] && self.visible[b]).count();
+        let shown_links = self
+            .graph
+            .edges
+            .iter()
+            .filter(|&&(a, b)| self.visible[a] && self.visible[b])
+            .count();
         let title = Line::from(vec![
-            Span::styled(" cold-lava ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(
-                format!("{} · {} nodes · {} links ", self.vault.name, shown, shown_links),
+                " cold-lava ",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{} · {} nodes · {} links ",
+                    self.vault.name, shown, shown_links
+                ),
                 Style::new().fg(MUTED),
             ),
         ]);
@@ -912,7 +1021,13 @@ impl App {
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(DIM))
             .title(title)
-            .title_top(Line::from(Span::styled(format!(" {} ", flags.join(" · ")), Style::new().fg(ACCENT_SOFT))).right_aligned());
+            .title_top(
+                Line::from(Span::styled(
+                    format!(" {} ", flags.join(" · ")),
+                    Style::new().fg(ACCENT_SOFT),
+                ))
+                .right_aligned(),
+            );
         let inner = block.inner(main);
         if inner != self.area {
             self.dirty = true;
@@ -975,7 +1090,10 @@ impl App {
                 Line::from(vec![
                     Span::styled("● ", Style::new().fg(g.color)),
                     Span::styled(label, Style::new().fg(NOTE)),
-                    Span::styled(format!(" {}", self.assign.count(gi)), Style::new().fg(MUTED)),
+                    Span::styled(
+                        format!(" {}", self.assign.count(gi)),
+                        Style::new().fg(MUTED),
+                    ),
                 ])
             })
             .collect();
@@ -1003,23 +1121,44 @@ impl App {
                     .map(|gi| format!("  [{}]", self.assign.groups[gi].label))
                     .unwrap_or_default();
                 Line::from(vec![
-                    Span::styled(format!(" {icon} "), Style::new().fg(self.assign.color(i).unwrap_or(ACCENT))),
-                    Span::styled(n.label.clone(), Style::new().fg(NOTE).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("  ←{} in  {}→ out  ", g.links_in[i], g.links_out[i]), Style::new().fg(ACCENT_SOFT)),
+                    Span::styled(
+                        format!(" {icon} "),
+                        Style::new().fg(self.assign.color(i).unwrap_or(ACCENT)),
+                    ),
+                    Span::styled(
+                        n.label.clone(),
+                        Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  ←{} in  {}→ out  ", g.links_in[i], g.links_out[i]),
+                        Style::new().fg(ACCENT_SOFT),
+                    ),
                     Span::styled(desc, Style::new().fg(MUTED)),
                     Span::styled(group, Style::new().fg(MUTED)),
                 ])
             }
         };
-        if self.msg.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3)) {
+        if self
+            .msg
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3))
+        {
             self.msg = None;
         }
         let second = match (&self.mode, &self.msg) {
             (Mode::Search(q), _) => {
-                let preview: Vec<String> = self.hits.iter().take(6).map(|&i| g.nodes[i].label.clone()).collect();
+                let preview: Vec<String> = self
+                    .hits
+                    .iter()
+                    .take(6)
+                    .map(|&i| g.nodes[i].label.clone())
+                    .collect();
                 Line::from(vec![
                     Span::styled(format!(" /{q}▏"), Style::new().fg(HIT)),
-                    Span::styled(format!("  {} matches  {}", self.hits.len(), preview.join(" · ")), Style::new().fg(MUTED)),
+                    Span::styled(
+                        format!("  {} matches  {}", self.hits.len(), preview.join(" · ")),
+                        Style::new().fg(MUTED),
+                    ),
                 ])
             }
             (_, Some((m, _))) => Line::from(Span::styled(format!(" {m}"), Style::new().fg(HIT))),
@@ -1079,7 +1218,12 @@ fn draw_help(f: &mut Frame, area: Rect) {
         .collect();
     let w = 72.min(area.width.saturating_sub(4));
     let h = (rows.len() as u16 + 2).min(area.height.saturating_sub(2));
-    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    let r = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
     f.render_widget(Clear, r);
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(

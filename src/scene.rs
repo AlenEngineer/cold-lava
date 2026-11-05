@@ -58,7 +58,12 @@ impl Scene {
                 // Filled disc: concentric rings spaced about one braille dot apart.
                 let rings = (d.r * self.zoom).ceil().clamp(1.0, 12.0) as usize;
                 for k in 1..=rings {
-                    ctx.draw(&Circle::new(d.x, d.y, d.r * k as f64 / rings as f64, d.color));
+                    ctx.draw(&Circle::new(
+                        d.x,
+                        d.y,
+                        d.r * k as f64 / rings as f64,
+                        d.color,
+                    ));
                 }
                 ctx.draw(&Points::new(&[(d.x, d.y)], d.color));
                 if let Some(c) = d.ring {

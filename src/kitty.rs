@@ -5,8 +5,8 @@
 
 use crate::scene::Scene;
 use base64::Engine;
-use flate2::write::ZlibEncoder;
 use flate2::Compression;
+use flate2::write::ZlibEncoder;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::io::Write;
@@ -28,7 +28,9 @@ pub fn supported() -> bool {
         return false; // multiplexers don't pass the protocol through by default
     }
     let term = std::env::var("TERM").unwrap_or_default();
-    let prog = std::env::var("TERM_PROGRAM").unwrap_or_default().to_lowercase();
+    let prog = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_lowercase();
     std::env::var_os("KITTY_WINDOW_ID").is_some()
         || std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some()
         || term.contains("kitty")
@@ -40,7 +42,12 @@ pub fn supported() -> bool {
 impl Kitty {
     /// Needs the terminal to report its pixel size (TIOCGWINSZ).
     pub fn new() -> Option<Kitty> {
-        let mut k = Kitty { cell_w: 0.0, cell_h: 0.0, next_id: 7001, shown: None };
+        let mut k = Kitty {
+            cell_w: 0.0,
+            cell_h: 0.0,
+            next_id: 7001,
+            shown: None,
+        };
         k.measure().then_some(k)
     }
 
@@ -70,7 +77,9 @@ impl Kitty {
         let scale = (MAX_PIXELS / (full_w * full_h).max(1.0)).sqrt().min(1.0);
         let w = (full_w * scale).round() as u32;
         let h = (full_h * scale).round() as u32;
-        let Some(mut pm) = Pixmap::new(w.max(1), h.max(1)) else { return Vec::new() };
+        let Some(mut pm) = Pixmap::new(w.max(1), h.max(1)) else {
+            return Vec::new();
+        };
         let (x0, x1, y0, y1) = scene.view;
         let sx = w as f64 / (x1 - x0);
         let sy = h as f64 / (y1 - y0);
@@ -86,21 +95,39 @@ impl Kitty {
                 pb.move_to(ax, ay);
                 pb.line_to(bx, by);
                 if let Some(path) = pb.finish() {
-                    let stroke = Stroke { width: if e.bold { base_w * 1.7 } else { base_w }, ..Stroke::default() };
-                    pm.stroke_path(&path, &paint(e.color, 255), &stroke, Transform::identity(), None);
+                    let stroke = Stroke {
+                        width: if e.bold { base_w * 1.7 } else { base_w },
+                        ..Stroke::default()
+                    };
+                    pm.stroke_path(
+                        &path,
+                        &paint(e.color, 255),
+                        &stroke,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
             for d in &layer.discs {
                 let (cx, cy) = to_px(d.x, d.y);
                 let r = (d.r * sx).max(2.0) as f32;
                 if let Some(path) = PathBuilder::from_circle(cx, cy, r) {
-                    pm.fill_path(&path, &paint(d.color, 255), FillRule::Winding, Transform::identity(), None);
+                    pm.fill_path(
+                        &path,
+                        &paint(d.color, 255),
+                        FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
                 }
-                if let Some(rc) = d.ring {
-                    if let Some(path) = PathBuilder::from_circle(cx, cy, r + 3.0 + base_w) {
-                        let stroke = Stroke { width: base_w * 1.5, ..Stroke::default() };
-                        pm.stroke_path(&path, &paint(rc, 255), &stroke, Transform::identity(), None);
-                    }
+                if let Some(rc) = d.ring
+                    && let Some(path) = PathBuilder::from_circle(cx, cy, r + 3.0 + base_w)
+                {
+                    let stroke = Stroke {
+                        width: base_w * 1.5,
+                        ..Stroke::default()
+                    };
+                    pm.stroke_path(&path, &paint(rc, 255), &stroke, Transform::identity(), None);
                 }
             }
         }

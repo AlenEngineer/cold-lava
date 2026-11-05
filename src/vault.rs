@@ -69,7 +69,9 @@ pub fn scan(root: &Path) -> Result<Vault> {
         if !entry.file_type().is_file() || path.extension().is_none_or(|e| e != "md") {
             continue;
         }
-        let Ok(text) = fs::read_to_string(path) else { continue };
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
         let rel = path
             .strip_prefix(&root)
             .unwrap_or(path)
@@ -81,7 +83,13 @@ pub fn scan(root: &Path) -> Result<Vault> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let (links, tags) = parse(&text, &p);
-        notes.push(Note { rel, name, path: path.to_path_buf(), links, tags });
+        notes.push(Note {
+            rel,
+            name,
+            path: path.to_path_buf(),
+            links,
+            tags,
+        });
     }
     notes.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(Vault { root, name, notes })
@@ -162,7 +170,10 @@ fn parse(text: &str, p: &Parsers) -> (Vec<String>, Vec<String>) {
 }
 
 fn push_tag(tags: &mut Vec<String>, raw: &str) {
-    let t = raw.trim().trim_matches(|c| c == '"' || c == '\'').trim_start_matches('#');
+    let t = raw
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .trim_start_matches('#');
     // A tag needs at least one non-digit character (`#123` is not a tag).
     if !t.is_empty() && !t.chars().all(|c| c.is_ascii_digit()) {
         let t = t.to_lowercase();

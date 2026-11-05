@@ -70,7 +70,19 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
             let a = i as f64 * std::f64::consts::PI * (3.0 - 5f64.sqrt());
             (r * a.cos(), r * a.sin())
         });
-        nodes.push(Node { key: key.clone(), label, kind, path, rel, tags: Vec::new(), x, y, vx: 0.0, vy: 0.0, pinned: false });
+        nodes.push(Node {
+            key: key.clone(),
+            label,
+            kind,
+            path,
+            rel,
+            tags: Vec::new(),
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            pinned: false,
+        });
         index.insert(key, i);
         i
     };
@@ -92,7 +104,14 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
         .iter()
         .map(|n| {
             let key = format!("n:{}", n.rel.to_lowercase());
-            add(&mut nodes, key, n.name.clone(), Kind::Note, Some(n.path.clone()), Some(n.rel.clone()))
+            add(
+                &mut nodes,
+                key,
+                n.name.clone(),
+                Kind::Note,
+                Some(n.path.clone()),
+                Some(n.rel.clone()),
+            )
         })
         .collect();
     for (ni, n) in v.notes.iter().enumerate() {
@@ -114,7 +133,14 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
                 Some(&target) => note_node[target],
                 None if o.unresolved => {
                     let label = t.rsplit('/').next().unwrap_or(t).to_string();
-                    add(&mut nodes, format!("u:{tl}"), label, Kind::Unresolved, None, None)
+                    add(
+                        &mut nodes,
+                        format!("u:{tl}"),
+                        label,
+                        Kind::Unresolved,
+                        None,
+                        None,
+                    )
                 }
                 None => continue,
             };
@@ -124,7 +150,14 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
         }
         if o.tags {
             for tag in &n.tags {
-                let to = add(&mut nodes, format!("t:{tag}"), format!("#{tag}"), Kind::Tag, None, None);
+                let to = add(
+                    &mut nodes,
+                    format!("t:{tag}"),
+                    format!("#{tag}"),
+                    Kind::Tag,
+                    None,
+                    None,
+                );
                 if edge_set.insert((from, to)) {
                     edges.push((from, to));
                 }
@@ -153,7 +186,15 @@ impl Graph {
                 adj[b].push(a);
             }
         }
-        Graph { nodes, edges, adj, links_out, links_in, alpha: 1.0, aspect: 1.0 }
+        Graph {
+            nodes,
+            edges,
+            adj,
+            links_out,
+            links_in,
+            alpha: 1.0,
+            aspect: 1.0,
+        }
     }
 
     fn without_orphans(self) -> Graph {
@@ -166,7 +207,11 @@ impl Graph {
                 nodes.push(node);
             }
         }
-        let edges = self.edges.iter().map(|&(a, b)| (remap[a], remap[b])).collect();
+        let edges = self
+            .edges
+            .iter()
+            .map(|&(a, b)| (remap[a], remap[b]))
+            .collect();
         Graph::from_parts(nodes, edges)
     }
 
@@ -179,7 +224,10 @@ impl Graph {
     }
 
     pub fn positions(&self) -> HashMap<String, (f64, f64)> {
-        self.nodes.iter().map(|n| (n.key.clone(), (n.x, n.y))).collect()
+        self.nodes
+            .iter()
+            .map(|n| (n.key.clone(), (n.x, n.y)))
+            .collect()
     }
 
     pub fn reheat(&mut self, alpha: f64) {

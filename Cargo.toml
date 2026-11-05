@@ -2,11 +2,15 @@
 name = "cold-lava"
 version = "0.1.0"
 edition = "2024"
+description = "Obsidian's graph view and canvas, in the terminal"
+license = "MIT"
+repository = "https://github.com/AlenEngineer/cold-lava"
 
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.1"
 flate2 = "1.1.10"
+notify = "8.2.1"
 ratatui = "0.30.2"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }

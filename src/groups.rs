@@ -52,11 +52,18 @@ pub struct Assignment {
 
 impl Assignment {
     pub fn none(n: usize) -> Self {
-        Assignment { groups: Vec::new(), of_node: vec![None; n] }
+        Assignment {
+            groups: Vec::new(),
+            of_node: vec![None; n],
+        }
     }
 
     pub fn color(&self, i: usize) -> Option<Color> {
-        self.of_node.get(i).copied().flatten().map(|g| self.groups[g].color)
+        self.of_node
+            .get(i)
+            .copied()
+            .flatten()
+            .map(|g| self.groups[g].color)
     }
 
     pub fn count(&self, g: usize) -> usize {
@@ -71,14 +78,20 @@ pub fn assign(mode: Mode, graph: &Graph, obsidian: &[Group]) -> Assignment {
         Mode::Obsidian => {
             let groups: Vec<Group> = obsidian
                 .iter()
-                .map(|g| Group { label: g.label.clone(), color: g.color, query: g.query.clone() })
+                .map(|g| Group {
+                    label: g.label.clone(),
+                    color: g.color,
+                    query: g.query.clone(),
+                })
                 .collect();
             // First matching group wins, like Obsidian.
             let of_node = graph
                 .nodes
                 .iter()
                 .map(|node| {
-                    groups.iter().position(|g| g.query.as_ref().is_some_and(|q| q.matches(node)))
+                    groups
+                        .iter()
+                        .position(|g| g.query.as_ref().is_some_and(|q| q.matches(node)))
                 })
                 .collect();
             Assignment { groups, of_node }
@@ -93,7 +106,11 @@ pub fn assign(mode: Mode, graph: &Graph, obsidian: &[Group]) -> Assignment {
 
 /// Group by an extracted key; the 8 most common keys get palette colours.
 fn auto(graph: &Graph, key: impl Fn(&Node) -> Option<String>) -> Assignment {
-    let keys: Vec<Option<String>> = graph.nodes.iter().map(|n| if n.kind == Kind::Note { key(n) } else { None }).collect();
+    let keys: Vec<Option<String>> = graph
+        .nodes
+        .iter()
+        .map(|n| if n.kind == Kind::Note { key(n) } else { None })
+        .collect();
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for k in keys.iter().flatten() {
         *counts.entry(k.as_str()).or_default() += 1;
@@ -104,11 +121,18 @@ fn auto(graph: &Graph, key: impl Fn(&Node) -> Option<String>) -> Assignment {
     let groups: Vec<Group> = ranked
         .iter()
         .enumerate()
-        .map(|(i, (k, _))| Group { label: k.to_string(), color: PALETTE[i], query: None })
+        .map(|(i, (k, _))| Group {
+            label: k.to_string(),
+            color: PALETTE[i],
+            query: None,
+        })
         .collect();
     let of_node = keys
         .iter()
-        .map(|k| k.as_ref().and_then(|k| groups.iter().position(|g| &g.label == k)))
+        .map(|k| {
+            k.as_ref()
+                .and_then(|k| groups.iter().position(|g| &g.label == k))
+        })
         .collect();
     Assignment { groups, of_node }
 }
@@ -129,7 +153,11 @@ pub fn load_obsidian(root: &Path) -> Vec<Group> {
             let query = g.get("query")?.as_str()?.trim().to_string();
             let rgb = g.get("color")?.get("rgb")?.as_u64()? as u32;
             let color = Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
-            Some(Group { label: query.clone(), color, query: Some(Query::parse(&query)) })
+            Some(Group {
+                label: query.clone(),
+                color,
+                query: Some(Query::parse(&query)),
+            })
         })
         .collect()
 }
@@ -183,7 +211,11 @@ impl Query {
             };
             let value = value.trim_matches('"').to_lowercase();
             if !value.is_empty() {
-                alternatives.last_mut().unwrap().push(Term { negate, field, value });
+                alternatives.last_mut().unwrap().push(Term {
+                    negate,
+                    field,
+                    value,
+                });
             }
         }
         alternatives.retain(|a| !a.is_empty());
@@ -194,14 +226,21 @@ impl Query {
         if n.kind == Kind::Tag {
             return false;
         }
-        let path = n.rel.clone().unwrap_or_else(|| n.label.clone()).to_lowercase();
+        let path = n
+            .rel
+            .clone()
+            .unwrap_or_else(|| n.label.clone())
+            .to_lowercase();
         let file = n.label.to_lowercase();
         self.alternatives.iter().any(|terms| {
             terms.iter().all(|t| {
                 let hit = match t.field {
                     Field::Path => path.contains(&t.value),
                     Field::File => file.contains(&t.value),
-                    Field::Tag => n.tags.iter().any(|tag| tag == &t.value || tag.starts_with(&format!("{}/", t.value))),
+                    Field::Tag => n
+                        .tags
+                        .iter()
+                        .any(|tag| tag == &t.value || tag.starts_with(&format!("{}/", t.value))),
                     Field::Any => file.contains(&t.value) || path.contains(&t.value),
                 };
                 hit != t.negate
