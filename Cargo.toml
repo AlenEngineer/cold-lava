@@ -1,0 +1,10 @@
+[package]
+name = "vaultgraph"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+ratatui = "0.30.2"
+regex = "1.13.1"
+walkdir = "2.5.0"
