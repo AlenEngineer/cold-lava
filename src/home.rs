@@ -442,6 +442,44 @@ impl Home {
         h
     }
 
+    /// Select a note (expanding its folders) and open it in the editor pane, focused.
+    pub fn focus_note(&mut self, path: &Path) {
+        let (Some(root), Ok(canon)) = (self.root.clone(), path.canonicalize()) else {
+            return;
+        };
+        let Ok(rel) = canon.strip_prefix(&root) else {
+            return;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        self.reload_tree();
+        let parts: Vec<&str> = rel.split('/').collect();
+        for n in 1..parts.len() {
+            self.expanded.insert(parts[..n].join("/"));
+        }
+        self.filter.clear();
+        self.refresh_rows();
+        if let Some(r) = self.rows.iter().position(|&i| self.items[i].rel == rel) {
+            self.nsel = r;
+        }
+        self.pending = None;
+        self.show(&canon);
+        self.focus = if self.editor.is_some() {
+            Focus::Editor
+        } else {
+            Focus::Notes
+        };
+    }
+
+    fn open_today(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        match crate::daily::ensure(&root, crate::tasks::today()) {
+            Ok(p) => self.focus_note(&p),
+            Err(e) => self.flash(format!("couldn't create today's note: {e}")),
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
             let mut changed = false;
@@ -755,6 +793,7 @@ impl Home {
             KeyCode::Char('g') => self.open_graph(terminal)?,
             KeyCode::Char('w') => self.open_boards(terminal, None)?,
             KeyCode::Char('n') if self.root.is_some() => self.mode = Mode::NewNote(String::new()),
+            KeyCode::Char('t') => self.open_today(),
             KeyCode::Char('a') => self.mode = Mode::AddVault(String::new()),
             KeyCode::Char('r') => {
                 self.reload_tree();
@@ -1364,7 +1403,7 @@ impl Home {
                     "⏎ open"
                 };
                 format!(
-                    " ↑↓ move  ←→ fold  {edit}  / filter  g graph  w boards  n new note  a add vault  z zoom  ? help  q quit"
+                    " ↑↓ move  ←→ fold  {edit}  / filter  g graph  w boards  t today  n new note  a add vault  z zoom  ? help  q quit"
                 )
             }
         };
@@ -1415,6 +1454,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ("g", "graph view of this vault"),
         ("w", "whiteboards of this vault"),
         ("n", "new note in the selected folder"),
+        ("t", "today's daily note (created from your template)"),
         ("a", "add a vault (any folder of Markdown files)"),
         ("o", "open the selected note in Obsidian"),
         ("z", "zoom the editor to full width"),

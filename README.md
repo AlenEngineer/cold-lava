@@ -48,6 +48,9 @@ cold-lava ~/path/to/vault               # main menu with that vault open
 cold-lava graph ~/path/to/vault         # straight to the graph view
 cold-lava board ~/vault/Plan.canvas     # whiteboard (created if missing)
 cold-lava board ~/vault                 # pick a board
+cold-lava daily ~/vault [DATE]          # open (or create) a day's daily note
+cold-lava agenda ~/vault --json         # dated tasks and daily notes, for other programs
+cold-lava task toggle FILE:LINE         # tick / untick a task
 ```
 
 Flags: `--pixels` / `--braille` to force a renderer. Pixel mode is on automatically in Ghostty,
@@ -119,6 +122,35 @@ cold-lava merges instead of overwriting: cards and arrows are matched by id and 
 by field. If Obsidian moves a card while you edit its text, both changes are kept. If the same
 field changed in both places, your cold-lava version wins and you get a notice. A card deleted
 on one side but edited on the other is kept.
+
+### Agenda, daily notes and tasks (for scripts and status bars)
+
+Other programs (a status bar's calendar, a widget, a script) can ask cold-lava about tasks
+instead of parsing the vault themselves. Tasks use the **Obsidian Tasks** format, emoji
+(`- [ ] Pay rent 📅 2026-11-07 🔁 every month`) or Dataview (`[due:: 2026-11-07]`), and the
+plugin's global filter. Daily notes follow the vault's **Daily notes** settings (folder,
+date format, template).
+
+```bash
+cold-lava agenda ~/vault --from 2026-11-01 --to 2026-11-30 --json
+```
+
+The JSON has `tasks` (text, status, dates, recurrence, priority, tags, `file`/`path`/`line`, and an
+`id`), `daily_notes` (date and path), and `days`, a per-day summary (`tasks`, `open`,
+`daily_note`) for calendar markers. A task's `date` is its due date, else scheduled, else start;
+a task in a daily note with no date of its own belongs to that note's day (`date_source` says
+which). A few thousand notes take well under a second.
+
+```bash
+cold-lava daily ~/vault 2026-11-07            # open that day's note in the menu (created from the template)
+cold-lava daily ~/vault today --path          # create if needed, print the path, no UI
+cold-lava task toggle ~/vault/Bills.md:12 --id 3f2a9c81b7d0 --json
+```
+
+`task toggle` works like Obsidian Tasks: it adds the done date (`✅`, or `[completion:: …]`),
+removes it when unticking, and for recurring tasks inserts the next occurrence with its dates
+moved forward. Pass the `id` from the agenda: if the line has changed since, nothing is touched
+and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note.
 
 ## What it understands
 
