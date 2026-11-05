@@ -30,3 +30,13 @@ jobs:
         run: cargo test
       - name: Release build
         run: cargo build --release
+
+  release-check:
+    # A PR that bumps the version must also add its CHANGELOG.md section (see RELEASING in README).
+    name: release check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/release-check.sh

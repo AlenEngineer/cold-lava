@@ -212,21 +212,18 @@ cold-lava uses [semantic versioning](https://semver.org). Before 1.0, a minor ve
 may change commands, keys or file formats; a patch version (0.1.**1**) only fixes things. Every
 release is listed in [CHANGELOG.md](CHANGELOG.md), and `cold-lava --version` prints yours.
 
-To cut a release:
+Releases are automatic. To cut one, open a PR that:
 
-1. Move the changes under `## [Unreleased]` in `CHANGELOG.md` into a new `## [x.y.z] - date`
-   section, and set `version = "x.y.z"` in `Cargo.toml` (then `cargo build` to update
-   `Cargo.lock`).
-2. Commit, then tag and push:
+1. sets `version = "x.y.z"` in `Cargo.toml` (then `cargo build` to update `Cargo.lock`), and
+2. moves the changes under `## [Unreleased]` in `CHANGELOG.md` into a new
+   `## [x.y.z] - YYYY-MM-DD` section.
 
-   ```bash
-   git tag vx.y.z
-   git push origin main vx.y.z
-   ```
-
-The [release workflow](.github/workflows/release.yml) checks the tag matches `Cargo.toml`, builds
-Linux and macOS binaries (x86-64 and ARM), and publishes a GitHub Release with that version's
-changelog section as its notes.
+CI checks it with [`scripts/release-check.sh`](scripts/release-check.sh) (you can run it
+locally too): a new version needs its changelog section and must be higher than the last
+release. Once the PR is merged into `main`, the [release workflow](.github/workflows/release.yml)
+runs the tests, builds Linux and macOS binaries (x86-64 and ARM), creates the `vx.y.z` tag and
+publishes the GitHub Release, with that changelog section as its notes. Pushing a `vx.y.z` tag
+by hand does the same.
 
 ## License
 
