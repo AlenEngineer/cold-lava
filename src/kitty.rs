@@ -134,7 +134,7 @@ impl Kitty {
 
         // tiny-skia stores premultiplied alpha; the protocol wants straight alpha.
         let mut rgba = pm.take();
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             let a = px[3] as u32;
             if a != 0 && a != 255 {
                 px[0] = ((px[0] as u32 * 255 + a / 2) / a).min(255) as u8;
