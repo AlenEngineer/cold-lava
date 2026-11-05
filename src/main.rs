@@ -5,6 +5,7 @@ mod embed;
 mod graph;
 mod groups;
 mod home;
+mod index;
 mod kitty;
 mod scene;
 mod tasks;

@@ -4,7 +4,8 @@
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
 use crate::embed::Embedded;
-use crate::{board, graph, term, vault};
+use crate::index::Index;
+use crate::{board, term, vault};
 use anyhow::Result;
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -321,6 +322,23 @@ enum Focus {
     Vaults,
     Notes,
     Editor,
+    Backlinks,
+}
+
+/// Where to put the cursor after opening a note.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Jump {
+    Line(usize),
+    Heading(String),
+    Block(String),
+}
+
+/// A backlink as shown in the pane under the editor.
+struct BackRow {
+    name: String,
+    path: PathBuf,
+    line: usize,
+    context: String,
 }
 
 enum Mode {
@@ -344,6 +362,10 @@ pub struct Home {
     nscroll: usize,
     filter: String,
     links: HashMap<String, (usize, usize)>,
+    index: Option<Index>,
+    backs: Vec<BackRow>,
+    bsel: usize,
+    show_backlinks: bool,
     // Right pane
     editor_cmd: Option<String>,
     editor: Option<Embedded>,
@@ -355,7 +377,7 @@ pub struct Home {
     focus: Focus,
     mode: Mode,
     msg: Option<(String, Instant)>,
-    areas: [Rect; 3],
+    areas: [Rect; 4],
     quit: bool,
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<notify::RecommendedWatcher>,
@@ -388,11 +410,104 @@ fn pick_editor() -> Option<String> {
         .map(|_| "nvim".to_string())
 }
 
-/// The command we type into Vim/Neovim to show another note: save edits, then open it.
-pub fn open_command(path: &Path) -> String {
-    let p = path.to_string_lossy().replace('\'', "''");
+/// The command we type into Vim/Neovim to show another note: save edits, open it, and
+/// optionally move to a line, heading or block.
+pub fn open_command_at(path: &Path, jump: Option<&Jump>) -> String {
+    let q = |s: &str| s.replace('\'', "''");
+    let p = q(&path.to_string_lossy());
+    let goto = match jump {
+        None => String::new(),
+        Some(Jump::Line(n)) => format!(" | call cursor({n}, 1) | normal! zz"),
+        // Very-nomagic search, so heading text is matched literally.
+        Some(Jump::Heading(h)) => format!(
+            " | call cursor(1, 1) | call search('\\v^#+\\s*\\V' . '{}', 'cW') | normal! zz",
+            q(&h.replace('\\', "\\\\"))
+        ),
+        Some(Jump::Block(b)) => format!(
+            " | call cursor(1, 1) | call search('\\V ^' . '{}', 'cW') | normal! zz",
+            q(&b.replace('\\', "\\\\"))
+        ),
+    };
     // <C-\><C-n> gets to normal mode from any mode first.
-    format!("\x1c\x0e:silent! wall | execute 'edit' fnameescape('{p}')\r")
+    format!("\x1c\x0e:silent! wall | execute 'edit' fnameescape('{p}'){goto}\r")
+}
+
+/// Loaded into the embedded Vim/Neovim: Enter (or gf) on a link asks cold-lava to follow it,
+/// and every note Vim opens is reported, so the menu and backlinks stay in sync.
+/// Messages go out as a private OSC sequence that cold-lava removes from the screen output.
+const VIM_SCRIPT: &str = r#"" cold-lava integration (loaded automatically; see https://github.com/AlenEngineer/cold-lava)
+if exists('g:cold_lava_loaded') | finish | endif
+let g:cold_lava_loaded = 1
+
+function! s:Enc(s) abort
+  return substitute(a:s, '[^A-Za-z0-9 _./-]', '\=printf("%%u%x;", char2nr(submatch(0)))', 'g')
+endfunction
+
+function! s:Send(kind, payload) abort
+  let l:msg = "\x1b]5379;" . a:kind . ";" . s:Enc(a:payload) . "\x07"
+  if has('nvim')
+    call chansend(v:stderr, l:msg)
+  elseif exists('*echoraw')
+    call echoraw(l:msg)
+  endif
+endfunction
+
+" The [[wikilink]] or [text](link.md) under the cursor, or ''.
+function! s:LinkUnderCursor() abort
+  let l:line = getline('.')
+  let l:col = col('.') - 1
+  for l:pat in ['\[\[\([^\]]\+\)\]\]', '\[[^\]]*\](\([^)]\+\))']
+    let l:start = 0
+    while 1
+      let l:m = matchstrpos(l:line, l:pat, l:start)
+      if l:m[1] < 0 | break | endif
+      if l:col >= l:m[1] && l:col < l:m[2]
+        return matchlist(l:m[0], l:pat)[1]
+      endif
+      let l:start = l:m[2]
+    endwhile
+  endfor
+  return ''
+endfunction
+
+function! ColdLavaFollow() abort
+  let l:target = s:LinkUnderCursor()
+  if l:target ==# '' || l:target =~# '^\a\+://'
+    return 0
+  endif
+  silent! update
+  call s:Send('follow', expand('%:p') . "\t" . l:target)
+  return 1
+endfunction
+
+function! s:Enter() abort
+  if !ColdLavaFollow()
+    execute "normal! \<CR>"
+  endif
+endfunction
+
+function! s:Gf() abort
+  if !ColdLavaFollow()
+    normal! gf
+  endif
+endfunction
+
+augroup ColdLava
+  autocmd!
+  autocmd BufEnter *.md call s:Send('open', expand('%:p'))
+  autocmd BufEnter *.md nnoremap <buffer><silent> <CR> :<C-u>call <SID>Enter()<CR>
+  autocmd BufWritePost *.md call s:Send('saved', expand('%:p'))
+augroup END
+nnoremap <silent> gf :<C-u>call <SID>Gf()<CR>
+if expand('%:e') ==# 'md'
+  silent! doautocmd <nomodeline> ColdLava BufEnter
+endif
+"#;
+
+fn vim_script_path() -> Option<PathBuf> {
+    let p = std::env::temp_dir().join(format!("cold-lava-{}.vim", std::process::id()));
+    std::fs::write(&p, VIM_SCRIPT).ok()?;
+    Some(p)
 }
 
 impl Home {
@@ -418,6 +533,10 @@ impl Home {
             nscroll: 0,
             filter: String::new(),
             links: HashMap::new(),
+            index: None,
+            backs: Vec::new(),
+            bsel: 0,
+            show_backlinks: true,
             editor_cmd: pick_editor(),
             editor: None,
             shown: None,
@@ -427,7 +546,7 @@ impl Home {
             focus: Focus::Vaults,
             mode: Mode::Normal,
             msg: None,
-            areas: [Rect::default(); 3],
+            areas: [Rect::default(); 4],
             quit: false,
             fs_events: None,
             _watcher: None,
@@ -483,8 +602,10 @@ impl Home {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
             let mut changed = false;
+            let mut messages = Vec::new();
             if let Some(ed) = self.editor.as_mut() {
                 changed |= ed.pump();
+                messages = ed.take_messages();
                 if ed.exited() {
                     self.editor = None;
                     self.shown = None;
@@ -493,6 +614,9 @@ impl Home {
                     }
                     self.flash("Neovim closed. Select a note to open it again");
                 }
+            }
+            for (kind, payload) in messages {
+                self.on_editor_message(&kind, &payload);
             }
             changed |= self.load_pending();
             self.check_disk();
@@ -561,21 +685,122 @@ impl Home {
         };
         self.items = scan_tree(&root);
         self.links.clear();
-        if let Ok(v) = vault::scan(&root) {
-            let opts = graph::BuildOpts {
-                unresolved: false,
-                tags: false,
-                orphans: true,
-            };
-            let g = graph::build(&v, opts, &HashMap::new());
-            for (i, n) in g.nodes.iter().enumerate() {
-                if let Some(rel) = &n.rel {
-                    self.links
-                        .insert(format!("{rel}.md"), (g.links_in[i], g.links_out[i]));
-                }
+        self.index = vault::scan(&root).ok().map(Index::build);
+        if let Some(ix) = &self.index {
+            for (i, n) in ix.vault.notes.iter().enumerate() {
+                self.links.insert(format!("{}.md", n.rel), ix.counts(i));
             }
         }
         self.refresh_rows();
+        self.refresh_backlinks();
+    }
+
+    /// Backlinks of the note in the editor pane.
+    fn refresh_backlinks(&mut self) {
+        self.backs.clear();
+        let (Some(ix), Some(shown)) = (&self.index, &self.shown) else {
+            return;
+        };
+        let Some(i) = ix.by_path(shown) else { return };
+        self.backs = ix
+            .backlinks(i)
+            .iter()
+            .map(|b| BackRow {
+                name: ix.vault.notes[b.from].name.clone(),
+                path: ix.path(b.from),
+                line: b.line,
+                context: b.context.clone(),
+            })
+            .collect();
+        self.bsel = self.bsel.min(self.backs.len().saturating_sub(1));
+    }
+
+    /// Messages from the embedded Vim/Neovim (see VIM_SCRIPT).
+    fn on_editor_message(&mut self, kind: &str, payload: &str) {
+        match kind {
+            "open" => {
+                let path = PathBuf::from(payload);
+                if self.shown.as_deref() != Some(path.as_path()) {
+                    self.shown = Some(path.clone());
+                    self.select_path(&path);
+                    self.bsel = 0;
+                    self.refresh_backlinks();
+                }
+            }
+            "follow" => {
+                if let Some((from, target)) = payload.split_once('\t') {
+                    self.follow(Path::new(from), target);
+                }
+            }
+            "saved" => self.rescan_at = Some(Instant::now() + Duration::from_millis(150)),
+            _ => {}
+        }
+    }
+
+    /// Follow a link written in `from`: open the target note (at its heading or block), or
+    /// create it if it doesn't exist yet, like clicking an unresolved link in Obsidian.
+    fn follow(&mut self, from: &Path, raw: &str) {
+        let link = crate::index::split_link(raw);
+        let Some(ix) = &self.index else { return };
+        let from_i = ix.by_path(from);
+        let jump = link
+            .heading
+            .clone()
+            .map(Jump::Heading)
+            .or(link.block.clone().map(Jump::Block));
+        if link.note.is_empty() {
+            // [[#Heading]]: a heading in the same note.
+            if let Some(j) = jump {
+                self.show_at(from, Some(j));
+            }
+            return;
+        }
+        match ix.resolver.resolve(&link.note) {
+            Some(i) => {
+                let path = ix.path(i);
+                self.show_at(&path, jump);
+                self.select_path(&path);
+            }
+            None => {
+                let path = ix.new_note_path(&link.note, from_i);
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                if !path.exists() && std::fs::write(&path, "").is_err() {
+                    return self.flash(format!("couldn't create {}", path.display()));
+                }
+                let rel = path
+                    .strip_prefix(self.root.as_deref().unwrap_or(Path::new("")))
+                    .map(|r| r.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.flash(format!("created {rel}"));
+                self.reload_tree();
+                self.show_at(&path, None);
+                self.select_path(&path);
+            }
+        }
+    }
+
+    /// Select a path in the tree (opening its folders), without opening it again.
+    fn select_path(&mut self, path: &Path) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let Ok(rel) = path.strip_prefix(&root) else {
+            return;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let parts: Vec<&str> = rel.split('/').collect();
+        for n in 1..parts.len() {
+            self.expanded.insert(parts[..n].join("/"));
+        }
+        if !self.filter.is_empty() && !self.rows.iter().any(|&i| self.items[i].rel == rel) {
+            self.filter.clear();
+        }
+        self.refresh_rows();
+        if let Some(r) = self.rows.iter().position(|&i| self.items[i].rel == rel) {
+            self.nsel = r;
+        }
     }
 
     fn refresh_rows(&mut self) {
@@ -620,10 +845,18 @@ impl Home {
 
     /// Show a note in the right pane (embedded editor, or preview).
     fn show(&mut self, path: &Path) {
-        if self.shown.as_deref() == Some(path) {
+        self.show_at(path, None);
+    }
+
+    fn show_at(&mut self, path: &Path, jump: Option<Jump>) {
+        if self.shown.as_deref() == Some(path) && jump.is_none() {
             return;
         }
+        if self.shown.as_deref() != Some(path) {
+            self.bsel = 0;
+        }
         self.shown = Some(path.to_path_buf());
+        self.refresh_backlinks();
         let Some(cmd) = self.editor_cmd.clone() else {
             let text = std::fs::read_to_string(path).unwrap_or_default();
             let mut lines: Vec<String> = text.lines().map(String::from).collect();
@@ -637,17 +870,23 @@ impl Home {
             return;
         };
         match self.editor.as_mut() {
-            Some(ed) => ed.send(open_command(path).as_bytes()),
+            Some(ed) => ed.send(open_command_at(path, jump.as_ref()).as_bytes()),
             None => {
                 let a = self.areas[2];
                 let cwd = self.root.clone().unwrap_or_else(|| PathBuf::from("."));
-                let args = vec![
-                    "-c".to_string(),
-                    "set autoread".to_string(),
-                    path.to_string_lossy().into_owned(),
-                ];
+                let mut args = vec!["-c".to_string(), "set autoread".to_string()];
+                if let Some(script) = vim_script_path() {
+                    args.push("-S".to_string());
+                    args.push(script.to_string_lossy().into_owned());
+                }
+                args.push(path.to_string_lossy().into_owned());
                 match Embedded::spawn(&cmd, &args, &cwd, a.height.max(5), a.width.max(20)) {
-                    Ok(ed) => self.editor = Some(ed),
+                    Ok(mut ed) => {
+                        if let Some(j) = &jump {
+                            ed.send(open_command_at(path, Some(j)).as_bytes());
+                        }
+                        self.editor = Some(ed);
+                    }
                     Err(e) => {
                         self.editor_cmd = None;
                         self.flash(format!(
@@ -768,10 +1007,18 @@ impl Home {
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Tab => {
+                let has_backs = self.show_backlinks && !self.backs.is_empty();
                 self.focus = match self.focus {
                     Focus::Vaults => Focus::Notes,
                     Focus::Notes if self.editor.is_some() => Focus::Editor,
+                    Focus::Notes | Focus::Editor if has_backs => Focus::Backlinks,
                     _ => Focus::Vaults,
+                }
+            }
+            KeyCode::Char('b') => {
+                self.show_backlinks = !self.show_backlinks;
+                if !self.show_backlinks && self.focus == Focus::Backlinks {
+                    self.focus = Focus::Notes;
                 }
             }
             KeyCode::BackTab => {
@@ -804,6 +1051,7 @@ impl Home {
             _ => match self.focus {
                 Focus::Vaults => self.vault_key(k),
                 Focus::Notes => self.notes_key(k, terminal)?,
+                Focus::Backlinks => self.backlinks_key(k),
                 Focus::Editor => {}
             },
         }
@@ -886,9 +1134,50 @@ impl Home {
         Ok(())
     }
 
+    fn backlinks_key(&mut self, k: KeyEvent) {
+        let n = self.backs.len();
+        if n == 0 {
+            self.focus = Focus::Notes;
+            return;
+        }
+        match k.code {
+            KeyCode::Down | KeyCode::Char('j') => self.bsel = (self.bsel + 1).min(n - 1),
+            KeyCode::Up | KeyCode::Char('k') => self.bsel = self.bsel.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_backlink(self.bsel),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.focus = Focus::Notes,
+            _ => {}
+        }
+    }
+
+    /// Open the note a backlink comes from, at the line with the link.
+    fn open_backlink(&mut self, i: usize) {
+        let Some(b) = self.backs.get(i) else { return };
+        let (path, line) = (b.path.clone(), b.line);
+        self.pending = None;
+        self.show_at(&path, Some(Jump::Line(line)));
+        self.select_path(&path);
+        if self.editor.is_some() {
+            self.focus = Focus::Editor;
+        }
+    }
+
     fn on_mouse(&mut self, m: MouseEvent) {
         let pos = Position::new(m.column, m.row);
-        let [va, na, ea] = self.areas;
+        let [va, na, ea, ba] = self.areas;
+        if ba.contains(pos) {
+            if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                let r = (m.row.saturating_sub(ba.y + 1)) as usize;
+                if r < self.backs.len() && m.row > ba.y {
+                    self.focus = Focus::Backlinks;
+                    if r == self.bsel {
+                        self.open_backlink(r);
+                    } else {
+                        self.bsel = r;
+                    }
+                }
+            }
+            return;
+        }
         if ea.contains(pos) {
             if let Some(ed) = self.editor.as_mut() {
                 if matches!(m.kind, MouseEventKind::Down(_)) {
@@ -1095,19 +1384,35 @@ impl Home {
             .areas(main);
             (a, b, c)
         };
+        // Backlinks under the editor.
+        let (ea, ba) = if self.show_backlinks && self.shown.is_some() && ea.height > 12 {
+            let want = if self.backs.is_empty() {
+                3
+            } else {
+                self.backs.len() as u16 + 2
+            };
+            let h = want.min(ea.height / 3).max(3);
+            let [e, b] = Layout::vertical([Constraint::Min(5), Constraint::Length(h)]).areas(ea);
+            (e, b)
+        } else {
+            (ea, Rect::default())
+        };
         let editor_inner = Rect::new(
             ea.x + 1,
             ea.y + 1,
             ea.width.saturating_sub(2),
             ea.height.saturating_sub(2),
         );
-        self.areas = [va, na, editor_inner];
+        self.areas = [va, na, editor_inner, ba];
 
         if !self.zoom {
             self.draw_vaults(f, va);
             self.draw_notes(f, na);
         }
         self.draw_editor(f, ea, editor_inner);
+        if ba.height > 0 {
+            self.draw_backlinks(f, ba);
+        }
         self.draw_status(f, status);
         match &self.mode {
             Mode::Help => draw_help(f, main),
@@ -1353,6 +1658,67 @@ impl Home {
         }
     }
 
+    fn draw_backlinks(&self, f: &mut Frame, area: Rect) {
+        let n = self.backs.len();
+        let title = Line::from(vec![
+            Span::styled(
+                " Backlinks ",
+                Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if n == 0 {
+                    "none · b hide ".to_string()
+                } else {
+                    format!("{n} · b hide ")
+                },
+                Style::new().fg(MUTED),
+            ),
+        ]);
+        let block = self.pane(title, Focus::Backlinks);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        if n == 0 {
+            let msg = "No other note links here yet.";
+            f.render_widget(
+                Paragraph::new(Line::styled(msg, Style::new().fg(MUTED))),
+                inner,
+            );
+            return;
+        }
+        let h = inner.height as usize;
+        let start = if self.bsel >= h { self.bsel + 1 - h } else { 0 };
+        let focused = self.focus == Focus::Backlinks;
+        let lines: Vec<Line> = self
+            .backs
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(h)
+            .map(|(i, b)| {
+                let sel = i == self.bsel && focused;
+                let name_st = if sel {
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(ACCENT)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD)
+                };
+                let mut spans = vec![
+                    Span::styled(format!(" ← {} ", b.name), name_st),
+                    Span::raw(" "),
+                ];
+                // The line with the link, with light markdown styling.
+                let ctx = board::markdown_text(&b.context);
+                if let Some(first) = ctx.lines.into_iter().next() {
+                    spans.extend(first.spans);
+                }
+                Line::from(spans)
+            })
+            .collect();
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         let info = match (self.focus, self.vaults.get(self.vsel)) {
             (Focus::Vaults, Some(v)) => {
@@ -1393,8 +1759,11 @@ impl Home {
         let hints = match (self.focus, &self.mode) {
             (_, Mode::Filter) => " type to filter · ↑↓ move · ⏎ keep · Esc clear".to_string(),
             (Focus::Editor, _) => {
-                " you're in Neovim: everything you type goes to it · Ctrl-q back to the menu"
+                " in Neovim · ⏎ on a [[link]] follows it · Ctrl-o back · Ctrl-q to the menu"
                     .to_string()
+            }
+            (Focus::Backlinks, _) => {
+                " backlinks · ↑↓ choose · ⏎ open at the link · ← back to notes · b hide".to_string()
             }
             _ => {
                 let edit = if self.editor_cmd.is_some() {
@@ -1449,6 +1818,12 @@ fn draw_help(f: &mut Frame, area: Rect) {
             "edit the note in the embedded Neovim · open a board",
         ),
         ("Ctrl-q", "leave Neovim and return to the menu"),
+        (
+            "⏎ in Neovim",
+            "on a [[link]]: open it (creates missing notes)",
+        ),
+        ("Ctrl-o", "in Neovim: back to the previous note"),
+        ("b", "show / hide backlinks under the editor"),
         ("e", "edit the note in $EDITOR, full screen"),
         ("/", "filter notes by name or path"),
         ("g", "graph view of this vault"),
@@ -1539,8 +1914,18 @@ mod tests {
 
     #[test]
     fn vim_open_command_escapes_quotes() {
-        let c = open_command(Path::new("/v/It's here.md"));
+        let c = open_command_at(Path::new("/v/It's here.md"), None);
         assert!(c.contains("fnameescape('/v/It''s here.md')"));
-        assert!(c.starts_with("\x1c\x0e"));
+        assert!(c.starts_with("\x1c\x0e") && c.ends_with(")\r"));
+        let c = open_command_at(Path::new("/v/a.md"), Some(&Jump::Line(12)));
+        assert!(c.ends_with("| call cursor(12, 1) | normal! zz\r"));
+        let c = open_command_at(
+            Path::new("/v/a.md"),
+            Some(&Jump::Heading("Don't panic".into())),
+        );
+        assert!(
+            c.contains("search('\\v^#+\\s*\\V' . 'Don''t panic', 'cW')"),
+            "{c}"
+        );
     }
 }

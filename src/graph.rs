@@ -87,18 +87,7 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
         i
     };
 
-    // Lookup tables for link resolution: full relative path, then bare file name.
-    let mut by_rel: HashMap<String, usize> = HashMap::new();
-    let mut by_name: HashMap<String, usize> = HashMap::new();
-    for (ni, n) in v.notes.iter().enumerate() {
-        by_rel.insert(n.rel.to_lowercase(), ni);
-        // Obsidian prefers the shortest path when names collide; notes are sorted, so keep first
-        // unless a shallower one appears.
-        let e = by_name.entry(n.name.to_lowercase()).or_insert(ni);
-        if n.rel.matches('/').count() < v.notes[*e].rel.matches('/').count() {
-            *e = ni;
-        }
-    }
+    let resolver = crate::index::Resolver::new(v);
     let note_node: Vec<usize> = v
         .notes
         .iter()
@@ -125,12 +114,8 @@ pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Gra
         for t in &n.links {
             let tl = t.to_lowercase();
             let tl = tl.trim_start_matches("./").trim_start_matches('/');
-            let resolved = by_rel.get(tl).or_else(|| {
-                let base = tl.rsplit('/').next().unwrap_or(tl);
-                by_name.get(base)
-            });
-            let to = match resolved {
-                Some(&target) => note_node[target],
+            let to = match resolver.resolve(t) {
+                Some(target) => note_node[target],
                 None if o.unresolved => {
                     let label = t.rsplit('/').next().unwrap_or(t).to_string();
                     add(
@@ -315,6 +300,7 @@ mod tests {
             name: rel.rsplit('/').next().unwrap().into(),
             path: PathBuf::from(format!("{rel}.md")),
             links: links.iter().map(|s| s.to_string()).collect(),
+            refs: vec![],
             tags: tags.iter().map(|s| s.to_string()).collect(),
         }
     }

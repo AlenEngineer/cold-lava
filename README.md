@@ -66,7 +66,15 @@ opened in cold-lava, and any folder you add with `a`.
 
 The right pane runs your real Neovim (your config, colours and plugins). It follows the
 selection as you move through notes; press `Enter` to start editing and `Ctrl-q` to get back to
-the menu. Edits are saved when you move to another note or quit. cold-lava uses `$VISUAL` or
+the menu.
+
+**Links and backlinks.** Inside Neovim, press `Enter` (or `gf`) on a `[[link]]` or
+`[text](note.md)` to open that note, resolved the way Obsidian does. `[[Note#Heading]]` and
+`[[Note#^block]]` jump to the heading or block. A link to a note that doesn't exist yet creates
+it, in the folder Obsidian's "Default location for new notes" setting says. `Ctrl-o` goes back,
+since it's Neovim's own jump list. Under the editor, **Backlinks** lists every note that links to
+the open one, with the line it's on. `Tab` into it and press `Enter` to open that note at the
+link, or press `b` to hide it. Edits are saved when you move to another note or quit. cold-lava uses `$VISUAL` or
 `$EDITOR` if it's Neovim or Vim, otherwise `nvim` from your `PATH`. Without either, the pane
 shows a rendered preview and `Enter` opens your `$EDITOR` full screen.
 
@@ -76,6 +84,8 @@ shows a rendered preview and `Enter` opens your `$EDITOR` full screen.
 | `→` / `←` | open / close a folder |
 | `Enter` | edit the note in Neovim · open a whiteboard |
 | `Ctrl-q` | leave Neovim, back to the menu |
+| `Enter` in Neovim, `Ctrl-o` | follow the `[[link]]` under the cursor · go back |
+| `b` | show / hide backlinks |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder / add a vault |

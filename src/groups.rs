@@ -287,6 +287,7 @@ mod tests {
                 name: rel.rsplit('/').next().unwrap().into(),
                 path: PathBuf::new(),
                 links: vec![],
+                refs: vec![],
                 tags: tags.iter().map(|s| s.to_string()).collect(),
             }],
         };

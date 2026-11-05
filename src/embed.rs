@@ -22,7 +22,14 @@ pub struct Embedded {
     output: Receiver<Vec<u8>>,
     size: (u16, u16),
     exited: bool,
+    /// Messages the program sent us inside its output (`ESC ] 5379 ; kind ; payload BEL`).
+    messages: Vec<(String, String)>,
+    /// An incomplete message at the end of the last chunk.
+    carry: Vec<u8>,
 }
+
+/// Start of a cold-lava message in the program's output (a private OSC sequence).
+const MARK: &[u8] = b"\x1b]5379;";
 
 fn nz(v: u16) -> NonZeroU16 {
     NonZeroU16::new(v.max(1)).unwrap()
@@ -79,6 +86,8 @@ impl Embedded {
             output: rx,
             size: (rows, cols),
             exited: false,
+            messages: Vec::new(),
+            carry: Vec::new(),
         })
     }
 
@@ -88,7 +97,8 @@ impl Embedded {
         loop {
             match self.output.try_recv() {
                 Ok(bytes) => {
-                    self.parser.process(&bytes);
+                    let screen_bytes = self.extract_messages(bytes);
+                    self.parser.process(&screen_bytes);
                     any = true;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -102,6 +112,52 @@ impl Embedded {
             self.exited = true;
         }
         any
+    }
+
+    /// Take the messages received since the last call: (kind, payload).
+    pub fn take_messages(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.messages)
+    }
+
+    /// Pull our messages out of the byte stream; return what's left for the screen.
+    fn extract_messages(&mut self, chunk: Vec<u8>) -> Vec<u8> {
+        let data = if self.carry.is_empty() {
+            chunk
+        } else {
+            let mut c = std::mem::take(&mut self.carry);
+            c.extend(chunk);
+            c
+        };
+        let mut out = Vec::with_capacity(data.len());
+        let mut i = 0;
+        while i < data.len() {
+            if data[i] == 0x1b {
+                let rest = &data[i..];
+                if rest.starts_with(MARK) {
+                    let body = &rest[MARK.len()..];
+                    match body.iter().position(|&b| b == 0x07) {
+                        Some(end) => {
+                            let msg = String::from_utf8_lossy(&body[..end]).into_owned();
+                            let (kind, payload) = msg.split_once(';').unwrap_or((msg.as_str(), ""));
+                            self.messages.push((kind.to_string(), decode(payload)));
+                            i += MARK.len() + end + 1;
+                            continue;
+                        }
+                        None if body.len() < 64 * 1024 => {
+                            self.carry = rest.to_vec();
+                            break;
+                        }
+                        None => {} // not really ours: pass it through
+                    }
+                } else if rest.len() < MARK.len() && MARK.starts_with(rest) {
+                    self.carry = rest.to_vec(); // might be the start of a message
+                    break;
+                }
+            }
+            out.push(data[i]);
+            i += 1;
+        }
+        out
     }
 
     pub fn exited(&self) -> bool {
@@ -210,6 +266,31 @@ impl Drop for Embedded {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
+}
+
+/// Decode the payload encoding used by our Vim script: `%u<hex>;` stands for one character.
+pub fn decode(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(pos) = rest.find("%u") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + 2..];
+        match after
+            .find(';')
+            .and_then(|e| u32::from_str_radix(&after[..e], 16).ok().map(|c| (c, e)))
+        {
+            Some((code, e)) => {
+                out.extend(char::from_u32(code));
+                rest = &after[e + 1..];
+            }
+            None => {
+                out.push_str("%u");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn button_code(b: MouseButton) -> u8 {
@@ -346,6 +427,28 @@ mod tests {
         assert_eq!(encode_key(key(KeyCode::F(5), none), false), b"\x1b[15~");
         assert_eq!(encode_key(key(KeyCode::Enter, none), false), b"\r");
         assert_eq!(encode_key(key(KeyCode::Backspace, none), false), [0x7f]);
+    }
+
+    #[test]
+    fn messages_are_extracted_even_when_split() {
+        let mut t = Embedded::spawn("true", &[], Path::new("."), 5, 20).unwrap();
+        let screen =
+            t.extract_messages(b"ab\x1b]5379;open;/v/K%u12b;lauea.md\x07cd\x1b]53".to_vec());
+        assert_eq!(screen, b"abcd");
+        let screen = t.extract_messages(b"79;follow;x%u9;y\x07ef".to_vec());
+        assert_eq!(screen, b"ef");
+        assert_eq!(
+            t.take_messages(),
+            [
+                ("open".to_string(), "/v/Kīlauea.md".to_string()),
+                ("follow".to_string(), "x\ty".to_string())
+            ]
+        );
+        // Other escape sequences pass through untouched.
+        assert_eq!(
+            t.extract_messages(b"\x1b[1mbold\x1b]0;title\x07".to_vec()),
+            b"\x1b[1mbold\x1b]0;title\x07"
+        );
     }
 
     #[test]

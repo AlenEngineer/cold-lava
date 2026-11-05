@@ -26,7 +26,19 @@ pub struct Note {
     pub path: PathBuf,
     /// Raw link targets (already stripped of `#heading`, `|alias`, `.md`).
     pub links: Vec<String>,
+    /// The same links with where they are: for backlinks.
+    pub refs: Vec<Ref>,
     pub tags: Vec<String>,
+}
+
+/// One link in a note.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ref {
+    pub target: String,
+    /// 1-based line number.
+    pub line: usize,
+    /// The line it's on, trimmed (for showing backlinks in context).
+    pub context: String,
 }
 
 pub struct Vault {
@@ -94,12 +106,14 @@ pub fn scan(root: &Path) -> Result<Vault> {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let (links, tags) = parse(&text, &p);
+        let (refs, tags) = parse(&text, &p);
+        let links = refs.iter().map(|r| r.target.clone()).collect();
         notes.push(Note {
             rel,
             name,
             path: path.to_path_buf(),
             links,
+            refs,
             tags,
         });
     }
@@ -125,18 +139,34 @@ fn clean_target(t: &str) -> Option<String> {
     }
 }
 
-fn parse(text: &str, p: &Parsers) -> (Vec<String>, Vec<String>) {
-    let mut links = Vec::new();
+fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>) {
+    let mut refs = Vec::new();
     let mut tags = Vec::new();
-    let mut lines = text.lines().peekable();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+    let add = |refs: &mut Vec<Ref>, target: Option<String>, i: usize, line: &str| {
+        if let Some(target) = target {
+            let mut context: String = line.trim().chars().take(240).collect();
+            if line.trim().chars().count() > 240 {
+                context.push('…');
+            }
+            refs.push(Ref {
+                target,
+                line: i + 1,
+                context,
+            });
+        }
+    };
 
     // YAML frontmatter: only `tags:` matters here.
-    if lines.peek().map(|l| l.trim_end()) == Some("---") {
-        lines.next();
+    if lines.first().map(|l| l.trim_end()) == Some("---") {
+        i = 1;
         let mut in_tags = false;
-        for line in lines.by_ref() {
+        while i < lines.len() {
+            let line = lines[i];
             let t = line.trim();
             if t == "---" || t == "..." {
+                i += 1;
                 break;
             }
             if let Some(rest) = t.strip_prefix("tags:").or_else(|| t.strip_prefix("tag:")) {
@@ -152,14 +182,15 @@ fn parse(text: &str, p: &Parsers) -> (Vec<String>, Vec<String>) {
             }
             // Wikilinks inside frontmatter properties count too, like in Obsidian.
             for c in p.wikilink.captures_iter(line) {
-                links.extend(clean_target(&c[1]));
+                add(&mut refs, clean_target(&c[1]), i, line);
             }
+            i += 1;
         }
     }
 
     let mut in_fence = false;
-    for line in lines {
-        let t = line.trim_start();
+    for (n, raw) in lines.iter().enumerate().skip(i) {
+        let t = raw.trim_start();
         if t.starts_with("```") || t.starts_with("~~~") {
             in_fence = !in_fence;
             continue;
@@ -167,18 +198,18 @@ fn parse(text: &str, p: &Parsers) -> (Vec<String>, Vec<String>) {
         if in_fence {
             continue;
         }
-        let line = p.inline_code.replace_all(line, "");
+        let line = p.inline_code.replace_all(raw, "");
         for c in p.wikilink.captures_iter(&line) {
-            links.extend(clean_target(&c[1]));
+            add(&mut refs, clean_target(&c[1]), n, raw);
         }
         for c in p.mdlink.captures_iter(&line) {
-            links.extend(clean_target(&c[1]));
+            add(&mut refs, clean_target(&c[1]), n, raw);
         }
         for c in p.tag.captures_iter(&line) {
             push_tag(&mut tags, &c[1]);
         }
     }
-    (links, tags)
+    (refs, tags)
 }
 
 fn push_tag(tags: &mut Vec<String>, raw: &str) {
@@ -200,7 +231,28 @@ mod tests {
     use super::*;
 
     fn links_and_tags(text: &str) -> (Vec<String>, Vec<String>) {
-        parse(text, &Parsers::new())
+        let (refs, tags) = parse(text, &Parsers::new());
+        (refs.into_iter().map(|r| r.target).collect(), tags)
+    }
+
+    #[test]
+    fn link_positions() {
+        let (refs, _) = parse(
+            "---\nup: \"[[Parent]]\"\n---\n\nSee [[A]] and\n[[B|bee]] here",
+            &Parsers::new(),
+        );
+        let pos: Vec<(&str, usize, &str)> = refs
+            .iter()
+            .map(|r| (r.target.as_str(), r.line, r.context.as_str()))
+            .collect();
+        assert_eq!(
+            pos,
+            [
+                ("Parent", 2, "up: \"[[Parent]]\""),
+                ("A", 5, "See [[A]] and"),
+                ("B", 6, "[[B|bee]] here")
+            ]
+        );
     }
 
     #[test]
