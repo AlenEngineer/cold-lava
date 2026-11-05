@@ -182,3 +182,69 @@ fn push_tag(tags: &mut Vec<String>, raw: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn links_and_tags(text: &str) -> (Vec<String>, Vec<String>) {
+        parse(text, &Parsers::new())
+    }
+
+    #[test]
+    fn wikilink_forms() {
+        let (links, _) = links_and_tags(
+            "[[Plain]] [[With Alias|shown]] [[Heading#Section]] ![[Embedded]] [[Block^abc]] [[folder/Deep]]",
+        );
+        assert_eq!(
+            links,
+            [
+                "Plain",
+                "With Alias",
+                "Heading",
+                "Embedded",
+                "Block",
+                "folder/Deep"
+            ]
+        );
+    }
+
+    #[test]
+    fn markdown_links_and_attachments() {
+        let (links, _) = links_and_tags(
+            "[a](Other%20Note.md) [b](https://example.com/x.md) ![[photo.png]] [[file.pdf]] [[v1.2 notes]]",
+        );
+        // Wikilinks are collected before markdown links on each line.
+        assert_eq!(links, ["v1.2 notes", "Other Note"]);
+    }
+
+    #[test]
+    fn code_is_ignored() {
+        let (links, tags) = links_and_tags("```\n[[InFence]] #fenced\n```\n`[[Inline]]` [[Real]]");
+        assert_eq!(links, ["Real"]);
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn tags_inline_and_frontmatter() {
+        let text = "---\ntags: [Project, area/work]\naliases:\n  - x\n---\n# Heading\nText #Idea and #123 and #nested/tag.";
+        let (_, tags) = links_and_tags(text);
+        assert_eq!(tags, ["project", "area/work", "idea", "nested/tag"]);
+    }
+
+    #[test]
+    fn frontmatter_list_tags() {
+        let (_, tags) = links_and_tags("---\ntags:\n  - one\n  - \"two\"\ntitle: x\n---\n");
+        assert_eq!(tags, ["one", "two"]);
+    }
+
+    #[test]
+    fn scans_demo_vault() {
+        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("demo-vault")).unwrap();
+        assert_eq!(v.name, "demo-vault");
+        assert!(v.notes.len() >= 30);
+        // Hidden folders (.obsidian) are skipped; subfolders are included.
+        assert!(v.notes.iter().all(|n| !n.rel.starts_with('.')));
+        assert!(v.notes.iter().any(|n| n.rel.starts_with("Projects/")));
+    }
+}

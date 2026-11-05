@@ -303,3 +303,112 @@ impl Graph {
         self.alpha += (0.0 - self.alpha) * ALPHA_DECAY;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::Note;
+
+    fn note(rel: &str, links: &[&str], tags: &[&str]) -> Note {
+        Note {
+            rel: rel.into(),
+            name: rel.rsplit('/').next().unwrap().into(),
+            path: PathBuf::from(format!("{rel}.md")),
+            links: links.iter().map(|s| s.to_string()).collect(),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn vault(notes: Vec<Note>) -> Vault {
+        Vault {
+            root: PathBuf::from("/v"),
+            name: "v".into(),
+            notes,
+        }
+    }
+
+    const ALL: BuildOpts = BuildOpts {
+        unresolved: true,
+        tags: true,
+        orphans: true,
+    };
+
+    fn labels(g: &Graph) -> Vec<&str> {
+        g.nodes.iter().map(|n| n.label.as_str()).collect()
+    }
+
+    #[test]
+    fn resolves_by_name_and_path_case_insensitively() {
+        let v = vault(vec![
+            note("A", &["b", "deep/C", "Missing"], &[]),
+            note("B", &["A"], &[]),
+            note("deep/C", &[], &[]),
+        ]);
+        let g = build(
+            &v,
+            BuildOpts {
+                unresolved: false,
+                tags: false,
+                orphans: true,
+            },
+            &HashMap::new(),
+        );
+        assert_eq!(g.nodes.len(), 3);
+        assert_eq!(g.edges.len(), 3); // A→B, A→C, B→A
+        let a = g.find("n:a").unwrap();
+        assert_eq!((g.links_out[a], g.links_in[a]), (2, 1));
+    }
+
+    #[test]
+    fn unresolved_tags_and_orphans() {
+        let v = vault(vec![
+            note("A", &["Ghost", "A"], &["topic"]),
+            note("Lonely", &[], &[]),
+        ]);
+        let g = build(&v, ALL, &HashMap::new());
+        let mut l = labels(&g);
+        l.sort();
+        assert_eq!(l, ["#topic", "A", "Ghost", "Lonely"]);
+        // Self-links are dropped.
+        assert_eq!(g.edges.len(), 2);
+
+        let no_orphans = BuildOpts {
+            orphans: false,
+            ..ALL
+        };
+        assert!(!labels(&build(&v, no_orphans, &HashMap::new())).contains(&"Lonely"));
+    }
+
+    #[test]
+    fn shortest_path_wins_on_name_collision() {
+        let v = vault(vec![
+            note("x/y/Dup", &[], &[]),
+            note("Dup", &[], &[]),
+            note("A", &["Dup"], &[]),
+        ]);
+        let g = build(&v, ALL, &HashMap::new());
+        let a = g.find("n:a").unwrap();
+        let target = g.edges.iter().find(|e| e.0 == a).unwrap().1;
+        assert_eq!(g.nodes[target].rel.as_deref(), Some("Dup"));
+    }
+
+    #[test]
+    fn layout_settles_and_keeps_positions() {
+        let v = vault(
+            (0..20)
+                .map(|i| note(&format!("N{i}"), &[&format!("N{}", (i + 1) % 20)], &[]))
+                .collect(),
+        );
+        let mut g = build(&v, ALL, &HashMap::new());
+        let active = vec![true; g.nodes.len()];
+        for _ in 0..400 {
+            g.step(&active);
+        }
+        assert!(g.settled());
+        assert!(g.nodes.iter().all(|n| n.x.is_finite() && n.y.is_finite()));
+        // Rebuilding with previous positions keeps nodes where they were.
+        let prev = g.positions();
+        let g2 = build(&v, ALL, &prev);
+        assert_eq!((g2.nodes[3].x, g2.nodes[3].y), prev[&g2.nodes[3].key]);
+    }
+}

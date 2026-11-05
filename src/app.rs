@@ -7,6 +7,7 @@ use crate::scene::{Disc, Edge, Label, Layer, Scene};
 use crate::vault::{self, Vault};
 use crate::{board, term};
 use anyhow::Result;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -19,6 +20,8 @@ use ratatui::widgets::canvas::Canvas;
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 // Palette (truecolor; Ghostty, Kitty, WezTerm, iTerm2 all support it).
@@ -81,6 +84,10 @@ pub struct App {
     pixels: bool,
     dirty: bool,
     pending_image: Vec<u8>,
+    // Live updates when notes change on disk
+    fs_events: Option<Receiver<notify::Event>>,
+    _watcher: Option<RecommendedWatcher>,
+    rescan_at: Option<Instant>,
 }
 
 pub enum Render {
@@ -111,6 +118,7 @@ impl App {
             _ => Kitty::new(),
         };
         let pixels = kitty.is_some();
+        let (fs_events, watcher) = watch_vault(&vault.root);
         App {
             vault,
             graph,
@@ -139,6 +147,9 @@ impl App {
             pixels,
             dirty: true,
             pending_image: Vec::new(),
+            fs_events,
+            _watcher: watcher,
+            rescan_at: None,
         }
     }
 
@@ -162,6 +173,7 @@ impl App {
             }
             terminal.draw(|f| self.draw(f))?;
             term::write_raw(&std::mem::take(&mut self.pending_image));
+            self.check_disk();
 
             let idle = self.paused || self.graph.settled();
             let ms = if idle && self.drag.is_none() {
@@ -196,6 +208,31 @@ impl App {
             term::write_raw(&k.clear());
         }
         Ok(())
+    }
+
+    /// Rescan shortly after notes change on disk (debounced so a burst of saves rescans once).
+    fn check_disk(&mut self) {
+        if let Some(rx) = &self.fs_events
+            && rx.try_iter().any(|ev| {
+                ev.paths
+                    .iter()
+                    .any(|p| is_vault_change(&self.vault.root, p))
+            })
+        {
+            self.rescan_at = Some(Instant::now() + Duration::from_millis(300));
+        }
+        if self.rescan_at.is_some_and(|t| Instant::now() >= t) && self.drag.is_none() {
+            self.rescan_at = None;
+            let before = self.vault.notes.len();
+            self.rebuild(true);
+            let after = self.vault.notes.len();
+            self.flash(match after.cmp(&before) {
+                std::cmp::Ordering::Greater => format!("vault changed: +{} notes", after - before),
+                std::cmp::Ordering::Less => format!("vault changed: −{} notes", before - after),
+                _ => "vault changed: graph updated".to_string(),
+            });
+            self.dirty = true;
+        }
     }
 
     // ---------- graph state ----------
@@ -1234,4 +1271,60 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ),
         r,
     );
+}
+
+fn watch_vault(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
+    let (tx, rx) = mpsc::channel();
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res
+            && !matches!(ev.kind, notify::EventKind::Access(_))
+        {
+            let _ = tx.send(ev);
+        }
+    });
+    match watcher {
+        Ok(mut w) => match w.watch(root, RecursiveMode::Recursive) {
+            Ok(()) => (Some(rx), Some(w)),
+            Err(_) => (None, None), // live updates unavailable; `r` still rescans
+        },
+        Err(_) => (None, None),
+    }
+}
+
+/// Does a changed path affect the graph? Notes do; Obsidian's own state files don't,
+/// except the graph colour-group settings.
+pub fn is_vault_change(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    if rel == ".obsidian/graph.json" {
+        return true;
+    }
+    let hidden = rel.split('/').any(|part| part.starts_with('.'));
+    !hidden && rel.ends_with(".md")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_vault_change;
+    use std::path::Path;
+
+    #[test]
+    fn only_notes_and_graph_settings_trigger_rescans() {
+        let root = Path::new("/vault");
+        assert!(is_vault_change(root, Path::new("/vault/Note.md")));
+        assert!(is_vault_change(root, Path::new("/vault/a/b/Deep.md")));
+        assert!(is_vault_change(
+            root,
+            Path::new("/vault/.obsidian/graph.json")
+        ));
+        assert!(!is_vault_change(
+            root,
+            Path::new("/vault/.obsidian/workspace.json")
+        ));
+        assert!(!is_vault_change(root, Path::new("/vault/.trash/Old.md")));
+        assert!(!is_vault_change(root, Path::new("/vault/Board.canvas")));
+        assert!(!is_vault_change(root, Path::new("/elsewhere/Note.md")));
+    }
 }

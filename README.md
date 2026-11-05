@@ -1,5 +1,7 @@
 # cold-lava
 
+[![CI](https://github.com/AlenEngineer/cold-lava/actions/workflows/ci.yml/badge.svg)](https://github.com/AlenEngineer/cold-lava/actions/workflows/ci.yml)
+
 Obsidian's graph view and canvas, in the terminal. Point it at a vault and you get:
 
 - **A live, force-directed graph** of your notes. In Ghostty, Kitty and WezTerm it's drawn as
@@ -8,7 +10,8 @@ Obsidian's graph view and canvas, in the terminal. Point it at a vault and you g
 - **A whiteboard** that reads and writes Obsidian Canvas (`.canvas`) files, so boards round-trip
   between the terminal and the Obsidian app.
 
-It doesn't need the Obsidian app running.
+It doesn't need the Obsidian app running, and it stays live: edit notes in your editor or in
+Obsidian and the graph updates on its own.
 
 ![graph, pixel mode](screenshot-pixels.png)
 ![whiteboard](screenshot-board.png)
@@ -68,6 +71,12 @@ Press `?` in either view to see every key.
 Every change saves straight to the `.canvas` file. Fields that cold-lava doesn't use are
 kept as they are, so Obsidian data and plugin data survive a round trip.
 
+**Safe to use alongside Obsidian.** If the same board is open in both and changes on disk,
+cold-lava merges instead of overwriting: cards and arrows are matched by id and merged field
+by field. If Obsidian moves a card while you edit its text, both changes are kept. If the same
+field changed in both places, your cold-lava version wins and you get a notice. A card deleted
+on one side but edited on the other is kept.
+
 ## What it understands
 
 - `[[wikilinks]]` (with aliases, headings and embeds), and `[text](note.md)` links
@@ -78,6 +87,17 @@ kept as they are, so Obsidian data and plugin data survive a round trip.
 ## Limits
 
 - The layout is O(n²): vaults of a few thousand notes are fine; for more, the next step would be Barnes–Hut.
-- No file watching yet: press `r` (graph) or `R` (board) after editing elsewhere.
 - Whiteboard: no freehand drawing, because JSON Canvas has no freehand shapes. Edge labels
   display but can't be edited yet. Excalidraw drawings aren't rendered.
+
+## Development
+
+```bash
+cargo test                                   # unit tests
+cargo clippy --all-targets -- -D warnings    # lints, as in CI
+cargo fmt --check
+```
+
+## License
+
+MIT, see [LICENSE](LICENSE).

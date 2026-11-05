@@ -88,3 +88,14 @@ pub fn url_encode(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn url_encoding() {
+        assert_eq!(
+            super::url_encode("My Vault/Note é.md"),
+            "My%20Vault%2FNote%20%C3%A9.md"
+        );
+    }
+}

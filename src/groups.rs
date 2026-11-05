@@ -272,3 +272,65 @@ fn tokenize(q: &str) -> Vec<String> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn node(rel: &str, tags: &[&str]) -> Node {
+        let v = crate::vault::Vault {
+            root: PathBuf::from("/v"),
+            name: "v".into(),
+            notes: vec![crate::vault::Note {
+                rel: rel.into(),
+                name: rel.rsplit('/').next().unwrap().into(),
+                path: PathBuf::new(),
+                links: vec![],
+                tags: tags.iter().map(|s| s.to_string()).collect(),
+            }],
+        };
+        let opts = crate::graph::BuildOpts {
+            unresolved: false,
+            tags: false,
+            orphans: true,
+        };
+        crate::graph::build(&v, opts, &Default::default())
+            .nodes
+            .remove(0)
+    }
+
+    fn m(q: &str, n: &Node) -> bool {
+        Query::parse(q).matches(n)
+    }
+
+    #[test]
+    fn query_fields() {
+        let n = node("Projects/Rust/Async Notes", &["rust", "area/work"]);
+        assert!(m("path:Projects", &n));
+        assert!(m("file:async", &n));
+        assert!(!m("file:Projects", &n));
+        assert!(m("tag:#rust", &n));
+        assert!(m("tag:area", &n)); // nested tags match their parent
+        assert!(!m("tag:are", &n));
+        assert!(m("notes", &n));
+    }
+
+    #[test]
+    fn query_logic() {
+        let n = node("Daily/2026-11-05", &["journal"]);
+        assert!(m("path:Daily tag:#journal", &n));
+        assert!(!m("path:Daily tag:#work", &n));
+        assert!(m("tag:#work OR path:Daily", &n));
+        assert!(!m("path:Daily -tag:journal", &n));
+        assert!(m("\"2026-11\"", &n));
+    }
+
+    #[test]
+    fn reads_obsidian_graph_json() {
+        let g = load_obsidian(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("demo-vault"));
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0].label, "tag:#rust");
+        assert_eq!(g[0].color, Color::Rgb(232, 139, 78)); // rgb 15240014 = #E88B4E
+    }
+}

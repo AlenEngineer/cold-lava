@@ -4,6 +4,7 @@
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
 use crate::term;
 use anyhow::{Context as _, Result};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -17,9 +18,10 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -183,6 +185,14 @@ struct Board {
     last_click: Option<(Instant, u16, u16)>,
     notes: Option<Vec<String>>,
     previews: HashMap<String, Vec<String>>,
+    // Sync with the file on disk (Obsidian may edit it while we have it open).
+    /// The version last read from or written to disk: the common ancestor for merges.
+    base: Doc,
+    /// Exact bytes last read or written, to spot outside changes cheaply.
+    disk: Vec<u8>,
+    last_check: Instant,
+    fs_events: Option<Receiver<notify::Event>>,
+    _watcher: Option<RecommendedWatcher>,
 }
 
 // ---------- entry points ----------
@@ -328,7 +338,22 @@ fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<Path
 
 impl Board {
     fn open(path: PathBuf, vault_root: &Path) -> Result<Board> {
-        let doc = load(&path)?;
+        let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let doc = parse(&disk, &path)?;
+        let base = doc.clone();
+        // Watch the folder (not the file): editors replace files by renaming over them.
+        let (tx, rx) = mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                let _ = tx.send(ev);
+            }
+        })
+        .ok();
+        if let (Some(w), Some(dir)) = (watcher.as_mut(), path.parent())
+            && w.watch(dir, RecursiveMode::NonRecursive).is_err()
+        {
+            watcher = None;
+        }
         let vault_root = vault_root
             .canonicalize()
             .unwrap_or_else(|_| vault_root.to_path_buf());
@@ -354,6 +379,11 @@ impl Board {
             last_click: None,
             notes: None,
             previews: HashMap::new(),
+            base,
+            disk,
+            last_check: Instant::now(),
+            fs_events: watcher.is_some().then_some(rx),
+            _watcher: watcher,
         };
         b.fit_pending();
         Ok(b)
@@ -369,20 +399,97 @@ impl Board {
                 first = false;
                 continue;
             }
-            if event::poll(Duration::from_millis(500))? {
+            if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k, terminal)?,
                     Event::Mouse(m) => self.on_mouse(m),
                     _ => {}
                 }
             }
+            self.watch_disk();
         }
         Ok(())
+    }
+
+    // ---------- live sync with the file on disk ----------
+
+    /// Pick up outside changes: on a file-system event, or every 2 s as a fallback.
+    fn watch_disk(&mut self) {
+        let mut touched = false;
+        if let Some(rx) = &self.fs_events {
+            let name = self.path.file_name();
+            for ev in rx.try_iter() {
+                touched |= ev.paths.iter().any(|p| p.file_name() == name);
+            }
+        }
+        let busy = matches!(self.mode, Mode::Edit { .. }) || self.drag.is_some();
+        if busy || !(touched || self.last_check.elapsed() > Duration::from_secs(2)) {
+            return;
+        }
+        self.last_check = Instant::now();
+        self.sync_from_disk();
+    }
+
+    /// If the file changed outside cold-lava, merge those changes into ours.
+    /// Returns true when something was merged in.
+    fn sync_from_disk(&mut self) -> bool {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return false;
+        };
+        if bytes == self.disk {
+            return false;
+        }
+        // A half-written file fails to parse; we'll catch the complete one on the next check.
+        let Ok(theirs) = parse(&bytes, &self.path) else {
+            return false;
+        };
+        self.disk = bytes;
+        let (Ok(b), Ok(o), Ok(t)) = (
+            serde_json::to_value(&self.base),
+            serde_json::to_value(&self.doc),
+            serde_json::to_value(&theirs),
+        ) else {
+            return false;
+        };
+        if t == b {
+            return false; // same content, just rewritten
+        }
+        let (merged, conflicts) = merge3(&b, &o, &t);
+        self.base = theirs;
+        match serde_json::from_value::<Doc>(merged) {
+            Ok(d) => self.doc = d,
+            Err(e) => {
+                self.flash(format!("couldn't merge outside changes: {e}"));
+                return false;
+            }
+        }
+        self.previews.clear();
+        if let Some(s) = &self.sel
+            && self.node(s).is_none()
+        {
+            self.sel = None;
+        }
+        // Write back only if our side added something the file doesn't have yet.
+        if serde_json::to_value(&self.doc).ok() != Some(t) {
+            self.write_file();
+        }
+        self.flash(if conflicts > 0 {
+            format!("merged changes from disk ({conflicts} conflicting edits: kept yours)")
+        } else {
+            "merged changes made outside cold-lava".to_string()
+        });
+        true
     }
 
     // ---------- persistence ----------
 
     fn save(&mut self) {
+        // Never overwrite edits made elsewhere (e.g. in Obsidian): merge them in first.
+        self.sync_from_disk();
+        self.write_file();
+    }
+
+    fn write_file(&mut self) {
         let mut buf = Vec::new();
         let fmt = serde_json::ser::PrettyFormatter::with_indent(b"\t");
         let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
@@ -391,9 +498,16 @@ impl Board {
         }
         buf.push(b'\n');
         let tmp = self.path.with_extension("canvas.tmp");
+        if buf == self.disk {
+            return;
+        }
         let res = std::fs::write(&tmp, &buf).and_then(|_| std::fs::rename(&tmp, &self.path));
-        if let Err(e) = res {
-            self.flash(format!("save failed: {e}"));
+        match res {
+            Ok(()) => {
+                self.base = self.doc.clone();
+                self.disk = buf;
+            }
+            Err(e) => self.flash(format!("save failed: {e}")),
         }
     }
 
@@ -1181,9 +1295,14 @@ impl Board {
             KeyCode::Char('d') | KeyCode::Delete => self.delete_selected(),
             KeyCode::Char(c @ '1'..='6') => self.set_color(Some(&c.to_string())),
             KeyCode::Char('0') => self.set_color(None),
-            KeyCode::Char('R') => match load(&self.path) {
-                Ok(d) => {
+            KeyCode::Char('R') => match std::fs::read(&self.path)
+                .map_err(anyhow::Error::from)
+                .and_then(|b| Ok((parse(&b, &self.path)?, b)))
+            {
+                Ok((d, bytes)) => {
                     self.checkpoint();
+                    self.base = d.clone();
+                    self.disk = bytes;
                     self.doc = d;
                     self.previews.clear();
                     self.notes = None;
@@ -1778,14 +1897,146 @@ impl Board {
 
 // ---------- helpers ----------
 
-fn load(path: &Path) -> Result<Doc> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    if text.trim().is_empty() {
+fn parse(bytes: &[u8], path: &Path) -> Result<Doc> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(Doc::default());
     }
-    serde_json::from_str(&text)
+    serde_json::from_slice(bytes)
         .with_context(|| format!("{} is not a valid canvas file", path.display()))
+}
+
+// ---------- three-way merge ----------
+//
+// `base` is the version both sides started from, `ours` is cold-lava's current board and
+// `theirs` is what is now on disk. Cards and arrows are matched by id and merged field by
+// field, so Obsidian moving a card while you edit its text keeps both changes. When the same
+// field changed on both sides, ours wins (and it is counted as a conflict). An item edited on
+// one side and deleted on the other is kept: losing an edit is worse than keeping a card.
+
+fn merge3(base: &Value, ours: &Value, theirs: &Value) -> (Value, usize) {
+    let mut conflicts = 0;
+    let empty = Map::new();
+    let b = base.as_object().unwrap_or(&empty);
+    let o = ours.as_object().unwrap_or(&empty);
+    let t = theirs.as_object().unwrap_or(&empty);
+    let mut out = merge_fields(b, o, t, &["nodes", "edges"], &mut conflicts);
+    for key in ["nodes", "edges"] {
+        let list = merge_lists(
+            b.get(key).unwrap_or(&Value::Null),
+            o.get(key).unwrap_or(&Value::Null),
+            t.get(key).unwrap_or(&Value::Null),
+            &mut conflicts,
+        );
+        out.insert(key.to_string(), Value::Array(list));
+    }
+    // Drop arrows whose cards no longer exist.
+    let ids: HashSet<String> = out["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| n.get("id")?.as_str().map(String::from))
+        .collect();
+    if let Some(edges) = out.get_mut("edges").and_then(Value::as_array_mut) {
+        edges.retain(|e| {
+            let has = |k: &str| {
+                e.get(k)
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| ids.contains(id))
+            };
+            has("fromNode") && has("toNode")
+        });
+    }
+    (Value::Object(out), conflicts)
+}
+
+/// Key-by-key merge of two objects against their common base.
+fn merge_fields(
+    b: &Map<String, Value>,
+    o: &Map<String, Value>,
+    t: &Map<String, Value>,
+    skip: &[&str],
+    conflicts: &mut usize,
+) -> Map<String, Value> {
+    let mut keys: Vec<&String> = o.keys().collect();
+    keys.extend(t.keys().filter(|k| !o.contains_key(*k)));
+    keys.extend(
+        b.keys()
+            .filter(|k| !o.contains_key(*k) && !t.contains_key(*k)),
+    );
+    let mut out = Map::new();
+    for k in keys {
+        if skip.contains(&k.as_str()) {
+            continue;
+        }
+        let (bv, ov, tv) = (b.get(k), o.get(k), t.get(k));
+        let v = if ov == bv {
+            tv
+        } else if tv == bv || tv == ov {
+            ov
+        } else {
+            *conflicts += 1;
+            ov
+        };
+        if let Some(v) = v {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+fn merge_lists(base: &Value, ours: &Value, theirs: &Value, conflicts: &mut usize) -> Vec<Value> {
+    let by_id = |v: &Value| -> Vec<(String, Value)> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| Some((x.get("id")?.as_str()?.to_string(), x.clone())))
+            .collect()
+    };
+    let (b, o, t) = (by_id(base), by_id(ours), by_id(theirs));
+    let find = |list: &[(String, Value)], id: &str| {
+        list.iter().find(|(i, _)| i == id).map(|(_, v)| v.clone())
+    };
+    // Order: ours first (keeps our stacking), then items only the other side has, in its order.
+    let mut ids: Vec<String> = o.iter().map(|(i, _)| i.clone()).collect();
+    ids.extend(
+        t.iter()
+            .map(|(i, _)| i.clone())
+            .filter(|i| !o.iter().any(|(j, _)| j == i)),
+    );
+    let only_base: Vec<String> = b
+        .iter()
+        .map(|(i, _)| i.clone())
+        .filter(|i| !ids.contains(i))
+        .collect();
+    ids.extend(only_base);
+    let mut out = Vec::new();
+    for id in ids {
+        let (bv, ov, tv) = (find(&b, &id), find(&o, &id), find(&t, &id));
+        let merged = match (bv, ov, tv) {
+            // Present on both sides now.
+            (Some(b), Some(o), Some(t)) => match (b.as_object(), o.as_object(), t.as_object()) {
+                (Some(bm), Some(om), Some(tm)) => {
+                    Some(Value::Object(merge_fields(bm, om, tm, &[], conflicts)))
+                }
+                _ => Some(if o == b { t } else { o }),
+            },
+            (None, Some(o), Some(t)) => {
+                if o != t {
+                    *conflicts += 1;
+                }
+                Some(o)
+            }
+            // Deleted on one side: delete unless the other side changed it.
+            (Some(b), Some(o), None) => (o != b).then_some(o),
+            (Some(b), None, Some(t)) => (t != b).then_some(t),
+            // New on one side only.
+            (None, Some(o), None) => Some(o),
+            (None, None, Some(t)) => Some(t),
+            (_, None, None) => None,
+        };
+        out.extend(merged);
+    }
+    out
 }
 
 fn snap(v: f64) -> f64 {
@@ -1972,4 +2223,144 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ),
         r,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn card(id: &str, x: i64, text: &str) -> Value {
+        json!({"id": id, "type": "text", "text": text, "x": x, "y": 0, "width": 250, "height": 60})
+    }
+
+    fn ids(v: &Value, key: &str) -> Vec<String> {
+        v[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn merge_keeps_both_sides_field_by_field() {
+        let base = json!({"nodes": [card("a", 0, "hi"), card("b", 300, "b")], "edges": []});
+        let mut ours = base.clone();
+        ours["nodes"][0]["text"] = json!("edited here"); // we edit a's text
+        let mut theirs = base.clone();
+        theirs["nodes"][0]["x"] = json!(500); // Obsidian moves a
+        theirs["nodes"][1]["color"] = json!("4"); // and colours b
+        let (m, conflicts) = merge3(&base, &ours, &theirs);
+        assert_eq!(conflicts, 0);
+        assert_eq!(m["nodes"][0]["text"], "edited here");
+        assert_eq!(m["nodes"][0]["x"], 500);
+        assert_eq!(m["nodes"][1]["color"], "4");
+    }
+
+    #[test]
+    fn merge_additions_deletions_and_conflicts() {
+        let base = json!({"nodes": [card("a", 0, "a"), card("b", 0, "b"), card("c", 0, "c")],
+                          "edges": [{"id": "e", "fromNode": "a", "toNode": "c"}]});
+        let mut ours = base.clone();
+        ours["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(card("mine", 0, "new here"));
+        ours["nodes"][1]["text"] = json!("ours wins");
+        let mut theirs = base.clone();
+        theirs["nodes"].as_array_mut().unwrap().remove(2); // Obsidian deletes c (and so edge e)
+        theirs["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(card("obs", 0, "new there"));
+        theirs["nodes"][1]["text"] = json!("theirs loses");
+        let (m, conflicts) = merge3(&base, &ours, &theirs);
+        assert_eq!(ids(&m, "nodes"), ["a", "b", "mine", "obs"]);
+        assert_eq!(m["nodes"][1]["text"], "ours wins");
+        assert_eq!(conflicts, 1);
+        assert!(
+            ids(&m, "edges").is_empty(),
+            "edge to a deleted card is dropped"
+        );
+    }
+
+    #[test]
+    fn merge_keeps_edited_card_deleted_elsewhere() {
+        let base = json!({"nodes": [card("a", 0, "a")], "edges": []});
+        let mut ours = base.clone();
+        ours["nodes"][0]["text"] = json!("still editing");
+        let theirs = json!({"nodes": [], "edges": []});
+        let (m, _) = merge3(&base, &ours, &theirs);
+        assert_eq!(ids(&m, "nodes"), ["a"]);
+        // ...but an untouched card deleted elsewhere goes away.
+        let (m, _) = merge3(&base, &base, &theirs);
+        assert!(ids(&m, "nodes").is_empty());
+    }
+
+    #[test]
+    fn merge_top_level_fields() {
+        let base = json!({"nodes": [], "edges": [], "plugin": 1});
+        let theirs = json!({"nodes": [], "edges": [], "plugin": 2, "added": true});
+        let (m, _) = merge3(&base, &base, &theirs);
+        assert_eq!(m["plugin"], 2);
+        assert_eq!(m["added"], true);
+    }
+
+    #[test]
+    fn canvas_round_trip_preserves_unknown_fields_and_integers() {
+        let src = r##"{"nodes":[{"id":"a","type":"text","text":"x","x":10.4,"y":-20,"width":250,"height":60,"color":"#ff0000","futureField":{"k":[1,2]}}],
+                      "edges":[{"id":"e","fromNode":"a","toNode":"a","toEnd":"none","styleAttributes":{}}],"meta":"keep"}"##;
+        let doc = parse(src.as_bytes(), Path::new("t.canvas")).unwrap();
+        let out = serde_json::to_value(&doc).unwrap();
+        assert_eq!(out["nodes"][0]["x"], 10); // coordinates are written as integers
+        assert_eq!(out["nodes"][0]["futureField"]["k"][1], 2);
+        assert_eq!(out["edges"][0]["styleAttributes"], json!({}));
+        assert_eq!(out["meta"], "keep");
+        assert!(
+            out["nodes"][0].get("file").is_none(),
+            "absent optional fields stay absent"
+        );
+        assert_eq!(
+            canvas_color(&Some("#ff0000".into())),
+            Some(Color::Rgb(255, 0, 0))
+        );
+    }
+
+    #[test]
+    fn empty_file_is_an_empty_board() {
+        let d = parse(b"  \n", Path::new("t.canvas")).unwrap();
+        assert!(d.nodes.is_empty() && d.edges.is_empty());
+        assert!(parse(b"{not json", Path::new("t.canvas")).is_err());
+    }
+
+    #[test]
+    fn arrows_attach_to_facing_sides() {
+        let n = |x: f64, y: f64| CNode {
+            id: String::new(),
+            kind: "text".into(),
+            text: None,
+            file: None,
+            url: None,
+            label: None,
+            x,
+            y,
+            width: 100.0,
+            height: 50.0,
+            color: None,
+            extra: Map::new(),
+        };
+        assert_eq!(
+            sides(&n(0.0, 0.0), &n(400.0, 0.0), None, None),
+            ("right", "left")
+        );
+        assert_eq!(
+            sides(&n(0.0, 0.0), &n(0.0, 400.0), None, None),
+            ("bottom", "top")
+        );
+        assert_eq!(
+            sides(&n(0.0, 0.0), &n(400.0, 0.0), Some("top"), None),
+            ("top", "left")
+        );
+    }
 }
