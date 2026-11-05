@@ -13,11 +13,11 @@ use ratatui::crossterm::execute;
 use std::io::stdout;
 use std::path::PathBuf;
 
-const USAGE: &str = "vaultgraph — Obsidian's graph view and canvas, in the terminal
+const USAGE: &str = "cold-lava — Obsidian's graph view and canvas, in the terminal
 
 Usage:
-  vaultgraph [VAULT_DIR]              graph view (default: current directory)
-  vaultgraph board [FILE.canvas|DIR]  whiteboard (Obsidian Canvas); no file = picker
+  cold-lava [VAULT_DIR]               graph view (default: current directory)
+  cold-lava board [FILE.canvas|DIR]   whiteboard (Obsidian Canvas); no file = picker
 
 Options:
   --braille   force braille rendering

@@ -902,7 +902,7 @@ impl App {
         let shown_links =
             self.graph.edges.iter().filter(|&&(a, b)| self.visible[a] && self.visible[b]).count();
         let title = Line::from(vec![
-            Span::styled(" vaultgraph ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" cold-lava ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(
                 format!("{} · {} nodes · {} links ", self.vault.name, shown, shown_links),
                 Style::new().fg(MUTED),

@@ -735,7 +735,7 @@ impl Board {
         if n.kind != "text" {
             return self.start_edit(terminal);
         }
-        let tmp = std::env::temp_dir().join(format!("vaultgraph-card-{id}.md"));
+        let tmp = std::env::temp_dir().join(format!("cold-lava-card-{id}.md"));
         std::fs::write(&tmp, n.text.clone().unwrap_or_default())?;
         if let Some(err) = term::edit_file(terminal, &tmp, &self.vault_root)? {
             self.flash(err);

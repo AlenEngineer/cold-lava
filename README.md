@@ -1,4 +1,4 @@
-# vaultgraph
+# cold-lava
 
 Obsidian's graph view and canvas, in the terminal. Point it at a vault and you get:
 
@@ -22,9 +22,9 @@ cargo install --path .
 ## Use
 
 ```bash
-vaultgraph ~/path/to/vault              # graph view
-vaultgraph board ~/vault/Plan.canvas    # whiteboard (created if missing)
-vaultgraph board ~/vault                # pick a board
+cold-lava ~/path/to/vault               # graph view
+cold-lava board ~/vault/Plan.canvas     # whiteboard (created if missing)
+cold-lava board ~/vault                 # pick a board
 ```
 
 Flags: `--pixels` / `--braille` to force a renderer. Pixel mode is on automatically in Ghostty,
@@ -65,7 +65,7 @@ Press `?` in either view to see every key.
 | `d`, `u` / `U` | delete, undo / redo |
 | `o` | open the note, or the board itself, in Obsidian |
 
-Every change saves straight to the `.canvas` file. Fields that vaultgraph doesn't use are
+Every change saves straight to the `.canvas` file. Fields that cold-lava doesn't use are
 kept as they are, so Obsidian data and plugin data survive a round trip.
 
 ## What it understands
