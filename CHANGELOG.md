@@ -7,6 +7,15 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- `cold-lava rename VAULT NOTE NEW` renames or moves a note and updates every link to it, like
+  Obsidian's "Automatically update internal links": `[[wikilinks]]` (with aliases, headings,
+  blocks and embeds), Markdown links (relative or vault paths), links in frontmatter, and
+  `.canvas` note cards and text cards. Each link keeps its style; the moved note's own relative
+  links are fixed; code is left alone. `--dry-run` shows the changes first, and nothing is
+  written if a file changed after the plan was made.
+
 ## [0.1.0] - 2026-11-05
 
 The first release.

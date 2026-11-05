@@ -54,6 +54,7 @@ cold-lava board ~/vault                 # pick a board
 cold-lava daily ~/vault [DATE]          # open (or create) a day's daily note
 cold-lava agenda ~/vault --json         # dated tasks and daily notes, for other programs
 cold-lava search ~/vault WORDS…         # full-text search
+cold-lava rename ~/vault NOTE NEW       # rename or move a note, updating every link to it
 cold-lava task toggle FILE:LINE         # tick / untick a task
 ```
 
@@ -155,6 +156,21 @@ Scripts can search as well:
 cold-lava search ~/vault volcanic winter          # file:line: text
 cold-lava search ~/vault '"ash cloud"' --json      # with match positions, for highlighting
 ```
+
+### Renaming and moving notes
+
+```bash
+cold-lava rename ~/vault "Mount St. Helens" "Mount Saint Helens" --dry-run   # show what would change
+cold-lava rename ~/vault Lava Geology/                                      # move, keeping the name
+cold-lava rename ~/vault Lava "Geology/Hot Rock"                            # move and rename
+```
+
+Every link to the note is updated, the way Obsidian does it: `[[wikilinks]]` with their
+aliases, headings and embeds, Markdown links (relative or vault paths), links in frontmatter,
+and whiteboard note cards and text cards. Each link keeps its style: a short `[[Name]]` stays
+short unless another note has the same name, `[[Folder/Name]]` keeps its path, and relative
+Markdown links are recomputed. When a note moves folder, its own relative links are fixed too.
+Code is never touched. If any file changes between the plan and writing it, nothing is changed.
 
 ### Agenda, daily notes and tasks (for scripts and status bars)
 
