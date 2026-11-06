@@ -2,6 +2,7 @@
 //! https://jsoncanvas.org). Boards made here open in Obsidian, and vice versa.
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
+use crate::commands::{self, BoardAction, Keymap};
 use crate::term;
 use anyhow::{Context as _, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -193,6 +194,7 @@ struct Board {
     last_check: Instant,
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<RecommendedWatcher>,
+    keys: Keymap<BoardAction>,
 }
 
 // ---------- entry points ----------
@@ -379,6 +381,7 @@ impl Board {
             last_check: Instant::now(),
             fs_events: watcher.is_some().then_some(rx),
             _watcher: watcher,
+            keys: Keymap::new(commands::BOARD),
         };
         b.fit_pending();
         Ok(b)
@@ -1189,18 +1192,11 @@ impl Board {
             Mode::Normal => {}
         }
 
+        if let Some(a) = self.keys.get(k) {
+            return self.run_action(a, terminal);
+        }
         let has_sel = self.sel.is_some();
         match k.code {
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Char('?') => self.mode = Mode::Help,
-            KeyCode::Esc => self.sel = None,
-
-            KeyCode::Char('z') if ctrl => self.undo(),
-            KeyCode::Char('y') | KeyCode::Char('r') if ctrl => self.redo(),
-            KeyCode::Char('u') => self.undo(),
-            KeyCode::Char('U') => self.redo(),
-
             // Resize: Ctrl+arrows, or [ ] { }
             KeyCode::Left if ctrl => self.resize_selected(-20.0, 0.0),
             KeyCode::Right if ctrl => self.resize_selected(20.0, 0.0),
@@ -1232,30 +1228,40 @@ impl Board {
             KeyCode::Down | KeyCode::Char('j') => self.pan_cells(0.0, 3.0),
             KeyCode::Tab => self.cycle(false),
             KeyCode::BackTab => self.cycle(true),
+            _ => {}
+        }
+        Ok(())
+    }
 
-            KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_by(1.25, None),
-            KeyCode::Char('-') | KeyCode::Char('_') => self.zoom_by(0.8, None),
-            KeyCode::Char('z') => self.fit(),
-
-            KeyCode::Char('n') => self.new_text_card(None, None),
-            KeyCode::Char('a') => match self.sel.clone() {
+    fn run_action(&mut self, a: BoardAction, terminal: &mut DefaultTerminal) -> Result<()> {
+        match a {
+            BoardAction::Quit => self.quit = true,
+            BoardAction::Help => self.mode = Mode::Help,
+            BoardAction::Escape => self.sel = None,
+            BoardAction::Undo => self.undo(),
+            BoardAction::Redo => self.redo(),
+            BoardAction::ZoomIn => self.zoom_by(1.25, None),
+            BoardAction::ZoomOut => self.zoom_by(0.8, None),
+            BoardAction::Fit => self.fit(),
+            BoardAction::NewCard => self.new_text_card(None, None),
+            BoardAction::NewLinkedCard => match self.sel.clone() {
                 Some(from) => self.new_text_card(None, Some(from)),
                 None => self.new_text_card(None, None),
             },
-            KeyCode::Char('f') => {
+            BoardAction::AddNote => {
                 self.mode = Mode::PickFile {
                     query: String::new(),
                     pos: 0,
                 }
             }
-            KeyCode::Char('G') => self.new_group(),
-            KeyCode::Char('c') => match self.sel.clone() {
+            BoardAction::NewGroup => self.new_group(),
+            BoardAction::Connect => match self.sel.clone() {
                 Some(from) => self.mode = Mode::Connect { from },
                 None => self.flash("select a card first, then c to draw an arrow from it"),
             },
-            KeyCode::Enter | KeyCode::Char('e') => self.start_edit(terminal)?,
-            KeyCode::Char('E') => self.edit_external(terminal)?,
-            KeyCode::Char('o') => {
+            BoardAction::Edit => self.start_edit(terminal)?,
+            BoardAction::EditExternal => self.edit_external(terminal)?,
+            BoardAction::OpenInObsidian => {
                 let file = self
                     .sel
                     .as_ref()
@@ -1286,10 +1292,10 @@ impl Board {
                     }
                 }
             }
-            KeyCode::Char('d') | KeyCode::Delete => self.delete_selected(),
-            KeyCode::Char(c @ '1'..='6') => self.set_color(Some(&c.to_string())),
-            KeyCode::Char('0') => self.set_color(None),
-            KeyCode::Char('R') => match std::fs::read(&self.path)
+            BoardAction::Delete => self.delete_selected(),
+            BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
+            BoardAction::ColourClear => self.set_color(None),
+            BoardAction::Reload => match std::fs::read(&self.path)
                 .map_err(anyhow::Error::from)
                 .and_then(|b| Ok((parse(&b, &self.path)?, b)))
             {
@@ -1304,7 +1310,6 @@ impl Board {
                 }
                 Err(e) => self.flash(format!("reload failed: {e}")),
             },
-            _ => {}
         }
         Ok(())
     }
@@ -2259,14 +2264,7 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let rows: &[(&str, &str)] = &[
-        ("n", "new text card (double-click empty space works too)"),
-        ("a", "new card linked from the selected one"),
-        ("f", "add a note from the vault as a card"),
-        ("G", "new group (around the selected card)"),
-        ("c", "draw an arrow: pick a target, ⏎ (again removes it)"),
-        ("Enter / e", "edit text · open note cards in $EDITOR"),
-        ("E", "edit a text card in $EDITOR"),
+    let fixed: &[(&str, &str)] = &[
         (
             "↑↓←→ / hjkl, Tab",
             "select cards (pan when nothing is selected)",
@@ -2276,15 +2274,16 @@ fn draw_help(f: &mut Frame, area: Rect) {
             "move the card (groups carry their contents)",
         ),
         ("Ctrl+arrows, [ ] { }", "resize (or drag the ◢ corner)"),
-        ("1-6 / 0", "colour (Obsidian presets) / clear colour"),
-        ("d / Delete", "delete the card and its arrows"),
-        ("u / U  (Ctrl-Z / Ctrl-Y)", "undo / redo"),
         ("drag · scroll", "move cards, pan · zoom at the cursor"),
-        ("+ / -   z", "zoom · fit everything"),
-        ("o", "open the note (or this board) in Obsidian"),
-        ("R", "reload the file from disk"),
-        ("Esc / q", "deselect / back to the graph"),
     ];
+    let commands = commands::BOARD
+        .iter()
+        .map(|c| (commands::keys_label(c), c.title));
+    let rows: Vec<(String, &str)> = fixed
+        .iter()
+        .map(|&(k, d)| (k.to_string(), d))
+        .chain(commands)
+        .collect();
     let lines: Vec<Line> = rows
         .iter()
         .map(|(k, d)| {

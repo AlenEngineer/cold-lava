@@ -357,6 +357,161 @@ pub const GRAPH: &[Command<GraphAction>] = &[
     cmd(GraphAction::Quit, "graph.quit", "quit", &["q", "ctrl+c"]),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BoardAction {
+    NewCard,
+    NewLinkedCard,
+    AddNote,
+    NewGroup,
+    Connect,
+    Edit,
+    EditExternal,
+    /// Obsidian's colour presets 1 to 6.
+    Colour(u8),
+    ColourClear,
+    Delete,
+    Undo,
+    Redo,
+    ZoomIn,
+    ZoomOut,
+    Fit,
+    OpenInObsidian,
+    Reload,
+    Escape,
+    Help,
+    Quit,
+}
+
+/// The whiteboard's commands, in the order the help screen lists them. Selecting, moving and
+/// resizing cards are plain keys, not commands.
+pub const BOARD: &[Command<BoardAction>] = &[
+    cmd(
+        BoardAction::NewCard,
+        "board.new-card",
+        "new text card (double-click empty space works too)",
+        &["n"],
+    ),
+    cmd(
+        BoardAction::NewLinkedCard,
+        "board.new-linked-card",
+        "new card linked from the selected one",
+        &["a"],
+    ),
+    cmd(
+        BoardAction::AddNote,
+        "board.add-note",
+        "add a note from the vault as a card",
+        &["f"],
+    ),
+    cmd(
+        BoardAction::NewGroup,
+        "board.new-group",
+        "new group (around the selected card)",
+        &["G"],
+    ),
+    cmd(
+        BoardAction::Connect,
+        "board.connect",
+        "draw an arrow: pick a target, ⏎ (again removes it)",
+        &["c"],
+    ),
+    cmd(
+        BoardAction::Edit,
+        "board.edit",
+        "edit text · open note cards in $EDITOR",
+        &["enter", "e"],
+    ),
+    cmd(
+        BoardAction::EditExternal,
+        "board.edit-external",
+        "edit a text card in $EDITOR",
+        &["E"],
+    ),
+    cmd(
+        BoardAction::Colour(1),
+        "board.colour-1",
+        "colour red (Obsidian preset 1)",
+        &["1"],
+    ),
+    cmd(
+        BoardAction::Colour(2),
+        "board.colour-2",
+        "colour orange (Obsidian preset 2)",
+        &["2"],
+    ),
+    cmd(
+        BoardAction::Colour(3),
+        "board.colour-3",
+        "colour yellow (Obsidian preset 3)",
+        &["3"],
+    ),
+    cmd(
+        BoardAction::Colour(4),
+        "board.colour-4",
+        "colour green (Obsidian preset 4)",
+        &["4"],
+    ),
+    cmd(
+        BoardAction::Colour(5),
+        "board.colour-5",
+        "colour cyan (Obsidian preset 5)",
+        &["5"],
+    ),
+    cmd(
+        BoardAction::Colour(6),
+        "board.colour-6",
+        "colour purple (Obsidian preset 6)",
+        &["6"],
+    ),
+    cmd(
+        BoardAction::ColourClear,
+        "board.colour-clear",
+        "clear colour",
+        &["0"],
+    ),
+    cmd(
+        BoardAction::Delete,
+        "board.delete",
+        "delete the card and its arrows",
+        &["d", "delete"],
+    ),
+    cmd(BoardAction::Undo, "board.undo", "undo", &["u", "ctrl+z"]),
+    cmd(
+        BoardAction::Redo,
+        "board.redo",
+        "redo",
+        &["U", "ctrl+y", "ctrl+r"],
+    ),
+    cmd(BoardAction::ZoomIn, "board.zoom-in", "zoom in", &["+", "="]),
+    cmd(
+        BoardAction::ZoomOut,
+        "board.zoom-out",
+        "zoom out",
+        &["-", "_"],
+    ),
+    cmd(BoardAction::Fit, "board.fit", "fit everything", &["z"]),
+    cmd(
+        BoardAction::OpenInObsidian,
+        "board.open-in-obsidian",
+        "open the note (or this board) in Obsidian",
+        &["o"],
+    ),
+    cmd(
+        BoardAction::Reload,
+        "board.reload",
+        "reload the file from disk",
+        &["R"],
+    ),
+    cmd(BoardAction::Escape, "board.escape", "deselect", &["esc"]),
+    cmd(BoardAction::Help, "board.help", "this help", &["?"]),
+    cmd(
+        BoardAction::Quit,
+        "board.quit",
+        "leave the whiteboard",
+        &["q", "ctrl+c"],
+    ),
+];
+
 /// A palette row: the command and the matched char positions in its title or its id.
 pub struct Match {
     pub command: &'static Command<MenuAction>,
@@ -411,7 +566,7 @@ pub struct Key {
 }
 
 impl Key {
-    /// Parses "g", "R", "ctrl+o", "shift+tab", "esc", "enter", "space", "backspace".
+    /// Parses "g", "R", "ctrl+o", "shift+tab", "esc", "enter", "space", "backspace", "delete".
     pub fn parse(s: &str) -> Option<Key> {
         let mut mods = KeyModifiers::NONE;
         let mut shift = false;
@@ -442,6 +597,7 @@ impl Key {
                 "enter" => KeyCode::Enter,
                 "space" => KeyCode::Char(' '),
                 "backspace" => KeyCode::Backspace,
+                "delete" => KeyCode::Delete,
                 _ => return None,
             },
         };
@@ -476,6 +632,7 @@ impl fmt::Display for Key {
             KeyCode::Esc => f.write_str("Esc"),
             KeyCode::Enter => f.write_str("Enter"),
             KeyCode::Backspace => f.write_str("Backspace"),
+            KeyCode::Delete => f.write_str("Delete"),
             c => write!(f, "{c:?}"),
         }
     }
@@ -507,7 +664,11 @@ mod tests {
 
     #[test]
     fn ids_are_unique_across_screens() {
-        let ids = MENU.iter().map(|c| c.id).chain(GRAPH.iter().map(|c| c.id));
+        let ids = MENU
+            .iter()
+            .map(|c| c.id)
+            .chain(GRAPH.iter().map(|c| c.id))
+            .chain(BOARD.iter().map(|c| c.id));
         let mut seen = HashSet::new();
         for id in ids {
             assert!(seen.insert(id), "duplicate id {id}");
@@ -528,6 +689,30 @@ mod tests {
     fn default_keys_parse_and_are_bound_once() {
         assert_keys_parse_and_are_bound_once(MENU);
         assert_keys_parse_and_are_bound_once(GRAPH);
+        assert_keys_parse_and_are_bound_once(BOARD);
+    }
+
+    #[test]
+    fn board_keys_run_their_commands() {
+        let keys = Keymap::new(BOARD);
+        let press = |code, mods| keys.get(KeyEvent::new(code, mods));
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        assert_eq!(press(KeyCode::Char('n'), none), Some(BoardAction::NewCard));
+        let shift_g = press(KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(shift_g, Some(BoardAction::NewGroup));
+        assert_eq!(press(KeyCode::Char('z'), ctrl), Some(BoardAction::Undo));
+        assert_eq!(press(KeyCode::Char('z'), none), Some(BoardAction::Fit));
+        assert_eq!(press(KeyCode::Char('r'), ctrl), Some(BoardAction::Redo));
+        assert_eq!(press(KeyCode::Char('r'), none), None);
+        assert_eq!(
+            press(KeyCode::Char('3'), none),
+            Some(BoardAction::Colour(3))
+        );
+        assert_eq!(press(KeyCode::Delete, none), Some(BoardAction::Delete));
+        assert_eq!(press(KeyCode::Esc, none), Some(BoardAction::Escape));
+        assert_eq!(press(KeyCode::Char('q'), none), Some(BoardAction::Quit));
+        assert_eq!(press(KeyCode::Char('h'), none), None);
     }
 
     #[test]
@@ -605,6 +790,7 @@ mod tests {
         assert_eq!(Key::parse("?").unwrap().to_string(), "?");
         assert_eq!(Key::parse("space").unwrap().to_string(), "space");
         assert_eq!(Key::parse("backspace").unwrap().to_string(), "Backspace");
+        assert_eq!(Key::parse("delete").unwrap().to_string(), "Delete");
         assert_eq!(Key::parse("bogus"), None);
     }
 }
