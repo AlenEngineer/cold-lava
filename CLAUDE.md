@@ -35,6 +35,9 @@ required checks on `main`.
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs` (in the `rename-core` PR until it's merged): rename/move with every link updated;
   `plan()` then `apply()`.
+- `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
+  the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
+  are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `vault.rs`.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks format, Daily notes settings, moment.js date formats.
 
 **Features / UI:**

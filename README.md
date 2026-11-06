@@ -177,6 +177,27 @@ Keys are written like `g`, `G`, `ctrl+o`, `alt+x`, `shift+tab`, `esc`, `enter`, 
 never stops the app: an unknown id or a key that doesn't parse is skipped, and when two commands
 on the same screen would share a key, both keep their default keys.
 
+### Markdown flavour
+
+Notes are read as `obsidian` Markdown when the vault has an `.obsidian` folder and as `github`
+Markdown otherwise. The same file can choose a flavour, or define one from a built-in
+(`commonmark`, `github`, `obsidian`) with syntax added or removed:
+
+```toml
+[markdown]
+flavour = "mine"                    # optional
+
+[markdown.flavours.mine]
+base = "github"                     # default: commonmark
+add = ["wikilinks", "highlights"]
+remove = ["footnotes"]
+```
+
+The syntax names are `tables`, `task-lists`, `strikethrough`, `footnotes`, `alerts` (GitHub's
+`> [!NOTE]`), `wikilinks`, `embeds`, `callouts`, `highlights`, `comments`, `tags`, `block-ids`,
+`math` and `frontmatter`. Mistakes are reported by `cold-lava keys` and fall back to the
+default.
+
 ### Renaming and moving notes
 
 ```bash

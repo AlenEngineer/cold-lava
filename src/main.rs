@@ -10,6 +10,14 @@ mod groups;
 mod home;
 mod index;
 mod kitty;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the reader view (next PR) is the first user of `parse`"
+    )
+)]
+mod markdown;
 mod rename;
 mod scene;
 mod search;

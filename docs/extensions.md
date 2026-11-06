@@ -62,6 +62,23 @@ live in is a project of its own, and it would be worse than the one they have.
 - **Saves need no cooperation.** The core's file watcher sees every save, so an editor only has
   to write the file. Telling the core about a save is a hint that makes it show up sooner.
 
+### Markdown flavours
+
+Markdown is not one language. GitHub, Obsidian and plain CommonMark each read the same file a
+little differently, so the reader reads a note in a **flavour**: a named set of syntax features
+(`tables`, `task-lists`, `wikilinks`, `callouts`, `highlights`, `tags` and so on). Syntax a
+flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals signs.
+
+- **Built in.** `commonmark` (only frontmatter is hidden), `github` (tables, task lists,
+  strikethrough, footnotes, `> [!NOTE]` alerts) and `obsidian` (GitHub's, plus wikilinks,
+  embeds, callouts, highlights, `%%comments%%`, tags, block ids and math). A vault with an
+  `.obsidian` folder reads as `obsidian`, any other folder as `github`.
+- **Your own.** `config.toml` defines more, as a built-in flavour with features added or
+  removed, and picks the one to use.
+- **Later, extensions.** A flavour decides what is parsed. What it leaves unrendered, such as a
+  fenced code block in `mermaid` or a callout type of a plugin's own, an extension can draw
+  through `view/render`.
+
 ## Commands
 
 Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Commands are what

@@ -1,18 +1,21 @@
 //! `~/.config/cold-lava/config.toml`, read once at startup. A mistake in it never stops the
 //! app: the entry falls back to its default and the problem is listed in `errors`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 
 use crate::commands::{BOARD, GRAPH, Key, Keymap, MENU};
+use crate::markdown::{BUILT_IN, Flavour, Syntax};
 
 #[derive(Default)]
 pub struct Config {
     /// Keys by command id, only for ids that exist and keys that parse.
     pub keys: BTreeMap<String, Vec<Key>>,
+    /// `[markdown] flavour`, resolved. `None` lets the vault decide (`markdown::flavour_for`).
+    pub flavour: Option<Flavour>,
     /// One human-readable line per problem in the file.
     pub errors: Vec<String>,
 }
@@ -22,6 +25,24 @@ pub struct Config {
 struct File {
     #[serde(default)]
     keys: BTreeMap<String, toml::Value>,
+    #[serde(default)]
+    markdown: toml::Table,
+}
+
+/// `[markdown.flavours.NAME]`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Custom {
+    #[serde(default = "commonmark")]
+    base: String,
+    #[serde(default)]
+    add: Vec<String>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+fn commonmark() -> String {
+    "commonmark".to_string()
 }
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -81,10 +102,80 @@ pub fn parse(text: &str) -> Config {
             Err(e) => config.errors.push(format!("[keys] {id:?}: {e}")),
         }
     }
+    config.flavour = markdown(file.markdown, &mut config.errors);
     config.errors.extend(Keymap::with(MENU, &config.keys).1);
     config.errors.extend(Keymap::with(GRAPH, &config.keys).1);
     config.errors.extend(Keymap::with(BOARD, &config.keys).1);
     config
+}
+
+fn markdown(mut section: toml::Table, errors: &mut Vec<String>) -> Option<Flavour> {
+    let mut custom = BTreeMap::new();
+    // Broken flavours are reported once, not again as unknown when chosen.
+    let mut broken = BTreeSet::new();
+    match section.remove("flavours") {
+        None => {}
+        Some(toml::Value::Table(flavours)) => {
+            for (name, value) in flavours {
+                match custom_flavour(&name, value) {
+                    Ok(f) => {
+                        custom.insert(name, f);
+                    }
+                    Err(e) => {
+                        errors.push(format!("[markdown.flavours.{name}] {e}"));
+                        broken.insert(name);
+                    }
+                }
+            }
+        }
+        Some(v) => errors.push(format!("[markdown] flavours: expected a table, got {v}")),
+    }
+    let chosen = match section.remove("flavour") {
+        None => None,
+        Some(toml::Value::String(name)) => {
+            let found = custom.remove(&name).or_else(|| Flavour::built_in(&name));
+            if found.is_none() && !broken.contains(&name) {
+                let built_in: Vec<&str> = BUILT_IN.iter().map(|f| f.0).collect();
+                errors.push(format!(
+                    "[markdown] flavour {name:?} is not built in ({}) or defined under [markdown.flavours]",
+                    built_in.join(", ")
+                ));
+            }
+            found
+        }
+        Some(v) => {
+            errors.push(format!("[markdown] flavour: expected a name, got {v}"));
+            None
+        }
+    };
+    for key in section.keys() {
+        errors.push(format!("[markdown] {key:?} is not a setting"));
+    }
+    chosen
+}
+
+fn custom_flavour(name: &str, value: toml::Value) -> Result<Flavour, String> {
+    if Flavour::built_in(name).is_some() {
+        return Err(format!(
+            "{name:?} is a built-in flavour; give yours another name"
+        ));
+    }
+    let custom: Custom = value
+        .try_into()
+        .map_err(|e| e.to_string().trim_end().to_string())?;
+    let mut flavour = Flavour::built_in(&custom.base)
+        .ok_or_else(|| format!("base {:?} is not a built-in flavour", custom.base))?;
+    flavour.name = name.to_string();
+    let syntax = |s: &String| {
+        Syntax::from_name(s).ok_or_else(|| format!("{s:?} is not a syntax ({})", Syntax::names()))
+    };
+    for s in &custom.add {
+        flavour.syntax.insert(syntax(s)?);
+    }
+    for s in &custom.remove {
+        flavour.syntax.remove(&syntax(s)?);
+    }
+    Ok(flavour)
 }
 
 /// `"G"`, `["p", "ctrl+p"]` or `[]`.
@@ -200,6 +291,64 @@ mod tests {
     fn other_sections_are_allowed() {
         let (_, errors) = menu("[colours]\naccent = \"red\"\n");
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn markdown_flavour_built_in_or_custom() {
+        let c = parse("[markdown]\nflavour = \"commonmark\"\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.flavour, Flavour::built_in("commonmark"));
+
+        let c = parse(
+            "[markdown]\nflavour = \"mine\"\n[markdown.flavours.mine]\nbase = \"github\"\n\
+             add = [\"wikilinks\", \"highlights\"]\nremove = [\"footnotes\"]\n",
+        );
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        let mine = c.flavour.unwrap();
+        assert_eq!(mine.name, "mine");
+        let mut expected = Flavour::built_in("github").unwrap().syntax;
+        expected.extend([Syntax::WikiLinks, Syntax::Highlights]);
+        expected.remove(&Syntax::Footnotes);
+        assert_eq!(mine.syntax, expected);
+        let doc = crate::markdown::parse("==hi== [^1]", &mine);
+        assert!(matches!(
+            &doc.blocks[0].kind,
+            crate::markdown::BlockKind::Paragraph(i)
+                if matches!(i[0], crate::markdown::Inline::Highlight(_))
+                    && i.contains(&crate::markdown::Inline::Text(" [^1]".into()))
+        ));
+    }
+
+    #[test]
+    fn markdown_mistakes_are_reported_and_fall_back() {
+        for (text, needle) in [
+            ("[markdown]\nflavour = \"gfm\"\n", "gfm"),
+            ("[markdown]\nflavour = 3\n", "flavour"),
+            ("[markdown]\nflavor = \"github\"\n", "flavor"),
+            (
+                "[markdown]\nflavour = \"x\"\n[markdown.flavours.x]\nadd = [\"wikilink\"]\n",
+                "wikilink",
+            ),
+            (
+                "[markdown]\nflavour = \"x\"\n[markdown.flavours.x]\nbase = \"x\"\n",
+                "base",
+            ),
+            ("[markdown.flavours.github]\nadd = [\"tags\"]\n", "built-in"),
+            (
+                "[markdown.flavours.x]\nbase = \"github\"\nextra = 1\n",
+                "extra",
+            ),
+        ] {
+            let c = parse(text);
+            assert_eq!(c.errors.len(), 1, "{text}: {:?}", c.errors);
+            assert!(c.errors[0].contains(needle), "{text}: {:?}", c.errors);
+            assert_eq!(c.flavour, None, "{text}");
+        }
+        // A shadowing flavour is ignored: `github` stays the built-in one.
+        let c = parse(
+            "[markdown]\nflavour = \"github\"\n[markdown.flavours.github]\nadd = [\"tags\"]\n",
+        );
+        assert_eq!(c.flavour, Flavour::built_in("github"));
     }
 
     #[test]
