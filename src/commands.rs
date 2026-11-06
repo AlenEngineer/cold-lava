@@ -1,7 +1,7 @@
-//! Named commands: every action has an id like `graph.open`, and keys and the command palette
-//! (later config and extensions) reach it through that table.
+//! Named commands: every action has an id like `graph.open`, and keys, the command palette and
+//! `[keys]` in config.toml (later extensions) reach it through that table.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -548,17 +548,6 @@ pub fn matching(query: &str) -> Vec<Match> {
     scored.into_iter().map(|(_, m)| m).collect()
 }
 
-/// A command's keys as shown to the user: "p / Ctrl-o".
-pub fn keys_label<A>(c: &Command<A>) -> String {
-    let keys: Vec<String> = c
-        .keys
-        .iter()
-        .filter_map(|s| Key::parse(s))
-        .map(|k| k.to_string())
-        .collect();
-    keys.join(" / ")
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
     code: KeyCode,
@@ -638,29 +627,95 @@ impl fmt::Display for Key {
     }
 }
 
-pub struct Keymap<A>(HashMap<Key, A>);
+/// A screen's effective keys: its table's defaults with the overrides from config.toml.
+pub struct Keymap<A> {
+    by_key: HashMap<Key, A>,
+    by_id: HashMap<&'static str, Vec<Key>>,
+}
 
 impl<A: Copy> Keymap<A> {
-    pub fn new(commands: &[Command<A>]) -> Keymap<A> {
-        let mut map = HashMap::new();
-        for c in commands {
-            for s in c.keys {
-                let key = Key::parse(s).unwrap_or_else(|| panic!("bad default key {s:?}"));
-                map.insert(key, c.action);
-            }
+    pub fn new(table: &'static [Command<A>]) -> Keymap<A> {
+        Keymap::with(table, &crate::config::get().keys).0
+    }
+
+    /// Applies `overrides` (keys by command id) to `table`. When a key would end up on two
+    /// commands, neither override is applied: both commands keep their default keys, and the
+    /// clash is reported. Repeats until nothing clashes, since a restored default can clash
+    /// with a third override.
+    pub fn with(
+        table: &'static [Command<A>],
+        overrides: &BTreeMap<String, Vec<Key>>,
+    ) -> (Keymap<A>, Vec<String>) {
+        let mut applied: HashSet<&str> = table
+            .iter()
+            .map(|c| c.id)
+            .filter(|id| overrides.contains_key(*id))
+            .collect();
+        let mut errors = Vec::new();
+        loop {
+            let keys: Vec<Vec<Key>> = table
+                .iter()
+                .map(|c| match overrides.get(c.id) {
+                    Some(keys) if applied.contains(c.id) => keys.clone(),
+                    _ => c.keys.iter().map(|s| default_key(c.id, s)).collect(),
+                })
+                .collect();
+            let Some((a, b, key)) = first_clash(&keys) else {
+                let mut by_key = HashMap::new();
+                let mut by_id = HashMap::new();
+                for (c, keys) in table.iter().zip(keys) {
+                    for &k in &keys {
+                        by_key.insert(k, c.action);
+                    }
+                    by_id.insert(c.id, keys);
+                }
+                return (Keymap { by_key, by_id }, errors);
+            };
+            let (a, b) = (table[a].id, table[b].id);
+            errors.push(format!(
+                "[keys] \"{key}\" is bound to both {a} and {b}; both keep their default keys"
+            ));
+            let removed = applied.remove(a) | applied.remove(b);
+            assert!(removed, "default keys of {a} and {b} clash");
         }
-        Keymap(map)
     }
 
     pub fn get(&self, k: KeyEvent) -> Option<A> {
-        self.0.get(&Key::from(k)).copied()
+        self.by_key.get(&Key::from(k)).copied()
     }
+
+    pub fn keys(&self, id: &str) -> &[Key] {
+        self.by_id.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// A command's keys as shown to the user: "p / Ctrl-o".
+    pub fn label(&self, id: &str) -> String {
+        let keys: Vec<String> = self.keys(id).iter().map(Key::to_string).collect();
+        keys.join(" / ")
+    }
+}
+
+fn default_key(id: &str, s: &str) -> Key {
+    Key::parse(s).unwrap_or_else(|| panic!("{id}: bad default key {s:?}"))
+}
+
+/// The first key held by two different commands, as (earlier command, later command, key).
+fn first_clash(keys: &[Vec<Key>]) -> Option<(usize, usize, Key)> {
+    let mut owner = HashMap::new();
+    for (i, ks) in keys.iter().enumerate() {
+        for &k in ks {
+            match owner.insert(k, i) {
+                Some(j) if j != i => return Some((j, i, k)),
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     #[test]
     fn ids_are_unique_across_screens() {

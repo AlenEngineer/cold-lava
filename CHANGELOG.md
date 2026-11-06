@@ -19,6 +19,8 @@ change commands, keys and file formats; patch versions only fix things.
   preview of every link that will change before you confirm. The open note is saved first, and
   Neovim shows it under its new name afterwards.
 - Command palette (`:`) in the main menu: run any command by name, with its key shown.
+- Keys are configurable in `~/.config/cold-lava/config.toml` (`[keys]`, by command id);
+  `cold-lava keys` lists every command and its keys and reports mistakes in the file.
 
 ### Changed
 

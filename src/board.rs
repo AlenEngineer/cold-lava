@@ -1533,7 +1533,7 @@ impl Board {
 
         self.draw_status(f, status);
         match &self.mode {
-            Mode::Help => draw_help(f, main),
+            Mode::Help => draw_help(f, main, &self.keys),
             Mode::PickFile { query, pos } => {
                 let (q, p) = (query.clone(), *pos);
                 self.draw_picker(f, main, &q, p);
@@ -2263,7 +2263,7 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
+fn draw_help(f: &mut Frame, area: Rect, keys: &Keymap<BoardAction>) {
     let fixed: &[(&str, &str)] = &[
         (
             "↑↓←→ / hjkl, Tab",
@@ -2276,9 +2276,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ("Ctrl+arrows, [ ] { }", "resize (or drag the ◢ corner)"),
         ("drag · scroll", "move cards, pan · zoom at the cursor"),
     ];
-    let commands = commands::BOARD
-        .iter()
-        .map(|c| (commands::keys_label(c), c.title));
+    let commands = commands::BOARD.iter().map(|c| (keys.label(c.id), c.title));
     let rows: Vec<(String, &str)> = fixed
         .iter()
         .map(|&(k, d)| (k.to_string(), d))

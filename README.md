@@ -159,6 +159,24 @@ cold-lava search ~/vault volcanic winter          # file:line: text
 cold-lava search ~/vault '"ash cloud"' --json      # with match positions, for highlighting
 ```
 
+### Keys
+
+Every command has an id (`graph.open`, `note.switch`, `board.undo`, ...), and its keys can be
+changed in `~/.config/cold-lava/config.toml` (or `$XDG_CONFIG_HOME/cold-lava/config.toml`):
+
+```toml
+[keys]
+"graph.open"  = "G"              # replaces that command's default keys
+"note.switch" = ["p", "ctrl+p"]  # several
+"vault.add"   = []               # unbound
+```
+
+Keys are written like `g`, `G`, `ctrl+o`, `alt+x`, `shift+tab`, `esc`, `enter`, `space`,
+`backspace`, `delete`. The help screens (`?`) and the command palette show the keys you set.
+`cold-lava keys` lists every command with its keys and reports mistakes in the file. A mistake
+never stops the app: an unknown id or a key that doesn't parse is skipped, and when two commands
+on the same screen would share a key, both keep their default keys.
+
 ### Renaming and moving notes
 
 ```bash

@@ -40,7 +40,7 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|h| h.join(".config")))
@@ -601,6 +601,13 @@ impl Home {
             if initial.is_some() {
                 h.focus = Focus::Notes;
             }
+        }
+        match crate::config::get().errors.len() {
+            0 => {}
+            1 => h.flash("config.toml has a problem: run cold-lava keys to see it"),
+            n => h.flash(format!(
+                "config.toml has {n} problems: run cold-lava keys to see them"
+            )),
         }
         h
     }
@@ -2098,7 +2105,7 @@ impl Home {
             prompt(f, main, title, label, input);
         }
         match &self.mode {
-            Mode::Help => draw_help(f, main),
+            Mode::Help => draw_help(f, main, &self.keys),
             Mode::NewNote(name) => prompt(
                 f,
                 main,
@@ -2256,7 +2263,7 @@ impl Home {
             push(c.title, &m.title_hits, base);
             push("  ", &[], base);
             push(c.id, &m.id_hits, dim);
-            let right = format!("{} ", commands::keys_label(c));
+            let right = format!("{} ", self.keys.label(c.id));
             let used = 3 + c.title.chars().count() + c.id.chars().count();
             let pad = width.saturating_sub(used + right.chars().count());
             spans.push(Span::styled(" ".repeat(pad), base));
@@ -2843,7 +2850,7 @@ fn picker_frame(f: &mut Frame, area: Rect, title: &str, hint: &str) -> Rect {
     inner
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
+fn draw_help(f: &mut Frame, area: Rect, keys: &Keymap<MenuAction>) {
     let fixed: &[(&str, &str)] = &[
         ("↑↓ / jk", "move through vaults or notes"),
         ("→ / ←", "open / close a folder · vaults ↔ notes"),
@@ -2858,9 +2865,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ),
         ("Ctrl-o", "in Neovim: back to the previous note"),
     ];
-    let commands = commands::MENU
-        .iter()
-        .map(|c| (commands::keys_label(c), c.title));
+    let commands = commands::MENU.iter().map(|c| (keys.label(c.id), c.title));
     let rows: Vec<(String, &str)> = fixed
         .iter()
         .map(|&(k, d)| (k.to_string(), d))

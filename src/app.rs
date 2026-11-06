@@ -1140,7 +1140,7 @@ impl App {
         self.draw_status(f, status);
         if matches!(self.mode, Mode::Help) {
             self.hide_image_later();
-            draw_help(f, main);
+            draw_help(f, main, &self.keys);
         }
     }
 
@@ -1263,16 +1263,14 @@ fn dim(c: Color) -> Color {
     }
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
+fn draw_help(f: &mut Frame, area: Rect, keys: &Keymap<GraphAction>) {
     let fixed: &[(&str, &str)] = &[
         ("↑↓←→ / hjkl", "select the nearest note in that direction"),
         ("Shift+arrows / HJKL", "pan"),
         ("scroll", "zoom at the cursor"),
         ("drag", "move a node, or pan on empty space"),
     ];
-    let commands = commands::GRAPH
-        .iter()
-        .map(|c| (commands::keys_label(c), c.title));
+    let commands = commands::GRAPH.iter().map(|c| (keys.label(c.id), c.title));
     let rows: Vec<(String, &str)> = fixed
         .iter()
         .map(|&(k, d)| (k.to_string(), d))
