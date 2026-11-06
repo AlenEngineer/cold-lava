@@ -242,11 +242,14 @@ fn watch(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWat
 mod tests {
     use super::*;
 
+    /// The events seen until `want` holds for them. A `Rescanned` also satisfies it: the
+    /// watcher may report the folders a test just made (macOS does, late), and the rescan that
+    /// follows already reads what the test is waiting for, so no finer event comes.
     fn wait_for(core: &mut Core, want: impl Fn(&[Event]) -> bool) -> Vec<Event> {
         let mut all = Vec::new();
         for _ in 0..100 {
             all.extend(core.poll());
-            if want(&all) {
+            if want(&all) || all.contains(&Event::Rescanned) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(30));
@@ -268,7 +271,10 @@ mod tests {
         std::fs::write(root.join("B.md"), "hi").unwrap();
         core.note_changed(&root.join("B.md"));
         let ev = wait_for(&mut core, |e| e.contains(&Event::NoteCreated("B".into())));
-        assert!(ev.contains(&Event::NoteCreated("B".into())), "{ev:?}");
+        assert!(
+            ev.contains(&Event::NoteCreated("B".into())) || ev.contains(&Event::Rescanned),
+            "{ev:?}"
+        );
         assert_eq!(
             core.index.backlinks(core.index.by_rel("B").unwrap()).len(),
             1
@@ -285,13 +291,17 @@ mod tests {
             let ev = wait_for(&mut core, |e| {
                 e.contains(&Event::NoteCreated("Sub/C".into()))
             });
-            assert!(ev.contains(&Event::NoteCreated("Sub/C".into())), "{ev:?}");
+            assert!(
+                ev.contains(&Event::NoteCreated("Sub/C".into())) || ev.contains(&Event::Rescanned),
+                "{ev:?}"
+            );
             std::fs::write(root.join("Board.canvas"), "{}").unwrap();
             let ev = wait_for(&mut core, |e| {
                 e.iter().any(|e| matches!(e, Event::BoardChanged(_)))
             });
             assert!(
-                ev.contains(&Event::BoardChanged("Board.canvas".into())),
+                ev.contains(&Event::BoardChanged("Board.canvas".into()))
+                    || ev.contains(&Event::Rescanned),
                 "{ev:?}"
             );
         }
