@@ -13,6 +13,7 @@ mod search;
 mod tasks;
 mod term;
 mod vault;
+mod write;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};

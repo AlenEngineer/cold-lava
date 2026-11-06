@@ -211,12 +211,7 @@ pub fn launch(
             None => return Ok(()),
         },
     };
-    if !path.exists() {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, "{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
-    }
+    crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
     let mut b = Board::open(path, vault_root)?;
     b.run(terminal)
 }
@@ -497,11 +492,10 @@ impl Board {
             return self.flash(format!("save failed: {e}"));
         }
         buf.push(b'\n');
-        let tmp = self.path.with_extension("canvas.tmp");
         if buf == self.disk {
             return;
         }
-        let res = std::fs::write(&tmp, &buf).and_then(|_| std::fs::rename(&tmp, &self.path));
+        let res = crate::write::write_atomic(&self.path, &buf);
         match res {
             Ok(()) => {
                 self.base = self.doc.clone();

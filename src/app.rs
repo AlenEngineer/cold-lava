@@ -846,9 +846,7 @@ impl App {
             Kind::Unresolved => {
                 // Like clicking an unresolved link in Obsidian: create the note.
                 let p = self.vault.root.join(format!("{}.md", node.label));
-                if !p.exists() {
-                    std::fs::write(&p, "")?;
-                }
+                crate::write::create_if_missing(&p, b"")?;
                 p
             }
             Kind::Tag => {

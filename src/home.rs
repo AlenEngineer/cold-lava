@@ -814,11 +814,8 @@ impl Home {
             }
             None => {
                 let path = ix.new_note_path(&link.note, from_i);
-                if let Some(dir) = path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                if !path.exists() && std::fs::write(&path, "").is_err() {
-                    return self.flash(format!("couldn't create {}", path.display()));
+                if let Err(e) = crate::write::create_if_missing(&path, b"") {
+                    return self.flash(format!("couldn't create the note: {e}"));
                 }
                 let rel = path
                     .strip_prefix(self.root.as_deref().unwrap_or(Path::new("")))
@@ -1334,15 +1331,12 @@ impl Home {
                         let from = self.shown.as_ref().and_then(|p| ix.by_path(p));
                         ix.new_note_path(q.trim(), from)
                     });
-                    if let Some(path) = path {
-                        if let Some(dir) = path.parent() {
-                            let _ = std::fs::create_dir_all(dir);
-                        }
-                        if path.exists() || std::fs::write(&path, "").is_ok() {
-                            self.flash(format!("created {}", q.trim()));
-                            self.reload_tree();
-                            self.open_found(&path, None);
-                        }
+                    if let Some(path) = path
+                        && crate::write::create_if_missing(&path, b"").is_ok()
+                    {
+                        self.flash(format!("created {}", q.trim()));
+                        self.reload_tree();
+                        self.open_found(&path, None);
                     }
                 }
                 self.back_to_editor = false;
@@ -1869,11 +1863,8 @@ impl Home {
         if path.exists() {
             self.flash(format!("{rel} already exists"));
         } else {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
             let title = name.trim_end_matches(".md");
-            std::fs::write(&path, format!("# {title}\n\n"))?;
+            crate::write::create(&path, format!("# {title}\n\n").as_bytes())?;
             if !folder.is_empty() {
                 self.expanded.insert(folder);
             }
