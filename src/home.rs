@@ -987,7 +987,7 @@ impl Home {
 
     /// Apply what changed on disk (from the core's events).
     fn check_disk(&mut self) {
-        let (Some(core), Some(root)) = (self.core.as_mut(), self.root.clone()) else {
+        let Some(core) = self.core.as_mut() else {
             return;
         };
         let events = core.poll();
@@ -1000,6 +1000,14 @@ impl Home {
                 CoreEvent::NoteChanged(_) | CoreEvent::GraphSettingsChanged
             )
         });
+        self.sync_with_core(tree_changed);
+    }
+
+    /// Bring the tree, link counts, backlinks and preview up to date with the core's index.
+    fn sync_with_core(&mut self, tree_changed: bool) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
         if tree_changed {
             self.items = scan_tree(&root);
         }
@@ -2030,6 +2038,8 @@ impl Home {
         let result = graph.run(terminal);
         self.core = Some(graph.into_core());
         terminal.clear()?;
+        // The graph consumed the core's events while it was open, so catch up on all of them.
+        self.sync_with_core(true);
         self.check_disk();
         result
     }
