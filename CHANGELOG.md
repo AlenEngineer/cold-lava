@@ -31,6 +31,12 @@ change commands, keys and file formats; patch versions only fix things.
   (`note.read`) switches the pane between the reader and Neovim. Its keys are under `reader.*`
   in `config.toml`, and the key names `up`, `down`, `left`, `right`, `pageup`, `pagedown`,
   `home` and `end` are new.
+- `nvim.restart` restarts the embedded Neovim from the menu: it saves every note, quits, and
+  starts again on the note it showed. Run it from the palette (`:`), or give it a key in
+  `config.toml`. It also starts Neovim again after it was closed.
+- Extensions register commands like the core's. Their commands are in the palette and the help,
+  `cold-lava keys` lists them, and `[keys]` in `config.toml` rebinds them by id with the same
+  rules. An extension's command id must start with its name, such as `nvim.`.
 
 ### Changed
 

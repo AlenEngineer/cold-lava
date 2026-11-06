@@ -83,8 +83,25 @@ flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals 
 ## Commands
 
 Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Commands are what
-keys, the command palette, `cold-lava run <command>` and extensions all call. Extensions register
-their own. Keys are configurable in `~/.config/cold-lava/config.toml`.
+keys, the command palette, `cold-lava run <command>` and extensions all call. Keys are
+configurable in `~/.config/cold-lava/config.toml`.
+
+Extensions register their own commands in their manifest (`commands`). The menu has one command
+table at runtime: the core's commands, then each extension's. Keys, the palette, the help,
+`cold-lava keys` and the `[keys]` section of `config.toml` all read that table, so an extension's
+command is configured, listed and reported exactly like a core one. *(Exists:
+`commands::menu`, which `Registry` builds when it loads extensions.)*
+
+- **Ids are namespaced.** An extension's command id is `<extension name>.<something>`, such as
+  `nvim.restart`. The core leaves out a command whose id is outside that namespace or is already
+  a command, and reports why in the status line and in `cold-lava keys`.
+- **Default keys are a suggestion.** A default key that another command already has, or that
+  doesn't parse, is dropped and reported. The command stays, without that key.
+- **Bound in the menu only.** While a pane has focus every key goes to its program, except
+  `pane.leave`. Extensions' commands run from the menu and the palette.
+- **Running one.** A key or the palette sends the extension `command/run` with the command's
+  `id` (and `null` args). An extension's own `command/run` goes through the same table, so it can
+  run core commands and other extensions' commands as a key would.
 
 Editing works the same way. `note.follow-link` is a core command: the editor runs it
 (`command/run`) when you press Enter on a link. `note.edit` is the command the active editor
@@ -129,7 +146,8 @@ pub trait Connector {
 
 JSON-RPC 2.0. Both sides can send requests and notifications.
 
-- The host calls the extension: `initialize` (capabilities and the API version), `command/run`,
+- The host calls the extension: `initialize` (capabilities, the API version and the
+  `commands` it registers), `command/run` (`id`, `args`: one of its commands),
   `view/render`, `shutdown`.
   - The editor gets `editor/open` (a note, and a `jump` to a line, heading or block),
     `editor/save` and `editor/renamed` (`from`, `to`).
@@ -139,8 +157,10 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
 - The extension calls the host: `vault/notes`, `vault/read`, `vault/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
   `tasks/agenda`, `ui/notify`, `ui/openNote`, `events/subscribe`, and:
-  - `command/run`: run a cold-lava command by `id` with `args`, as a key would. Today that is
-    `note.follow-link` (`from`, `link`), `note.switch` and `search.open` (`query`).
+  - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
+    core command or another extension's. Core commands ignore `args`, except
+    `note.follow-link` (`from`, `link`), which only extensions can run, and `search.open`
+    (`query`, optional). An unknown id is reported in the status line.
   - `editor/opened`: the editor shows this note now. It is a report, not a request, so the
     host never answers it with `editor/open`, which would echo.
   - `vault/saved`: a note was just written, so the host reads it now instead of when the file
@@ -153,9 +173,10 @@ The method set is versioned (`apiVersion` in `initialize`), so old extensions ke
 Paths are absolute and inside the vault. A message's tag is its method name, for example
 `{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
 
-Built-in extensions already use, in-process (`src/ext/mod.rs`): `initialize`, `editor/open`,
-`editor/save`, `editor/renamed`, `pane/message` and `pane/exited` from the host, and `ui/notify`,
-`command/run`, `editor/opened`, `vault/saved`, `pane/open` and `pane/input` from the extension.
+Built-in extensions already use, in-process (`src/ext/mod.rs`): `initialize` (with
+`commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`, `pane/message` and
+`pane/exited` from the host, and `ui/notify`, `command/run`, `editor/opened`, `vault/saved`,
+`pane/open` and `pane/input` from the extension.
 
 - **Saves are not acknowledged yet.** `editor/save` gets no answer, so before it reads the files
   (to rename a note, to show the reader, to quit) the core waits 300 ms. A later version answers
@@ -186,8 +207,9 @@ command = ["python3", "main.py"]
 permissions = ["read"]          # "read", "write", "network"…
 
 [[commands]]
-id = "word-count.show"
+id = "word-count.show"           # must start with the extension's name
 title = "Word count of this note"
+keys = ["W"]                     # default keys; config.toml can change them
 ```
 
 ## Views
@@ -218,7 +240,7 @@ returns, so it never holds the menu's state.
 2. Commands, command palette, configurable keys. The Markdown reader can land alongside, since
    it's core.
 3. The `Extension` interface; move built-in features onto it, starting with the Neovim editor.
-   *(in progress: the interface and the Neovim editor exist)*
+   *(in progress: the interface, extension commands and the Neovim editor exist)*
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
 

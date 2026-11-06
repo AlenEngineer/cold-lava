@@ -3,11 +3,12 @@
 //! embedded Neovim when it's installed).
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
-use crate::commands::{self, Keymap, MenuAction, PaneAction, ReaderAction};
+use crate::commands::{self, Entry, Keymap, MenuAction, MenuCommand, PaneAction, ReaderAction};
 use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::ext::{
-    EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId, PaneNews, PaneSpec, Registry,
+    CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId, PaneNews,
+    PaneSpec, Registry,
 };
 use crate::markdown::{self, Flavour};
 use crate::reader::Reader;
@@ -23,6 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -399,7 +401,7 @@ pub struct Home {
     backs: Vec<BackRow>,
     bsel: usize,
     show_backlinks: bool,
-    keys: Keymap<MenuAction>,
+    keys: Keymap<MenuCommand>,
     reader_keys: Keymap<ReaderAction>,
     pane_keys: Keymap<PaneAction>,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
@@ -411,6 +413,9 @@ pub struct Home {
     // Right pane
     registry: Registry,
     pane: Option<Pane>,
+    /// Commands extensions asked to run (`command/run`), as (who asked, id, args). They run
+    /// before the next frame is drawn, where the terminal is at hand.
+    requested: Vec<(ExtId, String, Value)>,
     /// What extensions may still ask for this frame (see `call`).
     effects_left: usize,
     shown: Option<PathBuf>,
@@ -441,7 +446,7 @@ struct Pane {
 const EFFECTS_PER_FRAME: usize = 256;
 
 impl Home {
-    pub fn new(render: Render, initial: Option<PathBuf>) -> Home {
+    pub fn new(render: Render, initial: Option<PathBuf>, registry: Registry) -> Home {
         let extra: Vec<PathBuf> = initial.iter().cloned().collect();
         let mut extra = extra;
         if extra.is_empty()
@@ -467,15 +472,16 @@ impl Home {
             backs: Vec::new(),
             bsel: 0,
             show_backlinks: true,
-            keys: Keymap::new(commands::MENU),
+            keys: Keymap::configured(registry.commands()),
             reader_keys: Keymap::new(commands::READER),
             pane_keys: Keymap::new(commands::PANE),
             mru: Vec::new(),
             results: Vec::new(),
             result_rows: Vec::new(),
             back_to_editor: false,
-            registry: Registry::builtin(),
+            registry,
             pane: None,
+            requested: Vec::new(),
             effects_left: EFFECTS_PER_FRAME,
             shown: None,
             pending: None,
@@ -494,10 +500,15 @@ impl Home {
                 h.focus = Focus::Notes;
             }
         }
-        match crate::config::get().errors.len() {
-            0 => {}
-            1 => h.flash("config.toml has a problem: run cold-lava keys to see it"),
-            n => h.flash(format!(
+        match (crate::config::get().errors.len(), h.registry.refused()) {
+            (0, []) => {}
+            (0, [why]) => h.flash(why.clone()),
+            (0, refused) => h.flash(format!(
+                "{} extension commands or keys were left out: run cold-lava keys to see why",
+                refused.len()
+            )),
+            (1, _) => h.flash("config.toml has a problem: run cold-lava keys to see it"),
+            (n, _) => h.flash(format!(
                 "config.toml has {n} problems: run cold-lava keys to see them"
             )),
         }
@@ -551,6 +562,7 @@ impl Home {
         while !self.quit {
             self.effects_left = EFFECTS_PER_FRAME;
             self.pump_pane();
+            self.run_requested(terminal)?;
             self.load_pending();
             self.check_disk();
             terminal.draw(|f| self.draw(f))?;
@@ -634,7 +646,7 @@ impl Home {
                     self.refresh_backlinks();
                 }
             }
-            Effect::RunCommand { id, args } => self.run_command(ext, &id, args),
+            Effect::RunCommand { id, args } => self.requested.push((ext, id, args)),
             Effect::Saved { note } => {
                 if let Some(core) = self.core.as_mut() {
                     core.note_changed(&note);
@@ -695,8 +707,24 @@ impl Home {
         self.call(owner, |e, host| e.pane(news, host));
     }
 
-    /// A command an extension asked to run, with its `args` parsed here.
-    fn run_command(&mut self, ext: ExtId, id: &str, args: serde_json::Value) {
+    /// Run the commands extensions asked for, including those they ask for meanwhile.
+    fn run_requested(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        while !self.requested.is_empty() {
+            let (from, id, args) = self.requested.remove(0);
+            self.run_command(from, &id, args, terminal)?;
+        }
+        Ok(())
+    }
+
+    /// A command an extension asked to run, found in the menu's table like a key's. Only
+    /// `note.follow-link`, which needs its `args`, isn't in it; `search.open` takes a `query`.
+    fn run_command(
+        &mut self,
+        from: ExtId,
+        id: &str,
+        args: Value,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
         #[derive(Deserialize)]
         struct FollowLink {
             from: PathBuf,
@@ -706,30 +734,51 @@ impl Home {
         struct Search {
             query: String,
         }
-        let done = match id {
-            "note.follow-link" => serde_json::from_value(args)
+        let found = self.registry.commands().iter().find(|c| c.id == id);
+        let done = match found.map(|c| c.action) {
+            _ if id == "note.follow-link" => serde_json::from_value(args)
                 .map(|FollowLink { from, link }| self.follow(&from, &link))
                 .map_err(|e| e.to_string()),
-            "note.switch" => {
-                self.open_switcher(true);
-                Ok(())
+            None => Err("there is no such command".to_string()),
+            Some(c) if !self.enabled(c) => Err("it can't run now".to_string()),
+            Some(MenuCommand::Core(MenuAction::Search)) if !args.is_null() => {
+                serde_json::from_value(args)
+                    .map(|Search { query }| {
+                        self.open_search();
+                        if let Mode::Search { query: q, .. } = &mut self.mode {
+                            *q = query;
+                        }
+                        self.run_search();
+                    })
+                    .map_err(|e| e.to_string())
             }
-            "search.open" => serde_json::from_value(args)
-                .map(|Search { query }| {
-                    self.open_search(true);
-                    if let Mode::Search { query: q, .. } = &mut self.mode {
-                        *q = query;
-                    }
-                    self.run_search();
-                })
-                .map_err(|e| e.to_string()),
-            _ => Err("there is no such command".to_string()),
+            Some(c) => return self.run_menu_command(c, args, terminal),
         };
         if let Err(e) = done {
-            let name = &self.registry.manifest(ext).name;
+            let name = &self.registry.manifest(from).name;
             let msg = format!("{name} couldn't run {id}: {e}");
             self.flash(msg);
         }
+        Ok(())
+    }
+
+    /// A menu command, from a key, the palette or an extension. Only extensions' commands take
+    /// `args`.
+    fn run_menu_command(
+        &mut self,
+        c: MenuCommand,
+        args: Value,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        match c {
+            MenuCommand::Core(a) => self.run_action(a, terminal)?,
+            MenuCommand::Ext(ext, i) => {
+                let id = self.registry.manifest(ext).commands[i].id.clone();
+                let request = CommandRequest::Run { id, args };
+                self.call(ext, |e, host| e.command(request, host));
+            }
+        }
+        Ok(())
     }
 
     // ---------- vaults & notes ----------
@@ -1129,8 +1178,8 @@ impl Home {
             return self.run_reader_action(a, terminal);
         }
         // A command whose guard fails leaves the key to the focused pane (Esc, for one).
-        if let Some(a) = self.keys.get(k).filter(|&a| self.enabled(a)) {
-            return self.run_action(a, terminal);
+        if let Some(c) = self.keys.get(k).filter(|&c| self.enabled(c)) {
+            return self.run_menu_command(c, Value::Null, terminal);
         }
         match self.focus {
             Focus::Vaults => self.vault_key(k),
@@ -1141,11 +1190,13 @@ impl Home {
         Ok(())
     }
 
-    fn enabled(&self, a: MenuAction) -> bool {
-        match a {
-            MenuAction::ClearFilter => !self.filter.is_empty(),
-            MenuAction::NewNote => self.root.is_some(),
-            MenuAction::Read => self.running_editor().is_some() && self.shown.is_some(),
+    fn enabled(&self, c: MenuCommand) -> bool {
+        match c {
+            MenuCommand::Core(MenuAction::ClearFilter) => !self.filter.is_empty(),
+            MenuCommand::Core(MenuAction::NewNote) => self.root.is_some(),
+            MenuCommand::Core(MenuAction::Read) => {
+                self.running_editor().is_some() && self.shown.is_some()
+            }
             _ => true,
         }
     }
@@ -1221,10 +1272,10 @@ impl Home {
                     sel: 0,
                 }
             }
-            MenuAction::Switcher => self.open_switcher(false),
+            MenuAction::Switcher => self.open_switcher(),
             MenuAction::Rename => self.start_rename(false),
             MenuAction::Move => self.start_rename(true),
-            MenuAction::Search => self.open_search(false),
+            MenuAction::Search => self.open_search(),
             MenuAction::ToggleBacklinks => {
                 self.show_backlinks = !self.show_backlinks;
                 if !self.show_backlinks && self.focus == Focus::Backlinks {
@@ -1350,11 +1401,11 @@ impl Home {
         self.mru.truncate(50);
     }
 
-    fn open_switcher(&mut self, from_editor: bool) {
+    fn open_switcher(&mut self) {
         if self.core.is_none() {
             return;
         }
-        self.back_to_editor = from_editor || self.focus == Focus::Pane;
+        self.back_to_editor = self.focus == Focus::Pane;
         if self.focus == Focus::Pane {
             self.focus = Focus::Notes;
         }
@@ -1364,11 +1415,11 @@ impl Home {
         };
     }
 
-    fn open_search(&mut self, from_editor: bool) {
+    fn open_search(&mut self) {
         if self.core.is_none() {
             return;
         }
-        self.back_to_editor = from_editor || self.focus == Focus::Pane;
+        self.back_to_editor = self.focus == Focus::Pane;
         if self.focus == Focus::Pane {
             self.focus = Focus::Notes;
         }
@@ -1479,8 +1530,8 @@ impl Home {
         self.mode = Mode::Switcher { query: q, sel: s };
     }
 
-    fn palette_hits(&self, query: &str) -> Vec<commands::Match> {
-        commands::matching(query)
+    fn palette_hits(&self, query: &str) -> Vec<commands::Match<'_>> {
+        commands::matching(self.registry.commands(), query)
             .into_iter()
             .filter(|m| self.enabled(m.command.action))
             .collect()
@@ -1516,7 +1567,7 @@ impl Home {
                 let action = self.palette_hits(&q).get(s).map(|m| m.command.action);
                 self.mode = Mode::Normal;
                 return match action {
-                    Some(a) => self.run_action(a, terminal),
+                    Some(c) => self.run_menu_command(c, Value::Null, terminal),
                     None => Ok(()),
                 };
             }
@@ -2197,8 +2248,8 @@ impl Home {
         match &self.mode {
             Mode::Help => {
                 let editor = self.registry.editor().map(|e| self.registry.manifest(e));
-                let (keys, reader_keys) = (&self.keys, &self.reader_keys);
-                draw_help(f, main, keys, reader_keys, &self.pane_keys, editor)
+                let menu = (self.registry.commands(), &self.keys);
+                draw_help(f, main, menu, &self.reader_keys, &self.pane_keys, editor)
             }
             Mode::NewNote(name) => prompt(
                 f,
@@ -2354,10 +2405,10 @@ impl Home {
                     spans.push(Span::styled(ch.to_string(), st));
                 }
             };
-            push(c.title, &m.title_hits, base);
+            push(&c.title, &m.title_hits, base);
             push("  ", &[], base);
-            push(c.id, &m.id_hits, dim);
-            let right = format!("{} ", self.keys.label(c.id));
+            push(&c.id, &m.id_hits, dim);
+            let right = format!("{} ", self.keys.label(&c.id));
             let used = 3 + c.title.chars().count() + c.id.chars().count();
             let pad = width.saturating_sub(used + right.chars().count());
             spans.push(Span::styled(" ".repeat(pad), base));
@@ -2986,7 +3037,7 @@ fn picker_frame(f: &mut Frame, area: Rect, title: &str, hint: &str) -> Rect {
 fn draw_help(
     f: &mut Frame,
     area: Rect,
-    keys: &Keymap<MenuAction>,
+    (menu, keys): (&[Entry<MenuCommand>], &Keymap<MenuCommand>),
     reader_keys: &Keymap<ReaderAction>,
     pane_keys: &Keymap<PaneAction>,
     editor: Option<&Manifest>,
@@ -3018,11 +3069,7 @@ fn draw_help(
     let menu: Vec<Line> = fixed
         .iter()
         .map(|(k, d)| row(k, d))
-        .chain(
-            commands::MENU
-                .iter()
-                .map(|c| row(&keys.label(c.id), c.title)),
-        )
+        .chain(menu.iter().map(|c| row(&keys.label(&c.id), &c.title)))
         .collect();
     let mut right = vec![heading("In the reader".to_string())];
     right.extend(

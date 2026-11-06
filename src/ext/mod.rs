@@ -8,13 +8,14 @@
 
 pub mod nvim;
 
+use crate::commands::{self, Entry, MenuCommand};
 use crate::core::Jump;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
 /// A loaded extension. Only the host uses it: on the wire, the connection says who is talking.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExtId(usize);
 
 /// A pane, named by the extension that opened it.
@@ -31,6 +32,17 @@ pub struct Manifest {
     pub roles: Vec<Role>,
     /// Keys its program understands, as (key, what it does), for the status line and the help.
     pub hints: Vec<(String, String)>,
+    /// What it adds to the menu's commands, for keys, the palette, the help and config.toml.
+    pub commands: Vec<CommandSpec>,
+}
+
+/// A command an extension registers. Its id is `<extension name>.<something>`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommandSpec {
+    pub id: String,
+    pub title: String,
+    /// Its default keys, written as in config.toml: "g", "ctrl+o".
+    pub keys: Vec<String>,
 }
 
 /// A part of cold-lava an extension provides.
@@ -79,6 +91,14 @@ pub enum EditorRequest {
     Renamed { from: PathBuf, to: PathBuf },
 }
 
+/// `command/run` (host → extension): run one of the commands it registered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", content = "params")]
+pub enum CommandRequest {
+    #[serde(rename = "command/run")]
+    Run { id: String, args: Value },
+}
+
 /// What an extension asks of the core (extension → host).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -89,7 +109,8 @@ pub enum Effect {
     /// The editor shows `note` now, whoever asked for it.
     #[serde(rename = "editor/opened")]
     EditorOpened { note: PathBuf },
-    /// Run a cold-lava command, such as `note.follow-link`.
+    /// Run a command by id, as a key would: the core's, such as `note.follow-link`, or an
+    /// extension's.
     #[serde(rename = "command/run")]
     RunCommand { id: String, args: Value },
     /// `note` was just written: read it now instead of when the watcher notices.
@@ -110,6 +131,8 @@ pub trait Extension {
     fn pane(&mut self, news: PaneNews, host: &mut Host<'_>);
     /// `editor/open`, `editor/save`, `editor/renamed`, for the extension in the editor role.
     fn editor(&mut self, request: EditorRequest, host: &mut Host<'_>);
+    /// `command/run`: one of its commands, from a key, the palette or an extension.
+    fn command(&mut self, _request: CommandRequest, _host: &mut Host<'_>) {}
 }
 
 /// What an extension can ask of the core during a call. Nothing happens until the call returns.
@@ -162,6 +185,10 @@ pub struct Registry {
     /// The one in the editor role, until its program fails to start.
     editor: Option<ExtId>,
     next_pane: u32,
+    /// The menu's commands: the core's, then the extensions'.
+    commands: Vec<Entry<MenuCommand>>,
+    /// Why commands or keys the extensions registered were left out.
+    refused: Vec<String>,
 }
 
 impl Registry {
@@ -186,11 +213,23 @@ impl Registry {
             .iter()
             .position(|(_, m)| m.roles.contains(&Role::Editor))
             .map(ExtId);
+        let manifests = loaded.iter().enumerate().map(|(i, (_, m))| (ExtId(i), m));
+        let (commands, refused) = commands::menu(manifests);
         Registry {
             loaded,
             editor,
             next_pane: 0,
+            commands,
+            refused,
         }
+    }
+
+    pub fn commands(&self) -> &[Entry<MenuCommand>] {
+        &self.commands
+    }
+
+    pub fn refused(&self) -> &[String] {
+        &self.refused
     }
 
     pub fn editor(&self) -> Option<ExtId> {
@@ -333,6 +372,25 @@ mod tests {
     }
 
     #[test]
+    fn command_run_is_a_json_rpc_message() {
+        wire(
+            CommandRequest::Run {
+                id: "nvim.restart".into(),
+                args: Value::Null,
+            },
+            json!({"method": "command/run", "params": {"id": "nvim.restart", "args": null}}),
+        );
+    }
+
+    fn command(id: &str, keys: &[&str]) -> CommandSpec {
+        CommandSpec {
+            id: id.into(),
+            title: format!("does {id}"),
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+        }
+    }
+
+    #[test]
     fn manifest_is_json() {
         wire(
             Manifest {
@@ -340,8 +398,138 @@ mod tests {
                 title: "Neovim".into(),
                 roles: vec![Role::Editor],
                 hints: vec![("Ctrl-o".into(), "back".into())],
+                commands: vec![command("nvim.restart", &["ctrl+r"])],
             },
-            json!({"name": "nvim", "title": "Neovim", "roles": ["editor"], "hints": [["Ctrl-o", "back"]]}),
+            json!({
+                "name": "nvim",
+                "title": "Neovim",
+                "roles": ["editor"],
+                "hints": [["Ctrl-o", "back"]],
+                "commands": [{"id": "nvim.restart", "title": "does nvim.restart", "keys": ["ctrl+r"]}],
+            }),
         );
+    }
+
+    /// An extension that only registers commands.
+    struct Commands {
+        name: &'static str,
+        commands: Vec<CommandSpec>,
+    }
+
+    impl Extension for Commands {
+        fn initialize(&mut self) -> Manifest {
+            Manifest {
+                name: self.name.into(),
+                title: self.name.into(),
+                roles: Vec::new(),
+                hints: Vec::new(),
+                commands: self.commands.clone(),
+            }
+        }
+        fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
+        fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+    }
+
+    fn registry(extensions: &[(&'static str, Vec<CommandSpec>)]) -> Registry {
+        let loaded = extensions.iter().map(|(name, commands)| {
+            let commands = commands.clone();
+            Box::new(Commands { name, commands }) as Box<dyn Extension>
+        });
+        Registry::new(loaded.collect())
+    }
+
+    fn ids(r: &Registry) -> Vec<&str> {
+        let ext = r
+            .commands()
+            .iter()
+            .filter(|c| matches!(c.action, MenuCommand::Ext(..)));
+        ext.map(|c| c.id.as_str()).collect()
+    }
+
+    #[test]
+    fn commands_join_the_menu_after_the_cores() {
+        let r = registry(&[("wc", vec![command("wc.show", &["c"])])]);
+        assert!(r.refused().is_empty(), "{:?}", r.refused());
+        let last = r.commands().last().unwrap();
+        assert_eq!(last.id, "wc.show");
+        assert_eq!(last.action, MenuCommand::Ext(ExtId(0), 0));
+        assert_eq!(r.commands().len(), commands::MENU.len() + 1);
+        let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
+        assert_eq!(keys.label("wc.show"), "c");
+        let palette = commands::matching(r.commands(), "wc.show");
+        assert_eq!(palette[0].command.id, "wc.show");
+    }
+
+    #[test]
+    fn commands_outside_the_namespace_or_taken_are_refused() {
+        let r = registry(&[
+            (
+                "wc",
+                vec![
+                    command("graph.open", &[]),
+                    command("wcx.show", &[]),
+                    command("wc.", &[]),
+                    command("wc.show", &[]),
+                    command("wc.show", &[]),
+                ],
+            ),
+            // An extension named like a core namespace can't take a core command.
+            ("note", vec![command("note.rename", &[])]),
+        ]);
+        assert_eq!(ids(&r), ["wc.show"]);
+        let refused = r.refused();
+        assert_eq!(refused.len(), 5, "{refused:?}");
+        assert!(refused[0].contains("\"graph.open\"") && refused[0].contains("\"wc.\""));
+        assert!(refused[3].contains("taken"), "{refused:?}");
+        assert!(refused[4].contains("note.rename"), "{refused:?}");
+        // What a refused command's id was meant to run is still the core's.
+        let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
+        assert_eq!(keys.label("graph.open"), "g");
+    }
+
+    #[test]
+    fn default_keys_that_are_taken_or_bad_are_dropped() {
+        let r = registry(&[
+            ("a", vec![command("a.one", &["g", "hyper+x", "x"])]),
+            ("b", vec![command("b.two", &["x", "y"])]),
+        ]);
+        assert_eq!(ids(&r), ["a.one", "b.two"]);
+        let refused = r.refused();
+        assert_eq!(refused.len(), 3, "{refused:?}");
+        assert!(refused[0].contains("graph.open"), "{refused:?}");
+        assert!(refused[1].contains("hyper+x"), "{refused:?}");
+        assert!(refused[2].contains("a.one"), "{refused:?}");
+        let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
+        assert_eq!(keys.label("a.one"), "x");
+        assert_eq!(keys.label("b.two"), "y");
+    }
+
+    #[test]
+    fn config_rebinds_extension_commands_like_the_cores() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let r = registry(&[("wc", vec![command("wc.show", &["c"])])]);
+        let press = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+
+        let config = crate::config::parse("[keys]\n\"wc.show\" = \"W\"\n", r.commands());
+        assert!(config.errors.is_empty(), "{:?}", config.errors);
+        let keys = commands::Keymap::with(r.commands(), &config.keys).0;
+        assert_eq!(keys.get(press('W')), Some(MenuCommand::Ext(ExtId(0), 0)));
+        assert_eq!(keys.get(press('c')), None);
+        assert_eq!(keys.label("wc.show"), "W");
+
+        // Clash rules are the core's: both keep their defaults.
+        let config = crate::config::parse("[keys]\n\"wc.show\" = \"g\"\n", r.commands());
+        assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
+        assert!(config.errors[0].contains("wc.show") && config.errors[0].contains("graph.open"));
+        let keys = commands::Keymap::with(r.commands(), &config.keys).0;
+        assert_eq!(keys.label("wc.show"), "c");
+
+        // A typo is still reported, and without the extension its ids are unknown.
+        let config = crate::config::parse("[keys]\n\"wc.shwo\" = \"W\"\n", r.commands());
+        assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
+        assert!(config.errors[0].contains("wc.shwo"));
+        let none = registry(&[]);
+        let config = crate::config::parse("[keys]\n\"wc.show\" = \"W\"\n", none.commands());
+        assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
     }
 }

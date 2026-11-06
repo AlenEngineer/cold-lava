@@ -1,10 +1,13 @@
-//! Named commands: every action has an id like `graph.open`, and keys, the command palette and
-//! `[keys]` in config.toml (later extensions) reach it through that table.
+//! Named commands: every action has an id like `graph.open`, and keys, the command palette,
+//! `[keys]` in config.toml and extensions reach it through that table. The menu's table also
+//! holds the commands extensions register (`menu`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::ext::{ExtId, Manifest};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MenuAction {
@@ -623,22 +626,113 @@ pub fn ids() -> impl Iterator<Item = &'static str> {
         .chain(PANE.iter().map(|c| c.id))
 }
 
+/// What a menu command runs: one of the core's, or the `i`th command extension `ext` registered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MenuCommand {
+    Core(MenuAction),
+    Ext(ExtId, usize),
+}
+
+/// A command as keymaps, the palette and the help read it. Unlike `Command`, an extension can
+/// make one at runtime.
+pub struct Entry<A> {
+    pub action: A,
+    pub id: String,
+    pub title: String,
+    /// Its default keys.
+    pub keys: Vec<Key>,
+}
+
+pub fn entries<A: Copy>(table: &[Command<A>]) -> Vec<Entry<A>> {
+    table
+        .iter()
+        .map(|c| Entry {
+            action: c.action,
+            id: c.id.to_string(),
+            title: c.title.to_string(),
+            keys: c.keys.iter().map(|s| default_key(c.id, s)).collect(),
+        })
+        .collect()
+}
+
+/// The menu's commands: `MENU`, then those of each extension, in order. A command is left out
+/// when its id isn't `<extension name>.<something>` or is already a command; a default key that
+/// doesn't parse or that an earlier command has is dropped. Each is reported.
+pub fn menu<'a>(
+    extensions: impl IntoIterator<Item = (ExtId, &'a Manifest)>,
+) -> (Vec<Entry<MenuCommand>>, Vec<String>) {
+    let mut table: Vec<Entry<MenuCommand>> = entries(MENU)
+        .into_iter()
+        .map(|e| Entry {
+            action: MenuCommand::Core(e.action),
+            id: e.id,
+            title: e.title,
+            keys: e.keys,
+        })
+        .collect();
+    let mut ids: HashSet<String> = self::ids().map(String::from).collect();
+    let mut refused = Vec::new();
+    for (ext, m) in extensions {
+        for (i, c) in m.commands.iter().enumerate() {
+            let (name, id) = (&m.name, &c.id);
+            let namespaced = id
+                .strip_prefix(name.as_str())
+                .and_then(|rest| rest.strip_prefix('.'))
+                .is_some_and(|rest| !rest.is_empty());
+            if !namespaced {
+                refused.push(format!(
+                    "{name}: command {id:?} was left out: its id must start with \"{name}.\""
+                ));
+                continue;
+            }
+            if !ids.insert(id.clone()) {
+                refused.push(format!(
+                    "{name}: command {id:?} was left out: that id is taken"
+                ));
+                continue;
+            }
+            let mut keys = Vec::new();
+            for s in &c.keys {
+                let Some(k) = Key::parse(s) else {
+                    refused.push(format!("{id}: {s:?} is not a key; it was dropped"));
+                    continue;
+                };
+                match table.iter().find(|e| e.keys.contains(&k)) {
+                    Some(owner) => refused.push(format!(
+                        "{id}: \"{k}\" is already {}'s key; it was dropped",
+                        owner.id
+                    )),
+                    None => keys.push(k),
+                }
+            }
+            table.push(Entry {
+                action: MenuCommand::Ext(ext, i),
+                id: id.clone(),
+                title: c.title.clone(),
+                keys,
+            });
+        }
+    }
+    (table, refused)
+}
+
 /// A palette row: the command and the matched char positions in its title or its id.
-pub struct Match {
-    pub command: &'static Command<MenuAction>,
+pub struct Match<'a> {
+    pub command: &'a Entry<MenuCommand>,
     pub title_hits: Vec<usize>,
     pub id_hits: Vec<usize>,
 }
 
-/// The palette's list for `query`, best first, scored on the better of title and id. An empty
-/// query lists every command in `MENU` order. The palette itself is left out.
-pub fn matching(query: &str) -> Vec<Match> {
-    let mut scored: Vec<(i64, Match)> = MENU
+/// The palette's list for `query` from the menu's commands, best first, scored on the better of
+/// title and id. An empty query lists every command in table order. The palette itself is left
+/// out.
+pub fn matching<'a>(table: &'a [Entry<MenuCommand>], query: &str) -> Vec<Match<'a>> {
+    let mut scored: Vec<(i64, Match)> = table
         .iter()
-        .filter(|c| c.action != MenuAction::Palette)
+        .filter(|c| c.action != MenuCommand::Core(MenuAction::Palette))
         .filter_map(|c| {
-            let title = crate::search::fuzzy(query, c.title);
-            let id = crate::search::fuzzy(query, c.id);
+            let title = crate::search::fuzzy(query, &c.title);
+            let id = crate::search::fuzzy(query, &c.id);
             let (score, title_hits, id_hits) = match (title, id) {
                 (Some(t), Some(i)) if i.score > t.score => (i.score, Vec::new(), i.positions),
                 (Some(t), _) => (t.score, t.positions, Vec::new()),
@@ -754,11 +848,16 @@ impl fmt::Display for Key {
 /// A screen's effective keys: its table's defaults with the overrides from config.toml.
 pub struct Keymap<A> {
     by_key: HashMap<Key, A>,
-    by_id: HashMap<&'static str, Vec<Key>>,
+    by_id: HashMap<String, Vec<Key>>,
 }
 
 impl<A: Copy> Keymap<A> {
-    pub fn new(table: &'static [Command<A>]) -> Keymap<A> {
+    pub fn new(table: &[Command<A>]) -> Keymap<A> {
+        Keymap::configured(&entries(table))
+    }
+
+    /// `table`'s keys with config.toml's overrides.
+    pub fn configured(table: &[Entry<A>]) -> Keymap<A> {
         Keymap::with(table, &crate::config::get().keys).0
     }
 
@@ -767,21 +866,21 @@ impl<A: Copy> Keymap<A> {
     /// clash is reported. Repeats until nothing clashes, since a restored default can clash
     /// with a third override.
     pub fn with(
-        table: &'static [Command<A>],
+        table: &[Entry<A>],
         overrides: &BTreeMap<String, Vec<Key>>,
     ) -> (Keymap<A>, Vec<String>) {
         let mut applied: HashSet<&str> = table
             .iter()
-            .map(|c| c.id)
+            .map(|c| c.id.as_str())
             .filter(|id| overrides.contains_key(*id))
             .collect();
         let mut errors = Vec::new();
         loop {
             let keys: Vec<Vec<Key>> = table
                 .iter()
-                .map(|c| match overrides.get(c.id) {
-                    Some(keys) if applied.contains(c.id) => keys.clone(),
-                    _ => c.keys.iter().map(|s| default_key(c.id, s)).collect(),
+                .map(|c| match overrides.get(&c.id) {
+                    Some(keys) if applied.contains(c.id.as_str()) => keys.clone(),
+                    _ => c.keys.clone(),
                 })
                 .collect();
             let Some((a, b, key)) = first_clash(&keys) else {
@@ -791,11 +890,11 @@ impl<A: Copy> Keymap<A> {
                     for &k in &keys {
                         by_key.insert(k, c.action);
                     }
-                    by_id.insert(c.id, keys);
+                    by_id.insert(c.id.clone(), keys);
                 }
                 return (Keymap { by_key, by_id }, errors);
             };
-            let (a, b) = (table[a].id, table[b].id);
+            let (a, b) = (table[a].id.as_str(), table[b].id.as_str());
             errors.push(format!(
                 "[keys] \"{key}\" is bound to both {a} and {b}; both keep their default keys"
             ));
@@ -963,7 +1062,11 @@ mod tests {
 
     #[test]
     fn palette_finds_commands_by_name() {
-        let ids = |q: &str| -> Vec<&str> { matching(q).iter().map(|m| m.command.id).collect() };
+        let (table, _) = menu([]);
+        let ids = |q: &str| -> Vec<String> {
+            let hits = matching(&table, q);
+            hits.iter().map(|m| m.command.id.clone()).collect()
+        };
         assert_eq!(ids("graph")[0], "graph.open");
         assert_eq!(ids("rnm")[0], "note.rename");
         assert_eq!(ids("daily.today")[0], "daily.today");
@@ -972,7 +1075,11 @@ mod tests {
 
     #[test]
     fn empty_palette_lists_every_other_command_in_order() {
-        let ids: Vec<&str> = matching("").iter().map(|m| m.command.id).collect();
+        let (table, _) = menu([]);
+        let ids: Vec<&str> = matching(&table, "")
+            .iter()
+            .map(|m| m.command.id.as_str())
+            .collect();
         let menu: Vec<&str> = MENU
             .iter()
             .map(|c| c.id)

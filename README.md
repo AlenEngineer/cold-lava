@@ -110,6 +110,9 @@ shows the reader.
 | `n` / `a` | new note in the selected folder / add a vault |
 | `z`, `e`, `o` | zoom the editor · edit in `$EDITOR` full screen · open in Obsidian |
 
+If Neovim gets into a bad state, or you changed its config, run `nvim.restart` from the
+palette. It saves every note, quits Neovim, and starts it again on the same note.
+
 In the reader:
 
 | Key | Action |
@@ -200,6 +203,9 @@ Keys are written like `g`, `G`, `ctrl+o`, `alt+x`, `shift+tab`, `esc`, `enter`, 
 `cold-lava keys` lists every command with its keys and reports mistakes in the file. A mistake
 never stops the app: an unknown id or a key that doesn't parse is skipped, and when two commands
 on the same screen would share a key, both keep their default keys.
+
+Extensions add commands to the menu, and they work the same way. Neovim's `nvim.restart` has no
+key until you give it one, for example `"nvim.restart" = "ctrl+r"`.
 
 While Neovim has focus it gets every key except `pane.leave` (`Ctrl-q`), which takes you back to
 the menu. Move it if you use `Ctrl-q` in Neovim, for example `"pane.leave" = "ctrl+g"`. It can't
