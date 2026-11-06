@@ -5,6 +5,7 @@ mod config;
 mod core;
 mod daily;
 mod embed;
+mod ext;
 mod graph;
 mod groups;
 mod home;

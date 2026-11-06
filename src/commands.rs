@@ -77,7 +77,7 @@ pub const MENU: &[Command<MenuAction>] = &[
     cmd(
         MenuAction::FocusEditor,
         "editor.focus",
-        "in the menu: back to Neovim",
+        "in the menu: back to the editor",
         &["ctrl+q"],
     ),
     cmd(

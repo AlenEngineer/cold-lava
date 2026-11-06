@@ -6,6 +6,7 @@ use crate::index::Index;
 use crate::vault::{self, NoteChange};
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -36,7 +37,8 @@ impl From<NoteChange> for Event {
 }
 
 /// Where to put the cursor after opening a note.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Jump {
     Line(usize),
     Heading(String),
