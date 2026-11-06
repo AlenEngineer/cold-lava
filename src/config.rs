@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::commands::{self, BOARD, GRAPH, Key, Keymap, MENU, READER};
+use crate::commands::{self, BOARD, GRAPH, Key, Keymap, MENU, PANE, READER};
 use crate::markdown::{BUILT_IN, Flavour, Syntax};
 
 #[derive(Default)]
@@ -91,6 +91,9 @@ pub fn parse(text: &str) -> Config {
             continue;
         }
         match parse_keys(&value) {
+            Ok(keys) if keys.is_empty() && id == "pane.leave" => config.errors.push(format!(
+                "[keys] {id:?} = [] would leave no way out of a pane; it keeps its default keys"
+            )),
             Ok(keys) => {
                 config.keys.insert(id, keys);
             }
@@ -102,6 +105,7 @@ pub fn parse(text: &str) -> Config {
     config.errors.extend(Keymap::with(GRAPH, &config.keys).1);
     config.errors.extend(Keymap::with(BOARD, &config.keys).1);
     config.errors.extend(Keymap::with(READER, &config.keys).1);
+    config.errors.extend(Keymap::with(PANE, &config.keys).1);
     config
 }
 
@@ -194,7 +198,7 @@ fn parse_keys(value: &toml::Value) -> Result<Vec<Key>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::MenuAction;
+    use crate::commands::{MenuAction, PaneAction};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn menu(text: &str) -> (Keymap<MenuAction>, Vec<String>) {
@@ -274,6 +278,22 @@ mod tests {
         let c = parse("[keys]\n\"graph.open\" = \"x\"\n\"board.fit\" = \"x\"\n");
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         assert_eq!(Keymap::with(BOARD, &c.keys).0.label("board.fit"), "x");
+    }
+
+    #[test]
+    fn pane_leave_moves_but_is_never_unbound() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let c = parse("[keys]\n\"pane.leave\" = \"ctrl+g\"\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        let keys = Keymap::with(PANE, &c.keys).0;
+        assert_eq!(keys.get(ctrl('g')), Some(PaneAction::Leave));
+        assert_eq!(keys.get(ctrl('q')), None, "Ctrl-q goes to the program now");
+
+        let c = parse("[keys]\n\"pane.leave\" = []\n");
+        assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
+        assert!(c.errors[0].contains("pane.leave"), "{:?}", c.errors);
+        let keys = Keymap::with(PANE, &c.keys).0;
+        assert_eq!(keys.get(ctrl('q')), Some(PaneAction::Leave));
     }
 
     #[test]

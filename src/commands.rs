@@ -599,6 +599,20 @@ pub const READER: &[Command<ReaderAction>] = &[
     ),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PaneAction {
+    Leave,
+}
+
+/// The keys the core keeps while a program in a pane has focus; every other key goes to the
+/// program. config.toml can move `pane.leave` but not unbind it, so every pane has a way out.
+pub const PANE: &[Command<PaneAction>] = &[cmd(
+    PaneAction::Leave,
+    "pane.leave",
+    "leave the pane, back to the menu",
+    &["ctrl+q"],
+)];
+
 /// Every command id of every screen.
 pub fn ids() -> impl Iterator<Item = &'static str> {
     MENU.iter()
@@ -606,6 +620,7 @@ pub fn ids() -> impl Iterator<Item = &'static str> {
         .chain(GRAPH.iter().map(|c| c.id))
         .chain(BOARD.iter().map(|c| c.id))
         .chain(READER.iter().map(|c| c.id))
+        .chain(PANE.iter().map(|c| c.id))
 }
 
 /// A palette row: the command and the matched char positions in its title or its id.
@@ -850,6 +865,18 @@ mod tests {
         assert_keys_parse_and_are_bound_once(GRAPH);
         assert_keys_parse_and_are_bound_once(BOARD);
         assert_keys_parse_and_are_bound_once(READER);
+        assert_keys_parse_and_are_bound_once(PANE);
+    }
+
+    #[test]
+    fn pane_keeps_only_its_leave_key() {
+        let keys = Keymap::new(PANE);
+        let ctrl_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert_eq!(keys.get(ctrl_q), Some(PaneAction::Leave));
+        let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(keys.get(q), None, "goes to the program");
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(keys.get(esc), None, "goes to the program");
     }
 
     #[test]

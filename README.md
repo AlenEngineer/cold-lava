@@ -98,7 +98,7 @@ shows the reader.
 | `→` / `←` | open / close a folder |
 | `Enter` | edit the note in Neovim, or read it in the reader · open a whiteboard |
 | `v` | switch the pane between the reader and Neovim |
-| `Ctrl-q` | leave Neovim, back to the menu |
+| `Ctrl-q` | leave Neovim, back to the menu (`pane.leave`) |
 | `Enter` in Neovim, `Ctrl-o` | follow the `[[link]]` under the cursor · go back |
 | `b` | show / hide backlinks |
 | `p` (or `Ctrl-o`) | quick switcher: jump to any note by name or alias |
@@ -200,6 +200,10 @@ Keys are written like `g`, `G`, `ctrl+o`, `alt+x`, `shift+tab`, `esc`, `enter`, 
 `cold-lava keys` lists every command with its keys and reports mistakes in the file. A mistake
 never stops the app: an unknown id or a key that doesn't parse is skipped, and when two commands
 on the same screen would share a key, both keep their default keys.
+
+While Neovim has focus it gets every key except `pane.leave` (`Ctrl-q`), which takes you back to
+the menu. Move it if you use `Ctrl-q` in Neovim, for example `"pane.leave" = "ctrl+g"`. It can't
+be `[]`, so there is always a way out.
 
 ### Markdown flavour
 

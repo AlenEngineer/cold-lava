@@ -34,6 +34,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- `Ctrl-q`, which leaves Neovim for the menu, is now the command `pane.leave`. Set its key under
+  `[keys]` in `config.toml` if you use `Ctrl-q` in Neovim; it can't be `[]`. The pane's title,
+  the status line and the help show the key you set.
 - Without an embedded Neovim or Vim, `Enter` on a note in the main menu goes into the reader
   instead of opening `$EDITOR` full screen; `e` still does that.
 - Every write to a vault now goes through one path: atomic (a hidden temporary file, then a

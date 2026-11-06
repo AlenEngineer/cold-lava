@@ -3,7 +3,7 @@
 //! installed.
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
-use crate::commands::{self, Keymap, MenuAction, ReaderAction};
+use crate::commands::{self, Keymap, MenuAction, PaneAction, ReaderAction};
 use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::markdown::{self, Flavour};
@@ -397,6 +397,7 @@ pub struct Home {
     show_backlinks: bool,
     keys: Keymap<MenuAction>,
     reader_keys: Keymap<ReaderAction>,
+    pane_keys: Keymap<PaneAction>,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
     mru: Vec<PathBuf>,
     results: Vec<crate::search::NoteHits>,
@@ -581,6 +582,7 @@ impl Home {
             show_backlinks: true,
             keys: Keymap::new(commands::MENU),
             reader_keys: Keymap::new(commands::READER),
+            pane_keys: Keymap::new(commands::PANE),
             mru: Vec::new(),
             results: Vec::new(),
             result_rows: Vec::new(),
@@ -1054,14 +1056,11 @@ impl Home {
 
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        // Keys typed into the editor pane go to Neovim, except Ctrl-q (back to the menu).
+        // Keys typed into the editor pane go to Neovim, except pane.leave (back to the menu).
         if self.focus == Focus::Pane && self.reader.is_none() {
-            if ctrl && matches!(k.code, KeyCode::Char('q')) {
-                self.focus = Focus::Notes;
-            } else if let Some(ed) = self.editor.as_mut() {
-                ed.send_key(k);
-            } else {
-                self.focus = Focus::Notes;
+            match (self.pane_keys.get(k), self.editor.as_mut()) {
+                (None, Some(ed)) => ed.send_key(k),
+                (Some(PaneAction::Leave), _) | (_, None) => self.focus = Focus::Notes,
             }
             return Ok(());
         }
@@ -1229,7 +1228,7 @@ impl Home {
 
     fn run_action(&mut self, a: MenuAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match a {
-            // Ctrl-q leaves Neovim; pressed in the menu it goes back to Neovim, never quits.
+            // Shares pane.leave's default key, so that key goes back and forth; it never quits.
             MenuAction::FocusEditor => {
                 if self.editor.is_some() {
                     self.focus = Focus::Pane;
@@ -2222,7 +2221,7 @@ impl Home {
             prompt(f, main, title, label, input);
         }
         match &self.mode {
-            Mode::Help => draw_help(f, main, &self.keys, &self.reader_keys),
+            Mode::Help => draw_help(f, main, &self.keys, &self.reader_keys, &self.pane_keys),
             Mode::NewNote(name) => prompt(
                 f,
                 main,
@@ -2694,6 +2693,7 @@ impl Home {
                     .unwrap_or_default();
                 let focused = self.focus == Focus::Pane;
                 let read = self.keys.label("note.read");
+                let leave = self.pane_keys.label("pane.leave");
                 let who = match (&self.editor_cmd, self.reader.is_some(), focused) {
                     (_, true, true) => {
                         let back = self.reader_keys.label("reader.back");
@@ -2701,7 +2701,7 @@ impl Home {
                     }
                     (Some(c), true, false) => format!(" reader · ⏎ read · {read} {c} "),
                     (None, _, false) => " reader · ⏎ read · e edit in $EDITOR ".to_string(),
-                    (Some(c), false, true) => format!(" {c} · editing · Ctrl-q back "),
+                    (Some(c), false, true) => format!(" {c} · editing · {leave} back "),
                     (Some(c), false, false) => format!(" {c} · ⏎ edit · {read} read "),
                     (None, false, true) => String::new(),
                 };
@@ -2856,10 +2856,10 @@ impl Home {
                     k("reader.back"),
                 )
             }
-            (Focus::Pane, _) => {
-                " in Neovim · ⏎ on a [[link]] follows it · Ctrl-o back · Ctrl-q to the menu"
-                    .to_string()
-            }
+            (Focus::Pane, _) => format!(
+                " in Neovim · ⏎ on a [[link]] follows it · Ctrl-o back · {} to the menu",
+                self.pane_keys.label("pane.leave")
+            ),
             (Focus::Backlinks, _) => {
                 " backlinks · ↑↓ choose · ⏎ open at the link · ← back to notes · b hide".to_string()
             }
@@ -3000,7 +3000,9 @@ fn draw_help(
     area: Rect,
     keys: &Keymap<MenuAction>,
     reader_keys: &Keymap<ReaderAction>,
+    pane_keys: &Keymap<PaneAction>,
 ) {
+    let leave = pane_keys.label("pane.leave");
     let fixed: &[(&str, &str)] = &[
         ("↑↓ / jk", "move through vaults or notes"),
         ("→ / ←", "open / close a folder · vaults ↔ notes"),
@@ -3008,7 +3010,7 @@ fn draw_help(
             "Enter",
             "go to the note in the reader or Neovim · open a board",
         ),
-        ("Ctrl-q", "leave Neovim and return to the menu"),
+        (&leave, "leave Neovim and return to the menu"),
         (
             "⏎ in Neovim",
             "on a [[link]]: open it (creates missing notes)",
