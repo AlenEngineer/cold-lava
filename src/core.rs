@@ -35,6 +35,14 @@ impl From<NoteChange> for Event {
     }
 }
 
+/// Where to put the cursor after opening a note.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Jump {
+    Line(usize),
+    Heading(String),
+    Block(String),
+}
+
 /// How long to wait after the last file-system event before reading: editors often write a
 /// file in several steps, and a burst of saves should cost one update.
 const SETTLE: Duration = Duration::from_millis(250);

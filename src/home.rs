@@ -4,7 +4,7 @@
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
 use crate::commands::{self, Keymap, MenuAction, ReaderAction};
-use crate::core::{Core, Event as CoreEvent};
+use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::markdown::{self, Flavour};
 use crate::reader::Reader;
@@ -326,14 +326,6 @@ enum Focus {
     /// The right pane: the reader or the embedded editor, whichever it shows.
     Pane,
     Backlinks,
-}
-
-/// Where to put the cursor after opening a note.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Jump {
-    Line(usize),
-    Heading(String),
-    Block(String),
 }
 
 /// A backlink as shown in the pane under the editor.

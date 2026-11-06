@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, GHOST, HIT, MUTED, NOTE, TAG};
-use crate::home::Jump;
+use crate::core::Jump;
 use crate::markdown::{Block, BlockKind, Doc, Inline, LinkKind};
 
 const LINK: Color = Color::Rgb(150, 180, 250);
