@@ -8,6 +8,7 @@ use super::{
 use crate::core::Jump;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub struct Nvim {
     program: String,
@@ -17,6 +18,8 @@ pub struct Nvim {
     restarting: Option<PaneId>,
     /// The note it showed last, to start again on.
     note: Option<PathBuf>,
+    /// `VIM_SCRIPT` on disk, written at the first start and removed with this extension.
+    script: Option<PathBuf>,
 }
 
 impl Nvim {
@@ -37,6 +40,7 @@ impl Nvim {
             pane: None,
             restarting: None,
             note: None,
+            script: None,
         };
         for var in ["COLD_LAVA_EDITOR", "VISUAL", "EDITOR"] {
             if let Ok(v) = std::env::var(var) {
@@ -61,7 +65,10 @@ impl Nvim {
 
     fn start(&mut self, note: &Path, jump: Option<&Jump>, host: &mut Host<'_>) {
         let mut args = vec!["-c".to_string(), "set autoread".to_string()];
-        if let Some(script) = script_path() {
+        if self.script.is_none() {
+            self.script = write_script();
+        }
+        if let Some(script) = &self.script {
             args.push("-S".to_string());
             args.push(script.to_string_lossy().into_owned());
         }
@@ -291,10 +298,22 @@ if expand('%:e') ==# 'md'
 endif
 "#;
 
-fn script_path() -> Option<PathBuf> {
-    let p = std::env::temp_dir().join(format!("cold-lava-{}.vim", std::process::id()));
+/// Writes `VIM_SCRIPT` to a file of its own: one per `Nvim`, so two of them in one process
+/// (tests run in parallel) never write over the file the other is reading.
+fn write_script() -> Option<PathBuf> {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!("cold-lava-{}-{n}.vim", std::process::id()));
     std::fs::write(&p, VIM_SCRIPT).ok()?;
     Some(p)
+}
+
+impl Drop for Nvim {
+    fn drop(&mut self) {
+        if let Some(p) = &self.script {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +328,7 @@ mod tests {
             pane: None,
             restarting: None,
             note: None,
+            script: None,
         };
         let registry = Registry::new(vec![Box::new(nvim)]);
         let editor = registry.editor().expect("Neovim is an editor");
@@ -354,13 +374,16 @@ mod tests {
         assert_eq!(spec.args[..2], ["-c", "set autoread"]);
         assert_eq!(spec.args.last().unwrap(), "/v/Lava.md");
         let script = spec.args.iter().position(|a| a == "-S").unwrap() + 1;
-        let script = std::fs::read_to_string(&spec.args[script]).unwrap();
+        let script_file = PathBuf::from(&spec.args[script]);
+        let script = std::fs::read_to_string(&script_file).unwrap();
         assert!(script.contains("function! ColdLavaFollow()"));
         assert_eq!(typed_into, pane);
         assert!(
             text.ends_with("| call cursor(12, 1) | normal! zz\r"),
             "{text:?}"
         );
+        drop(r);
+        assert!(!script_file.exists(), "the script goes with Neovim");
     }
 
     #[test]
