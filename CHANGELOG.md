@@ -22,10 +22,20 @@ change commands, keys and file formats; patch versions only fix things.
 - Keys are configurable in `~/.config/cold-lava/config.toml` (`[keys]`, by command id);
   `cold-lava keys` lists every command and its keys and reports mistakes in the file.
 - Markdown flavours (`commonmark`, `github`, `obsidian`, or your own in `config.toml`) for the
-  upcoming reader.
+  reader.
+- The reader, in the main menu's right pane: the note rendered in the vault's flavour, with
+  headings, lists, tasks, quotes, callouts (folded ones closed), code, tables, highlights, tags,
+  embed placeholders and links (unresolved ones dimmer). `Tab` selects a link and `Enter`
+  follows it like from Neovim, URLs open in the browser, and a click follows a link. It replaces
+  the plain preview, and follows changes on disk without losing its place. With Neovim, `v`
+  (`note.read`) switches the pane between the reader and Neovim. Its keys are under `reader.*`
+  in `config.toml`, and the key names `up`, `down`, `left`, `right`, `pageup`, `pagedown`,
+  `home` and `end` are new.
 
 ### Changed
 
+- Without an embedded Neovim or Vim, `Enter` on a note in the main menu goes into the reader
+  instead of opening `$EDITOR` full screen; `e` still does that.
 - Every write to a vault now goes through one path: atomic (a hidden temporary file, then a
   rename) and refused if the file changed since it was read. Task toggles, renames, new notes,
   daily notes and whiteboards all use it.

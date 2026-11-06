@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::commands::{BOARD, GRAPH, Key, Keymap, MENU};
+use crate::commands::{self, BOARD, GRAPH, Key, Keymap, MENU, READER};
 use crate::markdown::{BUILT_IN, Flavour, Syntax};
 
 #[derive(Default)]
@@ -81,12 +81,7 @@ pub fn parse(text: &str) -> Config {
             };
         }
     };
-    let ids: HashSet<&str> = MENU
-        .iter()
-        .map(|c| c.id)
-        .chain(GRAPH.iter().map(|c| c.id))
-        .chain(BOARD.iter().map(|c| c.id))
-        .collect();
+    let ids: HashSet<&str> = commands::ids().collect();
     let mut config = Config::default();
     for (id, value) in file.keys {
         if !ids.contains(id.as_str()) {
@@ -106,6 +101,7 @@ pub fn parse(text: &str) -> Config {
     config.errors.extend(Keymap::with(MENU, &config.keys).1);
     config.errors.extend(Keymap::with(GRAPH, &config.keys).1);
     config.errors.extend(Keymap::with(BOARD, &config.keys).1);
+    config.errors.extend(Keymap::with(READER, &config.keys).1);
     config
 }
 

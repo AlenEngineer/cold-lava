@@ -1,4 +1,4 @@
-//! Terminal helpers shared by the graph view and the whiteboard.
+//! Terminal helpers shared by the menu, the graph view and the whiteboard.
 
 use anyhow::Result;
 use ratatui::DefaultTerminal;
@@ -48,18 +48,22 @@ pub fn edit_file(
 
 /// Open a note in the Obsidian app via its URI scheme.
 pub fn open_in_obsidian(vault_name: &str, rel_path: &str) -> bool {
-    let url = format!(
+    open_url(&format!(
         "obsidian://open?vault={}&file={}",
         url_encode(vault_name),
         url_encode(rel_path)
-    );
+    ))
+}
+
+/// Open a URL with the system's handler (a browser, the Obsidian app).
+pub fn open_url(url: &str) -> bool {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
         "xdg-open"
     };
     Command::new(opener)
-        .arg(&url)
+        .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

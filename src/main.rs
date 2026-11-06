@@ -10,14 +10,8 @@ mod groups;
 mod home;
 mod index;
 mod kitty;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the reader view (next PR) is the first user of `parse`"
-    )
-)]
 mod markdown;
+mod reader;
 mod rename;
 mod scene;
 mod search;
@@ -147,6 +141,7 @@ fn run() -> Result<()> {
             print_keys("menu", commands::MENU);
             print_keys("graph", commands::GRAPH);
             print_keys("whiteboard", commands::BOARD);
+            print_keys("reader", commands::READER);
             let errors = &config::get().errors;
             if !errors.is_empty() {
                 let path = config::path().unwrap_or_default();

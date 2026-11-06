@@ -30,6 +30,7 @@ pub enum MenuAction {
     Rescan,
     OpenInObsidian,
     EditFullscreen,
+    Read,
 }
 
 pub struct Command<A> {
@@ -114,6 +115,12 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.edit",
         "edit the note in $EDITOR, full screen",
         &["e"],
+    ),
+    cmd(
+        MenuAction::Read,
+        "note.read",
+        "read the note: switch the pane between the reader and the editor",
+        &["v"],
     ),
     cmd(
         MenuAction::Filter,
@@ -512,6 +519,95 @@ pub const BOARD: &[Command<BoardAction>] = &[
     ),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReaderAction {
+    Down,
+    Up,
+    PageDown,
+    PageUp,
+    Top,
+    Bottom,
+    NextLink,
+    PreviousLink,
+    Follow,
+    Edit,
+    Back,
+}
+
+/// The reader's commands, when it has focus. Keys it doesn't bind go on to the menu's.
+pub const READER: &[Command<ReaderAction>] = &[
+    cmd(
+        ReaderAction::Down,
+        "reader.down",
+        "scroll down",
+        &["j", "down"],
+    ),
+    cmd(ReaderAction::Up, "reader.up", "scroll up", &["k", "up"]),
+    cmd(
+        ReaderAction::PageDown,
+        "reader.page-down",
+        "page down",
+        &["pagedown", "space", "ctrl+d"],
+    ),
+    cmd(
+        ReaderAction::PageUp,
+        "reader.page-up",
+        "page up",
+        &["pageup", "ctrl+u"],
+    ),
+    cmd(
+        ReaderAction::Top,
+        "reader.top",
+        "to the top",
+        &["g", "home"],
+    ),
+    cmd(
+        ReaderAction::Bottom,
+        "reader.bottom",
+        "to the bottom",
+        &["G", "end"],
+    ),
+    cmd(
+        ReaderAction::NextLink,
+        "reader.next-link",
+        "select the next link",
+        &["tab"],
+    ),
+    cmd(
+        ReaderAction::PreviousLink,
+        "reader.previous-link",
+        "select the previous link",
+        &["shift+tab"],
+    ),
+    cmd(
+        ReaderAction::Follow,
+        "reader.follow",
+        "follow the selected link (creates missing notes)",
+        &["enter"],
+    ),
+    cmd(
+        ReaderAction::Edit,
+        "reader.edit",
+        "edit the note in $EDITOR, full screen",
+        &["e"],
+    ),
+    cmd(
+        ReaderAction::Back,
+        "reader.back",
+        "back to the notes",
+        &["esc", "q"],
+    ),
+];
+
+/// Every command id of every screen.
+pub fn ids() -> impl Iterator<Item = &'static str> {
+    MENU.iter()
+        .map(|c| c.id)
+        .chain(GRAPH.iter().map(|c| c.id))
+        .chain(BOARD.iter().map(|c| c.id))
+        .chain(READER.iter().map(|c| c.id))
+}
+
 /// A palette row: the command and the matched char positions in its title or its id.
 pub struct Match {
     pub command: &'static Command<MenuAction>,
@@ -555,7 +651,8 @@ pub struct Key {
 }
 
 impl Key {
-    /// Parses "g", "R", "ctrl+o", "shift+tab", "esc", "enter", "space", "backspace", "delete".
+    /// Parses "g", "R", "ctrl+o", "shift+tab", "esc", "enter", "space", "backspace", "delete",
+    /// "up", "down", "left", "right", "pageup", "pagedown", "home", "end".
     pub fn parse(s: &str) -> Option<Key> {
         let mut mods = KeyModifiers::NONE;
         let mut shift = false;
@@ -587,6 +684,14 @@ impl Key {
                 "space" => KeyCode::Char(' '),
                 "backspace" => KeyCode::Backspace,
                 "delete" => KeyCode::Delete,
+                "up" => KeyCode::Up,
+                "down" => KeyCode::Down,
+                "left" => KeyCode::Left,
+                "right" => KeyCode::Right,
+                "pageup" => KeyCode::PageUp,
+                "pagedown" => KeyCode::PageDown,
+                "home" => KeyCode::Home,
+                "end" => KeyCode::End,
                 _ => return None,
             },
         };
@@ -622,6 +727,10 @@ impl fmt::Display for Key {
             KeyCode::Enter => f.write_str("Enter"),
             KeyCode::Backspace => f.write_str("Backspace"),
             KeyCode::Delete => f.write_str("Delete"),
+            KeyCode::Up => f.write_str("↑"),
+            KeyCode::Down => f.write_str("↓"),
+            KeyCode::Left => f.write_str("←"),
+            KeyCode::Right => f.write_str("→"),
             c => write!(f, "{c:?}"),
         }
     }
@@ -719,13 +828,8 @@ mod tests {
 
     #[test]
     fn ids_are_unique_across_screens() {
-        let ids = MENU
-            .iter()
-            .map(|c| c.id)
-            .chain(GRAPH.iter().map(|c| c.id))
-            .chain(BOARD.iter().map(|c| c.id));
         let mut seen = HashSet::new();
-        for id in ids {
+        for id in ids() {
             assert!(seen.insert(id), "duplicate id {id}");
         }
     }
@@ -745,6 +849,20 @@ mod tests {
         assert_keys_parse_and_are_bound_once(MENU);
         assert_keys_parse_and_are_bound_once(GRAPH);
         assert_keys_parse_and_are_bound_once(BOARD);
+        assert_keys_parse_and_are_bound_once(READER);
+    }
+
+    #[test]
+    fn reader_keys_run_their_commands() {
+        let keys = Keymap::new(READER);
+        let press = |code| keys.get(KeyEvent::new(code, KeyModifiers::NONE));
+        assert_eq!(press(KeyCode::Char('j')), Some(ReaderAction::Down));
+        assert_eq!(press(KeyCode::Down), Some(ReaderAction::Down));
+        assert_eq!(press(KeyCode::PageUp), Some(ReaderAction::PageUp));
+        assert_eq!(press(KeyCode::End), Some(ReaderAction::Bottom));
+        assert_eq!(press(KeyCode::Tab), Some(ReaderAction::NextLink));
+        assert_eq!(press(KeyCode::Esc), Some(ReaderAction::Back));
+        assert_eq!(press(KeyCode::Char('p')), None, "left to the menu");
     }
 
     #[test]

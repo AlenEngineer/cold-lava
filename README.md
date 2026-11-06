@@ -66,12 +66,21 @@ Press `?` in any view to see every key.
 ### Main menu
 
 Three columns: **vaults**, the selected vault's **notes** (a folder tree, with whiteboards), and
-the selected **note in Neovim**. Vaults come from Obsidian's own vault list, the vaults you've
+the selected **note**, in the reader or in Neovim. Vaults come from Obsidian's own vault list, the vaults you've
 opened in cold-lava, and any folder you add with `a`.
 
 The right pane runs your real Neovim (your config, colours and plugins). It follows the
 selection as you move through notes; press `Enter` to start editing and `Ctrl-q` to get back to
-the menu.
+the menu. Press `v` to switch the pane to the **reader** and back.
+
+**The reader** shows the note rendered, in the vault's [Markdown flavour](#markdown-flavour):
+headings, lists and tasks, quotes and callouts (folded ones show only their title), code blocks,
+tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden. Links are
+underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the
+reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the next link and
+`Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser); a click
+on a link follows it too. `e` edits the note in `$EDITOR` full screen, and `Esc` goes back to
+the notes. The reader updates when the note changes on disk and keeps its place.
 
 **Links and backlinks.** Inside Neovim, press `Enter` (or `gf`) on a `[[link]]` or
 `[text](note.md)` to open that note, resolved the way Obsidian does. `[[Note#Heading]]` and
@@ -81,13 +90,14 @@ since it's Neovim's own jump list. Under the editor, **Backlinks** lists every n
 the open one, with the line it's on. `Tab` into it and press `Enter` to open that note at the
 link, or press `b` to hide it. Edits are saved when you move to another note or quit. cold-lava uses `$VISUAL` or
 `$EDITOR` if it's Neovim or Vim, otherwise `nvim` from your `PATH`. Without either, the pane
-shows a rendered preview and `Enter` opens your `$EDITOR` full screen.
+shows the reader.
 
 | Key | Action |
 | --- | --- |
-| `↑↓` / `jk`, `Tab` | move; switch between vaults, notes and the editor |
+| `↑↓` / `jk`, `Tab` | move; switch between vaults, notes and the editor or reader |
 | `→` / `←` | open / close a folder |
-| `Enter` | edit the note in Neovim · open a whiteboard |
+| `Enter` | edit the note in Neovim, or read it in the reader · open a whiteboard |
+| `v` | switch the pane between the reader and Neovim |
 | `Ctrl-q` | leave Neovim, back to the menu |
 | `Enter` in Neovim, `Ctrl-o` | follow the `[[link]]` under the cursor · go back |
 | `b` | show / hide backlinks |
@@ -99,6 +109,20 @@ shows a rendered preview and `Enter` opens your `$EDITOR` full screen.
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder / add a vault |
 | `z`, `e`, `o` | zoom the editor · edit in `$EDITOR` full screen · open in Obsidian |
+
+In the reader:
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, `↑↓` | scroll |
+| `space` / `PageDown` / `Ctrl-d`, `PageUp` / `Ctrl-u` | page down, page up |
+| `g` / `Home`, `G` / `End` | top, bottom |
+| `Tab` / `Shift-Tab` | select the next / previous link |
+| `Enter` | follow the selected link (creates missing notes) |
+| `e` | edit the note in `$EDITOR` full screen |
+| `Esc` / `q` | back to the notes |
+
+Other menu keys (`p`, `s`, `:`, `?`, `R`, ...) work in the reader too.
 
 ### Graph view
 
@@ -172,7 +196,7 @@ changed in `~/.config/cold-lava/config.toml` (or `$XDG_CONFIG_HOME/cold-lava/con
 ```
 
 Keys are written like `g`, `G`, `ctrl+o`, `alt+x`, `shift+tab`, `esc`, `enter`, `space`,
-`backspace`, `delete`. The help screens (`?`) and the command palette show the keys you set.
+`backspace`, `delete`, `up`, `down`, `left`, `right`, `pageup`, `pagedown`, `home`, `end`. The help screens (`?`) and the command palette show the keys you set.
 `cold-lava keys` lists every command with its keys and reports mistakes in the file. A mistake
 never stops the app: an unknown id or a key that doesn't parse is skipped, and when two commands
 on the same screen would share a key, both keep their default keys.
