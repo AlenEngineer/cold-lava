@@ -7,6 +7,8 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
 ### Added
 
 - `cold-lava rename VAULT NOTE NEW` renames or moves a note and updates every link to it, like
@@ -90,5 +92,6 @@ The first release.
 - Live updates when notes change on disk, accent-insensitive matching everywhere, and an example
   vault that shows every feature.
 
-[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AlenEngineer/cold-lava/releases/tag/v0.1.0
