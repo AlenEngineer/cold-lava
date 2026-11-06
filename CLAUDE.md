@@ -83,8 +83,8 @@ required checks on `main`.
 
 ## Where things stand
 
-- Open: the `rename-core` ← `rename-menu` stack (rename/move with links updated; `R`/`m` in the
-  menu).
+- The extension API design is in `docs/extensions.md`. The connection to extensions must stay
+  behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - Next on the core list: an extension API (graph, canvas, agenda and the menu should become
   extensions of the core); then performance for large vaults (Barnes–Hut layout), a config file,
   light-terminal colours.
