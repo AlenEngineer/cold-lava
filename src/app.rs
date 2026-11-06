@@ -1,13 +1,13 @@
 //! The graph view: state, input handling and drawing.
 
+use crate::core::{Core, Event as CoreEvent};
 use crate::graph::{self, BuildOpts, Graph, Kind};
 use crate::groups::{self, Assignment};
 use crate::kitty::{self, Kitty};
 use crate::scene::{Disc, Edge, Label, Layer, Scene};
-use crate::vault::{self, Vault};
+use crate::vault;
 use crate::{board, term};
 use anyhow::Result;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -20,8 +20,6 @@ use ratatui::widgets::canvas::Canvas;
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
-use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 // Palette (truecolor; Ghostty, Kitty, WezTerm, iTerm2 all support it).
@@ -54,7 +52,8 @@ enum Drag {
 }
 
 pub struct App {
-    vault: Vault,
+    /// The live vault (shared with the main menu, which hands it over and gets it back).
+    core: Core,
     graph: Graph,
     opts: BuildOpts,
     // Camera: world point at the centre of the view, and braille dots per world unit.
@@ -85,9 +84,6 @@ pub struct App {
     dirty: bool,
     pending_image: Vec<u8>,
     // Live updates when notes change on disk
-    fs_events: Option<Receiver<notify::Event>>,
-    _watcher: Option<RecommendedWatcher>,
-    rescan_at: Option<Instant>,
     /// The view the last pixel frame was rendered for; any camera move needs a new frame.
     last_view: (f64, f64, f64, f64),
     /// The camera is still easing toward a fit.
@@ -102,13 +98,14 @@ pub enum Render {
 }
 
 impl App {
-    pub fn new(vault: Vault, render: Render) -> App {
+    pub fn new(core: Core, render: Render) -> App {
+        let vault = &core.index.vault;
         let opts = BuildOpts {
             unresolved: false,
             tags: false,
             orphans: true,
         };
-        let graph = graph::build(&vault, opts, &HashMap::new());
+        let graph = graph::build(vault, opts, &HashMap::new());
         let n = graph.nodes.len();
         let obsidian_groups = groups::load_obsidian(&vault.root);
         let group_mode = if obsidian_groups.is_empty() {
@@ -123,9 +120,8 @@ impl App {
             _ => Kitty::new(),
         };
         let pixels = kitty.is_some();
-        let (fs_events, watcher) = watch_vault(&vault.root);
         App {
-            vault,
+            core,
             graph,
             opts,
             cam: (0.0, 0.0),
@@ -152,9 +148,6 @@ impl App {
             pixels,
             dirty: true,
             pending_image: Vec::new(),
-            fs_events,
-            _watcher: watcher,
-            rescan_at: None,
             last_view: (0.0, 0.0, 0.0, 0.0),
             fitting: true,
         }
@@ -218,44 +211,47 @@ impl App {
     }
 
     /// Rescan shortly after notes change on disk (debounced so a burst of saves rescans once).
+    /// Follow changes on disk through the core's events.
     fn check_disk(&mut self) {
-        if let Some(rx) = &self.fs_events
-            && rx.try_iter().any(|ev| {
-                ev.paths
-                    .iter()
-                    .any(|p| is_vault_change(&self.vault.root, p))
-            })
+        if self.drag.is_some() {
+            return; // don't move the graph under the mouse
+        }
+        let events = self.core.poll();
+        if events.is_empty() {
+            return;
+        }
+        if events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::GraphSettingsChanged | CoreEvent::Rescanned))
         {
-            self.rescan_at = Some(Instant::now() + Duration::from_millis(300));
+            self.obsidian_groups = groups::load_obsidian(&self.core.index.vault.root);
         }
-        if self.rescan_at.is_some_and(|t| Instant::now() >= t) && self.drag.is_none() {
-            self.rescan_at = None;
-            let before = self.vault.notes.len();
-            self.rebuild(true);
-            let after = self.vault.notes.len();
-            self.flash(match after.cmp(&before) {
-                std::cmp::Ordering::Greater => format!("vault changed: +{} notes", after - before),
-                std::cmp::Ordering::Less => format!("vault changed: −{} notes", before - after),
-                _ => "vault changed: graph updated".to_string(),
-            });
-            self.dirty = true;
-        }
+        let count = |pred: fn(&CoreEvent) -> bool| events.iter().filter(|e| pred(e)).count();
+        let added = count(|e| matches!(e, CoreEvent::NoteCreated(_)));
+        let removed = count(|e| matches!(e, CoreEvent::NoteRemoved(_)));
+        self.rebuild();
+        self.flash(match (added, removed) {
+            (0, 0) => "vault changed: graph updated".to_string(),
+            (a, 0) => format!("vault changed: +{a} notes"),
+            (0, r) => format!("vault changed: −{r} notes"),
+            (a, r) => format!("vault changed: +{a} −{r} notes"),
+        });
+        self.dirty = true;
+    }
+
+    /// Give the live vault back (to the main menu).
+    pub fn into_core(self) -> Core {
+        self.core
     }
 
     // ---------- graph state ----------
 
-    fn rebuild(&mut self, rescan: bool) {
-        if rescan {
-            match vault::scan(&self.vault.root) {
-                Ok(v) => self.vault = v,
-                Err(e) => return self.flash(format!("rescan failed: {e}")),
-            }
-            self.obsidian_groups = groups::load_obsidian(&self.vault.root);
-        }
+    /// Rebuild the graph from the core's current notes, keeping node positions.
+    fn rebuild(&mut self) {
         let prev = self.graph.positions();
         let prev_aspect = self.graph.aspect;
         let sel_key = self.sel.map(|i| self.graph.nodes[i].key.clone());
-        self.graph = graph::build(&self.vault, self.opts, &prev);
+        self.graph = graph::build(&self.core.index.vault, self.opts, &prev);
         self.graph.alpha = 0.6;
         self.graph.aspect = prev_aspect;
         self.sel = sel_key.and_then(|k| self.graph.find(&k));
@@ -608,7 +604,12 @@ impl App {
             KeyCode::Char('o') => self.open_in_obsidian(),
             KeyCode::Char('w') => {
                 self.hide_image();
-                board::launch(terminal, &self.vault.root, None, self.kitty.is_some())?;
+                board::launch(
+                    terminal,
+                    &self.core.index.vault.root,
+                    None,
+                    self.kitty.is_some(),
+                )?;
                 self.dirty = true;
             }
 
@@ -633,7 +634,7 @@ impl App {
             KeyCode::Char('p') => self.toggle_pixels(),
             KeyCode::Char('t') => {
                 self.opts.tags = !self.opts.tags;
-                self.rebuild(false);
+                self.rebuild();
                 self.flash(if self.opts.tags {
                     "tags shown"
                 } else {
@@ -642,7 +643,7 @@ impl App {
             }
             KeyCode::Char('u') => {
                 self.opts.unresolved = !self.opts.unresolved;
-                self.rebuild(false);
+                self.rebuild();
                 self.flash(if self.opts.unresolved {
                     "unresolved links shown"
                 } else {
@@ -651,7 +652,7 @@ impl App {
             }
             KeyCode::Char('O') => {
                 self.opts.orphans = !self.opts.orphans;
-                self.rebuild(false);
+                self.rebuild();
                 self.flash(if self.opts.orphans {
                     "orphans shown"
                 } else {
@@ -676,10 +677,7 @@ impl App {
                     self.graph.reheat(0.5);
                 }
             }
-            KeyCode::Char('r') => {
-                self.rebuild(true);
-                self.flash(format!("rescanned: {} notes", self.vault.notes.len()));
-            }
+            KeyCode::Char('r') => self.core.rescan(), // picked up as a Rescanned event
             _ => {}
         }
         Ok(())
@@ -845,10 +843,13 @@ impl App {
             Kind::Note => node.path.clone().unwrap(),
             Kind::Unresolved => {
                 // Like clicking an unresolved link in Obsidian: create the note.
-                let p = self.vault.root.join(format!("{}.md", node.label));
-                if !p.exists() {
-                    std::fs::write(&p, "")?;
-                }
+                let p = self
+                    .core
+                    .index
+                    .vault
+                    .root
+                    .join(format!("{}.md", node.label));
+                crate::write::create_if_missing(&p, b"")?;
                 p
             }
             Kind::Tag => {
@@ -857,8 +858,8 @@ impl App {
             }
         };
         self.hide_image();
-        match term::edit_file(terminal, &path, &self.vault.root)? {
-            None => self.rebuild(true), // links may have changed
+        match term::edit_file(terminal, &path, &self.core.index.vault.root)? {
+            None => self.core.note_changed(&path), // its links may have changed
             Some(err) => self.flash(err),
         }
         Ok(())
@@ -868,7 +869,7 @@ impl App {
         let Some(rel) = self.sel.and_then(|i| self.graph.nodes[i].rel.clone()) else {
             return self.flash("select a note first");
         };
-        let ok = term::open_in_obsidian(&self.vault.name, &rel);
+        let ok = term::open_in_obsidian(&self.core.index.vault.name, &rel);
         self.flash(if ok {
             "opened in Obsidian"
         } else {
@@ -1073,7 +1074,7 @@ impl App {
             Span::styled(
                 format!(
                     "{} · {} nodes · {} links ",
-                    self.vault.name, shown, shown_links
+                    self.core.index.vault.name, shown, shown_links
                 ),
                 Style::new().fg(MUTED),
             ),
@@ -1300,60 +1301,4 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ),
         r,
     );
-}
-
-pub fn watch_vault(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
-    let (tx, rx) = mpsc::channel();
-    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res
-            && !matches!(ev.kind, notify::EventKind::Access(_))
-        {
-            let _ = tx.send(ev);
-        }
-    });
-    match watcher {
-        Ok(mut w) => match w.watch(root, RecursiveMode::Recursive) {
-            Ok(()) => (Some(rx), Some(w)),
-            Err(_) => (None, None), // live updates unavailable; `r` still rescans
-        },
-        Err(_) => (None, None),
-    }
-}
-
-/// Does a changed path affect the graph? Notes do; Obsidian's own state files don't,
-/// except the graph colour-group settings.
-pub fn is_vault_change(root: &Path, path: &Path) -> bool {
-    let Ok(rel) = path.strip_prefix(root) else {
-        return false;
-    };
-    let rel = rel.to_string_lossy().replace('\\', "/");
-    if rel == ".obsidian/graph.json" {
-        return true;
-    }
-    let hidden = rel.split('/').any(|part| part.starts_with('.'));
-    !hidden && rel.ends_with(".md")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_vault_change;
-    use std::path::Path;
-
-    #[test]
-    fn only_notes_and_graph_settings_trigger_rescans() {
-        let root = Path::new("/vault");
-        assert!(is_vault_change(root, Path::new("/vault/Note.md")));
-        assert!(is_vault_change(root, Path::new("/vault/a/b/Deep.md")));
-        assert!(is_vault_change(
-            root,
-            Path::new("/vault/.obsidian/graph.json")
-        ));
-        assert!(!is_vault_change(
-            root,
-            Path::new("/vault/.obsidian/workspace.json")
-        ));
-        assert!(!is_vault_change(root, Path::new("/vault/.trash/Old.md")));
-        assert!(!is_vault_change(root, Path::new("/vault/Board.canvas")));
-        assert!(!is_vault_change(root, Path::new("/elsewhere/Note.md")));
-    }
 }

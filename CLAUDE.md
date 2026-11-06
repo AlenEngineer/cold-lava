@@ -22,6 +22,11 @@ required checks on `main`.
 
 **Core** (no UI; other code asks it instead of re-parsing files):
 
+- `core.rs`: `Core` = one live vault. Owns the `Index`, is the only file watcher, re-reads only
+  changed notes and emits `Event`s (`poll()`, `subscribe()`). Screens share it: the menu lends
+  its core to the graph view and gets it back. Don't add another watcher or full rescan loop.
+- `write.rs`: the only way to write to a vault: `write_atomic`, `replace` (refused if the file
+  changed since it was read), `create`, `move_file`. Never call `std::fs::write` on vault files.
 - `vault.rs`: scans a vault: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
@@ -83,8 +88,8 @@ required checks on `main`.
 
 ## Where things stand
 
-- Open: the `rename-core` ← `rename-menu` stack (rename/move with links updated; `R`/`m` in the
-  menu).
+- The extension API design is in `docs/extensions.md`. The connection to extensions must stay
+  behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - Next on the core list: an extension API (graph, canvas, agenda and the menu should become
   extensions of the core); then performance for large vaults (Barnes–Hut layout), a config file,
   light-terminal colours.

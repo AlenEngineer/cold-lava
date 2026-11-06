@@ -490,9 +490,16 @@ pub fn toggle(
     if ends_with_newline {
         out.push_str(nl);
     }
-    let tmp = path.with_extension("md.cold-lava-tmp");
-    std::fs::write(&tmp, out)?;
-    std::fs::rename(&tmp, &path)?;
+    match crate::write::replace(&path, text.as_bytes(), out.as_bytes()) {
+        Err(crate::write::WriteError::Changed(_)) => {
+            return Err(Changed(format!(
+                "{} changed while the task was being toggled; refresh and try again",
+                path.display()
+            ))
+            .into());
+        }
+        r => r?,
+    }
     let status = status_of(new_char).0;
     Ok(Toggled {
         path: path.to_string_lossy().into_owned(),

@@ -1,5 +1,6 @@
 mod app;
 mod board;
+mod core;
 mod daily;
 mod embed;
 mod graph;
@@ -13,6 +14,7 @@ mod search;
 mod tasks;
 mod term;
 mod vault;
+mod write;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -136,11 +138,11 @@ fn run() -> Result<()> {
         }
         Some("graph") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
-            let vault = vault::scan(&root)?;
-            if vault.notes.is_empty() {
-                anyhow::bail!("no .md notes found under {}", vault.root.display());
+            let core = core::Core::open(&root)?;
+            if core.index.vault.notes.is_empty() {
+                anyhow::bail!("no .md notes found under {}", core.root().display());
             }
-            let mut app = app::App::new(vault, render);
+            let mut app = app::App::new(core, render);
             with_terminal(|t| app.run(t))
         }
         Some("agenda") => {

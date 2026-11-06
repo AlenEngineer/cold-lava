@@ -19,6 +19,16 @@ change commands, keys and file formats; patch versions only fix things.
   preview of every link that will change before you confirm. The open note is saved first, and
   Neovim shows it under its new name afterwards.
 
+### Changed
+
+- Every write to a vault now goes through one path: atomic (a hidden temporary file, then a
+  rename) and refused if the file changed since it was read. Task toggles, renames, new notes,
+  daily notes and whiteboards all use it.
+- The main menu now re-reads only the notes that changed on disk instead of the whole vault;
+  a full rescan only happens when a folder moves or a whiteboard changes.
+- The graph view and the main menu share one live vault with a single file watcher, so changes
+  made while the graph is open show up in the menu too.
+
 ### Fixed
 
 - `Ctrl-q` in the main menu no longer quits; it goes back to the editor.

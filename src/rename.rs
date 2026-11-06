@@ -465,10 +465,7 @@ pub fn apply(plan: &Plan) -> Result<()> {
     if plan.to_path.exists() && plan.to.to_lowercase() != plan.from.to_lowercase() {
         bail!("{} already exists", plan.to);
     }
-    if let Some(dir) = plan.to_path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::rename(&plan.from_path, &plan.to_path)
+    crate::write::move_file(&plan.from_path, &plan.to_path)
         .with_context(|| format!("moving {} to {}", plan.from, plan.to))?;
     let mut failed = Vec::new();
     for e in &plan.edits {
@@ -478,9 +475,9 @@ pub fn apply(plan: &Plan) -> Result<()> {
         } else {
             &e.path
         };
-        let tmp = path.with_extension("cold-lava-tmp");
-        let res = std::fs::write(&tmp, &e.new_text).and_then(|_| std::fs::rename(&tmp, path));
-        if let Err(err) = res {
+        // Still guarded: a file edited between the check above and now is left alone.
+        if let Err(err) = crate::write::replace(path, e.old_text.as_bytes(), e.new_text.as_bytes())
+        {
             failed.push(format!("{} ({err})", e.file));
         }
     }

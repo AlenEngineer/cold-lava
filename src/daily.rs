@@ -1,7 +1,7 @@
 //! Daily notes, following the vault's Obsidian "Daily notes" settings
 //! (`.obsidian/daily-notes.json`: folder, moment.js date format, template).
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{Datelike, Local, NaiveDate, NaiveTime, Timelike, Weekday};
 use regex::Regex;
 use std::path::{Path, PathBuf};
@@ -96,13 +96,7 @@ pub fn ensure(root: &Path, date: NaiveDate) -> Result<PathBuf> {
         }
         None => String::new(),
     };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    if path.exists() {
-        bail!("{} appeared while creating it", path.display());
-    }
-    std::fs::write(&path, body)?;
+    crate::write::create(&path, body.as_bytes())?;
     Ok(path)
 }
 
