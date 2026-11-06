@@ -135,15 +135,16 @@ fn run() -> Result<()> {
         app::Render::Auto
     };
     let json = args.has("json");
-    config::load();
+    let registry = ext::Registry::builtin();
+    config::load(registry.commands());
 
     match args.word(0) {
         Some("keys") => {
-            print_keys("menu", commands::MENU);
-            print_keys("graph", commands::GRAPH);
-            print_keys("whiteboard", commands::BOARD);
-            print_keys("reader", commands::READER);
-            print_keys("pane", commands::PANE);
+            print_keys("menu", registry.commands());
+            print_keys("graph", &commands::entries(commands::GRAPH));
+            print_keys("whiteboard", &commands::entries(commands::BOARD));
+            print_keys("reader", &commands::entries(commands::READER));
+            print_keys("pane", &commands::entries(commands::PANE));
             let errors = &config::get().errors;
             if !errors.is_empty() {
                 let path = config::path().unwrap_or_default();
@@ -151,6 +152,14 @@ fn run() -> Result<()> {
                 for e in errors {
                     eprintln!("  {}", e.replace('\n', "\n  "));
                 }
+            }
+            if !registry.refused().is_empty() {
+                eprintln!("extensions:");
+                for e in registry.refused() {
+                    eprintln!("  {e}");
+                }
+            }
+            if !errors.is_empty() || !registry.refused().is_empty() {
                 std::process::exit(1);
             }
             Ok(())
@@ -274,7 +283,7 @@ fn run() -> Result<()> {
                 println!("{}", path.display());
                 return Ok(());
             }
-            let mut home = home::Home::new(render, Some(root));
+            let mut home = home::Home::new(render, Some(root), registry);
             home.focus_note(&path);
             with_terminal(|t| home.run(t))
         }
@@ -320,20 +329,20 @@ fn run() -> Result<()> {
             if !path.is_dir() {
                 anyhow::bail!("not a folder or command: {dir}\n\n{USAGE}");
             }
-            let mut home = home::Home::new(render, Some(path));
+            let mut home = home::Home::new(render, Some(path), registry);
             with_terminal(|t| home.run(t))
         }
         None => {
-            let mut home = home::Home::new(render, None);
+            let mut home = home::Home::new(render, None, registry);
             with_terminal(|t| home.run(t))
         }
     }
 }
 
-fn print_keys<A: Copy>(screen: &str, table: &'static [commands::Command<A>]) {
-    let keys = commands::Keymap::new(table);
+fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
+    let keys = commands::Keymap::configured(table);
     let id_width = table.iter().map(|c| c.id.len()).max().unwrap_or(0);
-    let labels: Vec<String> = table.iter().map(|c| keys.label(c.id)).collect();
+    let labels: Vec<String> = table.iter().map(|c| keys.label(&c.id)).collect();
     let key_width = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     println!("{screen}");
     for (c, label) in table.iter().zip(&labels) {

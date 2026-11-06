@@ -1,15 +1,25 @@
 //! Neovim (or Vim) as the editor. It runs in the core's pane with `VIM_SCRIPT` loaded, which
 //! reports every note it opens or saves and asks cold-lava to follow links.
 
-use super::{EditorRequest, Extension, Host, Manifest, PaneId, PaneNews, PaneSpec, Role};
+use super::{
+    CommandRequest, CommandSpec, EditorRequest, Extension, Host, Manifest, PaneId, PaneNews,
+    PaneSpec, Role,
+};
 use crate::core::Jump;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub struct Nvim {
     program: String,
     /// Its pane, while it runs.
     pane: Option<PaneId>,
+    /// The pane `nvim.restart` asked to quit: when it exits, Neovim starts again.
+    restarting: Option<PaneId>,
+    /// The note it showed last, to start again on.
+    note: Option<PathBuf>,
+    /// `VIM_SCRIPT` on disk, written at the first start and removed with this extension.
+    script: Option<PathBuf>,
 }
 
 impl Nvim {
@@ -28,6 +38,9 @@ impl Nvim {
         let found = |program: String| Nvim {
             program,
             pane: None,
+            restarting: None,
+            note: None,
+            script: None,
         };
         for var in ["COLD_LAVA_EDITOR", "VISUAL", "EDITOR"] {
             if let Ok(v) = std::env::var(var) {
@@ -49,6 +62,39 @@ impl Nvim {
             _ => "Vim",
         }
     }
+
+    fn start(&mut self, note: &Path, jump: Option<&Jump>, host: &mut Host<'_>) {
+        let mut args = vec!["-c".to_string(), "set autoread".to_string()];
+        if self.script.is_none() {
+            self.script = write_script();
+        }
+        if let Some(script) = &self.script {
+            args.push("-S".to_string());
+            args.push(script.to_string_lossy().into_owned());
+        }
+        args.push(note.to_string_lossy().into_owned());
+        let program = self.program.clone();
+        let pane = host.open_pane(PaneSpec { program, args });
+        self.pane = Some(pane);
+        if let Some(j) = jump {
+            host.pane_input(pane, open_command_at(note, Some(j)));
+        }
+    }
+
+    /// `nvim.restart`: save everything and quit, then start again on the same note. A Neovim
+    /// that won't quit (a buffer it can't write) stays, showing why.
+    fn restart(&mut self, host: &mut Host<'_>) {
+        let title = self.title();
+        match (self.pane, self.note.clone()) {
+            (Some(pane), _) => {
+                self.restarting = Some(pane);
+                host.notify(format!("restarting {title}"));
+                host.pane_input(pane, "\x1c\x0e:silent! wall | qall\r");
+            }
+            (None, Some(note)) => self.start(&note, None, host),
+            (None, None) => host.notify(format!("Select a note to open {title}")),
+        }
+    }
 }
 
 impl Extension for Nvim {
@@ -62,6 +108,14 @@ impl Extension for Nvim {
                 hint("⏎ on a [[link]]", "follows it"),
                 hint("Ctrl-o", "back"),
             ],
+            commands: vec![CommandSpec {
+                id: "nvim.restart".to_string(),
+                title: format!(
+                    "restart {}: save, quit and start it again on the same note",
+                    self.title()
+                ),
+                keys: Vec::new(),
+            }],
         }
     }
 
@@ -71,34 +125,41 @@ impl Extension for Nvim {
                 pane,
                 kind,
                 payload,
-            } if self.pane == Some(pane) => message(&kind, &payload, host),
+            } if self.pane == Some(pane) => {
+                if kind == "open" {
+                    self.note = Some(PathBuf::from(&payload));
+                }
+                message(&kind, &payload, host)
+            }
             PaneNews::Exited { pane, error } if self.pane == Some(pane) => {
                 self.pane = None;
-                // A start that failed is reported by the core, which shows the reader instead.
-                if error.is_none() {
-                    let title = self.title();
-                    host.notify(format!("{title} closed. Select a note to open it again"));
+                let restart = self.restarting.take() == Some(pane);
+                match (error, self.note.clone()) {
+                    // A start that failed is reported by the core, which shows the reader.
+                    (Some(_), _) => {}
+                    (None, Some(note)) if restart => self.start(&note, None, host),
+                    (None, _) => {
+                        let title = self.title();
+                        host.notify(format!("{title} closed. Select a note to open it again"));
+                    }
                 }
             }
             _ => {}
         }
     }
 
+    fn command(&mut self, request: CommandRequest, host: &mut Host<'_>) {
+        let CommandRequest::Run { id, .. } = request;
+        if id == "nvim.restart" {
+            self.restart(host);
+        }
+    }
+
     fn editor(&mut self, request: EditorRequest, host: &mut Host<'_>) {
         match (request, self.pane) {
             (EditorRequest::Open { note, jump }, None) => {
-                let mut args = vec!["-c".to_string(), "set autoread".to_string()];
-                if let Some(script) = script_path() {
-                    args.push("-S".to_string());
-                    args.push(script.to_string_lossy().into_owned());
-                }
-                args.push(note.to_string_lossy().into_owned());
-                let program = self.program.clone();
-                let pane = host.open_pane(PaneSpec { program, args });
-                self.pane = Some(pane);
-                if let Some(j) = &jump {
-                    host.pane_input(pane, open_command_at(&note, Some(j)));
-                }
+                self.start(&note, jump.as_ref(), host);
+                self.note = Some(note);
             }
             (EditorRequest::Open { note, jump }, Some(pane)) => {
                 host.pane_input(pane, open_command_at(&note, jump.as_ref()))
@@ -237,10 +298,22 @@ if expand('%:e') ==# 'md'
 endif
 "#;
 
-fn script_path() -> Option<PathBuf> {
-    let p = std::env::temp_dir().join(format!("cold-lava-{}.vim", std::process::id()));
+/// Writes `VIM_SCRIPT` to a file of its own: one per `Nvim`, so two of them in one process
+/// (tests run in parallel) never write over the file the other is reading.
+fn write_script() -> Option<PathBuf> {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!("cold-lava-{}-{n}.vim", std::process::id()));
     std::fs::write(&p, VIM_SCRIPT).ok()?;
     Some(p)
+}
+
+impl Drop for Nvim {
+    fn drop(&mut self) {
+        if let Some(p) = &self.script {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -253,6 +326,9 @@ mod tests {
         let nvim = Nvim {
             program: "nvim".into(),
             pane: None,
+            restarting: None,
+            note: None,
+            script: None,
         };
         let registry = Registry::new(vec![Box::new(nvim)]);
         let editor = registry.editor().expect("Neovim is an editor");
@@ -298,13 +374,16 @@ mod tests {
         assert_eq!(spec.args[..2], ["-c", "set autoread"]);
         assert_eq!(spec.args.last().unwrap(), "/v/Lava.md");
         let script = spec.args.iter().position(|a| a == "-S").unwrap() + 1;
-        let script = std::fs::read_to_string(&spec.args[script]).unwrap();
+        let script_file = PathBuf::from(&spec.args[script]);
+        let script = std::fs::read_to_string(&script_file).unwrap();
         assert!(script.contains("function! ColdLavaFollow()"));
         assert_eq!(typed_into, pane);
         assert!(
             text.ends_with("| call cursor(12, 1) | normal! zz\r"),
             "{text:?}"
         );
+        drop(r);
+        assert!(!script_file.exists(), "the script goes with Neovim");
     }
 
     #[test]
@@ -400,6 +479,77 @@ mod tests {
             open(&mut r, ed, "/v/Lava.md", None)[..],
             [Effect::OpenPane { pane: p, .. }] if p != pane
         ));
+    }
+
+    fn restart(r: &mut Registry, ed: ExtId) -> Vec<Effect> {
+        let request = CommandRequest::Run {
+            id: "nvim.restart".into(),
+            args: Value::Null,
+        };
+        r.call(ed, |e, host| e.command(request, host))
+    }
+
+    #[test]
+    fn restart_saves_quits_and_starts_again_on_the_last_note() {
+        let (mut r, ed) = nvim();
+        assert!(
+            r.commands().iter().any(|c| c.id == "nvim.restart"),
+            "registered"
+        );
+        let pane = started(&mut r, ed);
+        let (kind, payload) = ("open".to_string(), "/v/Hotspot.md".to_string());
+        let opened = PaneNews::Message {
+            pane,
+            kind,
+            payload,
+        };
+        news(&mut r, ed, opened);
+        assert_eq!(
+            restart(&mut r, ed),
+            [
+                Effect::Notify {
+                    message: "restarting Neovim".into()
+                },
+                Effect::PaneInput {
+                    pane,
+                    text: "\x1c\x0e:silent! wall | qall\r".into()
+                },
+            ]
+        );
+        let fx = news(&mut r, ed, PaneNews::Exited { pane, error: None });
+        let [Effect::OpenPane { pane: again, spec }] = &fx[..] else {
+            panic!("{fx:?}")
+        };
+        assert_ne!(*again, pane);
+        assert_eq!(spec.args.last().unwrap(), "/v/Hotspot.md");
+
+        // Quitting it later is a plain quit again.
+        let exited = PaneNews::Exited {
+            pane: *again,
+            error: None,
+        };
+        assert!(matches!(
+            news(&mut r, ed, exited)[..],
+            [Effect::Notify { .. }]
+        ));
+    }
+
+    #[test]
+    fn restart_when_closed_starts_it_and_without_a_note_says_how() {
+        let (mut r, ed) = nvim();
+        assert_eq!(
+            restart(&mut r, ed),
+            [Effect::Notify {
+                message: "Select a note to open Neovim".into()
+            }]
+        );
+        let pane = started(&mut r, ed);
+        news(&mut r, ed, PaneNews::Exited { pane, error: None });
+        let fx = restart(&mut r, ed);
+        let [Effect::OpenPane { spec, .. }] = &fx[..] else {
+            panic!("{fx:?}")
+        };
+        assert_eq!(spec.args.last().unwrap(), "/v/Lava.md");
     }
 
     #[test]

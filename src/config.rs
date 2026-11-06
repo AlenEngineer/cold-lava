@@ -7,12 +7,13 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::commands::{self, BOARD, GRAPH, Key, Keymap, MENU, PANE, READER};
+use crate::commands::{self, BOARD, Entry, GRAPH, Key, Keymap, MenuCommand, PANE, READER};
 use crate::markdown::{BUILT_IN, Flavour, Syntax};
 
 #[derive(Default)]
 pub struct Config {
-    /// Keys by command id, only for ids that exist and keys that parse.
+    /// Keys by command id, only for ids that exist (the extensions' included) and keys that
+    /// parse.
     pub keys: BTreeMap<String, Vec<Key>>,
     /// `[markdown] flavour`, resolved. `None` lets the vault decide (`markdown::flavour_for`).
     pub flavour: Option<Flavour>,
@@ -51,13 +52,15 @@ pub fn path() -> Option<PathBuf> {
     crate::home::config_dir().map(|c| c.join("cold-lava/config.toml"))
 }
 
-pub fn load() {
-    let _ = CONFIG.set(read(path()));
+/// Reads the file, checking `[keys]` against every screen's commands, with `menu` as the menu's:
+/// the core's and the loaded extensions'.
+pub fn load(menu: &[Entry<MenuCommand>]) {
+    let _ = CONFIG.set(read(path(), menu));
 }
 
-fn read(path: Option<PathBuf>) -> Config {
+fn read(path: Option<PathBuf>, menu: &[Entry<MenuCommand>]) -> Config {
     match path.map(std::fs::read_to_string) {
-        Some(Ok(text)) => parse(&text),
+        Some(Ok(text)) => parse(&text, menu),
         Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Config {
             errors: vec![format!("can't read it: {e}")],
             ..Config::default()
@@ -71,7 +74,7 @@ pub fn get() -> &'static Config {
     CONFIG.get_or_init(Config::default)
 }
 
-pub fn parse(text: &str) -> Config {
+pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let file: File = match toml::from_str(text) {
         Ok(f) => f,
         Err(e) => {
@@ -81,7 +84,8 @@ pub fn parse(text: &str) -> Config {
             };
         }
     };
-    let ids: HashSet<&str> = commands::ids().collect();
+    let mut ids: HashSet<&str> = commands::ids().collect();
+    ids.extend(menu.iter().map(|c| c.id.as_str()));
     let mut config = Config::default();
     for (id, value) in file.keys {
         if !ids.contains(id.as_str()) {
@@ -101,11 +105,20 @@ pub fn parse(text: &str) -> Config {
         }
     }
     config.flavour = markdown(file.markdown, &mut config.errors);
-    config.errors.extend(Keymap::with(MENU, &config.keys).1);
-    config.errors.extend(Keymap::with(GRAPH, &config.keys).1);
-    config.errors.extend(Keymap::with(BOARD, &config.keys).1);
-    config.errors.extend(Keymap::with(READER, &config.keys).1);
-    config.errors.extend(Keymap::with(PANE, &config.keys).1);
+    config.errors.extend(Keymap::with(menu, &config.keys).1);
+    let keys = &config.keys;
+    config
+        .errors
+        .extend(Keymap::with(&commands::entries(GRAPH), keys).1);
+    config
+        .errors
+        .extend(Keymap::with(&commands::entries(BOARD), keys).1);
+    config
+        .errors
+        .extend(Keymap::with(&commands::entries(READER), keys).1);
+    config
+        .errors
+        .extend(Keymap::with(&commands::entries(PANE), keys).1);
     config
 }
 
@@ -201,9 +214,18 @@ mod tests {
     use crate::commands::{MenuAction, PaneAction};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    fn menu(text: &str) -> (Keymap<MenuAction>, Vec<String>) {
+    /// The file read with no extensions loaded.
+    fn parse(text: &str) -> Config {
+        super::parse(text, &commands::menu([]).0)
+    }
+
+    fn menu(text: &str) -> (Keymap<MenuCommand>, Vec<String>) {
         let c = parse(text);
-        (Keymap::with(MENU, &c.keys).0, c.errors)
+        (Keymap::with(&commands::menu([]).0, &c.keys).0, c.errors)
+    }
+
+    fn core(a: MenuAction) -> Option<MenuCommand> {
+        Some(MenuCommand::Core(a))
     }
 
     fn press(c: char) -> KeyEvent {
@@ -214,7 +236,7 @@ mod tests {
     fn override_replaces_the_default_keys() {
         let (keys, errors) = menu("[keys]\n\"graph.open\" = \"G\"\n");
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(keys.get(press('G')), Some(MenuAction::Graph));
+        assert_eq!(keys.get(press('G')), core(MenuAction::Graph));
         assert_eq!(keys.get(press('g')), None);
         assert_eq!(keys.label("graph.open"), "G");
     }
@@ -261,23 +283,28 @@ mod tests {
         // Taking another command's default key is a clash too.
         let (keys, errors) = menu("[keys]\n\"graph.open\" = \"n\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(keys.get(press('n')), Some(MenuAction::NewNote));
-        assert_eq!(keys.get(press('g')), Some(MenuAction::Graph));
+        assert_eq!(keys.get(press('n')), core(MenuAction::NewNote));
+        assert_eq!(keys.get(press('g')), core(MenuAction::Graph));
     }
 
     #[test]
     fn swapping_two_keys_is_not_a_clash() {
         let (keys, errors) = menu("[keys]\n\"graph.open\" = \"n\"\n\"note.new\" = \"g\"\n");
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(keys.get(press('n')), Some(MenuAction::Graph));
-        assert_eq!(keys.get(press('g')), Some(MenuAction::NewNote));
+        assert_eq!(keys.get(press('n')), core(MenuAction::Graph));
+        assert_eq!(keys.get(press('g')), core(MenuAction::NewNote));
     }
 
     #[test]
     fn same_key_in_two_screens_is_fine() {
         let c = parse("[keys]\n\"graph.open\" = \"x\"\n\"board.fit\" = \"x\"\n");
         assert!(c.errors.is_empty(), "{:?}", c.errors);
-        assert_eq!(Keymap::with(BOARD, &c.keys).0.label("board.fit"), "x");
+        assert_eq!(
+            Keymap::with(&commands::entries(BOARD), &c.keys)
+                .0
+                .label("board.fit"),
+            "x"
+        );
     }
 
     #[test]
@@ -285,14 +312,14 @@ mod tests {
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         let c = parse("[keys]\n\"pane.leave\" = \"ctrl+g\"\n");
         assert!(c.errors.is_empty(), "{:?}", c.errors);
-        let keys = Keymap::with(PANE, &c.keys).0;
+        let keys = Keymap::with(&commands::entries(PANE), &c.keys).0;
         assert_eq!(keys.get(ctrl('g')), Some(PaneAction::Leave));
         assert_eq!(keys.get(ctrl('q')), None, "Ctrl-q goes to the program now");
 
         let c = parse("[keys]\n\"pane.leave\" = []\n");
         assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
         assert!(c.errors[0].contains("pane.leave"), "{:?}", c.errors);
-        let keys = Keymap::with(PANE, &c.keys).0;
+        let keys = Keymap::with(&commands::entries(PANE), &c.keys).0;
         assert_eq!(keys.get(ctrl('q')), Some(PaneAction::Leave));
     }
 
@@ -369,7 +396,10 @@ mod tests {
 
     #[test]
     fn missing_file_is_not_an_error() {
-        let c = read(Some(PathBuf::from("/nonexistent/cold-lava/config.toml")));
+        let c = read(
+            Some(PathBuf::from("/nonexistent/cold-lava/config.toml")),
+            &commands::menu([]).0,
+        );
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         assert!(c.keys.is_empty());
     }

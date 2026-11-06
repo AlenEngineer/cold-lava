@@ -44,7 +44,9 @@ required checks on `main`.
 
 - `ext/mod.rs`: `Extension` (one method per host→extension JSON-RPC method), `Host` (one method
   per extension→host method; it queues `Effect`s), `Registry` (loaded extensions, their
-  manifests, the editor). Three rules:
+  manifests, the editor, and the menu's command table: the core's commands plus the extensions',
+  built by `commands::menu`; keys, palette, help, `cold-lava keys` and config all read it).
+  Three rules:
   - An extension can only do what a message can say: every type that crosses derives serde.
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
     into panes.
