@@ -7,7 +7,7 @@ use std::fmt;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Action {
+pub enum MenuAction {
     Quit,
     Help,
     FocusNext,
@@ -32,19 +32,19 @@ pub enum Action {
     EditFullscreen,
 }
 
-pub struct Command {
-    pub action: Action,
+pub struct Command<A> {
+    pub action: A,
     pub id: &'static str,
     pub title: &'static str,
     pub keys: &'static [&'static str],
 }
 
-const fn cmd(
-    action: Action,
+const fn cmd<A>(
+    action: A,
     id: &'static str,
     title: &'static str,
     keys: &'static [&'static str],
-) -> Command {
+) -> Command<A> {
     Command {
         action,
         id,
@@ -54,134 +54,312 @@ const fn cmd(
 }
 
 /// The main menu's commands, in the order the help screen lists them.
-pub const MENU: &[Command] = &[
+pub const MENU: &[Command<MenuAction>] = &[
     cmd(
-        Action::FocusNext,
+        MenuAction::FocusNext,
         "focus.next",
         "switch between vaults, notes, editor and backlinks",
         &["tab"],
     ),
     cmd(
-        Action::FocusPrevious,
+        MenuAction::FocusPrevious,
         "focus.previous",
         "back to the notes, or from the notes to the vaults",
         &["shift+tab"],
     ),
     cmd(
-        Action::Palette,
+        MenuAction::Palette,
         "app.palette",
         "command palette: run any command by name",
         &[":"],
     ),
     cmd(
-        Action::FocusEditor,
+        MenuAction::FocusEditor,
         "editor.focus",
         "in the menu: back to Neovim",
         &["ctrl+q"],
     ),
     cmd(
-        Action::ToggleBacklinks,
+        MenuAction::ToggleBacklinks,
         "backlinks.toggle",
         "show / hide backlinks under the editor",
         &["b"],
     ),
     cmd(
-        Action::Switcher,
+        MenuAction::Switcher,
         "note.switch",
         "quick switcher: jump to any note by name",
         &["p", "ctrl+o"],
     ),
     cmd(
-        Action::Search,
+        MenuAction::Search,
         "search.open",
         "search the text of every note",
         &["s", "ctrl+f"],
     ),
     cmd(
-        Action::Rename,
+        MenuAction::Rename,
         "note.rename",
         "rename the note (every link to it is updated)",
         &["R"],
     ),
     cmd(
-        Action::Move,
+        MenuAction::Move,
         "note.move",
         "move the note to another folder (links updated)",
         &["m"],
     ),
     cmd(
-        Action::EditFullscreen,
+        MenuAction::EditFullscreen,
         "note.edit",
         "edit the note in $EDITOR, full screen",
         &["e"],
     ),
     cmd(
-        Action::Filter,
+        MenuAction::Filter,
         "filter.open",
         "filter notes by name or path",
         &["/"],
     ),
     cmd(
-        Action::ClearFilter,
+        MenuAction::ClearFilter,
         "filter.clear",
         "clear the filter",
         &["esc"],
     ),
     cmd(
-        Action::Graph,
+        MenuAction::Graph,
         "graph.open",
         "graph view of this vault",
         &["g"],
     ),
     cmd(
-        Action::Boards,
+        MenuAction::Boards,
         "boards.open",
         "whiteboards of this vault",
         &["w"],
     ),
     cmd(
-        Action::NewNote,
+        MenuAction::NewNote,
         "note.new",
         "new note in the selected folder",
         &["n"],
     ),
     cmd(
-        Action::Today,
+        MenuAction::Today,
         "daily.today",
         "today's daily note (created from your template)",
         &["t"],
     ),
     cmd(
-        Action::AddVault,
+        MenuAction::AddVault,
         "vault.add",
         "add a vault (any folder of Markdown files)",
         &["a"],
     ),
     cmd(
-        Action::OpenInObsidian,
+        MenuAction::OpenInObsidian,
         "note.open-in-obsidian",
         "open the selected note in Obsidian",
         &["o"],
     ),
     cmd(
-        Action::Zoom,
+        MenuAction::Zoom,
         "editor.zoom",
         "zoom the editor to full width",
         &["z"],
     ),
-    cmd(Action::Rescan, "vault.rescan", "rescan the vault", &["r"]),
-    cmd(Action::Help, "app.help", "this help", &["?"]),
     cmd(
-        Action::Quit,
+        MenuAction::Rescan,
+        "vault.rescan",
+        "rescan the vault",
+        &["r"],
+    ),
+    cmd(MenuAction::Help, "app.help", "this help", &["?"]),
+    cmd(
+        MenuAction::Quit,
         "app.quit",
         "quit (notes are saved)",
         &["q", "ctrl+c"],
     ),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GraphAction {
+    CycleLinks,
+    CycleLinksBack,
+    Back,
+    Search,
+    NextMatch,
+    PreviousMatch,
+    OpenNote,
+    OpenInObsidian,
+    Boards,
+    Local,
+    DepthMore,
+    DepthLess,
+    Groups,
+    Pixels,
+    ZoomIn,
+    ZoomOut,
+    Fit,
+    Center,
+    ToggleTags,
+    ToggleUnresolved,
+    ToggleOrphans,
+    Labels,
+    Pause,
+    Rescan,
+    Escape,
+    Help,
+    Quit,
+}
+
+/// The graph view's commands, in the order the help screen lists them. Moving the selection
+/// and panning are plain keys, not commands.
+pub const GRAPH: &[Command<GraphAction>] = &[
+    cmd(
+        GraphAction::CycleLinks,
+        "graph.cycle-links",
+        "cycle through the selected note's links",
+        &["tab"],
+    ),
+    cmd(
+        GraphAction::CycleLinksBack,
+        "graph.cycle-links-back",
+        "cycle back through the selected note's links",
+        &["shift+tab"],
+    ),
+    cmd(
+        GraphAction::Back,
+        "graph.back",
+        "go back to the previous selection",
+        &["b", "backspace"],
+    ),
+    cmd(GraphAction::Search, "graph.search", "search notes", &["/"]),
+    cmd(
+        GraphAction::NextMatch,
+        "graph.next-match",
+        "jump to the next match",
+        &["n"],
+    ),
+    cmd(
+        GraphAction::PreviousMatch,
+        "graph.previous-match",
+        "jump to the previous match",
+        &["N"],
+    ),
+    cmd(
+        GraphAction::OpenNote,
+        "graph.open-note",
+        "open in $EDITOR (creates unresolved notes)",
+        &["enter", "e"],
+    ),
+    cmd(
+        GraphAction::OpenInObsidian,
+        "graph.open-in-obsidian",
+        "open the note in the Obsidian app",
+        &["o"],
+    ),
+    cmd(
+        GraphAction::Boards,
+        "graph.boards",
+        "whiteboards (Obsidian .canvas files)",
+        &["w"],
+    ),
+    cmd(
+        GraphAction::Local,
+        "graph.local",
+        "local graph around the selection",
+        &["f"],
+    ),
+    cmd(
+        GraphAction::DepthMore,
+        "graph.depth-more",
+        "local graph one link deeper",
+        &["]"],
+    ),
+    cmd(
+        GraphAction::DepthLess,
+        "graph.depth-less",
+        "local graph one link shallower",
+        &["["],
+    ),
+    cmd(
+        GraphAction::Groups,
+        "graph.groups",
+        "colour groups: obsidian → folder → tag → off",
+        &["g"],
+    ),
+    cmd(
+        GraphAction::Pixels,
+        "graph.pixels",
+        "pixel rendering (Kitty graphics) ↔ braille",
+        &["p"],
+    ),
+    cmd(GraphAction::ZoomIn, "graph.zoom-in", "zoom in", &["+", "="]),
+    cmd(
+        GraphAction::ZoomOut,
+        "graph.zoom-out",
+        "zoom out",
+        &["-", "_"],
+    ),
+    cmd(GraphAction::Fit, "graph.fit", "fit graph to screen", &["0"]),
+    cmd(
+        GraphAction::Center,
+        "graph.center",
+        "centre on selection",
+        &["c"],
+    ),
+    cmd(
+        GraphAction::ToggleTags,
+        "graph.toggle-tags",
+        "show / hide tags",
+        &["t"],
+    ),
+    cmd(
+        GraphAction::ToggleUnresolved,
+        "graph.toggle-unresolved",
+        "show / hide unresolved links",
+        &["u"],
+    ),
+    cmd(
+        GraphAction::ToggleOrphans,
+        "graph.toggle-orphans",
+        "show / hide orphans",
+        &["O"],
+    ),
+    cmd(
+        GraphAction::Labels,
+        "graph.labels",
+        "labels: auto → all → selection only",
+        &["a"],
+    ),
+    cmd(
+        GraphAction::Pause,
+        "graph.pause",
+        "pause / resume the layout",
+        &["space"],
+    ),
+    cmd(
+        GraphAction::Rescan,
+        "graph.rescan",
+        "rescan the vault",
+        &["r"],
+    ),
+    cmd(
+        GraphAction::Escape,
+        "graph.escape",
+        "leave local graph, clear selection",
+        &["esc"],
+    ),
+    cmd(GraphAction::Help, "graph.help", "this help", &["?"]),
+    cmd(GraphAction::Quit, "graph.quit", "quit", &["q", "ctrl+c"]),
+];
+
 /// A palette row: the command and the matched char positions in its title or its id.
 pub struct Match {
-    pub command: &'static Command,
+    pub command: &'static Command<MenuAction>,
     pub title_hits: Vec<usize>,
     pub id_hits: Vec<usize>,
 }
@@ -191,7 +369,7 @@ pub struct Match {
 pub fn matching(query: &str) -> Vec<Match> {
     let mut scored: Vec<(i64, Match)> = MENU
         .iter()
-        .filter(|c| c.action != Action::Palette)
+        .filter(|c| c.action != MenuAction::Palette)
         .filter_map(|c| {
             let title = crate::search::fuzzy(query, c.title);
             let id = crate::search::fuzzy(query, c.id);
@@ -216,7 +394,7 @@ pub fn matching(query: &str) -> Vec<Match> {
 }
 
 /// A command's keys as shown to the user: "p / Ctrl-o".
-pub fn keys_label(c: &Command) -> String {
+pub fn keys_label<A>(c: &Command<A>) -> String {
     let keys: Vec<String> = c
         .keys
         .iter()
@@ -233,7 +411,7 @@ pub struct Key {
 }
 
 impl Key {
-    /// Parses "g", "R", "ctrl+o", "shift+tab", "esc", "enter".
+    /// Parses "g", "R", "ctrl+o", "shift+tab", "esc", "enter", "space", "backspace".
     pub fn parse(s: &str) -> Option<Key> {
         let mut mods = KeyModifiers::NONE;
         let mut shift = false;
@@ -262,6 +440,8 @@ impl Key {
                 "backtab" => KeyCode::BackTab,
                 "esc" => KeyCode::Esc,
                 "enter" => KeyCode::Enter,
+                "space" => KeyCode::Char(' '),
+                "backspace" => KeyCode::Backspace,
                 _ => return None,
             },
         };
@@ -289,22 +469,24 @@ impl fmt::Display for Key {
             f.write_str("Alt-")?;
         }
         match self.code {
+            KeyCode::Char(' ') => f.write_str("space"),
             KeyCode::Char(c) => write!(f, "{c}"),
             KeyCode::Tab => f.write_str("Tab"),
             KeyCode::BackTab => f.write_str("Shift-Tab"),
             KeyCode::Esc => f.write_str("Esc"),
             KeyCode::Enter => f.write_str("Enter"),
+            KeyCode::Backspace => f.write_str("Backspace"),
             c => write!(f, "{c:?}"),
         }
     }
 }
 
-pub struct Keymap(HashMap<Key, Action>);
+pub struct Keymap<A>(HashMap<Key, A>);
 
-impl Keymap {
-    pub fn menu() -> Keymap {
+impl<A: Copy> Keymap<A> {
+    pub fn new(commands: &[Command<A>]) -> Keymap<A> {
         let mut map = HashMap::new();
-        for c in MENU {
+        for c in commands {
             for s in c.keys {
                 let key = Key::parse(s).unwrap_or_else(|| panic!("bad default key {s:?}"));
                 map.insert(key, c.action);
@@ -313,7 +495,7 @@ impl Keymap {
         Keymap(map)
     }
 
-    pub fn get(&self, k: KeyEvent) -> Option<Action> {
+    pub fn get(&self, k: KeyEvent) -> Option<A> {
         self.0.get(&Key::from(k)).copied()
     }
 }
@@ -324,17 +506,17 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_are_unique() {
+    fn ids_are_unique_across_screens() {
+        let ids = MENU.iter().map(|c| c.id).chain(GRAPH.iter().map(|c| c.id));
         let mut seen = HashSet::new();
-        for c in MENU {
-            assert!(seen.insert(c.id), "duplicate id {}", c.id);
+        for id in ids {
+            assert!(seen.insert(id), "duplicate id {id}");
         }
     }
 
-    #[test]
-    fn default_keys_parse_and_are_bound_once() {
+    fn assert_keys_parse_and_are_bound_once<A>(table: &[Command<A>]) {
         let mut seen = HashSet::new();
-        for c in MENU {
+        for c in table {
             for s in c.keys {
                 let k = Key::parse(s).unwrap_or_else(|| panic!("{} key {s:?}", c.id));
                 assert!(seen.insert(k), "{s:?} is bound twice");
@@ -343,25 +525,55 @@ mod tests {
     }
 
     #[test]
+    fn default_keys_parse_and_are_bound_once() {
+        assert_keys_parse_and_are_bound_once(MENU);
+        assert_keys_parse_and_are_bound_once(GRAPH);
+    }
+
+    #[test]
+    fn graph_keys_run_their_commands() {
+        let keys = Keymap::new(GRAPH);
+        let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert_eq!(
+            keys.get(press(KeyCode::Char('f'))),
+            Some(GraphAction::Local)
+        );
+        assert_eq!(
+            keys.get(press(KeyCode::Char(' '))),
+            Some(GraphAction::Pause)
+        );
+        assert_eq!(keys.get(press(KeyCode::Backspace)), Some(GraphAction::Back));
+        let shift_o = KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT);
+        assert_eq!(keys.get(shift_o), Some(GraphAction::ToggleOrphans));
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(keys.get(ctrl_c), Some(GraphAction::Quit));
+        assert_eq!(
+            keys.get(press(KeyCode::Char('c'))),
+            Some(GraphAction::Center)
+        );
+        assert_eq!(keys.get(press(KeyCode::Char('h'))), None);
+    }
+
+    #[test]
     fn shifted_letter_runs_its_command() {
-        let keys = Keymap::menu();
+        let keys = Keymap::new(MENU);
         let shift_r = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
-        assert_eq!(keys.get(shift_r), Some(Action::Rename));
+        assert_eq!(keys.get(shift_r), Some(MenuAction::Rename));
         let back_tab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(keys.get(back_tab), Some(Action::FocusPrevious));
+        assert_eq!(keys.get(back_tab), Some(MenuAction::FocusPrevious));
         let plain_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        assert_eq!(keys.get(plain_r), Some(Action::Rescan));
+        assert_eq!(keys.get(plain_r), Some(MenuAction::Rescan));
     }
 
     #[test]
     fn ctrl_keys_parse_and_display() {
         let k = Key::parse("ctrl+o").unwrap();
         assert_eq!(k.to_string(), "Ctrl-o");
-        let keys = Keymap::menu();
+        let keys = Keymap::new(MENU);
         let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
-        assert_eq!(keys.get(ctrl_o), Some(Action::Switcher));
+        assert_eq!(keys.get(ctrl_o), Some(MenuAction::Switcher));
         let o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE);
-        assert_eq!(keys.get(o), Some(Action::OpenInObsidian));
+        assert_eq!(keys.get(o), Some(MenuAction::OpenInObsidian));
     }
 
     #[test]
@@ -391,6 +603,8 @@ mod tests {
         assert_eq!(Key::parse("esc").unwrap().to_string(), "Esc");
         assert_eq!(Key::parse("enter").unwrap().to_string(), "Enter");
         assert_eq!(Key::parse("?").unwrap().to_string(), "?");
+        assert_eq!(Key::parse("space").unwrap().to_string(), "space");
+        assert_eq!(Key::parse("backspace").unwrap().to_string(), "Backspace");
         assert_eq!(Key::parse("bogus"), None);
     }
 }

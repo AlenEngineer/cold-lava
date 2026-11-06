@@ -3,7 +3,7 @@
 //! preview when Neovim isn't installed.
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
-use crate::commands::{self, Action, Keymap};
+use crate::commands::{self, Keymap, MenuAction};
 use crate::core::{Core, Event as CoreEvent};
 use crate::embed::Embedded;
 use crate::{board, term, vault};
@@ -400,7 +400,7 @@ pub struct Home {
     backs: Vec<BackRow>,
     bsel: usize,
     show_backlinks: bool,
-    keys: Keymap,
+    keys: Keymap<MenuAction>,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
     mru: Vec<PathBuf>,
     results: Vec<crate::search::NoteHits>,
@@ -579,7 +579,7 @@ impl Home {
             backs: Vec::new(),
             bsel: 0,
             show_backlinks: true,
-            keys: Keymap::menu(),
+            keys: Keymap::new(commands::MENU),
             mru: Vec::new(),
             results: Vec::new(),
             result_rows: Vec::new(),
@@ -1115,25 +1115,25 @@ impl Home {
         Ok(())
     }
 
-    fn enabled(&self, a: Action) -> bool {
+    fn enabled(&self, a: MenuAction) -> bool {
         match a {
-            Action::ClearFilter => !self.filter.is_empty(),
-            Action::NewNote => self.root.is_some(),
+            MenuAction::ClearFilter => !self.filter.is_empty(),
+            MenuAction::NewNote => self.root.is_some(),
             _ => true,
         }
     }
 
-    fn run_action(&mut self, a: Action, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn run_action(&mut self, a: MenuAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match a {
             // Ctrl-q leaves Neovim; pressed in the menu it goes back to Neovim, never quits.
-            Action::FocusEditor => {
+            MenuAction::FocusEditor => {
                 if self.editor.is_some() {
                     self.focus = Focus::Editor;
                 }
             }
-            Action::Quit => self.quit = true,
-            Action::Help => self.mode = Mode::Help,
-            Action::FocusNext => {
+            MenuAction::Quit => self.quit = true,
+            MenuAction::Help => self.mode = Mode::Help,
+            MenuAction::FocusNext => {
                 let has_backs = self.show_backlinks && !self.backs.is_empty();
                 self.focus = match self.focus {
                     Focus::Vaults => Focus::Notes,
@@ -1142,51 +1142,51 @@ impl Home {
                     _ => Focus::Vaults,
                 }
             }
-            Action::Palette => {
+            MenuAction::Palette => {
                 self.mode = Mode::Palette {
                     query: String::new(),
                     sel: 0,
                 }
             }
-            Action::Switcher => self.open_switcher(false),
-            Action::Rename => self.start_rename(false),
-            Action::Move => self.start_rename(true),
-            Action::Search => self.open_search(false),
-            Action::ToggleBacklinks => {
+            MenuAction::Switcher => self.open_switcher(false),
+            MenuAction::Rename => self.start_rename(false),
+            MenuAction::Move => self.start_rename(true),
+            MenuAction::Search => self.open_search(false),
+            MenuAction::ToggleBacklinks => {
                 self.show_backlinks = !self.show_backlinks;
                 if !self.show_backlinks && self.focus == Focus::Backlinks {
                     self.focus = Focus::Notes;
                 }
             }
-            Action::FocusPrevious => {
+            MenuAction::FocusPrevious => {
                 self.focus = if self.focus == Focus::Notes {
                     Focus::Vaults
                 } else {
                     Focus::Notes
                 }
             }
-            Action::Filter => {
+            MenuAction::Filter => {
                 self.mode = Mode::Filter;
                 self.focus = Focus::Notes;
             }
-            Action::ClearFilter => {
+            MenuAction::ClearFilter => {
                 self.filter.clear();
                 self.refresh_rows();
             }
-            Action::Zoom => self.zoom = !self.zoom,
-            Action::Graph => self.open_graph(terminal)?,
-            Action::Boards => self.open_boards(terminal, None)?,
-            Action::NewNote => self.mode = Mode::NewNote(String::new()),
-            Action::Today => self.open_today(),
-            Action::AddVault => self.mode = Mode::AddVault(String::new()),
-            Action::Rescan => {
+            MenuAction::Zoom => self.zoom = !self.zoom,
+            MenuAction::Graph => self.open_graph(terminal)?,
+            MenuAction::Boards => self.open_boards(terminal, None)?,
+            MenuAction::NewNote => self.mode = Mode::NewNote(String::new()),
+            MenuAction::Today => self.open_today(),
+            MenuAction::AddVault => self.mode = Mode::AddVault(String::new()),
+            MenuAction::Rescan => {
                 if let Some(core) = self.core.as_mut() {
                     core.rescan(); // applied on the next poll, as a Rescanned event
                 }
                 self.flash("rescanning");
             }
-            Action::OpenInObsidian => self.open_in_obsidian(),
-            Action::EditFullscreen => self.edit_fullscreen(terminal)?,
+            MenuAction::OpenInObsidian => self.open_in_obsidian(),
+            MenuAction::EditFullscreen => self.edit_fullscreen(terminal)?,
         }
         Ok(())
     }

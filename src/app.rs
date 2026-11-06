@@ -1,5 +1,6 @@
 //! The graph view: state, input handling and drawing.
 
+use crate::commands::{self, GraphAction, Keymap};
 use crate::core::{Core, Event as CoreEvent};
 use crate::graph::{self, BuildOpts, Graph, Kind};
 use crate::groups::{self, Assignment};
@@ -74,6 +75,7 @@ pub struct App {
     area: Rect,
     drag: Option<Drag>,
     quit: bool,
+    keys: Keymap<GraphAction>,
     // Colour groups
     group_mode: groups::Mode,
     obsidian_groups: Vec<groups::Group>,
@@ -141,6 +143,7 @@ impl App {
             area: Rect::default(),
             drag: None,
             quit: false,
+            keys: Keymap::new(commands::GRAPH),
             group_mode,
             obsidian_groups,
             assign,
@@ -534,26 +537,12 @@ impl App {
             Mode::Normal => {}
         }
 
+        // A command whose guard fails leaves the key unused (n / N without search hits).
+        if let Some(a) = self.keys.get(k).filter(|&a| self.enabled(a)) {
+            return self.run_action(a, terminal);
+        }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match k.code {
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Esc => {
-                if self.local {
-                    self.local = false;
-                    self.auto_fit = true;
-                } else {
-                    self.sel = None;
-                    self.hits.clear();
-                }
-            }
-            KeyCode::Char('?') => self.mode = Mode::Help,
-            KeyCode::Char('/') => {
-                self.mode = Mode::Search(String::new());
-                self.hits.clear();
-            }
-
             // Pan: Shift+arrows or HJKL
             KeyCode::Left if shift => self.pan(-6.0, 0.0),
             KeyCode::Right if shift => self.pan(6.0, 0.0),
@@ -568,14 +557,42 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => self.select_dir(1.0, 0.0),
             KeyCode::Up | KeyCode::Char('k') => self.select_dir(0.0, 1.0),
             KeyCode::Down | KeyCode::Char('j') => self.select_dir(0.0, -1.0),
+            _ => {}
+        }
+        Ok(())
+    }
 
-            KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_by(1.25, None),
-            KeyCode::Char('-') | KeyCode::Char('_') => self.zoom_by(0.8, None),
-            KeyCode::Char('0') => self.auto_fit = true,
-            KeyCode::Char('c') => self.center_on_sel(),
+    fn enabled(&self, a: GraphAction) -> bool {
+        match a {
+            GraphAction::NextMatch | GraphAction::PreviousMatch => !self.hits.is_empty(),
+            _ => true,
+        }
+    }
 
-            KeyCode::Tab | KeyCode::BackTab => self.cycle_links(k.code == KeyCode::BackTab),
-            KeyCode::Backspace | KeyCode::Char('b') => {
+    fn run_action(&mut self, a: GraphAction, terminal: &mut DefaultTerminal) -> Result<()> {
+        match a {
+            GraphAction::Quit => self.quit = true,
+            GraphAction::Escape => {
+                if self.local {
+                    self.local = false;
+                    self.auto_fit = true;
+                } else {
+                    self.sel = None;
+                    self.hits.clear();
+                }
+            }
+            GraphAction::Help => self.mode = Mode::Help,
+            GraphAction::Search => {
+                self.mode = Mode::Search(String::new());
+                self.hits.clear();
+            }
+            GraphAction::ZoomIn => self.zoom_by(1.25, None),
+            GraphAction::ZoomOut => self.zoom_by(0.8, None),
+            GraphAction::Fit => self.auto_fit = true,
+            GraphAction::Center => self.center_on_sel(),
+            GraphAction::CycleLinks => self.cycle_links(false),
+            GraphAction::CycleLinksBack => self.cycle_links(true),
+            GraphAction::Back => {
                 while let Some(key) = self.history.pop() {
                     if let Some(i) = self.graph.find(&key) {
                         self.sel = Some(i);
@@ -588,9 +605,9 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('n') | KeyCode::Char('N') if !self.hits.is_empty() => {
+            GraphAction::NextMatch | GraphAction::PreviousMatch => {
                 let len = self.hits.len();
-                self.hit_pos = if k.code == KeyCode::Char('n') {
+                self.hit_pos = if a == GraphAction::NextMatch {
                     (self.hit_pos + 1) % len
                 } else {
                     (self.hit_pos + len - 1) % len
@@ -599,10 +616,9 @@ impl App {
                 self.center_on_sel();
                 self.flash(format!("match {}/{}", self.hit_pos + 1, len));
             }
-
-            KeyCode::Enter | KeyCode::Char('e') => self.open_in_editor(terminal)?,
-            KeyCode::Char('o') => self.open_in_obsidian(),
-            KeyCode::Char('w') => {
+            GraphAction::OpenNote => self.open_in_editor(terminal)?,
+            GraphAction::OpenInObsidian => self.open_in_obsidian(),
+            GraphAction::Boards => {
                 self.hide_image();
                 board::launch(
                     terminal,
@@ -612,27 +628,26 @@ impl App {
                 )?;
                 self.dirty = true;
             }
-
-            KeyCode::Char('f') => {
+            GraphAction::Local => {
                 if self.sel.is_none() {
                     self.select_default();
                 }
                 self.local = !self.local;
                 self.auto_fit = true;
             }
-            KeyCode::Char(']') => {
+            GraphAction::DepthMore => {
                 self.depth = (self.depth + 1).min(5);
                 self.auto_fit = true;
                 self.flash(format!("local graph depth {}", self.depth));
             }
-            KeyCode::Char('[') => {
+            GraphAction::DepthLess => {
                 self.depth = (self.depth - 1).max(1);
                 self.auto_fit = true;
                 self.flash(format!("local graph depth {}", self.depth));
             }
-            KeyCode::Char('g') => self.cycle_groups(),
-            KeyCode::Char('p') => self.toggle_pixels(),
-            KeyCode::Char('t') => {
+            GraphAction::Groups => self.cycle_groups(),
+            GraphAction::Pixels => self.toggle_pixels(),
+            GraphAction::ToggleTags => {
                 self.opts.tags = !self.opts.tags;
                 self.rebuild();
                 self.flash(if self.opts.tags {
@@ -641,7 +656,7 @@ impl App {
                     "tags hidden"
                 });
             }
-            KeyCode::Char('u') => {
+            GraphAction::ToggleUnresolved => {
                 self.opts.unresolved = !self.opts.unresolved;
                 self.rebuild();
                 self.flash(if self.opts.unresolved {
@@ -650,7 +665,7 @@ impl App {
                     "unresolved links hidden"
                 });
             }
-            KeyCode::Char('O') => {
+            GraphAction::ToggleOrphans => {
                 self.opts.orphans = !self.opts.orphans;
                 self.rebuild();
                 self.flash(if self.opts.orphans {
@@ -659,7 +674,7 @@ impl App {
                     "orphans hidden"
                 });
             }
-            KeyCode::Char('a') => {
+            GraphAction::Labels => {
                 self.labels = match self.labels {
                     Labels::Auto => Labels::All,
                     Labels::All => Labels::Off,
@@ -671,14 +686,13 @@ impl App {
                     Labels::Off => "labels: selection only",
                 });
             }
-            KeyCode::Char(' ') => {
+            GraphAction::Pause => {
                 self.paused = !self.paused;
                 if !self.paused {
                     self.graph.reheat(0.5);
                 }
             }
-            KeyCode::Char('r') => self.core.rescan(), // picked up as a Rescanned event
-            _ => {}
+            GraphAction::Rescan => self.core.rescan(), // picked up as a Rescanned event
         }
         Ok(())
     }
@@ -1250,30 +1264,20 @@ fn dim(c: Color) -> Color {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let rows: &[(&str, &str)] = &[
+    let fixed: &[(&str, &str)] = &[
         ("↑↓←→ / hjkl", "select the nearest note in that direction"),
-        ("Tab / Shift-Tab", "cycle through the selected note's links"),
-        ("b / Backspace", "go back to the previous selection"),
-        ("/  then n / N", "search notes, jump between matches"),
-        ("Enter / e", "open in $EDITOR (creates unresolved notes)"),
-        ("o", "open the note in the Obsidian app"),
-        ("w", "whiteboards (Obsidian .canvas files)"),
-        ("f", "local graph around the selection"),
-        ("[  ]", "local graph depth"),
-        ("g", "colour groups: obsidian → folder → tag → off"),
-        ("p", "pixel rendering (Kitty graphics) ↔ braille"),
         ("Shift+arrows / HJKL", "pan"),
-        ("+ / -  or scroll", "zoom (scroll zooms at the cursor)"),
-        ("0", "fit graph to screen"),
-        ("c", "centre on selection"),
+        ("scroll", "zoom at the cursor"),
         ("drag", "move a node, or pan on empty space"),
-        ("t / u / O", "toggle tags / unresolved links / orphans"),
-        ("a", "labels: auto → all → selection only"),
-        ("space", "pause / resume the layout"),
-        ("r", "rescan the vault"),
-        ("Esc", "leave local graph, clear selection"),
-        ("q", "quit"),
     ];
+    let commands = commands::GRAPH
+        .iter()
+        .map(|c| (commands::keys_label(c), c.title));
+    let rows: Vec<(String, &str)> = fixed
+        .iter()
+        .map(|&(k, d)| (k.to_string(), d))
+        .chain(commands)
+        .collect();
     let lines: Vec<Line> = rows
         .iter()
         .map(|(k, d)| {
