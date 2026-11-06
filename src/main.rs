@@ -1,5 +1,6 @@
 mod app;
 mod board;
+mod commands;
 mod core;
 mod daily;
 mod embed;

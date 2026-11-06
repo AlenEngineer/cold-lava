@@ -28,6 +28,8 @@ change commands, keys and file formats; patch versions only fix things.
   a full rescan only happens when a folder moves or a whiteboard changes.
 - The graph view and the main menu share one live vault with a single file watcher, so changes
   made while the graph is open show up in the menu too.
+- Every main-menu action is a named command (e.g. `graph.open`); the help screen (`?`) is
+  generated from them.
 
 ### Fixed
 

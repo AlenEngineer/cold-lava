@@ -3,6 +3,7 @@
 //! preview when Neovim isn't installed.
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
+use crate::commands::{self, Action, Keymap};
 use crate::core::{Core, Event as CoreEvent};
 use crate::embed::Embedded;
 use crate::{board, term, vault};
@@ -394,6 +395,7 @@ pub struct Home {
     backs: Vec<BackRow>,
     bsel: usize,
     show_backlinks: bool,
+    keys: Keymap,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
     mru: Vec<PathBuf>,
     results: Vec<crate::search::NoteHits>,
@@ -572,6 +574,7 @@ impl Home {
             backs: Vec::new(),
             bsel: 0,
             show_backlinks: true,
+            keys: Keymap::menu(),
             mru: Vec::new(),
             results: Vec::new(),
             result_rows: Vec::new(),
@@ -1090,17 +1093,38 @@ impl Home {
             Mode::Normal => {}
         }
 
-        match k.code {
+        // A command whose guard fails leaves the key to the focused pane (Esc, for one).
+        if let Some(a) = self.keys.get(k).filter(|&a| self.enabled(a)) {
+            return self.run_action(a, terminal);
+        }
+        match self.focus {
+            Focus::Vaults => self.vault_key(k),
+            Focus::Notes => self.notes_key(k, terminal)?,
+            Focus::Backlinks => self.backlinks_key(k),
+            Focus::Editor => {}
+        }
+        Ok(())
+    }
+
+    fn enabled(&self, a: Action) -> bool {
+        match a {
+            Action::ClearFilter => !self.filter.is_empty(),
+            Action::NewNote => self.root.is_some(),
+            _ => true,
+        }
+    }
+
+    fn run_action(&mut self, a: Action, terminal: &mut DefaultTerminal) -> Result<()> {
+        match a {
             // Ctrl-q leaves Neovim; pressed in the menu it goes back to Neovim, never quits.
-            KeyCode::Char('q') if ctrl => {
+            Action::FocusEditor => {
                 if self.editor.is_some() {
                     self.focus = Focus::Editor;
                 }
             }
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Char('?') => self.mode = Mode::Help,
-            KeyCode::Tab => {
+            Action::Quit => self.quit = true,
+            Action::Help => self.mode = Mode::Help,
+            Action::FocusNext => {
                 let has_backs = self.show_backlinks && !self.backs.is_empty();
                 self.focus = match self.focus {
                     Focus::Vaults => Focus::Notes,
@@ -1109,53 +1133,45 @@ impl Home {
                     _ => Focus::Vaults,
                 }
             }
-            KeyCode::Char('p') => self.open_switcher(false),
-            KeyCode::Char('R') => self.start_rename(false),
-            KeyCode::Char('m') => self.start_rename(true),
-            KeyCode::Char('o') if ctrl => self.open_switcher(false),
-            KeyCode::Char('s') => self.open_search(false),
-            KeyCode::Char('f') if ctrl => self.open_search(false),
-            KeyCode::Char('b') => {
+            Action::Switcher => self.open_switcher(false),
+            Action::Rename => self.start_rename(false),
+            Action::Move => self.start_rename(true),
+            Action::Search => self.open_search(false),
+            Action::ToggleBacklinks => {
                 self.show_backlinks = !self.show_backlinks;
                 if !self.show_backlinks && self.focus == Focus::Backlinks {
                     self.focus = Focus::Notes;
                 }
             }
-            KeyCode::BackTab => {
+            Action::FocusPrevious => {
                 self.focus = if self.focus == Focus::Notes {
                     Focus::Vaults
                 } else {
                     Focus::Notes
                 }
             }
-            KeyCode::Char('/') => {
+            Action::Filter => {
                 self.mode = Mode::Filter;
                 self.focus = Focus::Notes;
             }
-            KeyCode::Esc if !self.filter.is_empty() => {
+            Action::ClearFilter => {
                 self.filter.clear();
                 self.refresh_rows();
             }
-            KeyCode::Char('z') => self.zoom = !self.zoom,
-            KeyCode::Char('g') => self.open_graph(terminal)?,
-            KeyCode::Char('w') => self.open_boards(terminal, None)?,
-            KeyCode::Char('n') if self.root.is_some() => self.mode = Mode::NewNote(String::new()),
-            KeyCode::Char('t') => self.open_today(),
-            KeyCode::Char('a') => self.mode = Mode::AddVault(String::new()),
-            KeyCode::Char('r') => {
+            Action::Zoom => self.zoom = !self.zoom,
+            Action::Graph => self.open_graph(terminal)?,
+            Action::Boards => self.open_boards(terminal, None)?,
+            Action::NewNote => self.mode = Mode::NewNote(String::new()),
+            Action::Today => self.open_today(),
+            Action::AddVault => self.mode = Mode::AddVault(String::new()),
+            Action::Rescan => {
                 if let Some(core) = self.core.as_mut() {
                     core.rescan(); // applied on the next poll, as a Rescanned event
                 }
                 self.flash("rescanning");
             }
-            KeyCode::Char('o') => self.open_in_obsidian(),
-            KeyCode::Char('e') => self.edit_fullscreen(terminal)?,
-            _ => match self.focus {
-                Focus::Vaults => self.vault_key(k),
-                Focus::Notes => self.notes_key(k, terminal)?,
-                Focus::Backlinks => self.backlinks_key(k),
-                Focus::Editor => {}
-            },
+            Action::OpenInObsidian => self.open_in_obsidian(),
+            Action::EditFullscreen => self.edit_fullscreen(terminal)?,
         }
         Ok(())
     }
@@ -2686,10 +2702,9 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let rows: &[(&str, &str)] = &[
+    let fixed: &[(&str, &str)] = &[
         ("↑↓ / jk", "move through vaults or notes"),
-        ("Tab / ←→", "switch between vaults, notes and the editor"),
-        ("→ / ←", "open / close a folder"),
+        ("→ / ←", "open / close a folder · vaults ↔ notes"),
         (
             "Enter",
             "edit the note in the embedded Neovim · open a board",
@@ -2700,23 +2715,21 @@ fn draw_help(f: &mut Frame, area: Rect) {
             "on a [[link]]: open it (creates missing notes)",
         ),
         ("Ctrl-o", "in Neovim: back to the previous note"),
-        ("b", "show / hide backlinks under the editor"),
-        ("p / Ctrl-o", "quick switcher: jump to any note by name"),
-        ("s / Ctrl-f", "search the text of every note"),
-        ("R", "rename the note (every link to it is updated)"),
-        ("m", "move the note to another folder (links updated)"),
-        ("e", "edit the note in $EDITOR, full screen"),
-        ("/", "filter notes by name or path"),
-        ("g", "graph view of this vault"),
-        ("w", "whiteboards of this vault"),
-        ("n", "new note in the selected folder"),
-        ("t", "today's daily note (created from your template)"),
-        ("a", "add a vault (any folder of Markdown files)"),
-        ("o", "open the selected note in Obsidian"),
-        ("z", "zoom the editor to full width"),
-        ("r", "rescan the vault"),
-        ("q", "quit (notes are saved)"),
     ];
+    let commands = commands::MENU.iter().map(|c| {
+        let keys: Vec<String> = c
+            .keys
+            .iter()
+            .filter_map(|s| commands::Key::parse(s))
+            .map(|k| k.to_string())
+            .collect();
+        (keys.join(" / "), c.title)
+    });
+    let rows: Vec<(String, &str)> = fixed
+        .iter()
+        .map(|&(k, d)| (k.to_string(), d))
+        .chain(commands)
+        .collect();
     let lines: Vec<Line> = rows
         .iter()
         .map(|(k, d)| {
