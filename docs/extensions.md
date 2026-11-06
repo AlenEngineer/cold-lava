@@ -55,10 +55,11 @@ live in is a project of its own, and it would be worse than the one they have.
   | In a pane | The editor runs beside the tree, as Neovim does today | Any TUI editor, through the "program in a pane" view |
   | Bridged | Follow links and open backlinks from inside the editor | One extension per editor |
 
-- **Neovim becomes the first editor extension.** It keeps the Vim script and the private OSC
-  messages (`ESC ] 5379 ; kind ; payload BEL`) that make link following work inside it. The core
-  keeps only the pane (`embed.rs`), which third-party views need as well. Without the
-  Neovim-only checks, Helix, Kakoune or micro embed in the pane too, without the bridge.
+- **Neovim is the first editor extension.** It keeps the Vim script and the meaning of the
+  private OSC messages (`ESC ] 5379 ; kind ; payload BEL`) that make link following work inside
+  it. The core keeps only the pane (`embed.rs`), which third-party views need as well. Without
+  the Neovim-only checks, Helix, Kakoune or micro embed in the pane too, without the bridge.
+  (Exists: `src/ext/nvim.rs`.)
 - **Saves need no cooperation.** The core's file watcher sees every save, so an editor only has
   to write the file. Telling the core about a save is a hint that makes it show up sooner.
 
@@ -85,8 +86,9 @@ Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Com
 keys, the command palette, `cold-lava run <command>` and extensions all call. Extensions register
 their own. Keys are configurable in `~/.config/cold-lava/config.toml`.
 
-Editing works the same way: `note.edit` and `note.follow-link` are commands, and the editor
-extension that is active fills them in.
+Editing works the same way. `note.follow-link` is a core command: the editor runs it
+(`command/run`) when you press Enter on a link. `note.edit` is the command the active editor
+extension will fill in.
 
 ## Transport: an abstraction from the start
 
@@ -129,12 +131,47 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
 
 - The host calls the extension: `initialize` (capabilities and the API version), `command/run`,
   `view/render`, `shutdown`.
+  - The editor gets `editor/open` (a note, and a `jump` to a line, heading or block),
+    `editor/save` and `editor/renamed` (`from`, `to`).
+  - An extension hears from a pane it opened through `pane/message` (`kind` and `payload`, what
+    its program wrote as `ESC ] 5379 ; kind ; payload BEL`) and `pane/exited` (with an `error`
+    when the program never started).
 - The extension calls the host: `vault/notes`, `vault/read`, `vault/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
-  `tasks/agenda`, `ui/notify`, `ui/openNote`, `events/subscribe`.
+  `tasks/agenda`, `ui/notify`, `ui/openNote`, `events/subscribe`, and:
+  - `command/run`: run a cold-lava command by `id` with `args`, as a key would. Today that is
+    `note.follow-link` (`from`, `link`), `note.switch` and `search.open` (`query`).
+  - `editor/opened`: the editor shows this note now. It is a report, not a request, so the
+    host never answers it with `editor/open`, which would echo.
+  - `vault/saved`: a note was just written, so the host reads it now instead of when the file
+    watcher notices.
+  - `pane/open` (a `pane` id the extension picks, and the program with its arguments),
+    `pane/input` (text to type into the pane) and `pane/close`.
 - The host notifies subscribers: `event/noteChanged` and friends.
 
 The method set is versioned (`apiVersion` in `initialize`), so old extensions keep working.
+Paths are absolute and inside the vault. A message's tag is its method name, for example
+`{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
+
+Built-in extensions already use, in-process (`src/ext/mod.rs`): `initialize`, `editor/open`,
+`editor/save`, `editor/renamed`, `pane/message` and `pane/exited` from the host, and `ui/notify`,
+`command/run`, `editor/opened`, `vault/saved`, `pane/open` and `pane/input` from the extension.
+
+- **Saves are not acknowledged yet.** `editor/save` gets no answer, so before it reads the files
+  (to rename a note, to show the reader, to quit) the core waits 300 ms. A later version answers
+  `editor/save` once the files are written.
+- **`editor/renamed` is temporary.** Until extensions can subscribe to events, a rename tells the
+  editor directly. Then the editor follows `note.renamed` like any other subscriber.
+
+### Panes and keys
+
+The core owns every pane. It starts the program an extension names in `pane/open`, draws it,
+resizes it and sends it the keys you type. The extension only types text of its own
+(`pane/input`) and hears what the program sends back. Extensions never see keystrokes.
+
+While a pane has focus, the core keeps one key: `pane.leave` (`Ctrl-q`) takes you back to the
+menu. It can be moved in `config.toml` but not unbound, so every pane has a way out. The core
+shows one pane at a time and answers a second `pane/open` with `pane/exited`.
 
 ## Manifest
 
@@ -168,12 +205,20 @@ The graph, whiteboards, agenda, daily notes and rename move onto the same `Exten
 (in-process, through the in-process transport). If our own features fit the interface, it is
 good enough for everyone else.
 
+A built-in extension implements the `Extension` trait (`src/ext/mod.rs`) instead of reading
+messages from a transport. The trait is the protocol: each of its methods is one host→extension
+method, and the `Host` it is given has one method per extension→host method. Every type that
+crosses derives serde, and tests pin its JSON, so an extension can move to its own process
+without changing shape. What an extension asks for is queued and applied after its call
+returns, so it never holds the menu's state.
+
 ## Order of work
 
 1. Core: safe writes, live vault, events. *(done)*
 2. Commands, command palette, configurable keys. The Markdown reader can land alongside, since
    it's core.
 3. The `Extension` interface; move built-in features onto it, starting with the Neovim editor.
+   *(in progress: the interface and the Neovim editor exist)*
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
 

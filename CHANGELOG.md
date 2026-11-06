@@ -34,6 +34,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- The embedded Neovim is now the first editor extension, on cold-lava's new extension interface
+  (see `docs/extensions.md`). The pane's title names the editor (Neovim or Vim) instead of the
+  program, and the help lists the editor's keys under its name.
 - `Ctrl-q`, which leaves Neovim for the menu, is now the command `pane.leave`. Set its key under
   `[keys]` in `config.toml` if you use `Ctrl-q` in Neovim; it can't be `[]`. The pane's title,
   the status line and the help show the key you set.
@@ -52,6 +55,7 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- When the embedded editor can't start, the message no longer repeats itself.
 - `Ctrl-q` in the main menu no longer quits; it goes back to the editor.
 - Control keys (such as `Ctrl-u`) are no longer typed as letters in text prompts; `Ctrl-u`
   clears the field.

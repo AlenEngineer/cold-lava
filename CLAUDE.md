@@ -40,12 +40,27 @@ required checks on `main`.
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `vault.rs`.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks format, Daily notes settings, moment.js date formats.
 
+**Extensions** (`ext/`, step 3 of `docs/extensions.md`):
+
+- `ext/mod.rs`: `Extension` (one method per host→extension JSON-RPC method), `Host` (one method
+  per extension→host method; it queues `Effect`s), `Registry` (loaded extensions, their
+  manifests, the editor). Three rules:
+  - An extension can only do what a message can say: every type that crosses derives serde.
+  - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
+    into panes.
+  - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
+    returns, so extensions never hold `&mut Home`.
+- `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
+  commands it types into its pane.
+
 **Features / UI:**
 
-- `home.rs`: the main menu (vaults, note tree, embedded Neovim, backlinks, switcher, search).
-- `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the embedded Vim arrive
-  as a private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (see `VIM_SCRIPT` in `home.rs`);
-  the payload encodes non-ASCII as `%u<hex>;`.
+- `home.rs`: the main menu (vaults, note tree, the right pane with the reader or an extension's
+  program, backlinks, switcher, search). It applies the extensions' `Effect`s.
+- `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a
+  private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (Neovim's come from `VIM_SCRIPT` in
+  `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the
+  extension that owns the pane.
 - `app.rs`, `graph.rs`, `scene.rs`, `kitty.rs`, `groups.rs`: graph view (force layout; braille
   or Kitty-graphics pixels drawn under the text with `z=-1`; colour groups).
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
@@ -93,7 +108,7 @@ required checks on `main`.
 
 - The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
-- Next on the core list: an extension API (graph, canvas, agenda and the menu should become
-  extensions of the core); then performance for large vaults (Barnes–Hut layout), a config file,
-  light-terminal colours.
+- In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
+  it; the graph, canvas, agenda and the menu should become extensions of the core too. Then
+  performance for large vaults (Barnes–Hut layout), a config file, light-terminal colours.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).
