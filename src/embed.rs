@@ -91,15 +91,13 @@ impl Embedded {
         })
     }
 
-    /// Feed pending output into the screen. Returns true if anything arrived.
-    pub fn pump(&mut self) -> bool {
-        let mut any = false;
+    /// Feed pending output into the screen.
+    pub fn pump(&mut self) {
         loop {
             match self.output.try_recv() {
                 Ok(bytes) => {
                     let screen_bytes = self.extract_messages(bytes);
                     self.parser.process(&screen_bytes);
-                    any = true;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -111,7 +109,6 @@ impl Embedded {
         if !self.exited && matches!(self.child.try_wait(), Ok(Some(_))) {
             self.exited = true;
         }
-        any
     }
 
     /// Take the messages received since the last call: (kind, payload).

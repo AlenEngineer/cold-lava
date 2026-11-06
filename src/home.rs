@@ -667,10 +667,9 @@ impl Home {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
-            let mut changed = false;
             let mut messages = Vec::new();
             if let Some(ed) = self.editor.as_mut() {
-                changed |= ed.pump();
+                ed.pump();
                 messages = ed.take_messages();
                 if ed.exited() {
                     self.editor = None;
@@ -686,9 +685,8 @@ impl Home {
             for (kind, payload) in messages {
                 self.on_editor_message(&kind, &payload);
             }
-            changed |= self.load_pending();
+            self.load_pending();
             self.check_disk();
-            let _ = changed;
             terminal.draw(|f| self.draw(f))?;
             let ms = if self.editor.is_some() || self.pending.is_some() {
                 15
@@ -918,14 +916,13 @@ impl Home {
         }
     }
 
-    fn load_pending(&mut self) -> bool {
+    fn load_pending(&mut self) {
         match &self.pending {
             Some((_, t)) if Instant::now() >= *t => {}
-            _ => return false,
+            _ => return,
         }
         let (path, _) = self.pending.take().unwrap();
         self.show(&path);
-        true
     }
 
     /// Show a note in the right pane (reader, or embedded editor).
