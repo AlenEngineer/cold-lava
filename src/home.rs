@@ -1,15 +1,18 @@
 //! The main menu: vaults on the left, the selected vault's notes in the middle, and the
-//! selected note on the right, in the reader or in a real (embedded) Neovim when it's
-//! installed.
+//! selected note on the right, in the reader or in the editor extension's pane (a real,
+//! embedded Neovim when it's installed).
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
-use crate::commands::{self, Keymap, MenuAction, ReaderAction};
-use crate::core::{Core, Event as CoreEvent};
+use crate::commands::{self, Keymap, MenuAction, PaneAction, ReaderAction};
+use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
+use crate::ext::{
+    EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId, PaneNews, PaneSpec, Registry,
+};
 use crate::markdown::{self, Flavour};
 use crate::reader::Reader;
 use crate::{board, term, vault};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -19,6 +22,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -323,17 +327,9 @@ pub fn visible(items: &[Item], expanded: &HashSet<String>, filter: &str) -> Vec<
 enum Focus {
     Vaults,
     Notes,
-    /// The right pane: the reader or the embedded editor, whichever it shows.
+    /// The right pane: the reader, or the program an extension runs there.
     Pane,
     Backlinks,
-}
-
-/// Where to put the cursor after opening a note.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Jump {
-    Line(usize),
-    Heading(String),
-    Block(String),
 }
 
 /// A backlink as shown in the pane under the editor.
@@ -405,18 +401,21 @@ pub struct Home {
     show_backlinks: bool,
     keys: Keymap<MenuAction>,
     reader_keys: Keymap<ReaderAction>,
+    pane_keys: Keymap<PaneAction>,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
     mru: Vec<PathBuf>,
     results: Vec<crate::search::NoteHits>,
     result_rows: Vec<SearchRow>,
-    /// The overlay was opened from inside Neovim: give it focus back afterwards.
+    /// The overlay was opened from inside the pane's program: give it focus back afterwards.
     back_to_editor: bool,
     // Right pane
-    editor_cmd: Option<String>,
-    editor: Option<Embedded>,
+    registry: Registry,
+    pane: Option<Pane>,
+    /// What extensions may still ask for this frame (see `call`).
+    effects_left: usize,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
-    /// `Some` while the pane shows the reader: always without an embedded editor, else after
+    /// `Some` while the pane shows the reader: always without an editor, else after
     /// `note.read`.
     reader: Option<Reader>,
     /// The open vault's Markdown flavour.
@@ -430,135 +429,16 @@ pub struct Home {
     quit: bool,
 }
 
-/// Neovim (or Vim) to embed: $VISUAL/$EDITOR if it is one, else `nvim` if it's installed.
-fn pick_editor() -> Option<String> {
-    let is_vim = |p: &str| {
-        let base = Path::new(p)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        matches!(
-            base.as_str(),
-            "nvim" | "vim" | "vi" | "nvim.exe" | "vim.exe"
-        )
-    };
-    for var in ["COLD_LAVA_EDITOR", "VISUAL", "EDITOR"] {
-        if let Ok(v) = std::env::var(var) {
-            let prog = v.split_whitespace().next().unwrap_or("").to_string();
-            if is_vim(&prog) {
-                return Some(prog);
-            }
-        }
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .find(|d| d.join("nvim").is_file())
-        .map(|_| "nvim".to_string())
+/// A program an extension runs in the right pane. The core draws it and types into it.
+struct Pane {
+    id: PaneId,
+    owner: ExtId,
+    term: Embedded,
 }
 
-/// The command we type into Vim/Neovim to show another note: save edits, open it, and
-/// optionally move to a line, heading or block.
-pub fn open_command_at(path: &Path, jump: Option<&Jump>) -> String {
-    let q = |s: &str| s.replace('\'', "''");
-    let p = q(&path.to_string_lossy());
-    let goto = match jump {
-        None => String::new(),
-        Some(Jump::Line(n)) => format!(" | call cursor({n}, 1) | normal! zz"),
-        // Very-nomagic search, so heading text is matched literally.
-        Some(Jump::Heading(h)) => format!(
-            " | call cursor(1, 1) | call search('\\v^#+\\s*\\V' . '{}', 'cW') | normal! zz",
-            q(&h.replace('\\', "\\\\"))
-        ),
-        Some(Jump::Block(b)) => format!(
-            " | call cursor(1, 1) | call search('\\V ^' . '{}', 'cW') | normal! zz",
-            q(&b.replace('\\', "\\\\"))
-        ),
-    };
-    // <C-\><C-n> gets to normal mode from any mode first.
-    format!("\x1c\x0e:silent! wall | execute 'edit' fnameescape('{p}'){goto}\r")
-}
-
-/// Loaded into the embedded Vim/Neovim: Enter (or gf) on a link asks cold-lava to follow it,
-/// and every note Vim opens is reported, so the menu and backlinks stay in sync.
-/// Messages go out as a private OSC sequence that cold-lava removes from the screen output.
-const VIM_SCRIPT: &str = r#"" cold-lava integration (loaded automatically; see https://github.com/AlenEngineer/cold-lava)
-if exists('g:cold_lava_loaded') | finish | endif
-let g:cold_lava_loaded = 1
-
-function! s:Enc(s) abort
-  return substitute(a:s, '[^A-Za-z0-9 _./-]', '\=printf("%%u%x;", char2nr(submatch(0)))', 'g')
-endfunction
-
-function! s:Send(kind, payload) abort
-  let l:msg = "\x1b]5379;" . a:kind . ";" . s:Enc(a:payload) . "\x07"
-  if has('nvim')
-    call chansend(v:stderr, l:msg)
-  elseif exists('*echoraw')
-    call echoraw(l:msg)
-  endif
-endfunction
-
-" The [[wikilink]] or [text](link.md) under the cursor, or ''.
-function! s:LinkUnderCursor() abort
-  let l:line = getline('.')
-  let l:col = col('.') - 1
-  for l:pat in ['\[\[\([^\]]\+\)\]\]', '\[[^\]]*\](\([^)]\+\))']
-    let l:start = 0
-    while 1
-      let l:m = matchstrpos(l:line, l:pat, l:start)
-      if l:m[1] < 0 | break | endif
-      if l:col >= l:m[1] && l:col < l:m[2]
-        return matchlist(l:m[0], l:pat)[1]
-      endif
-      let l:start = l:m[2]
-    endwhile
-  endfor
-  return ''
-endfunction
-
-function! ColdLavaFollow() abort
-  let l:target = s:LinkUnderCursor()
-  if l:target ==# '' || l:target =~# '^\a\+://'
-    return 0
-  endif
-  silent! update
-  call s:Send('follow', expand('%:p') . "\t" . l:target)
-  return 1
-endfunction
-
-function! s:Enter() abort
-  if !ColdLavaFollow()
-    execute "normal! \<CR>"
-  endif
-endfunction
-
-function! s:Gf() abort
-  if !ColdLavaFollow()
-    normal! gf
-  endif
-endfunction
-
-augroup ColdLava
-  autocmd!
-  autocmd BufEnter *.md call s:Send('open', expand('%:p'))
-  autocmd BufEnter *.md nnoremap <buffer><silent> <CR> :<C-u>call <SID>Enter()<CR>
-  autocmd BufWritePost *.md call s:Send('saved', expand('%:p'))
-augroup END
-nnoremap <silent> gf :<C-u>call <SID>Gf()<CR>
-" Open cold-lava's quick switcher or search from Vim; map them as you like, e.g.
-"   nnoremap <C-p> <Cmd>ColdLavaSwitcher<CR>
-command! -nargs=0 ColdLavaSwitcher call s:Send('switcher', '')
-command! -nargs=* ColdLavaSearch call s:Send('search', <q-args>)
-if expand('%:e') ==# 'md'
-  silent! doautocmd <nomodeline> ColdLava BufEnter
-endif
-"#;
-
-fn vim_script_path() -> Option<PathBuf> {
-    let p = std::env::temp_dir().join(format!("cold-lava-{}.vim", std::process::id()));
-    std::fs::write(&p, VIM_SCRIPT).ok()?;
-    Some(p)
-}
+/// What extensions may ask for in one frame. Applying an effect can call an extension again, so
+/// without a limit two of them could echo each other forever.
+const EFFECTS_PER_FRAME: usize = 256;
 
 impl Home {
     pub fn new(render: Render, initial: Option<PathBuf>) -> Home {
@@ -589,12 +469,14 @@ impl Home {
             show_backlinks: true,
             keys: Keymap::new(commands::MENU),
             reader_keys: Keymap::new(commands::READER),
+            pane_keys: Keymap::new(commands::PANE),
             mru: Vec::new(),
             results: Vec::new(),
             result_rows: Vec::new(),
             back_to_editor: false,
-            editor_cmd: pick_editor(),
-            editor: None,
+            registry: Registry::builtin(),
+            pane: None,
+            effects_left: EFFECTS_PER_FRAME,
             shown: None,
             pending: None,
             reader: None,
@@ -648,7 +530,7 @@ impl Home {
 
     /// The right pane takes focus if it shows something to focus.
     fn focus_pane(&mut self) {
-        self.focus = if self.editor.is_some() || self.reader.is_some() {
+        self.focus = if self.pane.is_some() || self.reader.is_some() {
             Focus::Pane
         } else {
             Focus::Notes
@@ -667,30 +549,12 @@ impl Home {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
-            let mut changed = false;
-            let mut messages = Vec::new();
-            if let Some(ed) = self.editor.as_mut() {
-                changed |= ed.pump();
-                messages = ed.take_messages();
-                if ed.exited() {
-                    self.editor = None;
-                    if self.reader.is_none() {
-                        self.shown = None;
-                        if self.focus == Focus::Pane {
-                            self.focus = Focus::Notes;
-                        }
-                    }
-                    self.flash("Neovim closed. Select a note to open it again");
-                }
-            }
-            for (kind, payload) in messages {
-                self.on_editor_message(&kind, &payload);
-            }
-            changed |= self.load_pending();
+            self.effects_left = EFFECTS_PER_FRAME;
+            self.pump_pane();
+            self.load_pending();
             self.check_disk();
-            let _ = changed;
             terminal.draw(|f| self.draw(f))?;
-            let ms = if self.editor.is_some() || self.pending.is_some() {
+            let ms = if self.pane.is_some() || self.pending.is_some() {
                 15
             } else {
                 250
@@ -710,12 +574,162 @@ impl Home {
                 }
             }
         }
-        if let Some(ed) = self.editor.as_mut() {
-            // Save before leaving.
-            ed.send(b"\x1c\x0e:silent! wall\r");
-            std::thread::sleep(Duration::from_millis(150));
-        }
+        self.save_editor();
         Ok(())
+    }
+
+    /// Bring the pane's screen up to date, and tell its extension what the program said and
+    /// whether it ended.
+    fn pump_pane(&mut self) {
+        let Some(p) = self.pane.as_mut() else {
+            return;
+        };
+        p.term.pump();
+        let (pane, owner) = (p.id, p.owner);
+        let (messages, exited) = (p.term.take_messages(), p.term.exited());
+        for (kind, payload) in messages {
+            let news = PaneNews::Message {
+                pane,
+                kind,
+                payload,
+            };
+            self.call(owner, |e, host| e.pane(news, host));
+        }
+        if exited {
+            self.pane = None;
+            // Nothing shows the note now, so selecting it again opens it again.
+            if self.reader.is_none() {
+                self.shown = None;
+                if self.focus == Focus::Pane {
+                    self.focus = Focus::Notes;
+                }
+            }
+            let news = PaneNews::Exited { pane, error: None };
+            self.call(owner, |e, host| e.pane(news, host));
+        }
+    }
+
+    /// Call an extension, then do what it asked for.
+    fn call(&mut self, ext: ExtId, f: impl FnOnce(&mut dyn Extension, &mut Host<'_>)) {
+        for effect in self.registry.call(ext, f) {
+            if self.effects_left == 0 {
+                let name = &self.registry.manifest(ext).name;
+                let msg = format!("{name} asked for too much at once; the rest was skipped");
+                return self.flash(msg);
+            }
+            self.effects_left -= 1;
+            self.apply(ext, effect);
+        }
+    }
+
+    fn apply(&mut self, ext: ExtId, effect: Effect) {
+        match effect {
+            Effect::Notify { message } => self.flash(message),
+            Effect::EditorOpened { note } => {
+                if self.shown.as_deref() != Some(note.as_path()) {
+                    self.remember_recent(&note);
+                    self.shown = Some(note.clone());
+                    self.select_path(&note);
+                    self.bsel = 0;
+                    self.refresh_backlinks();
+                }
+            }
+            Effect::RunCommand { id, args } => self.run_command(ext, &id, args),
+            Effect::Saved { note } => {
+                if let Some(core) = self.core.as_mut() {
+                    core.note_changed(&note);
+                }
+            }
+            Effect::OpenPane { pane, spec } => self.open_pane(ext, pane, spec),
+            Effect::PaneInput { pane, text } => {
+                if let Some(p) = self
+                    .pane
+                    .as_mut()
+                    .filter(|p| p.id == pane && p.owner == ext)
+                {
+                    p.term.send(text.as_bytes());
+                }
+            }
+        }
+    }
+
+    /// Start `spec` in the pane. If it can't start, or another pane is open, the extension hears
+    /// that its pane exited; an editor that can't start is dropped, and the reader shows notes.
+    fn open_pane(&mut self, owner: ExtId, pane: PaneId, spec: PaneSpec) {
+        let started = if self.pane.is_some() {
+            Err(anyhow!("another pane is open"))
+        } else {
+            let a = self.areas[2];
+            let cwd = self.root.clone().unwrap_or_else(|| PathBuf::from("."));
+            Embedded::spawn(
+                &spec.program,
+                &spec.args,
+                &cwd,
+                a.height.max(5),
+                a.width.max(20),
+            )
+        };
+        let error = match started {
+            Ok(term) => {
+                self.pane = Some(Pane {
+                    id: pane,
+                    owner,
+                    term,
+                });
+                return;
+            }
+            Err(e) => format!("{e:#}"),
+        };
+        // The whole error goes to the extension: on the status line it would hide the rest.
+        let fallback = if self.registry.editor() == Some(owner) {
+            self.registry.drop_editor();
+            "; showing the reader"
+        } else {
+            ""
+        };
+        self.flash(format!("couldn't start {}{fallback}", spec.program));
+        let news = PaneNews::Exited {
+            pane,
+            error: Some(error),
+        };
+        self.call(owner, |e, host| e.pane(news, host));
+    }
+
+    /// A command an extension asked to run, with its `args` parsed here.
+    fn run_command(&mut self, ext: ExtId, id: &str, args: serde_json::Value) {
+        #[derive(Deserialize)]
+        struct FollowLink {
+            from: PathBuf,
+            link: String,
+        }
+        #[derive(Deserialize)]
+        struct Search {
+            query: String,
+        }
+        let done = match id {
+            "note.follow-link" => serde_json::from_value(args)
+                .map(|FollowLink { from, link }| self.follow(&from, &link))
+                .map_err(|e| e.to_string()),
+            "note.switch" => {
+                self.open_switcher(true);
+                Ok(())
+            }
+            "search.open" => serde_json::from_value(args)
+                .map(|Search { query }| {
+                    self.open_search(true);
+                    if let Mode::Search { query: q, .. } = &mut self.mode {
+                        *q = query;
+                    }
+                    self.run_search();
+                })
+                .map_err(|e| e.to_string()),
+            _ => Err("there is no such command".to_string()),
+        };
+        if let Err(e) = done {
+            let name = &self.registry.manifest(ext).name;
+            let msg = format!("{name} couldn't run {id}: {e}");
+            self.flash(msg);
+        }
     }
 
     // ---------- vaults & notes ----------
@@ -786,41 +800,6 @@ impl Home {
             })
             .collect();
         self.bsel = self.bsel.min(self.backs.len().saturating_sub(1));
-    }
-
-    /// Messages from the embedded Vim/Neovim (see VIM_SCRIPT).
-    fn on_editor_message(&mut self, kind: &str, payload: &str) {
-        match kind {
-            "open" => {
-                let path = PathBuf::from(payload);
-                if self.shown.as_deref() != Some(path.as_path()) {
-                    self.remember_recent(&path);
-                    self.shown = Some(path.clone());
-                    self.select_path(&path);
-                    self.bsel = 0;
-                    self.refresh_backlinks();
-                }
-            }
-            "follow" => {
-                if let Some((from, target)) = payload.split_once('\t') {
-                    self.follow(Path::new(from), target);
-                }
-            }
-            "saved" => {
-                if let Some(core) = self.core.as_mut() {
-                    core.note_changed(Path::new(payload));
-                }
-            }
-            "switcher" => self.open_switcher(true),
-            "search" => {
-                self.open_search(true);
-                if let Mode::Search { query, .. } = &mut self.mode {
-                    *query = payload.to_string();
-                }
-                self.run_search();
-            }
-            _ => {}
-        }
     }
 
     /// Follow a link written in `from`: open the target note (at its heading or block), or
@@ -918,14 +897,13 @@ impl Home {
         }
     }
 
-    fn load_pending(&mut self) -> bool {
+    fn load_pending(&mut self) {
         match &self.pending {
             Some((_, t)) if Instant::now() >= *t => {}
-            _ => return false,
+            _ => return,
         }
         let (path, _) = self.pending.take().unwrap();
         self.show(&path);
-        true
     }
 
     /// Show a note in the right pane (reader, or embedded editor).
@@ -944,7 +922,7 @@ impl Home {
             self.shown = Some(path.to_path_buf());
             self.refresh_backlinks();
         }
-        if self.editor_cmd.is_none() || self.reader.is_some() {
+        if self.registry.editor().is_none() || self.reader.is_some() {
             if !same || self.reader.is_none() {
                 self.reader = Some(Reader::new(self.read_shown()));
             }
@@ -953,35 +931,18 @@ impl Home {
             }
         }
         // The editor follows along while the reader is shown, so switching back finds the note.
-        let Some(cmd) = self.editor_cmd.clone() else {
+        let Some(editor) = self.registry.editor() else {
             return;
         };
-        match self.editor.as_mut() {
-            Some(ed) => ed.send(open_command_at(path, jump.as_ref()).as_bytes()),
-            None => {
-                let a = self.areas[2];
-                let cwd = self.root.clone().unwrap_or_else(|| PathBuf::from("."));
-                let mut args = vec!["-c".to_string(), "set autoread".to_string()];
-                if let Some(script) = vim_script_path() {
-                    args.push("-S".to_string());
-                    args.push(script.to_string_lossy().into_owned());
-                }
-                args.push(path.to_string_lossy().into_owned());
-                match Embedded::spawn(&cmd, &args, &cwd, a.height.max(5), a.width.max(20)) {
-                    Ok(mut ed) => {
-                        if let Some(j) = &jump {
-                            ed.send(open_command_at(path, Some(j)).as_bytes());
-                        }
-                        self.editor = Some(ed);
-                    }
-                    Err(e) => {
-                        self.editor_cmd = None;
-                        self.flash(format!("couldn't start {cmd}: {e}; showing the reader"));
-                        self.shown = None;
-                        self.show_at(path, jump);
-                    }
-                }
-            }
+        let request = EditorRequest::Open {
+            note: path.to_path_buf(),
+            jump: jump.clone(),
+        };
+        self.call(editor, |e, host| e.editor(request, host));
+        if self.registry.editor().is_none() {
+            // It couldn't start: show the note in the reader instead.
+            self.shown = None;
+            self.show_at(path, jump);
         }
     }
 
@@ -1065,14 +1026,11 @@ impl Home {
 
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        // Keys typed into the editor pane go to Neovim, except Ctrl-q (back to the menu).
+        // Keys go straight to the pane's program, except pane.leave (back to the menu).
         if self.focus == Focus::Pane && self.reader.is_none() {
-            if ctrl && matches!(k.code, KeyCode::Char('q')) {
-                self.focus = Focus::Notes;
-            } else if let Some(ed) = self.editor.as_mut() {
-                ed.send_key(k);
-            } else {
-                self.focus = Focus::Notes;
+            match (self.pane_keys.get(k), self.pane.as_mut()) {
+                (None, Some(p)) => p.term.send_key(k),
+                (Some(PaneAction::Leave), _) | (_, None) => self.focus = Focus::Notes,
             }
             return Ok(());
         }
@@ -1187,7 +1145,7 @@ impl Home {
         match a {
             MenuAction::ClearFilter => !self.filter.is_empty(),
             MenuAction::NewNote => self.root.is_some(),
-            MenuAction::Read => self.editor.is_some() && self.shown.is_some(),
+            MenuAction::Read => self.running_editor().is_some() && self.shown.is_some(),
             _ => true,
         }
     }
@@ -1220,7 +1178,7 @@ impl Home {
         Ok(())
     }
 
-    /// Follow the reader's selected link: notes like from Neovim, URLs in the browser.
+    /// Follow the reader's selected link: notes like from the editor, URLs in the browser.
     fn follow_selected(&mut self) {
         let (Some(link), Some(from)) = (
             self.reader.as_ref().and_then(Reader::selected_link),
@@ -1240,9 +1198,9 @@ impl Home {
 
     fn run_action(&mut self, a: MenuAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match a {
-            // Ctrl-q leaves Neovim; pressed in the menu it goes back to Neovim, never quits.
+            // Shares pane.leave's default key, so that key goes back and forth; it never quits.
             MenuAction::FocusEditor => {
-                if self.editor.is_some() {
+                if self.pane.is_some() {
                     self.focus = Focus::Pane;
                 }
             }
@@ -1252,7 +1210,7 @@ impl Home {
                 let has_backs = self.show_backlinks && !self.backs.is_empty();
                 self.focus = match self.focus {
                     Focus::Vaults => Focus::Notes,
-                    Focus::Notes if self.editor.is_some() || self.reader.is_some() => Focus::Pane,
+                    Focus::Notes if self.pane.is_some() || self.reader.is_some() => Focus::Pane,
                     Focus::Notes | Focus::Pane if has_backs => Focus::Backlinks,
                     _ => Focus::Vaults,
                 }
@@ -1681,16 +1639,26 @@ impl Home {
         };
     }
 
-    /// Save Neovim's buffers and give it a moment, so the plan sees what's on screen.
+    /// Ask the editor to save, and give it a moment, so what's read from disk next is what's on
+    /// screen. The editor can't say when it's done yet, hence the wait.
     fn save_editor(&mut self) {
-        if let Some(ed) = self.editor.as_mut() {
-            ed.send(b"\x1c\x0e:silent! wall\r");
-            for _ in 0..12 {
-                std::thread::sleep(Duration::from_millis(25));
-                ed.pump();
+        let Some(editor) = self.running_editor() else {
+            return;
+        };
+        self.call(editor, |e, host| e.editor(EditorRequest::Save, host));
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(25));
+            if let Some(p) = self.pane.as_mut() {
+                p.term.pump();
             }
-            let _ = ed.take_messages();
         }
+    }
+
+    /// The editor, if its program runs in the pane (perhaps behind the reader).
+    fn running_editor(&self) -> Option<ExtId> {
+        let editor = self.registry.editor()?;
+        let pane = self.pane.as_ref().filter(|p| p.owner == editor);
+        pane.map(|_| editor)
     }
 
     fn rename_key(&mut self, k: KeyEvent) {
@@ -1774,18 +1742,12 @@ impl Home {
             return self.flash(format!("rename failed: {e}"));
         }
         let (old, new) = (plan.from_path.clone(), plan.to_path.clone());
-        // Neovim: show the note under its new name, drop the old buffer, reload the others.
-        if let Some(ed) = self.editor.as_mut() {
-            if self.shown.as_deref() == Some(old.as_path()) {
-                ed.send(open_command_at(&new, None).as_bytes());
-            }
-            let o = old.to_string_lossy().replace('\'', "''");
-            ed.send(
-                format!(
-                    "\x1c\x0e:silent! execute 'bwipeout!' fnameescape('{o}') | silent! checktime\r"
-                )
-                .as_bytes(),
-            );
+        if let Some(editor) = self.running_editor() {
+            let request = EditorRequest::Renamed {
+                from: old.clone(),
+                to: new.clone(),
+            };
+            self.call(editor, |e, host| e.editor(request, host));
         }
         if self.shown.as_deref() == Some(old.as_path()) {
             self.shown = Some(new.clone());
@@ -1972,11 +1934,11 @@ impl Home {
             return;
         }
         if ea.contains(pos) {
-            if let Some(ed) = self.editor.as_mut() {
+            if let Some(p) = self.pane.as_mut() {
                 if matches!(m.kind, MouseEventKind::Down(_)) {
                     self.focus = Focus::Pane;
                 }
-                ed.send_mouse(m, m.column - ea.x, m.row - ea.y);
+                p.term.send_mouse(m, m.column - ea.x, m.row - ea.y);
             }
             return;
         }
@@ -2156,7 +2118,7 @@ impl Home {
 
     // ---------- drawing ----------
 
-    fn pane(&self, title: Line<'static>, focus: Focus) -> Block<'static> {
+    fn block(&self, title: Line<'static>, focus: Focus) -> Block<'static> {
         let active = self.focus == focus;
         Block::bordered()
             .border_type(if active {
@@ -2233,7 +2195,11 @@ impl Home {
             prompt(f, main, title, label, input);
         }
         match &self.mode {
-            Mode::Help => draw_help(f, main, &self.keys, &self.reader_keys),
+            Mode::Help => {
+                let editor = self.registry.editor().map(|e| self.registry.manifest(e));
+                let (keys, reader_keys) = (&self.keys, &self.reader_keys);
+                draw_help(f, main, keys, reader_keys, &self.pane_keys, editor)
+            }
             Mode::NewNote(name) => prompt(
                 f,
                 main,
@@ -2530,7 +2496,7 @@ impl Home {
             ),
             Span::styled("vaults ", Style::new().fg(MUTED)),
         ]);
-        let block = self.pane(title, Focus::Vaults);
+        let block = self.block(title, Focus::Vaults);
         let inner = block.inner(area);
         f.render_widget(block, area);
         if self.vaults.is_empty() {
@@ -2594,7 +2560,7 @@ impl Home {
             ),
             Span::styled(counts, Style::new().fg(MUTED)),
         ]);
-        let mut block = self.pane(title, Focus::Notes);
+        let mut block = self.block(title, Focus::Notes);
         if !self.filter.is_empty() || matches!(self.mode, Mode::Filter) {
             let cursor = if matches!(self.mode, Mode::Filter) {
                 "▏"
@@ -2705,14 +2671,17 @@ impl Home {
                     .unwrap_or_default();
                 let focused = self.focus == Focus::Pane;
                 let read = self.keys.label("note.read");
-                let who = match (&self.editor_cmd, self.reader.is_some(), focused) {
+                let leave = self.pane_keys.label("pane.leave");
+                let editor = self.registry.editor();
+                let editor = editor.map(|e| self.registry.manifest(e).title.as_str());
+                let who = match (editor, self.reader.is_some(), focused) {
                     (_, true, true) => {
                         let back = self.reader_keys.label("reader.back");
                         format!(" reading · {back} back ")
                     }
                     (Some(c), true, false) => format!(" reader · ⏎ read · {read} {c} "),
                     (None, _, false) => " reader · ⏎ read · e edit in $EDITOR ".to_string(),
-                    (Some(c), false, true) => format!(" {c} · editing · Ctrl-q back "),
+                    (Some(c), false, true) => format!(" {c} · editing · {leave} back "),
                     (Some(c), false, false) => format!(" {c} · ⏎ edit · {read} read "),
                     (None, false, true) => String::new(),
                 };
@@ -2726,7 +2695,7 @@ impl Home {
             }
             None => Line::styled(" note ", Style::new().fg(MUTED)),
         };
-        let block = self.pane(title, Focus::Pane);
+        let block = self.block(title, Focus::Pane);
         f.render_widget(block, area);
         if let Some(r) = self.reader.as_mut() {
             let ix = self.core.as_ref().map(|c| &c.index);
@@ -2734,9 +2703,9 @@ impl Home {
             r.render(inner, f.buffer_mut());
             return;
         }
-        if let Some(ed) = self.editor.as_mut() {
-            ed.resize(inner.height, inner.width);
-            if let Some((x, y)) = ed.render(f.buffer_mut(), inner)
+        if let Some(p) = self.pane.as_mut() {
+            p.term.resize(inner.height, inner.width);
+            if let Some((x, y)) = p.term.render(f.buffer_mut(), inner)
                 && self.focus == Focus::Pane
                 && matches!(self.mode, Mode::Normal)
             {
@@ -2771,7 +2740,7 @@ impl Home {
                 Style::new().fg(MUTED),
             ),
         ]);
-        let block = self.pane(title, Focus::Backlinks);
+        let block = self.block(title, Focus::Backlinks);
         let inner = block.inner(area);
         f.render_widget(block, area);
         if n == 0 {
@@ -2868,8 +2837,16 @@ impl Home {
                 )
             }
             (Focus::Pane, _) => {
-                " in Neovim · ⏎ on a [[link]] follows it · Ctrl-o back · Ctrl-q to the menu"
-                    .to_string()
+                let manifest = self.pane.as_ref().map(|p| self.registry.manifest(p.owner));
+                let title = manifest.map(|m| format!("in {}", m.title));
+                let hints = manifest.iter().flat_map(|m| &m.hints);
+                let leave = format!("{} to the menu", self.pane_keys.label("pane.leave"));
+                let parts: Vec<String> = title
+                    .into_iter()
+                    .chain(hints.map(|(key, does)| format!("{key} {does}")))
+                    .chain([leave])
+                    .collect();
+                format!(" {}", parts.join(" · "))
             }
             (Focus::Backlinks, _) => {
                 " backlinks · ↑↓ choose · ⏎ open at the link · ← back to notes · b hide".to_string()
@@ -3011,50 +2988,60 @@ fn draw_help(
     area: Rect,
     keys: &Keymap<MenuAction>,
     reader_keys: &Keymap<ReaderAction>,
+    pane_keys: &Keymap<PaneAction>,
+    editor: Option<&Manifest>,
 ) {
-    let fixed: &[(&str, &str)] = &[
-        ("↑↓ / jk", "move through vaults or notes"),
-        ("→ / ←", "open / close a folder · vaults ↔ notes"),
+    let enter = match editor {
+        Some(m) => format!("go to the note in the reader or {} · open a board", m.title),
+        None => "go to the note in the reader · open a board".to_string(),
+    };
+    let fixed = [
+        ("↑↓ / jk", "move through vaults or notes".to_string()),
         (
-            "Enter",
-            "go to the note in the reader or Neovim · open a board",
+            "→ / ←",
+            "open / close a folder · vaults ↔ notes".to_string(),
         ),
-        ("Ctrl-q", "leave Neovim and return to the menu"),
-        (
-            "⏎ in Neovim",
-            "on a [[link]]: open it (creates missing notes)",
-        ),
-        ("Ctrl-o", "in Neovim: back to the previous note"),
+        ("Enter", enter),
     ];
-    let row = |k: &str, d: &'static str| {
+    let row = |k: &str, d: &str| {
         Line::from(vec![
             Span::styled(format!("{k:>12}  "), Style::new().fg(ACCENT)),
-            Span::styled(d, Style::new().fg(NOTE)),
+            Span::styled(d.to_string(), Style::new().fg(NOTE)),
         ])
+    };
+    let heading = |text: String| {
+        Line::from(Span::styled(
+            format!("      {text}"),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
     };
     let menu: Vec<Line> = fixed
         .iter()
-        .map(|&(k, d)| row(k, d))
+        .map(|(k, d)| row(k, d))
         .chain(
             commands::MENU
                 .iter()
                 .map(|c| row(&keys.label(c.id), c.title)),
         )
         .collect();
-    let mut reader = vec![Line::from(Span::styled(
-        "      In the reader",
-        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-    ))];
-    reader.extend(
+    let mut right = vec![heading("In the reader".to_string())];
+    right.extend(
         commands::READER
             .iter()
             .map(|c| row(&reader_keys.label(c.id), c.title)),
     );
-    // Side by side when there's room, else the reader's keys under the menu's.
+    if let Some(m) = editor {
+        right.push(Line::raw(""));
+        right.push(heading(format!("In {}", m.title)));
+        let leave = commands::PANE.iter();
+        right.extend(leave.map(|c| row(&pane_keys.label(c.id), c.title)));
+        right.extend(m.hints.iter().map(|(k, d)| row(k, d)));
+    }
+    // Side by side when there's room, else the reader's and the pane's keys under the menu's.
     let column = 70;
     let (lines, w) = if area.width >= 2 * column + 4 {
         let mut lines = menu;
-        for (i, r) in reader.into_iter().enumerate() {
+        for (i, r) in right.into_iter().enumerate() {
             let pad = " ".repeat((column as usize).saturating_sub(lines[i].width()));
             lines[i].spans.push(Span::raw(pad));
             lines[i].spans.extend(r.spans);
@@ -3063,7 +3050,7 @@ fn draw_help(
     } else {
         let mut lines = menu;
         lines.push(Line::raw(""));
-        lines.extend(reader);
+        lines.extend(right);
         (lines, column.min(area.width.saturating_sub(4)))
     };
     let h = (lines.len() as u16 + 2).min(area.height);
@@ -3133,22 +3120,5 @@ mod tests {
 
         let found = visible(&items, &HashSet::new(), "kil");
         assert_eq!(items[found[0]].rel, "Volcanoes/Kīlauea.md");
-    }
-
-    #[test]
-    fn vim_open_command_escapes_quotes() {
-        let c = open_command_at(Path::new("/v/It's here.md"), None);
-        assert!(c.contains("fnameescape('/v/It''s here.md')"));
-        assert!(c.starts_with("\x1c\x0e") && c.ends_with(")\r"));
-        let c = open_command_at(Path::new("/v/a.md"), Some(&Jump::Line(12)));
-        assert!(c.ends_with("| call cursor(12, 1) | normal! zz\r"));
-        let c = open_command_at(
-            Path::new("/v/a.md"),
-            Some(&Jump::Heading("Don't panic".into())),
-        );
-        assert!(
-            c.contains("search('\\v^#+\\s*\\V' . 'Don''t panic', 'cW')"),
-            "{c}"
-        );
     }
 }

@@ -5,6 +5,7 @@ mod config;
 mod core;
 mod daily;
 mod embed;
+mod ext;
 mod graph;
 mod groups;
 mod home;
@@ -142,6 +143,7 @@ fn run() -> Result<()> {
             print_keys("graph", commands::GRAPH);
             print_keys("whiteboard", commands::BOARD);
             print_keys("reader", commands::READER);
+            print_keys("pane", commands::PANE);
             let errors = &config::get().errors;
             if !errors.is_empty() {
                 let path = config::path().unwrap_or_default();
