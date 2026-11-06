@@ -707,10 +707,10 @@ impl Home {
         self.call(owner, |e, host| e.pane(news, host));
     }
 
-    /// Run the commands extensions asked for, including those they ask for meanwhile.
+    /// Run the commands extensions asked for before this frame. Those they ask for meanwhile
+    /// wait for the next one, so a command that keeps running itself can't freeze the menu.
     fn run_requested(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        while !self.requested.is_empty() {
-            let (from, id, args) = self.requested.remove(0);
+        for (from, id, args) in std::mem::take(&mut self.requested) {
             self.run_command(from, &id, args, terminal)?;
         }
         Ok(())
