@@ -18,9 +18,24 @@ change commands, keys and file formats; patch versions only fix things.
 - In the main menu, `R` renames the selected note and `m` moves it to another folder, with a
   preview of every link that will change before you confirm. The open note is saved first, and
   Neovim shows it under its new name afterwards.
+- Command palette (`:`) in the main menu: run any command by name, with its key shown.
+- Keys are configurable in `~/.config/cold-lava/config.toml` (`[keys]`, by command id);
+  `cold-lava keys` lists every command and its keys and reports mistakes in the file.
+- Markdown flavours (`commonmark`, `github`, `obsidian`, or your own in `config.toml`) for the
+  reader.
+- The reader, in the main menu's right pane: the note rendered in the vault's flavour, with
+  headings, lists, tasks, quotes, callouts (folded ones closed), code, tables, highlights, tags,
+  embed placeholders and links (unresolved ones dimmer). `Tab` selects a link and `Enter`
+  follows it like from Neovim, URLs open in the browser, and a click follows a link. It replaces
+  the plain preview, and follows changes on disk without losing its place. With Neovim, `v`
+  (`note.read`) switches the pane between the reader and Neovim. Its keys are under `reader.*`
+  in `config.toml`, and the key names `up`, `down`, `left`, `right`, `pageup`, `pagedown`,
+  `home` and `end` are new.
 
 ### Changed
 
+- Without an embedded Neovim or Vim, `Enter` on a note in the main menu goes into the reader
+  instead of opening `$EDITOR` full screen; `e` still does that.
 - Every write to a vault now goes through one path: atomic (a hidden temporary file, then a
   rename) and refused if the file changed since it was read. Task toggles, renames, new notes,
   daily notes and whiteboards all use it.
@@ -28,6 +43,9 @@ change commands, keys and file formats; patch versions only fix things.
   a full rescan only happens when a folder moves or a whiteboard changes.
 - The graph view and the main menu share one live vault with a single file watcher, so changes
   made while the graph is open show up in the menu too.
+- Every action in the main menu, the graph view and the whiteboard is a named command (e.g.
+  `graph.open`, `graph.local`, `board.new-card`); each screen's help (`?`) is generated from
+  them.
 
 ### Fixed
 

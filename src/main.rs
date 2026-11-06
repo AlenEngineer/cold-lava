@@ -1,5 +1,7 @@
 mod app;
 mod board;
+mod commands;
+mod config;
 mod core;
 mod daily;
 mod embed;
@@ -8,6 +10,8 @@ mod groups;
 mod home;
 mod index;
 mod kitty;
+mod markdown;
+mod reader;
 mod rename;
 mod scene;
 mod search;
@@ -34,6 +38,7 @@ Usage:
   cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
+  cold-lava keys                      every command and its keys; checks config.toml
 
 Options:
   --braille            force braille rendering
@@ -47,7 +52,8 @@ Options:
   -V, --version        print the version
   -h, --help           this help
 
-DATE is YYYY-MM-DD, today, tomorrow or yesterday. Press ? inside the app for keys.";
+DATE is YYYY-MM-DD, today, tomorrow or yesterday. Press ? inside the app for keys.
+Keys are set by command id under [keys] in ~/.config/cold-lava/config.toml.";
 
 /// Command-line arguments: positional words, `--flag value` options and `--switch`es.
 struct Args {
@@ -128,8 +134,25 @@ fn run() -> Result<()> {
         app::Render::Auto
     };
     let json = args.has("json");
+    config::load();
 
     match args.word(0) {
+        Some("keys") => {
+            print_keys("menu", commands::MENU);
+            print_keys("graph", commands::GRAPH);
+            print_keys("whiteboard", commands::BOARD);
+            print_keys("reader", commands::READER);
+            let errors = &config::get().errors;
+            if !errors.is_empty() {
+                let path = config::path().unwrap_or_default();
+                eprintln!("{}:", path.display());
+                for e in errors {
+                    eprintln!("  {}", e.replace('\n', "\n  "));
+                }
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Some("board") => {
             let target = PathBuf::from(args.word(1).unwrap_or("."));
             let root = board::find_vault_root(&target);
@@ -303,6 +326,19 @@ fn run() -> Result<()> {
             with_terminal(|t| home.run(t))
         }
     }
+}
+
+fn print_keys<A: Copy>(screen: &str, table: &'static [commands::Command<A>]) {
+    let keys = commands::Keymap::new(table);
+    let id_width = table.iter().map(|c| c.id.len()).max().unwrap_or(0);
+    let labels: Vec<String> = table.iter().map(|c| keys.label(c.id)).collect();
+    let key_width = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    println!("{screen}");
+    for (c, label) in table.iter().zip(&labels) {
+        let label = if label.is_empty() { "-" } else { label };
+        println!("  {:id_width$}  {label:key_width$}  {}", c.id, c.title);
+    }
+    println!();
 }
 
 fn print_agenda(a: &tasks::Agenda) {

@@ -1,10 +1,13 @@
 //! The main menu: vaults on the left, the selected vault's notes in the middle, and the
-//! selected note on the right, shown in a real (embedded) Neovim, or as a rendered
-//! preview when Neovim isn't installed.
+//! selected note on the right, in the reader or in a real (embedded) Neovim when it's
+//! installed.
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
+use crate::commands::{self, Keymap, MenuAction, ReaderAction};
 use crate::core::{Core, Event as CoreEvent};
 use crate::embed::Embedded;
+use crate::markdown::{self, Flavour};
+use crate::reader::Reader;
 use crate::{board, term, vault};
 use anyhow::Result;
 use ratatui::crossterm::event::{
@@ -39,7 +42,7 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|h| h.join(".config")))
@@ -320,7 +323,8 @@ pub fn visible(items: &[Item], expanded: &HashSet<String>, filter: &str) -> Vec<
 enum Focus {
     Vaults,
     Notes,
-    Editor,
+    /// The right pane: the reader or the embedded editor, whichever it shows.
+    Pane,
     Backlinks,
 }
 
@@ -348,6 +352,11 @@ enum Mode {
     Help,
     /// Quick switcher: jump to a note by (fuzzy) name.
     Switcher {
+        query: String,
+        sel: usize,
+    },
+    /// Command palette: run a command by (fuzzy) name.
+    Palette {
         query: String,
         sel: usize,
     },
@@ -394,6 +403,8 @@ pub struct Home {
     backs: Vec<BackRow>,
     bsel: usize,
     show_backlinks: bool,
+    keys: Keymap<MenuAction>,
+    reader_keys: Keymap<ReaderAction>,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
     mru: Vec<PathBuf>,
     results: Vec<crate::search::NoteHits>,
@@ -405,7 +416,11 @@ pub struct Home {
     editor: Option<Embedded>,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
-    preview: Vec<String>,
+    /// `Some` while the pane shows the reader: always without an embedded editor, else after
+    /// `note.read`.
+    reader: Option<Reader>,
+    /// The open vault's Markdown flavour.
+    flavour: Flavour,
     zoom: bool,
     // UI
     focus: Focus,
@@ -572,6 +587,8 @@ impl Home {
             backs: Vec::new(),
             bsel: 0,
             show_backlinks: true,
+            keys: Keymap::new(commands::MENU),
+            reader_keys: Keymap::new(commands::READER),
             mru: Vec::new(),
             results: Vec::new(),
             result_rows: Vec::new(),
@@ -580,7 +597,8 @@ impl Home {
             editor: None,
             shown: None,
             pending: None,
-            preview: Vec::new(),
+            reader: None,
+            flavour: markdown::flavour_for(Path::new("")),
             zoom: false,
             focus: Focus::Vaults,
             mode: Mode::Normal,
@@ -593,6 +611,13 @@ impl Home {
             if initial.is_some() {
                 h.focus = Focus::Notes;
             }
+        }
+        match crate::config::get().errors.len() {
+            0 => {}
+            1 => h.flash("config.toml has a problem: run cold-lava keys to see it"),
+            n => h.flash(format!(
+                "config.toml has {n} problems: run cold-lava keys to see them"
+            )),
         }
         h
     }
@@ -618,8 +643,13 @@ impl Home {
         }
         self.pending = None;
         self.show(&canon);
-        self.focus = if self.editor.is_some() {
-            Focus::Editor
+        self.focus_pane();
+    }
+
+    /// The right pane takes focus if it shows something to focus.
+    fn focus_pane(&mut self) {
+        self.focus = if self.editor.is_some() || self.reader.is_some() {
+            Focus::Pane
         } else {
             Focus::Notes
         };
@@ -644,9 +674,11 @@ impl Home {
                 messages = ed.take_messages();
                 if ed.exited() {
                     self.editor = None;
-                    self.shown = None;
-                    if self.focus == Focus::Editor {
-                        self.focus = Focus::Notes;
+                    if self.reader.is_none() {
+                        self.shown = None;
+                        if self.focus == Focus::Pane {
+                            self.focus = Focus::Notes;
+                        }
                     }
                     self.flash("Neovim closed. Select a note to open it again");
                 }
@@ -694,6 +726,7 @@ impl Home {
         };
         self.vsel = i;
         self.root = Some(v.path.clone());
+        self.flavour = markdown::flavour_for(&v.path);
         self.expanded.clear();
         self.filter.clear();
         self.nsel = 0;
@@ -895,31 +928,32 @@ impl Home {
         true
     }
 
-    /// Show a note in the right pane (embedded editor, or preview).
+    /// Show a note in the right pane (reader, or embedded editor).
     fn show(&mut self, path: &Path) {
         self.show_at(path, None);
     }
 
     fn show_at(&mut self, path: &Path, jump: Option<Jump>) {
-        if self.shown.as_deref() == Some(path) && jump.is_none() {
+        let same = self.shown.as_deref() == Some(path);
+        if same && jump.is_none() {
             return;
         }
-        if self.shown.as_deref() != Some(path) {
+        if !same {
             self.bsel = 0;
+            self.remember_recent(path);
+            self.shown = Some(path.to_path_buf());
+            self.refresh_backlinks();
         }
-        self.remember_recent(path);
-        self.shown = Some(path.to_path_buf());
-        self.refresh_backlinks();
-        let Some(cmd) = self.editor_cmd.clone() else {
-            let text = std::fs::read_to_string(path).unwrap_or_default();
-            let mut lines: Vec<String> = text.lines().map(String::from).collect();
-            // Hide YAML frontmatter in the preview.
-            if lines.first().is_some_and(|l| l.trim_end() == "---")
-                && let Some(end) = lines.iter().skip(1).position(|l| l.trim_end() == "---")
-            {
-                lines.drain(..end + 2);
+        if self.editor_cmd.is_none() || self.reader.is_some() {
+            if !same || self.reader.is_none() {
+                self.reader = Some(Reader::new(self.read_shown()));
             }
-            self.preview = lines;
+            if let (Some(r), Some(j)) = (self.reader.as_mut(), jump.clone()) {
+                r.jump(j);
+            }
+        }
+        // The editor follows along while the reader is shown, so switching back finds the note.
+        let Some(cmd) = self.editor_cmd.clone() else {
             return;
         };
         match self.editor.as_mut() {
@@ -942,11 +976,9 @@ impl Home {
                     }
                     Err(e) => {
                         self.editor_cmd = None;
-                        self.flash(format!(
-                            "couldn't start {cmd}: {e}; showing previews instead"
-                        ));
+                        self.flash(format!("couldn't start {cmd}: {e}; showing the reader"));
                         self.shown = None;
-                        self.show(path);
+                        self.show_at(path, jump);
                     }
                 }
             }
@@ -979,10 +1011,41 @@ impl Home {
         }
         self.refresh_rows();
         self.refresh_backlinks();
-        if self.editor_cmd.is_none()
-            && let Some(p) = self.shown.take()
-        {
-            self.show(&p);
+        let shown_rel = self
+            .shown
+            .as_ref()
+            .and_then(|p| p.strip_prefix(&root).ok())
+            .map(|r| r.to_string_lossy().replace('\\', "/"));
+        let shown_rel = shown_rel.as_deref().map(|r| r.trim_end_matches(".md"));
+        let reread = events.iter().any(|e| match e {
+            CoreEvent::NoteChanged(rel)
+            | CoreEvent::NoteCreated(rel)
+            | CoreEvent::NoteRemoved(rel) => Some(rel.as_str()) == shown_rel,
+            CoreEvent::Rescanned => true,
+            CoreEvent::BoardChanged(_) | CoreEvent::GraphSettingsChanged => false,
+        });
+        if reread {
+            self.reload_reader();
+        } else if let Some(r) = self.reader.as_mut() {
+            r.invalidate();
+        }
+    }
+
+    /// The shown note, parsed.
+    fn read_shown(&self) -> markdown::Doc {
+        let text = self
+            .shown
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default();
+        markdown::parse(&text, &self.flavour)
+    }
+
+    /// Read the shown note again, keeping the reader's place.
+    fn reload_reader(&mut self) {
+        let doc = self.read_shown();
+        if let Some(r) = self.reader.as_mut() {
+            r.set_doc(doc);
         }
     }
 
@@ -995,7 +1058,7 @@ impl Home {
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Keys typed into the editor pane go to Neovim, except Ctrl-q (back to the menu).
-        if self.focus == Focus::Editor {
+        if self.focus == Focus::Pane && self.reader.is_none() {
             if ctrl && matches!(k.code, KeyCode::Char('q')) {
                 self.focus = Focus::Notes;
             } else if let Some(ed) = self.editor.as_mut() {
@@ -1008,6 +1071,9 @@ impl Home {
         if matches!(self.mode, Mode::Switcher { .. }) {
             self.switcher_key(k);
             return Ok(());
+        }
+        if matches!(self.mode, Mode::Palette { .. }) {
+            return self.palette_key(k, terminal);
         }
         if matches!(self.mode, Mode::Search { .. }) {
             self.search_key(k);
@@ -1084,78 +1150,156 @@ impl Home {
                 return Ok(());
             }
             Mode::Switcher { .. }
+            | Mode::Palette { .. }
             | Mode::Search { .. }
             | Mode::Rename { .. }
             | Mode::ConfirmRename { .. } => return Ok(()),
             Mode::Normal => {}
         }
 
-        match k.code {
+        if self.focus == Focus::Pane
+            && let Some(a) = self.reader_keys.get(k)
+        {
+            return self.run_reader_action(a, terminal);
+        }
+        // A command whose guard fails leaves the key to the focused pane (Esc, for one).
+        if let Some(a) = self.keys.get(k).filter(|&a| self.enabled(a)) {
+            return self.run_action(a, terminal);
+        }
+        match self.focus {
+            Focus::Vaults => self.vault_key(k),
+            Focus::Notes => self.notes_key(k, terminal)?,
+            Focus::Backlinks => self.backlinks_key(k),
+            Focus::Pane => {}
+        }
+        Ok(())
+    }
+
+    fn enabled(&self, a: MenuAction) -> bool {
+        match a {
+            MenuAction::ClearFilter => !self.filter.is_empty(),
+            MenuAction::NewNote => self.root.is_some(),
+            MenuAction::Read => self.editor.is_some() && self.shown.is_some(),
+            _ => true,
+        }
+    }
+
+    fn run_reader_action(&mut self, a: ReaderAction, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Some(r) = self.reader.as_mut() else {
+            return Ok(());
+        };
+        match a {
+            ReaderAction::Down => r.scroll_by(1),
+            ReaderAction::Up => r.scroll_by(-1),
+            ReaderAction::PageDown => r.page(1),
+            ReaderAction::PageUp => r.page(-1),
+            ReaderAction::Top => r.top(),
+            ReaderAction::Bottom => r.bottom(),
+            ReaderAction::NextLink => r.next_link(),
+            ReaderAction::PreviousLink => r.previous_link(),
+            ReaderAction::Follow => self.follow_selected(),
+            ReaderAction::Edit => {
+                let (Some(p), Some(root)) = (self.shown.clone(), self.root.clone()) else {
+                    return Ok(());
+                };
+                if let Some(err) = term::edit_file(terminal, &p, &root)? {
+                    self.flash(err);
+                }
+                self.reload_reader();
+            }
+            ReaderAction::Back => self.focus = Focus::Notes,
+        }
+        Ok(())
+    }
+
+    /// Follow the reader's selected link: notes like from Neovim, URLs in the browser.
+    fn follow_selected(&mut self) {
+        let (Some(link), Some(from)) = (
+            self.reader.as_ref().and_then(Reader::selected_link),
+            self.shown.clone(),
+        ) else {
+            return;
+        };
+        let target = link.target.clone();
+        if link.kind == markdown::LinkKind::Url {
+            if !term::open_url(&target) {
+                self.flash(format!("couldn't open {target}"));
+            }
+            return;
+        }
+        self.follow(&from, &target);
+    }
+
+    fn run_action(&mut self, a: MenuAction, terminal: &mut DefaultTerminal) -> Result<()> {
+        match a {
             // Ctrl-q leaves Neovim; pressed in the menu it goes back to Neovim, never quits.
-            KeyCode::Char('q') if ctrl => {
+            MenuAction::FocusEditor => {
                 if self.editor.is_some() {
-                    self.focus = Focus::Editor;
+                    self.focus = Focus::Pane;
                 }
             }
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Char('?') => self.mode = Mode::Help,
-            KeyCode::Tab => {
+            MenuAction::Quit => self.quit = true,
+            MenuAction::Help => self.mode = Mode::Help,
+            MenuAction::FocusNext => {
                 let has_backs = self.show_backlinks && !self.backs.is_empty();
                 self.focus = match self.focus {
                     Focus::Vaults => Focus::Notes,
-                    Focus::Notes if self.editor.is_some() => Focus::Editor,
-                    Focus::Notes | Focus::Editor if has_backs => Focus::Backlinks,
+                    Focus::Notes if self.editor.is_some() || self.reader.is_some() => Focus::Pane,
+                    Focus::Notes | Focus::Pane if has_backs => Focus::Backlinks,
                     _ => Focus::Vaults,
                 }
             }
-            KeyCode::Char('p') => self.open_switcher(false),
-            KeyCode::Char('R') => self.start_rename(false),
-            KeyCode::Char('m') => self.start_rename(true),
-            KeyCode::Char('o') if ctrl => self.open_switcher(false),
-            KeyCode::Char('s') => self.open_search(false),
-            KeyCode::Char('f') if ctrl => self.open_search(false),
-            KeyCode::Char('b') => {
+            MenuAction::Palette => {
+                self.mode = Mode::Palette {
+                    query: String::new(),
+                    sel: 0,
+                }
+            }
+            MenuAction::Switcher => self.open_switcher(false),
+            MenuAction::Rename => self.start_rename(false),
+            MenuAction::Move => self.start_rename(true),
+            MenuAction::Search => self.open_search(false),
+            MenuAction::ToggleBacklinks => {
                 self.show_backlinks = !self.show_backlinks;
                 if !self.show_backlinks && self.focus == Focus::Backlinks {
                     self.focus = Focus::Notes;
                 }
             }
-            KeyCode::BackTab => {
+            MenuAction::FocusPrevious => {
                 self.focus = if self.focus == Focus::Notes {
                     Focus::Vaults
                 } else {
                     Focus::Notes
                 }
             }
-            KeyCode::Char('/') => {
+            MenuAction::Filter => {
                 self.mode = Mode::Filter;
                 self.focus = Focus::Notes;
             }
-            KeyCode::Esc if !self.filter.is_empty() => {
+            MenuAction::ClearFilter => {
                 self.filter.clear();
                 self.refresh_rows();
             }
-            KeyCode::Char('z') => self.zoom = !self.zoom,
-            KeyCode::Char('g') => self.open_graph(terminal)?,
-            KeyCode::Char('w') => self.open_boards(terminal, None)?,
-            KeyCode::Char('n') if self.root.is_some() => self.mode = Mode::NewNote(String::new()),
-            KeyCode::Char('t') => self.open_today(),
-            KeyCode::Char('a') => self.mode = Mode::AddVault(String::new()),
-            KeyCode::Char('r') => {
+            MenuAction::Zoom => self.zoom = !self.zoom,
+            MenuAction::Graph => self.open_graph(terminal)?,
+            MenuAction::Boards => self.open_boards(terminal, None)?,
+            MenuAction::NewNote => self.mode = Mode::NewNote(String::new()),
+            MenuAction::Today => self.open_today(),
+            MenuAction::AddVault => self.mode = Mode::AddVault(String::new()),
+            MenuAction::Rescan => {
                 if let Some(core) = self.core.as_mut() {
                     core.rescan(); // applied on the next poll, as a Rescanned event
                 }
                 self.flash("rescanning");
             }
-            KeyCode::Char('o') => self.open_in_obsidian(),
-            KeyCode::Char('e') => self.edit_fullscreen(terminal)?,
-            _ => match self.focus {
-                Focus::Vaults => self.vault_key(k),
-                Focus::Notes => self.notes_key(k, terminal)?,
-                Focus::Backlinks => self.backlinks_key(k),
-                Focus::Editor => {}
-            },
+            MenuAction::OpenInObsidian => self.open_in_obsidian(),
+            MenuAction::EditFullscreen => self.edit_fullscreen(terminal)?,
+            MenuAction::Read => {
+                if self.reader.take().is_none() {
+                    self.save_editor();
+                    self.reader = Some(Reader::new(self.read_shown()));
+                }
+            }
         }
         Ok(())
     }
@@ -1223,11 +1367,7 @@ impl Home {
                             self.pending = None;
                             self.show(&p);
                         }
-                        if self.editor.is_some() {
-                            self.focus = Focus::Editor;
-                        } else if k.code == KeyCode::Enter {
-                            self.edit_fullscreen(terminal)?;
-                        }
+                        self.focus_pane();
                     }
                 }
             }
@@ -1248,8 +1388,8 @@ impl Home {
         if self.core.is_none() {
             return;
         }
-        self.back_to_editor = from_editor || self.focus == Focus::Editor;
-        if self.focus == Focus::Editor {
+        self.back_to_editor = from_editor || self.focus == Focus::Pane;
+        if self.focus == Focus::Pane {
             self.focus = Focus::Notes;
         }
         self.mode = Mode::Switcher {
@@ -1262,8 +1402,8 @@ impl Home {
         if self.core.is_none() {
             return;
         }
-        self.back_to_editor = from_editor || self.focus == Focus::Editor;
-        if self.focus == Focus::Editor {
+        self.back_to_editor = from_editor || self.focus == Focus::Pane;
+        if self.focus == Focus::Pane {
             self.focus = Focus::Notes;
         }
         self.mode = Mode::Search {
@@ -1276,8 +1416,8 @@ impl Home {
 
     fn close_overlay(&mut self) {
         self.mode = Mode::Normal;
-        if self.back_to_editor && self.editor.is_some() {
-            self.focus = Focus::Editor;
+        if self.back_to_editor {
+            self.focus_pane();
         }
         self.back_to_editor = false;
     }
@@ -1371,6 +1511,57 @@ impl Home {
             _ => {}
         }
         self.mode = Mode::Switcher { query: q, sel: s };
+    }
+
+    fn palette_hits(&self, query: &str) -> Vec<commands::Match> {
+        commands::matching(query)
+            .into_iter()
+            .filter(|m| self.enabled(m.command.action))
+            .collect()
+    }
+
+    fn palette_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Mode::Palette { query, sel } = &mut self.mode else {
+            return Ok(());
+        };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let (mut q, mut s) = (query.clone(), *sel);
+        let total = self.palette_hits(&q).len();
+        match k.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return Ok(());
+            }
+            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(total.saturating_sub(1)),
+            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
+                s = (s + 1).min(total.saturating_sub(1))
+            }
+            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
+            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
+            KeyCode::Backspace => {
+                q.pop();
+                s = 0;
+            }
+            KeyCode::Char('u') if ctrl => {
+                q.clear();
+                s = 0;
+            }
+            KeyCode::Enter => {
+                let action = self.palette_hits(&q).get(s).map(|m| m.command.action);
+                self.mode = Mode::Normal;
+                return match action {
+                    Some(a) => self.run_action(a, terminal),
+                    None => Ok(()),
+                };
+            }
+            KeyCode::Char(c) if !ctrl => {
+                q.push(c);
+                s = 0;
+            }
+            _ => {}
+        }
+        self.mode = Mode::Palette { query: q, sel: s };
+        Ok(())
     }
 
     fn run_search(&mut self) {
@@ -1707,11 +1898,7 @@ impl Home {
         self.pending = None;
         self.show_at(path, jump);
         self.select_path(path);
-        self.focus = if self.editor.is_some() {
-            Focus::Editor
-        } else {
-            Focus::Notes
-        };
+        self.focus_pane();
     }
 
     fn backlinks_key(&mut self, k: KeyEvent) {
@@ -1736,9 +1923,7 @@ impl Home {
         self.pending = None;
         self.show_at(&path, Some(Jump::Line(line)));
         self.select_path(&path);
-        if self.editor.is_some() {
-            self.focus = Focus::Editor;
-        }
+        self.focus_pane();
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
@@ -1758,10 +1943,30 @@ impl Home {
             }
             return;
         }
+        if ea.contains(pos)
+            && let Some(r) = self.reader.as_mut()
+        {
+            match m.kind {
+                MouseEventKind::ScrollDown => r.scroll_by(3),
+                MouseEventKind::ScrollUp => r.scroll_by(-3),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let link = r.link_at((m.row - ea.y) as usize, (m.column - ea.x) as usize);
+                    if let Some(i) = link {
+                        r.select(i);
+                    }
+                    self.focus = Focus::Pane;
+                    if link.is_some() {
+                        self.follow_selected();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if ea.contains(pos) {
             if let Some(ed) = self.editor.as_mut() {
                 if matches!(m.kind, MouseEventKind::Down(_)) {
-                    self.focus = Focus::Editor;
+                    self.focus = Focus::Pane;
                 }
                 ed.send_mouse(m, m.column - ea.x, m.row - ea.y);
             }
@@ -1847,8 +2052,12 @@ impl Home {
             if let Some(err) = term::edit_file(terminal, &p, &root)? {
                 self.flash(err);
             }
-            self.shown = None;
-            self.select_row(self.nsel);
+            if self.reader.is_some() && self.shown.as_deref() == Some(p.as_path()) {
+                self.reload_reader();
+            } else {
+                self.shown = None;
+                self.select_row(self.nsel);
+            }
         }
         Ok(())
     }
@@ -1907,9 +2116,7 @@ impl Home {
             self.nsel = r;
             self.pending = None;
             self.show(&path);
-            if self.editor.is_some() {
-                self.focus = Focus::Editor;
-            }
+            self.focus_pane();
         }
         Ok(())
     }
@@ -1998,6 +2205,9 @@ impl Home {
         if matches!(self.mode, Mode::Switcher { .. }) {
             self.draw_switcher(f, main);
         }
+        if matches!(self.mode, Mode::Palette { .. }) {
+            self.draw_palette(f, main);
+        }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
         }
@@ -2013,7 +2223,7 @@ impl Home {
             prompt(f, main, title, label, input);
         }
         match &self.mode {
-            Mode::Help => draw_help(f, main),
+            Mode::Help => draw_help(f, main, &self.keys, &self.reader_keys),
             Mode::NewNote(name) => prompt(
                 f,
                 main,
@@ -2039,28 +2249,7 @@ impl Home {
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return;
         };
-        let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
-        let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
-        let r = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + area.height / 6,
-            w,
-            h,
-        );
-        f.render_widget(Clear, r);
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(ACCENT))
-            .title(Line::styled(
-                " Go to note ",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::styled(
-                " ↑↓ choose · ⏎ open · Esc close ",
-                Style::new().fg(MUTED),
-            ));
-        let inner = block.inner(r);
-        f.render_widget(block, r);
+        let inner = picker_frame(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close ");
         let hits = self.switcher_hits(query);
         let create = self.offers_create(query);
         let mut lines = vec![
@@ -2136,6 +2325,76 @@ impl Home {
         }
         if total == 0 {
             lines.push(Line::styled(" no notes match", Style::new().fg(MUTED)));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn draw_palette(&self, f: &mut Frame, area: Rect) {
+        let Mode::Palette { query, sel } = &self.mode else {
+            return;
+        };
+        let inner = picker_frame(f, area, " Commands ", " ↑↓ choose · ⏎ run · Esc close ");
+        let hits = self.palette_hits(query);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::new().fg(HIT)),
+                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+                Span::styled(
+                    if query.is_empty() {
+                        "  type a command's name or id".to_string()
+                    } else {
+                        format!("  {}", plural(hits.len(), "command"))
+                    },
+                    Style::new().fg(MUTED),
+                ),
+            ]),
+            Line::raw(""),
+        ];
+        let rows = inner.height.saturating_sub(2) as usize;
+        let start = sel.saturating_sub(rows.saturating_sub(1));
+        let width = inner.width as usize;
+        for (i, m) in hits.iter().enumerate().skip(start).take(rows) {
+            let selected = i == *sel;
+            let base = if selected {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else {
+                Style::new().fg(NOTE)
+            };
+            let dim = if selected {
+                base
+            } else {
+                Style::new().fg(MUTED)
+            };
+            let hl = if selected {
+                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
+            };
+            let c = m.command;
+            let mut spans = vec![Span::styled(" ", base)];
+            let mut push = |text: &str, hits: &[usize], style: Style| {
+                for (ci, ch) in text.chars().enumerate() {
+                    let st = if hits.contains(&ci) { hl } else { style };
+                    spans.push(Span::styled(ch.to_string(), st));
+                }
+            };
+            push(c.title, &m.title_hits, base);
+            push("  ", &[], base);
+            push(c.id, &m.id_hits, dim);
+            let right = format!("{} ", self.keys.label(c.id));
+            let used = 3 + c.title.chars().count() + c.id.chars().count();
+            let pad = width.saturating_sub(used + right.chars().count());
+            spans.push(Span::styled(" ".repeat(pad), base));
+            let keys = if selected {
+                base
+            } else {
+                Style::new().fg(ACCENT)
+            };
+            spans.push(Span::styled(right, keys));
+            lines.push(Line::from(spans));
+        }
+        if hits.is_empty() {
+            lines.push(Line::styled(" no commands match", Style::new().fg(MUTED)));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -2434,10 +2693,18 @@ impl Home {
                     .and_then(|r| p.strip_prefix(r).ok())
                     .map(|r| r.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let who = match (&self.editor_cmd, self.focus == Focus::Editor) {
-                    (Some(c), true) => format!(" {c} · editing · Ctrl-q back "),
-                    (Some(c), false) => format!(" {c} · ⏎ edit "),
-                    (None, _) => " preview · e edit in $EDITOR ".to_string(),
+                let focused = self.focus == Focus::Pane;
+                let read = self.keys.label("note.read");
+                let who = match (&self.editor_cmd, self.reader.is_some(), focused) {
+                    (_, true, true) => {
+                        let back = self.reader_keys.label("reader.back");
+                        format!(" reading · {back} back ")
+                    }
+                    (Some(c), true, false) => format!(" reader · ⏎ read · {read} {c} "),
+                    (None, _, false) => " reader · ⏎ read · e edit in $EDITOR ".to_string(),
+                    (Some(c), false, true) => format!(" {c} · editing · Ctrl-q back "),
+                    (Some(c), false, false) => format!(" {c} · ⏎ edit · {read} read "),
+                    (None, false, true) => String::new(),
                 };
                 Line::from(vec![
                     Span::styled(
@@ -2449,32 +2716,33 @@ impl Home {
             }
             None => Line::styled(" note ", Style::new().fg(MUTED)),
         };
-        let block = self.pane(title, Focus::Editor);
+        let block = self.pane(title, Focus::Pane);
         f.render_widget(block, area);
+        if let Some(r) = self.reader.as_mut() {
+            let ix = self.core.as_ref().map(|c| &c.index);
+            r.layout(inner.width, &|raw| resolves(ix, raw));
+            r.render(inner, f.buffer_mut());
+            return;
+        }
         if let Some(ed) = self.editor.as_mut() {
             ed.resize(inner.height, inner.width);
             if let Some((x, y)) = ed.render(f.buffer_mut(), inner)
-                && self.focus == Focus::Editor
+                && self.focus == Focus::Pane
                 && matches!(self.mode, Mode::Normal)
             {
                 f.set_cursor_position((x, y));
             }
             return;
         }
-        if self.shown.is_some() && self.editor_cmd.is_none() {
-            let text = board::markdown_text(&self.preview.join("\n"));
-            f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
-        } else {
-            let hint = match self.current().map(|it| it.kind) {
-                Some(ItemKind::Folder) => "a folder · → to open it",
-                Some(ItemKind::Board) => "a whiteboard · ⏎ to open it",
-                _ => "select a note to see it here",
-            };
-            f.render_widget(
-                Paragraph::new(Line::styled(hint, Style::new().fg(MUTED))),
-                inner,
-            );
-        }
+        let hint = match self.current().map(|it| it.kind) {
+            Some(ItemKind::Folder) => "a folder · → to open it",
+            Some(ItemKind::Board) => "a whiteboard · ⏎ to open it",
+            _ => "select a note to see it here",
+        };
+        f.render_widget(
+            Paragraph::new(Line::styled(hint, Style::new().fg(MUTED))),
+            inner,
+        );
     }
 
     fn draw_backlinks(&self, f: &mut Frame, area: Rect) {
@@ -2577,7 +2845,19 @@ impl Home {
         }
         let hints = match (self.focus, &self.mode) {
             (_, Mode::Filter) => " type to filter · ↑↓ move · ⏎ keep · Esc clear".to_string(),
-            (Focus::Editor, _) => {
+            (Focus::Pane, _) if self.reader.is_some() => {
+                let k = |id| self.reader_keys.label(id);
+                format!(
+                    " reading · {} scroll · {} page · {} next link · {} follow · {} edit · {} back to notes",
+                    k("reader.down"),
+                    k("reader.page-down"),
+                    k("reader.next-link"),
+                    k("reader.follow"),
+                    k("reader.edit"),
+                    k("reader.back"),
+                )
+            }
+            (Focus::Pane, _) => {
                 " in Neovim · ⏎ on a [[link]] follows it · Ctrl-o back · Ctrl-q to the menu"
                     .to_string()
             }
@@ -2585,13 +2865,13 @@ impl Home {
                 " backlinks · ↑↓ choose · ⏎ open at the link · ← back to notes · b hide".to_string()
             }
             _ => {
-                let edit = if self.editor_cmd.is_some() {
-                    "⏎ edit"
+                let edit = if self.reader.is_some() {
+                    "⏎ read"
                 } else {
-                    "⏎ open"
+                    "⏎ edit"
                 };
                 format!(
-                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  s search  R rename  m move  g graph  w boards  t today  n new  z zoom  ? help  q quit"
+                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  : commands  s search  R rename  m move  g graph  w boards  t today  n new  z zoom  ? help  q quit"
                 )
             }
         };
@@ -2601,6 +2881,13 @@ impl Home {
         };
         f.render_widget(Paragraph::new(vec![info, second]), area);
     }
+}
+
+/// Whether a wiki or Markdown link written in a note leads to a note (a heading in the same
+/// note always does).
+fn resolves(ix: Option<&crate::index::Index>, raw: &str) -> bool {
+    let link = crate::index::split_link(raw);
+    link.note.is_empty() || ix.is_some_and(|ix| ix.resolver.resolve(&link.note).is_some())
 }
 
 fn plural(n: usize, word: &str) -> String {
@@ -2685,14 +2972,42 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) {
     );
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
-    let rows: &[(&str, &str)] = &[
+/// The centred popup shared by the quick switcher and the command palette; returns its inside.
+fn picker_frame(f: &mut Frame, area: Rect, title: &str, hint: &str) -> Rect {
+    let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
+    let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
+    let r = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + area.height / 6,
+        w,
+        h,
+    );
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Line::styled(
+            title,
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    inner
+}
+
+fn draw_help(
+    f: &mut Frame,
+    area: Rect,
+    keys: &Keymap<MenuAction>,
+    reader_keys: &Keymap<ReaderAction>,
+) {
+    let fixed: &[(&str, &str)] = &[
         ("↑↓ / jk", "move through vaults or notes"),
-        ("Tab / ←→", "switch between vaults, notes and the editor"),
-        ("→ / ←", "open / close a folder"),
+        ("→ / ←", "open / close a folder · vaults ↔ notes"),
         (
             "Enter",
-            "edit the note in the embedded Neovim · open a board",
+            "go to the note in the reader or Neovim · open a board",
         ),
         ("Ctrl-q", "leave Neovim and return to the menu"),
         (
@@ -2700,34 +3015,48 @@ fn draw_help(f: &mut Frame, area: Rect) {
             "on a [[link]]: open it (creates missing notes)",
         ),
         ("Ctrl-o", "in Neovim: back to the previous note"),
-        ("b", "show / hide backlinks under the editor"),
-        ("p / Ctrl-o", "quick switcher: jump to any note by name"),
-        ("s / Ctrl-f", "search the text of every note"),
-        ("R", "rename the note (every link to it is updated)"),
-        ("m", "move the note to another folder (links updated)"),
-        ("e", "edit the note in $EDITOR, full screen"),
-        ("/", "filter notes by name or path"),
-        ("g", "graph view of this vault"),
-        ("w", "whiteboards of this vault"),
-        ("n", "new note in the selected folder"),
-        ("t", "today's daily note (created from your template)"),
-        ("a", "add a vault (any folder of Markdown files)"),
-        ("o", "open the selected note in Obsidian"),
-        ("z", "zoom the editor to full width"),
-        ("r", "rescan the vault"),
-        ("q", "quit (notes are saved)"),
     ];
-    let lines: Vec<Line> = rows
+    let row = |k: &str, d: &'static str| {
+        Line::from(vec![
+            Span::styled(format!("{k:>12}  "), Style::new().fg(ACCENT)),
+            Span::styled(d, Style::new().fg(NOTE)),
+        ])
+    };
+    let menu: Vec<Line> = fixed
         .iter()
-        .map(|(k, d)| {
-            Line::from(vec![
-                Span::styled(format!("{k:>12}  "), Style::new().fg(ACCENT)),
-                Span::styled(*d, Style::new().fg(NOTE)),
-            ])
-        })
+        .map(|&(k, d)| row(k, d))
+        .chain(
+            commands::MENU
+                .iter()
+                .map(|c| row(&keys.label(c.id), c.title)),
+        )
         .collect();
-    let w = 70.min(area.width.saturating_sub(4));
-    let h = (rows.len() as u16 + 3).min(area.height);
+    let mut reader = vec![Line::from(Span::styled(
+        "      In the reader",
+        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ))];
+    reader.extend(
+        commands::READER
+            .iter()
+            .map(|c| row(&reader_keys.label(c.id), c.title)),
+    );
+    // Side by side when there's room, else the reader's keys under the menu's.
+    let column = 70;
+    let (lines, w) = if area.width >= 2 * column + 4 {
+        let mut lines = menu;
+        for (i, r) in reader.into_iter().enumerate() {
+            let pad = " ".repeat((column as usize).saturating_sub(lines[i].width()));
+            lines[i].spans.push(Span::raw(pad));
+            lines[i].spans.extend(r.spans);
+        }
+        (lines, 2 * column)
+    } else {
+        let mut lines = menu;
+        lines.push(Line::raw(""));
+        lines.extend(reader);
+        (lines, column.min(area.width.saturating_sub(4)))
+    };
+    let h = (lines.len() as u16 + 2).min(area.height);
     let r = Rect::new(
         area.x + (area.width - w) / 2,
         area.y + (area.height - h) / 2,

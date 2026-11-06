@@ -70,7 +70,7 @@ impl Parsers {
             wikilink: Regex::new(r"\[\[([^\]\|#\^]*)[^\]]*\]\]").unwrap(),
             // [text](some/note.md) — local markdown links only
             mdlink: Regex::new(r"\]\(([^)\s]+?\.md)(?:#[^)]*)?\)").unwrap(),
-            tag: Regex::new(r"(?:^|[\s(,])#([\p{L}\p{N}_/\-]+)").unwrap(),
+            tag: Regex::new(crate::markdown::TAG).unwrap(),
             inline_code: Regex::new(r"`[^`\n]*`").unwrap(),
         }
     }
