@@ -7,6 +7,7 @@ mod groups;
 mod home;
 mod index;
 mod kitty;
+mod rename;
 mod scene;
 mod search;
 mod tasks;
@@ -17,7 +18,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use std::io::stdout;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const USAGE: &str = "cold-lava — Obsidian's graph view and canvas, in the terminal
 
@@ -30,6 +31,7 @@ Usage:
   cold-lava agenda VAULT_DIR          dated tasks and daily notes, for other programs
   cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
+  cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
 
 Options:
   --braille            force braille rendering
@@ -39,6 +41,7 @@ Options:
   --id ID              task toggle: only if the line still matches this id from the agenda
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
+  --dry-run            rename: show what would change, change nothing
   -V, --version        print the version
   -h, --help           this help
 
@@ -194,6 +197,44 @@ fn run() -> Result<()> {
                 if hits.is_empty() {
                     eprintln!("no matches");
                     std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
+        Some("rename") => {
+            let (Some(root), Some(note), Some(new)) = (args.word(1), args.word(2), args.word(3))
+            else {
+                anyhow::bail!(
+                    "usage: cold-lava rename VAULT_DIR NOTE NEW [--dry-run] [--json]\n\
+                     NOTE is a note's name or path; NEW is a new name (same folder), \
+                     a folder ending in / (keeps the name), or a full path"
+                );
+            };
+            let ix = index::Index::build(vault::scan(Path::new(root))?);
+            let i = ix
+                .by_rel(note)
+                .or_else(|| ix.resolver.resolve(note))
+                .ok_or_else(|| anyhow::anyhow!("no note called {note}"))?;
+            let to = rename::target_rel(&format!("{}.md", ix.vault.notes[i].rel), new)?;
+            let plan = rename::plan(&ix, i, &to)?;
+            let dry = args.has("dry-run");
+            if !dry {
+                rename::apply(&plan)?;
+            }
+            if json {
+                let out = serde_json::json!({ "applied": !dry, "plan": plan });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                let verb = if dry { "would rename" } else { "renamed" };
+                println!("{verb} {} → {}", plan.from, plan.to);
+                for e in &plan.edits {
+                    for c in &e.changes {
+                        println!("  {}:{}  {}", e.file, c.line, c.after.trim());
+                    }
+                }
+                println!("{} links in {} files", plan.links(), plan.files());
+                for w in &plan.warnings {
+                    eprintln!("warning: {w}");
                 }
             }
             Ok(())
