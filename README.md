@@ -93,6 +93,7 @@ shows a rendered preview and `Enter` opens your `$EDITOR` full screen.
 | `b` | show / hide backlinks |
 | `p` (or `Ctrl-o`) | quick switcher: jump to any note by name or alias |
 | `s` (or `Ctrl-f`) | search the text of every note |
+| `R` / `m` | rename / move the note, updating every link to it (with a preview first) |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder / add a vault |
@@ -164,6 +165,9 @@ cold-lava rename ~/vault "Mount St. Helens" "Mount Saint Helens" --dry-run   # s
 cold-lava rename ~/vault Lava Geology/                                      # move, keeping the name
 cold-lava rename ~/vault Lava "Geology/Hot Rock"                            # move and rename
 ```
+
+In the main menu, press `R` to rename the selected note or `m` to move it to another folder:
+you see every link that will change before confirming.
 
 Every link to the note is updated, the way Obsidian does it: `[[wikilinks]]` with their
 aliases, headings and embeds, Markdown links (relative or vault paths), links in frontmatter,

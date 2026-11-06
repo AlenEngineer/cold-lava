@@ -15,6 +15,15 @@ change commands, keys and file formats; patch versions only fix things.
   `.canvas` note cards and text cards. Each link keeps its style; the moved note's own relative
   links are fixed; code is left alone. `--dry-run` shows the changes first, and nothing is
   written if a file changed after the plan was made.
+- In the main menu, `R` renames the selected note and `m` moves it to another folder, with a
+  preview of every link that will change before you confirm. The open note is saved first, and
+  Neovim shows it under its new name afterwards.
+
+### Fixed
+
+- `Ctrl-q` in the main menu no longer quits; it goes back to the editor.
+- Control keys (such as `Ctrl-u`) are no longer typed as letters in text prompts; `Ctrl-u`
+  clears the field.
 
 ## [0.1.0] - 2026-11-05
 

@@ -357,6 +357,17 @@ enum Mode {
         query: String,
         sel: usize,
     },
+    /// Typing a note's new name (or folder, when moving).
+    Rename {
+        note: PathBuf,
+        input: String,
+        moving: bool,
+    },
+    /// Showing what a rename will change before doing it.
+    ConfirmRename {
+        plan: Box<crate::rename::Plan>,
+        scroll: usize,
+    },
 }
 
 /// One row of the search results: a note header, or one of its matching lines.
@@ -990,6 +1001,10 @@ impl Home {
             self.search_key(k);
             return Ok(());
         }
+        if matches!(self.mode, Mode::Rename { .. } | Mode::ConfirmRename { .. }) {
+            self.rename_key(k);
+            return Ok(());
+        }
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
@@ -1015,6 +1030,12 @@ impl Home {
                         self.refresh_rows();
                         self.select_row(0);
                     }
+                    KeyCode::Char('u') if ctrl => {
+                        self.filter.clear();
+                        self.nsel = 0;
+                        self.refresh_rows();
+                    }
+                    KeyCode::Char(_) if ctrl => {}
                     KeyCode::Char(c) => {
                         self.filter.push(c);
                         self.nsel = 0;
@@ -1031,6 +1052,8 @@ impl Home {
                     KeyCode::Backspace => {
                         name.pop();
                     }
+                    KeyCode::Char('u') if ctrl => name.clear(),
+                    KeyCode::Char(_) if ctrl => {}
                     KeyCode::Char(c) => name.push(c),
                     KeyCode::Enter => {
                         let text = name.trim().to_string();
@@ -1048,11 +1071,20 @@ impl Home {
                 }
                 return Ok(());
             }
-            Mode::Switcher { .. } | Mode::Search { .. } => return Ok(()),
+            Mode::Switcher { .. }
+            | Mode::Search { .. }
+            | Mode::Rename { .. }
+            | Mode::ConfirmRename { .. } => return Ok(()),
             Mode::Normal => {}
         }
 
         match k.code {
+            // Ctrl-q leaves Neovim; pressed in the menu it goes back to Neovim, never quits.
+            KeyCode::Char('q') if ctrl => {
+                if self.editor.is_some() {
+                    self.focus = Focus::Editor;
+                }
+            }
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Char('?') => self.mode = Mode::Help,
@@ -1066,6 +1098,8 @@ impl Home {
                 }
             }
             KeyCode::Char('p') => self.open_switcher(false),
+            KeyCode::Char('R') => self.start_rename(false),
+            KeyCode::Char('m') => self.start_rename(true),
             KeyCode::Char('o') if ctrl => self.open_switcher(false),
             KeyCode::Char('s') => self.open_search(false),
             KeyCode::Char('f') if ctrl => self.open_search(false),
@@ -1389,6 +1423,265 @@ impl Home {
         }
     }
 
+    // ---------- rename & move ----------
+
+    /// The note to rename: the one selected in the tree, else the one in the editor.
+    fn rename_target(&self) -> Option<PathBuf> {
+        match (self.focus, self.current()) {
+            (Focus::Notes, Some(it)) if it.kind == ItemKind::Note => self.current_path(),
+            (Focus::Notes, Some(_)) => None,
+            _ => self.shown.clone().or_else(|| {
+                self.current()
+                    .filter(|it| it.kind == ItemKind::Note)
+                    .and(self.current_path())
+            }),
+        }
+    }
+
+    fn start_rename(&mut self, moving: bool) {
+        let (Some(note), Some(root)) = (self.rename_target(), self.root.clone()) else {
+            return self.flash("select a note to rename or move");
+        };
+        let rel = note
+            .strip_prefix(&root)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let rel = rel.trim_end_matches(".md");
+        let (dir, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+        let input = if moving {
+            if dir.is_empty() {
+                String::new()
+            } else {
+                format!("{dir}/")
+            }
+        } else {
+            name.to_string()
+        };
+        self.mode = Mode::Rename {
+            note,
+            input,
+            moving,
+        };
+    }
+
+    /// Save Neovim's buffers and give it a moment, so the plan sees what's on screen.
+    fn save_editor(&mut self) {
+        if let Some(ed) = self.editor.as_mut() {
+            ed.send(b"\x1c\x0e:silent! wall\r");
+            for _ in 0..12 {
+                std::thread::sleep(Duration::from_millis(25));
+                ed.pump();
+            }
+            let _ = ed.take_messages();
+        }
+    }
+
+    fn rename_key(&mut self, k: KeyEvent) {
+        match &mut self.mode {
+            Mode::Rename {
+                note,
+                input,
+                moving,
+            } => match k.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => input.clear(),
+                KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
+                KeyCode::Char(c) => input.push(c),
+                KeyCode::Enter => {
+                    let (note, input, moving) = (note.clone(), input.clone(), *moving);
+                    self.mode = Mode::Normal;
+                    self.plan_rename(&note, &input, moving);
+                }
+                _ => {}
+            },
+            Mode::ConfirmRename { plan, scroll } => match k.code {
+                KeyCode::Esc | KeyCode::Char('n') => {
+                    self.mode = Mode::Normal;
+                    self.flash("rename cancelled");
+                }
+                KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    let plan = (**plan).clone();
+                    self.mode = Mode::Normal;
+                    self.apply_rename(plan);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn plan_rename(&mut self, note: &Path, input: &str, moving: bool) {
+        // A folder typed without a trailing slash still means "move into it".
+        let input =
+            if moving && !input.ends_with('/') && !input.ends_with(".md") && !input.is_empty() {
+                format!("{input}/")
+            } else if moving && input.is_empty() {
+                return self.flash("type a folder, e.g. Archive/ (or / for the vault root)");
+            } else {
+                input.to_string()
+            };
+        self.save_editor();
+        self.reload_tree();
+        let Some(ix) = &self.index else { return };
+        let Some(i) = ix.by_path(note) else {
+            return self.flash("that note is no longer there");
+        };
+        let from = format!("{}.md", ix.vault.notes[i].rel);
+        // Moving to the root: "/" means "no folder".
+        let target = if input == "/" {
+            Ok(format!("{}.md", ix.vault.notes[i].name))
+        } else {
+            crate::rename::target_rel(&from, &input)
+        };
+        match target.and_then(|to| crate::rename::plan(ix, i, &to)) {
+            Ok(plan) => {
+                self.mode = Mode::ConfirmRename {
+                    plan: Box::new(plan),
+                    scroll: 0,
+                }
+            }
+            Err(e) => self.flash(format!("can't rename: {e}")),
+        }
+    }
+
+    fn apply_rename(&mut self, plan: crate::rename::Plan) {
+        if let Err(e) = crate::rename::apply(&plan) {
+            self.reload_tree();
+            return self.flash(format!("rename failed: {e}"));
+        }
+        let (old, new) = (plan.from_path.clone(), plan.to_path.clone());
+        // Neovim: show the note under its new name, drop the old buffer, reload the others.
+        if let Some(ed) = self.editor.as_mut() {
+            if self.shown.as_deref() == Some(old.as_path()) {
+                ed.send(open_command_at(&new, None).as_bytes());
+            }
+            let o = old.to_string_lossy().replace('\'', "''");
+            ed.send(
+                format!(
+                    "\x1c\x0e:silent! execute 'bwipeout!' fnameescape('{o}') | silent! checktime\r"
+                )
+                .as_bytes(),
+            );
+        }
+        if self.shown.as_deref() == Some(old.as_path()) {
+            self.shown = Some(new.clone());
+        }
+        self.mru.retain(|p| p != &old);
+        self.reload_tree();
+        self.select_path(&new);
+        let links = plan.links();
+        let moved_own = plan.edits.iter().any(|e| e.path == plan.from_path) as usize;
+        let files = plan.files() - moved_own;
+        let moved = dir_of_rel(&plan.from) != dir_of_rel(&plan.to);
+        let verb = if moved { "moved" } else { "renamed" };
+        self.flash(if links == 0 {
+            format!("{verb} to {} (no links needed updating)", plan.to)
+        } else {
+            format!(
+                "{verb} to {} · {} updated in {}",
+                plan.to,
+                plural(links, "link"),
+                plural(files.max(1), "file")
+            )
+        });
+    }
+
+    fn draw_confirm_rename(&self, f: &mut Frame, area: Rect) {
+        let Mode::ConfirmRename { plan, scroll } = &self.mode else {
+            return;
+        };
+        let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
+        let h = (area.height * 2 / 3).clamp(10.min(area.height), 34);
+        let r = Rect::new(
+            area.x + (area.width - w) / 2,
+            area.y + area.height / 6,
+            w,
+            h,
+        );
+        f.render_widget(Clear, r);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(ACCENT))
+            .title(Line::styled(
+                " Rename ",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(Line::styled(
+                " ⏎ rename · Esc cancel · ↑↓ scroll ",
+                Style::new().fg(MUTED),
+            ));
+        let inner = block.inner(r);
+        f.render_widget(block, r);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(format!(" {}", plan.from), Style::new().fg(MUTED)),
+                Span::styled("  →  ", Style::new().fg(ACCENT)),
+                Span::styled(
+                    plan.to.clone(),
+                    Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::styled(
+                match plan.links() {
+                    0 => " No links point to it, so only the file moves.".to_string(),
+                    n => format!(
+                        " {} in {} will be updated:",
+                        plural(n, "link"),
+                        plural(plan.files(), "file")
+                    ),
+                },
+                Style::new().fg(NOTE),
+            ),
+        ];
+        for w in &plan.warnings {
+            lines.push(Line::styled(format!(" ! {w}"), Style::new().fg(HIT)));
+        }
+        lines.push(Line::raw(""));
+        let mut detail = Vec::new();
+        for e in &plan.edits {
+            detail.push(Line::from(vec![
+                Span::styled(
+                    format!(" ▤ {}", e.file.trim_end_matches(".md")),
+                    Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {} link{}", e.links, if e.links == 1 { "" } else { "s" }),
+                    Style::new().fg(DIM),
+                ),
+            ]));
+            for c in e.changes.iter().take(3) {
+                let mut t: String = c
+                    .after
+                    .trim()
+                    .chars()
+                    .take(inner.width.saturating_sub(10) as usize)
+                    .collect();
+                if c.after.trim().chars().count() > t.chars().count() {
+                    t.push('…');
+                }
+                detail.push(Line::from(vec![
+                    Span::styled(format!("   {:>4}  ", c.line), Style::new().fg(DIM)),
+                    Span::styled(t, Style::new().fg(NOTE)),
+                ]));
+            }
+            if e.changes.len() > 3 {
+                detail.push(Line::styled(
+                    format!("         … {} more lines", e.changes.len() - 3),
+                    Style::new().fg(DIM),
+                ));
+            }
+        }
+        let room = (inner.height as usize).saturating_sub(lines.len());
+        let start = (*scroll).min(detail.len().saturating_sub(room));
+        lines.extend(detail.into_iter().skip(start).take(room));
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
     /// Open a note picked in the switcher or search, and give the editor focus.
     fn open_found(&mut self, path: &Path, jump: Option<Jump>) {
         self.pending = None;
@@ -1686,6 +1979,17 @@ impl Home {
         }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
+        }
+        if matches!(self.mode, Mode::ConfirmRename { .. }) {
+            self.draw_confirm_rename(f, main);
+        }
+        if let Mode::Rename { input, moving, .. } = &self.mode {
+            let (title, label) = if *moving {
+                (" move to folder · ⏎ preview · Esc cancel ", "folder: ")
+            } else {
+                (" rename · ⏎ preview · Esc cancel ", "new name: ")
+            };
+            prompt(f, main, title, label, input);
         }
         match &self.mode {
             Mode::Help => draw_help(f, main),
@@ -2262,7 +2566,7 @@ impl Home {
                     "⏎ open"
                 };
                 format!(
-                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  s search  g graph  w boards  t today  n new  z zoom  ? help  q quit"
+                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  s search  R rename  m move  g graph  w boards  t today  n new  z zoom  ? help  q quit"
                 )
             }
         };
@@ -2272,6 +2576,18 @@ impl Home {
         };
         f.render_widget(Paragraph::new(vec![info, second]), area);
     }
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+
+fn dir_of_rel(rel: &str) -> &str {
+    rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
 
 /// `text` with `ranges` (char ranges) highlighted, cut to `width` chars around the first match.
@@ -2362,6 +2678,8 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ("b", "show / hide backlinks under the editor"),
         ("p / Ctrl-o", "quick switcher: jump to any note by name"),
         ("s / Ctrl-f", "search the text of every note"),
+        ("R", "rename the note (every link to it is updated)"),
+        ("m", "move the note to another folder (links updated)"),
         ("e", "edit the note in $EDITOR, full screen"),
         ("/", "filter notes by name or path"),
         ("g", "graph view of this vault"),
