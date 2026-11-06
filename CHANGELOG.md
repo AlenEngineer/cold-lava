@@ -18,6 +18,7 @@ change commands, keys and file formats; patch versions only fix things.
 - In the main menu, `R` renames the selected note and `m` moves it to another folder, with a
   preview of every link that will change before you confirm. The open note is saved first, and
   Neovim shows it under its new name afterwards.
+- Command palette (`:`) in the main menu: run any command by name, with its key shown.
 
 ### Changed
 

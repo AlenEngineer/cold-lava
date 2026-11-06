@@ -92,6 +92,7 @@ shows a rendered preview and `Enter` opens your `$EDITOR` full screen.
 | `Enter` in Neovim, `Ctrl-o` | follow the `[[link]]` under the cursor · go back |
 | `b` | show / hide backlinks |
 | `p` (or `Ctrl-o`) | quick switcher: jump to any note by name or alias |
+| `:` | command palette: run any command by name (its key is shown next to it) |
 | `s` (or `Ctrl-f`) | search the text of every note |
 | `R` / `m` | rename / move the note, updating every link to it (with a preview first) |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |

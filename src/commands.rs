@@ -1,5 +1,5 @@
-//! Named commands: every action has an id like `graph.open`, and keys (later the command
-//! palette, config and extensions) reach it through that table.
+//! Named commands: every action has an id like `graph.open`, and keys and the command palette
+//! (later config and extensions) reach it through that table.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -13,6 +13,7 @@ pub enum Action {
     FocusNext,
     FocusPrevious,
     FocusEditor,
+    Palette,
     Switcher,
     Search,
     Rename,
@@ -33,7 +34,6 @@ pub enum Action {
 
 pub struct Command {
     pub action: Action,
-    #[allow(dead_code, reason = "read by the command palette and config keys")]
     pub id: &'static str,
     pub title: &'static str,
     pub keys: &'static [&'static str],
@@ -66,6 +66,12 @@ pub const MENU: &[Command] = &[
         "focus.previous",
         "back to the notes, or from the notes to the vaults",
         &["shift+tab"],
+    ),
+    cmd(
+        Action::Palette,
+        "app.palette",
+        "command palette: run any command by name",
+        &[":"],
     ),
     cmd(
         Action::FocusEditor,
@@ -172,6 +178,53 @@ pub const MENU: &[Command] = &[
         &["q", "ctrl+c"],
     ),
 ];
+
+/// A palette row: the command and the matched char positions in its title or its id.
+pub struct Match {
+    pub command: &'static Command,
+    pub title_hits: Vec<usize>,
+    pub id_hits: Vec<usize>,
+}
+
+/// The palette's list for `query`, best first, scored on the better of title and id. An empty
+/// query lists every command in `MENU` order. The palette itself is left out.
+pub fn matching(query: &str) -> Vec<Match> {
+    let mut scored: Vec<(i64, Match)> = MENU
+        .iter()
+        .filter(|c| c.action != Action::Palette)
+        .filter_map(|c| {
+            let title = crate::search::fuzzy(query, c.title);
+            let id = crate::search::fuzzy(query, c.id);
+            let (score, title_hits, id_hits) = match (title, id) {
+                (Some(t), Some(i)) if i.score > t.score => (i.score, Vec::new(), i.positions),
+                (Some(t), _) => (t.score, t.positions, Vec::new()),
+                (None, Some(i)) => (i.score, Vec::new(), i.positions),
+                (None, None) => return None,
+            };
+            Some((
+                score,
+                Match {
+                    command: c,
+                    title_hits,
+                    id_hits,
+                },
+            ))
+        })
+        .collect();
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    scored.into_iter().map(|(_, m)| m).collect()
+}
+
+/// A command's keys as shown to the user: "p / Ctrl-o".
+pub fn keys_label(c: &Command) -> String {
+    let keys: Vec<String> = c
+        .keys
+        .iter()
+        .filter_map(|s| Key::parse(s))
+        .map(|k| k.to_string())
+        .collect();
+    keys.join(" / ")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
@@ -309,6 +362,26 @@ mod tests {
         assert_eq!(keys.get(ctrl_o), Some(Action::Switcher));
         let o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE);
         assert_eq!(keys.get(o), Some(Action::OpenInObsidian));
+    }
+
+    #[test]
+    fn palette_finds_commands_by_name() {
+        let ids = |q: &str| -> Vec<&str> { matching(q).iter().map(|m| m.command.id).collect() };
+        assert_eq!(ids("graph")[0], "graph.open");
+        assert_eq!(ids("rnm")[0], "note.rename");
+        assert_eq!(ids("daily.today")[0], "daily.today");
+        assert!(ids("zzzz").is_empty());
+    }
+
+    #[test]
+    fn empty_palette_lists_every_other_command_in_order() {
+        let ids: Vec<&str> = matching("").iter().map(|m| m.command.id).collect();
+        let menu: Vec<&str> = MENU
+            .iter()
+            .map(|c| c.id)
+            .filter(|&id| id != "app.palette")
+            .collect();
+        assert_eq!(ids, menu);
     }
 
     #[test]

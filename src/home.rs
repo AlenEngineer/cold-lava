@@ -352,6 +352,11 @@ enum Mode {
         query: String,
         sel: usize,
     },
+    /// Command palette: run a command by (fuzzy) name.
+    Palette {
+        query: String,
+        sel: usize,
+    },
     /// Full-text search.
     Search {
         query: String,
@@ -1012,6 +1017,9 @@ impl Home {
             self.switcher_key(k);
             return Ok(());
         }
+        if matches!(self.mode, Mode::Palette { .. }) {
+            return self.palette_key(k, terminal);
+        }
         if matches!(self.mode, Mode::Search { .. }) {
             self.search_key(k);
             return Ok(());
@@ -1087,6 +1095,7 @@ impl Home {
                 return Ok(());
             }
             Mode::Switcher { .. }
+            | Mode::Palette { .. }
             | Mode::Search { .. }
             | Mode::Rename { .. }
             | Mode::ConfirmRename { .. } => return Ok(()),
@@ -1131,6 +1140,12 @@ impl Home {
                     Focus::Notes if self.editor.is_some() => Focus::Editor,
                     Focus::Notes | Focus::Editor if has_backs => Focus::Backlinks,
                     _ => Focus::Vaults,
+                }
+            }
+            Action::Palette => {
+                self.mode = Mode::Palette {
+                    query: String::new(),
+                    sel: 0,
                 }
             }
             Action::Switcher => self.open_switcher(false),
@@ -1387,6 +1402,57 @@ impl Home {
             _ => {}
         }
         self.mode = Mode::Switcher { query: q, sel: s };
+    }
+
+    fn palette_hits(&self, query: &str) -> Vec<commands::Match> {
+        commands::matching(query)
+            .into_iter()
+            .filter(|m| self.enabled(m.command.action))
+            .collect()
+    }
+
+    fn palette_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Mode::Palette { query, sel } = &mut self.mode else {
+            return Ok(());
+        };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let (mut q, mut s) = (query.clone(), *sel);
+        let total = self.palette_hits(&q).len();
+        match k.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return Ok(());
+            }
+            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(total.saturating_sub(1)),
+            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
+                s = (s + 1).min(total.saturating_sub(1))
+            }
+            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
+            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
+            KeyCode::Backspace => {
+                q.pop();
+                s = 0;
+            }
+            KeyCode::Char('u') if ctrl => {
+                q.clear();
+                s = 0;
+            }
+            KeyCode::Enter => {
+                let action = self.palette_hits(&q).get(s).map(|m| m.command.action);
+                self.mode = Mode::Normal;
+                return match action {
+                    Some(a) => self.run_action(a, terminal),
+                    None => Ok(()),
+                };
+            }
+            KeyCode::Char(c) if !ctrl => {
+                q.push(c);
+                s = 0;
+            }
+            _ => {}
+        }
+        self.mode = Mode::Palette { query: q, sel: s };
+        Ok(())
     }
 
     fn run_search(&mut self) {
@@ -2014,6 +2080,9 @@ impl Home {
         if matches!(self.mode, Mode::Switcher { .. }) {
             self.draw_switcher(f, main);
         }
+        if matches!(self.mode, Mode::Palette { .. }) {
+            self.draw_palette(f, main);
+        }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
         }
@@ -2055,28 +2124,7 @@ impl Home {
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return;
         };
-        let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
-        let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
-        let r = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + area.height / 6,
-            w,
-            h,
-        );
-        f.render_widget(Clear, r);
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(ACCENT))
-            .title(Line::styled(
-                " Go to note ",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::styled(
-                " ↑↓ choose · ⏎ open · Esc close ",
-                Style::new().fg(MUTED),
-            ));
-        let inner = block.inner(r);
-        f.render_widget(block, r);
+        let inner = picker_frame(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close ");
         let hits = self.switcher_hits(query);
         let create = self.offers_create(query);
         let mut lines = vec![
@@ -2152,6 +2200,76 @@ impl Home {
         }
         if total == 0 {
             lines.push(Line::styled(" no notes match", Style::new().fg(MUTED)));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn draw_palette(&self, f: &mut Frame, area: Rect) {
+        let Mode::Palette { query, sel } = &self.mode else {
+            return;
+        };
+        let inner = picker_frame(f, area, " Commands ", " ↑↓ choose · ⏎ run · Esc close ");
+        let hits = self.palette_hits(query);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::new().fg(HIT)),
+                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+                Span::styled(
+                    if query.is_empty() {
+                        "  type a command's name or id".to_string()
+                    } else {
+                        format!("  {}", plural(hits.len(), "command"))
+                    },
+                    Style::new().fg(MUTED),
+                ),
+            ]),
+            Line::raw(""),
+        ];
+        let rows = inner.height.saturating_sub(2) as usize;
+        let start = sel.saturating_sub(rows.saturating_sub(1));
+        let width = inner.width as usize;
+        for (i, m) in hits.iter().enumerate().skip(start).take(rows) {
+            let selected = i == *sel;
+            let base = if selected {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else {
+                Style::new().fg(NOTE)
+            };
+            let dim = if selected {
+                base
+            } else {
+                Style::new().fg(MUTED)
+            };
+            let hl = if selected {
+                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
+            };
+            let c = m.command;
+            let mut spans = vec![Span::styled(" ", base)];
+            let mut push = |text: &str, hits: &[usize], style: Style| {
+                for (ci, ch) in text.chars().enumerate() {
+                    let st = if hits.contains(&ci) { hl } else { style };
+                    spans.push(Span::styled(ch.to_string(), st));
+                }
+            };
+            push(c.title, &m.title_hits, base);
+            push("  ", &[], base);
+            push(c.id, &m.id_hits, dim);
+            let right = format!("{} ", commands::keys_label(c));
+            let used = 3 + c.title.chars().count() + c.id.chars().count();
+            let pad = width.saturating_sub(used + right.chars().count());
+            spans.push(Span::styled(" ".repeat(pad), base));
+            let keys = if selected {
+                base
+            } else {
+                Style::new().fg(ACCENT)
+            };
+            spans.push(Span::styled(right, keys));
+            lines.push(Line::from(spans));
+        }
+        if hits.is_empty() {
+            lines.push(Line::styled(" no commands match", Style::new().fg(MUTED)));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -2607,7 +2725,7 @@ impl Home {
                     "⏎ open"
                 };
                 format!(
-                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  s search  R rename  m move  g graph  w boards  t today  n new  z zoom  ? help  q quit"
+                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  : commands  s search  R rename  m move  g graph  w boards  t today  n new  z zoom  ? help  q quit"
                 )
             }
         };
@@ -2701,6 +2819,30 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) {
     );
 }
 
+/// The centred popup shared by the quick switcher and the command palette; returns its inside.
+fn picker_frame(f: &mut Frame, area: Rect, title: &str, hint: &str) -> Rect {
+    let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
+    let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
+    let r = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + area.height / 6,
+        w,
+        h,
+    );
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Line::styled(
+            title,
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    inner
+}
+
 fn draw_help(f: &mut Frame, area: Rect) {
     let fixed: &[(&str, &str)] = &[
         ("↑↓ / jk", "move through vaults or notes"),
@@ -2716,15 +2858,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ),
         ("Ctrl-o", "in Neovim: back to the previous note"),
     ];
-    let commands = commands::MENU.iter().map(|c| {
-        let keys: Vec<String> = c
-            .keys
-            .iter()
-            .filter_map(|s| commands::Key::parse(s))
-            .map(|k| k.to_string())
-            .collect();
-        (keys.join(" / "), c.title)
-    });
+    let commands = commands::MENU
+        .iter()
+        .map(|c| (commands::keys_label(c), c.title));
     let rows: Vec<(String, &str)> = fixed
         .iter()
         .map(|&(k, d)| (k.to_string(), d))
