@@ -416,6 +416,10 @@ pub struct Home {
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<notify::RecommendedWatcher>,
     rescan_at: Option<Instant>,
+    /// Notes changed on disk since the last update (re-read one by one).
+    changed_paths: Vec<PathBuf>,
+    /// Something only a full rescan catches (a folder moved or deleted, a board changed).
+    rescan_all: bool,
 }
 
 /// Neovim (or Vim) to embed: $VISUAL/$EDITOR if it is one, else `nvim` if it's installed.
@@ -593,6 +597,8 @@ impl Home {
             fs_events: None,
             _watcher: None,
             rescan_at: None,
+            changed_paths: Vec::new(),
+            rescan_all: false,
         };
         if !h.vaults.is_empty() {
             h.open_vault(0);
@@ -775,7 +781,10 @@ impl Home {
                     self.follow(Path::new(from), target);
                 }
             }
-            "saved" => self.rescan_at = Some(Instant::now() + Duration::from_millis(150)),
+            "saved" => {
+                self.changed_paths.push(PathBuf::from(payload));
+                self.rescan_at = Some(Instant::now() + Duration::from_millis(150));
+            }
             "switcher" => self.open_switcher(true),
             "search" => {
                 self.open_search(true);
@@ -951,24 +960,71 @@ impl Home {
 
     fn check_disk(&mut self) {
         if let (Some(rx), Some(root)) = (&self.fs_events, &self.root) {
-            let changed = rx.try_iter().any(|ev| {
-                ev.paths.iter().any(|p| {
-                    app::is_vault_change(root, p) || p.extension().is_some_and(|e| e == "canvas")
-                })
-            });
-            if changed {
-                self.rescan_at = Some(Instant::now() + Duration::from_millis(300));
+            for ev in rx.try_iter() {
+                for p in &ev.paths {
+                    let Ok(rel) = p.strip_prefix(root) else {
+                        continue;
+                    };
+                    if rel
+                        .components()
+                        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+                    {
+                        continue; // .obsidian, .trash, our own temporary files…
+                    }
+                    if vault::is_note_path(rel) {
+                        self.changed_paths.push(p.clone());
+                    } else if rel.extension().is_none()
+                        || rel.extension().is_some_and(|e| e == "canvas")
+                    {
+                        // A folder (moved, deleted…) or a board: rescan the tree.
+                        self.rescan_all = true;
+                    } else {
+                        continue;
+                    }
+                    self.rescan_at = Some(Instant::now() + Duration::from_millis(300));
+                }
             }
         }
         if self.rescan_at.is_some_and(|t| Instant::now() >= t) {
             self.rescan_at = None;
-            self.reload_tree();
+            let paths = std::mem::take(&mut self.changed_paths);
+            let full = std::mem::take(&mut self.rescan_all);
+            if full || self.index.is_none() {
+                self.reload_tree();
+            } else {
+                self.update_notes(&paths);
+            }
             if self.editor_cmd.is_none()
                 && let Some(p) = self.shown.take()
             {
                 self.show(&p);
             }
         }
+    }
+
+    /// Re-read only the notes that changed, instead of the whole vault.
+    fn update_notes(&mut self, paths: &[PathBuf]) {
+        let (Some(ix), Some(root)) = (self.index.as_mut(), self.root.clone()) else {
+            return;
+        };
+        let changes = ix.refresh(paths);
+        if changes.is_empty() {
+            return;
+        }
+        if changes
+            .iter()
+            .any(|c| !matches!(c, vault::NoteChange::Changed(_)))
+        {
+            self.items = scan_tree(&root); // a note appeared or went away
+        }
+        self.links.clear();
+        if let Some(ix) = &self.index {
+            for (i, n) in ix.vault.notes.iter().enumerate() {
+                self.links.insert(format!("{}.md", n.rel), ix.counts(i));
+            }
+        }
+        self.refresh_rows();
+        self.refresh_backlinks();
     }
 
     fn flash(&mut self, s: impl Into<String>) {

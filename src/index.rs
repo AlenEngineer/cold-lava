@@ -96,13 +96,27 @@ pub fn split_link(raw: &str) -> LinkTarget {
 
 impl Index {
     pub fn build(vault: Vault) -> Index {
-        let resolver = Resolver::new(&vault);
+        let mut ix = Index {
+            resolver: Resolver::new(&vault),
+            vault,
+            backlinks: Vec::new(),
+            outgoing: Vec::new(),
+            folded: OnceLock::new(),
+        };
+        ix.relink();
+        ix
+    }
+
+    /// Recompute link resolution and backlinks from the notes in memory (no disk access).
+    fn relink(&mut self) {
+        let vault = &self.vault;
+        self.resolver = Resolver::new(vault);
         let n = vault.notes.len();
         let mut backlinks = vec![Vec::new(); n];
         let mut outgoing = vec![0; n];
         for (from, note) in vault.notes.iter().enumerate() {
             for r in &note.refs {
-                if let Some(to) = resolver.resolve(&r.target) {
+                if let Some(to) = self.resolver.resolve(&r.target) {
                     outgoing[from] += 1;
                     if to != from {
                         backlinks[to].push(Backlink {
@@ -122,13 +136,22 @@ impl Index {
                     .then(a.line.cmp(&b.line))
             });
         }
-        Index {
-            vault,
-            resolver,
-            backlinks,
-            outgoing,
-            folded: OnceLock::new(),
+        self.backlinks = backlinks;
+        self.outgoing = outgoing;
+        self.folded = OnceLock::new();
+    }
+
+    /// Bring these paths up to date with the disk, then update links and backlinks once.
+    /// Returns what changed.
+    pub fn refresh(&mut self, paths: &[PathBuf]) -> Vec<crate::vault::NoteChange> {
+        let changes: Vec<_> = paths
+            .iter()
+            .filter_map(|p| self.vault.refresh_path(p))
+            .collect();
+        if !changes.is_empty() {
+            self.relink();
         }
+        changes
     }
 
     pub fn folded(&self) -> &[Folded] {
@@ -256,6 +279,48 @@ mod tests {
             ix.backlinks(ix.by_rel("Inbox/Loose thought").unwrap())
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn refreshes_one_note_at_a_time() {
+        use crate::vault::NoteChange;
+        let dir = std::env::temp_dir().join(format!("cold-lava-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("A.md"), "links to [[B]]").unwrap();
+        std::fs::write(dir.join("B.md"), "nothing").unwrap();
+        let mut ix = Index::build(crate::vault::scan(&dir).unwrap());
+        let root = ix.vault.root.clone();
+        let b = |ix: &Index| ix.by_rel("B").unwrap();
+        assert_eq!(ix.backlinks(b(&ix)).len(), 1);
+
+        // A new note linking to B.
+        std::fs::write(root.join("C.md"), "also [[B]]").unwrap();
+        assert_eq!(
+            ix.refresh(&[root.join("C.md")]),
+            [NoteChange::Created("C".into())]
+        );
+        assert_eq!(ix.backlinks(b(&ix)).len(), 2);
+        // A drops its link; an unchanged file reports nothing.
+        std::fs::write(root.join("A.md"), "no links").unwrap();
+        assert_eq!(
+            ix.refresh(&[root.join("A.md"), root.join("B.md")]),
+            [NoteChange::Changed("A".into())]
+        );
+        assert_eq!(ix.backlinks(b(&ix)).len(), 1);
+        // C is deleted; hidden folders and other files are ignored.
+        std::fs::remove_file(root.join("C.md")).unwrap();
+        std::fs::create_dir_all(root.join(".trash")).unwrap();
+        std::fs::write(root.join(".trash/D.md"), "[[B]]").unwrap();
+        let changed = ix.refresh(&[
+            root.join("C.md"),
+            root.join(".trash/D.md"),
+            root.join("x.png"),
+        ]);
+        assert_eq!(changed, [NoteChange::Removed("C".into())]);
+        assert!(ix.backlinks(b(&ix)).is_empty());
+        assert_eq!(ix.vault.notes.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

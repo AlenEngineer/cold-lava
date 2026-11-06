@@ -76,6 +76,49 @@ impl Parsers {
     }
 }
 
+fn parsers() -> &'static Parsers {
+    static P: std::sync::OnceLock<Parsers> = std::sync::OnceLock::new();
+    P.get_or_init(Parsers::new)
+}
+
+/// Is this vault-relative path a note cold-lava reads (a `.md` file outside hidden folders)?
+pub fn is_note_path(rel: &Path) -> bool {
+    rel.extension().is_some_and(|e| e == "md")
+        && !rel.components().any(|c| {
+            let c = c.as_os_str().to_string_lossy();
+            c.starts_with('.') || c == "node_modules"
+        })
+}
+
+/// Read and parse one note. `None` if it isn't a note, is outside the vault, or can't be read.
+pub fn read_note(root: &Path, path: &Path) -> Option<Note> {
+    let rel_path = path.strip_prefix(root).ok()?;
+    if !is_note_path(rel_path) {
+        return None;
+    }
+    let text = fs::read_to_string(path).ok()?;
+    let rel = rel_path
+        .with_extension("")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (refs, tags, aliases) = parse(&text, parsers());
+    let links = refs.iter().map(|r| r.target.clone()).collect();
+    Some(Note {
+        rel,
+        name,
+        path: path.to_path_buf(),
+        links,
+        refs,
+        tags,
+        aliases,
+        text,
+    })
+}
+
 pub fn scan(root: &Path) -> Result<Vault> {
     let root = root
         .canonicalize()
@@ -84,47 +127,58 @@ pub fn scan(root: &Path) -> Result<Vault> {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "vault".into());
-    let p = Parsers::new();
-    let mut notes = Vec::new();
-
     let walker = WalkDir::new(&root).into_iter().filter_entry(|e| {
         let n = e.file_name().to_string_lossy();
         // Skip .obsidian, .trash, .git and friends.
         e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
     });
-    for entry in walker.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if !entry.file_type().is_file() || path.extension().is_none_or(|e| e != "md") {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
-        };
-        let rel = path
-            .strip_prefix(&root)
-            .unwrap_or(path)
-            .with_extension("")
-            .to_string_lossy()
-            .replace('\\', "/");
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let (refs, tags, aliases) = parse(&text, &p);
-        let links = refs.iter().map(|r| r.target.clone()).collect();
-        notes.push(Note {
-            rel,
-            name,
-            path: path.to_path_buf(),
-            links,
-            refs,
-            tags,
-            aliases,
-            text,
-        });
-    }
+    let mut notes: Vec<Note> = walker
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| read_note(&root, e.path()))
+        .collect();
     notes.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(Vault { root, name, notes })
+}
+
+/// What happened to a note when the vault was told a path changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteChange {
+    Created(String),
+    Changed(String),
+    Removed(String),
+}
+
+impl Vault {
+    /// Bring one path up to date with the disk: read it again, add it, or drop it.
+    /// Returns what changed, if anything did (rel paths without `.md`).
+    pub fn refresh_path(&mut self, path: &Path) -> Option<NoteChange> {
+        let pos = self.notes.iter().position(|n| n.path == path);
+        match (read_note(&self.root, path), pos) {
+            (Some(note), Some(i)) => {
+                if self.notes[i].text == note.text {
+                    return None;
+                }
+                let rel = note.rel.clone();
+                self.notes[i] = note;
+                Some(NoteChange::Changed(rel))
+            }
+            (Some(note), None) => {
+                let rel = note.rel.clone();
+                let at = self.notes.partition_point(|n| n.rel < note.rel);
+                self.notes.insert(at, note);
+                Some(NoteChange::Created(rel))
+            }
+            (None, Some(i)) => {
+                // Still on disk but unreadable (e.g. mid-write): keep the last good version.
+                if path.exists() {
+                    return None;
+                }
+                Some(NoteChange::Removed(self.notes.remove(i).rel))
+            }
+            (None, None) => None,
+        }
+    }
 }
 
 fn is_attachment(target: &str) -> bool {
@@ -256,7 +310,7 @@ mod tests {
     use super::*;
 
     fn links_and_tags(text: &str) -> (Vec<String>, Vec<String>) {
-        let (refs, tags, _) = parse(text, &Parsers::new());
+        let (refs, tags, _) = parse(text, parsers());
         (refs.into_iter().map(|r| r.target).collect(), tags)
     }
 
