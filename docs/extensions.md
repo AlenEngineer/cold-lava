@@ -25,7 +25,7 @@ extension of that core.
 
 Each layer only talks to the one below it, so any one of them can be replaced on its own.
 
-## Core (being built now)
+## Core
 
 - **Live vault.** One `Core` owns the vault. It is the only thing watching the folder; when a
   note changes it re-reads only that note and updates the index. Nothing else scans the disk.
@@ -33,16 +33,43 @@ Each layer only talks to the one below it, so any one of them can be replaced on
   aliases, full text. (Exists: `index.rs`, `search.rs`.)
 - **Safe writes.** Every write goes through one path that writes atomically and can refuse when
   the file changed since it was read. Renames, task toggles, whiteboards and extensions all use
-  it, so nothing overwrites an edit made in Obsidian at the same time. (Exists in pieces; being
-  unified.)
+  it, so nothing overwrites an edit made in Obsidian at the same time. (Exists: `write.rs`.)
 - **Events.** `note.created`, `note.changed`, `note.removed`, `note.renamed`, emitted once per
   change, whatever caused it (cold-lava, Obsidian, Neovim, git). Anything can subscribe.
+
+## Reading is core, editing is an extension
+
+Reading a vault and moving through it by links is the product, so it works with nothing else
+installed. Editing is left to the editor each person already uses: a text editor good enough to
+live in is a project of its own, and it would be worse than the one they have.
+
+- **The reader (core).** A Markdown view of the note: headings, lists, tasks and code blocks
+  styled, links highlighted and followed from the keyboard, backlinks beside it. It replaces the
+  plain-text preview the menu shows when no Vim is installed.
+- **The editor (an extension slot).** An editor extension provides `note.edit`. There are three
+  levels, and an editor can stop at any of them:
+
+  | Level | What you get | Provided by |
+  | --- | --- | --- |
+  | Full screen | The editor takes over the terminal until it quits | Built in, for any `$EDITOR` |
+  | In a pane | The editor runs beside the tree, as Neovim does today | Any TUI editor, through the "program in a pane" view |
+  | Bridged | Follow links and open backlinks from inside the editor | One extension per editor |
+
+- **Neovim becomes the first editor extension.** It keeps the Vim script and the private OSC
+  messages (`ESC ] 5379 ; kind ; payload BEL`) that make link following work inside it. The core
+  keeps only the pane (`embed.rs`), which third-party views need as well. Without the
+  Neovim-only checks, Helix, Kakoune or micro embed in the pane too, without the bridge.
+- **Saves need no cooperation.** The core's file watcher sees every save, so an editor only has
+  to write the file. Telling the core about a save is a hint that makes it show up sooner.
 
 ## Commands
 
 Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Commands are what
 keys, the command palette, `cold-lava run <command>` and extensions all call. Extensions register
 their own. Keys are configurable in `~/.config/cold-lava/config.toml`.
+
+Editing works the same way: `note.edit` and `note.follow-link` are commands, and the editor
+extension that is active fills them in.
 
 ## Transport: an abstraction from the start
 
@@ -126,9 +153,10 @@ good enough for everyone else.
 
 ## Order of work
 
-1. Core: safe writes, live vault, events. *(in progress)*
-2. Commands, command palette, configurable keys.
-3. The `Extension` interface; move built-in features onto it.
+1. Core: safe writes, live vault, events. *(done)*
+2. Commands, command palette, configurable keys. The Markdown reader can land alongside, since
+   it's core.
+3. The `Extension` interface; move built-in features onto it, starting with the Neovim editor.
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
 
