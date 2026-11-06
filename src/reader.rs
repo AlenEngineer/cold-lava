@@ -812,7 +812,7 @@ mod tests {
         );
         assert_eq!(
             link_texts(&r),
-            [vec!["Shield", "Volcano"], vec!["Lava"]],
+            [vec!["Shield Volcano"], vec!["Lava"]],
             "{:#?}",
             lines(&r)
         );
@@ -867,9 +867,14 @@ mod tests {
 
     #[test]
     fn jumps_to_a_heading() {
-        let text = format!("# Top\n\n{}## Far Down\n\ntext", "para\n\n".repeat(20));
+        let paras = "para\n\n".repeat(20);
+        let text = format!("# Top\n\n{paras}## Far Down\n\n{paras}## Last\n\ntext");
         let mut r = reader(&text, 40, 5);
         r.jump(Jump::Heading("far down".into()));
         assert_eq!(lines(&r)[r.scroll], "## Far Down");
+        // Near the end the page can't scroll further, so the heading is shown lower down.
+        r.jump(Jump::Heading("last".into()));
+        let shown = &lines(&r)[r.scroll..r.scroll + 5];
+        assert!(shown.iter().any(|l| l == "## Last"), "{shown:?}");
     }
 }
