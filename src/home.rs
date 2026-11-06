@@ -3,8 +3,8 @@
 //! preview when Neovim isn't installed.
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
+use crate::core::{Core, Event as CoreEvent};
 use crate::embed::Embedded;
-use crate::index::Index;
 use crate::{board, term, vault};
 use anyhow::Result;
 use ratatui::crossterm::event::{
@@ -18,7 +18,6 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -390,7 +389,8 @@ pub struct Home {
     nscroll: usize,
     filter: String,
     links: HashMap<String, (usize, usize)>,
-    index: Option<Index>,
+    /// The open vault: index, file watching and change events.
+    core: Option<Core>,
     backs: Vec<BackRow>,
     bsel: usize,
     show_backlinks: bool,
@@ -413,13 +413,6 @@ pub struct Home {
     msg: Option<(String, Instant)>,
     areas: [Rect; 4],
     quit: bool,
-    fs_events: Option<Receiver<notify::Event>>,
-    _watcher: Option<notify::RecommendedWatcher>,
-    rescan_at: Option<Instant>,
-    /// Notes changed on disk since the last update (re-read one by one).
-    changed_paths: Vec<PathBuf>,
-    /// Something only a full rescan catches (a folder moved or deleted, a board changed).
-    rescan_all: bool,
 }
 
 /// Neovim (or Vim) to embed: $VISUAL/$EDITOR if it is one, else `nvim` if it's installed.
@@ -575,7 +568,7 @@ impl Home {
             nscroll: 0,
             filter: String::new(),
             links: HashMap::new(),
-            index: None,
+            core: None,
             backs: Vec::new(),
             bsel: 0,
             show_backlinks: true,
@@ -594,11 +587,6 @@ impl Home {
             msg: None,
             areas: [Rect::default(); 4],
             quit: false,
-            fs_events: None,
-            _watcher: None,
-            rescan_at: None,
-            changed_paths: Vec::new(),
-            rescan_all: false,
         };
         if !h.vaults.is_empty() {
             h.open_vault(0);
@@ -710,6 +698,7 @@ impl Home {
         self.filter.clear();
         self.nsel = 0;
         self.nscroll = 0;
+        self.core = None; // a different vault: start a fresh core
         self.reload_tree();
         // Start with top-level folders open if the vault is small enough to take in at once.
         if self.items.len() <= 60 {
@@ -720,9 +709,9 @@ impl Home {
             }
             self.refresh_rows();
         }
-        let (rx, w) = app::watch_vault(&v.path);
-        self.fs_events = rx;
-        self._watcher = w;
+        if self.core.as_ref().is_some_and(|c| !c.is_live()) {
+            self.flash("can't watch this folder for changes; press r to refresh");
+        }
         remember(&v.path);
         self.select_row(0);
     }
@@ -733,8 +722,11 @@ impl Home {
         };
         self.items = scan_tree(&root);
         self.links.clear();
-        self.index = vault::scan(&root).ok().map(Index::build);
-        if let Some(ix) = &self.index {
+        match self.core.as_mut() {
+            Some(core) => core.rescan_now(),
+            None => self.core = Core::open(&root).ok(),
+        }
+        if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
             for (i, n) in ix.vault.notes.iter().enumerate() {
                 self.links.insert(format!("{}.md", n.rel), ix.counts(i));
             }
@@ -746,7 +738,7 @@ impl Home {
     /// Backlinks of the note in the editor pane.
     fn refresh_backlinks(&mut self) {
         self.backs.clear();
-        let (Some(ix), Some(shown)) = (&self.index, &self.shown) else {
+        let (Some(ix), Some(shown)) = (self.core.as_ref().map(|c| &c.index), &self.shown) else {
             return;
         };
         let Some(i) = ix.by_path(shown) else { return };
@@ -782,8 +774,9 @@ impl Home {
                 }
             }
             "saved" => {
-                self.changed_paths.push(PathBuf::from(payload));
-                self.rescan_at = Some(Instant::now() + Duration::from_millis(150));
+                if let Some(core) = self.core.as_mut() {
+                    core.note_changed(Path::new(payload));
+                }
             }
             "switcher" => self.open_switcher(true),
             "search" => {
@@ -801,7 +794,9 @@ impl Home {
     /// create it if it doesn't exist yet, like clicking an unresolved link in Obsidian.
     fn follow(&mut self, from: &Path, raw: &str) {
         let link = crate::index::split_link(raw);
-        let Some(ix) = &self.index else { return };
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
         let from_i = ix.by_path(from);
         let jump = link
             .heading
@@ -958,73 +953,37 @@ impl Home {
         }
     }
 
+    /// Apply what changed on disk (from the core's events).
     fn check_disk(&mut self) {
-        if let (Some(rx), Some(root)) = (&self.fs_events, &self.root) {
-            for ev in rx.try_iter() {
-                for p in &ev.paths {
-                    let Ok(rel) = p.strip_prefix(root) else {
-                        continue;
-                    };
-                    if rel
-                        .components()
-                        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-                    {
-                        continue; // .obsidian, .trash, our own temporary files…
-                    }
-                    if vault::is_note_path(rel) {
-                        self.changed_paths.push(p.clone());
-                    } else if rel.extension().is_none()
-                        || rel.extension().is_some_and(|e| e == "canvas")
-                    {
-                        // A folder (moved, deleted…) or a board: rescan the tree.
-                        self.rescan_all = true;
-                    } else {
-                        continue;
-                    }
-                    self.rescan_at = Some(Instant::now() + Duration::from_millis(300));
-                }
-            }
-        }
-        if self.rescan_at.is_some_and(|t| Instant::now() >= t) {
-            self.rescan_at = None;
-            let paths = std::mem::take(&mut self.changed_paths);
-            let full = std::mem::take(&mut self.rescan_all);
-            if full || self.index.is_none() {
-                self.reload_tree();
-            } else {
-                self.update_notes(&paths);
-            }
-            if self.editor_cmd.is_none()
-                && let Some(p) = self.shown.take()
-            {
-                self.show(&p);
-            }
-        }
-    }
-
-    /// Re-read only the notes that changed, instead of the whole vault.
-    fn update_notes(&mut self, paths: &[PathBuf]) {
-        let (Some(ix), Some(root)) = (self.index.as_mut(), self.root.clone()) else {
+        let (Some(core), Some(root)) = (self.core.as_mut(), self.root.clone()) else {
             return;
         };
-        let changes = ix.refresh(paths);
-        if changes.is_empty() {
+        let events = core.poll();
+        if events.is_empty() {
             return;
         }
-        if changes
-            .iter()
-            .any(|c| !matches!(c, vault::NoteChange::Changed(_)))
-        {
-            self.items = scan_tree(&root); // a note appeared or went away
+        let tree_changed = events.iter().any(|e| {
+            !matches!(
+                e,
+                CoreEvent::NoteChanged(_) | CoreEvent::GraphSettingsChanged
+            )
+        });
+        if tree_changed {
+            self.items = scan_tree(&root);
         }
         self.links.clear();
-        if let Some(ix) = &self.index {
+        if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
             for (i, n) in ix.vault.notes.iter().enumerate() {
                 self.links.insert(format!("{}.md", n.rel), ix.counts(i));
             }
         }
         self.refresh_rows();
         self.refresh_backlinks();
+        if self.editor_cmd.is_none()
+            && let Some(p) = self.shown.take()
+        {
+            self.show(&p);
+        }
     }
 
     fn flash(&mut self, s: impl Into<String>) {
@@ -1184,8 +1143,10 @@ impl Home {
             KeyCode::Char('t') => self.open_today(),
             KeyCode::Char('a') => self.mode = Mode::AddVault(String::new()),
             KeyCode::Char('r') => {
-                self.reload_tree();
-                self.flash("rescanned");
+                if let Some(core) = self.core.as_mut() {
+                    core.rescan(); // applied on the next poll, as a Rescanned event
+                }
+                self.flash("rescanning");
             }
             KeyCode::Char('o') => self.open_in_obsidian(),
             KeyCode::Char('e') => self.edit_fullscreen(terminal)?,
@@ -1284,7 +1245,7 @@ impl Home {
     }
 
     fn open_switcher(&mut self, from_editor: bool) {
-        if self.index.is_none() {
+        if self.core.is_none() {
             return;
         }
         self.back_to_editor = from_editor || self.focus == Focus::Editor;
@@ -1298,7 +1259,7 @@ impl Home {
     }
 
     fn open_search(&mut self, from_editor: bool) {
-        if self.index.is_none() {
+        if self.core.is_none() {
             return;
         }
         self.back_to_editor = from_editor || self.focus == Focus::Editor;
@@ -1323,7 +1284,7 @@ impl Home {
 
     /// The quick switcher's list: (note index, hit). Empty query: recent notes, then the rest.
     fn switcher_hits(&self, query: &str) -> Vec<crate::search::SwitchHit> {
-        let Some(ix) = &self.index else {
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return Vec::new();
         };
         let mut hits = crate::search::switcher(ix, query);
@@ -1348,7 +1309,7 @@ impl Home {
     fn offers_create(&self, query: &str) -> bool {
         let q = vault::search_key(query.trim());
         !q.is_empty()
-            && self.index.as_ref().is_some_and(|ix| {
+            && self.core.as_ref().map(|c| &c.index).is_some_and(|ix| {
                 !ix.vault.notes.iter().any(|n| {
                     vault::search_key(&n.name) == q
                         || n.aliases.iter().any(|a| vault::search_key(a) == q)
@@ -1379,11 +1340,16 @@ impl Home {
                 let hits = self.switcher_hits(&q);
                 self.mode = Mode::Normal;
                 if let Some(h) = hits.get(s) {
-                    let path = self.index.as_ref().map(|ix| ix.path(h.note)).unwrap();
+                    let path = self
+                        .core
+                        .as_ref()
+                        .map(|c| &c.index)
+                        .map(|ix| ix.path(h.note))
+                        .unwrap();
                     self.open_found(&path, None);
                 } else if self.offers_create(&q) {
                     // Same place a new note from a link goes (Obsidian's new-note location setting).
-                    let path = self.index.as_ref().map(|ix| {
+                    let path = self.core.as_ref().map(|c| &c.index).map(|ix| {
                         let from = self.shown.as_ref().and_then(|p| ix.by_path(p));
                         ix.new_note_path(q.trim(), from)
                     });
@@ -1413,7 +1379,9 @@ impl Home {
         };
         *sel = 0;
         let q = query.clone();
-        let Some(ix) = &self.index else { return };
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
         self.results = crate::search::search(ix, &q, 8);
         self.result_rows.clear();
         for (i, r) in self.results.iter().enumerate() {
@@ -1461,7 +1429,7 @@ impl Home {
                         .and_then(|l| hit.lines.get(l))
                         .or(hit.lines.first())
                         .map(|l| l.line);
-                    Some((self.index.as_ref()?.path(hit.note), line))
+                    Some((self.core.as_ref().map(|c| &c.index)?.path(hit.note), line))
                 });
                 self.mode = Mode::Normal;
                 if let Some((path, line)) = target {
@@ -1577,7 +1545,9 @@ impl Home {
             };
         self.save_editor();
         self.reload_tree();
-        let Some(ix) = &self.index else { return };
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
         let Some(i) = ix.by_path(note) else {
             return self.flash("that note is no longer there");
         };
@@ -1841,18 +1811,22 @@ impl Home {
     // ---------- actions ----------
 
     fn open_graph(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Some(root) = self.root.clone() else {
+        // The graph borrows the menu's live vault and gives it back, so there's one watcher and
+        // changes made while the graph is open show up here too.
+        let Some(core) = self.core.take() else {
             return Ok(());
         };
-        match vault::scan(&root) {
-            Ok(v) if !v.notes.is_empty() => {
-                app::App::new(v, self.render).run(terminal)?;
-                terminal.clear()?;
-            }
-            Ok(_) => self.flash("this vault has no notes yet"),
-            Err(e) => self.flash(format!("couldn't read the vault: {e}")),
+        if core.index.vault.notes.is_empty() {
+            self.core = Some(core);
+            self.flash("this vault has no notes yet");
+            return Ok(());
         }
-        Ok(())
+        let mut graph = app::App::new(core, self.render);
+        let result = graph.run(terminal);
+        self.core = Some(graph.into_core());
+        terminal.clear()?;
+        self.check_disk();
+        result
     }
 
     fn open_boards(&mut self, terminal: &mut DefaultTerminal, file: Option<PathBuf>) -> Result<()> {
@@ -2062,7 +2036,9 @@ impl Home {
         let Mode::Switcher { query, sel } = &self.mode else {
             return;
         };
-        let Some(ix) = &self.index else { return };
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
         let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
         let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
         let r = Rect::new(
@@ -2168,7 +2144,9 @@ impl Home {
         let Mode::Search { query, sel } = &self.mode else {
             return;
         };
-        let Some(ix) = &self.index else { return };
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
         let w = (area.width * 4 / 5).clamp(50.min(area.width), 140);
         let h = area.height.saturating_sub(4).max(8.min(area.height));
         let r = Rect::new(

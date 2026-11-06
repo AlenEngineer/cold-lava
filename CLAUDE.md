@@ -22,6 +22,11 @@ required checks on `main`.
 
 **Core** (no UI; other code asks it instead of re-parsing files):
 
+- `core.rs`: `Core` = one live vault. Owns the `Index`, is the only file watcher, re-reads only
+  changed notes and emits `Event`s (`poll()`, `subscribe()`). Screens share it: the menu lends
+  its core to the graph view and gets it back. Don't add another watcher or full rescan loop.
+- `write.rs`: the only way to write to a vault: `write_atomic`, `replace` (refused if the file
+  changed since it was read), `create`, `move_file`. Never call `std::fs::write` on vault files.
 - `vault.rs`: scans a vault: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.

@@ -26,6 +26,8 @@ change commands, keys and file formats; patch versions only fix things.
   daily notes and whiteboards all use it.
 - The main menu now re-reads only the notes that changed on disk instead of the whole vault;
   a full rescan only happens when a folder moves or a whiteboard changes.
+- The graph view and the main menu share one live vault with a single file watcher, so changes
+  made while the graph is open show up in the menu too.
 
 ### Fixed
 
