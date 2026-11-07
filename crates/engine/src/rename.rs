@@ -310,7 +310,8 @@ impl Files {
         self.find(dir, target).map(|(i, _)| i)
     }
 
-    fn path(&self, key: &str) -> Option<usize> {
+    /// The file at a vault path (notes with or without `.md`).
+    pub(crate) fn path(&self, key: &str) -> Option<usize> {
         self.by_path.get(&key.to_lowercase()).copied()
     }
 
@@ -438,33 +439,11 @@ impl Rewriter {
     }
 
     fn line(&self, body: &str, dir_then: &str, dir_now: &str, p: &Patterns) -> (String, usize) {
-        let code: Vec<(usize, usize)> = p
-            .inline_code
-            .find_iter(body)
-            .map(|m| (m.start(), m.end()))
-            .collect();
-        let in_code = |s: usize| code.iter().any(|&(a, b)| s >= a && s < b);
         // Collect replacements (byte range of the target, new text), then apply from the end.
         let mut reps: Vec<(usize, usize, String)> = Vec::new();
-        for c in p.wikilink.captures_iter(body) {
-            let m = c.get(1).unwrap();
-            if !in_code(m.start())
-                && !m.as_str().trim().is_empty()
-                && let Some(new) = self.link(m.as_str(), false, dir_then, dir_now)
-            {
-                reps.push((m.start(), m.end(), new));
-            }
-        }
-        for c in p.mdlink.captures_iter(body) {
-            let m = c.get(1).unwrap();
-            let target = m.as_str();
-            let names_a_file = target.ends_with(".md") || attachment_kind(target).is_some();
-            if !in_code(m.start())
-                && names_a_file
-                && !target.contains("://")
-                && let Some(new) = self.link(target, true, dir_then, dir_now)
-            {
-                reps.push((m.start(), m.end(), new));
+        for (r, md) in line_targets(body, p) {
+            if let Some(new) = self.link(&body[r.clone()], md, dir_then, dir_now) {
+                reps.push((r.start, r.end, new));
             }
         }
         reps.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -474,6 +453,61 @@ impl Rewriter {
         }
         (s, reps.len())
     }
+}
+
+/// The links on one line outside inline code, as (byte range of the target, Markdown link?):
+/// wikilinks, then Markdown links naming a note or an attachment.
+fn line_targets(body: &str, p: &Patterns) -> Vec<(std::ops::Range<usize>, bool)> {
+    let code: Vec<(usize, usize)> = p
+        .inline_code
+        .find_iter(body)
+        .map(|m| (m.start(), m.end()))
+        .collect();
+    let in_code = |s: usize| code.iter().any(|&(a, b)| s >= a && s < b);
+    let wiki = (p.wikilink.captures_iter(body))
+        .map(|c| c.get(1).unwrap())
+        .filter(|m| !m.as_str().trim().is_empty())
+        .map(|m| (m.range(), false));
+    let md = (p.mdlink.captures_iter(body))
+        .map(|c| c.get(1).unwrap())
+        .filter(|m| {
+            let t = m.as_str();
+            (t.ends_with(".md") || attachment_kind(t).is_some()) && !t.contains("://")
+        })
+        .map(|m| (m.range(), true));
+    wiki.chain(md).filter(|(r, _)| !in_code(r.start)).collect()
+}
+
+/// Every link target in a note's (or a canvas text card's) text outside code, as written.
+pub(crate) fn link_targets(text: &str) -> Vec<&str> {
+    let p = patterns();
+    let mut in_fence = false;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            out.extend(line_targets(line, p).into_iter().map(|(r, _)| &line[r]));
+        }
+    }
+    out
+}
+
+/// What an Obsidian Canvas file links to: its file cards' vault paths, and the links written in
+/// its text cards.
+pub(crate) fn canvas_targets(text: &str) -> (Vec<String>, Vec<String>) {
+    let (mut files, mut links) = (Vec::new(), Vec::new());
+    for c in patterns().canvas_field.captures_iter(text) {
+        let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
+            continue;
+        };
+        match &c[1] {
+            "file" => files.push(value),
+            _ => links.extend(link_targets(&value).into_iter().map(str::to_string)),
+        }
+    }
+    (files, links)
 }
 
 /// Work out everything renaming/moving note `note` to vault-relative `new_rel` (with `.md`)

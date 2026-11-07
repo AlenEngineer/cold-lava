@@ -49,6 +49,7 @@ pub enum MenuAction {
     Bookmarks,
     Bookmark,
     BookmarkSearch,
+    Tidy,
     History(HistoryAction),
 }
 
@@ -186,6 +187,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "bookmarks",
         "bookmarks, shared with Obsidian: open one (type to filter, Del removes it)",
         &["'"],
+    ),
+    cmd(
+        MenuAction::Tidy,
+        "vault.tidy",
+        Group::Go,
+        "tidy",
+        "tidy the vault: orphan notes, unused attachments, empty folders, unresolved links",
+        &["T"],
     ),
     cmd(
         MenuAction::BookmarkSearch,

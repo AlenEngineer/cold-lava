@@ -9,6 +9,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Tidying a vault. `T` (`vault.tidy`) lists orphan notes (no links in or out; `a` adds notes
+  only without backlinks, daily notes are grouped last), attachments no note, embed or
+  whiteboard links to, empty folders (not the ones the vault's settings name), and unresolved
+  links by target with where each is. `space` marks rows, `d` deletes the marked or selected
+  ones to the trash after one prompt that lists each, `u` undoes the whole batch, `Enter` opens
+  the note, link, attachment or folder, and `n` creates the missing note for an unresolved link.
+  `cold-lava tidy VAULT_DIR [--json] [--no-backlinks]` prints the same, read-only.
+
 - Duplicating and merging notes. `D` (`note.duplicate`) copies the selected note or whiteboard
   to `Name 1` beside it (Obsidian's naming) and opens it. `M` (`note.merge`) merges the
   selected note into another picked in the switcher, like Obsidian's Note composer: its text is

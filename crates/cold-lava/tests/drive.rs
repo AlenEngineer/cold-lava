@@ -234,6 +234,44 @@ fn duplicates_a_note_and_merges_one_into_another_keeping_links() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn tidy_lists_what_nothing_uses_and_deletes_it_undoably() {
+    let dir = sandbox("tidy");
+    let home = dir.join("home");
+    let vault = dir.join("example-vault");
+    std::fs::write(vault.join("Inbox/Stray.md"), "nothing links here\n").unwrap();
+    std::fs::write(vault.join("Inbox/stray.png"), b"\x89PNG").unwrap();
+    std::fs::create_dir_all(vault.join("Empty/Deeper")).unwrap();
+    let out = drive_with("tidy.drive", &dir, &["--home".as_ref(), home.as_os_str()]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!vault.join("Inbox/Stray.md").exists());
+    assert!(!vault.join("Inbox/stray.png").exists());
+    assert!(
+        vault.join("Empty/Deeper").is_dir(),
+        "not deleted: never asked"
+    );
+    assert!(vault.join("Inbox/Loose thought.md").exists());
+    let files = system_trash(&home);
+    let mut trashed = files_ending(&files, "");
+    trashed.sort();
+    assert_eq!(trashed, [files.join("Stray.md"), files.join("stray.png")]);
+    assert_eq!(
+        std::fs::read_to_string(files.join("Stray.md")).unwrap(),
+        "nothing links here\n"
+    );
+    assert!(!vault.join(".trash").exists(), "not the vault's own trash");
+    assert!(
+        in_real_trash(&dir).is_empty(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Trash entries in the user's real system trash that came from `dir`: there must be none.
 fn in_real_trash(dir: &Path) -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME") else {

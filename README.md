@@ -124,6 +124,7 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `D` / `M` | duplicate the note or whiteboard / merge the note into another, links and all (with a preview first) |
 | `space` | mark the selected note or folder, to move, delete or tag several at once (`Esc` clears the marks) |
 | `#` | add a tag to the marked notes (or the selected one); `-tag` removes it |
+| `T` | tidy: orphan notes, unused attachments, empty folders and unresolved links, to open, delete or create |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder (`Tab` picks a template) / add a vault |
@@ -403,6 +404,37 @@ everything in it goes along. With marks, the status line says how many and what 
   changed on disk since it was read.
 
 Marks follow the tree: a marked note that is renamed or deleted elsewhere drops out.
+
+### Tidying a vault
+
+`T` (`vault.tidy`, also in the palette) lists what nothing uses, in four sections:
+
+- **Orphans**: notes with no links in or out, Obsidian's graph "orphans". A link from a
+  whiteboard card or text counts, a note's link to itself doesn't. `a` also shows notes nothing
+  links to that do link elsewhere. Templates are never listed. Daily notes are listed last, dim,
+  under "daily notes": a journal often links nowhere on purpose, so they shouldn't bury the
+  others, but an empty one left behind is still worth seeing.
+- **Unused attachments**: images, audio, video and PDFs that no note, embed or whiteboard links
+  to, found the way Obsidian resolves links (by path, beside the note, by name;
+  percent-encoded Markdown links too). Whiteboards and bases aren't attachments.
+- **Empty folders**: folders with no files at any depth, the outermost of each. Hidden folders
+  aren't listed, and a hidden file counts as content. The folders the vault's settings name
+  (templates, daily notes, attachments, new notes) are kept.
+- **Unresolved links**: links to notes that don't exist, by target, with each place they are.
+
+| Key | Action |
+| --- | --- |
+| `↑↓` / `jk`, `g` / `G` | move (headings are skipped), first / last |
+| `Enter` | open the note (at the link, for an unresolved one), the attachment in its app, the folder in the tree |
+| `space` | mark an orphan, attachment or folder |
+| `d` | delete the marked ones, or the selected one, to the trash after one prompt listing each |
+| `u` | undo the last delete (the whole batch) |
+| `n` | on an unresolved link: create the missing note, where Obsidian would |
+| `a` / `Esc` | also notes with only no backlinks / close |
+
+Nothing is deleted without that prompt. `cold-lava tidy VAULT_DIR` prints the same sections
+(`--no-backlinks` adds the notes that link elsewhere, `--json` gives every note nothing links
+to with how many links it has); it never changes anything.
 
 ### Agenda, daily notes and tasks (for scripts and status bars)
 
