@@ -3,16 +3,19 @@
 //! embedded Neovim when it's installed).
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
-use crate::commands::{self, Entry, Keymap, MenuAction, MenuCommand, PaneAction, ReaderAction};
+use crate::commands::{
+    self, Entry, HistoryAction, Keymap, MenuAction, MenuCommand, PaneAction, ReaderAction,
+};
 use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::ext::{
     CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId, PaneNews,
     PaneSpec, Registry,
 };
+use crate::history::{Exit, History, Nav, Place};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
-use crate::reader::Reader;
+use crate::reader::{Reader, Spot};
 use crate::{board, term, vault};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
@@ -395,6 +398,8 @@ pub struct Home {
     pane_keys: Keymap<PaneAction>,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
     mru: Vec<PathBuf>,
+    /// Back and forward, within the open vault.
+    history: History,
     results: Vec<crate::search::NoteHits>,
     result_rows: Vec<SearchRow>,
     /// The overlay was opened from inside the pane's program: give it focus back afterwards.
@@ -465,6 +470,7 @@ impl Home {
             reader_keys: Keymap::new(commands::READER),
             pane_keys: Keymap::new(commands::PANE),
             mru: Vec::new(),
+            history: History::default(),
             results: Vec::new(),
             result_rows: Vec::new(),
             back_to_editor: false,
@@ -513,6 +519,8 @@ impl Home {
             return;
         };
         let rel = rel.to_string_lossy().replace('\\', "/");
+        let from = self.here();
+        self.leave(from, &canon, None);
         self.reload_tree();
         let parts: Vec<&str> = rel.split('/').collect();
         for n in 1..parts.len() {
@@ -732,13 +740,7 @@ impl Home {
             Some(c) if !self.enabled(c) => Err("it can't run now".to_string()),
             Some(MenuCommand::Core(MenuAction::Search)) if !args.is_null() => {
                 serde_json::from_value(args)
-                    .map(|Search { query }| {
-                        self.open_search();
-                        if let Mode::Search { query: q, .. } = &mut self.mode {
-                            *q = query;
-                        }
-                        self.run_search();
-                    })
+                    .map(|Search { query }| self.search_for(query))
                     .map_err(|e| e.to_string())
             }
             Some(c) => return self.run_menu_command(c, args, terminal),
@@ -784,6 +786,7 @@ impl Home {
         self.nsel = 0;
         self.nscroll = 0;
         self.core = None; // a different vault: start a fresh core
+        self.history.clear();
         self.reload_tree();
         // Start with top-level folders open if the vault is small enough to take in at once.
         if self.items.len() <= 60 {
@@ -844,6 +847,7 @@ impl Home {
     /// create it if it doesn't exist yet, like clicking an unresolved link in Obsidian.
     fn follow(&mut self, from: &Path, raw: &str) {
         let link = crate::index::split_link(raw);
+        let here = self.here();
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return;
         };
@@ -856,6 +860,7 @@ impl Home {
         if link.note.is_empty() {
             // [[#Heading]]: a heading in the same note.
             if let Some(j) = jump {
+                self.leave(here, from, Some(&j));
                 self.show_at(from, Some(j));
             }
             return;
@@ -863,6 +868,7 @@ impl Home {
         match ix.resolver.resolve(&link.note) {
             Some(i) => {
                 let path = ix.path(i);
+                self.leave(here, &path, jump.as_ref());
                 self.show_at(&path, jump);
                 self.select_path(&path);
             }
@@ -877,9 +883,110 @@ impl Home {
                     .unwrap_or_default();
                 self.flash(format!("created {rel}"));
                 self.reload_tree();
+                self.leave(here, &path, None);
                 self.show_at(&path, None);
                 self.select_path(&path);
             }
+        }
+    }
+
+    /// Where you are, as Back would return to it: the search, else the note in the pane.
+    fn here(&self) -> Option<Place> {
+        if let Mode::Search { query, sel } = &self.mode {
+            return Some(Place::Search {
+                query: query.clone(),
+                sel: *sel,
+            });
+        }
+        Some(Place::Note {
+            path: self.shown.clone()?,
+            spot: self.reader.as_ref().map(Reader::spot),
+        })
+    }
+
+    /// Going to `path` (at `jump`) from `from`: `from` becomes the way back, unless it is that
+    /// same note with nowhere to jump to.
+    fn leave(&mut self, from: Option<Place>, path: &Path, jump: Option<&Jump>) {
+        let same = matches!(&from, Some(Place::Note { path: p, .. }) if p == path);
+        if let Some(from) = from.filter(|_| jump.is_some() || !same) {
+            self.history.visit(from);
+        }
+    }
+
+    fn travel(&mut self, a: HistoryAction, terminal: &mut DefaultTerminal) -> Result<()> {
+        let here = self.here();
+        let to = match a {
+            HistoryAction::Back => self.history.back(here),
+            HistoryAction::Forward => self.history.forward(here),
+        };
+        match to {
+            Some(place) => self.go(place, terminal),
+            None => Ok(()),
+        }
+    }
+
+    /// Go to the graph or a board from here, which becomes the way back.
+    fn go_from_here(&mut self, to: Place, terminal: &mut DefaultTerminal) -> Result<()> {
+        if let Some(here) = self.here() {
+            self.history.visit(here);
+        }
+        self.go(to, terminal)
+    }
+
+    /// Go to `place`. The graph and boards run until they are left, maybe for another place.
+    fn go(&mut self, place: Place, terminal: &mut DefaultTerminal) -> Result<()> {
+        let mut next = Some(place);
+        while let Some(place) = next.take() {
+            next = match place {
+                Place::Note { path, spot } => {
+                    self.return_to_note(&path, spot);
+                    None
+                }
+                Place::Search { query, sel } => {
+                    self.search_for(query);
+                    if let Mode::Search { sel: s, .. } = &mut self.mode {
+                        *s = sel.min(self.result_rows.len().saturating_sub(1));
+                    }
+                    None
+                }
+                Place::Graph { selected } => self.run_graph(terminal, selected)?,
+                Place::Board { path } => self.run_board(terminal, path)?,
+            };
+        }
+        Ok(())
+    }
+
+    /// Where leaving the graph or a board leads. Quitting goes to the menu, so Back comes back.
+    fn left(&mut self, here: Place, exit: Exit) -> Option<Place> {
+        match exit {
+            Exit::Quit => {
+                self.history.visit(here);
+                None
+            }
+            Exit::Back => self.history.back(Some(here)),
+            Exit::Forward => self.history.forward(Some(here)),
+            Exit::Board(path) => {
+                self.history.visit(here);
+                Some(Place::Board { path })
+            }
+        }
+    }
+
+    fn return_to_note(&mut self, path: &Path, spot: Option<Spot>) {
+        if !path.exists() {
+            let name = path.file_stem().unwrap_or_default().to_string_lossy();
+            return self.flash(format!("{name} is gone"));
+        }
+        self.mode = Mode::Normal;
+        self.pending = None;
+        self.show(path);
+        self.select_path(path);
+        if let (Some(r), Some(spot)) = (self.reader.as_mut(), spot) {
+            r.restore(spot);
+        }
+        // Into the reader, where Back still works; the editor's pane would take the keys.
+        if self.reader.is_some() {
+            self.focus = Focus::Pane;
         }
     }
 
@@ -1186,6 +1293,12 @@ impl Home {
             MenuCommand::Core(MenuAction::Read) => {
                 self.running_editor().is_some() && self.shown.is_some()
             }
+            MenuCommand::Core(MenuAction::History(HistoryAction::Back)) => {
+                self.history.peek_back().is_some()
+            }
+            MenuCommand::Core(MenuAction::History(HistoryAction::Forward)) => {
+                self.history.peek_forward().is_some()
+            }
             _ => true,
         }
     }
@@ -1287,8 +1400,9 @@ impl Home {
                 self.refresh_rows();
             }
             MenuAction::Zoom => self.zoom = !self.zoom,
-            MenuAction::Graph => self.open_graph(terminal)?,
+            MenuAction::Graph => self.go_from_here(Place::Graph { selected: None }, terminal)?,
             MenuAction::Boards => self.open_boards(terminal, None)?,
+            MenuAction::History(a) => self.travel(a, terminal)?,
             MenuAction::NewNote => self.mode = Mode::NewNote(String::new()),
             MenuAction::Today => self.open_today(),
             MenuAction::AddVault => self.mode = Mode::AddVault(String::new()),
@@ -1404,6 +1518,15 @@ impl Home {
         };
     }
 
+    /// The search, with `query` typed in.
+    fn search_for(&mut self, query: String) {
+        self.open_search();
+        if let Mode::Search { query: q, .. } = &mut self.mode {
+            *q = query;
+        }
+        self.run_search();
+    }
+
     fn open_search(&mut self) {
         if self.core.is_none() {
             return;
@@ -1485,6 +1608,7 @@ impl Home {
             KeyCode::Enter => {
                 let hits = self.switcher_hits(&q);
                 self.mode = Mode::Normal;
+                let from = self.here();
                 if let Some(h) = hits.get(s) {
                     let path = self
                         .core
@@ -1492,7 +1616,7 @@ impl Home {
                         .map(|c| &c.index)
                         .map(|ix| ix.path(h.note))
                         .unwrap();
-                    self.open_found(&path, None);
+                    self.open_found(from, &path, None);
                 } else if self.offers_create(&q) {
                     // Same place a new note from a link goes (Obsidian's new-note location setting).
                     let path = self.core.as_ref().map(|c| &c.index).map(|ix| {
@@ -1504,7 +1628,7 @@ impl Home {
                     {
                         self.flash(format!("created {}", q.trim()));
                         self.reload_tree();
-                        self.open_found(&path, None);
+                        self.open_found(from, &path, None);
                     }
                 }
                 self.back_to_editor = false;
@@ -1628,9 +1752,10 @@ impl Home {
                         .map(|l| l.line);
                     Some((self.core.as_ref().map(|c| &c.index)?.path(hit.note), line))
                 });
+                let from = self.here();
                 self.mode = Mode::Normal;
                 if let Some((path, line)) = target {
-                    self.open_found(&path, line.map(Jump::Line));
+                    self.open_found(from, &path, line.map(Jump::Line));
                 }
                 self.back_to_editor = false;
             }
@@ -1904,7 +2029,8 @@ impl Home {
     }
 
     /// Open a note picked in the switcher or search, and give the editor focus.
-    fn open_found(&mut self, path: &Path, jump: Option<Jump>) {
+    fn open_found(&mut self, from: Option<Place>, path: &Path, jump: Option<Jump>) {
+        self.leave(from, path, jump.as_ref());
         self.pending = None;
         self.show_at(path, jump);
         self.select_path(path);
@@ -1930,6 +2056,8 @@ impl Home {
     fn open_backlink(&mut self, i: usize) {
         let Some(b) = self.backs.get(i) else { return };
         let (path, line) = (b.path.clone(), b.line);
+        let from = self.here();
+        self.leave(from, &path, Some(&Jump::Line(line)));
         self.pending = None;
         self.show_at(&path, Some(Jump::Line(line)));
         self.select_path(&path);
@@ -2025,35 +2153,66 @@ impl Home {
 
     // ---------- actions ----------
 
-    fn open_graph(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    /// The graph view, with `selected` selected, until it is left; then where to go next.
+    fn run_graph(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        selected: Option<String>,
+    ) -> Result<Option<Place>> {
         // The graph borrows the menu's live vault and gives it back, so there's one watcher and
         // changes made while the graph is open show up here too.
         let Some(core) = self.core.take() else {
-            return Ok(());
+            return Ok(None);
         };
         if core.index.vault.notes.is_empty() {
             self.core = Some(core);
             self.flash("this vault has no notes yet");
-            return Ok(());
+            return Ok(None);
         }
         let mut graph = app::App::new(core, self.render);
+        graph.navigate(Nav::of(&self.history), selected.as_deref());
         let result = graph.run(terminal);
+        let here = Place::Graph {
+            selected: graph.selected_key(),
+        };
+        let exit = graph.exit();
         self.core = Some(graph.into_core());
         terminal.clear()?;
         // The graph consumed the core's events while it was open, so catch up as after a rescan.
         self.sync_with_core(&[CoreEvent::Rescanned]);
         self.check_disk();
-        result
+        result?;
+        Ok(self.left(here, exit))
     }
 
+    /// A board, the picked one when `file` is `None`.
     fn open_boards(&mut self, terminal: &mut DefaultTerminal, file: Option<PathBuf>) -> Result<()> {
         let Some(root) = self.root.clone() else {
             return Ok(());
         };
-        board::launch(terminal, &root, file, false)?;
+        let path = match file {
+            Some(p) => Some(p),
+            None => board::pick_board(terminal, &root)?,
+        };
+        match path {
+            Some(path) => self.go_from_here(Place::Board { path }, terminal),
+            None => Ok(terminal.clear()?),
+        }
+    }
+
+    /// The board at `path` until it is left; then where to go next.
+    fn run_board(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        path: PathBuf,
+    ) -> Result<Option<Place>> {
+        let Some(root) = self.root.clone() else {
+            return Ok(None);
+        };
+        let exit = board::open(terminal, &root, path.clone(), Some(Nav::of(&self.history)))?;
         terminal.clear()?;
         self.reload_tree();
-        Ok(())
+        Ok(self.left(Place::Board { path }, exit))
     }
 
     fn edit_fullscreen(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -2826,7 +2985,7 @@ impl Home {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
-        let info = match (self.focus, self.vaults.get(self.vsel)) {
+        let mut info = match (self.focus, self.vaults.get(self.vsel)) {
             (Focus::Vaults, Some(v)) => {
                 let src = match v.source {
                     "obsidian" => "from Obsidian",
@@ -2855,6 +3014,12 @@ impl Home {
                 None => Line::raw(""),
             },
         };
+        let first = |id| self.keys.keys(id).first();
+        let nav = Nav::of(&self.history).hint(first("history.back"), first("history.forward"));
+        if !nav.is_empty() {
+            info.spans
+                .push(Span::styled(format!("   {nav}"), Style::new().fg(MUTED)));
+        }
         if self
             .msg
             .as_ref()

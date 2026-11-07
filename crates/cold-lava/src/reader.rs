@@ -41,6 +41,13 @@ struct Page {
     block_ids: Vec<(String, usize)>,
 }
 
+/// Where the reader is in a note, to come back to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot {
+    scroll: usize,
+    selected: Option<usize>,
+}
+
 pub struct Reader {
     doc: Doc,
     page: Option<Page>,
@@ -204,6 +211,20 @@ impl Reader {
             self.scroll = (last + 1).saturating_sub(self.height);
         }
         self.clamp();
+    }
+
+    pub fn spot(&self) -> Spot {
+        Spot {
+            scroll: self.scroll,
+            selected: self.selected,
+        }
+    }
+
+    /// Back to a `spot` of this note; kept within the note once it is laid out.
+    pub fn restore(&mut self, spot: Spot) {
+        self.scroll = spot.scroll;
+        self.selected = spot.selected;
+        self.pending_jump = None;
     }
 
     pub fn selected_link(&self) -> Option<&Link> {

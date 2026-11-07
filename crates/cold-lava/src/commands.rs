@@ -34,6 +34,15 @@ pub enum MenuAction {
     OpenInObsidian,
     EditFullscreen,
     Read,
+    History(HistoryAction),
+}
+
+/// Back and forward through the places you went to. They are menu commands that the graph and
+/// the whiteboard also run, on the keys their own commands leave free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HistoryAction {
+    Back,
+    Forward,
 }
 
 pub struct Command<A> {
@@ -93,13 +102,25 @@ pub const MENU: &[Command<MenuAction>] = &[
         MenuAction::Switcher,
         "note.switch",
         "quick switcher: jump to any note by name",
-        &["p", "ctrl+o"],
+        &["p"],
     ),
     cmd(
         MenuAction::Search,
         "search.open",
         "search the text of every note",
         &["s", "ctrl+f"],
+    ),
+    cmd(
+        MenuAction::History(HistoryAction::Back),
+        "history.back",
+        "back to where you were: a note, a search, the graph, a board",
+        &["ctrl+o", "alt+left", "backspace"],
+    ),
+    cmd(
+        MenuAction::History(HistoryAction::Forward),
+        "history.forward",
+        "forward again, after going back",
+        &["alt+right"],
     ),
     cmd(
         MenuAction::Rename,
@@ -626,6 +647,37 @@ pub fn ids() -> impl Iterator<Item = &'static str> {
         .chain(PANE.iter().map(|c| c.id))
 }
 
+/// The history commands' keys for a screen of its own (the graph, the whiteboard): the
+/// menu's, with config.toml's overrides, less those `screen` binds.
+pub fn history_keys<A: Copy>(screen: &Keymap<A>) -> Keymap<HistoryAction> {
+    let table: Vec<Entry<HistoryAction>> = entries(MENU)
+        .into_iter()
+        .filter_map(|e| match e.action {
+            MenuAction::History(action) => Some(Entry {
+                action,
+                id: e.id,
+                title: e.title,
+                keys: e.keys,
+            }),
+            _ => None,
+        })
+        .collect();
+    let mut keys = Keymap::configured(&table);
+    keys.by_key.retain(|k, _| !screen.by_key.contains_key(k));
+    for ks in keys.by_id.values_mut() {
+        ks.retain(|k| !screen.by_key.contains_key(k));
+    }
+    keys
+}
+
+/// The history commands as a screen's help lists them: (keys, title).
+pub fn history_help(keys: &Keymap<HistoryAction>) -> Vec<(String, &'static str)> {
+    MENU.iter()
+        .filter(|c| matches!(c.action, MenuAction::History(_)))
+        .map(|c| (keys.label(c.id), c.title))
+        .collect()
+}
+
 /// What a menu command runs: one of the core's, or the `i`th command extension `ext` registered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MenuCommand {
@@ -917,7 +969,7 @@ impl<A: Copy> Keymap<A> {
         self.by_id.get(id).map_or(&[], Vec::as_slice)
     }
 
-    /// A command's keys as shown to the user: "p / Ctrl-o".
+    /// A command's keys as shown to the user: "s / Ctrl-f".
     pub fn label(&self, id: &str) -> String {
         let keys: Vec<String> = self.keys(id).iter().map(Key::to_string).collect();
         keys.join(" / ")
@@ -1061,7 +1113,8 @@ mod tests {
         assert_eq!(k.to_string(), "Ctrl-o");
         let keys = Keymap::new(MENU);
         let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
-        assert_eq!(keys.get(ctrl_o), Some(MenuAction::Switcher));
+        let back = MenuAction::History(HistoryAction::Back);
+        assert_eq!(keys.get(ctrl_o), Some(back));
         let o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE);
         assert_eq!(keys.get(o), Some(MenuAction::OpenInObsidian));
     }
@@ -1092,6 +1145,24 @@ mod tests {
             .filter(|&id| id != "app.palette")
             .collect();
         assert_eq!(ids, menu);
+    }
+
+    #[test]
+    fn history_keys_leave_the_screens_own_keys_alone() {
+        let graph = history_keys(&Keymap::new(GRAPH));
+        let backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(graph.get(backspace), None, "stays graph.back");
+        let alt_left = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(graph.get(alt_left), Some(HistoryAction::Back));
+        assert_eq!(graph.label("history.back"), "Ctrl-o / Alt-←");
+        let board = history_keys(&Keymap::new(BOARD));
+        assert_eq!(board.get(backspace), Some(HistoryAction::Back));
+        let alt_right = KeyEvent::new(KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(board.get(alt_right), Some(HistoryAction::Forward));
+        let reader = Keymap::new(READER);
+        for k in [backspace, alt_left, alt_right] {
+            assert_eq!(reader.get(k), None, "the reader leaves {k:?} to the menu");
+        }
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! The graph view: state, input handling and drawing.
 
-use crate::commands::{self, GraphAction, Keymap};
+use crate::commands::{self, GraphAction, HistoryAction, Keymap};
 use crate::core::{Core, Event as CoreEvent};
 use crate::graph::{self, BuildOpts, Graph, Kind};
 use crate::groups::{self, Assignment};
+use crate::history::{Exit, Nav};
 use crate::kitty::{self, Kitty};
 use crate::scene::{Disc, Edge, Label, Layer, Scene};
 use crate::vault;
@@ -76,6 +77,10 @@ pub struct App {
     drag: Option<Drag>,
     quit: bool,
     keys: Keymap<GraphAction>,
+    /// Inside the main menu: where Back and Forward lead, and their keys. Then the menu, not
+    /// the graph, opens boards.
+    nav: Option<(Nav, Keymap<HistoryAction>)>,
+    exit: Exit,
     // Colour groups
     group_mode: groups::Mode,
     obsidian_groups: Vec<groups::Group>,
@@ -144,6 +149,8 @@ impl App {
             drag: None,
             quit: false,
             keys: Keymap::new(commands::GRAPH),
+            nav: None,
+            exit: Exit::Quit,
             group_mode,
             obsidian_groups,
             assign,
@@ -240,6 +247,24 @@ impl App {
             (a, r) => format!("vault changed: +{a} −{r} notes"),
         });
         self.dirty = true;
+    }
+
+    /// Run inside the main menu: the history keys leave the graph for `nav`'s places, and
+    /// `selected` (a node key) starts selected.
+    pub fn navigate(&mut self, nav: Nav, selected: Option<&str>) {
+        self.nav = Some((nav, commands::history_keys(&self.keys)));
+        if let Some(i) = selected.and_then(|key| self.graph.find(key)) {
+            self.sel = Some(i);
+        }
+    }
+
+    pub fn selected_key(&self) -> Option<String> {
+        self.sel.map(|i| self.graph.nodes[i].key.clone())
+    }
+
+    /// How the graph was left.
+    pub fn exit(&self) -> Exit {
+        self.exit.clone()
     }
 
     /// Give the live vault back (to the main menu).
@@ -541,6 +566,19 @@ impl App {
         if let Some(a) = self.keys.get(k).filter(|&a| self.enabled(a)) {
             return self.run_action(a, terminal);
         }
+        if let Some((nav, keys)) = &self.nav
+            && let Some(a) = keys.get(k)
+        {
+            let (exit, to) = match a {
+                HistoryAction::Back => (Exit::Back, &nav.back),
+                HistoryAction::Forward => (Exit::Forward, &nav.forward),
+            };
+            if to.is_some() {
+                self.exit = exit;
+                self.quit = true;
+            }
+            return Ok(());
+        }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         match k.code {
             // Pan: Shift+arrows or HJKL
@@ -618,6 +656,14 @@ impl App {
             }
             GraphAction::OpenNote => self.open_in_editor(terminal)?,
             GraphAction::OpenInObsidian => self.open_in_obsidian(),
+            GraphAction::Boards if self.nav.is_some() => {
+                self.hide_image();
+                if let Some(path) = board::pick_board(terminal, &self.core.index.vault.root)? {
+                    self.exit = Exit::Board(path);
+                    self.quit = true;
+                }
+                self.dirty = true;
+            }
             GraphAction::Boards => {
                 self.hide_image();
                 board::launch(
@@ -1140,7 +1186,7 @@ impl App {
         self.draw_status(f, status);
         if matches!(self.mode, Mode::Help) {
             self.hide_image_later();
-            draw_help(f, main, &self.keys);
+            draw_help(f, main, &self.keys, self.nav.as_ref().map(|(_, k)| k));
         }
     }
 
@@ -1186,7 +1232,7 @@ impl App {
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
         let g = &self.graph;
-        let info = match self.sel {
+        let mut info = match self.sel {
             None => Line::from(Span::styled(
                 "  nothing selected — arrows/hjkl or Tab to pick a note, / to search, ? for help",
                 Style::new().fg(MUTED),
@@ -1248,6 +1294,14 @@ impl App {
                 Style::new().fg(DIM),
             )),
         };
+        if let Some((nav, keys)) = &self.nav {
+            let first = |id| keys.keys(id).first();
+            let hint = nav.hint(first("history.back"), first("history.forward"));
+            if !hint.is_empty() {
+                info.spans
+                    .push(Span::styled(format!("   {hint}"), Style::new().fg(MUTED)));
+            }
+        }
         f.render_widget(Paragraph::new(vec![info, second]), area);
     }
 }
@@ -1263,7 +1317,12 @@ fn dim(c: Color) -> Color {
     }
 }
 
-fn draw_help(f: &mut Frame, area: Rect, keys: &Keymap<GraphAction>) {
+fn draw_help(
+    f: &mut Frame,
+    area: Rect,
+    keys: &Keymap<GraphAction>,
+    history: Option<&Keymap<HistoryAction>>,
+) {
     let fixed: &[(&str, &str)] = &[
         ("↑↓←→ / hjkl", "select the nearest note in that direction"),
         ("Shift+arrows / HJKL", "pan"),
@@ -1275,6 +1334,7 @@ fn draw_help(f: &mut Frame, area: Rect, keys: &Keymap<GraphAction>) {
         .iter()
         .map(|&(k, d)| (k.to_string(), d))
         .chain(commands)
+        .chain(history.map(commands::history_help).unwrap_or_default())
         .collect();
     let lines: Vec<Line> = rows
         .iter()

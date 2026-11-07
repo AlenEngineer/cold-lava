@@ -103,7 +103,8 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `Ctrl-q` | leave Neovim, back to the menu (`pane.leave`) |
 | `Enter` in Neovim, `Ctrl-o` | follow the `[[link]]` under the cursor · go back |
 | `b` | show / hide backlinks |
-| `p` (or `Ctrl-o`) | quick switcher: jump to any note by name or alias |
+| `p` | quick switcher: jump to any note by name or alias |
+| `Ctrl-o` / `Alt-←` / `Backspace`, `Alt-→` | back to where you were, forward again (see below) |
 | `:` | command palette: run any command by name (its key is shown next to it) |
 | `s` (or `Ctrl-f`) | search the text of every note |
 | `R` / `m` | rename / move the note, updating every link to it (with a preview first) |
@@ -129,6 +130,19 @@ In the reader:
 
 Other menu keys (`p`, `s`, `:`, `?`, `R`, ...) work in the reader too.
 
+**Back and forward.** cold-lava keeps one history across the app, like a browser's. Following
+a link, opening a note from the quick switcher, a search result, a backlink or today's note,
+and opening the graph or a whiteboard each remember where you were: the note with the reader's
+scroll position and selected link, or the search with its words and the selected result.
+`Ctrl-o`, `Alt-←` or `Backspace` (`history.back`) goes back there, and `Alt-→`
+(`history.forward`) goes forward again until you go somewhere new. Moving through the notes
+with the arrows doesn't add to it. The status line shows where Back and Forward lead (`Ctrl-o ⟵
+Lava`). Back and forward work from the menu, the reader, the graph and whiteboards opened from
+the menu; in the graph `Backspace` stays the graph's own `b` (back to the previous selection),
+and quitting the graph or a board counts as going to the menu, so Back returns to it. While
+Neovim has focus, `Ctrl-o` is Neovim's own jump list. The history is kept for the last 100
+places of the open vault.
+
 ### Graph view
 
 | Key | Action |
@@ -146,6 +160,7 @@ Other menu keys (`p`, `s`, `:`, `?`, `R`, ...) work in the reader too.
 | scroll, drag | zoom at the cursor, pan, drag nodes |
 | `0` / `c` / `a` | fit / centre on selection / label mode |
 | `space` / `r` / `q` | pause layout / rescan / quit |
+| `Ctrl-o` / `Alt-←`, `Alt-→` | from the menu: back to where you were, forward again |
 
 ### Whiteboard
 
@@ -161,6 +176,7 @@ Other menu keys (`p`, `s`, `:`, `?`, `R`, ...) work in the reader too.
 | `1`–`6` / `0` | Obsidian colour presets / clear |
 | `d`, `u` / `U` | delete, undo / redo |
 | `o` | open the note, or the board itself, in Obsidian |
+| `Ctrl-o` / `Alt-←` / `Backspace`, `Alt-→` | from the menu: back to where you were, forward again |
 
 Every change saves straight to the `.canvas` file. Fields that cold-lava doesn't use are
 kept as they are, so Obsidian data and plugin data survive a round trip.
