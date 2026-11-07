@@ -14,6 +14,26 @@ change commands, keys and file formats; patch versions only fix things.
   names its line and prints the screen. It drives the real binary, embedded Neovim included, with an empty home folder so
   it doesn't read your config or add to your list of vaults (`--real-home` to use yours).
 - `COLD_LAVA_EDITOR=none` opens notes in the reader even when Neovim is installed.
+- `cold-lava items VAULT KIND [--json]` lists the vault's tasks, list items, headings or blocks
+  with a `^id`, one per line (`note:line` and a short form), or as JSON lines with each item's
+  id, line range, section, parent, block id and data. A task's id stays the same when it is
+  ticked, re-dated, re-indented or moved down by lines added above it.
+
+### Changed
+
+- `agenda` and `task toggle` read tasks the way Obsidian and the Tasks plugin do, from the same
+  parse as the rest of cold-lava:
+  - Tasks in callouts and quotes (`> - [ ] …`) are listed, and `task toggle` ticks them.
+  - Tasks in `~~~` code blocks, indented code blocks, `%%comments%%`, or text that only looks
+    like a list (an indented line continuing a paragraph) are no longer listed.
+  - A task's text leaves out a trailing `^block-id` and inline `%%comments%%`.
+  - Custom statuses follow the Tasks plugin's status settings (`[?]` set to "todo" counts as
+    open).
+  - A malformed date (`📅 2026-13-45`) is ignored, so the task is filed under its next date
+    instead of being left out.
+  - Notes under `node_modules` are skipped, as everywhere else in cold-lava.
+- `agenda` is about six times faster on large vaults: the daily-note date format is compiled once
+  instead of once per note.
 
 ### Fixed
 

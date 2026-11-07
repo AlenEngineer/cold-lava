@@ -291,7 +291,9 @@ mod tests {
                 aliases: vec![],
                 text: String::new(),
                 tags: tags.iter().map(|s| s.to_string()).collect(),
+                items: Default::default(),
             }],
+            item_settings: Default::default(),
         };
         let opts = crate::graph::BuildOpts {
             unresolved: false,

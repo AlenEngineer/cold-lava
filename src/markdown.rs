@@ -142,6 +142,23 @@ impl Flavour {
     pub fn has(&self, syntax: Syntax) -> bool {
         self.syntax.contains(&syntax)
     }
+
+    /// pulldown-cmark's options for this flavour.
+    pub fn options(&self) -> Options {
+        self.syntax
+            .iter()
+            .fold(Options::empty(), |o, s| o | s.options())
+    }
+
+    /// The text pulldown-cmark reads: without `%%comments%%` when the flavour has them. Line
+    /// numbers stay those of the note.
+    pub fn source<'t>(&self, text: &'t str) -> Cow<'t, str> {
+        if self.has(S::Comments) {
+            strip_comments(text, self.options())
+        } else {
+            Cow::Borrowed(text)
+        }
+    }
 }
 
 /// The flavour set in `config.toml`, else `obsidian` for a folder Obsidian has opened (it has
@@ -254,15 +271,8 @@ pub enum Inline {
 }
 
 pub fn parse(text: &str, flavour: &Flavour) -> Doc {
-    let options = flavour
-        .syntax
-        .iter()
-        .fold(Options::empty(), |o, s| o | s.options());
-    let text = if flavour.has(S::Comments) {
-        strip_comments(text, options)
-    } else {
-        Cow::Borrowed(text)
-    };
+    let options = flavour.options();
+    let text = flavour.source(text);
     let mut reader = Reader {
         src: &text,
         flavour,
@@ -743,14 +753,18 @@ fn spans(inlines: Vec<Inline>, delim: &str, wrap: Wrap) -> Vec<Inline> {
     merge_text(out)
 }
 
+/// A trailing `^id`, after a space or alone: the block's id is group 1.
+pub fn block_id_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?:^|\s)\^([A-Za-z0-9-]+)\s*$").unwrap())
+}
+
 /// A trailing `^id` (after a space, or alone on the paragraph's last line) names the block.
 fn block_id(inlines: &mut Vec<Inline>) {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"(?:^|\s)\^([A-Za-z0-9-]+)\s*$").unwrap());
     let Some(Inline::Text(text)) = inlines.last_mut() else {
         return;
     };
-    let Some(c) = re.captures(text) else {
+    let Some(c) = block_id_pattern().captures(text) else {
         return;
     };
     let id = c[1].to_string();

@@ -5,14 +5,15 @@
 //! and "next recurrence on the line below" settings, and daily notes as an implicit date.
 
 use crate::daily;
+use crate::items::{self, Data, Item};
+use crate::vault::Vault;
 use anyhow::{Context, Result, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate, Weekday};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use walkdir::WalkDir;
 
 // ---------- settings ----------
 
@@ -21,6 +22,8 @@ pub struct TasksSettings {
     pub set_done_date: bool,
     pub recurrence_below: bool,
     pub dataview: bool,
+    /// What each status symbol means: the defaults, then the plugin's `statusSettings`.
+    pub statuses: BTreeMap<char, StatusType>,
 }
 
 impl TasksSettings {
@@ -30,6 +33,32 @@ impl TasksSettings {
                 .ok()
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or_default();
+        TasksSettings::from_json(&json)
+    }
+
+    fn from_json(json: &serde_json::Value) -> TasksSettings {
+        let mut statuses: BTreeMap<char, StatusType> = [
+            (' ', StatusType::Todo),
+            ('x', StatusType::Done),
+            ('X', StatusType::Done),
+            ('-', StatusType::Cancelled),
+            ('/', StatusType::InProgress),
+        ]
+        .into();
+        let configured = ["coreStatuses", "customStatuses"]
+            .iter()
+            .filter_map(|k| json.pointer(&format!("/statusSettings/{k}"))?.as_array())
+            .flatten();
+        for s in configured {
+            let symbol = s.get("symbol").and_then(|v| v.as_str()).map(str::chars);
+            let kind = s.get("type").and_then(|v| v.as_str());
+            if let (Some(mut symbol), Some(kind)) = (symbol, kind)
+                && let (Some(c), None) = (symbol.next(), symbol.next())
+                && let Some(t) = StatusType::from_plugin(kind)
+            {
+                statuses.insert(c, t);
+            }
+        }
         TasksSettings {
             global_filter: json
                 .get("globalFilter")
@@ -46,39 +75,126 @@ impl TasksSettings {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             dataview: json.get("taskFormat").and_then(|v| v.as_str()) == Some("dataview"),
+            statuses,
         }
+    }
+
+    /// A symbol the settings don't name is not a task status Tasks would act on.
+    pub fn status_type(&self, symbol: char) -> StatusType {
+        self.statuses
+            .get(&symbol)
+            .copied()
+            .unwrap_or(StatusType::NonTask)
     }
 }
 
 // ---------- parsing ----------
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+/// The Tasks plugin's status types.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusType {
+    Todo,
+    InProgress,
+    Done,
+    Cancelled,
+    NonTask,
+}
+
+impl StatusType {
+    fn from_plugin(name: &str) -> Option<StatusType> {
+        Some(match name {
+            "TODO" => StatusType::Todo,
+            "IN_PROGRESS" => StatusType::InProgress,
+            "DONE" => StatusType::Done,
+            "CANCELLED" => StatusType::Cancelled,
+            "NON_TASK" => StatusType::NonTask,
+            _ => return None,
+        })
+    }
+
+    /// The name `agenda --json` and `task toggle --json` have always used.
+    fn agenda_name(self) -> &'static str {
+        match self {
+            StatusType::Todo => "todo",
+            StatusType::InProgress => "in_progress",
+            StatusType::Done => "done",
+            StatusType::Cancelled => "cancelled",
+            StatusType::NonTask => "other",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    Highest,
+    High,
+    Medium,
+    Low,
+    Lowest,
+}
+
+impl Priority {
+    const EMOJI: [(&str, Priority); 5] = [
+        ("🔺", Priority::Highest),
+        ("⏫", Priority::High),
+        ("🔼", Priority::Medium),
+        ("🔽", Priority::Low),
+        ("⏬", Priority::Lowest),
+    ];
+
+    fn from_name(name: &str) -> Option<Priority> {
+        serde_json::from_value(serde_json::Value::from(name)).ok()
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Priority::Highest => "highest",
+            Priority::High => "high",
+            Priority::Medium => "medium",
+            Priority::Low => "low",
+            Priority::Lowest => "lowest",
+        }
+    }
+}
+
+/// One task line, read the way the Tasks plugin reads it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Task {
-    /// Description without dates, recurrence and priority markers.
+    /// The character between the brackets.
+    pub status: char,
+    pub status_type: StatusType,
+    /// Description without dates, recurrence, priority and the global filter.
     pub text: String,
-    /// "todo", "done", "cancelled", "in_progress", or "other".
-    pub status: &'static str,
-    pub status_char: String,
-    pub done: bool,
-    /// The date the agenda files it under (due, else scheduled, else start, else the daily note's).
-    pub date: Option<String>,
-    pub date_source: Option<&'static str>,
-    pub due: Option<String>,
-    pub scheduled: Option<String>,
-    pub start: Option<String>,
-    pub created: Option<String>,
-    pub done_date: Option<String>,
-    pub cancelled_date: Option<String>,
+    pub due: Option<NaiveDate>,
+    pub scheduled: Option<NaiveDate>,
+    pub start: Option<NaiveDate>,
+    pub created: Option<NaiveDate>,
+    pub done: Option<NaiveDate>,
+    pub cancelled: Option<NaiveDate>,
     pub recurrence: Option<String>,
-    pub priority: Option<&'static str>,
+    pub priority: Option<Priority>,
+    /// As written, with the `#`.
     pub tags: Vec<String>,
-    /// Vault-relative file, absolute path and 1-based line.
-    pub file: String,
-    pub path: String,
-    pub line: usize,
-    /// Fingerprint of the line, to pass to `task toggle --id` (guards against edits in between).
-    pub id: String,
-    pub raw: String,
+    /// Link targets, as `Note::links` has them.
+    pub links: Vec<String>,
+    /// The date of the daily note the task is in.
+    pub daily_note: Option<NaiveDate>,
+}
+
+impl Task {
+    /// The date the agenda files it under, and which one that is.
+    pub fn agenda_date(&self) -> Option<(NaiveDate, &'static str)> {
+        [
+            (self.due, "due"),
+            (self.scheduled, "scheduled"),
+            (self.start, "start"),
+            (self.daily_note, "daily_note"),
+        ]
+        .into_iter()
+        .find_map(|(d, source)| Some((d?, source)))
+    }
 }
 
 struct Re {
@@ -103,119 +219,110 @@ fn re() -> &'static Re {
     })
 }
 
-/// FNV-1a fingerprint of a line, as 12 hex digits.
+/// FNV-1a of some bytes: stable across runs and machines, unlike `std`'s hasher.
+pub fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Fingerprint of a line, as 12 hex digits.
 pub fn line_id(line: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in line.trim_end_matches(['\r', '\n']).bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
+    let h = fnv(line.trim_end_matches(['\r', '\n']).as_bytes());
     format!("{:012x}", h & 0xffff_ffff_ffff)
 }
 
-fn status_of(c: char) -> (&'static str, bool) {
-    match c {
-        ' ' => ("todo", false),
-        'x' | 'X' => ("done", true),
-        '-' => ("cancelled", false),
-        '/' => ("in_progress", false),
-        _ => ("other", false),
+/// Splits a line into its blockquote / callout markers (`> > `) and the rest.
+fn split_quote(line: &str) -> (&str, &str) {
+    let mut at = 0;
+    for (i, c) in line.char_indices() {
+        match c {
+            '>' => at = i + 1,
+            ' ' | '\t' if at > 0 => at = i + 1,
+            ' ' | '\t' => {}
+            _ => break,
+        }
     }
+    line.split_at(at)
 }
 
-/// Parse one line; `None` if it isn't a task (or doesn't carry the global filter).
-pub fn parse_line(line: &str, global_filter: &str) -> Option<Task> {
+/// Parse a list item's first line, from its marker (`- [ ] …`); `None` if it isn't a task
+/// (or doesn't carry the global filter).
+pub fn parse_line(line: &str, settings: &TasksSettings) -> Option<Task> {
     let r = re();
     let c = r.task.captures(line)?;
-    let status_char = c[2].to_string();
-    let body = c[4].to_string();
+    let symbol = c[2].chars().next()?;
+    let body = &c[4];
+    let global_filter = settings.global_filter.as_str();
     if !global_filter.is_empty() && !body.contains(global_filter) {
         return None;
     }
-    let (status, done) = status_of(status_char.chars().next().unwrap_or(' '));
     let mut t = Task {
+        status: symbol,
+        status_type: settings.status_type(symbol),
         text: String::new(),
-        status,
-        status_char,
-        done,
-        date: None,
-        date_source: None,
         due: None,
         scheduled: None,
         start: None,
         created: None,
-        done_date: None,
-        cancelled_date: None,
+        done: None,
+        cancelled: None,
         recurrence: None,
         priority: None,
         tags: Vec::new(),
-        file: String::new(),
-        path: String::new(),
-        line: 0,
-        id: line_id(line),
-        raw: line.to_string(),
+        links: crate::vault::line_links(body),
+        daily_note: None,
     };
-    for m in r.date_field.captures_iter(&body) {
-        let v = Some(m[2].to_string());
-        match &m[1] {
-            "📅" | "📆" | "🗓" => t.due = v,
-            "⏳" | "⌛" => t.scheduled = v,
-            "🛫" => t.start = v,
-            "➕" => t.created = v,
-            "✅" => t.done_date = v,
-            _ => t.cancelled_date = v,
-        }
+    let date = |s: &str| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
+    for m in r.date_field.captures_iter(body) {
+        let field = match &m[1] {
+            "📅" | "📆" | "🗓" => &mut t.due,
+            "⏳" | "⌛" => &mut t.scheduled,
+            "🛫" => &mut t.start,
+            "➕" => &mut t.created,
+            "✅" => &mut t.done,
+            _ => &mut t.cancelled,
+        };
+        *field = date(&m[2]);
     }
-    if let Some(m) = r.recur.captures(&body) {
+    if let Some(m) = r.recur.captures(body) {
         t.recurrence = Some(m[1].trim().to_string());
     }
-    for m in r.dv_field.captures_iter(&body) {
-        let v = m[2].trim().to_string();
-        let date = NaiveDate::parse_from_str(&v, "%Y-%m-%d")
-            .is_ok()
-            .then(|| v.clone());
-        match &m[1] {
-            "due" => t.due = date.or(t.due.take()),
-            "scheduled" => t.scheduled = date.or(t.scheduled.take()),
-            "start" => t.start = date.or(t.start.take()),
-            "created" => t.created = date.or(t.created.take()),
-            "completion" => t.done_date = date.or(t.done_date.take()),
-            "cancelled" => t.cancelled_date = date.or(t.cancelled_date.take()),
-            "repeat" => t.recurrence = Some(v),
-            "priority" => {
-                t.priority = match v.as_str() {
-                    "highest" => Some("highest"),
-                    "high" => Some("high"),
-                    "medium" => Some("medium"),
-                    "low" => Some("low"),
-                    "lowest" => Some("lowest"),
-                    _ => None,
-                }
+    for m in r.dv_field.captures_iter(body) {
+        let v = m[2].trim();
+        let field = match &m[1] {
+            "due" => &mut t.due,
+            "scheduled" => &mut t.scheduled,
+            "start" => &mut t.start,
+            "created" => &mut t.created,
+            "completion" => &mut t.done,
+            "cancelled" => &mut t.cancelled,
+            "repeat" => {
+                t.recurrence = Some(v.to_string());
+                continue;
             }
-            _ => {}
-        }
+            _ => {
+                t.priority = Priority::from_name(v);
+                continue;
+            }
+        };
+        *field = date(v).or(field.take());
     }
-    for (emoji, p) in [
-        ("🔺", "highest"),
-        ("⏫", "high"),
-        ("🔼", "medium"),
-        ("🔽", "low"),
-        ("⏬", "lowest"),
-    ] {
+    for (emoji, p) in Priority::EMOJI {
         if body.contains(emoji) {
             t.priority = Some(p);
         }
     }
     t.tags = r
         .tag
-        .captures_iter(&body)
+        .captures_iter(body)
         .map(|m| m[1].to_string())
         .collect();
     // Clean description: drop the markers.
-    let mut text = r.date_field.replace_all(&body, "").into_owned();
+    let mut text = r.date_field.replace_all(body, "").into_owned();
     text = r.dv_field.replace_all(&text, "").into_owned();
     text = r.recur_text.replace_all(&text, "").into_owned();
-    for e in ["🔺", "⏫", "🔼", "🔽", "⏬"] {
+    for (e, _) in Priority::EMOJI {
         text = text.replace(e, "");
     }
     if !global_filter.is_empty() {
@@ -225,21 +332,68 @@ pub fn parse_line(line: &str, global_filter: &str) -> Option<Task> {
     if t.text.is_empty() {
         return None; // an empty checkbox (e.g. from a template) isn't a task yet
     }
-    let (date, src) = if let Some(d) = &t.due {
-        (Some(d.clone()), Some("due"))
-    } else if let Some(d) = &t.scheduled {
-        (Some(d.clone()), Some("scheduled"))
-    } else if let Some(d) = &t.start {
-        (Some(d.clone()), Some("start"))
-    } else {
-        (None, None)
-    };
-    t.date = date;
-    t.date_source = src;
     Some(t)
 }
 
 // ---------- agenda ----------
+
+/// A task as `agenda --json` lists it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct AgendaTask {
+    pub text: String,
+    /// "todo", "done", "cancelled", "in_progress", or "other".
+    pub status: &'static str,
+    pub status_char: String,
+    pub done: bool,
+    /// The date the agenda files it under (due, else scheduled, else start, else the daily note's).
+    pub date: Option<String>,
+    pub date_source: Option<&'static str>,
+    pub due: Option<String>,
+    pub scheduled: Option<String>,
+    pub start: Option<String>,
+    pub created: Option<String>,
+    pub done_date: Option<String>,
+    pub cancelled_date: Option<String>,
+    pub recurrence: Option<String>,
+    pub priority: Option<&'static str>,
+    pub tags: Vec<String>,
+    /// Vault-relative file, absolute path and 1-based line.
+    pub file: String,
+    pub path: String,
+    pub line: usize,
+    /// The task's `rev`, to pass to `task toggle --id` (guards against edits in between).
+    pub id: String,
+    pub raw: String,
+}
+
+impl AgendaTask {
+    fn new(item: &Item, t: &Task, root: &Path, raw: &str) -> AgendaTask {
+        let s = |d: Option<NaiveDate>| d.map(|d| d.to_string());
+        let date = t.agenda_date();
+        AgendaTask {
+            text: t.text.clone(),
+            status: t.status_type.agenda_name(),
+            status_char: t.status.to_string(),
+            done: t.status_type == StatusType::Done,
+            date: s(date.map(|d| d.0)),
+            date_source: date.map(|d| d.1),
+            due: s(t.due),
+            scheduled: s(t.scheduled),
+            start: s(t.start),
+            created: s(t.created),
+            done_date: s(t.done),
+            cancelled_date: s(t.cancelled),
+            recurrence: t.recurrence.clone(),
+            priority: t.priority.map(Priority::name),
+            tags: t.tags.clone(),
+            file: item.note.clone(),
+            path: root.join(&item.note).to_string_lossy().into_owned(),
+            line: item.line,
+            id: item.rev.clone(),
+            raw: raw.to_string(),
+        }
+    }
+}
 
 #[derive(Serialize)]
 pub struct DailyNote {
@@ -260,80 +414,36 @@ pub struct Agenda {
     pub vault: String,
     pub from: String,
     pub to: String,
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<AgendaTask>,
     pub daily_notes: Vec<DailyNote>,
     /// Per-day summary for calendar markers (only days with something on them).
     pub days: BTreeMap<String, Day>,
 }
 
-pub fn agenda(root: &Path, from: NaiveDate, to: NaiveDate) -> Result<Agenda> {
-    let root = root
-        .canonicalize()
-        .with_context(|| format!("vault not found: {}", root.display()))?;
-    let settings = TasksSettings::load(&root);
-    let daily = daily::Settings::load(&root);
+/// The vault's dated tasks and daily notes from `from` to `to`, read from its items.
+pub fn agenda(vault: &Vault, from: NaiveDate, to: NaiveDate) -> Agenda {
     let in_range = |d: NaiveDate| d >= from && d <= to;
     let mut tasks = Vec::new();
     let mut notes = Vec::new();
-    let walker = WalkDir::new(&root)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
-    for e in walker.filter_map(|e| e.ok()) {
-        if !e.file_type().is_file() || e.path().extension().is_none_or(|x| x != "md") {
-            continue;
-        }
-        let rel = e
-            .path()
-            .strip_prefix(&root)
-            .unwrap_or(e.path())
-            .to_string_lossy()
-            .replace('\\', "/");
-        let note_date = daily.date_of(&rel);
-        if let Some(d) = note_date.filter(|d| in_range(*d)) {
+    for note in &vault.notes {
+        let file = format!("{}.md", note.rel);
+        if let Some(d) = vault.item_settings().daily.date_of(&file)
+            && in_range(d)
+        {
             notes.push(DailyNote {
                 date: d.to_string(),
-                file: rel.clone(),
-                path: e.path().to_string_lossy().into_owned(),
+                file,
+                path: note.path.to_string_lossy().into_owned(),
             });
         }
-        let Ok(text) = std::fs::read_to_string(e.path()) else {
-            continue;
-        };
-        if !text.contains('[') {
-            continue;
-        }
-        let mut in_code = false;
-        for (i, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with("```") {
-                in_code = !in_code;
-                continue;
-            }
-            if in_code {
-                continue;
-            }
-            let Some(mut t) = parse_line(line, &settings.global_filter) else {
-                continue;
-            };
-            if t.date.is_none()
-                && let Some(d) = note_date
+        let lines: Vec<&str> = note.text.lines().collect();
+        for item in vault.items(note) {
+            if let Data::Task(t) = &item.data
+                && t.agenda_date().is_some_and(|(d, _)| in_range(d))
             {
-                t.date = Some(d.to_string());
-                t.date_source = Some("daily_note");
+                let raw = lines.get(item.line - 1).copied().unwrap_or_default();
+                tasks.push(AgendaTask::new(item, t, &vault.root, raw));
             }
-            let Some(d) = t
-                .date
-                .as_deref()
-                .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-            else {
-                continue;
-            };
-            if !in_range(d) {
-                continue;
-            }
-            t.file = rel.clone();
-            t.path = e.path().to_string_lossy().into_owned();
-            t.line = i + 1;
-            tasks.push(t);
         }
     }
     tasks.sort_by(|a, b| (&a.date, &a.file, a.line).cmp(&(&b.date, &b.file, b.line)));
@@ -349,14 +459,14 @@ pub fn agenda(root: &Path, from: NaiveDate, to: NaiveDate) -> Result<Agenda> {
     for n in &notes {
         days.entry(n.date.clone()).or_default().daily_note = true;
     }
-    Ok(Agenda {
-        vault: root.to_string_lossy().into_owned(),
+    Agenda {
+        vault: vault.root.to_string_lossy().into_owned(),
         from: from.to_string(),
         to: to.to_string(),
         tasks,
         daily_notes: notes,
         days,
-    })
+    }
 }
 
 // ---------- toggling ----------
@@ -400,7 +510,13 @@ pub fn toggle(
         .canonicalize()
         .with_context(|| format!("no such file: {}", path.display()))?;
     let root = crate::board::find_vault_root(&path);
-    let settings = TasksSettings::load(&root);
+    let item_settings = items::Settings::load(&root);
+    let settings = &item_settings.tasks;
+    let rel = path
+        .strip_prefix(&root)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/");
     let text = std::fs::read_to_string(&path)?;
     let crlf = text.contains("\r\n");
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
@@ -414,28 +530,36 @@ pub fn toggle(
         .into());
     }
     let old = lines[line - 1].clone();
-    if let Some(id) = expect_id
-        && line_id(&old) != id
-    {
+    let note_items = items::extract(&rel, &text, &item_settings);
+    let item = task_at(&note_items, line);
+    let rev = item.map_or_else(|| line_id(&old), |(i, _)| i.rev.clone());
+    if expect_id.is_some_and(|id| id != rev) {
         return Err(Changed(format!(
             "line {line} changed since the agenda was read; refresh and try again"
         ))
         .into());
     }
-    let Some(task) = parse_line(&old, &settings.global_filter) else {
+    let Some((_, task)) = item else {
         bail!("line {line} of {} is not a task", path.display());
     };
     let dataview = settings.dataview || old.contains("::");
-    let caps = re().task.captures(&old).unwrap();
+    let (quote, rest) = split_quote(&old);
+    let caps = re()
+        .task
+        .captures(rest)
+        .with_context(|| format!("line {line} of {} is not a task", path.display()))?;
     let (prefix, mid, body) = (
-        caps[1].to_string(),
+        format!("{quote}{}", &caps[1]),
         caps[3].to_string(),
         caps[4].to_string(),
     );
     let mut warning = None;
     let mut next = None;
 
-    let (new_char, new_body) = if task.done || task.status == "cancelled" {
+    let (new_char, new_body) = if matches!(
+        task.status_type,
+        StatusType::Done | StatusType::Cancelled
+    ) {
         // Back to todo: drop the done / cancelled date.
         (
             ' ',
@@ -448,7 +572,7 @@ pub fn toggle(
             b = add_field(&b, "✅", "completion", today, dataview);
         }
         if let Some(rule) = &task.recurrence {
-            match next_occurrence(&task, rule, today) {
+            match next_occurrence(task, rule, today) {
                 Some(dates) => {
                     let mut nb = strip_field(&body, "✅", "completion");
                     for (emoji, field, new) in dates {
@@ -468,22 +592,18 @@ pub fn toggle(
     let new_line = format!("{prefix}{new_char}{mid}{new_body}");
     lines[line - 1] = new_line.clone();
     let mut toggled_line = line;
-    let mut next_out = None;
+    let mut next_at = None;
     if let Some(n) = next {
         let at = if settings.recurrence_below {
             line
         } else {
             line - 1
         };
-        lines.insert(at, n.clone());
+        lines.insert(at, n);
         if !settings.recurrence_below {
             toggled_line += 1;
         }
-        next_out = Some(NextTask {
-            line: at + 1,
-            id: line_id(&n),
-            raw: n,
-        });
+        next_at = Some(at + 1);
     }
     let nl = if crlf { "\r\n" } else { "\n" };
     let mut out = lines.join(nl);
@@ -500,15 +620,30 @@ pub fn toggle(
         }
         r => r?,
     }
-    let status = status_of(new_char).0;
+    let new_items = items::extract(&rel, &out, &item_settings);
+    let rev_at = |at: usize| {
+        task_at(&new_items, at).map_or_else(|| line_id(&lines[at - 1]), |(i, _)| i.rev.clone())
+    };
     Ok(Toggled {
         path: path.to_string_lossy().into_owned(),
         line: toggled_line,
-        status,
-        id: line_id(&new_line),
+        status: settings.status_type(new_char).agenda_name(),
+        id: rev_at(toggled_line),
         raw: new_line,
-        next: next_out,
+        next: next_at.map(|at| NextTask {
+            line: at,
+            raw: lines[at - 1].clone(),
+            id: rev_at(at),
+        }),
         warning,
+    })
+}
+
+/// The task item that starts on `line`.
+fn task_at(items: &[Item], line: usize) -> Option<(&Item, &Task)> {
+    items.iter().find_map(|i| match &i.data {
+        Data::Task(t) if i.line == line => Some((i, t)),
+        _ => None,
     })
 }
 
@@ -542,14 +677,10 @@ fn next_occurrence(
     rule: &str,
     today: NaiveDate,
 ) -> Option<Vec<(&'static str, &'static str, NaiveDate)>> {
-    let parse = |s: &Option<String>| {
-        s.as_deref()
-            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-    };
     let fields = [
-        ("📅", "due", parse(&t.due)),
-        ("⏳", "scheduled", parse(&t.scheduled)),
-        ("🛫", "start", parse(&t.start)),
+        ("📅", "due", t.due),
+        ("⏳", "scheduled", t.scheduled),
+        ("🛫", "start", t.start),
     ];
     let reference = fields.iter().find_map(|f| f.2);
     let rule_l = rule.to_lowercase();
@@ -657,54 +788,99 @@ mod tests {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
     }
 
+    fn settings(json: serde_json::Value) -> TasksSettings {
+        TasksSettings::from_json(&json)
+    }
+
+    fn parse(line: &str) -> Option<Task> {
+        parse_line(line, &settings(serde_json::json!({})))
+    }
+
     #[test]
     fn parses_tasks_emoji_format() {
-        let t = parse_line(
-            "- [ ] Pay rent #bills 📅 2026-11-07 ⏫ 🔁 every month ➕ 2026-10-01",
-            "",
+        let t = parse(
+            "- [ ] Pay rent #bills [[Landlord]] 📅 2026-11-07 ⏫ 🔁 every month ➕ 2026-10-01",
         )
         .unwrap();
-        assert_eq!(t.text, "Pay rent #bills");
-        assert_eq!((t.status, t.done), ("todo", false));
-        assert_eq!(t.due.as_deref(), Some("2026-11-07"));
-        assert_eq!(t.created.as_deref(), Some("2026-10-01"));
-        assert_eq!(
-            (t.date.as_deref(), t.date_source),
-            (Some("2026-11-07"), Some("due"))
-        );
+        assert_eq!(t.text, "Pay rent #bills [[Landlord]]");
+        assert_eq!((t.status, t.status_type), (' ', StatusType::Todo));
+        assert_eq!(t.due, Some(d("2026-11-07")));
+        assert_eq!(t.created, Some(d("2026-10-01")));
+        assert_eq!(t.agenda_date(), Some((d("2026-11-07"), "due")));
         assert_eq!(t.recurrence.as_deref(), Some("every month"));
-        assert_eq!(t.priority, Some("high"));
+        assert_eq!(t.priority, Some(Priority::High));
         assert_eq!(t.tags, ["#bills"]);
-        let s = parse_line("  * [x] Call back ⏳ 2026-11-03 ✅ 2026-11-04", "").unwrap();
+        assert_eq!(t.links, ["Landlord"]);
+        let s = parse("  * [x] Call back ⏳ 2026-11-03 ✅ 2026-11-04").unwrap();
+        assert_eq!(s.status_type, StatusType::Done);
+        assert_eq!(s.agenda_date(), Some((d("2026-11-03"), "scheduled")));
+        assert_eq!(s.done, Some(d("2026-11-04")));
+        assert!(parse("- not a task").is_none());
+        assert!(parse("- [ ] ").is_none(), "empty checkbox");
+        assert!(parse("- [ ] 📅 2026-11-07").is_none(), "only a date");
+        let tagged = settings(serde_json::json!({"globalFilter": "#task"}));
+        assert!(parse_line("- [ ] untagged", &tagged).is_none());
+        let t = parse_line("- [/] Halfway #task", &tagged).unwrap();
         assert_eq!(
-            (s.status, s.done, s.date_source),
-            ("done", true, Some("scheduled"))
-        );
-        assert_eq!(s.done_date.as_deref(), Some("2026-11-04"));
-        assert!(parse_line("- not a task", "").is_none());
-        assert!(parse_line("- [ ] ", "").is_none(), "empty checkbox");
-        assert!(
-            parse_line("- [ ] 📅 2026-11-07", "").is_none(),
-            "only a date"
-        );
-        assert!(parse_line("- [ ] untagged", "#task").is_none());
-        assert_eq!(
-            parse_line("- [/] Halfway #task", "#task").unwrap().status,
-            "in_progress"
+            (t.text.as_str(), t.status_type),
+            ("Halfway", StatusType::InProgress)
         );
     }
 
     #[test]
+    fn custom_statuses_come_from_the_plugin_settings() {
+        let type_of = |s: &TasksSettings, line: &str| parse_line(line, s).unwrap().status_type;
+        let default = settings(serde_json::json!({}));
+        assert_eq!(type_of(&default, "- [-] Dropped"), StatusType::Cancelled);
+        assert_eq!(type_of(&default, "- [X] Shouted"), StatusType::Done);
+        assert_eq!(type_of(&default, "- [?] Maybe"), StatusType::NonTask);
+        let custom = settings(serde_json::json!({"statusSettings": {
+            "coreStatuses": [{"symbol": "x", "name": "Done", "type": "DONE"}],
+            "customStatuses": [
+                {"symbol": "?", "name": "Question", "type": "TODO"},
+                {"symbol": "-", "name": "Skipped", "type": "NON_TASK"},
+                {"symbol": "ab", "name": "Two symbols", "type": "DONE"},
+                {"symbol": "!", "name": "Unknown type", "type": "SOMEDAY"}
+            ]
+        }}));
+        assert_eq!(type_of(&custom, "- [?] Maybe"), StatusType::Todo);
+        assert_eq!(type_of(&custom, "- [-] Skipped"), StatusType::NonTask);
+        assert_eq!(type_of(&custom, "- [/] Halfway"), StatusType::InProgress);
+        assert_eq!(type_of(&custom, "- [!] Odd"), StatusType::NonTask);
+    }
+
+    #[test]
     fn parses_dataview_format() {
-        let t = parse_line(
-            "- [ ] Dentist [due:: 2026-11-12] [repeat:: every year] [priority:: high]",
-            "",
-        )
-        .unwrap();
+        let t = parse("- [ ] Dentist [due:: 2026-11-12] [repeat:: every year] [priority:: high]")
+            .unwrap();
         assert_eq!(t.text, "Dentist");
-        assert_eq!(t.due.as_deref(), Some("2026-11-12"));
+        assert_eq!(t.due, Some(d("2026-11-12")));
         assert_eq!(t.recurrence.as_deref(), Some("every year"));
-        assert_eq!(t.priority, Some("high"));
+        assert_eq!(t.priority, Some(Priority::High));
+    }
+
+    #[test]
+    fn task_json_is_pinned() {
+        let mut t = parse("- [/] Dentist #health 📅 2026-11-12 🔼").unwrap();
+        t.daily_note = Some(d("2026-11-05"));
+        let json = serde_json::json!({
+            "status": "/",
+            "status_type": "in_progress",
+            "text": "Dentist #health",
+            "due": "2026-11-12",
+            "scheduled": null,
+            "start": null,
+            "created": null,
+            "done": null,
+            "cancelled": null,
+            "recurrence": null,
+            "priority": "medium",
+            "tags": ["#health"],
+            "links": [],
+            "daily_note": "2026-11-05"
+        });
+        assert_eq!(serde_json::to_value(&t).unwrap(), json);
+        assert_eq!(serde_json::from_value::<Task>(json).unwrap(), t);
     }
 
     #[test]
@@ -764,6 +940,20 @@ mod tests {
     }
 
     #[test]
+    fn toggle_in_a_callout_keeps_its_markers() {
+        let v = temp_vault("callout");
+        let f = v.join("Plan.md");
+        std::fs::write(&f, "> [!todo] This week\n> - [ ] Pack boots\n").unwrap();
+        let r = toggle(&f, 2, Some(&line_id("> - [ ] Pack boots")), d("2026-11-05")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "> [!todo] This week\n> - [x] Pack boots ✅ 2026-11-05\n"
+        );
+        assert_eq!(r.id, line_id("> - [x] Pack boots ✅ 2026-11-05"));
+        let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
     fn toggle_recurring_inserts_next_occurrence() {
         let v = temp_vault("recur");
         let f = v.join("Bills.md");
@@ -797,7 +987,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(v.join("Projects.md"), "- [ ] Ship it 📅 2026-11-20\n- [ ] Someday\n```\n- [ ] in code 📅 2026-11-20\n```\n- [ ] Next month 📅 2026-12-02\n").unwrap();
-        let a = agenda(&v, d("2026-11-01"), d("2026-11-30")).unwrap();
+        let a = agenda(
+            &crate::vault::scan(&v).unwrap(),
+            d("2026-11-01"),
+            d("2026-11-30"),
+        );
         let summary: Vec<(String, &str, Option<&str>)> = a
             .tasks
             .iter()

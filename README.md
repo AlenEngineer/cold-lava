@@ -53,6 +53,7 @@ cold-lava board ~/vault/Plan.canvas     # whiteboard (created if missing)
 cold-lava board ~/vault                 # pick a board
 cold-lava daily ~/vault [DATE]          # open (or create) a day's daily note
 cold-lava agenda ~/vault --json         # dated tasks and daily notes, for other programs
+cold-lava items ~/vault task            # every task (or list, heading, block), one per line
 cold-lava search ~/vault WORDS…         # full-text search
 cold-lava rename ~/vault NOTE NEW       # rename or move a note, updating every link to it
 cold-lava task toggle FILE:LINE         # tick / untick a task
@@ -273,6 +274,20 @@ cold-lava daily ~/vault 2026-11-07            # open that day's note in the menu
 cold-lava daily ~/vault today --path          # create if needed, print the path, no UI
 cold-lava task toggle ~/vault/Bills.md:12 --id 3f2a9c81b7d0 --json
 ```
+
+Every task, list item, heading and block with a `^id` is an **item**, and `cold-lava items` lists
+the items of one kind:
+
+```bash
+cold-lava items ~/vault task                  # Journal/2026-11-05.md:9  [ ] Look up … due 2026-11-12
+cold-lava items ~/vault heading --json        # one JSON object per line
+```
+
+Each item has an `id` that stays the same when a task is ticked, re-dated, re-indented or moved
+down by lines added above it (an author's `^block-id` keeps it even when the words change), the
+`section` (headings) it sits under, its `parent` list item, and a `rev` that changes whenever its
+lines do. Items are read in the vault's Markdown flavour: tasks in callouts count, tasks in code
+blocks and `%%comments%%` don't, and custom statuses follow the Tasks plugin's settings.
 
 `task toggle` works like Obsidian Tasks: it adds the done date (`✅`, or `[completion:: …]`),
 removes it when unticking, and for recurring tasks inserts the next occurrence with its dates
