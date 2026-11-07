@@ -421,7 +421,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
   `commands` it registers), `command/run` (`id`, `args`: one of its commands),
   `view/render`, `shutdown`.
   - The editor gets `editor/open` (a note, and a `jump` to a line, heading or block),
-    `editor/save` and `editor/renamed` (`from`, `to`).
+    `editor/save`, `editor/renamed` (`from`, `to`) and `editor/deleted` (`note`: it went to
+    the trash; forget it without writing it back).
   - An extension hears from a pane it opened through `pane/message` (`kind` and `payload`, what
     its program wrote as `ESC ] 5379 ; kind ; payload BEL`) and `pane/exited` (with an `error`
     when the program never started).
@@ -445,15 +446,16 @@ Paths are absolute and inside the vault. A message's tag is its method name, for
 `{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
 
 Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
-(with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`, `pane/message`
+(with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
+`editor/deleted`, `pane/message`
 and `pane/exited` from the host, and `ui/notify`, `command/run`, `editor/opened`, `vault/saved`,
 `pane/open` and `pane/input` from the extension.
 
 - **Saves are not acknowledged yet.** `editor/save` gets no answer, so before it reads the files
   (to rename a note, to show the reader, to quit) the core waits 300 ms. A later version answers
   `editor/save` once the files are written.
-- **`editor/renamed` is temporary.** Until extensions can subscribe to events, a rename tells the
-  editor directly. Then the editor follows `note.renamed` like any other subscriber.
+- **`editor/renamed` and `editor/deleted` are temporary.** Until extensions can subscribe to
+  events, a rename or a delete tells the editor directly. Then the editor follows `note.renamed` like any other subscriber.
 
 ### Panes and keys
 

@@ -17,7 +17,7 @@ mod term;
 mod whichkey;
 
 use cold_lava_engine::{
-    core, daily, index, items, markdown, paths, rename, search, tasks, types, vault, write,
+    core, daily, index, items, markdown, paths, rename, search, tasks, trash, types, vault, write,
 };
 
 use anyhow::Result;
@@ -48,6 +48,7 @@ Usage:
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
                                       with an empty home unless --real-home
+                                      (or --home DIR: that folder, kept)
 
 Options:
   --braille            force braille rendering
@@ -422,15 +423,27 @@ fn run() -> Result<()> {
     }
 }
 
-/// `drive [--real-home] [SCRIPT] [-- ARGS…]`, parsed apart from `Args`: ARGS belong to the program under test.
+/// `drive [--real-home | --home DIR] [SCRIPT] [-- ARGS…]`, parsed apart from `Args`: ARGS belong
+/// to the program under test.
 fn drive() -> Result<()> {
+    const USAGE: &str = "usage: cold-lava drive [--real-home | --home DIR] [SCRIPT] [-- ARGS…]";
     let mut words = std::env::args().skip(2);
     let mut ours: Vec<String> = words.by_ref().take_while(|w| w != "--").collect();
     let theirs: Vec<String> = words.collect();
-    let real_home = ours.iter().any(|w| w == "--real-home");
-    ours.retain(|w| w != "--real-home");
+    let mut home = drive::HomeChoice::Empty;
+    if let Some(i) = ours.iter().position(|w| w == "--home") {
+        let Some(dir) = ours.get(i + 1).cloned() else {
+            anyhow::bail!(USAGE);
+        };
+        ours.drain(i..=i + 1);
+        home = drive::HomeChoice::At(PathBuf::from(dir));
+    }
+    if let Some(i) = ours.iter().position(|w| w == "--real-home") {
+        ours.remove(i);
+        home = drive::HomeChoice::Real;
+    }
     if ours.len() > 1 {
-        anyhow::bail!("usage: cold-lava drive [--real-home] [SCRIPT] [-- ARGS…]");
+        anyhow::bail!(USAGE);
     }
     let (name, src) = match ours.pop() {
         Some(path) => {
@@ -446,13 +459,7 @@ fn drive() -> Result<()> {
     };
     let script =
         drive::parse(&src).map_err(|e| anyhow::anyhow!("{name}:{}: {}", e.line, e.message))?;
-    if !drive::run(
-        &name,
-        &script,
-        &std::env::current_exe()?,
-        &theirs,
-        real_home,
-    )? {
+    if !drive::run(&name, &script, &std::env::current_exe()?, &theirs, home)? {
         std::process::exit(1);
     }
     Ok(())

@@ -173,7 +173,13 @@ impl Extension for Nvim {
             (EditorRequest::Renamed { from, to }, Some(pane)) => {
                 host.pane_input(pane, renamed_command(&from, &to))
             }
-            (EditorRequest::Save | EditorRequest::Renamed { .. }, None) => {}
+            (EditorRequest::Deleted { note }, Some(pane)) => {
+                host.pane_input(pane, deleted_command(&note))
+            }
+            (
+                EditorRequest::Save | EditorRequest::Renamed { .. } | EditorRequest::Deleted { .. },
+                None,
+            ) => {}
         }
     }
 }
@@ -225,6 +231,12 @@ fn renamed_command(from: &Path, to: &Path) -> String {
         "\x1c\x0e:if expand('%:p') ==# '{from}' | execute 'edit' fnameescape('{to}') | endif \
          | silent! execute 'bwipeout!' fnameescape('{from}') | silent! checktime\r"
     )
+}
+
+/// Wipe the deleted note's buffer without writing it, so Vim neither shows nor recreates it.
+fn deleted_command(note: &Path) -> String {
+    let note = note.to_string_lossy().replace('\'', "''");
+    format!("\x1c\x0e:silent! execute 'bwipeout!' fnameescape('{note}')\r")
 }
 
 /// Loaded into the embedded Vim/Neovim: Enter (or gf) on a link asks cold-lava to follow it,
@@ -597,6 +609,26 @@ mod tests {
         assert!(
             text.contains("execute 'bwipeout!' fnameescape('/v/It''s.md') | silent! checktime\r"),
             "{text:?}"
+        );
+    }
+
+    #[test]
+    fn delete_wipes_the_buffer_without_writing() {
+        let (mut r, ed) = nvim();
+        let pane = started(&mut r, ed);
+        let fx = ask(
+            &mut r,
+            ed,
+            EditorRequest::Deleted {
+                note: "/v/It's.md".into(),
+            },
+        );
+        assert_eq!(
+            fx,
+            [Effect::PaneInput {
+                pane,
+                text: "\x1c\x0e:silent! execute 'bwipeout!' fnameescape('/v/It''s.md')\r".into()
+            }]
         );
     }
 

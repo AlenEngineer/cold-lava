@@ -82,6 +82,13 @@ impl History {
         self.forward.last()
     }
 
+    /// Drop the places that show the note or board at `path` (it was deleted).
+    pub fn forget(&mut self, path: &Path) {
+        let keep = |p: &Place| !matches!(p, Place::Note { path: q, .. } | Place::Board { path: q } if q == path);
+        self.back.retain(keep);
+        self.forward.retain(keep);
+    }
+
     pub fn clear(&mut self) {
         self.back.clear();
         self.forward.clear();
@@ -177,6 +184,19 @@ mod tests {
         h.visit(note("Kīlauea"));
         h.visit(note("Lava"));
         assert_eq!(h.back(Some(note("Lava"))), Some(note("Kīlauea")));
+    }
+
+    #[test]
+    fn forgets_a_deleted_note_both_ways() {
+        let mut h = History::default();
+        h.visit(note("Kīlauea"));
+        h.visit(note("Lava"));
+        h.visit(note("Shield Volcano"));
+        h.back(Some(note("Lava")));
+        h.forget(Path::new("Lava.md"));
+        assert_eq!(h.back(Some(note("Shield Volcano"))), Some(note("Kīlauea")));
+        assert_eq!(h.forward(None), Some(note("Shield Volcano")));
+        assert_eq!(h.forward(None), None);
     }
 
     #[test]

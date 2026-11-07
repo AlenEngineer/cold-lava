@@ -1,0 +1,54 @@
+# Delete a note that others link to: the prompt lists them, n cancels, y sends it to the trash,
+# u puts it back. Then a whiteboard, the tree's last row. tests/drive.rs checks the files.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault 33 notes
+keys home
+wait-for ▾ Concepts
+keys d
+wait-for cold-lava doesn't delete folders yet
+expect-not Delete Concepts
+keys p lava
+wait-for Lava
+keys enter
+wait-for Concepts/Lava  reading
+keys d
+wait-for Delete Concepts/Lava?
+expect 3 notes link to it: Pāhoehoe, Shield Volcano, ʻAʻā. Their links will become unresolved.
+expect Lava goes to the system trash.
+expect ▤ Shield Volcano     6  Broad, gently sloping volcanoes
+expect y delete · n cancel
+screen
+keys n
+wait-for delete cancelled
+expect example-vault 33 notes
+keys d
+wait-for Delete Concepts/Lava?
+keys y
+wait-for deleted Lava · u undo
+wait-for example-vault 32 notes
+expect-not • Lava 
+# The reader moved on to the next note in the tree.
+expect Concepts/Plate Tectonics  reading
+keys u
+wait-for restored Concepts/Lava.md
+wait-for example-vault 33 notes
+wait-for • Lava 
+wait-for Concepts/Lava  reading
+expect Molten rock that reaches the surface.
+# Delete it again and leave it in the trash, for tests/drive.rs to find.
+keys d
+wait-for Delete Concepts/Lava?
+keys y
+wait-for deleted Lava · u undo
+wait-for example-vault 32 notes
+keys esc
+wait-for ? help  q quit
+keys end
+wait-for Welcome.canvas
+keys d
+wait-for Delete Welcome.canvas?
+expect Links to it in notes will become unresolved.
+keys y
+wait-for deleted Welcome.canvas · u undo
+keys q
+exits 0

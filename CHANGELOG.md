@@ -63,6 +63,19 @@ change commands, keys and file formats; patch versions only fix things.
   grouped (move, go, links, note, view, app, extensions), each with its key and a short name.
   Typing a listed key runs that command, `Esc` closes it. The groups and names live in the
   command tables, so the popup follows `[keys]` in config.toml. `?` still opens the full help.
+- Delete a note: `d` (`note.delete`) in the menu, or in the reader, asks first and lists the
+  notes that link to it, with the line, since their links will become unresolved (they aren't
+  rewritten, as in Obsidian). `y` deletes, `n` cancels. Whiteboards can be deleted the same way;
+  folders are refused for now. Nothing is deleted for good: the note goes where the vault's
+  Obsidian setting (`trashOption` in `.obsidian/app.json`) says, the system trash by default
+  (the freedesktop trash on Linux, `~/.Trash` on macOS) or the vault's `.trash` folder for
+  "local". A vault set to delete permanently gets `.trash` too, and the status line says so. If
+  the note changed on disk after the prompt opened, it asks again with the new version. A note
+  open in Neovim is saved first and its buffer dropped.
+- Undo a delete: `u` (`note.undo-delete`) puts the last deleted note back where it was (up to
+  20, this session). If something new is at that path, it offers a free name (`Lava 1.md`).
+- `cold-lava drive --home DIR` runs the program with DIR as its home and keeps it afterwards,
+  so a test can look at what the program left there (the system trash, for one).
 
 ### Changed
 
@@ -93,6 +106,8 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- The menu no longer crashes when the last row of the note tree disappears (deleted here or in
+  Obsidian): the selection was read through rows of the old tree.
 - Following a link to an attachment (`[[map.pdf]]`, `[map](Maps/map.pdf)`) no longer creates a
   note named `map.pdf.md`. The file opens in the system's app (`xdg-open`, `open` on macOS) when
   it's in the vault, found the way Obsidian finds it: by path, next to the note, then by name

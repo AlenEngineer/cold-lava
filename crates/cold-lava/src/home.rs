@@ -18,6 +18,7 @@ use crate::history::{Exit, History, Nav, Place};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
 use crate::reader::{Reader, Spot};
+use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::{board, term, vault, whichkey};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
@@ -370,6 +371,13 @@ enum Mode {
         plan: Box<crate::rename::Plan>,
         scroll: usize,
     },
+    /// Asking before a note goes to the trash.
+    ConfirmDelete(Box<PendingDelete>),
+    /// Undoing a delete whose old path is taken now: put it back under a free name?
+    ConfirmRestore {
+        trashed: Trashed,
+        to: PathBuf,
+    },
     Hints(Hints<HintTarget>),
     /// The reader's headings, to jump to one; `sel` is a row of `outline_hits`.
     Outline {
@@ -382,6 +390,23 @@ enum Mode {
         view: Peek,
     },
 }
+
+/// A delete waiting for a yes: the content the user is deciding on, and what links to it.
+struct PendingDelete {
+    path: PathBuf,
+    /// Vault-relative, without `.md`.
+    rel: String,
+    bytes: Vec<u8>,
+    backlinks: Vec<BackRow>,
+    /// Which trash it goes to, as the prompt says it.
+    goes: String,
+    /// It changed on disk after the first prompt, so this is the question again.
+    changed: bool,
+    scroll: usize,
+}
+
+/// Deletes that `note.undo-delete` can still put back.
+const UNDO_DELETES: usize = 20;
 
 /// What a peek looks at: Tab sweeps through these and Enter goes where the selected one leads.
 #[derive(Clone, Copy, PartialEq)]
@@ -481,6 +506,8 @@ pub struct Home {
     effects_left: usize,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
+    /// What was deleted this session, most recent last.
+    trashed: Vec<Trashed>,
     /// A screen a link led to, gone to once the key that followed it is handled.
     go_to: Option<Place>,
     /// `Some` while the pane shows the reader: always without an editor, else after
@@ -549,6 +576,7 @@ impl Home {
             effects_left: EFFECTS_PER_FRAME,
             shown: None,
             pending: None,
+            trashed: Vec::new(),
             go_to: None,
             reader: None,
             flavour: markdown::flavour_for(Path::new("")),
@@ -1346,6 +1374,13 @@ impl Home {
             self.rename_key(k);
             return Ok(());
         }
+        if matches!(
+            self.mode,
+            Mode::ConfirmDelete(_) | Mode::ConfirmRestore { .. }
+        ) {
+            self.delete_key(k);
+            return Ok(());
+        }
         if matches!(self.mode, Mode::Keys) {
             self.mode = Mode::Normal;
             if !self.key_hints().iter().any(|h| h.key == Key::from(k)) {
@@ -1423,6 +1458,8 @@ impl Home {
             | Mode::Search { .. }
             | Mode::Rename { .. }
             | Mode::ConfirmRename { .. }
+            | Mode::ConfirmDelete(_)
+            | Mode::ConfirmRestore { .. }
             | Mode::Hints(_)
             | Mode::Outline { .. }
             | Mode::Peek { .. } => return Ok(()),
@@ -1468,7 +1505,8 @@ impl Home {
     fn enabled(&self, c: MenuCommand) -> bool {
         match c {
             MenuCommand::Core(MenuAction::ClearFilter) => !self.filter.is_empty(),
-            MenuCommand::Core(MenuAction::NewNote) => self.root.is_some(),
+            MenuCommand::Core(MenuAction::NewNote | MenuAction::Delete) => self.root.is_some(),
+            MenuCommand::Core(MenuAction::UndoDelete) => !self.trashed.is_empty(),
             MenuCommand::Core(MenuAction::Read) => {
                 self.running_editor().is_some() && self.shown.is_some()
             }
@@ -1741,6 +1779,8 @@ impl Home {
             MenuAction::Switcher => self.open_switcher(),
             MenuAction::Rename => self.start_rename(false),
             MenuAction::Move => self.start_rename(true),
+            MenuAction::Delete => self.start_delete(false),
+            MenuAction::UndoDelete => self.undo_delete(),
             MenuAction::Search => self.open_search(),
             MenuAction::ToggleBacklinks => {
                 self.show_backlinks = !self.show_backlinks;
@@ -2477,6 +2517,332 @@ impl Home {
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
+    // ---------- delete & undo ----------
+
+    /// The note or board to delete: the tree's selection, else the note in the pane.
+    fn delete_target(&self) -> Result<PathBuf, &'static str> {
+        match (self.focus, self.current()) {
+            (Focus::Notes, Some(it)) if it.kind == ItemKind::Folder => {
+                Err("cold-lava doesn't delete folders yet: delete the notes in it, or use Obsidian")
+            }
+            (Focus::Notes, Some(_)) => self.current_path().ok_or("select a note to delete"),
+            _ => self.rename_target().ok_or("select a note to delete"),
+        }
+    }
+
+    /// Ask before deleting, showing the notes whose links will break. `changed`: asking again
+    /// because the note changed on disk after the first time.
+    fn start_delete(&mut self, changed: bool) {
+        let path = match (&self.mode, self.delete_target()) {
+            (Mode::ConfirmDelete(p), _) => p.path.clone(),
+            (_, Ok(p)) => p,
+            (_, Err(why)) => return self.flash(why),
+        };
+        self.mode = Mode::Normal;
+        if self.shown.as_deref() == Some(path.as_path()) {
+            self.save_editor();
+        }
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            self.reload_tree();
+            return self.flash("that note is no longer there");
+        };
+        let rel = path
+            .strip_prefix(&root)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let rel = rel.trim_end_matches(".md").to_string();
+        let mut backlinks = Vec::new();
+        if let Some(ix) = self.core.as_ref().map(|c| &c.index)
+            && let Some(i) = ix.by_path(&path)
+        {
+            backlinks = ix
+                .backlinks(i)
+                .iter()
+                .filter(|b| b.from != i)
+                .map(|b| BackRow {
+                    name: ix.vault.notes[b.from].name.clone(),
+                    path: ix.path(b.from),
+                    line: b.line,
+                    context: b.context.clone(),
+                })
+                .collect();
+        }
+        let goes = match TrashOption::of_vault(&root) {
+            TrashOption::System if trash::system_bin().is_some() => "goes to the system trash.",
+            TrashOption::System | TrashOption::Local => "goes to the vault's .trash folder.",
+            TrashOption::Permanent => {
+                "goes to .trash: this vault deletes permanently in Obsidian, cold-lava never does."
+            }
+        };
+        self.mode = Mode::ConfirmDelete(Box::new(PendingDelete {
+            path,
+            rel,
+            bytes,
+            backlinks,
+            goes: goes.to_string(),
+            changed,
+            scroll: 0,
+        }));
+    }
+
+    fn delete_key(&mut self, k: KeyEvent) {
+        let yes = matches!(k.code, KeyCode::Enter | KeyCode::Char('y'));
+        let no = matches!(k.code, KeyCode::Esc | KeyCode::Char('n'));
+        match &mut self.mode {
+            Mode::ConfirmDelete(p) => match k.code {
+                _ if no => {
+                    self.mode = Mode::Normal;
+                    self.flash("delete cancelled");
+                }
+                KeyCode::Down | KeyCode::Char('j') => p.scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => p.scroll = p.scroll.saturating_sub(1),
+                _ if yes => self.apply_delete(),
+                _ => {}
+            },
+            Mode::ConfirmRestore { .. } if yes || no => {
+                let Mode::ConfirmRestore { trashed, to } =
+                    std::mem::replace(&mut self.mode, Mode::Normal)
+                else {
+                    return;
+                };
+                if yes {
+                    self.restore(trashed, &to);
+                } else {
+                    self.trashed.push(trashed);
+                    self.flash("undo cancelled");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_delete(&mut self) {
+        let (Mode::ConfirmDelete(p), Some(root)) = (&self.mode, self.root.clone()) else {
+            return;
+        };
+        let system = trash::system_bin();
+        let t = match trash::delete(&root, &p.path, &p.bytes, system.as_ref()) {
+            Ok(t) => t,
+            Err(crate::write::WriteError::Changed(_)) => return self.start_delete(true),
+            Err(e) => {
+                self.mode = Mode::Normal;
+                return self.flash(format!("couldn't delete: {e}"));
+            }
+        };
+        let Mode::ConfirmDelete(p) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return;
+        };
+        let was_shown = self.shown.as_deref() == Some(p.path.as_path());
+        if was_shown {
+            if let Some(editor) = self.running_editor() {
+                let request = EditorRequest::Deleted {
+                    note: p.path.clone(),
+                };
+                self.call(editor, |e, host| e.editor(request, host));
+            }
+            self.shown = None;
+            self.pending = None;
+        }
+        self.mru.retain(|m| m != &p.path);
+        self.history.forget(&p.path);
+        self.reload_tree();
+        if was_shown {
+            match (self.current().map(|it| it.kind), self.current_path()) {
+                (Some(ItemKind::Note), Some(next)) => self.show(&next),
+                _ if self.reader.is_some() => self.reload_reader(),
+                _ => {}
+            }
+        }
+        let name = p.rel.rsplit('/').next().unwrap_or(&p.rel).to_string();
+        let undo = self.keys.first_label("note.undo-delete");
+        self.flash(match (t.went, TrashOption::of_vault(&root)) {
+            (Went::VaultTrash, TrashOption::Permanent) => format!(
+                "moved {name} to .trash: this vault deletes permanently in Obsidian, cold-lava never does · {undo} undo"
+            ),
+            (Went::VaultTrash, TrashOption::Local) => {
+                format!("deleted {name} (to .trash) · {undo} undo")
+            }
+            (Went::VaultTrash, TrashOption::System) => format!(
+                "deleted {name} (to .trash: the system trash couldn't take it) · {undo} undo"
+            ),
+            (Went::System, _) => format!("deleted {name} · {undo} undo"),
+        });
+        self.trashed.push(t);
+        if self.trashed.len() > UNDO_DELETES {
+            self.trashed.remove(0);
+        }
+    }
+
+    /// Put the last deleted note back, or ask about a free name if its path is taken now.
+    fn undo_delete(&mut self) {
+        let Some(t) = self.trashed.pop() else {
+            return self.flash("nothing to undo");
+        };
+        if t.from.exists() {
+            let to = trash::free_path(&t.from);
+            self.mode = Mode::ConfirmRestore { trashed: t, to };
+            return;
+        }
+        let to = t.from.clone();
+        self.restore(t, &to);
+    }
+
+    fn restore(&mut self, t: Trashed, to: &Path) {
+        if let Err(e) = trash::restore(&t, to) {
+            return self.flash(format!("couldn't put it back: {e}"));
+        }
+        self.reload_tree();
+        self.select_path(to);
+        if to.extension().is_some_and(|e| e == "md") {
+            self.pending = None;
+            self.show(to);
+        }
+        let rel = self
+            .root
+            .as_deref()
+            .and_then(|r| to.strip_prefix(r).ok())
+            .unwrap_or(to);
+        self.flash(format!("restored {}", rel.display()));
+    }
+
+    fn draw_confirm_delete(&self, f: &mut Frame, area: Rect) {
+        let (title, hint, lines, detail, scroll) = match &self.mode {
+            Mode::ConfirmDelete(p) => {
+                let name = p.rel.rsplit('/').next().unwrap_or(&p.rel);
+                let mut lines = vec![Line::from(vec![
+                    Span::styled(" Delete ", Style::new().fg(NOTE)),
+                    Span::styled(
+                        p.rel.clone(),
+                        Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("?", Style::new().fg(NOTE)),
+                ])];
+                if p.changed {
+                    lines.push(Line::styled(
+                        " ! It changed on disk since you asked: this is the new version.",
+                        Style::new().fg(HIT),
+                    ));
+                }
+                let mut names: Vec<&str> = Vec::new();
+                for b in &p.backlinks {
+                    if !names.contains(&b.name.as_str()) {
+                        names.push(&b.name);
+                    }
+                }
+                let note = p.path.extension().is_some_and(|e| e == "md");
+                lines.push(Line::styled(
+                    match names.len() {
+                        0 if !note => " Links to it in notes will become unresolved.".to_string(),
+                        0 => " Nothing links to it.".to_string(),
+                        n => format!(
+                            " {} to it: {}. Their links will become unresolved.",
+                            if n == 1 {
+                                "1 note links".to_string()
+                            } else {
+                                format!("{n} notes link")
+                            },
+                            names.join(", ")
+                        ),
+                    },
+                    Style::new().fg(NOTE),
+                ));
+                lines.push(Line::styled(
+                    format!(" {name} {}", p.goes),
+                    Style::new().fg(MUTED),
+                ));
+                lines.push(Line::raw(""));
+                let inner_w = popup_width(area).saturating_sub(2) as usize;
+                let detail: Vec<Line> = p
+                    .backlinks
+                    .iter()
+                    .map(|b| {
+                        let head = format!(" ▤ {}  {:>4}  ", b.name, b.line);
+                        let room = inner_w.saturating_sub(head.chars().count());
+                        let mut context: String = b.context.trim().chars().take(room).collect();
+                        if b.context.trim().chars().count() > room {
+                            context.pop();
+                            context.push('…');
+                        }
+                        Line::from(vec![
+                            Span::styled(
+                                format!(" ▤ {}", b.name),
+                                Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(format!("  {:>4}  ", b.line), Style::new().fg(DIM)),
+                            Span::styled(context, Style::new().fg(NOTE)),
+                        ])
+                    })
+                    .collect();
+                (
+                    " Delete ",
+                    " y delete · n cancel · ↑↓ scroll ",
+                    lines,
+                    detail,
+                    p.scroll,
+                )
+            }
+            Mode::ConfirmRestore { trashed, to } => {
+                let file = |p: &Path| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                };
+                let lines = vec![
+                    Line::styled(
+                        format!(" {} exists now.", file(&trashed.from)),
+                        Style::new().fg(NOTE),
+                    ),
+                    Line::styled(
+                        format!(" Put the deleted one back as {}?", file(to)),
+                        Style::new().fg(NOTE),
+                    ),
+                ];
+                (
+                    " Undo delete ",
+                    " y restore · n cancel ",
+                    lines,
+                    Vec::new(),
+                    0,
+                )
+            }
+            _ => return,
+        };
+        let w = popup_width(area);
+        // Word wrapping can take a row more than the width alone says.
+        let rows = |l: &Line| {
+            l.width()
+                .div_ceil(w.saturating_sub(2).max(1) as usize)
+                .max(1)
+        };
+        let tall: usize = lines.iter().map(rows).sum::<usize>() + 1 + detail.len();
+        let h = (tall as u16 + 2).clamp(6.min(area.height), 24);
+        let r = Rect::new(
+            area.x + (area.width - w) / 2,
+            area.y + area.height / 6,
+            w,
+            h.min(area.height),
+        );
+        f.render_widget(Clear, r);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(HIT))
+            .title(Line::styled(
+                title,
+                Style::new().fg(HIT).add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
+        let inner = block.inner(r);
+        f.render_widget(block, r);
+        let mut lines = lines;
+        let room = (inner.height as usize).saturating_sub(lines.len());
+        let start = scroll.min(detail.len().saturating_sub(room));
+        lines.extend(detail.into_iter().skip(start).take(room));
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
     /// Open a note picked in the switcher or search, and give the editor focus.
     fn open_found(&mut self, from: Option<Place>, path: &Path, jump: Option<Jump>) {
         self.leave(from, path, jump.as_ref());
@@ -2838,6 +3204,12 @@ impl Home {
         }
         if matches!(self.mode, Mode::ConfirmRename { .. }) {
             self.draw_confirm_rename(f, main);
+        }
+        if matches!(
+            self.mode,
+            Mode::ConfirmDelete(_) | Mode::ConfirmRestore { .. }
+        ) {
+            self.draw_confirm_delete(f, main);
         }
         if let Mode::Rename { input, moving, .. } = &self.mode {
             let (title, label) = if *moving {
@@ -3737,6 +4109,11 @@ fn attachment_label(name: &str) -> Option<String> {
 
 /// A `w`×`h` popup under the point `at`, or above it when there is more room there, kept on
 /// `screen` and shrunk to fit.
+/// The delete prompt's width in `area`.
+fn popup_width(area: Rect) -> u16 {
+    (area.width * 3 / 4).clamp(50.min(area.width), 120)
+}
+
 fn popup_near(at: (u16, u16), w: u16, h: u16, screen: Rect) -> Rect {
     let (x, y) = at;
     let below = screen.bottom().saturating_sub(y + 1);
