@@ -1,0 +1,9 @@
+[package]
+name = "cold-lava-views"
+description = "The view vocabulary cold-lava's frontends draw: markdown, list, table, scene, pane, image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

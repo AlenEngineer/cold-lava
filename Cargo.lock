@@ -235,6 +235,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cold-lava-views"
+version = "0.2.0"
+
+[[package]]
 name = "compact_str"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
