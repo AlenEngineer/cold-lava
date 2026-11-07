@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cold-lava</title>
+<style>
+  :root { --bg: #1b1b1f; --fg: #e6e1dc; --muted: #8a8580; --accent: #ef6262; color-scheme: dark; }
+  @media (prefers-color-scheme: light) { :root { --bg: #faf8f5; --fg: #2a2723; --muted: #77716a; --accent: #c43c3c; color-scheme: light; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; padding: 6px 8px; background: transparent; color: inherit; border: 1px solid var(--muted); border-radius: 4px; font: inherit; }
+  button { padding: 6px 12px; background: var(--accent); color: var(--bg); border: 0; border-radius: 4px; font: inherit; cursor: pointer; }
+  #status { color: var(--muted); margin: 12px 0 4px; }
+  ul { margin: 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<form id="open">
+  <input id="vault" placeholder="Path to a vault, e.g. /home/you/Notes" autofocus>
+  <button>Open</button>
+</form>
+<p id="status">The same engine as the terminal UI. Open a vault to list its notes.</p>
+<ul id="notes"></ul>
+<script>
+  const { invoke } = window.__TAURI__.core;
+  document.getElementById("open").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const status = document.getElementById("status"), list = document.getElementById("notes");
+    list.replaceChildren();
+    try {
+      const notes = await invoke("notes", { vault: document.getElementById("vault").value });
+      status.textContent = `${notes.length} notes`;
+      for (const n of notes) { const li = document.createElement("li"); li.textContent = n; list.append(li); }
+    } catch (err) { status.textContent = String(err); }
+  });
+</script>
+</body>
+</html>

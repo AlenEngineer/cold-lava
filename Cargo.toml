@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/*"]
+# The Tauri GUI is its own workspace: building it pulls in a webview, so `cargo build`, `cargo test`
+# and CI here never compile it. Build it with `cargo build --manifest-path crates/gui/Cargo.toml`.
+exclude = ["crates/gui"]
 resolver = "3"
 
 [workspace.package]

@@ -218,6 +218,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cold-lava-editor"
+version = "0.2.0"
+
+[[package]]
 name = "cold-lava-engine"
 version = "0.2.0"
 dependencies = [
@@ -233,6 +237,10 @@ dependencies = [
  "unicode-normalization",
  "walkdir",
 ]
+
+[[package]]
+name = "cold-lava-views"
+version = "0.2.0"
 
 [[package]]
 name = "compact_str"

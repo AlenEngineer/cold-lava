@@ -20,7 +20,7 @@ required checks on `main`.
 
 ## Architecture
 
-A Cargo workspace of two crates. The version lives in the root `Cargo.toml` under
+A Cargo workspace of four crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
 `[workspace.package]`; `example-vault/`, `docs/` and `scripts/` stay at the root.
 
 - `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
@@ -28,6 +28,15 @@ A Cargo workspace of two crates. The version lives in the root `Cargo.toml` unde
 - `crates/cold-lava`: the `cold-lava` binary (extensions and UI below, `tests/` with the drive
   scripts and goldens). `main.rs` imports the engine's modules by name, so `crate::vault` etc.
   work in the binary.
+- `crates/views`: `cold-lava-views`, the frontend framework, empty on purpose: pieces move into it
+  from `crates/cold-lava` once a second frontend needs them (`docs/engine.md`, "The frontend").
+- `crates/editor`: `cold-lava-editor`, the small text editor, headless (text, cursors, edits,
+  undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
+  in place. Saves go through the engine's safe writes.
+- `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the
+  workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
+  a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
+  webkit2gtk-4.1). The terminal UI stays the main frontend.
 
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
