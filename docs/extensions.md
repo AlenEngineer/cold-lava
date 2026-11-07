@@ -1,7 +1,8 @@
 # Extensions: design
 
 Status: **draft**. This is the plan the code is being built towards; sections are marked with
-what exists already.
+what exists already. For the whole picture (the engine's layers, and how it is separate from
+the terminal UI) start with [engine.md](engine.md).
 
 cold-lava aims to be as extensible as Obsidian, and open-source. The product at the centre is
 the notes app itself: open a vault, find a note, read and edit it, move between notes through
