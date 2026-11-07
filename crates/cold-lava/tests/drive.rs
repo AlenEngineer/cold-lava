@@ -55,6 +55,19 @@ fn opens_a_note_follows_a_link_and_quits() {
 }
 
 #[test]
+fn peeks_at_a_link_without_going_there() {
+    let dir = sandbox("peek");
+    let out = drive("peek.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn goes_back_and_forward_through_notes_and_a_search() {
     let dir = sandbox("history");
     let out = drive("history.drive", &dir);

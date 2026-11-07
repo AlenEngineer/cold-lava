@@ -149,9 +149,13 @@ impl Reader {
         }
     }
 
+    /// How many lines the note takes, as last laid out.
+    pub fn line_count(&self) -> usize {
+        self.page.as_ref().map_or(0, |p| p.lines.len())
+    }
+
     fn max_scroll(&self) -> usize {
-        let lines = self.page.as_ref().map_or(0, |p| p.lines.len());
-        lines.saturating_sub(self.height)
+        self.line_count().saturating_sub(self.height)
     }
 
     fn clamp(&mut self) {
@@ -309,6 +313,16 @@ impl Reader {
 
     pub fn selected_link(&self) -> Option<&Link> {
         self.links().get(self.selected?)
+    }
+
+    /// Where the selected link is drawn: (row, column) in the pane, when it is on screen.
+    pub fn selected_at(&self) -> Option<(u16, u16)> {
+        let s = self.selected?;
+        let links = self.visible_links();
+        links
+            .into_iter()
+            .find(|l| l.0 == s)
+            .map(|(_, row, col)| (row, col))
     }
 
     /// The links on screen in reading order: (link, row, column in the pane) of where the first

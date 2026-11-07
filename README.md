@@ -83,7 +83,11 @@ reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the nex
 `Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser); a click
 on a link follows it too. Faster still, `f` puts a label of one or two letters on every link on
 screen and every backlink in view: type a label to follow that link, or `Esc` to put them away.
-It works from the menu too, while the reader shows a note. `o` opens the **outline**: the note's
+It works from the menu too, while the reader shows a note. `K` **peeks** at the selected link:
+a popup under it shows the note it leads to, at the linked heading or block, without leaving the
+one you're reading. Scroll it with `j`/`k`, `Tab` on to the next link (the peek follows),
+`Enter` to go there, `Esc` to close; on a backlink it shows the linking note at the link.
+`o` opens the **outline**: the note's
 headings, indented by level, with the one you're reading marked. Type a few letters to filter
 them (accents ignored), `Enter` jumps there, and Back returns to where you were. `]` and `[` step
 from heading to heading. The reader's title shows where you are, as `Concepts/Lava ›
@@ -132,6 +136,7 @@ In the reader:
 | `Tab` / `Shift-Tab` | select the next / previous link |
 | `Enter` | follow the selected link (creates missing notes) |
 | `f`, then a label | link hints: follow the link or backlink with that label (`Esc` cancels) |
+| `K` | peek at the selected link (or backlink) in a popup: `j`/`k` scroll, `Tab` next link, `Enter` go there, `Esc` close |
 | `o` | outline: the note's headings; type to filter, `Enter` jumps to one (Back returns) |
 | `]` / `[` | next heading / this section's heading, or the one before |
 | `e` | edit the note in `$EDITOR` full screen |

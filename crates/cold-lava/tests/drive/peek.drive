@@ -1,0 +1,79 @@
+# Peek: K shows where the selected link leads without going there; Enter goes, Esc closes.
+size 120x18
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p
+type kilau
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Kīlauea  reading
+wait-for reading · j
+keys tab
+keys K
+wait-for Concepts/Shield Volcano
+wait-for Broad, gently sloping
+expect Volcanoes/Kīlauea  reading
+expect peek · j / ↓ scroll
+screen
+# j scrolls the peek, not the reader under it.
+keys j j
+wait-gone # Shield volcano
+expect Broad, gently sloping
+expect Volcanoes/Kīlauea  reading
+# Tab moves the reader to the next link and the peek follows it.
+keys tab
+wait-for Concepts/Hotspot
+wait-gone Broad, gently sloping
+keys shift+tab
+wait-for Broad, gently sloping
+# Esc closes it and leaves the reader where it was.
+keys esc
+wait-gone Broad, gently sloping
+expect Volcanoes/Kīlauea  reading
+# K again closes it too.
+keys K
+wait-for Broad, gently sloping
+keys K
+wait-gone Broad, gently sloping
+expect Volcanoes/Kīlauea  reading
+# Enter in the peek goes there, and Back returns.
+keys K
+wait-for Broad, gently sloping
+keys enter
+wait-for Concepts/Shield Volcano  reading
+keys ctrl+o
+wait-for Volcanoes/Kīlauea  reading
+# A link to a note that doesn't exist yet offers to create it.
+keys p
+type 2026-11-05
+wait-for 1 notes
+keys enter
+wait-for Journal/2026-11-05  reading
+keys tab tab tab
+keys K
+wait-for No note named Lahar yet · Enter creates it
+screen
+keys esc
+wait-gone No note named Lahar
+expect Journal/2026-11-05  reading
+# On a backlink: a click selects Lava's row, K peeks at Lava where it links here.
+keys p
+type shield
+wait-for 1 notes
+keys enter
+wait-for Concepts/Shield Volcano  reading
+click 14 70
+wait-for backlinks · ↑↓ choose
+keys K
+wait-for Concepts/Lava
+wait-for Concepts/Lava › Temperature
+expect Basaltic lava, the runny kind
+expect Concepts/Shield Volcano ─
+screen
+# Tab sweeps on to the next backlink, Enter opens it at the link.
+keys tab
+wait-for Volcanoes/Mauna Loa
+keys enter
+wait-for Volcanoes/Mauna Loa  reading
+keys esc q
+exits 0
