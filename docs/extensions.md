@@ -129,7 +129,9 @@ then a query and a view, not a parser of its own.
 
 ## Types
 
-*(design; nothing of it exists yet)*
+*(design; definitions load, are checked and are listed: `crates/engine/src/types.rs`,
+`cold-lava types`. Nothing matches them against notes yet. "Loading, as built" below says where
+the loader settled what this design left open.)*
 
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
 row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
@@ -219,6 +221,48 @@ style.minutes = { badge = true, icon = "⏱" }
   against types for their primitive, and one `RegexSet` per primitive tells which types could
   match before any pattern runs. Targets on 10,000 notes with 30 types: the whole vault matched
   in under 1.5 s on first use, one changed note in under 2 ms.
+
+### Loading, as built
+
+- **Every shape names its `on`**, even in a subtype: `[types.idea] extends = "task"` also says
+  `on = "list-item"`. Inheriting shapes from a base waits for typed blocks.
+- **A field can have several sources in one shape**, read in the order written; the first with
+  a value wins (`title = { property = "title", note = "name" }`). TOML writes them as one
+  table; the JSON of a definition writes them as a list (`[{"property": "title"}, {"note":
+  "name"}]`), since not every JSON reader keeps an object's order. Both read.
+- **The one-shape shorthand** puts `on`, `where`, `match` and `key` at the top, and each
+  field's value type beside its sources (`fields.minutes = { capture = "v", type =
+  "duration" }`). With `[[from]]` shapes, the top `fields` holds only value types and the shapes
+  only sources. A field with no `type` is text.
+- **Sources, in detail:** `pattern` is a field's own pattern over the block's text, read from its
+  first group; `flag = "⏫"` is a bool; `flags = { "⏫" = "high", "🔼" = "medium" }` maps
+  glyphs to names; `info` is `"language"` or `"arguments"`; `inlines` is `"tags"` or
+  `"links"`; `note` is `"name"`, `"path"` or `"folder"`; `section` is `"heading"` or `"path"`;
+  `children` names a kind or type; `rest = true`. `capture`, `pattern`, `marker`, `inline`,
+  `flag`, `flags`, `column`, `property` and `info` are writable; the rest are read-only. Each
+  source can only be read on some primitives (`column` on `table-row`, `property` on `note`,
+  `info` on `code`, `marker` and `rest` on text blocks, …), and `Source::on` in types.rs is that
+  table.
+- **`where`** has `header`, `property` (string values), `tag` (a nested tag counts),
+  `folder`, `section`, `language` (the fence's) and `inside` (a type, native kind or primitive).
+- **Looks:** `colour` (or `color`): `red`, `orange`, `yellow`, `green`, `cyan`, `purple`,
+  `accent`, `muted`; `badge`, `icon`, `dim`, `strike`, `bold`, `hide`, `link` (the value is
+  followed as a link), `whole` (the look covers the whole item), and `by-value` (looks by enum
+  value name, not nested).
+- **Placeholders** in a `match` are `{date}` (ISO), `{number}` and `{duration}`. Settings
+  (`${tasks.statuses}`, `${tasks.global-filter}`, `${tasks.format}`, `${daily.format}`) are
+  checked by name; their values come from the vault when matching exists. A date `format`
+  takes the moment.js tokens daily notes read, and any other token is refused rather than kept
+  as literal text. Patterns compile to at most 256 KiB.
+- **Origins.** No built-in definitions exist yet: `task`, `list`, `heading` and `block` are
+  native kinds, which can be extended and not redefined. An extension's manifest carries
+  `types` (named `<extension>.<name>`); `config.toml`'s `[types.NAME]` is handed to the engine
+  by the frontend, since the engine never reads config.toml; the vault's
+  `.cold-lava/types.toml` must start with `version = 1`, and a missing or unknown version skips
+  the file. A later origin replacing an earlier type is a note, not an error. `actions` must be
+  native actions the engine has (`tasks.toggle`).
+- **Not yet:** item counts and timings in `cold-lava types`, and `--check` for conflicts; they
+  come with matching.
 
 ## File types
 
@@ -381,6 +425,10 @@ transport = "stdio"
 command = ["python3", "main.py"]
 permissions = ["read"]          # "read", "write", "network"…
 
+[types.doc]                      # loaded as word-count.doc
+on = "note"
+fields.words = { property = "words", type = "number" }
+
 [[commands]]
 id = "word-count.show"           # must start with the extension's name
 title = "Word count of this note"
@@ -467,7 +515,8 @@ after its call returns, so it never holds the menu's state.
    3. The protocol for items, and reads through `Host`.
    4. The declarative list view, and the agenda as an extension.
    5. Types, in small steps: the loader and `cold-lava types` (with
-      `example-vault/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows);
+      `example-vault/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows)
+      *(done: `types::load`, definitions' JSON pinned for `types/list`)*;
       primitives with spans; typed blocks; inline types; `set-field` with the read-back check;
       the task as a definition, first in shadow mode beside today's parser, then switched over;
       looks in the reader; the table view.

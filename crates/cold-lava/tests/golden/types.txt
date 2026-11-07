@@ -1,0 +1,18 @@
+task, list, heading, block  built in, read natively
+
+volcano  vault example-vault/.cold-lava/types.toml
+  on note · where tag volcano
+    name       text    note name             read-only
+    country    text    property country      writable
+    elevation  number  property elevation_m  writable
+    tags       tag     inlines tags          read-only
+  looks
+    elevation  icon ▲, badge
+
+eruption  vault example-vault/.cold-lava/types.toml
+  on table-row · where header VEI, Example · key vei
+    vei        number  column VEI      writable
+    example    text    column Example  writable
+    volcanoes  link    inlines links   read-only
+  looks
+    vei        orange, badge

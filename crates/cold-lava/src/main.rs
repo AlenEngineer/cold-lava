@@ -14,7 +14,7 @@ mod scene;
 mod term;
 
 use cold_lava_engine::{
-    core, daily, index, items, markdown, paths, rename, search, tasks, vault, write,
+    core, daily, index, items, markdown, paths, rename, search, tasks, types, vault, write,
 };
 
 use anyhow::Result;
@@ -37,6 +37,8 @@ Usage:
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
   cold-lava keys                      every command and its keys; checks config.toml
+  cold-lava types [VAULT_DIR]         every type: where it comes from, its shapes and fields;
+                                      checks [types] in config.toml and .cold-lava/types.toml
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
                                       with an empty home unless --real-home
@@ -45,7 +47,7 @@ Options:
   --braille            force braille rendering
   --pixels             force pixel rendering (Kitty graphics protocol)
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
-  --json               machine-readable output (agenda, items, task toggle)
+  --json               machine-readable output (agenda, items, types, task toggle)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
@@ -167,6 +169,36 @@ fn run() -> Result<()> {
                 }
             }
             if !errors.is_empty() || !registry.refused().is_empty() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some("types") => {
+            let root = match args.word(1) {
+                Some(dir) => PathBuf::from(dir),
+                None => vault::find_vault_root(Path::new(".")),
+            };
+            let mut layers: Vec<types::Layer> = registry
+                .manifests()
+                .map(|m| types::Layer::extension(&m.name, &m.types))
+                .collect();
+            if let Some(path) = config::path() {
+                layers.push(types::Layer::config(&path, config::get().types.clone()));
+            }
+            layers.extend(types::Layer::vault(&root));
+            let found = types::load(layers);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&found)?);
+            } else {
+                print_types(&found);
+                if !found.errors.is_empty() {
+                    eprintln!("errors:");
+                    for e in &found.errors {
+                        eprintln!("  {e}");
+                    }
+                }
+            }
+            if !found.errors.is_empty() {
                 std::process::exit(1);
             }
             Ok(())
@@ -424,6 +456,196 @@ fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
         println!("  {:id_width$}  {label:key_width$}  {}", c.id, c.title);
     }
     println!();
+}
+
+/// `cold-lava types`: each type with where it comes from, then each shape with the fields it
+/// reads, where, and whether a value can be written back there.
+fn print_types(found: &types::Types) {
+    println!("{}  built in, read natively", found.native.join(", "));
+    for t in &found.types {
+        let d = &t.definition;
+        println!("\n{}  {}", t.name, t.origin);
+        let mut about = Vec::new();
+        if let Some(base) = &d.extends {
+            about.push(format!("extends {base}"));
+        }
+        if d.priority != 0 {
+            about.push(format!("priority {}", d.priority));
+        }
+        if !d.requires.is_empty() {
+            about.push(format!("requires {}", d.requires.join(", ")));
+        }
+        if !d.actions.is_empty() {
+            about.push(format!("actions {}", d.actions.join(", ")));
+        }
+        if let Some(w) = &d.write {
+            about.push(format!("write '{w}'"));
+        }
+        if !about.is_empty() {
+            println!("  {}", about.join(" · "));
+        }
+        let name_width = d
+            .fields
+            .keys()
+            .map(|f| f.chars().count())
+            .max()
+            .unwrap_or(0);
+        let values: Vec<String> = d.fields.values().map(value_label).collect();
+        let value_width = values.iter().map(|v| v.chars().count()).max().unwrap_or(0);
+        for (i, shape) in d.from.iter().enumerate() {
+            let mut line = format!("on {}", shape.on.name());
+            let conditions = where_label(&shape.conditions);
+            if !conditions.is_empty() {
+                line += &format!(" · where {conditions}");
+            }
+            if let Some(m) = &shape.pattern {
+                line += &format!(" · match '{m}'");
+            }
+            if !shape.key.is_empty() {
+                line += &format!(" · key {}", shape.key.join(", "));
+            }
+            if d.from.len() > 1 {
+                line = format!("shape {}: {line}", i + 1);
+            }
+            println!("  {line}");
+            let read: Vec<(String, &str)> = d
+                .fields
+                .keys()
+                .map(|f| match shape.fields.get(f) {
+                    None => ("-".to_string(), "not read here"),
+                    Some(sources) => {
+                        let labels: Vec<String> = sources.0.iter().map(source_label).collect();
+                        let rw = if sources.0.iter().any(types::Source::writable) {
+                            "writable"
+                        } else {
+                            "read-only"
+                        };
+                        (labels.join(" or "), rw)
+                    }
+                })
+                .collect();
+            let source_width = read.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
+            for ((field, value), (source, rw)) in d.fields.keys().zip(&values).zip(&read) {
+                println!(
+                    "    {field:name_width$}  {value:value_width$}  {source:source_width$}  {rw}"
+                );
+            }
+        }
+        if !d.style.is_empty() {
+            println!("  looks");
+            for (field, look) in &d.style {
+                println!("    {field:name_width$}  {}", look_label(look));
+            }
+        }
+    }
+    if !found.notes.is_empty() {
+        println!("\nnotes:");
+        for n in &found.notes {
+            println!("  {n}");
+        }
+    }
+}
+
+fn value_label(v: &types::Value) -> String {
+    match v {
+        types::Value::Date { format: Some(f) } | types::Value::Datetime { format: Some(f) } => {
+            format!("{} ({f})", v.name())
+        }
+        types::Value::Enum { values } => {
+            let mut names: Vec<&str> = Vec::new();
+            for n in values.values() {
+                if !names.contains(&n.as_str()) {
+                    names.push(n);
+                }
+            }
+            format!("enum {}", names.join("|"))
+        }
+        _ => v.name().to_string(),
+    }
+}
+
+fn where_label(w: &types::Where) -> String {
+    let mut parts = Vec::new();
+    for (key, list) in [
+        ("header", &w.header),
+        ("tag", &w.tag),
+        ("folder", &w.folder),
+        ("section", &w.section),
+        ("language", &w.language),
+        ("inside", &w.inside),
+    ] {
+        if !list.is_empty() {
+            parts.push(format!("{key} {}", list.join(", ")));
+        }
+    }
+    for (key, value) in &w.property {
+        parts.push(format!("property {key} = {value}"));
+    }
+    parts.join("; ")
+}
+
+fn source_label(s: &types::Source) -> String {
+    use types::Source as S;
+    let detail = match s {
+        S::Capture(t)
+        | S::Pattern(t)
+        | S::Marker(t)
+        | S::Inline(t)
+        | S::Flag(t)
+        | S::Column(t)
+        | S::Property(t)
+        | S::Children(t) => t.clone(),
+        S::Flags(glyphs) => glyphs
+            .iter()
+            .map(|(g, n)| format!("{g} {n}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        S::Info(part) => name_of(part),
+        S::Inlines(kind) => name_of(kind),
+        S::Note(part) => name_of(part),
+        S::Section(part) => name_of(part),
+        S::Rest(_) => String::new(),
+    };
+    match s {
+        S::Pattern(_) => format!("pattern '{detail}'"),
+        _ if detail.is_empty() => s.kind().to_string(),
+        _ => format!("{} {detail}", s.kind()),
+    }
+}
+
+/// A unit variant's name as written in TOML and JSON: `list-item`, `cyan`.
+fn name_of(v: impl serde::Serialize) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+fn look_label(l: &types::Look) -> String {
+    let mut parts = Vec::new();
+    if let Some(c) = l.colour {
+        parts.push(name_of(c));
+    }
+    if let Some(i) = &l.icon {
+        parts.push(format!("icon {i}"));
+    }
+    for (on, name) in [
+        (l.badge, "badge"),
+        (l.dim, "dim"),
+        (l.strike, "strike"),
+        (l.bold, "bold"),
+        (l.hide, "hide"),
+        (l.link, "link"),
+        (l.whole, "whole"),
+    ] {
+        if on {
+            parts.push(name.to_string());
+        }
+    }
+    for (value, look) in &l.by_value {
+        parts.push(format!("{value}: {}", look_label(look)));
+    }
+    parts.join(", ")
 }
 
 /// An item in a few words, for `cold-lava items`.

@@ -1,0 +1,25 @@
+# This vault's types: what its notes and tables mean, for cold-lava. Obsidian ignores this
+# folder. Run `cold-lava types example-vault` to see how cold-lava reads it.
+version = 1
+
+# A note tagged #volcano, or a tag under it like #volcano/strato. One shape, written at the top.
+[types.volcano]
+on = "note"
+where.tag = ["volcano"]
+fields.name = { note = "name" }
+fields.country = { property = "country" }
+fields.elevation = { property = "elevation_m", type = "number" }
+fields.tags = { inlines = "tags", type = "tag" }
+style.elevation = { badge = true, icon = "▲" }
+
+# A row of a table whose header has VEI and Example, like the one in
+# Concepts/Volcanic Explosivity Index. The schema first, then the shapes it is read from.
+[types.eruption]
+fields = { vei = "number", example = "text", volcanoes = "link" }
+style.vei = { badge = true, colour = "orange" }
+
+[[types.eruption.from]]
+on = "table-row"
+where.header = ["VEI", "Example"]
+key = ["vei"]
+fields = { vei = { column = "VEI" }, example = { column = "Example" }, volcanoes = { inlines = "links" } }

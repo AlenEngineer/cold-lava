@@ -18,6 +18,13 @@ change commands, keys and file formats; patch versions only fix things.
   with a `^id`, one per line (`note:line` and a short form), or as JSON lines with each item's
   id, line range, section, parent, block id and data. A task's id stays the same when it is
   ticked, re-dated, re-indented or moved down by lines added above it.
+- Types, the first step: `[types.NAME]` in `config.toml` and `.cold-lava/types.toml` in a vault
+  (starting with `version = 1`) define what notes, table rows, list items and other blocks mean:
+  fields with value types, where each is read, and how it looks. `cold-lava types [VAULT]
+  [--json]` lists every type with where it comes from, its shapes and fields, and whether each
+  field can be written back, then one line per mistake (the broken type is left out, the rest
+  load, exit code 1). Types are only loaded and checked for now; matching them in notes comes
+  later. The example vault defines `volcano` notes and `eruption` table rows.
 
 ### Changed
 

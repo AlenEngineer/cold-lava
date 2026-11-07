@@ -9,10 +9,12 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+indexmap.workspace = true
 notify.workspace = true
 pulldown-cmark.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml = { workspace = true, features = ["preserve_order"] }
 unicode-normalization.workspace = true
 walkdir.workspace = true
