@@ -57,6 +57,7 @@ cold-lava items ~/vault task            # every task (or list, heading, block), 
 cold-lava search ~/vault WORDS…         # full-text search
 cold-lava rename ~/vault NOTE NEW       # rename or move a note or folder, updating every link
 cold-lava task toggle FILE:LINE         # tick / untick a task
+cold-lava item set FILE ID FIELD VALUE  # set one field of a typed item, checked by reading back
 cold-lava types ~/vault                 # the vault's types, and what's wrong with them
 ```
 
@@ -529,6 +530,30 @@ more conditions, else the vault's over `config.toml`'s over an extension's, else
 A typed block is listed under its type instead of `list` or `heading`, and an item whose type
 `extends` another is listed under both. Tasks stay tasks for now: a type on list items never
 takes a task.
+
+`cold-lava item set` changes one field of one typed item, with the `id` (and `rev`) from
+`cold-lava items --json`:
+
+```bash
+cold-lava item set "example-vault/Concepts/Volcanic Explosivity Index.md" ID example "[[Krakatoa]] 1883" --rev REV
+cold-lava item set ~/vault/Volcanoes/Hekla.md ID country Iceland --dry-run
+cold-lava item set ~/vault/Chores.md ID due --remove
+```
+
+Only the value's own bytes change: a `📅` marker keeps its glyph, `[due:: …]` and `(due:: …)`
+keep their brackets, a table cell is filled without padding the rest of the table again, and a
+frontmatter property is edited as one line, never by writing the YAML out again (a nested value
+is refused). A missing value is added the way the line already writes its fields (a marker or
+flag at the end of the text, a Dataview field in the brackets the line uses, a property as a new
+line, with new frontmatter if the note has none); `--remove` takes it out with its glyph or line.
+Values are written by the field's type: a date in the field's `format`, a duration like `1h30m`,
+an enum in the form the note already uses. A field read from a pattern can be changed but not
+added or removed, and fields read from the rest of the text, tags and links in it, the note's
+name or the headings above are read-only. Before writing, cold-lava reads the note again in
+memory: unless the item reads back exactly the new value, with its other fields and every other
+item in the note unchanged, nothing is written and it says why. A stale `--rev`, or a file
+changed since it was read, exits with code **3**. When the field is part of the item's key (a
+row's `key`, a list item's text), the item gets a new id, which `item set` prints.
 
 `cold-lava types ~/vault` lists every type: where it comes from, how many items it found (and
 how many values didn't parse), the shapes it is read from, each field with its value type, where

@@ -18,8 +18,8 @@ mod tidy_view;
 mod whichkey;
 
 use cold_lava_engine::{
-    bookmarks, core, daily, frontmatter, index, items, markdown, merge, paths, rename, search,
-    tasks, templates, tidy, trash, types, vault, write,
+    bookmarks, core, daily, edit, frontmatter, index, items, markdown, merge, paths, rename,
+    search, tasks, templates, tidy, trash, types, vault, write,
 };
 
 use anyhow::Result;
@@ -42,6 +42,9 @@ Usage:
                                       items, one per line
   cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
+  cold-lava item set FILE ID FIELD VALUE
+                                      set one field of a typed item (ID from items --json),
+                                      refused unless the note reads back as asked
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note or folder, updating every link
   cold-lava tidy VAULT_DIR            orphan notes, unused attachments, empty folders and
                                       unresolved links (read-only)
@@ -58,11 +61,14 @@ Options:
   --braille            force braille rendering
   --pixels             force pixel rendering (Kitty graphics protocol)
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
-  --json               machine-readable output (agenda, items, types, task toggle, tidy)
+  --json               machine-readable output (agenda, items, types, task toggle, item set,
+                       tidy)
   --id ID              task toggle: only if the line still matches this id from the agenda
+  --rev REV            item set: only if the item is still this version (its rev)
+  --remove             item set: take the field's value out instead of setting one
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
-  --dry-run            rename: show what would change, change nothing
+  --dry-run            rename, item set: show what would change, change nothing
   --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
   -V, --version        print the version
   -h, --help           this help
@@ -80,7 +86,7 @@ struct Args {
 
 impl Args {
     fn parse() -> Result<Args> {
-        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit"];
+        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit", "rev"];
         let mut a = Args {
             words: Vec::new(),
             values: Default::default(),
@@ -122,8 +128,12 @@ impl Args {
 fn main() {
     if let Err(e) = run() {
         eprintln!("cold-lava: {e:#}");
-        // Exit code 3 means "the task line changed": callers can refresh and retry.
-        let code = if e.downcast_ref::<tasks::Changed>().is_some() {
+        // Exit code 3 means "the task line or item changed": callers can refresh and retry.
+        let changed_item = matches!(
+            e.downcast_ref::<edit::EditError>(),
+            Some(edit::EditError::Changed(_))
+        );
+        let code = if e.downcast_ref::<tasks::Changed>().is_some() || changed_item {
             3
         } else {
             1
@@ -431,6 +441,68 @@ fn run() -> Result<()> {
                     return Err(e);
                 }
                 (Err(e), false) => return Err(e),
+            }
+            Ok(())
+        }
+        Some("item") => {
+            const USAGE: &str = "usage: cold-lava item set FILE ID FIELD (VALUE | --remove) \
+                                 [--rev REV] [--dry-run] [--json]";
+            let (Some("set"), Some(file), Some(id), Some(field)) =
+                (args.word(1), args.word(2), args.word(3), args.word(4))
+            else {
+                anyhow::bail!(USAGE);
+            };
+            let value = match (args.word(5), args.has("remove")) {
+                (Some(v), false) => serde_json::Value::String(v.to_string()),
+                (None, true) => serde_json::Value::Null,
+                _ => anyhow::bail!(USAGE),
+            };
+            let path = Path::new(file)
+                .canonicalize()
+                .map_err(|e| anyhow::anyhow!("{file}: {e}"))?;
+            let root = vault::find_vault_root(&path);
+            let note = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let req = edit::SetField {
+                id,
+                rev: args.values.get("rev").map(String::as_str),
+                field,
+                value,
+            };
+            let dry = args.has("dry-run");
+            match (edit::set_field(&root, &note, &req, dry), json) {
+                (Ok(set), true) => {
+                    let out = serde_json::json!({
+                        "applied": set.changed && !dry,
+                        "changed": set.changed,
+                        "item": set.item,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                }
+                (Ok(set), false) => {
+                    let verb = match (set.changed, dry) {
+                        (false, _) => "unchanged",
+                        (true, true) => "would set",
+                        (true, false) => "set",
+                    };
+                    let item = &set.item;
+                    println!("{verb} {}:{}  {}", item.note, item.line, item_line(item));
+                    if item.id != id {
+                        println!("new id {}", item.id);
+                    }
+                }
+                (Err(e), true) => {
+                    let changed = matches!(e, edit::EditError::Changed(_));
+                    println!(
+                        "{}",
+                        serde_json::json!({"error": e.to_string(), "changed": changed})
+                    );
+                    return Err(e.into());
+                }
+                (Err(e), false) => return Err(e.into()),
             }
             Ok(())
         }

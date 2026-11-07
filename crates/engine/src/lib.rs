@@ -4,6 +4,7 @@
 pub mod bookmarks;
 pub mod core;
 pub mod daily;
+pub mod edit;
 pub mod frontmatter;
 pub mod index;
 pub mod items;

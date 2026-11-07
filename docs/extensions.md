@@ -132,8 +132,10 @@ then a query and a view, not a parser of its own.
 
 *(design; definitions load, are checked and are listed: `crates/engine/src/types.rs`,
 `cold-lava types`; they match notes, table rows, list items, headings and paragraphs, and inline
-types match in their text: `crates/engine/src/matcher.rs`. "Loading, as built" and "Matching, as built" below say where the
-code settled what this design left open.)*
+types match in their text: `crates/engine/src/matcher.rs`; one field of a typed item is set
+with the read-back check: `crates/engine/src/edit.rs`, `cold-lava item set`. "Loading, as
+built", "Matching, as built" and "Writing, as built" below say where the code settled what this
+design left open.)*
 
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
 row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
@@ -339,6 +341,70 @@ style.minutes = { badge = true, icon = "⏱" }
   every note) with four types (note, table-row, list-item, heading) finding 31,000 items:
   matching adds about 0.1 ms per note to `cold-lava items` on a loaded laptop. The perf step
   owns the `RegexSet` and fewer per-item allocations.
+
+### Writing, as built
+
+- **One call.** `edit::set_field(root, note, SetField { id, rev, field, value }, dry_run)` reads
+  the note, `edit::plan` makes the edit in memory, and `write::replace` writes it, refused if the
+  file changed since it was read. The CLI is `cold-lava item set FILE ID FIELD VALUE` (or
+  `--remove`), with `--rev`, `--dry-run` and `--json`, beside `task toggle FILE:LINE`: both
+  name one item in one note, and `items` stays a read. `items/edit set-field` will call the same
+  function. `Set` carries the new text, the item as it reads back, and `changed` (false when the
+  note already said this; nothing is written then).
+- **Finding the item.** By id in the note as it is now; gone, or a `rev` that differs, is
+  `Changed` (exit code 3, like a stale `task toggle`). Only typed items: a task's fields wait
+  for the task as a definition.
+- **Which source.** Each typed item carries, off the wire, its shape, which source gave each
+  field its value, its block's text and a row's cells (`matcher::Place`). The value is written
+  through the source that gave it; when that one is read-only, through the first writable
+  source before it (so `title = { property = "title", note = "name" }` adds the property), and
+  for a field with no value, through its first writable source.
+- **The value** comes in the form items carry it (an ISO date, minutes, an enum's name, a
+  link's target) or as a string the field's type reads (`1h30m`, `[[Lava]]`, an enum's written
+  form); `null` or `""` removes. It is written by its value type: a date in the field's
+  `format` (ISO without one), a datetime with `T` or a space as the old value had, a number as
+  JSON writes it, `yes`/`no` when the old value was written so, a link as `[[target]]` unless the
+  old value was a bare name or a Markdown link, a tag with `#` in text and without in a
+  property, an enum in the old value's form, else the form the note's other items of the type
+  use, else the first, a duration as `1h30m` (minutes alone, `90m`, when the old value was).
+  A datetime with a `format` is refused, as it doesn't read yet.
+- **Sources.** Replacing changes only the value's span. Adding and removing:
+  - `marker`: a value goes after a glyph that has none, else ` 📅 value` is appended to the
+    block's text (before a `^id`); removing takes the glyph, its value and one space.
+  - `inline`: a block gets ` [key:: value]`, or `(key:: value)` when the block's other Dataview
+    fields use parentheses; a note gets a `key:: value` line at the top of its body. Removing
+    takes the brackets too, and an unbracketed field's whole line when nothing else is on it.
+  - `flag`: true appends the glyph, false takes it out with a space; null is refused. `flags`
+    swaps the glyph for the one of the new name, appends it, or takes it out.
+  - `column`: the cell between its pipes is rewritten as wide as it was when the value fits
+    (its leading spaces kept), else just wide enough for the value; other rows are never
+    touched. A value with `|` or a line break is refused, as is a column the row has no cell
+    for. Removing blanks the cell, keeping its width.
+  - `property`: a scalar or a one-item list's value is replaced inside its quotes, or quoted
+    when YAML needs it; `key:` with nothing gets the value on its line; a missing key is a new
+    line before the closing `---`, with new frontmatter when the note has none. Removing deletes
+    the property's lines. Nested YAML and lists of several values are refused.
+  - `capture` and `pattern`: replaced only. A pattern says where a value is read, not where one
+    goes, so a missing value is refused, and so is removing one (it would leave the text around
+    it). The type's `write` template, meant for this, is still not used.
+  - `rest`, `inlines`, `note`, `section` and `children` are read-only and refused, and so is
+    `info`, which reads nothing yet.
+- **The read-back check.** The new text is read again with `items::extract`, and the edit is
+  refused (`ReadBack`, with what would differ) unless: the note has as many items as before;
+  the item (found by its id, else, when its key changed, as the item of its kind starting on
+  its line) is of the same type, has exactly the new value, and every other field as it was;
+  and every other item, paired in order, has the same kind and fields (spans aside), block id
+  and parent. What follows from the edit itself is allowed: a new id for the item when the
+  field is part of its key (its shape's `key`; without one a list item's, paragraph's or
+  heading's text and an inline match's whole text are the key, so they get new ids; a row
+  without `key` changes id only with its first cell, a note never), new ids and parent ids for
+  what sits under it, a new `rev` for items sharing its lines, and the same one section name
+  changed for the items under a typed heading whose words changed. The key-field decision:
+  the edit goes ahead and returns the new id, since refusing would make keys unwritable, and
+  the caller gets the item as it reads now.
+- **Not yet:** the `write` template for adding a pattern's value or a whole inline item, and
+  writing a list field (tags, links, children are read-only anyway, and a property holding
+  several values is refused).
 
 ## File types
 
@@ -598,7 +664,8 @@ after its call returns, so it never holds the menu's state.
       primitives with spans; typed blocks *(done for notes, table rows, list items, headings and
       paragraphs: `matcher.rs`, `cold-lava items VAULT TYPE`)*; inline types *(done: in
       paragraphs, list items and tasks, headings and table rows, with the block as parent;
-      `vei` in the example vault)*; `set-field` with the read-back check;
+      `vei` in the example vault)*; `set-field` with the read-back check *(done:
+      `edit::set_field`, `cold-lava item set`)*;
       the task as a definition, first in shadow mode beside today's parser, then switched over;
       looks in the reader; the table view.
    6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and

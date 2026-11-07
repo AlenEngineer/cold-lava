@@ -17,6 +17,14 @@ change commands, keys and file formats; patch versions only fix things.
   section, and `inside` (the block's primitive or kind, such as `task`). `cold-lava items VAULT
   TYPE` lists them and `cold-lava types` counts them. The example vault's `vei` type finds a VEI
   written in prose (`its 1883 eruption (VEI 6, …)`).
+- `cold-lava item set FILE ID FIELD VALUE` (`--remove`, `--rev REV`, `--dry-run`, `--json`)
+  sets one field of a typed item through the source it is read from: a marker, a Dataview field
+  (brackets kept), a flag or flags glyph, a table cell (not re-padded), a frontmatter property
+  (line by line; nested YAML refused) or a pattern's group. A missing value is added the way the
+  line writes its others, and `--remove` takes one out. The note is read again in memory first,
+  and nothing is written unless the item reads back exactly the new value with nothing else in
+  the note changed. A stale rev exits with code 3. The engine's `edit::set_field` does it, for
+  the coming `items/edit set-field`.
 
 ## [0.3.0] - 2026-11-07
 
