@@ -161,10 +161,17 @@ impl Flavour {
     }
 }
 
+static CONFIGURED: OnceLock<Option<Flavour>> = OnceLock::new();
+
+/// The flavour `config.toml` chose, which the frontend reads and sets once at startup.
+pub fn set_configured(flavour: Option<Flavour>) {
+    let _ = CONFIGURED.set(flavour);
+}
+
 /// The flavour set in `config.toml`, else `obsidian` for a folder Obsidian has opened (it has
 /// `.obsidian/`), else `github`.
 pub fn flavour_for(vault_root: &Path) -> Flavour {
-    crate::config::get().flavour.clone().unwrap_or_else(|| {
+    CONFIGURED.get().cloned().flatten().unwrap_or_else(|| {
         let name = if vault_root.join(".obsidian").is_dir() {
             "obsidian"
         } else {
@@ -1277,7 +1284,7 @@ mod tests {
                 .sum()
         }
         let flavour = Flavour::built_in("obsidian").unwrap();
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault");
         let mut notes = 0;
         let mut found = 0;
         for entry in walkdir::WalkDir::new(&root) {

@@ -221,21 +221,6 @@ pub fn launch(
     b.run(terminal)
 }
 
-/// Find the vault for a path: the nearest ancestor containing `.obsidian`, else the folder itself.
-pub fn find_vault_root(p: &Path) -> PathBuf {
-    let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let start = if abs.is_dir() {
-        abs.clone()
-    } else {
-        abs.parent().map(Path::to_path_buf).unwrap_or(abs.clone())
-    };
-    start
-        .ancestors()
-        .find(|a| a.join(".obsidian").is_dir())
-        .map(Path::to_path_buf)
-        .unwrap_or(start)
-}
-
 fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<PathBuf>> {
     let mut boards: Vec<String> = WalkDir::new(root)
         .into_iter()

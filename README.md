@@ -25,7 +25,7 @@ Download a binary for Linux or macOS from the
 [latest release](https://github.com/AlenEngineer/cold-lava/releases/latest), or build it:
 
 ```bash
-cargo install --path .
+cargo install --path crates/cold-lava
 ```
 
 ## Try it
@@ -312,10 +312,13 @@ and the exit code is **3**, so the caller can refresh. In the main menu, `t` ope
 How it fits together: [docs/engine.md](docs/engine.md) (the engine, its layers and the
 frontends) and [docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
 
+The engine (`crates/engine`, no user interface) and the terminal UI (`crates/cold-lava`) are
+two crates in one Cargo workspace.
+
 ```bash
-cargo test                                   # unit tests
-cargo clippy --all-targets -- -D warnings    # lints, as in CI
-cargo fmt --check
+cargo test --workspace                                   # unit and integration tests
+cargo clippy --workspace --all-targets -- -D warnings    # lints, as in CI
+cargo fmt --all --check
 ```
 
 ### Scripting and testing the UI
@@ -323,7 +326,7 @@ cargo fmt --check
 `cold-lava drive` runs cold-lava in a hidden terminal and follows a script, one step per line:
 
 ```bash
-cold-lava drive tests/drive/follow-link.drive -- example-vault
+cold-lava drive crates/cold-lava/tests/drive/follow-link.drive -- example-vault
 ```
 
 ```
@@ -354,7 +357,8 @@ release is listed in [CHANGELOG.md](CHANGELOG.md), and `cold-lava --version` pri
 
 Releases are automatic. To cut one, open a PR that:
 
-1. sets `version = "x.y.z"` in `Cargo.toml` (then `cargo build` to update `Cargo.lock`), and
+1. sets `version = "x.y.z"` under `[workspace.package]` in `Cargo.toml` (then `cargo build` to
+   update `Cargo.lock`), and
 2. moves the changes under `## [Unreleased]` in `CHANGELOG.md` into a new
    `## [x.y.z] - YYYY-MM-DD` section.
 

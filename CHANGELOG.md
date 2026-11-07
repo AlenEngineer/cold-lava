@@ -21,6 +21,8 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- Building from source is now `cargo install --path crates/cold-lava`: the repository is a
+  Cargo workspace, with the engine as its own crate (`cold-lava-engine`) beside the terminal UI.
 - `agenda` and `task toggle` read tasks the way Obsidian and the Tasks plugin do, from the same
   parse as the rest of cold-lava:
   - Tasks in callouts and quotes (`> - [ ] …`) are listed, and `task toggle` ticks them.

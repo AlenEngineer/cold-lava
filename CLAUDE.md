@@ -8,11 +8,11 @@ extension once there is an extension API.
 ## Commands
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings   # CI runs the latest stable clippy, which can be stricter than yours
-cargo test
-cargo run --release -- example-vault        # main menu on the example vault
-scripts/release-check.sh                    # is this commit a release, and is it ready?
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings   # CI runs the latest stable clippy, which can be stricter than yours
+cargo test --workspace
+cargo run --release -- example-vault                    # main menu on the example vault
+scripts/release-check.sh                                # is this commit a release, and is it ready?
 ```
 
 All three checks must pass before pushing: CI runs them on Ubuntu and macOS, and they are
@@ -20,7 +20,16 @@ required checks on `main`.
 
 ## Architecture
 
-**Core** (no UI; other code asks it instead of re-parsing files):
+A Cargo workspace of two crates. The version lives in the root `Cargo.toml` under
+`[workspace.package]`; `example-vault/`, `docs/` and `scripts/` stay at the root.
+
+- `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
+  depend on ratatui, crossterm, portable-pty or vt100 (`cargo tree -p cold-lava-engine`).
+- `crates/cold-lava`: the `cold-lava` binary (extensions and UI below, `tests/` with the drive
+  scripts and goldens). `main.rs` imports the engine's modules by name, so `crate::vault` etc.
+  work in the binary.
+
+**Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
 - `core.rs`: `Core` = one live vault. Owns the `Index`, is the only file watcher, re-reads only
   changed notes and emits `Event`s (`poll()`, `subscribe()`). Screens share it: the menu lends
@@ -45,8 +54,12 @@ required checks on `main`.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks format (`parse_line` for one task line, statuses from
   the plugin's settings; `agenda` and `toggle` read items), Daily notes settings, moment.js date
   formats.
+- `paths.rs`: the user's home and config folders.
 
-**Extensions** (`ext/`, step 3 of `docs/extensions.md`):
+The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
+what it needs (`markdown::set_configured` for the chosen flavour).
+
+**Extensions** (`crates/cold-lava/src/ext/`, step 3 of `docs/extensions.md`):
 
 - `ext/mod.rs`: `Extension` (one method per host→extension JSON-RPC method), `Host` (one method
   per extension→host method; it queues `Effect`s), `Registry` (loaded extensions, their
@@ -61,7 +74,7 @@ required checks on `main`.
 - `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
   commands it types into its pane.
 
-**Features / UI:**
+**Features / UI** (`crates/cold-lava/src`):
 
 - `home.rs`: the main menu (vaults, note tree, the right pane with the reader or an extension's
   program, backlinks, switcher, search). It applies the extensions' `Effect`s.
@@ -72,7 +85,7 @@ required checks on `main`.
 - `app.rs`, `graph.rs`, `scene.rs`, `kitty.rs`, `groups.rs`: graph view (force layout; braille
   or Kitty-graphics pixels drawn under the text with `z=-1`; colour groups).
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
-- `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers.
+- `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
   with vt100, cursor-position queries answered.
 
@@ -99,7 +112,7 @@ required checks on `main`.
   top PR merges the whole stack; `gh stack rebase` / **Rebase stack** restores linear history.
 - Every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and the
   README is updated with it.
-- **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` and moves the
+- **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
   commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,
   patch = fixes only.
@@ -110,7 +123,7 @@ required checks on `main`.
 - `example-vault/` is the showcase vault and is used by tests (they count its notes and groups).
   Copy it to a temp folder before trying anything that writes.
 - Drive the TUI headless with `cold-lava drive SCRIPT -- VAULT` (`cold-lava --help` lists the
-  steps; `tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`. Runs get an
+  steps; `crates/cold-lava/tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`. Runs get an
   empty home (so they don't read your config or add vaults to your list; `--real-home` to
   use yours), and `env COLD_LAVA_EDITOR=none` for the reader instead of Neovim. The embedded editor needs `nvim`
   (or `vim`) installed.
@@ -119,8 +132,8 @@ required checks on `main`.
 
 ## Where things stand
 
-- The whole picture (engine layers, engine vs. frontends) is `docs/engine.md`; keep the engine
-  free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
+- The whole picture (engine layers, engine vs. frontends) is `docs/engine.md`; the crate split
+  keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
   it; the graph, canvas, agenda and the menu should become extensions of the core too. Then

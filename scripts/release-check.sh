@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Is this commit a release, and is it ready to be one?
 #
-# A commit is a release when the version in Cargo.toml has no vX.Y.Z tag yet (or when the
-# workflow runs for a pushed vX.Y.Z tag). A release must:
+# A commit is a release when the version in Cargo.toml (under [workspace.package], which both
+# crates use) has no vX.Y.Z tag yet (or when the workflow runs for a pushed vX.Y.Z tag). A
+# release must:
 #   - have a "## [X.Y.Z]" section in CHANGELOG.md,
 #   - be a higher version than the latest release,
 #   - match the tag, when run for a tag.

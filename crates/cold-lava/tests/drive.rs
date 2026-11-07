@@ -22,7 +22,7 @@ fn sandbox(name: &str) -> PathBuf {
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("drive-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     copy_dir(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"),
         &dir.join("example-vault"),
     );
     dir

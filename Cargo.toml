@@ -1,12 +1,15 @@
-[package]
-name = "cold-lava"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
 version = "0.2.0"
 edition = "2024"
-description = "Obsidian's graph view and canvas, in the terminal"
 license = "MIT"
 repository = "https://github.com/AlenEngineer/cold-lava"
 
-[dependencies]
+[workspace.dependencies]
+cold-lava-engine = { path = "crates/engine" }
 anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }

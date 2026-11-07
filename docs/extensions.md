@@ -60,7 +60,7 @@ live in is a project of its own, and it would be worse than the one they have.
   private OSC messages (`ESC ] 5379 ; kind ; payload BEL`) that make link following work inside
   it. The core keeps only the pane (`embed.rs`), which third-party views need as well. Without
   the Neovim-only checks, Helix, Kakoune or micro embed in the pane too, without the bridge.
-  (Exists: `src/ext/nvim.rs`.)
+  (Exists: `crates/cold-lava/src/ext/nvim.rs`.)
 - **Saves need no cooperation.** The core's file watcher sees every save, so an editor only has
   to write the file. Telling the core about a save is a hint that makes it show up sooner.
 
@@ -83,7 +83,7 @@ flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals 
 
 ## Notes as data
 
-*(design; items for tasks, lists, headings and blocks exist: `src/items.rs`)*
+*(design; items for tasks, lists, headings and blocks exist: `crates/engine/src/items.rs`)*
 
 You write notes, not data. But Markdown already has types, and Obsidian's community has settled
 how to read them: a checkbox is a task, with dates written the Tasks plugin's way
@@ -348,9 +348,9 @@ The method set is versioned (`apiVersion` in `initialize`), so old extensions ke
 Paths are absolute and inside the vault. A message's tag is its method name, for example
 `{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
 
-Built-in extensions already use, in-process (`src/ext/mod.rs`): `initialize` (with
-`commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`, `pane/message` and
-`pane/exited` from the host, and `ui/notify`, `command/run`, `editor/opened`, `vault/saved`,
+Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
+(with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`, `pane/message`
+and `pane/exited` from the host, and `ui/notify`, `command/run`, `editor/opened`, `vault/saved`,
 `pane/open` and `pane/input` from the extension.
 
 - **Saves are not acknowledged yet.** `editor/save` gets no answer, so before it reads the files
@@ -444,12 +444,12 @@ The graph, whiteboards, agenda, daily notes and rename move onto the same `Exten
 (in-process, through the in-process transport). If our own features fit the interface, it is
 good enough for everyone else.
 
-A built-in extension implements the `Extension` trait (`src/ext/mod.rs`) instead of reading
-messages from a transport. The trait is the protocol: each of its methods is one host→extension
-method, and the `Host` it is given has one method per extension→host method. Every type that
-crosses derives serde, and tests pin its JSON, so an extension can move to its own process
-without changing shape. What an extension asks for is queued and applied after its call
-returns, so it never holds the menu's state.
+A built-in extension implements the `Extension` trait (`crates/cold-lava/src/ext/mod.rs`)
+instead of reading messages from a transport. The trait is the protocol: each of its methods is
+one host→extension method, and the `Host` it is given has one method per extension→host
+method. Every type that crosses derives serde, and tests pin its JSON, so an extension can move
+to its own process without changing shape. What an extension asks for is queued and applied
+after its call returns, so it never holds the menu's state.
 
 ## Order of work
 

@@ -38,7 +38,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - if: steps.check.outputs.release == 'true'
         name: Test
-        run: cargo test --locked
+        run: cargo test --workspace --locked
 
   build:
     needs: plan
@@ -59,7 +59,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked -p cold-lava --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |

@@ -339,6 +339,21 @@ fn push_tag(tags: &mut Vec<String>, raw: &str) {
     }
 }
 
+/// Find the vault for a path: the nearest ancestor containing `.obsidian`, else the folder itself.
+pub fn find_vault_root(p: &Path) -> PathBuf {
+    let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let start = if abs.is_dir() {
+        abs.clone()
+    } else {
+        abs.parent().map(Path::to_path_buf).unwrap_or(abs.clone())
+    };
+    start
+        .ancestors()
+        .find(|a| a.join(".obsidian").is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or(start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,7 +472,7 @@ mod tests {
 
     #[test]
     fn scans_example_vault() {
-        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault")).unwrap();
+        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault")).unwrap();
         assert_eq!(v.name, "example-vault");
         assert_eq!(v.notes.len(), 33);
         // Hidden folders (.obsidian) are skipped; subfolders and non-ASCII names are included.
