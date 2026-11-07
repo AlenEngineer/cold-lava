@@ -3,14 +3,21 @@
 //! "Notes as data" in docs/extensions.md.
 //!
 //! One pass of pulldown-cmark per note, in the vault's flavour, over the same text the reader
-//! parses. Tasks are list items whose first line `tasks::parse_line` reads as one.
+//! parses. Tasks are list items whose first line `tasks::parse_line` reads as one. Loaded types
+//! match in the same pass: the pass collects the blocks some type reads, and `matcher` says
+//! which type each one is.
 
 use crate::daily;
 use crate::markdown::{self, Flavour, Syntax};
+use crate::matcher::{self, Matcher, Typed};
 use crate::tasks::{self, Task, TasksSettings, fnv};
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
-use serde::{Deserialize, Serialize};
+use crate::types::{self, On, Types};
+use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
+use serde::de::{MapAccess, Visitor};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
 
 /// Everything about a vault that changes how its notes read as items.
@@ -18,14 +25,34 @@ pub struct Settings {
     pub flavour: Flavour,
     pub tasks: TasksSettings,
     pub daily: daily::Settings,
+    /// The types its notes are matched against, and what was wrong with the rest.
+    pub types: Types,
+    pub matcher: Matcher,
 }
 
 impl Settings {
     pub fn load(root: &Path) -> Settings {
+        Settings::new(
+            markdown::flavour_for(root),
+            TasksSettings::load(root),
+            daily::Settings::load(root),
+            types::for_vault(root),
+        )
+    }
+
+    pub fn new(
+        flavour: Flavour,
+        tasks: TasksSettings,
+        daily: daily::Settings,
+        types: Types,
+    ) -> Settings {
+        let matcher = Matcher::new(&types, &flavour, &daily);
         Settings {
-            flavour: markdown::flavour_for(root),
-            tasks: TasksSettings::load(root),
-            daily: daily::Settings::load(root),
+            flavour,
+            tasks,
+            daily,
+            types,
+            matcher,
         }
     }
 }
@@ -64,18 +91,78 @@ pub enum Data {
     },
     /// A paragraph, or the block before a `^id` line, named by its block id.
     Block,
+    /// A block or note a type matched: `kind` is the type's name.
+    #[serde(untagged)]
+    Typed(Typed),
 }
 
 pub const KINDS: &[&str] = &["task", "list", "heading", "block"];
 
 impl Data {
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &str {
         match self {
             Data::Task(_) => "task",
             Data::List { .. } => "list",
             Data::Heading { .. } => "heading",
             Data::Block => "block",
+            Data::Typed(t) => &t.kind,
         }
+    }
+
+    /// Whether `items KIND` lists it: its own kind, or a base it extends.
+    pub fn answers_to(&self, kind: &str) -> bool {
+        self.kind() == kind || matches!(self, Data::Typed(t) if t.is.iter().any(|b| b == kind))
+    }
+}
+
+/// Flat, like every item: `kind`, then `is` when it extends a type, then each schema field.
+impl Serialize for Typed {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(None)?;
+        map.serialize_entry("kind", &self.kind)?;
+        if !self.is.is_empty() {
+            map.serialize_entry("is", &self.is)?;
+        }
+        for (name, value) in &self.fields {
+            map.serialize_entry(name, value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Typed {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Typed, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Typed;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a typed item's fields")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Typed, A::Error> {
+                let mut t = Typed {
+                    kind: String::new(),
+                    is: Vec::new(),
+                    fields: Default::default(),
+                    spans: Default::default(),
+                    unparsed: 0,
+                };
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "kind" => t.kind = map.next_value()?,
+                        "is" => t.is = map.next_value()?,
+                        _ => {
+                            let value = map.next_value()?;
+                            t.fields.insert(key, value);
+                        }
+                    }
+                }
+                if t.kind.is_empty() {
+                    return Err(serde::de::Error::missing_field("kind"));
+                }
+                Ok(t)
+            }
+        }
+        d.deserialize_map(V)
     }
 }
 
@@ -87,6 +174,8 @@ struct Raw {
     parent: Option<usize>,
     block_id: Option<String>,
     data: Data,
+    /// A typed item's key: its shape's `key` fields, or what tells its primitive apart.
+    key: String,
 }
 
 /// A container pulldown-cmark has opened and not yet closed.
@@ -101,16 +190,51 @@ struct Open {
     prev_child: Option<usize>,
 }
 
+/// A block some loaded type reads, found in the pass and matched once the note is read.
+struct Candidate {
+    on: On,
+    /// Its text in the source.
+    text: Range<usize>,
+    /// The item it would type (a list item, a heading, a paragraph with a block id); without
+    /// one, a match is a new item.
+    raw: Option<usize>,
+    line: usize,
+    end_line: usize,
+    section: Vec<String>,
+    parent: Option<usize>,
+    block_id: Option<String>,
+    in_quote: bool,
+    /// A table row's table, and its cells in the source.
+    table: usize,
+    cells: Vec<Range<usize>>,
+}
+
 /// The items of the note at vault-relative `note` (with `.md`) whose text is `text`.
 pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let flavour = &s.flavour;
-    let src = flavour.source(text);
+    let source = flavour.source(text);
+    let src: &str = &source.text;
     let newlines: Vec<usize> = src.match_indices('\n').map(|(i, _)| i).collect();
     let line_of = |offset: usize| newlines.partition_point(|&n| n < offset) + 1;
     let src_lines: Vec<&str> = src.lines().collect();
     let src_line = |n: usize| src_lines.get(n - 1).copied().unwrap_or_default();
     let is_blank = |n: usize| src_line(n).trim().trim_start_matches('>').trim().is_empty();
     let daily_note = s.daily.date_of(note);
+
+    let m = &s.matcher;
+    let typing = !m.is_empty();
+    let want = |on: On| typing && m.reads(on);
+    let (want_rows, want_paragraphs) = (want(On::TableRow), want(On::Paragraph));
+    let (want_lists, want_headings) = (want(On::ListItem), want(On::Heading));
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut tables: Vec<Vec<String>> = Vec::new();
+    let mut cells: Vec<Range<usize>> = Vec::new();
+    let mut in_head = false;
+    let mut quotes = 0usize;
+    // Inside a code block or the frontmatter, text holds no tags.
+    let mut verbatim = 0usize;
+    let mut body_tags: Vec<String> = Vec::new();
+    let mut links: Vec<String> = Vec::new();
 
     let mut raws: Vec<Raw> = Vec::new();
     let mut headings: Vec<(u8, String)> = Vec::new();
@@ -124,8 +248,11 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     }];
     let enclosing = |open: &[Open]| open.iter().rev().find_map(|o| o.item);
 
-    for (event, range) in Parser::new_ext(&src, flavour.options()).into_offset_iter() {
+    for (event, range) in Parser::new_ext(src, flavour.options()).into_offset_iter() {
         match event {
+            Event::Text(t) if m.needs_tags && verbatim == 0 && t.contains('#') => {
+                body_tags.extend(matcher::Note::tags_in(&t).map(|(tag, _)| tag.to_string()));
+            }
             Event::Start(tag) => {
                 let line = line_of(range.start);
                 let mut item = None;
@@ -136,9 +263,25 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             headings.pop();
                         }
                         let text = heading_text(&src[range.clone()]);
+                        let end_line = line_of(range.end.saturating_sub(1)).max(line);
+                        if want_headings {
+                            candidates.push(Candidate {
+                                on: On::Heading,
+                                text: heading_range(src, range.clone()),
+                                raw: Some(raws.len()),
+                                line,
+                                end_line,
+                                section: names(&headings),
+                                parent: enclosing(&open),
+                                block_id: None,
+                                in_quote: quotes > 0,
+                                table: 0,
+                                cells: Vec::new(),
+                            });
+                        }
                         raws.push(Raw {
                             line,
-                            end_line: line_of(range.end.saturating_sub(1)).max(line),
+                            end_line,
                             section: names(&headings),
                             parent: enclosing(&open),
                             block_id: None,
@@ -146,6 +289,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                                 level,
                                 text: text.clone(),
                             },
+                            key: String::new(),
                         });
                         headings.push((level, text));
                     }
@@ -158,6 +302,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             parent: enclosing(&open),
                             block_id: None,
                             data: Data::Block,
+                            key: String::new(),
                         });
                     }
                     Tag::List(_) => {
@@ -166,6 +311,32 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             && top.own_end.is_none()
                         {
                             top.own_end = Some(line.saturating_sub(1).max(top.line));
+                        }
+                    }
+                    Tag::BlockQuote(_) => quotes += 1,
+                    Tag::CodeBlock(_) | Tag::MetadataBlock(_) => verbatim += 1,
+                    Tag::Link {
+                        link_type,
+                        ref dest_url,
+                        ..
+                    } if m.needs_links => {
+                        let local = matches!(link_type, LinkType::WikiLink { .. })
+                            || dest_url
+                                .split('#')
+                                .next()
+                                .is_some_and(|d| d.ends_with(".md"));
+                        if local {
+                            let target = dest_url.split('#').next().unwrap_or_default();
+                            links.extend(crate::vault::clean_target(target));
+                        }
+                    }
+                    Tag::Table(_) if want_rows => tables.push(Vec::new()),
+                    Tag::TableHead => in_head = true,
+                    Tag::TableCell if want_rows => {
+                        let cell = trim_cell(src, range.clone());
+                        match tables.last_mut() {
+                            Some(header) if in_head => header.push(src[cell].to_string()),
+                            _ => cells.push(cell),
                         }
                     }
                     _ => {}
@@ -211,6 +382,23 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             .has(Syntax::TaskLists)
                             .then(|| tasks::parse_line(first, &s.tasks))
                             .flatten();
+                        if want_lists && task.is_none() {
+                            let start = frame.start + list_text_start(first);
+                            let end = frame.start + first.trim_end().len();
+                            candidates.push(Candidate {
+                                on: On::ListItem,
+                                text: start..end.max(start),
+                                raw: Some(at),
+                                line: frame.line,
+                                end_line: last,
+                                section: raws[at].section.clone(),
+                                parent: None,
+                                block_id: None,
+                                in_quote: quotes > 0,
+                                table: 0,
+                                cells: Vec::new(),
+                            });
+                        }
                         let raw = &mut raws[at];
                         raw.end_line = last;
                         raw.block_id = block_id;
@@ -221,18 +409,24 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             },
                         };
                     }
-                    (TagEnd::Paragraph, _)
-                        if flavour.has(Syntax::BlockIds) && parent_item.is_none() =>
-                    {
+                    (TagEnd::Paragraph, _) if parent_item.is_none() => {
                         while last > frame.line && is_blank(last) {
                             last -= 1;
                         }
-                        if let Some(c) = markdown::block_id_pattern().captures(src_line(last)) {
-                            let alone = last == frame.line && c.get(0).unwrap().start() == 0;
+                        let id = flavour
+                            .has(Syntax::BlockIds)
+                            .then(|| markdown::block_id_pattern().captures(src_line(last)))
+                            .flatten();
+                        let alone = id
+                            .as_ref()
+                            .is_some_and(|c| last == frame.line && c.get(0).unwrap().start() == 0);
+                        let mut raw = None;
+                        if let Some(c) = &id {
                             let line = match parent_prev {
                                 Some(prev) if alone => prev,
                                 _ => frame.line,
                             };
+                            raw = Some(raws.len());
                             raws.push(Raw {
                                 line,
                                 end_line: last,
@@ -240,8 +434,51 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                                 parent: enclosing(&open),
                                 block_id: Some(c[1].to_string()),
                                 data: Data::Block,
+                                key: String::new(),
                             });
                         }
+                        if want_paragraphs && !alone {
+                            let mut text = src[frame.start..range.end].trim_end();
+                            if let Some(c) = markdown::block_id_pattern().captures(text)
+                                && id.is_some()
+                            {
+                                text = text[..c.get(0).unwrap().start()].trim_end();
+                            }
+                            candidates.push(Candidate {
+                                on: On::Paragraph,
+                                text: frame.start..frame.start + text.len(),
+                                raw,
+                                line: frame.line,
+                                end_line: last,
+                                section: names(&headings),
+                                parent: enclosing(&open),
+                                block_id: None,
+                                in_quote: quotes > 0,
+                                table: 0,
+                                cells: Vec::new(),
+                            });
+                        }
+                    }
+                    (TagEnd::BlockQuote(_), _) => quotes = quotes.saturating_sub(1),
+                    (TagEnd::CodeBlock | TagEnd::MetadataBlock(_), _) => {
+                        verbatim = verbatim.saturating_sub(1)
+                    }
+                    (TagEnd::TableHead, _) => in_head = false,
+                    (TagEnd::TableRow, _) if want_rows => {
+                        let row = src[frame.start..range.end].trim_end();
+                        candidates.push(Candidate {
+                            on: On::TableRow,
+                            text: frame.start..frame.start + row.len(),
+                            raw: None,
+                            line: frame.line,
+                            end_line: frame.line,
+                            section: names(&headings),
+                            parent: enclosing(&open),
+                            block_id: None,
+                            in_quote: quotes > 0,
+                            table: tables.len().saturating_sub(1),
+                            cells: std::mem::take(&mut cells),
+                        });
                     }
                     _ => {}
                 }
@@ -252,6 +489,74 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
             _ => {}
         }
     }
+    if typing {
+        let mut found = matcher::Note::new(note, text, &source, m.needs_links);
+        for tag in &body_tags {
+            found.add_tag(tag);
+        }
+        found.links.extend(links);
+        let gate = m.gate(&found);
+        let mut note_is: Vec<String> = Vec::new();
+        if let Some((typed, key)) = m.note(&gate, &found) {
+            note_is.push(typed.kind.clone());
+            note_is.extend(typed.is.iter().cloned());
+            raws.push(Raw {
+                line: 1,
+                end_line: found.frontmatter.as_ref().map_or(1, |f| f.end_line),
+                section: Vec::new(),
+                parent: None,
+                block_id: None,
+                data: Data::Typed(typed),
+                key,
+            });
+        }
+        // In document order, so a list item is typed before the items inside it ask.
+        candidates.sort_by_key(|c| c.text.start);
+        for c in candidates {
+            let mut inside = note_is.clone();
+            if c.in_quote {
+                inside.push("quote".into());
+            }
+            if let Some(p) = c.parent {
+                inside.push("list-item".into());
+                inside.push(raws[p].data.kind().to_string());
+                if let Data::Typed(t) = &raws[p].data {
+                    inside.extend(t.is.iter().cloned());
+                }
+            }
+            let matched = m.block(
+                &gate,
+                &found,
+                &matcher::Block {
+                    on: c.on,
+                    text: &src[c.text.clone()],
+                    at: c.text.start,
+                    section: &c.section,
+                    header: tables.get(c.table).map_or(&[], Vec::as_slice),
+                    cells: &c.cells,
+                    inside: inside.iter().map(String::as_str).collect(),
+                },
+            );
+            let Some((typed, key)) = matched else {
+                continue;
+            };
+            match c.raw {
+                Some(i) => {
+                    raws[i].data = Data::Typed(typed);
+                    raws[i].key = key;
+                }
+                None => raws.push(Raw {
+                    line: c.line,
+                    end_line: c.end_line,
+                    section: c.section,
+                    parent: c.parent,
+                    block_id: c.block_id,
+                    data: Data::Typed(typed),
+                    key,
+                }),
+            }
+        }
+    }
     identify(note, text, raws)
 }
 
@@ -259,11 +564,11 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
 fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
     let lines: Vec<&str> = text.lines().collect();
     let mut keys: Vec<String> = Vec::with_capacity(raws.len());
-    let mut seen: HashMap<(&'static str, String), usize> = HashMap::new();
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
     let mut ids: Vec<String> = Vec::with_capacity(raws.len());
     let mut items = Vec::with_capacity(raws.len());
     for raw in raws {
-        let kind = raw.data.kind();
+        let kind = raw.data.kind().to_string();
         let parent_key = raw.parent.map_or("", |p| keys[p].as_str());
         let anchor = match (&raw.block_id, &raw.data) {
             (Some(id), _) => format!("^{id}"),
@@ -274,9 +579,11 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
             }
             (None, Data::Task(t)) => format!("{parent_key}/{:016x}", fnv(t.text.as_bytes())),
             (None, Data::List { text }) => format!("{parent_key}/{:016x}", fnv(text.as_bytes())),
+            (None, Data::Typed(_)) if raw.key.is_empty() => parent_key.to_string(),
+            (None, Data::Typed(_)) => format!("{parent_key}/{:016x}", fnv(raw.key.as_bytes())),
             (None, Data::Block) => String::new(),
         };
-        let n = seen.entry((kind, anchor.clone())).or_default();
+        let n = seen.entry((kind.clone(), anchor.clone())).or_default();
         let key = match *n {
             0 => anchor,
             n => format!("{anchor}.{n}"),
@@ -302,6 +609,48 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
     }
     items.sort_by_key(|i| i.line);
     items
+}
+
+/// A heading's words in the source: ATX without its `#`s, setext without its underline.
+fn heading_range(src: &str, range: Range<usize>) -> Range<usize> {
+    let raw = &src[range.clone()];
+    let first = raw.lines().next().unwrap_or_default();
+    let indent = first.len() - first.trim_start().len();
+    if first.trim_start().starts_with('#') {
+        let after = first[indent..].trim_start_matches('#');
+        let start = range.start + first.len() - after.trim_start().len();
+        let mut words = after.trim();
+        let closed = words.trim_end_matches('#');
+        if closed.is_empty() || closed.ends_with([' ', '\t']) {
+            words = closed.trim_end();
+        }
+        start..start + words.len()
+    } else {
+        let body = raw.trim_end();
+        let end = body.rfind('\n').unwrap_or(0);
+        let words = body[..end].trim();
+        let start = range.start + body.find(words).unwrap_or(0);
+        start..start + words.len()
+    }
+}
+
+/// A table cell without its padding and pipes.
+fn trim_cell(src: &str, range: Range<usize>) -> Range<usize> {
+    let pad = [' ', '\t', '|', '\r', '\n'];
+    let cell = &src[range.clone()];
+    let start = range.start + cell.len() - cell.trim_start_matches(pad).len();
+    let end = range.end - (cell.len() - cell.trim_end_matches(pad).len());
+    start..end.max(start)
+}
+
+/// Where a list item's words start on its first line: after its marker and the space.
+fn list_text_start(first: &str) -> usize {
+    let t = first.trim_start();
+    let marker = t.strip_prefix(['-', '*', '+']).unwrap_or_else(|| {
+        t.trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start_matches(['.', ')'])
+    });
+    first.len() - marker.trim_start().len()
 }
 
 /// A heading's text as written: ATX without its `#`s, setext without its underline.
@@ -347,11 +696,12 @@ mod tests {
 
     fn settings(flavour: &str) -> Settings {
         let nowhere = Path::new("/nonexistent-cold-lava-vault");
-        Settings {
-            flavour: Flavour::built_in(flavour).unwrap(),
-            tasks: TasksSettings::load(nowhere),
-            daily: daily::Settings::load(nowhere),
-        }
+        Settings::new(
+            Flavour::built_in(flavour).unwrap(),
+            TasksSettings::load(nowhere),
+            daily::Settings::load(nowhere),
+            Types::default(),
+        )
     }
 
     fn items(text: &str) -> Vec<Item> {
@@ -368,8 +718,13 @@ mod tests {
                     Data::List { text } => text.clone(),
                     Data::Heading { text, .. } => text.clone(),
                     Data::Block => format!("^{}", i.block_id.as_deref().unwrap_or("")),
+                    Data::Typed(t) => t.kind.clone(),
                 };
-                (i.data.kind(), i.line, i.end_line, text)
+                let kind = match &i.data {
+                    Data::Typed(_) => "typed",
+                    d => KINDS.iter().find(|k| **k == d.kind()).unwrap(),
+                };
+                (kind, i.line, i.end_line, text)
             })
             .collect()
     }
@@ -389,7 +744,7 @@ mod tests {
             .find(|i| match &i.data {
                 Data::Task(t) => t.text == text,
                 Data::List { text: t } | Data::Heading { text: t, .. } => t == text,
-                Data::Block => false,
+                Data::Block | Data::Typed(_) => false,
             })
             .unwrap_or_else(|| panic!("no item {text:?} in {:?}", summary(items)))
     }

@@ -30,12 +30,16 @@ fn sandbox(name: &str) -> PathBuf {
     vault.canonicalize().unwrap()
 }
 
+/// cold-lava without your own config.toml, so only the vault's types apply.
+fn cold_lava(vault: &Path) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cold-lava"));
+    c.env("XDG_CONFIG_HOME", vault.parent().unwrap());
+    c
+}
+
 /// Runs cold-lava; its stdout with the vault's path written as `VAULT`.
 fn run(vault: &Path, args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
-        .args(args)
-        .output()
-        .unwrap();
+    let out = cold_lava(vault).args(args).output().unwrap();
     assert!(
         out.status.success(),
         "{args:?}: {}",
@@ -91,12 +95,31 @@ Journal/2026-11-05.md:10  [ ] Review the eruption timeline board  scheduled 2026
         headings.contains("Concepts/Lava.md:8  ## Temperature\n"),
         "{headings}"
     );
-    let out = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+    let out = cold_lava(&vault)
         .args(["items", v, "tasks"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("task, list, heading, block"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("task, list, heading, block, volcano, eruption"),
+        "the vault's types are kinds too"
+    );
+    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+}
+
+#[test]
+fn types_find_their_items() {
+    let vault = sandbox("types");
+    let v = vault.to_str().unwrap();
+    assert_eq!(
+        run(&vault, &["items", v, "volcano"]),
+        golden("items-volcano.txt")
+    );
+    assert_eq!(
+        run(&vault, &["items", v, "eruption", "--json"]),
+        golden("items-eruption.json")
+    );
     let _ = std::fs::remove_dir_all(vault.parent().unwrap());
 }
 
@@ -152,7 +175,7 @@ fn a_task_keeps_its_id_through_a_toggle_by_rev() {
     assert_eq!(after["rev"], toggled["id"], "toggle reports the new rev");
     assert_ne!(after["rev"], before["rev"]);
 
-    let stale = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+    let stale = cold_lava(&vault)
         .args(["task", "toggle", &file, "--id", rev])
         .output()
         .unwrap();

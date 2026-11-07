@@ -23,8 +23,13 @@ change commands, keys and file formats; patch versions only fix things.
   fields with value types, where each is read, and how it looks. `cold-lava types [VAULT]
   [--json]` lists every type with where it comes from, its shapes and fields, and whether each
   field can be written back, then one line per mistake (the broken type is left out, the rest
-  load, exit code 1). Types are only loaded and checked for now; matching them in notes comes
-  later. The example vault defines `volcano` notes and `eruption` table rows.
+  load, exit code 1). The example vault defines `volcano` notes and `eruption` table rows.
+- Types find their notes and blocks: `cold-lava items VAULT TYPE` lists the notes, table rows,
+  list items, headings or paragraphs a type matches, with every field of the type read and
+  parsed (`null` when missing or when it doesn't read as the field's type), and `cold-lava
+  types VAULT` says how many items each type found and how many values didn't parse. One type
+  wins per note and per block (priority, then subtype, then the more specific shape, then
+  origin, then name); a type that `extends` another is also listed under it. Tasks stay tasks.
 
 ### Changed
 

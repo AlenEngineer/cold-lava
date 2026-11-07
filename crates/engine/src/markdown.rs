@@ -151,13 +151,46 @@ impl Flavour {
     }
 
     /// The text pulldown-cmark reads: without `%%comments%%` when the flavour has them. Line
-    /// numbers stay those of the note.
-    pub fn source<'t>(&self, text: &'t str) -> Cow<'t, str> {
+    /// numbers stay those of the note, and `Source::file_range` maps byte offsets back to it.
+    pub fn source<'t>(&self, text: &'t str) -> Source<'t> {
         if self.has(S::Comments) {
             strip_comments(text, self.options())
         } else {
-            Cow::Borrowed(text)
+            Source {
+                text: Cow::Borrowed(text),
+                pieces: Vec::new(),
+            }
         }
+    }
+}
+
+/// A note's text as pulldown-cmark reads it, and where each byte of it is in the file.
+pub struct Source<'t> {
+    pub text: Cow<'t, str>,
+    /// `(offset here, offset in the file)` where each copied piece starts; empty when nothing
+    /// was removed.
+    pieces: Vec<(usize, usize)>,
+}
+
+impl Source<'_> {
+    /// Where `range` of this text is in the file. Text removed inside the range stays inside.
+    pub fn file_range(&self, range: Range<usize>) -> Range<usize> {
+        let at = |offset: usize, end: bool| {
+            let i = self
+                .pieces
+                .partition_point(|p| if end { p.0 < offset } else { p.0 <= offset });
+            match i.checked_sub(1).map(|i| self.pieces[i]) {
+                Some((here, file)) => file + offset - here,
+                None => offset,
+            }
+        };
+        let start = at(range.start, false);
+        let end = if range.is_empty() {
+            start
+        } else {
+            at(range.end, true)
+        };
+        start..end
     }
 }
 
@@ -279,7 +312,7 @@ pub enum Inline {
 
 pub fn parse(text: &str, flavour: &Flavour) -> Doc {
     let options = flavour.options();
-    let text = flavour.source(text);
+    let text = flavour.source(text).text;
     let mut reader = Reader {
         src: &text,
         flavour,
@@ -835,9 +868,12 @@ fn callout(mut blocks: Vec<Block>) -> BlockKind {
 }
 
 /// Removes `%%…%%` outside code, keeping the line breaks so lines still match the file.
-fn strip_comments(text: &str, options: Options) -> Cow<'_, str> {
+fn strip_comments(text: &str, options: Options) -> Source<'_> {
     if !text.contains("%%") {
-        return Cow::Borrowed(text);
+        return Source {
+            text: Cow::Borrowed(text),
+            pieces: Vec::new(),
+        };
     }
     let code: Vec<Range<usize>> = Parser::new_ext(text, options)
         .into_offset_iter()
@@ -858,14 +894,22 @@ fn strip_comments(text: &str, options: Options) -> Cow<'_, str> {
         .filter(|i| !code.iter().any(|r| r.contains(i)))
         .collect();
     let mut out = String::with_capacity(text.len());
+    let mut pieces = vec![(0, 0)];
     let mut at = 0;
     for [open, close] in delims.as_chunks::<2>().0 {
         out.push_str(&text[at..*open]);
-        out.extend(text[*open..*close].chars().filter(|&c| c == '\n'));
+        for (i, _) in text[*open..*close].match_indices('\n') {
+            pieces.push((out.len(), open + i));
+            out.push('\n');
+        }
         at = close + 2;
+        pieces.push((out.len(), at));
     }
     out.push_str(&text[at..]);
-    Cow::Owned(out)
+    Source {
+        text: Cow::Owned(out),
+        pieces,
+    }
 }
 
 #[cfg(test)]

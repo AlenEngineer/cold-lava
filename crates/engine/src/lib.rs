@@ -3,9 +3,11 @@
 
 pub mod core;
 pub mod daily;
+pub mod frontmatter;
 pub mod index;
 pub mod items;
 pub mod markdown;
+pub mod matcher;
 pub mod paths;
 pub mod rename;
 pub mod search;
