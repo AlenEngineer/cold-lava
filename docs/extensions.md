@@ -242,6 +242,7 @@ returns, so it never holds the menu's state.
 3. The `Extension` interface; move built-in features onto it, starting with the Neovim editor.
    *(in progress: the interface, extension commands and the Neovim editor exist)*
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
+   Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
 
 ## Compatibility with Obsidian plugins

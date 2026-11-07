@@ -23,7 +23,8 @@ pub struct Nvim {
 }
 
 impl Nvim {
-    /// Neovim (or Vim) to embed: $VISUAL/$EDITOR if it is one, else `nvim` if it's installed.
+    /// Neovim (or Vim) to embed: $COLD_LAVA_EDITOR, $VISUAL or $EDITOR if it is one, else `nvim`
+    /// if it's installed. `COLD_LAVA_EDITOR=none` means no editor (the reader shows notes).
     pub fn detect() -> Option<Nvim> {
         let is_vim = |p: &str| {
             let base = Path::new(p)
@@ -42,6 +43,9 @@ impl Nvim {
             note: None,
             script: None,
         };
+        if std::env::var("COLD_LAVA_EDITOR").is_ok_and(|v| v == "none") {
+            return None;
+        }
         for var in ["COLD_LAVA_EDITOR", "VISUAL", "EDITOR"] {
             if let Ok(v) = std::env::var(var) {
                 let prog = v.split_whitespace().next().unwrap_or("").to_string();

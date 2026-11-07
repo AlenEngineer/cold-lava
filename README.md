@@ -89,8 +89,8 @@ it, in the folder Obsidian's "Default location for new notes" setting says. `Ctr
 since it's Neovim's own jump list. Under the editor, **Backlinks** lists every note that links to
 the open one, with the line it's on. `Tab` into it and press `Enter` to open that note at the
 link, or press `b` to hide it. Edits are saved when you move to another note or quit. cold-lava uses `$VISUAL` or
-`$EDITOR` if it's Neovim or Vim, otherwise `nvim` from your `PATH`. Without either, the pane
-shows the reader.
+`$EDITOR` if it's Neovim or Vim (`$COLD_LAVA_EDITOR` comes first), otherwise `nvim` from your
+`PATH`. Without either, or with `COLD_LAVA_EDITOR=none`, the pane shows the reader.
 
 | Key | Action |
 | --- | --- |
@@ -299,6 +299,32 @@ cargo test                                   # unit tests
 cargo clippy --all-targets -- -D warnings    # lints, as in CI
 cargo fmt --check
 ```
+
+### Scripting and testing the UI
+
+`cold-lava drive` runs cold-lava in a hidden terminal and follows a script, one step per line:
+
+```bash
+cold-lava drive tests/drive/follow-link.drive -- example-vault
+```
+
+```
+# Notes open in the reader, not Neovim.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+# Each token is a key name (enter, tab, ctrl+q, …) or text.
+keys p kilau enter
+# Waits up to 5 s; `wait-for 10s TEXT` waits longer.
+wait-for Kīlauea  reading
+expect One of the most active volcanoes
+# Print the screen.
+screen
+keys q q
+exits 0
+```
+
+`#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
+`cold-lava --help` lists every step. Without a SCRIPT, the script is read from stdin.
 
 ## Versions and releases
 

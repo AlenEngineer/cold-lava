@@ -1,0 +1,14 @@
+# Open a note from the quick switcher in the reader, follow its first link, quit.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p kilau
+wait-for Kīlauea
+keys enter
+wait-for One of the most active volcanoes on Earth
+expect Volcanoes/Kīlauea  reading
+keys tab enter
+wait-for Concepts/Shield Volcano  reading
+expect-not Volcanoes/Kīlauea  reading
+# Esc then q in one step: back to the notes, then quit (not Alt-q).
+keys esc q
+exits 0
