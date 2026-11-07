@@ -225,6 +225,13 @@ fn describe(s: &Source) -> String {
 
 /// The value asked for, as the field carries it.
 fn input(src: &Source, v: &Value, value: &Json, daily_format: &str) -> Result<Json, String> {
+    // A checkbox holds one character as written, and a space is a status.
+    if let (Source::Checkbox(_), Json::String(s)) = (src, value)
+        && s.chars().count() == 1
+    {
+        return matcher::parse_as_written(v, s, daily_format)
+            .ok_or_else(|| format!("{s:?} is not a {}", v.name()));
+    }
     let text = match value {
         Json::Null => return Ok(Json::Null),
         Json::String(s) if s.trim().is_empty() => return Ok(Json::Null),
@@ -332,7 +339,9 @@ impl Writer<'_> {
             },
             Source::Marker(glyph) => match existing {
                 Some(span) if remove => {
+                    // `⏳️`: a variation selector after the glyph is part of it.
                     let lead = self.text[..span.start].trim_end_matches([' ', '\t']);
+                    let lead = lead.strip_suffix('\u{FE0F}').unwrap_or(lead);
                     if !lead.ends_with(glyph.as_str()) {
                         return Err(Refused(format!("{field}'s {glyph} isn't before its value")));
                     }
@@ -344,8 +353,13 @@ impl Writer<'_> {
                 }),
                 None => {
                     let value = self.written(false)?;
-                    Ok(match self.text[block.clone()].find(glyph.as_str()) {
-                        Some(i) => insert(block.start + i + glyph.len(), format!(" {value}")),
+                    let line = &self.text[block.clone()];
+                    Ok(match line.find(glyph.as_str()) {
+                        Some(i) => {
+                            let end = i + glyph.len();
+                            let end = end + line[end..].strip_prefix('\u{FE0F}').map_or(0, |_| 3);
+                            insert(block.start + end, format!(" {value}"))
+                        }
                         None => insert(block.end, format!(" {glyph} {value}")),
                     })
                 }
@@ -771,14 +785,22 @@ fn read_back(
             is.fields[field]
         )));
     }
+    // A field read from the very text that was set (a status's type, from its checkbox) may
+    // change with it.
+    let shares_text = |name: &str| {
+        was.spans
+            .get(name)
+            .is_some_and(|s| Some(s) == was.spans.get(field))
+    };
     if let Some((name, v)) = was
         .fields
         .iter()
-        .find(|(name, v)| *name != field && is.fields[name.as_str()] != **v)
+        .map(|(name, v)| (&**name, v))
+        .find(|&(name, v)| name != field && is.fields[name] != *v && !shares_text(name))
     {
         return Err(ReadBack(format!(
             "{name} would change too, from {v} to {}",
-            is.fields[name.as_str()]
+            is.fields[name]
         )));
     }
     let renamed = |id: &Option<String>| -> Option<String> {

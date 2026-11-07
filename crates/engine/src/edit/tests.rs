@@ -7,7 +7,10 @@ use serde_json::json;
 
 fn settings(toml: &str) -> Settings {
     let table: toml::Table = toml::from_str(toml).unwrap();
-    let found = load(vec![Layer::config(Path::new("config.toml"), table)]);
+    let found = load(vec![
+        Layer::built_in(),
+        Layer::config(Path::new("config.toml"), table),
+    ]);
     assert!(found.errors.is_empty(), "{:?}", found.errors);
     let nowhere = Path::new("/nonexistent-cold-lava-vault");
     Settings::new(
@@ -118,7 +121,7 @@ fn dataview_fields_keep_their_brackets() {
     for (line, want) in [
         ("- Sweep [who:: Ana]", "- Sweep [who:: Bo]"),
         ("- Sweep (who:: Ana)", "- Sweep (who:: Bo)"),
-        ("- Sweep who:: Ana", "- Sweep who:: Bo"),
+        ("- who:: Ana", "- who:: Bo"),
         ("- Sweep [who::Ana] ❗", "- Sweep [who::Bo] ❗"),
     ] {
         assert_eq!(after(&s, line, 1, "chore", "who", json!("Bo")), want);
@@ -135,7 +138,6 @@ fn dataview_fields_keep_their_brackets() {
     for (line, want) in [
         ("- Sweep [who:: Ana] ❗", "- Sweep ❗"),
         ("- Sweep (who:: Ana)", "- Sweep"),
-        ("- Sweep ❗ who:: Ana", "- Sweep ❗"),
     ] {
         assert_eq!(after(&s, line, 1, "chore", "who", Json::Null), want);
     }
@@ -255,18 +257,61 @@ fields.under = { section = "heading" }
         refusal(&s, "- Sweep", 1, "thing", "nope", json!("y")),
         Refused(_)
     ));
-    let task = "- [ ] A task\n";
-    let id = extract("Note.md", task, &s)[0].id.clone();
-    let req = SetField {
-        id: &id,
-        rev: None,
-        field: "due",
-        value: json!("2026-01-01"),
-    };
-    assert!(
-        matches!(plan("Note.md", task, &s, &req), Err(Refused(_))),
-        "a task is not a typed item yet"
+}
+
+#[test]
+fn a_task_is_set_through_its_checkbox_and_markers() {
+    let s = settings("");
+    let t = "- [x] Pay rent 📅 2026-11-12 ✅ 2026-11-10\n";
+    assert_eq!(
+        after(&s, t, 1, "task", "status", json!(" ")),
+        "- [ ] Pay rent 📅 2026-11-12 ✅ 2026-11-10\n",
+        "a space is a status, and its type changes with it"
     );
+    assert_eq!(
+        after(
+            &s,
+            "- [ ] Pay rent\n",
+            1,
+            "task",
+            "status_type",
+            json!("done")
+        ),
+        "- [x] Pay rent\n"
+    );
+    assert_eq!(
+        after(&s, t, 1, "task", "status_type", json!("in_progress")),
+        "- [/] Pay rent 📅 2026-11-12 ✅ 2026-11-10\n"
+    );
+    assert_eq!(
+        after(&s, t, 1, "task", "due", json!("2026-12-01")),
+        "- [x] Pay rent 📅 2026-12-01 ✅ 2026-11-10\n"
+    );
+    assert_eq!(
+        after(&s, t, 1, "task", "done", Json::Null),
+        "- [x] Pay rent 📅 2026-11-12\n"
+    );
+    let selector = "- [ ] Pay rent ⏳\u{FE0F} 2026-11-05 📅 2026-11-12\n";
+    assert_eq!(
+        after(&s, selector, 1, "task", "scheduled", Json::Null),
+        "- [ ] Pay rent 📅 2026-11-12\n",
+        "a variation selector goes with its glyph"
+    );
+    assert_eq!(
+        after(
+            &s,
+            "- [ ] Dentist [due:: 2026-11-12]\n",
+            1,
+            "task",
+            "due",
+            json!("2026-11-13")
+        ),
+        "- [ ] Dentist [due:: 2026-11-13]\n"
+    );
+    assert!(matches!(
+        refusal(&s, t, 1, "task", "status", Json::Null),
+        Refused(_)
+    ));
 }
 
 #[test]

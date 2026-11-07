@@ -63,9 +63,9 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   in one pulldown-cmark pass in the vault's flavour; `Vault::items()` caches them per note on
   first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`
   hashes the item's lines. Read tasks through items, not by scanning lines.
-- `tasks.rs`, `daily.rs`: Obsidian Tasks format (`parse_line` for one task line, statuses from
-  the plugin's settings; `agenda` and `toggle` read items), Daily notes settings, moment.js date
-  formats.
+- `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
+  `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
+  notes settings, moment.js date formats.
 - `paths.rs`: the user's home and config folders.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
