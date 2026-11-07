@@ -178,6 +178,62 @@ fn renames_moves_creates_and_deletes_folders_keeping_links() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn duplicates_a_note_and_merges_one_into_another_keeping_links() {
+    let dir = sandbox("merge");
+    let home = dir.join("home");
+    let vault = dir.join("example-vault");
+    let source = std::fs::read_to_string(vault.join("Concepts/Pāhoehoe.md")).unwrap();
+    let before = unresolved(&vault);
+    let out = drive_with("merge.drive", &dir, &["--home".as_ref(), home.as_os_str()]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        unresolved(&vault),
+        before,
+        "no link was left pointing nowhere"
+    );
+    let read = |rel: &str| std::fs::read_to_string(vault.join(rel)).unwrap();
+    assert_eq!(read("Volcanoes/Kīlauea 1.md"), read("Volcanoes/Kīlauea.md"));
+    assert!(!vault.join("Concepts/Pāhoehoe.md").exists());
+    assert_eq!(
+        read("Concepts/Lava.md"),
+        "---\ntags: [concept, lava]\naliases:\n  - Pāhoehoe\n---\n# Lava\n\n\
+         Molten rock that reaches the surface. Below ground it's called magma.\n\n\
+         ## Temperature\nBasaltic lava, the runny kind at a [[Shield Volcano]], erupts at roughly \
+         1,100–1,200 °C.\n\n## Textures\nWhen it cools, basaltic lava usually becomes either \
+         smooth, ropy [[Lava]] or rough, jagged\n[[ʻAʻā]]. Both names come from Hawaiian.\n\n\
+         # Pāhoehoe\n\nLava with a smooth, billowy or ropy surface, formed when hot, fluid \
+         [[Lava]] keeps a thin skin as\nit flows. Common at [[Kīlauea]]. Its rough counterpart \
+         is [[ʻAʻā]].\n"
+    );
+    for e in files_ending(&vault, "") {
+        let text = std::fs::read_to_string(&e).unwrap_or_default();
+        assert!(
+            !text.contains("[[Pāhoehoe"),
+            "{} still links to it",
+            e.display()
+        );
+    }
+    let trashed = system_trash(&home).join("Pāhoehoe.md");
+    assert_eq!(std::fs::read_to_string(&trashed).unwrap(), source);
+    assert_eq!(
+        files_ending(&system_trash(&home), "").len(),
+        1,
+        "the undone merge took its copy back out"
+    );
+    assert!(!vault.join(".trash").exists());
+    assert!(
+        in_real_trash(&dir).is_empty(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Trash entries in the user's real system trash that came from `dir`: there must be none.
 fn in_real_trash(dir: &Path) -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME") else {
