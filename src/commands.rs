@@ -806,6 +806,12 @@ impl Key {
         };
         Some(Key { code, mods })
     }
+
+    /// What a terminal sends for this key. `app_cursor`: the program asked for application
+    /// cursor keys (arrows as `ESC O A`).
+    pub fn bytes(&self, app_cursor: bool) -> Vec<u8> {
+        crate::embed::encode_key(KeyEvent::new(self.code, self.mods), app_cursor)
+    }
 }
 
 impl From<KeyEvent> for Key {

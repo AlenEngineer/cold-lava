@@ -1,0 +1,20 @@
+# Restart the embedded Neovim from the command palette (nvim.restart), then quit.
+wait-for example-vault
+keys p kilau enter
+wait-for 10s [[Shield Volcano]]
+# Line numbers mark this Neovim: a restarted one starts without them.
+type :set number
+keys enter
+wait-for 1 ---
+keys ctrl+q
+keys :
+type restart
+wait-for nvim.restart
+keys enter
+wait-for restarting Neovim
+wait-gone 10s 1 ---
+wait-for 10s [[Shield Volcano]]
+expect Volcanoes/Kīlauea  Neovim
+screen
+keys q
+exits 0

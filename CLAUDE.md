@@ -67,6 +67,8 @@ required checks on `main`.
   or Kitty-graphics pixels drawn under the text with `z=-1`; colour groups).
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers.
+- `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
+  with vt100, cursor-position queries answered.
 
 ## Rules that keep it compatible with Obsidian
 
@@ -101,10 +103,13 @@ required checks on `main`.
 
 - `example-vault/` is the showcase vault and is used by tests (they count its notes and groups).
   Copy it to a temp folder before trying anything that writes.
-- The TUI can be driven headless with tmux (`tmux new-session -d -x 160 -y 44 …`,
-  `send-keys`, `capture-pane -p`). The embedded editor needs `nvim` (or `vim`) installed.
+- Drive the TUI headless with `cold-lava drive SCRIPT -- VAULT` (`cold-lava --help` lists the
+  steps; `tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`. Set `HOME`
+  and `XDG_CONFIG_HOME` to a temp folder so runs don't add vaults to your own list, and
+  `env COLD_LAVA_EDITOR=none` for the reader instead of Neovim. The embedded editor needs `nvim`
+  (or `vim`) installed.
 - Pixel mode only shows in terminals with the Kitty graphics protocol (Ghostty, Kitty, WezTerm),
-  not in tmux; check it in the real terminal.
+  not in a pseudo-terminal or tmux; check it in the real terminal.
 
 ## Where things stand
 

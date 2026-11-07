@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod core;
 mod daily;
+mod drive;
 mod embed;
 mod ext;
 mod graph;
@@ -40,6 +41,8 @@ Usage:
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
   cold-lava keys                      every command and its keys; checks config.toml
+  cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
+                                      checking the screen as SCRIPT says (stdin if none)
 
 Options:
   --braille            force braille rendering
@@ -54,7 +57,8 @@ Options:
   -h, --help           this help
 
 DATE is YYYY-MM-DD, today, tomorrow or yesterday. Press ? inside the app for keys.
-Keys are set by command id under [keys] in ~/.config/cold-lava/config.toml.";
+Keys are set by command id under [keys] in ~/.config/cold-lava/config.toml.
+COLD_LAVA_EDITOR=none opens notes in the reader even when Neovim is installed.";
 
 /// Command-line arguments: positional words, `--flag value` options and `--switch`es.
 struct Args {
@@ -118,9 +122,15 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("drive") {
+        return drive();
+    }
     let args = Args::parse()?;
     if args.has("help") {
-        println!("{USAGE}");
+        println!("{USAGE}\n\nA drive script has one step per line:");
+        for line in drive::SYNTAX.lines() {
+            println!("  {line}");
+        }
         return Ok(());
     }
     if args.has("version") {
@@ -337,6 +347,34 @@ fn run() -> Result<()> {
             with_terminal(|t| home.run(t))
         }
     }
+}
+
+/// `drive [SCRIPT] [-- ARGS…]`, parsed apart from `Args`: ARGS belong to the program under test.
+fn drive() -> Result<()> {
+    let mut words = std::env::args().skip(2);
+    let mut ours: Vec<String> = words.by_ref().take_while(|w| w != "--").collect();
+    let theirs: Vec<String> = words.collect();
+    if ours.len() > 1 {
+        anyhow::bail!("usage: cold-lava drive [SCRIPT] [-- ARGS…]");
+    }
+    let (name, src) = match ours.pop() {
+        Some(path) => {
+            let src = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("couldn't read {path}: {e}"))?;
+            (path, src)
+        }
+        None => {
+            let mut src = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut src)?;
+            ("<stdin>".to_string(), src)
+        }
+    };
+    let script =
+        drive::parse(&src).map_err(|e| anyhow::anyhow!("{name}:{}: {}", e.line, e.message))?;
+    if !drive::run(&name, &script, &std::env::current_exe()?, &theirs)? {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {

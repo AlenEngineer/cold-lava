@@ -62,22 +62,8 @@ impl Embedded {
             .spawn_command(cmd)
             .with_context(|| format!("couldn't start {program}"))?;
         drop(pair.slave);
-        let mut reader = pair.master.try_clone_reader()?;
+        let rx = read_in_background(pair.master.try_clone_reader()?);
         let writer = pair.master.take_writer()?;
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 16 * 1024];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
         Ok(Embedded {
             parser: vt100::Parser::new(nz(rows), nz(cols), 0),
             master: pair.master,
@@ -263,6 +249,25 @@ impl Drop for Embedded {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
+}
+
+/// Read a pty's output on a thread; the channel disconnects when the program's side closes.
+pub fn read_in_background(mut reader: Box<dyn Read + Send>) -> Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    rx
 }
 
 /// Decode the payload encoding used by our Vim script: `%u<hex>;` stands for one character.

@@ -1,0 +1,3 @@
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+expect Atlantis
