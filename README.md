@@ -122,7 +122,7 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `d` / `u` | delete the note or whiteboard (to the trash, after showing what links to it) / undo |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
-| `n` / `a` | new note in the selected folder / add a vault |
+| `n` / `a` | new note in the selected folder (`Tab` picks a template) / add a vault |
 | `z`, `e`, `O` | zoom the editor · edit in `$EDITOR` full screen · open in Obsidian |
 | `,` | which key: this screen's commands by group; type one's key to run it, `Esc` closes |
 | `?` | help: every key, with a longer description |
@@ -277,6 +277,28 @@ The syntax names are `tables`, `task-lists`, `strikethrough`, `footnotes`, `aler
 `> [!NOTE]`), `wikilinks`, `embeds`, `callouts`, `highlights`, `comments`, `tags`, `block-ids`,
 `math` and `frontmatter`. Mistakes are reported by `cold-lava keys` and fall back to the
 default.
+
+### New notes and templates
+
+Press `n` and type a name to create a note in the selected folder (or next to the selected note),
+then `Enter`: it opens right away. If the vault has templates, a list under the name offers them,
+with **No template** first and chosen. `Tab` / `Shift-Tab` (or `↓`/`↑`) picks another, so a plain
+note is still just `n`, a name and `Enter`. The new file is never written over an existing one.
+
+Templates are the notes in the folder set in Obsidian's core **Templates** settings
+(`.obsidian/templates.json`), and in Templater's templates folder if that plugin is set up. If
+neither is set, `n` makes a plain note. cold-lava fills the core Templates variables: `{{title}}`
+(the note's name), `{{date}}` and `{{time}}` in the formats from the same settings (default
+`YYYY-MM-DD` and `HH:mm`), and `{{date:FORMAT}}` / `{{time:FORMAT}}` with a moment.js format such
+as `{{date:dddd, MMMM Do YYYY}}`. Other `{{…}}` text is kept as written, and so are Templater
+commands (`<% … %>`): cold-lava doesn't run them, Obsidian with Templater will when you open the
+note there. Notes in a templates folder aren't read as items, so a template's tasks and types
+don't show up in the agenda or in `cold-lava items`.
+
+The example vault has two: **Daily** (used by the daily notes) and **Volcano**, which starts a
+note tagged `#volcano`, a [type](#types) the vault defines.
+
+A link to a note that doesn't exist yet still creates a plain note when you follow it.
 
 ### Renaming and moving notes
 

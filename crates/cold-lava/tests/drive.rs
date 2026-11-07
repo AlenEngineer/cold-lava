@@ -99,6 +99,49 @@ fn deletes_a_note_to_the_system_trash_and_undoes_it() {
 }
 
 #[test]
+fn creates_a_note_from_a_template() {
+    let dir = sandbox("template");
+    let vault = dir.join("example-vault");
+    let out = drive("template.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let today = today();
+    let etna = std::fs::read_to_string(vault.join("Volcanoes/Etna.md")).unwrap();
+    assert!(etna.starts_with("---\ntags: [volcano]\n"), "{etna}");
+    assert!(etna.contains(&format!("\nadded: {today}\n")), "{etna}");
+    assert!(etna.contains("\n# Etna\n"), "{etna}");
+    assert!(!etna.contains("{{"), "{etna}");
+    assert_eq!(
+        std::fs::read_to_string(vault.join("Volcanoes/Plain.md")).unwrap(),
+        "# Plain\n\n"
+    );
+    let items = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .args(["items".as_ref(), vault.as_os_str(), "volcano".as_ref()])
+        .output()
+        .unwrap();
+    let items = String::from_utf8_lossy(&items.stdout);
+    assert!(
+        items.contains("Volcanoes/Etna.md:1  volcano  name Etna"),
+        "{items}"
+    );
+    assert!(
+        !items.contains("Templates/"),
+        "a template isn't an item: {items}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Today's date as YYYY-MM-DD, from `date`, the way the program's local clock reads it.
+fn today() -> String {
+    let out = Command::new("date").arg("+%Y-%m-%d").output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[test]
 fn opens_a_note_follows_a_link_and_quits() {
     let dir = sandbox("follow-link");
     let out = drive("follow-link.drive", &dir);
@@ -236,7 +279,7 @@ fn a_false_expect_fails_with_its_line_and_the_screen() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("example-vault 33 notes"),
+        stdout.contains("example-vault 34 notes"),
         "the screen: {stdout}"
     );
     let _ = std::fs::remove_dir_all(dir);

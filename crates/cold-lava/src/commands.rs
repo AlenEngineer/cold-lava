@@ -296,7 +296,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.new",
         Group::Note,
         "new note",
-        "new note in the selected folder",
+        "new note in the selected folder (Tab picks a template)",
         &["n"],
     ),
     cmd(

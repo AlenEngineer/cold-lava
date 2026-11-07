@@ -17,7 +17,8 @@ mod term;
 mod whichkey;
 
 use cold_lava_engine::{
-    core, daily, index, items, markdown, paths, rename, search, tasks, trash, types, vault, write,
+    core, daily, index, items, markdown, paths, rename, search, tasks, templates, trash, types,
+    vault, write,
 };
 
 use anyhow::Result;

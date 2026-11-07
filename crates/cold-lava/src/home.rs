@@ -19,7 +19,7 @@ use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
 use crate::reader::{Reader, Spot};
 use crate::trash::{self, TrashOption, Trashed, Went};
-use crate::{board, term, vault, whichkey};
+use crate::{board, templates, term, vault, whichkey};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -340,7 +340,13 @@ struct BackRow {
 enum Mode {
     Normal,
     Filter,
-    NewNote(String),
+    /// Typing a new note's name; `templates` are the vault's (vault-relative without `.md`, and
+    /// the name shown), and `template` is the chosen one's place in them, `None` for none.
+    NewNote {
+        name: String,
+        templates: Vec<(String, String)>,
+        template: Option<usize>,
+    },
     AddVault(String),
     Help,
     /// Which key: the commands this screen has, by group, until a key is typed.
@@ -1428,7 +1434,46 @@ impl Home {
                 }
                 return Ok(());
             }
-            Mode::NewNote(name) | Mode::AddVault(name) => {
+            Mode::NewNote {
+                name,
+                templates,
+                template,
+            } => {
+                match k.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Backspace => {
+                        name.pop();
+                    }
+                    KeyCode::Tab | KeyCode::Down if !templates.is_empty() => {
+                        *template = match *template {
+                            None => Some(0),
+                            Some(i) if i + 1 < templates.len() => Some(i + 1),
+                            Some(_) => None,
+                        };
+                    }
+                    KeyCode::BackTab | KeyCode::Up if !templates.is_empty() => {
+                        *template = match *template {
+                            None => Some(templates.len() - 1),
+                            Some(0) => None,
+                            Some(i) => Some(i - 1),
+                        };
+                    }
+                    KeyCode::Char('u') if ctrl => name.clear(),
+                    KeyCode::Char(_) if ctrl => {}
+                    KeyCode::Char(c) => name.push(c),
+                    KeyCode::Enter => {
+                        let text = name.trim().to_string();
+                        let template = template.map(|i| templates[i].0.clone());
+                        self.mode = Mode::Normal;
+                        if !text.is_empty() {
+                            self.create_note(&text, template.as_deref())?;
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            Mode::AddVault(name) => {
                 match k.code {
                     KeyCode::Esc => self.mode = Mode::Normal,
                     KeyCode::Backspace => {
@@ -1439,14 +1484,9 @@ impl Home {
                     KeyCode::Char(c) => name.push(c),
                     KeyCode::Enter => {
                         let text = name.trim().to_string();
-                        let new_note = matches!(self.mode, Mode::NewNote(_));
                         self.mode = Mode::Normal;
                         if !text.is_empty() {
-                            if new_note {
-                                self.create_note(&text)?;
-                            } else {
-                                self.add_vault(&text);
-                            }
+                            self.add_vault(&text);
                         }
                     }
                     _ => {}
@@ -1807,7 +1847,13 @@ impl Home {
             MenuAction::Graph => self.go_from_here(Place::Graph { selected: None }, terminal)?,
             MenuAction::Boards => self.open_boards(terminal, None)?,
             MenuAction::History(a) => self.travel(a, terminal)?,
-            MenuAction::NewNote => self.mode = Mode::NewNote(String::new()),
+            MenuAction::NewNote => {
+                self.mode = Mode::NewNote {
+                    name: String::new(),
+                    templates: self.templates(),
+                    template: None,
+                }
+            }
             MenuAction::Today => self.open_today(),
             MenuAction::AddVault => self.mode = Mode::AddVault(String::new()),
             MenuAction::Rescan => {
@@ -3061,7 +3107,27 @@ impl Home {
         });
     }
 
-    fn create_note(&mut self, name: &str) -> Result<()> {
+    /// The vault's templates, from the folders its Templates settings name.
+    fn templates(&self) -> Vec<(String, String)> {
+        let (Some(root), Some(core)) = (&self.root, &self.core) else {
+            return Vec::new();
+        };
+        let settings = templates::Settings::load(root);
+        let mut found: Vec<(String, String)> = core
+            .index
+            .vault
+            .notes
+            .iter()
+            .filter(|n| settings.is_template(&n.rel))
+            .map(|n| (n.rel.clone(), settings.name(&n.rel).to_string()))
+            .collect();
+        found.sort_by_key(|(_, name)| vault::search_key(name));
+        found
+    }
+
+    /// Create the note `name` in the selected folder, from `template` (vault-relative, without
+    /// `.md`) if one is given, and open it.
+    fn create_note(&mut self, name: &str, template: Option<&str>) -> Result<()> {
         let Some(root) = self.root.clone() else {
             return Ok(());
         };
@@ -3090,11 +3156,24 @@ impl Home {
             self.flash(format!("{rel} already exists"));
         } else {
             let title = name.trim_end_matches(".md");
-            crate::write::create(&path, format!("# {title}\n\n").as_bytes())?;
+            let filled = template
+                .map(|t| templates::new_note(&root, t, title.rsplit('/').next().unwrap_or(title)));
+            let body = match filled {
+                Some(Ok(body)) => body,
+                Some(Err(e)) => {
+                    self.flash(format!("{e:#}"));
+                    return Ok(());
+                }
+                None => format!("# {title}\n\n"),
+            };
+            crate::write::create(&path, body.as_bytes())?;
             if !folder.is_empty() {
                 self.expanded.insert(folder);
             }
-            self.flash(format!("created {rel}"));
+            self.flash(match template {
+                Some(t) => format!("created {rel} from {}", t.rsplit('/').next().unwrap_or(t)),
+                None => format!("created {rel}"),
+            });
         }
         // Make sure the new note is visible, even if a filter was active.
         self.filter.clear();
@@ -3226,20 +3305,20 @@ impl Home {
                 draw_help(f, main, menu, &self.reader_keys, &self.pane_keys, editor)
             }
             Mode::Keys => whichkey::draw(f, main, &self.key_hints()),
-            Mode::NewNote(name) => prompt(
-                f,
-                main,
-                " new note · ⏎ create · Esc cancel ",
-                "name: ",
+            Mode::NewNote {
                 name,
-            ),
-            Mode::AddVault(name) => prompt(
-                f,
-                main,
-                " add a vault · ⏎ add · Esc cancel ",
-                "folder: ",
-                name,
-            ),
+                templates,
+                template,
+            } => draw_new_note(f, main, name, templates, *template),
+            Mode::AddVault(name) => {
+                prompt(
+                    f,
+                    main,
+                    " add a vault · ⏎ add · Esc cancel ",
+                    "folder: ",
+                    name,
+                );
+            }
             _ => {}
         }
     }
@@ -4219,7 +4298,67 @@ fn highlight(
     spans
 }
 
-fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) {
+/// The new-note prompt, with the vault's templates under it when it has some.
+fn draw_new_note(
+    f: &mut Frame,
+    area: Rect,
+    name: &str,
+    templates: &[(String, String)],
+    template: Option<usize>,
+) {
+    if templates.is_empty() {
+        prompt(
+            f,
+            area,
+            " new note · ⏎ create · Esc cancel ",
+            "name: ",
+            name,
+        );
+        return;
+    }
+    let title = " new note · Tab template · ⏎ create · Esc cancel ";
+    let r = prompt(f, area, title, "name: ", name);
+    let room = area.bottom().saturating_sub(r.bottom()) as usize;
+    let rows = (templates.len() + 1).min(room.saturating_sub(2));
+    let list = Rect::new(r.x, r.bottom(), r.width, rows as u16 + 2);
+    let shown = template.map_or(0, |i| i + 1);
+    let start = shown.saturating_sub(rows.saturating_sub(1));
+    let choices =
+        std::iter::once("No template").chain(templates.iter().map(|(_, name)| name.as_str()));
+    let lines: Vec<Line> = choices
+        .enumerate()
+        .skip(start)
+        .take(rows)
+        .map(|(i, t)| {
+            let style = if i == shown {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else if i == 0 {
+                Style::new().fg(MUTED)
+            } else {
+                Style::new().fg(NOTE)
+            };
+            let width = list.width.saturating_sub(2) as usize;
+            let mark = if i == shown { "▸" } else { " " };
+            Line::styled(
+                format!("{mark} {t:<w$}", w = width.saturating_sub(2)),
+                style,
+            )
+        })
+        .collect();
+    f.render_widget(Clear, list);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(ACCENT_SOFT))
+                .title(" template "),
+        ),
+        list,
+    );
+}
+
+/// Draw a one-line prompt in the upper middle of `area`; returns where it went.
+fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) -> Rect {
     let w = 60.min(area.width.saturating_sub(4));
     let r = Rect::new(
         area.x + (area.width - w) / 2,
@@ -4241,6 +4380,7 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) {
         ),
         r,
     );
+    r
 }
 
 /// The centred popup shared by the quick switcher and the command palette; returns its inside.
