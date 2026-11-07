@@ -2,7 +2,7 @@
 //! https://jsoncanvas.org). Boards made here open in Obsidian, and vice versa.
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
-use crate::commands::{self, BoardAction, HistoryAction, Keymap};
+use crate::commands::{self, BoardAction, HistoryAction, Key, KeyHint, Keymap};
 use crate::history::{Exit, Nav};
 use crate::term;
 use anyhow::{Context as _, Result};
@@ -150,6 +150,8 @@ enum Mode {
         pos: usize,
     },
     Help,
+    /// Which key: the whiteboard's commands by group, until a key is typed.
+    Keys,
 }
 
 enum Drag {
@@ -1153,6 +1155,12 @@ impl Board {
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+        if matches!(self.mode, Mode::Keys) {
+            self.mode = Mode::Normal;
+            if !self.key_hints().iter().any(|h| h.key == Key::from(k)) {
+                return Ok(());
+            }
+        }
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
@@ -1220,7 +1228,7 @@ impl Board {
                 }
                 return Ok(());
             }
-            Mode::Normal => {}
+            Mode::Normal | Mode::Keys => {}
         }
 
         if let Some(a) = self.keys.get(k) {
@@ -1279,10 +1287,17 @@ impl Board {
         Ok(())
     }
 
+    /// The which-key popup's lines: the whiteboard's commands, and Back / Forward.
+    fn key_hints(&self) -> Vec<KeyHint> {
+        let show = |a| a != BoardAction::Keys;
+        commands::screen_key_hints(commands::BOARD, &self.keys, show, self.nav.as_ref())
+    }
+
     fn run_action(&mut self, a: BoardAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match a {
             BoardAction::Quit => self.request_quit(),
             BoardAction::Help => self.mode = Mode::Help,
+            BoardAction::Keys => self.mode = Mode::Keys,
             BoardAction::Escape => self.sel = None,
             BoardAction::Undo => self.undo(),
             BoardAction::Redo => self.redo(),
@@ -1369,7 +1384,7 @@ impl Board {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
-        if matches!(self.mode, Mode::Help | Mode::PickFile { .. }) {
+        if matches!(self.mode, Mode::Help | Mode::Keys | Mode::PickFile { .. }) {
             return;
         }
         if matches!(self.mode, Mode::Edit { .. }) {
@@ -1580,6 +1595,7 @@ impl Board {
         self.draw_status(f, status);
         match &self.mode {
             Mode::Help => draw_help(f, main, &self.keys, self.nav.as_ref().map(|(_, k)| k)),
+            Mode::Keys => crate::whichkey::draw(f, main, &self.key_hints()),
             Mode::PickFile { query, pos } => {
                 let (q, p) = (query.clone(), *pos);
                 self.draw_picker(f, main, &q, p);
@@ -1939,10 +1955,22 @@ impl Board {
                 Style::new().fg(HIT),
             ),
             (_, Some((m, _))) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
-            _ => Line::styled(
-                " n new  a add linked  f note  G group  c connect  ⏎ edit  1-6 colour  d delete  u undo  ⇧+arrows move  ? help  q back",
-                Style::new().fg(DIM),
-            ),
+            _ => {
+                let k = |id| self.keys.first_label(id);
+                Line::styled(
+                    format!(
+                        " {} new  {} connect  {} edit  ⇧+arrows move  {} undo  {} keys  {} help  {} back",
+                        k("board.new-card"),
+                        k("board.connect"),
+                        k("board.edit"),
+                        k("board.undo"),
+                        k("board.keys"),
+                        k("board.help"),
+                        k("board.quit"),
+                    ),
+                    Style::new().fg(DIM),
+                )
+            }
         };
         f.render_widget(Paragraph::new(vec![info, second]), area);
     }

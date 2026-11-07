@@ -104,6 +104,19 @@ fn follows_attachment_links_without_creating_notes_for_them() {
 }
 
 #[test]
+fn which_key_lists_and_runs_each_screens_commands() {
+    let dir = sandbox("which-key");
+    let out = drive("which-key.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn goes_back_and_forward_through_notes_and_a_search() {
     let dir = sandbox("history");
     let out = drive("history.drive", &dir);

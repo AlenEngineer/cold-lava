@@ -123,6 +123,15 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder / add a vault |
 | `z`, `e`, `O` | zoom the editor · edit in `$EDITOR` full screen · open in Obsidian |
+| `,` | which key: this screen's commands by group; type one's key to run it, `Esc` closes |
+| `?` | help: every key, with a longer description |
+
+**Which key.** The status line shows only a few keys. Press `,` (`app.keys`) for the rest: a
+popup at the bottom lists what you can do on this screen right now, grouped (move, go, links,
+note, view, app, and extensions' commands), each with its key. Type a key from it to run that
+command, or `Esc` to close it. In the reader it lists the reader's keys and the menu keys the
+reader leaves free; the graph (`graph.keys`) and whiteboards (`board.keys`) have their own. It
+is built from the same tables as the keys, so it shows the keys you set in `config.toml`.
 
 If Neovim gets into a bad state, or you changed its config, run `nvim.restart` from the
 palette. It saves every note, quits Neovim, and starts it again on the same note.
@@ -141,6 +150,7 @@ In the reader:
 | `o` | outline: the note's headings; type to filter, `Enter` jumps to one (Back returns) |
 | `]` / `[` | next heading / this section's heading, or the one before |
 | `e` | edit the note in `$EDITOR` full screen |
+| `,` | which key: the reader's commands and the menu's, by group |
 | `Esc` / `q` | back to the notes |
 
 Other menu keys (`p`, `s`, `:`, `?`, `R`, ...) work in the reader too.
@@ -175,6 +185,7 @@ places of the open vault.
 | scroll, drag | zoom at the cursor, pan, drag nodes |
 | `0` / `c` / `a` | fit / centre on selection / label mode |
 | `space` / `r` / `q` | pause layout / rescan / quit |
+| `,` / `?` | which key: the graph's commands by group / help |
 | `Ctrl-o` / `Alt-←`, `Alt-→` | from the menu: back to where you were, forward again |
 
 ### Whiteboard
@@ -191,6 +202,7 @@ places of the open vault.
 | `1`–`6` / `0` | Obsidian colour presets / clear |
 | `d`, `u` / `U` | delete, undo / redo |
 | `o` | open the note, or the board itself, in Obsidian |
+| `,` / `?` | which key: the whiteboard's commands by group / help |
 | `Ctrl-o` / `Alt-←` / `Backspace`, `Alt-→` | from the menu: back to where you were, forward again |
 
 Every change saves straight to the `.canvas` file. Fields that cold-lava doesn't use are
@@ -232,7 +244,7 @@ changed in `~/.config/cold-lava/config.toml` (or `$XDG_CONFIG_HOME/cold-lava/con
 ```
 
 Keys are written like `g`, `G`, `ctrl+o`, `alt+x`, `shift+tab`, `esc`, `enter`, `space`,
-`backspace`, `delete`, `up`, `down`, `left`, `right`, `pageup`, `pagedown`, `home`, `end`. The help screens (`?`) and the command palette show the keys you set.
+`backspace`, `delete`, `up`, `down`, `left`, `right`, `pageup`, `pagedown`, `home`, `end`. The help screens (`?`), the which-key popup (`,`) and the command palette show the keys you set.
 `cold-lava keys` lists every command with its keys and reports mistakes in the file. A mistake
 never stops the app: an unknown id or a key that doesn't parse is skipped, and when two commands
 on the same screen would share a key, both keep their default keys.

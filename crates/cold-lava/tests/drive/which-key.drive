@@ -1,0 +1,59 @@
+# Which key: , lists the screen's commands by group; typing one's key runs it, Esc closes.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+wait-for , keys  ? help  q quit
+keys ,
+wait-for keys · type one to run it · Esc closes
+wait-for g  graph
+wait-for p  go to note
+keys esc
+wait-gone keys · type one to run it
+keys p
+type lava
+wait-for 1 notes
+keys enter
+wait-for Concepts/Lava  reading
+wait-for reading · j / ↓ scroll · Tab next link · Enter follow · , keys · ? help · Esc / q back to notes
+keys ,
+wait-for keys · type one to run it · Esc closes
+wait-for o  outline
+wait-for f  hints
+wait-for j  down
+wait-for Enter  follow
+expect-not ,  keys
+screen
+keys o
+wait-gone keys · type one to run it
+wait-for 3 of 3 headings
+keys esc
+wait-gone 3 of 3 headings
+keys ,
+wait-for keys · type one to run it
+keys x
+wait-gone keys · type one to run it
+expect Concepts/Lava  reading
+# The graph and the whiteboard have their own.
+keys esc g
+wait-for , keys  ? help  q quit
+keys ,
+wait-for keys · type one to run it
+wait-for t  tags
+wait-for p  pixels
+keys esc
+wait-gone keys · type one to run it
+keys w
+wait-for Eruptions Timeline.canvas
+keys enter
+wait-for whiteboard Eruptions Timeline
+wait-for , keys  ? help  q back
+keys ,
+wait-for keys · type one to run it
+wait-for 1  red
+wait-for n  new card
+keys ?
+wait-for this help
+keys esc q
+wait-for , keys  ? help  q quit
+keys q
+exits 0

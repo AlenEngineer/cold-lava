@@ -4,7 +4,8 @@
 
 use crate::app::{self, ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
 use crate::commands::{
-    self, Entry, HistoryAction, Keymap, MenuAction, MenuCommand, PaneAction, ReaderAction,
+    self, Entry, HistoryAction, Key, KeyHint, Keymap, MenuAction, MenuCommand, PaneAction,
+    ReaderAction,
 };
 use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
@@ -17,7 +18,7 @@ use crate::history::{Exit, History, Nav, Place};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
 use crate::reader::{Reader, Spot};
-use crate::{board, term, vault};
+use crate::{board, term, vault, whichkey};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -341,6 +342,8 @@ enum Mode {
     NewNote(String),
     AddVault(String),
     Help,
+    /// Which key: the commands this screen has, by group, until a key is typed.
+    Keys,
     /// Quick switcher: jump to a note by (fuzzy) name.
     Switcher {
         query: String,
@@ -1331,6 +1334,12 @@ impl Home {
             self.rename_key(k);
             return Ok(());
         }
+        if matches!(self.mode, Mode::Keys) {
+            self.mode = Mode::Normal;
+            if !self.key_hints().iter().any(|h| h.key == Key::from(k)) {
+                return Ok(());
+            }
+        }
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
@@ -1405,7 +1414,7 @@ impl Home {
             | Mode::Hints(_)
             | Mode::Outline { .. }
             | Mode::Peek { .. } => return Ok(()),
-            Mode::Normal => {}
+            Mode::Normal | Mode::Keys => {}
         }
 
         if self.focus == Focus::Pane
@@ -1424,6 +1433,24 @@ impl Home {
             Focus::Pane => {}
         }
         Ok(())
+    }
+
+    /// The which-key popup's lines: in the reader its own commands, then the menu's on keys
+    /// it leaves free; only commands that can run now.
+    fn key_hints(&self) -> Vec<KeyHint> {
+        let reading = self.focus == Focus::Pane && self.reader.is_some();
+        let mut hints = Vec::new();
+        if reading {
+            let table = commands::entries(commands::READER);
+            hints = commands::key_hints(&table, &self.reader_keys, |_| false, |_| true);
+        }
+        hints.extend(commands::key_hints(
+            self.registry.commands(),
+            &self.keys,
+            |k| reading && self.reader_keys.has(k),
+            |c| c != MenuCommand::Core(MenuAction::Keys) && self.enabled(c),
+        ));
+        hints
     }
 
     fn enabled(&self, c: MenuCommand) -> bool {
@@ -1683,6 +1710,7 @@ impl Home {
             }
             MenuAction::Quit => self.quit = true,
             MenuAction::Help => self.mode = Mode::Help,
+            MenuAction::Keys => self.mode = Mode::Keys,
             MenuAction::FocusNext => {
                 let has_backs = self.show_backlinks && !self.backs.is_empty();
                 self.focus = match self.focus {
@@ -2813,6 +2841,7 @@ impl Home {
                 let menu = (self.registry.commands(), &self.keys);
                 draw_help(f, main, menu, &self.reader_keys, &self.pane_keys, editor)
             }
+            Mode::Keys => whichkey::draw(f, main, &self.key_hints()),
             Mode::NewNote(name) => prompt(
                 f,
                 main,
@@ -3631,16 +3660,12 @@ impl Home {
             (Focus::Pane, _) if self.reader.is_some() => {
                 let k = |id| self.reader_keys.label(id);
                 format!(
-                    " reading · {} scroll · {} page · {} next link · {} follow · {} hints · {} outline · {} {} headings · {} edit · {} back to notes",
+                    " reading · {} scroll · {} next link · {} follow · {} keys · {} help · {} back to notes",
                     k("reader.down"),
-                    k("reader.page-down"),
                     k("reader.next-link"),
                     k("reader.follow"),
-                    self.keys.label("note.hints"),
-                    self.keys.label("note.outline"),
-                    k("reader.next-heading"),
-                    k("reader.previous-heading"),
-                    k("reader.edit"),
+                    self.keys.label("app.keys"),
+                    self.keys.label("app.help"),
                     k("reader.back"),
                 )
             }
@@ -3665,8 +3690,14 @@ impl Home {
                 } else {
                     "⏎ edit"
                 };
+                let k = |id| self.keys.first_label(id);
                 format!(
-                    " ↑↓ move  ←→ fold  {edit}  / filter  p go to  : commands  s search  R rename  m move  g graph  w boards  t today  n new  z zoom  ? help  q quit"
+                    " ↑↓ move  ←→ fold  {edit}  {} go to  {} search  {} keys  {} help  {} quit",
+                    k("note.switch"),
+                    k("search.open"),
+                    k("app.keys"),
+                    k("app.help"),
+                    k("app.quit"),
                 )
             }
         };
