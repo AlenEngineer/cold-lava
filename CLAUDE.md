@@ -113,7 +113,8 @@ required checks on `main`.
 
 ## Where things stand
 
-- The extension API design is in `docs/extensions.md`. The connection to extensions must stay
+- The whole picture (engine layers, engine vs. frontends) is `docs/engine.md`; keep the engine
+  free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
   it; the graph, canvas, agenda and the menu should become extensions of the core too. Then

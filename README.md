@@ -294,6 +294,9 @@ and the exit code is **3**, so the caller can refresh. In the main menu, `t` ope
 
 ## Development
 
+How it fits together: [docs/engine.md](docs/engine.md) (the engine, its layers and the
+frontends) and [docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
+
 ```bash
 cargo test                                   # unit tests
 cargo clippy --all-targets -- -D warnings    # lints, as in CI
