@@ -45,6 +45,9 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   its core to the graph view and gets it back. Don't add another watcher or full rescan loop.
 - `write.rs`: the only way to write to a vault: `write_atomic`, `replace` (refused if the file
   changed since it was read), `create`, `move_file`. Never call `std::fs::write` on vault files.
+- `trash.rs`: the only way to delete: `delete` moves a file to the trash the vault's
+  `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
+  changed since it was read; `restore` puts it back.
 - `vault.rs`: scans a vault: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
