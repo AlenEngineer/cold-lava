@@ -14,6 +14,7 @@ pub mod merge;
 pub mod paths;
 pub mod rename;
 pub mod search;
+pub mod shadow;
 pub mod tasks;
 pub mod templates;
 pub mod tidy;

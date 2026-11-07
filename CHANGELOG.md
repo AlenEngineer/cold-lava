@@ -25,6 +25,24 @@ change commands, keys and file formats; patch versions only fix things.
   and nothing is written unless the item reads back exactly the new value with nothing else in
   the note changed. A stale rev exits with code 3. The engine's `edit::set_field` does it, for
   the coming `items/edit set-field`.
+- The task as a type definition, in shadow mode: `crates/engine/types/task.toml` defines `task`
+  in the same TOML as anyone's types, with the vault's Tasks plugin statuses and global filter
+  filled in. Tasks are still read the old way. `cold-lava types VAULT --shadow` (`--json`)
+  reads every task both ways and lists each field that reads differently (status, dates,
+  priority, recurrence, words, tags, links, id), exiting 1 when one does. With the definition, a
+  type that `extends = "task"` takes the tasks it matches and still answers to `task`.
+- Types can read a task's checkbox (`checkbox = true`, a space included), leave strings out of
+  the rest of the text (`rest = { without = ["#task"] }`), read the date of the daily note they
+  are in (`note = "date"`), take an enum's values from `${tasks.statuses}`, and name fields a
+  block must have (`required = ["text"]`; without one, the next type that matches takes it).
+  `${tasks.global-filter}`, `${tasks.statuses}`, `${tasks.format}` and `${daily.format}` in a
+  pattern now stand for the vault's settings. A marker reads past an emoji's variation selector
+  (`⏳️ 2026-11-05`), and a `flags` source leaves every one of its glyphs out of the rest.
+
+### Changed
+
+- A typed item whose shape has a `key` with a text field is identified by that text as written,
+  not as a JSON string, as tasks are; such items get a new id once.
 
 ## [0.3.0] - 2026-11-07
 

@@ -243,6 +243,7 @@ fn input(src: &Source, v: &Value, value: &Json, daily_format: &str) -> Result<Js
     let not = || format!("{text:?} is not a {}", v.name());
     match v {
         Value::Enum { values } => {
+            let values = values.map();
             if values.values().any(|n| *n == text) {
                 Ok(Json::String(text))
             } else if let Some(n) = values.get(&text) {
@@ -315,7 +316,7 @@ impl Writer<'_> {
         let remove = self.value.is_null();
         let existing = self.existing.clone();
         match src {
-            Source::Capture(_) | Source::Pattern(_) => match existing {
+            Source::Capture(_) | Source::Pattern(_) | Source::Checkbox(_) => match existing {
                 _ if remove => Err(Refused(format!(
                     "{field} is read by a pattern; taking its value out would leave the text \
                      around it, so edit the note instead"
@@ -487,6 +488,7 @@ impl Writer<'_> {
                 None => format!("#{s}"),
             },
             Value::Enum { values } => {
+                let values = values.map();
                 let forms: Vec<&str> = values
                     .iter()
                     .filter(|(_, n)| *n == s)

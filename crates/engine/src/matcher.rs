@@ -70,7 +70,7 @@ pub struct Matcher {
     /// Some shape needs the note's tags, or its links.
     pub needs_tags: bool,
     pub needs_links: bool,
-    daily_format: String,
+    daily: daily::Settings,
 }
 
 struct Compiled {
@@ -89,6 +89,7 @@ struct Shape {
     w: crate::types::Where,
     pattern: Option<Regex>,
     key: Vec<usize>,
+    required: Vec<usize>,
     /// Sources by schema field index.
     fields: Vec<(usize, Vec<Src>)>,
     conditions: usize,
@@ -106,7 +107,9 @@ enum Src {
     Inlines(InlineKind),
     Note(NotePart),
     Section(SectionPart),
-    Rest,
+    /// The leftover text, without these strings.
+    Rest(Vec<String>),
+    Checkbox,
     /// `children` and `info`, not read yet.
     Later,
 }
@@ -126,7 +129,7 @@ fn slot(on: On) -> Option<usize> {
 impl Matcher {
     pub fn new(types: &Types, flavour: &Flavour, daily: &daily::Settings) -> Matcher {
         let mut m = Matcher {
-            daily_format: daily.format.clone(),
+            daily: daily.clone(),
             ..Matcher::default()
         };
         for t in &types.types {
@@ -190,6 +193,7 @@ impl Matcher {
                         .as_deref()
                         .and_then(|p| crate::types::compile(p).ok()),
                     key: shape.key.iter().filter_map(|k| field(k)).collect(),
+                    required: shape.required.iter().filter_map(|k| field(k)).collect(),
                     fields,
                     conditions,
                 });
@@ -202,6 +206,7 @@ impl Matcher {
                     Origin::Vault { .. } => 0,
                     Origin::Config { .. } => 1,
                     Origin::Extension { .. } => 2,
+                    Origin::BuiltIn => 3,
                 },
                 schema,
                 shapes,
@@ -257,7 +262,7 @@ impl Matcher {
     /// The block's type and its key, if one matches.
     pub fn block(&self, gate: &[Vec<bool>], note: &Note, b: &Block) -> Option<(Typed, String)> {
         let slot = slot(b.on)?;
-        let mut best: Option<(usize, usize, Option<regex::Captures>)> = None;
+        let mut passing: Vec<(usize, usize, Option<regex::Captures>)> = Vec::new();
         for &(t, s) in &self.by_on[slot] {
             if !gate[t][s] {
                 continue;
@@ -273,16 +278,24 @@ impl Matcher {
                 },
                 None => None,
             };
-            let wins = match &best {
-                None => true,
-                Some((bt, bs, _)) => self.better((t, s), (*bt, *bs)) == Ordering::Greater,
-            };
-            if wins {
-                best = Some((t, s, caps));
-            }
+            passing.push((t, s, caps));
         }
-        let (t, s, caps) = best?;
-        Some(self.read(t, s, caps, note, b))
+        // The winner first; of equals, the one loaded first. One missing a required field
+        // gives way to the next.
+        passing.sort_by(|a, b| self.better((b.0, b.1), (a.0, a.1)));
+        passing.into_iter().find_map(|(t, s, caps)| {
+            let (typed, key) = self.read(t, s, caps, note, b);
+            let has = |&f: &usize| match &typed.fields[f] {
+                Json::Null => false,
+                Json::Array(a) => !a.is_empty(),
+                _ => true,
+            };
+            self.types[t].shapes[s]
+                .required
+                .iter()
+                .all(has)
+                .then_some((typed, key))
+        })
     }
 
     /// Every match of an inline type in a block's text, in order, with its range in that text.
@@ -388,11 +401,11 @@ impl Matcher {
         for (f, sources) in &shape.fields {
             let mut pieces = Vec::new();
             for (i, src) in sources.iter().enumerate() {
-                if matches!(src, Src::Rest) {
-                    rest_field = Some(*f);
+                if let Src::Rest(without) = src {
+                    rest_field = Some((*f, without));
                     continue;
                 }
-                pieces = read_source(src, caps.as_ref(), note, b, &mut used);
+                pieces = read_source(src, caps.as_ref(), note, b, &self.daily, &mut used);
                 if !pieces.is_empty() {
                     let name = ty.schema[*f].0.clone();
                     typed.place.sources.insert(name, i);
@@ -401,8 +414,19 @@ impl Matcher {
             }
             self.set(&mut typed, ty, *f, pieces);
         }
-        if let Some(f) = rest_field {
-            used.extend(markdown::block_id_pattern().find(b.text).map(|m| m.range()));
+        if let Some((f, without)) = rest_field {
+            // A list item's text comes without its block id; a `^x` left on its first line,
+            // when more lines follow, names nothing and is words.
+            if b.on != On::ListItem {
+                used.extend(markdown::block_id_pattern().find(b.text).map(|m| m.range()));
+            }
+            for w in without {
+                used.extend(
+                    b.text
+                        .match_indices(w.as_str())
+                        .map(|(i, _)| i..i + w.len()),
+                );
+            }
             let rest = rest_of(b.text, &mut used);
             let pieces = if rest.is_empty() {
                 Vec::new()
@@ -430,7 +454,11 @@ impl Matcher {
             shape
                 .key
                 .iter()
-                .map(|&f| typed.fields[f].to_string())
+                .map(|&f| match &typed.fields[f] {
+                    // Text as itself, so a task keyed by its words keeps the id it always had.
+                    Json::String(s) => s.clone(),
+                    v => v.to_string(),
+                })
                 .collect::<Vec<_>>()
                 .join("\u{1f}")
         };
@@ -446,11 +474,13 @@ impl Matcher {
         let spans: Vec<Range<usize>> = pieces.iter().filter_map(|p| p.span.clone()).collect();
         let mut parsed = Vec::new();
         for p in &pieces {
-            match p
-                .value
-                .clone()
-                .or_else(|| parse(value, &p.text, &self.daily_format))
-            {
+            let format = &self.daily.format;
+            let read = if p.verbatim {
+                parse_as_written(value, &p.text, format)
+            } else {
+                parse(value, &p.text, format)
+            };
+            match p.value.clone().or(read) {
                 Some(v) => parsed.push(v),
                 None => typed.unparsed += 1,
             }
@@ -513,7 +543,8 @@ fn compile_source(s: &Source) -> Src {
         Source::Inlines(k) => Src::Inlines(*k),
         Source::Note(p) => Src::Note(*p),
         Source::Section(p) => Src::Section(*p),
-        Source::Rest(_) => Src::Rest,
+        Source::Rest(r) => Src::Rest(r.without.clone()),
+        Source::Checkbox(_) => Src::Checkbox,
         Source::Children(_) | Source::Info(_) => Src::Later,
     }
 }
@@ -671,6 +702,8 @@ struct Piece {
     text: String,
     span: Option<Range<usize>>,
     value: Option<Json>,
+    /// Its text is the value as written, spaces and all (a checkbox's ` `).
+    verbatim: bool,
 }
 
 impl Piece {
@@ -679,6 +712,7 @@ impl Piece {
             text,
             span,
             value: None,
+            verbatim: false,
         }
     }
 }
@@ -690,6 +724,7 @@ fn read_source(
     caps: Option<&regex::Captures>,
     note: &Note,
     b: &Block,
+    daily: &daily::Settings,
     used: &mut Vec<Range<usize>>,
 ) -> Vec<Piece> {
     let text = b.text;
@@ -722,7 +757,9 @@ fn read_source(
             let Some(i) = text.find(glyph.as_str()) else {
                 return Vec::new();
             };
+            // A variation selector after an emoji is part of the glyph: `⏳️` is `⏳`.
             let after = i + glyph.len();
+            let after = after + text[after..].strip_prefix('\u{FE0F}').map_or(0, |_| 3);
             let lead = text[after..].len() - text[after..].trim_start().len();
             let start = after + lead;
             let len = text[start..]
@@ -746,20 +783,30 @@ fn read_source(
                 text: String::new(),
                 span: at_glyph.map(|i| at(i..i + glyph.len())),
                 value: Some(Json::Bool(at_glyph.is_some())),
+                verbatim: false,
             }]
         }
         Src::Flags(map) => {
-            for (glyph, name) in map {
-                if let Some(i) = text.find(glyph.as_str()) {
-                    used.push(i..i + glyph.len());
-                    return vec![Piece {
-                        text: name.clone(),
-                        span: Some(at(i..i + glyph.len())),
-                        value: Some(Json::String(name.clone())),
-                    }];
-                }
+            // Every glyph of the map is the source's text, though only the first one found
+            // gives the value.
+            for glyph in map.keys() {
+                used.extend(
+                    text.match_indices(glyph.as_str())
+                        .map(|(i, g)| i..i + g.len()),
+                );
             }
-            Vec::new()
+            let first = map
+                .iter()
+                .find_map(|(glyph, name)| Some((text.find(glyph.as_str())?, glyph, name)));
+            match first {
+                Some((i, glyph, name)) => vec![Piece {
+                    text: name.clone(),
+                    span: Some(at(i..i + glyph.len())),
+                    value: Some(Json::String(name.clone())),
+                    verbatim: false,
+                }],
+                None => Vec::new(),
+            }
         }
         Src::Column(name) => {
             let Some(i) = b.header.iter().position(|h| h == name) else {
@@ -800,6 +847,7 @@ fn read_source(
                 text: l.clone(),
                 span: None,
                 value: Some(Json::String(l.clone())),
+                verbatim: false,
             })
             .collect(),
         Src::Inlines(InlineKind::Tags) => Note::tags_in(text)
@@ -811,16 +859,39 @@ fn read_source(
                 value: Some(Json::String(l.clone())),
                 text: l,
                 span: None,
+                verbatim: false,
             })
             .collect(),
+        Src::Note(NotePart::Date) => match daily.date_of(note.path) {
+            Some(d) => vec![Piece {
+                value: Some(Json::String(d.format("%Y-%m-%d").to_string())),
+                ..Piece::text(d.to_string(), None)
+            }],
+            None => Vec::new(),
+        },
         Src::Note(part) => {
             let (folder, file) = note.path.rsplit_once('/').unwrap_or(("", note.path));
             let value = match part {
-                NotePart::Name => file.strip_suffix(".md").unwrap_or(file),
+                NotePart::Name | NotePart::Date => file.strip_suffix(".md").unwrap_or(file),
                 NotePart::Path => note.path,
                 NotePart::Folder => folder,
             };
             vec![Piece::text(value.to_string(), None)]
+        }
+        Src::Checkbox => {
+            let Some(symbol) = text
+                .strip_prefix('[')
+                .and_then(|t| t.chars().next())
+                .filter(|&c| c != '\n' && text[1 + c.len_utf8()..].starts_with(']'))
+            else {
+                return Vec::new();
+            };
+            let end = 1 + symbol.len_utf8();
+            used.push(0..end + 1);
+            vec![Piece {
+                verbatim: true,
+                ..Piece::text(symbol.to_string(), Some(at(1..end)))
+            }]
         }
         Src::Section(SectionPart::Heading) => b
             .section
@@ -833,7 +904,7 @@ fn read_source(
             .iter()
             .map(|h| Piece::text(h.clone(), None))
             .collect(),
-        Src::Rest | Src::Later => Vec::new(),
+        Src::Rest(_) | Src::Later => Vec::new(),
     }
 }
 
@@ -855,7 +926,11 @@ fn rest_of(text: &str, used: &mut [Range<usize>]) -> String {
 
 /// A written value as its field's type; `None` when it doesn't parse.
 pub fn parse(value: &Value, text: &str, daily_format: &str) -> Option<Json> {
-    let text = text.trim();
+    parse_as_written(value, text.trim(), daily_format)
+}
+
+/// `parse` without trimming: a checkbox's ` ` is a status.
+fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option<Json> {
     if text.is_empty() {
         return None;
     }
@@ -900,6 +975,7 @@ pub fn parse(value: &Value, text: &str, daily_format: &str) -> Option<Json> {
         }
         Value::Enum { values } => Json::String(
             values
+                .map()
                 .get(text)
                 .cloned()
                 .unwrap_or_else(|| "other".to_string()),
@@ -1461,11 +1537,13 @@ Survey the rim ~3h, not `~4h`, not~6h.
         );
         assert_eq!(p(Value::Tag, "two words"), None);
         let status = Value::Enum {
-            values: [
-                ("to read".into(), "todo".into()),
-                ("read".into(), "done".into()),
-            ]
-            .into(),
+            values: crate::types::EnumValues::Written(
+                [
+                    ("to read".into(), "todo".into()),
+                    ("read".into(), "done".into()),
+                ]
+                .into(),
+            ),
         };
         assert_eq!(p(status.clone(), "to read"), Some(json!("todo")));
         assert_eq!(p(status, "skimmed"), Some(json!("other")));
@@ -1590,6 +1668,75 @@ Survey the rim ~3h, not `~4h`, not~6h.
             }))
             .is_ok_and(|i| matches!(i.data, Data::List { .. })),
             "native kinds still read as themselves"
+        );
+    }
+
+    #[test]
+    fn required_fields_settings_checkboxes_and_rest_without() {
+        // CommonMark has no task lists, so its checkboxes are list items' text.
+        let types = |toml: &str| {
+            load([Layer::config(
+                Path::new("config.toml"),
+                toml::from_str(toml).unwrap(),
+            )])
+        };
+        let nowhere = Path::new("/nonexistent-cold-lava-vault");
+        let s = Settings::new(
+            Flavour::built_in("commonmark").unwrap(),
+            TasksSettings::load(nowhere),
+            daily::Settings::load(nowhere),
+            crate::templates::Settings::default(),
+            types(
+                r#"
+            [todo]
+            on = "list-item"
+            match = '^\[[^\n]\]\s'
+            required = ["words"]
+            fields.state = { checkbox = true, type = "enum", values = { " " = "open", x = "done" } }
+            fields.symbol = { checkbox = true }
+            fields.words = { rest = { without = ["@work"] } }
+            fields.day = { note = "date", type = "date" }
+
+            [line]
+            on = "list-item"
+            fields.text = { rest = true }
+            "#,
+            ),
+        );
+        let all = extract(
+            "2026-11-05.md",
+            "- [ ] Call Ana @work\n- [x] @work\n- plain\n",
+            &s,
+        );
+        assert_eq!(
+            fields(&all[0]),
+            json!({"state": "open", "symbol": " ", "words": "Call Ana", "day": "2026-11-05"}),
+            "a space is a status, and the daily note's date is the note's"
+        );
+        assert_eq!(
+            all[1].data.kind(),
+            "line",
+            "without words it isn't a todo, and the next type takes it"
+        );
+        assert_eq!(all[2].data.kind(), "line");
+
+        let mut types = types(
+            r#"
+            [flagged]
+            on = "paragraph"
+            match = '${tasks.global-filter}\s'
+            fields.text = { rest = { without = "${tasks.global-filter}" } }
+            "#,
+        );
+        types.fill(&crate::types::Provided {
+            global_filter: "#t(1)".into(),
+            ..Default::default()
+        });
+        let shape = &types.types[0].definition.from[0];
+        assert_eq!(shape.pattern.as_deref(), Some(r"\#t\(1\)\s"));
+        assert_eq!(
+            serde_json::to_value(&shape.fields["text"]).unwrap(),
+            json!([{"rest": {"without": ["#t(1)"]}}])
         );
     }
 

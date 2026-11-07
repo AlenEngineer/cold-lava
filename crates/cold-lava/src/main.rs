@@ -19,7 +19,7 @@ mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, edit, frontmatter, index, items, markdown, merge, paths, rename,
-    search, tasks, templates, tidy, trash, types, vault, write,
+    search, shadow, tasks, templates, tidy, trash, types, vault, write,
 };
 
 use anyhow::Result;
@@ -51,7 +51,9 @@ Usage:
   cold-lava keys                      every command and its keys; checks config.toml
   cold-lava types [VAULT_DIR]         every type: where it comes from, what it found, its
                                       shapes and fields;
-                                      checks [types] in config.toml and .cold-lava/types.toml
+                                      checks [types] in config.toml and .cold-lava/types.toml;
+                                      --shadow reads every task with the built-in task
+                                      definition too and lists what reads differently
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
                                       with an empty home unless --real-home
@@ -208,6 +210,18 @@ fn run() -> Result<()> {
                 Some(dir) => PathBuf::from(dir),
                 None => vault::find_vault_root(Path::new(".")),
             };
+            if args.has("shadow") {
+                let report = shadow::compare(&vault::scan(&root)?);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print_shadow(&report);
+                }
+                if !report.differences.is_empty() || !report.errors.is_empty() {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             let found = types::for_vault(&root);
             if json {
                 println!("{}", serde_json::to_string_pretty(&found)?);
@@ -621,6 +635,41 @@ fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
 
 /// `cold-lava types`: each type with where it comes from, then each shape with the fields it
 /// reads, where, and whether a value can be written back there.
+/// `types --shadow`: how the task's definition reads the vault beside `tasks::parse_line`.
+fn print_shadow(report: &shadow::Report) {
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    println!(
+        "the task as a definition, beside the native parser: {} · {} · {}",
+        plural(report.notes, "note", "notes"),
+        plural(report.tasks, "task", "tasks"),
+        plural(report.differences.len(), "difference", "differences"),
+    );
+    if report.subtyped > 0 {
+        println!(
+            "{} read as a subtype of task",
+            plural(report.subtyped, "task", "tasks")
+        );
+    }
+    let by_field = report.by_field();
+    if !by_field.is_empty() {
+        let fields: Vec<String> = by_field.iter().map(|(f, n)| format!("{f} {n}")).collect();
+        println!("by field: {}", fields.join(", "));
+    }
+    for d in &report.differences {
+        println!(
+            "{}:{} {}: native {} · definition {}",
+            d.note, d.line, d.field, d.native, d.definition
+        );
+    }
+    if !report.errors.is_empty() {
+        eprintln!("errors:");
+        for e in &report.errors {
+            eprintln!("  {e}");
+        }
+    }
+}
+
 fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usize)>>) {
     println!("{}  built in, read natively", found.native.join(", "));
     for t in &found.types {
@@ -673,6 +722,9 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
             }
             if !shape.key.is_empty() {
                 line += &format!(" · key {}", shape.key.join(", "));
+            }
+            if !shape.required.is_empty() {
+                line += &format!(" · required {}", shape.required.join(", "));
             }
             if d.from.len() > 1 {
                 line = format!("shape {}: {line}", i + 1);
@@ -736,9 +788,12 @@ fn value_label(v: &types::Value) -> String {
         types::Value::Date { format: Some(f) } | types::Value::Datetime { format: Some(f) } => {
             format!("{} ({f})", v.name())
         }
+        types::Value::Enum {
+            values: types::EnumValues::Setting(s),
+        } => format!("enum {s}"),
         types::Value::Enum { values } => {
             let mut names: Vec<&str> = Vec::new();
-            for n in values.values() {
+            for n in values.map().values() {
                 if !names.contains(&n.as_str()) {
                     names.push(n);
                 }
@@ -789,7 +844,9 @@ fn source_label(s: &types::Source) -> String {
         S::Inlines(kind) => name_of(kind),
         S::Note(part) => name_of(part),
         S::Section(part) => name_of(part),
-        S::Rest(_) => String::new(),
+        S::Rest(r) if r.without.is_empty() => String::new(),
+        S::Rest(r) => format!("without {}", r.without.join(", ")),
+        S::Checkbox(_) => String::new(),
     };
     match s {
         S::Pattern(_) => format!("pattern '{detail}'"),

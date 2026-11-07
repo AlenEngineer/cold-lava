@@ -133,9 +133,11 @@ then a query and a view, not a parser of its own.
 *(design; definitions load, are checked and are listed: `crates/engine/src/types.rs`,
 `cold-lava types`; they match notes, table rows, list items, headings and paragraphs, and inline
 types match in their text: `crates/engine/src/matcher.rs`; one field of a typed item is set
-with the read-back check: `crates/engine/src/edit.rs`, `cold-lava item set`. "Loading, as
-built", "Matching, as built" and "Writing, as built" below say where the code settled what this
-design left open.)*
+with the read-back check: `crates/engine/src/edit.rs`, `cold-lava item set`; the task is a
+built-in definition, read in shadow mode beside the native parser: `crates/engine/types/task.toml`,
+`crates/engine/src/shadow.rs`, `cold-lava types --shadow`. "Loading, as built", "Matching, as
+built", "Writing, as built" and "The task as a definition, as built" below say where the code
+settled what this design left open.)*
 
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
 row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
@@ -242,8 +244,12 @@ style.minutes = { badge = true, icon = "⏱" }
   first group; `flag = "⏫"` is a bool; `flags = { "⏫" = "high", "🔼" = "medium" }` maps
   glyphs to names; `info` is `"language"` or `"arguments"`; `inlines` is `"tags"` or
   `"links"`; `note` is `"name"`, `"path"` or `"folder"`; `section` is `"heading"` or `"path"`;
-  `children` names a kind or type; `rest = true`. `capture`, `pattern`, `marker`, `inline`,
-  `flag`, `flags`, `column`, `property` and `info` are writable; the rest are read-only. Each
+  `children` names a kind or type; `rest = true`, or `rest = { without = ["#task"] }` to leave
+  every occurrence of those strings out too; `checkbox = true` is the character between a list
+  item's brackets (`[x]`), kept as written so a space is a value, and `note = "date"` the date
+  of the daily note the block is in (the vault's Daily notes folder and format). `capture`,
+  `pattern`, `marker`, `inline`, `flag`, `flags`, `checkbox`, `column`, `property` and `info`
+  are writable (a checkbox is replaced only, like a capture); the rest are read-only. Each
   source can only be read on some primitives (`column` on `table-row`, `property` on `note`,
   `info` on `code`, `marker` and `rest` on text blocks, …), and `Source::on` in types.rs is that
   table.
@@ -253,13 +259,26 @@ style.minutes = { badge = true, icon = "⏱" }
   `accent`, `muted`; `badge`, `icon`, `dim`, `strike`, `bold`, `hide`, `link` (the value is
   followed as a link), `whole` (the look covers the whole item), and `by-value` (looks by enum
   value name, not nested).
-- **Placeholders** in a `match` are `{date}` (ISO), `{number}` and `{duration}`. Settings
-  (`${tasks.statuses}`, `${tasks.global-filter}`, `${tasks.format}`, `${daily.format}`) are
-  checked by name; their values come from the vault when matching exists. A date `format`
+- **`required`** in a shape names fields a block must have a value for (not `null`, not `[]`)
+  to be of that shape: the task requires its words. A block that matches a shape but lacks one
+  goes to the next shape that matches, as if the first hadn't.
+- **An enum's values** are a table, or the setting `"${tasks.statuses}"`: the vault's status
+  symbols, each to the name of its type (`todo`, `in_progress`, `done`, `cancelled`, `other`,
+  the names `agenda --json` uses).
+- **Placeholders** in a `match` are `{date}` (ISO), `{number}` and `{duration}`; `\p{…}` and
+  `\x{…}` escapes are kept whole. Settings (`${tasks.statuses}`, `${tasks.global-filter}`,
+  `${tasks.format}`, `${daily.format}`) are checked by name at load, and filled in for each
+  vault when its notes are read (`Types::fill`, from `items::Settings::new`): in a `match` or
+  `pattern` as the setting's text, escaped (`${tasks.statuses}` as any one of the symbols), in
+  `rest`'s `without` as plain text, and as an enum's values. `cold-lava types` lists
+  definitions as written, settings unfilled. A date `format`
   takes the moment.js tokens daily notes read, and any other token is refused rather than kept
   as literal text. Patterns compile to at most 256 KiB.
-- **Origins.** No built-in definitions exist yet: `task`, `list`, `heading` and `block` are
-  native kinds, which can be extended and not redefined. An extension's manifest carries
+- **Origins.** One built-in definition exists, `task` (`crates/engine/types/task.toml`, compiled
+  into the engine, origin `built in`, last in a conflict), and it is loaded only in shadow mode
+  (`types::with_built_in`) until the switch-over. `task`, `list`, `heading` and `block` are
+  native kinds otherwise, which can be extended and not redefined; only the built-in origin may
+  define one of those names. An extension's manifest carries
   `types` (named `<extension>.<name>`); `config.toml`'s `[types.NAME]` is handed to the engine
   by the frontend, since the engine never reads config.toml; the vault's
   `.cold-lava/types.toml` must start with `version = 1`, and a missing or unknown version skips
@@ -280,12 +299,17 @@ style.minutes = { badge = true, icon = "⏱" }
   paragraph outside list items) and `inline`. Shapes on `code` and `quote` load but match
   nothing.
   Tasks stay native and win: a type on `list-item` never takes a task, so an `idea` that
-  `extends = "task"` can't match a task yet; that changes when the task becomes a definition.
+  `extends = "task"` can't match a task yet. With the built-in definition loaded (shadow
+  mode), tasks are typed blocks like any other: `items::Settings::native_tasks` is false, the
+  pass doesn't call `tasks::parse_line`, and an `idea` with `where.tag = ["idea"]` wins over
+  `task` as its subtype and still answers to `task`.
 - **What each primitive's text is:** a list item's first line after its marker (without a
   trailing `^id`), a heading's words, a paragraph's text, a whole table row's line. A note's
   `match`, `capture` and `inline` read the text after the frontmatter. `rest` is that text with
   every other source's match taken out (a marker with its value, a whole `[due:: …]`, a flag's
-  glyph, the whole `match` when a capture is read), spaces collapsed.
+  glyph, every glyph of a `flags` map, a checkbox with its brackets, the whole `match` when a
+  capture is read, a trailing `^id` except on a list item, whose text is already without one),
+  spaces collapsed. A marker's glyph includes an emoji variation selector after it (`⏳️`).
 - **`where.tag`** on a note shape is the note's tags (frontmatter and body); on a block shape it
   is the block's own tags, not the note's: `[types.idea] where.tag = ["idea"]` means a list item
   tagged `#idea`. Tags compare without case, and a nested tag counts. `where.inside` names the
@@ -317,7 +341,8 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Spans.** Every value keeps the byte range it was read from in the file as written, through
   `%%comments%%` (`Flavour::source` maps offsets back); spans are not on the wire. Read-only
   sources (`note`, `section`, links, a note's tags) have none.
-- **Ids.** A typed item's key is its shape's `key` fields; without one, a row's first cell, a
+- **Ids.** A typed item's key is its shape's `key` fields (text as written, anything else as
+  JSON, so a task keyed by its words keeps the id the native parser gave it); without one, a row's first cell, a
   list item's or paragraph's text, a heading's words, or nothing for a note. Its id is the note,
   its type and that key under its parent's, as for tasks, so a row keeps its id when other rows
   change and when its own non-key cells do. A note item's lines are its frontmatter (line 1 when
@@ -341,6 +366,56 @@ style.minutes = { badge = true, icon = "⏱" }
   every note) with four types (note, table-row, list-item, heading) finding 31,000 items:
   matching adds about 0.1 ms per note to `cold-lava items` on a loaded laptop. The perf step
   owns the `RegexSet` and fewer per-item allocations.
+
+### The task as a definition, as built
+
+- **The definition** (`crates/engine/types/task.toml`): one shape on `list-item`, `requires =
+  ["task-lists"]`, `match = '^\[[^\n]\]\s+.*${tasks.global-filter}'`, `key` and `required` the
+  words. Its fields are the native task's, in its order: `status` and `status_type` from the
+  checkbox (the type through `${tasks.statuses}`), `text` the rest without the global filter,
+  each date from its Dataview field then its markers (`due` from `[due:: …]`, `📅`, `📆`, `🗓`;
+  `scheduled` `⏳` `⌛`; `start` `🛫`; `created` `➕`; `done` `[completion:: …]` `✅`;
+  `cancelled` `❌`), `recurrence` from `[repeat:: …]` or a pattern after `🔁`, `priority` from
+  the five glyphs (lowest first, so the lowest present wins, as natively) then `[priority:: …]`,
+  `tags` and `links` from the text, `daily_note` from `note = "date"`. `actions = ["tasks.toggle"]`.
+- **Shadow mode.** The engine still reads tasks with `tasks::parse_line`. `shadow::compare` reads
+  each note twice, with `Settings::load` and with `Settings::load_with(types::with_built_in)`,
+  pairs the items by line and order, and compares a native task's fields (as the schema writes
+  them: the status type by its `agenda --json` name, tags without `#`) and its id, rev, lines,
+  section, parent and block id with the typed task's; any other item must be identical. A task
+  taken by a subtype is counted, not compared. `cold-lava types VAULT --shadow [--json]` prints
+  it and exits 1 on a difference.
+- **Results.** The example vault (34 notes, 4 tasks), and a generated stress set of four vaults
+  (178 notes each, 8,054 tasks in all: emoji and Dataview fields in any order, every priority,
+  recurrence, variation selectors, global filter `#task` at the start, middle or end, custom
+  statuses including `NON_TASK`, the Dataview task format setting, nesting four deep, numbered
+  lists, quotes, callouts, nested quotes, continuation lines, block ids, code fences and
+  comments) read the same, ids included, but for 6 tasks whose recurrence is followed by a
+  `^x` that names nothing (the last case below). The same set with the known differences below
+  written into every note finds only those.
+- **Known differences,** each pinned by `shadow::tests::known_differences`; the native parser's
+  reading is the one to drop at the switch-over unless said otherwise:
+  - Tags: the native parser's own pattern takes `#2026` and not `(#paren)`; the definition reads
+    tags as the vault does (`markdown::TAG`), like Obsidian.
+  - A marker inside a code span (`` `📅 2026-01-01` ``): natively a date, and taken out of the
+    code; the definition's marker reads the date with the closing backtick, which isn't a date.
+    Neither is right; the switch-over should keep sources out of code spans.
+  - The same field twice (`📅 a 📅 b`, or `[due:: a] 📅 b`): natively the last date (Dataview's
+    when it parses), every one taken out of the words; the definition reads the first source
+    with a value and leaves the others in the words.
+  - An unbracketed `due:: x` in a task's line is a Dataview field to the definition, words to the
+    native parser.
+  - `[priority:: urgent]` is `null` natively and `other` (the enum's fallback) to the definition.
+  - A recurrence followed by words that are no field (`🔁 every day (or so)`, or a `^x` that
+    isn't a block id because a continuation line follows): natively no recurrence, as the
+    plugin, which reads fields from the end of the line; the definition reads `every day`.
+    Rust's regex has no look-ahead to require what follows.
+- **The switch-over** loads `Layer::built_in()` in `types::for_vault`, drops `task` from
+  `NATIVE` and `Data::Task`, and moves `agenda`, `task toggle` and the reader's `x` onto typed
+  tasks. Still to settle there: the item JSON (pinned by `item_json_is_pinned`) changes from
+  `status_type: "non_task"` to `other` and loses the `#` on tags; `set-status` through the
+  checkbox (a space is a value `input` now reads as removal); toggling and recurrence stay
+  `tasks.toggle`; and the known differences above.
 
 ### Writing, as built
 
@@ -666,7 +741,8 @@ after its call returns, so it never holds the menu's state.
       paragraphs, list items and tasks, headings and table rows, with the block as parent;
       `vei` in the example vault)*; `set-field` with the read-back check *(done:
       `edit::set_field`, `cold-lava item set`)*;
-      the task as a definition, first in shadow mode beside today's parser, then switched over;
+      the task as a definition, first in shadow mode beside today's parser *(done:
+      `types/task.toml`, `cold-lava types --shadow`)*, then switched over;
       looks in the reader; the table view.
    6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and
       links contributed by owners; the whiteboard as the first owner.

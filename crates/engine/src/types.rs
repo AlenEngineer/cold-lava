@@ -54,6 +54,9 @@ pub const PLACEHOLDERS: &[(&str, &str)] = &[
 /// Native behaviour a type can name in `actions`.
 pub const ACTIONS: &[&str] = &["tasks.toggle"];
 
+/// The task, written in the same language as anyone's types (docs/extensions.md, "Types").
+pub const BUILT_IN_TASK: &str = include_str!("../types/task.toml");
+
 /// What one pattern may compile to, so no definition can make matching slow.
 const REGEX_LIMIT: usize = 256 * 1024;
 
@@ -107,6 +110,9 @@ pub struct Shape {
     /// The fields that tell two items of this shape apart, for their ids.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key: Vec<String>,
+    /// Fields a block must have a value for to be of this shape: a task needs words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
     /// Where each field is read, by field name; the first source with a value wins.
     #[serde(default)]
     pub fields: IndexMap<String, Sources>,
@@ -222,11 +228,35 @@ pub enum Value {
     Tag,
     /// Written forms and the names they stand for: `{ "to read" = "todo" }`.
     Enum {
-        values: IndexMap<String, String>,
+        values: EnumValues,
     },
     /// `1h30m`.
     Duration,
 }
+
+/// An enum's written forms and names, or the setting that gives them for each vault.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EnumValues {
+    Written(IndexMap<String, String>),
+    /// `"${tasks.statuses}"`: filled in from the vault when its notes are read
+    /// (`Types::fill`).
+    Setting(String),
+}
+
+impl EnumValues {
+    /// The written forms and their names; none while a setting is not filled in.
+    pub fn map(&self) -> &IndexMap<String, String> {
+        static NONE: OnceLock<IndexMap<String, String>> = OnceLock::new();
+        match self {
+            EnumValues::Written(m) => m,
+            EnumValues::Setting(_) => NONE.get_or_init(IndexMap::new),
+        }
+    }
+}
+
+/// The settings that give an enum its values.
+pub const ENUM_PROVIDERS: &[&str] = &["tasks.statuses"];
 
 const VALUE_TYPES: &[&str] = &[
     "text", "number", "date", "datetime", "bool", "link", "tag", "enum", "duration",
@@ -250,7 +280,7 @@ impl Value {
     /// `type`, `values` and `format` as written; the type defaults to text.
     fn from_parts(
         ty: Option<String>,
-        mut values: Option<IndexMap<String, String>>,
+        mut values: Option<EnumValues>,
         mut format: Option<String>,
     ) -> Result<Value, String> {
         let value = match ty.as_deref().unwrap_or("text") {
@@ -266,10 +296,27 @@ impl Value {
             "link" => Value::Link,
             "tag" => Value::Tag,
             "enum" => Value::Enum {
-                values: values
-                    .take()
-                    .filter(|v| !v.is_empty())
-                    .ok_or("an enum needs values = { written = \"name\", … }")?,
+                values: match values.take() {
+                    Some(EnumValues::Written(v)) if !v.is_empty() => EnumValues::Written(v),
+                    Some(EnumValues::Setting(s)) => {
+                        let name = s
+                            .strip_prefix("${")
+                            .and_then(|s| s.strip_suffix('}'))
+                            .unwrap_or_default();
+                        if !ENUM_PROVIDERS.contains(&name) {
+                            return Err(format!(
+                                "values = {s:?}: an enum's values are a table, or a setting ({})",
+                                ENUM_PROVIDERS
+                                    .iter()
+                                    .map(|p| format!("${{{p}}}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                        EnumValues::Setting(s)
+                    }
+                    _ => return Err("an enum needs values = { written = \"name\", … }".into()),
+                },
             },
             "duration" => Value::Duration,
             other => {
@@ -320,7 +367,61 @@ pub enum Source {
     /// The headings it sits under.
     Section(SectionPart),
     /// The text no other source read.
-    Rest(Yes),
+    Rest(Rest),
+    /// The character between a task's brackets: `x` in `[x] Pay rent`, kept as written, a
+    /// space included.
+    Checkbox(Yes),
+}
+
+/// `rest = true`, or `rest = { without = ["#task"] }`: the leftover text, with every
+/// occurrence of these strings taken out as well.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rest {
+    pub without: Vec<String>,
+}
+
+impl Serialize for Rest {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.without.is_empty() {
+            return s.serialize_bool(true);
+        }
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(1))?;
+        map.serialize_entry("without", &self.without)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Rest {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Rest, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            Bool(bool),
+            Table { without: OneOrMany },
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OneOrMany {
+            One(String),
+            Many(Vec<String>),
+        }
+        match Written::deserialize(d) {
+            Ok(Written::Bool(true)) => Ok(Rest::default()),
+            Ok(Written::Bool(false)) => {
+                Err(de::Error::custom("rest = false: leave it out instead"))
+            }
+            Ok(Written::Table { without }) => Ok(Rest {
+                without: match without {
+                    OneOrMany::One(s) => vec![s],
+                    OneOrMany::Many(v) => v,
+                },
+            }),
+            Err(_) => Err(de::Error::custom(
+                "rest is true, or { without = [\"text\", …] }",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -345,6 +446,8 @@ pub enum NotePart {
     Name,
     Path,
     Folder,
+    /// The date of the daily note it is in, by the vault's Daily notes folder and format.
+    Date,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -393,6 +496,7 @@ impl Source {
             Source::Note(_) => "note",
             Source::Section(_) => "section",
             Source::Rest(_) => "rest",
+            Source::Checkbox(_) => "checkbox",
         }
     }
 
@@ -419,6 +523,7 @@ impl Source {
             Source::Column(_) => &[O::TableRow],
             Source::Property(_) => &[O::Note],
             Source::Info(_) => &[O::Code],
+            Source::Checkbox(_) => &[O::ListItem],
             Source::Inlines(_) => &[
                 O::Note,
                 O::Heading,
@@ -608,6 +713,7 @@ struct Written {
     #[serde(rename = "match")]
     pattern: Option<String>,
     key: Option<Vec<String>>,
+    required: Option<Vec<String>>,
     extends: Option<String>,
     #[serde(default)]
     priority: i32,
@@ -624,8 +730,11 @@ impl TryFrom<Written> for Definition {
     type Error = String;
 
     fn try_from(w: Written) -> Result<Definition, String> {
-        let shorthand =
-            w.on.is_some() || w.conditions.is_some() || w.pattern.is_some() || w.key.is_some();
+        let shorthand = w.on.is_some()
+            || w.conditions.is_some()
+            || w.pattern.is_some()
+            || w.key.is_some()
+            || w.required.is_some();
         let mut fields = IndexMap::new();
         let mut from = w.from;
         if from.is_empty() {
@@ -636,6 +745,7 @@ impl TryFrom<Written> for Definition {
                 conditions: w.conditions.unwrap_or_default(),
                 pattern: w.pattern,
                 key: w.key.unwrap_or_default(),
+                required: w.required.unwrap_or_default(),
                 fields: IndexMap::new(),
             };
             for (name, entry) in w.fields {
@@ -648,7 +758,7 @@ impl TryFrom<Written> for Definition {
         } else {
             if shorthand {
                 return Err(
-                    "with [[from]] shapes, `on`, `where`, `match` and `key` go in each shape"
+                    "with [[from]] shapes, `on`, `where`, `match`, `key` and `required` go in each shape"
                         .into(),
                 );
             }
@@ -679,6 +789,8 @@ impl TryFrom<Written> for Definition {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Origin {
+    /// `types/*.toml` in the engine: the task.
+    BuiltIn,
     /// An extension's manifest; its types are named `<extension>.<name>`.
     Extension { name: String },
     /// `[types.*]` in config.toml.
@@ -691,6 +803,7 @@ impl Origin {
     /// What an error line starts with: the file, or the extension.
     fn place(&self) -> String {
         match self {
+            Origin::BuiltIn => "built in".into(),
             Origin::Extension { name } => format!("extension {name}"),
             Origin::Config { path } | Origin::Vault { path } => path.display().to_string(),
         }
@@ -700,6 +813,7 @@ impl Origin {
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Origin::BuiltIn => f.write_str("built in"),
             Origin::Extension { name } => write!(f, "extension {name}"),
             Origin::Config { path } => write!(f, "config {}", path.display()),
             Origin::Vault { path } => write!(f, "vault {}", path.display()),
@@ -754,18 +868,25 @@ impl Layer {
         let path = root.join(VAULT_FILE);
         let text = match std::fs::read_to_string(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            r => r,
+            r => r.map_err(|e| e.to_string()),
         };
-        let origin = Origin::Vault { path };
+        Some(Layer::from_file(Origin::Vault { path }, text))
+    }
+
+    /// The definitions built into the engine (`types/*.toml`): the task.
+    pub fn built_in() -> Layer {
+        Layer::from_file(Origin::BuiltIn, Ok(BUILT_IN_TASK.to_string()))
+    }
+
+    /// A types file: `version = 1`, then `[types.NAME]` tables.
+    fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
         let place = origin.place();
-        let file_error = |e: String| {
-            Some(Layer {
-                errors: vec![format!("{place}: {e}")],
-                origin: origin.clone(),
-                definitions: Vec::new(),
-            })
+        let file_error = |e: String| Layer {
+            errors: vec![format!("{place}: {e}")],
+            origin: origin.clone(),
+            definitions: Vec::new(),
         };
-        let mut file: toml::Table = match text.map_err(|e| e.to_string()).and_then(|t| {
+        let mut file: toml::Table = match text.and_then(|t| {
             toml::from_str(&t).map_err(|e| e.to_string().replace('\n', " ").trim().to_string())
         }) {
             Ok(f) => f,
@@ -789,13 +910,13 @@ impl Layer {
             Some(v) => return file_error(format!("types: expected [types.NAME] tables, got {v}")),
             None => toml::Table::new(),
         };
-        let mut layer = Layer::from_table(origin, types);
+        let mut layer = Layer::from_table(origin.clone(), types);
         for key in file.keys() {
             layer.errors.push(format!(
                 "{place}: {key:?} is not a setting (only version and [types.NAME])"
             ));
         }
-        Some(layer)
+        layer
     }
 
     fn from_table(origin: Origin, table: toml::Table) -> Layer {
@@ -843,6 +964,17 @@ pub fn for_vault(root: &Path) -> Types {
     load(configured.into_iter().chain(Layer::vault(root)))
 }
 
+/// The same with the built-in definitions first, so the task is read by its definition: shadow
+/// mode (`shadow.rs`) until the switch-over.
+pub fn with_built_in(root: &Path) -> Types {
+    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+    load(
+        std::iter::once(Layer::built_in())
+            .chain(configured)
+            .chain(Layer::vault(root)),
+    )
+}
+
 /// Loads layers in order: built in, extensions, config.toml, the vault. A later definition of a
 /// name replaces an earlier one, and says so in a note. Broken definitions are dropped.
 pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
@@ -856,6 +988,11 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
         for (name, parsed) in layer.definitions {
             let problems = match &parsed {
                 Err(e) => vec![e.clone()],
+                Ok(_) if NATIVE.contains(&name.as_str()) && layer.origin != Origin::BuiltIn => {
+                    vec![format!(
+                        "{name} is built in: it can be extended (extends = \"{name}\") but not redefined"
+                    )]
+                }
                 Ok(d) => check(&name, d),
             };
             let definition = match parsed {
@@ -909,11 +1046,115 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
         }
     }
     Types {
-        native: NATIVE.iter().map(|n| n.to_string()).collect(),
+        native: NATIVE
+            .iter()
+            .filter(|n| !kept.get(**n).is_some_and(|t| t.origin == Origin::BuiltIn))
+            .map(|n| n.to_string())
+            .collect(),
         types: kept.into_values().collect(),
         errors,
         notes,
     }
+}
+
+/// The vault's own settings that `${…}` in a definition stands for.
+#[derive(Clone, Debug, Default)]
+pub struct Provided {
+    /// The Tasks plugin's status symbols and the names of their types (`x` = `done`).
+    pub statuses: IndexMap<String, String>,
+    pub global_filter: String,
+    /// `emoji` or `dataview`.
+    pub tasks_format: String,
+    pub daily_format: String,
+}
+
+impl Provided {
+    /// What `${name}` is in a pattern: the setting as literal text; the statuses as any one of
+    /// their symbols.
+    fn in_pattern(&self, name: &str) -> String {
+        match name {
+            "tasks.statuses" => {
+                let symbols: Vec<String> = self.statuses.keys().map(|s| regex::escape(s)).collect();
+                format!("(?:{})", symbols.join("|"))
+            }
+            "tasks.global-filter" => regex::escape(&self.global_filter),
+            "tasks.format" => regex::escape(&self.tasks_format),
+            "daily.format" => regex::escape(&self.daily_format),
+            _ => String::new(),
+        }
+    }
+
+    /// What `${name}` is in plain text (`rest`'s `without`).
+    fn in_text(&self, name: &str) -> String {
+        match name {
+            "tasks.statuses" => String::new(),
+            "tasks.global-filter" => self.global_filter.clone(),
+            "tasks.format" => self.tasks_format.clone(),
+            "daily.format" => self.daily_format.clone(),
+            _ => String::new(),
+        }
+    }
+}
+
+impl Types {
+    /// Fills in each `${…}` setting with the vault's value: in patterns as literal text (the
+    /// statuses as any one symbol), in `rest`'s `without`, and as an enum's values. A date
+    /// `format`'s `${daily.format}` stays, as values parse with the vault's format anyway.
+    pub fn fill(&mut self, p: &Provided) {
+        let pattern = |s: &mut String| *s = fill(s, true, |n| p.in_pattern(n));
+        for t in &mut self.types {
+            let d = &mut t.definition;
+            for value in d.fields.values_mut() {
+                if let Value::Enum { values } = value
+                    && let EnumValues::Setting(_) = values
+                {
+                    *values = EnumValues::Written(p.statuses.clone());
+                }
+            }
+            for shape in &mut d.from {
+                if let Some(m) = &mut shape.pattern {
+                    pattern(m);
+                }
+                for sources in shape.fields.values_mut() {
+                    for s in &mut sources.0 {
+                        match s {
+                            Source::Pattern(re) => pattern(re),
+                            Source::Rest(rest) => {
+                                for w in &mut rest.without {
+                                    *w = fill(w, false, |n| p.in_text(n));
+                                }
+                                rest.without.retain(|w| !w.is_empty());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `text` with each `${name}` replaced; in a pattern, escapes are kept whole.
+fn fill(text: &str, pattern: bool, value: impl Fn(&str) -> String) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if pattern && c == '\\' {
+            let end = 1 + rest[1..].chars().next().map_or(0, char::len_utf8);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+        } else if let Some(r) = rest.strip_prefix("${")
+            && let Some(end) = r.find('}')
+            && PROVIDERS.contains(&&r[..end])
+        {
+            out.push_str(&value(&r[..end]));
+            rest = &r[end + 1..];
+        } else {
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
 }
 
 /// `extends`, `children` and `where.inside` name types that exist, and `extends` doesn't go
@@ -970,11 +1211,6 @@ fn references(
 
 /// Everything wrong with one definition on its own, one line each.
 fn check(name: &str, d: &Definition) -> Vec<String> {
-    if NATIVE.contains(&name) {
-        return vec![format!(
-            "{name} is built in: it can be extended (extends = \"{name}\") but not redefined"
-        )];
-    }
     let mut p = Vec::new();
     if !is_name(name, true) {
         p.push(format!(
@@ -1036,9 +1272,12 @@ fn check(name: &str, d: &Definition) -> Vec<String> {
                 ));
             }
             match value {
-                Value::Enum { values } if values.values().any(|v| v == name) => {}
+                Value::Enum { values } if values.map().values().any(|v| v == name) => {}
+                Value::Enum { values: EnumValues::Setting(s) } => p.push(format!(
+                    "style.{field}.by-value: {field}'s values come from {s}, so they can't be named here"
+                )),
                 Value::Enum { values } => {
-                    let names: Vec<&str> = values.values().map(String::as_str).collect();
+                    let names: Vec<&str> = values.map().values().map(String::as_str).collect();
                     p.push(format!(
                         "style.{field}.by-value: {name:?} is not one of its values ({})",
                         names.join(", ")
@@ -1091,9 +1330,11 @@ fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
             Some(Vec::new())
         }
     };
-    for k in &shape.key {
-        if !d.fields.contains_key(k) {
-            p.push(format!("{at}key {k:?} is not a field"));
+    for (what, names) in [("key", &shape.key), ("required", &shape.required)] {
+        for k in names {
+            if !d.fields.contains_key(k) {
+                p.push(format!("{at}{what} {k:?} is not a field"));
+            }
         }
     }
     let mut rest = 0;
@@ -1191,9 +1432,11 @@ fn expand(pattern: &str) -> Result<String, String> {
     let mut rest = pattern;
     while let Some(c) = rest.chars().next() {
         if c == '\\' {
-            // An escape, with `\p{…}` kept whole so its braces aren't read as a placeholder.
+            // An escape, with `\p{…}` and `\x{…}` kept whole so their braces aren't read as a
+            // placeholder.
             let mut end = 1 + rest[1..].chars().next().map_or(0, char::len_utf8);
-            if matches!(&rest[1..end], "p" | "P") && rest[end..].starts_with('{') {
+            if matches!(&rest[1..end], "p" | "P" | "x" | "u" | "U") && rest[end..].starts_with('{')
+            {
                 end += rest[end..].find('}').map_or(rest.len() - end, |i| i + 1);
             }
             out.push_str(&rest[..end]);
@@ -1322,7 +1565,7 @@ mod tests {
             list["c"].0,
             [Source::Marker("📅".into()), Source::Inline("due".into())]
         );
-        assert_eq!(list["j"].0, [Source::Rest(Yes)]);
+        assert_eq!(list["j"].0, [Source::Rest(Rest::default())]);
         let kinds: Vec<&str> = list.values().flat_map(|s| &s.0).map(Source::kind).collect();
         assert_eq!(
             kinds,
@@ -1761,6 +2004,36 @@ mod tests {
             r"\{date} (?:\d{4}-\d{2}-\d{2})"
         );
         assert_eq!(expand(r"\p{L}+ x{2}").unwrap(), r"\p{L}+ x{2}");
+        assert_eq!(expand(r"\x{FE0F}?").unwrap(), r"\x{FE0F}?");
         assert_eq!(expand("${tasks.statuses}").unwrap(), "(?:)");
+    }
+
+    #[test]
+    fn the_built_in_task_loads_and_reads_back_as_json() {
+        let t = load([Layer::built_in()]);
+        assert_eq!(t.errors, Vec::<String>::new());
+        assert_eq!(names(&t), ["task"]);
+        assert_eq!(t.native, ["list", "heading", "block"]);
+        let task = &t.types[0];
+        assert_eq!(task.origin, Origin::BuiltIn);
+        let json = serde_json::to_value(&task.definition).unwrap();
+        assert_eq!(json["fields"]["status_type"]["values"], "${tasks.statuses}");
+        let back: Definition = serde_json::from_value(json).unwrap();
+        assert_eq!(back, task.definition);
+
+        let mine = load([Layer::built_in(), config("[task]\non = \"list-item\"\n")]);
+        assert_eq!(
+            mine.errors,
+            [
+                "config.toml: [types.task] task is built in: it can be extended (extends = \"task\") but not redefined"
+            ]
+        );
+        let bad = load([config(
+            "[x]\non = \"list-item\"\nfields.s = { checkbox = true, type = \"enum\", values = \"${daily.format}\" }\n",
+        )]);
+        assert!(
+            bad.errors[0]
+                .contains("an enum's values are a table, or a setting (${tasks.statuses})")
+        );
     }
 }
