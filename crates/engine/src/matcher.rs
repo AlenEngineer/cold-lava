@@ -5,7 +5,8 @@
 //! A note is gated once (folder, tags, frontmatter), and a block is only checked against the
 //! shapes for its primitive that passed. One type wins per note and per block: higher
 //! `priority`, then a subtype over its base, then the shape with more conditions, then origin
-//! (vault, config, extension), then name.
+//! (vault, config, extension), then name. Inline types don't compete: every match of each is an
+//! item.
 
 use std::cmp::Ordering;
 use std::ops::Range;
@@ -20,13 +21,14 @@ use crate::markdown::{self, Flavour, Syntax};
 use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
 use crate::{daily, vault};
 
-/// The primitives this matcher reads; shapes on the others (code, quote, inline) wait.
+/// The primitives this matcher reads; shapes on the others (code, quote) wait.
 const READ: &[On] = &[
     On::Note,
     On::Heading,
     On::Paragraph,
     On::ListItem,
     On::TableRow,
+    On::Inline,
 ];
 
 /// A typed item's kind, the types it answers to, and its fields.
@@ -137,7 +139,7 @@ impl Matcher {
                     continue;
                 }
                 let w = &shape.conditions;
-                m.needs_tags |= shape.on == On::Note && !w.tag.is_empty();
+                m.needs_tags |= matches!(shape.on, On::Note | On::Inline) && !w.tag.is_empty();
                 let fields = shape
                     .fields
                     .iter()
@@ -264,6 +266,42 @@ impl Matcher {
         Some(self.read(t, s, caps, note, b))
     }
 
+    /// Every match of an inline type in a block's text, in order, with its range in that text.
+    /// A match that touches `code` (ranges in `src`: code spans, fences, math) doesn't count.
+    pub fn inline(
+        &self,
+        gate: &[Vec<bool>],
+        note: &Note,
+        b: &Block,
+        code: &[Range<usize>],
+    ) -> Vec<(Typed, String, Range<usize>)> {
+        let mut found: Vec<(usize, Typed, String, Range<usize>)> = Vec::new();
+        let Some(slot) = slot(On::Inline) else {
+            return Vec::new();
+        };
+        for &(t, s) in &self.by_on[slot] {
+            let shape = &self.types[t].shapes[s];
+            if !gate[t][s] || !block_passes(&shape.w, note, b) {
+                continue;
+            }
+            let Some(re) = &shape.pattern else { continue };
+            for caps in re.captures_iter(b.text) {
+                let whole = caps.get(0).expect("group 0 is the match").range();
+                let (start, end) = (b.at + whole.start, b.at + whole.end);
+                let i = code.partition_point(|c| c.end <= start);
+                let in_code = code.get(i).is_some_and(|c| c.start < end);
+                let again = found.iter().any(|f| f.0 == t && f.3 == whole);
+                if whole.is_empty() || in_code || again {
+                    continue;
+                }
+                let (typed, key) = self.read(t, s, Some(caps), note, b);
+                found.push((t, typed, key, whole));
+            }
+        }
+        found.sort_by_key(|f| f.3.start);
+        found.into_iter().map(|f| (f.1, f.2, f.3)).collect()
+    }
+
     /// Which of two matching (type, shape)s wins.
     fn better(&self, a: (usize, usize), b: (usize, usize)) -> Ordering {
         let (ta, tb) = (&self.types[a.0], &self.types[b.0]);
@@ -349,6 +387,11 @@ impl Matcher {
                     .map(|c| note.src[c.clone()].to_string())
                     .unwrap_or_default(),
                 On::Note => String::new(),
+                On::Inline => caps
+                    .as_ref()
+                    .and_then(|c| c.get(0))
+                    .map_or("", |m| m.as_str().trim())
+                    .to_string(),
                 _ => b.text.trim().to_string(),
             }
         } else {
@@ -551,7 +594,8 @@ fn tag_under(tag: &str, wanted: &str) -> bool {
 pub struct Block<'a> {
     pub on: On,
     /// Its text: a list item's first line without its marker, a heading's words, a paragraph,
-    /// a whole table row; and where it starts in `src`.
+    /// a whole table row; for inline types, the text they are looked for in. And where it starts
+    /// in `src`.
     pub text: &'a str,
     pub at: usize,
     pub section: &'a [String],
@@ -576,11 +620,12 @@ fn note_passes(w: &crate::types::Where, note: &Note) -> bool {
         })
 }
 
-/// The conditions on the block itself; a note's tags are the note's, a block's its own.
+/// The conditions on the block itself; a note's tags are the note's, a block's its own, and an
+/// inline match, which has no text to tag, goes by the note's.
 fn block_passes(w: &crate::types::Where, note: &Note, b: &Block) -> bool {
     (w.tag.is_empty()
         || w.tag.iter().any(|t| match b.on {
-            On::Note => note.has_tag(t),
+            On::Note | On::Inline => note.has_tag(t),
             _ => Note::tags_in(b.text).any(|(tag, _)| tag_under(tag, t)),
         }))
         && w.header.iter().all(|h| b.header.iter().any(|x| x == h))
@@ -1176,6 +1221,184 @@ fields.title = { rest = true }
             json!({ "by": "Ana", "text": "Lava is hot. #quote" })
         );
         assert_eq!(all.len(), 1, "an untyped paragraph is no item");
+    }
+
+    const ESTIMATE: &str = r#"
+[estimate]
+on = "inline"
+match = '(?:^|\s)~(?<v>{duration})\b'
+fields.minutes = { capture = "v", type = "duration" }
+fields.under = { section = "heading" }
+"#;
+
+    const SPRINT: &str = "\
+---
+note: ~9h in frontmatter
+---
+# Plan ~1h
+- [ ] Dig ~30m and haul ~2h ^dig
+- Sweep %%x%% ~15m
+  then ~5m on its second line
+  - nested ~1m
+
+Survey the rim ~3h, not `~4h`, not~6h.
+| Step | Time |
+| --- | --- |
+| Map | ~45m |
+
+```
+~8h
+```
+> Quoted ~10m
+";
+
+    #[test]
+    fn inline_types_match_anywhere_in_text_any_number_per_block() {
+        let s = settings(ESTIMATE);
+        let all = extract("Sprint.md", SPRINT, &s);
+        let found: Vec<(usize, Json, Vec<&str>)> = all
+            .iter()
+            .filter(|i| i.data.kind() == "estimate")
+            .map(|i| {
+                (
+                    i.line,
+                    fields(i)["minutes"].clone(),
+                    spans(SPRINT, i, "minutes"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (4, json!(60), vec!["1h"]),
+                (5, json!(30), vec!["30m"]),
+                (5, json!(120), vec!["2h"]),
+                (6, json!(15), vec!["15m"]),
+                (7, json!(5), vec!["5m"]),
+                (8, json!(1), vec!["1m"]),
+                (10, json!(180), vec!["3h"]),
+                (13, json!(45), vec!["45m"]),
+                (18, json!(10), vec!["10m"]),
+            ],
+            "not in frontmatter, a code span, a fence, or glued to a word"
+        );
+        let item = |line: usize| {
+            all.iter()
+                .find(|i| i.line == line && i.data.kind() != "estimate")
+        };
+        let parent = |line: usize, nth: usize| {
+            all.iter()
+                .filter(|i| i.line == line && i.data.kind() == "estimate")
+                .nth(nth)
+                .unwrap()
+                .parent
+                .clone()
+        };
+        assert_eq!(parent(4, 0), item(4).map(|h| h.id.clone()), "a heading");
+        let dig = item(5).unwrap();
+        assert_eq!(dig.data.kind(), "task");
+        assert_eq!(parent(5, 0), Some(dig.id.clone()), "a task");
+        assert_eq!(parent(5, 1), Some(dig.id.clone()), "two in one task");
+        assert_eq!(
+            parent(7, 0),
+            item(6).map(|l| l.id.clone()),
+            "a list item's lines"
+        );
+        assert_eq!(parent(8, 0), item(8).map(|l| l.id.clone()), "a nested item");
+        assert_eq!(parent(10, 0), None, "a paragraph is no item");
+        assert_eq!(
+            all.iter()
+                .find(|i| i.line == 4 && i.data.kind() == "estimate")
+                .map(fields),
+            Some(json!({ "minutes": 60, "under": null })),
+        );
+        let haul = all
+            .iter()
+            .find(|i| i.data.kind() == "estimate" && fields(i)["minutes"] == 120)
+            .unwrap();
+        assert_eq!(fields(haul)["under"], "Plan ~1h");
+        assert_eq!(haul.section, ["Plan ~1h"]);
+        assert_eq!(
+            haul.rev,
+            crate::tasks::line_id(SPRINT.lines().nth(4).unwrap())
+        );
+    }
+
+    #[test]
+    fn inline_ids_follow_their_block_and_their_text() {
+        let s = settings(ESTIMATE);
+        let ids = |text: &str| -> Vec<String> {
+            extract("Sprint.md", text, &s)
+                .into_iter()
+                .filter(|i| i.data.kind() == "estimate")
+                .map(|i| i.id)
+                .collect()
+        };
+        let before = ids(SPRINT);
+        let after = ids(&SPRINT.replace("# Plan ~1h\n", "# Plan ~1h\n\nA new line.\n"));
+        assert_eq!(before, after, "lines added above keep every id");
+        let ticked = ids(&SPRINT.replace("- [ ] Dig", "- [x] Dig"));
+        assert_eq!(before, ticked, "ticking the task keeps its estimates' ids");
+        let retimed = ids(&SPRINT.replace("~30m", "~40m"));
+        assert_ne!(before[1], retimed[1], "a new value is a new item");
+        assert_eq!(before[2], retimed[2], "its neighbour keeps its id");
+        let twice = ids("~5m and ~5m\n");
+        assert_eq!(twice.len(), 2);
+        assert_ne!(twice[0], twice[1], "the nth identical one");
+    }
+
+    #[test]
+    fn inline_where_gates_by_note_section_and_block() {
+        let text =
+            "---\ntags: [work]\n---\n# Today\n- [ ] Dig ~30m\n- Rest ~1h\n# Later\nRead ~2h\n";
+        let minutes = |toml: &str, path: &str, text: &str| -> Vec<Json> {
+            extract(path, text, &settings(&format!("{ESTIMATE}{toml}")))
+                .iter()
+                .filter(|i| i.data.kind() == "estimate")
+                .map(|i| fields(i)["minutes"].clone())
+                .collect()
+        };
+        assert_eq!(
+            minutes("", "N.md", text),
+            [json!(30), json!(60), json!(120)]
+        );
+        assert_eq!(minutes("where.tag = [\"work\"]\n", "N.md", text).len(), 3);
+        assert!(minutes("where.tag = [\"home\"]\n", "N.md", text).is_empty());
+        assert_eq!(
+            minutes("where.folder = [\"Work\"]\n", "Work/N.md", text).len(),
+            3
+        );
+        assert!(minutes("where.folder = [\"Work\"]\n", "N.md", text).is_empty());
+        assert_eq!(
+            minutes("where.section = [\"Later\"]\n", "N.md", text),
+            [json!(120)]
+        );
+        assert_eq!(
+            minutes("where.inside = [\"task\"]\n", "N.md", text),
+            [json!(30)]
+        );
+        assert_eq!(
+            minutes("where.inside = [\"paragraph\"]\n", "N.md", text),
+            [json!(120)]
+        );
+        assert_eq!(
+            minutes("where.inside = [\"list-item\"]\n", "N.md", text),
+            [json!(30), json!(60)]
+        );
+    }
+
+    #[test]
+    fn inline_items_sit_in_typed_blocks_and_keep_their_spans_through_comments() {
+        let s = settings(&format!(
+            "{ESTIMATE}\n[step]\non = \"table-row\"\nwhere.header = [\"Step\"]\n\
+             fields.name = {{ column = \"Step\" }}\n"
+        ));
+        let text = "| Step | Time |\n| --- | --- |\n| Map %%x%% | ~45m |\n";
+        let all = extract("N.md", text, &s);
+        let step = one(&all, "step");
+        let estimate = one(&all, "estimate");
+        assert_eq!(estimate.parent.as_ref(), Some(&step.id), "a typed row");
+        assert_eq!(spans(text, estimate, "minutes"), ["45m"]);
     }
 
     #[test]

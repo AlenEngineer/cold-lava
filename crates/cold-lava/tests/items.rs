@@ -102,7 +102,7 @@ Journal/2026-11-05.md:10  [ ] Review the eruption timeline board  scheduled 2026
     assert_eq!(out.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&out.stderr)
-            .contains("task, list, heading, block, volcano, eruption"),
+            .contains("task, list, heading, block, volcano, eruption, vei"),
         "the vault's types are kinds too"
     );
     let _ = std::fs::remove_dir_all(vault.parent().unwrap());
@@ -119,6 +119,11 @@ fn types_find_their_items() {
     assert_eq!(
         run(&vault, &["items", v, "eruption", "--json"]),
         golden("items-eruption.json")
+    );
+    assert_eq!(
+        run(&vault, &["items", v, "vei", "--json"]),
+        golden("items-vei.json"),
+        "an inline type, found in the prose of three notes"
     );
     let _ = std::fs::remove_dir_all(vault.parent().unwrap());
 }

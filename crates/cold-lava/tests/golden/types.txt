@@ -18,3 +18,10 @@ eruption  vault example-vault/.cold-lava/types.toml
     volcanoes  link    inlines links   read-only
   looks
     vei        orange, badge
+
+vei  vault example-vault/.cold-lava/types.toml
+  found 3 items
+  on inline · match '\bVEI (?<n>\d)\b'
+    vei  number  capture n  writable
+  looks
+    vei  orange, badge

@@ -5,7 +5,7 @@
 //! One pass of pulldown-cmark per note, in the vault's flavour, over the same text the reader
 //! parses. Tasks are list items whose first line `tasks::parse_line` reads as one. Loaded types
 //! match in the same pass: the pass collects the blocks some type reads, and `matcher` says
-//! which type each one is.
+//! which type each one is and which inline types sit in its text.
 
 use crate::daily;
 use crate::markdown::{self, Flavour, Syntax};
@@ -201,6 +201,11 @@ struct Candidate {
     on: On,
     /// Its text in the source.
     text: Range<usize>,
+    /// Whether a type on its primitive may take it (tasks stay tasks); else it is only searched
+    /// for inline types.
+    typeable: bool,
+    /// Where inline types are looked for: its text, or all of a list item's own lines.
+    own: Range<usize>,
     /// The item it would type (a list item, a heading, a paragraph with a block id); without
     /// one, a match is a new item.
     raw: Option<usize>,
@@ -235,7 +240,12 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let want = |on: On| typing && m.reads(on);
     let (want_rows, want_paragraphs) = (want(On::TableRow), want(On::Paragraph));
     let (want_lists, want_headings) = (want(On::ListItem), want(On::Heading));
+    let want_inline = want(On::Inline);
+    let collect_rows = want_rows || want_inline;
+    let line_end = |n: usize| newlines.get(n - 1).copied().unwrap_or(src.len());
     let mut candidates: Vec<Candidate> = Vec::new();
+    // Code spans, code blocks and math, where inline types never match.
+    let mut code: Vec<Range<usize>> = Vec::new();
     let mut tables: Vec<Vec<String>> = Vec::new();
     let mut cells: Vec<Range<usize>> = Vec::new();
     let mut in_head = false;
@@ -262,6 +272,9 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
             Event::Text(t) if m.needs_tags && verbatim == 0 && t.contains('#') => {
                 body_tags.extend(matcher::Note::tags_in(&t).map(|(tag, _)| tag.to_string()));
             }
+            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) if want_inline => {
+                code.push(range)
+            }
             Event::Start(tag) => {
                 let line = line_of(range.start);
                 let mut item = None;
@@ -273,10 +286,13 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                         }
                         let text = heading_text(&src[range.clone()]);
                         let end_line = line_of(range.end.saturating_sub(1)).max(line);
-                        if want_headings {
+                        if want_headings || want_inline {
+                            let words = heading_range(src, range.clone());
                             candidates.push(Candidate {
                                 on: On::Heading,
-                                text: heading_range(src, range.clone()),
+                                typeable: want_headings,
+                                own: words.clone(),
+                                text: words,
                                 raw: Some(raws.len()),
                                 line,
                                 end_line,
@@ -323,7 +339,13 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                         }
                     }
                     Tag::BlockQuote(_) => quotes += 1,
-                    Tag::CodeBlock(_) | Tag::MetadataBlock(_) => verbatim += 1,
+                    Tag::CodeBlock(_) => {
+                        verbatim += 1;
+                        if want_inline {
+                            code.push(range.clone());
+                        }
+                    }
+                    Tag::MetadataBlock(_) => verbatim += 1,
                     Tag::Link {
                         link_type,
                         ref dest_url,
@@ -339,9 +361,9 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             links.extend(crate::vault::clean_target(target));
                         }
                     }
-                    Tag::Table(_) if want_rows => tables.push(Vec::new()),
+                    Tag::Table(_) if collect_rows => tables.push(Vec::new()),
                     Tag::TableHead => in_head = true,
-                    Tag::TableCell if want_rows => {
+                    Tag::TableCell if collect_rows => {
                         let cell = trim_cell(src, range.clone());
                         match tables.last_mut() {
                             Some(header) if in_head => header.push(src[cell].to_string()),
@@ -391,11 +413,15 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             .has(Syntax::TaskLists)
                             .then(|| tasks::parse_line(first, &s.tasks))
                             .flatten();
-                        if want_lists && task.is_none() {
+                        let typeable = want_lists && task.is_none();
+                        if typeable || want_inline {
                             let start = frame.start + list_text_start(first);
                             let end = frame.start + first.trim_end().len();
+                            let own_end = start + src[start..line_end(last)].trim_end().len();
                             candidates.push(Candidate {
                                 on: On::ListItem,
+                                typeable,
+                                own: start..own_end.max(start),
                                 text: start..end.max(start),
                                 raw: Some(at),
                                 line: frame.line,
@@ -446,16 +472,19 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                                 key: String::new(),
                             });
                         }
-                        if want_paragraphs && !alone {
+                        if (want_paragraphs || want_inline) && !alone {
                             let mut text = src[frame.start..range.end].trim_end();
                             if let Some(c) = markdown::block_id_pattern().captures(text)
                                 && id.is_some()
                             {
                                 text = text[..c.get(0).unwrap().start()].trim_end();
                             }
+                            let text = frame.start..frame.start + text.len();
                             candidates.push(Candidate {
                                 on: On::Paragraph,
-                                text: frame.start..frame.start + text.len(),
+                                typeable: want_paragraphs,
+                                own: text.clone(),
+                                text,
                                 raw,
                                 line: frame.line,
                                 end_line: last,
@@ -473,11 +502,14 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                         verbatim = verbatim.saturating_sub(1)
                     }
                     (TagEnd::TableHead, _) => in_head = false,
-                    (TagEnd::TableRow, _) if want_rows => {
+                    (TagEnd::TableRow, _) if collect_rows => {
                         let row = src[frame.start..range.end].trim_end();
+                        let text = frame.start..frame.start + row.len();
                         candidates.push(Candidate {
                             on: On::TableRow,
-                            text: frame.start..frame.start + row.len(),
+                            typeable: want_rows,
+                            own: text.clone(),
+                            text,
                             raw: None,
                             line: frame.line,
                             end_line: frame.line,
@@ -521,6 +553,9 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
         }
         // In document order, so a list item is typed before the items inside it ask.
         candidates.sort_by_key(|c| c.text.start);
+        // (type, where) of each inline match, so a block inside a list item's lines (a quote,
+        // a table) doesn't find it twice.
+        let mut inline_seen: std::collections::HashSet<(String, usize)> = Default::default();
         for c in candidates {
             let mut inside = note_is.clone();
             if c.in_quote {
@@ -533,36 +568,82 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                     inside.extend(t.is.iter().cloned());
                 }
             }
-            let matched = m.block(
-                &gate,
-                &found,
-                &matcher::Block {
-                    on: c.on,
-                    text: &src[c.text.clone()],
-                    at: c.text.start,
-                    section: &c.section,
-                    header: tables.get(c.table).map_or(&[], Vec::as_slice),
-                    cells: &c.cells,
-                    inside: inside.iter().map(String::as_str).collect(),
-                },
-            );
-            let Some((typed, key)) = matched else {
-                continue;
-            };
-            match c.raw {
-                Some(i) => {
-                    raws[i].data = Data::Typed(typed);
-                    raws[i].key = key;
+            let matched = c
+                .typeable
+                .then(|| {
+                    m.block(
+                        &gate,
+                        &found,
+                        &matcher::Block {
+                            on: c.on,
+                            text: &src[c.text.clone()],
+                            at: c.text.start,
+                            section: &c.section,
+                            header: tables.get(c.table).map_or(&[], Vec::as_slice),
+                            cells: &c.cells,
+                            inside: inside.iter().map(String::as_str).collect(),
+                        },
+                    )
+                })
+                .flatten();
+            // The item the block is, which its inline items name as their parent.
+            let mut host = c.raw;
+            if let Some((typed, key)) = matched {
+                match c.raw {
+                    Some(i) => {
+                        raws[i].data = Data::Typed(typed);
+                        raws[i].key = key;
+                    }
+                    None => {
+                        host = Some(raws.len());
+                        raws.push(Raw {
+                            line: c.line,
+                            end_line: c.end_line,
+                            section: c.section.clone(),
+                            parent: c.parent,
+                            block_id: c.block_id.clone(),
+                            data: Data::Typed(typed),
+                            key,
+                        });
+                    }
                 }
-                None => raws.push(Raw {
-                    line: c.line,
-                    end_line: c.end_line,
-                    section: c.section,
-                    parent: c.parent,
-                    block_id: c.block_id,
+            }
+            if !want_inline {
+                continue;
+            }
+            inside.push(c.on.name().into());
+            if let Some(h) = host {
+                inside.push(raws[h].data.kind().to_string());
+                if let Data::Typed(t) = &raws[h].data {
+                    inside.extend(t.is.iter().cloned());
+                }
+            }
+            let block = matcher::Block {
+                on: On::Inline,
+                text: &src[c.own.clone()],
+                at: c.own.start,
+                section: &c.section,
+                header: &[],
+                cells: &[],
+                inside: inside.iter().map(String::as_str).collect(),
+            };
+            for (typed, key, r) in m.inline(&gate, &found, &block, &code) {
+                let written = &block.text[r.clone()];
+                let start = c.own.start + r.start + (written.len() - written.trim_start().len());
+                let end = c.own.start + r.start + written.trim_end().len();
+                if !inline_seen.insert((typed.kind.clone(), start)) {
+                    continue;
+                }
+                let line = line_of(start);
+                raws.push(Raw {
+                    line,
+                    end_line: line_of(end.saturating_sub(1)).max(line),
+                    section: c.section.clone(),
+                    parent: host,
+                    block_id: None,
                     data: Data::Typed(typed),
                     key,
-                }),
+                });
             }
         }
     }
