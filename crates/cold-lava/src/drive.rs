@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// No script runs longer than this, whatever its steps say.
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long, at most, the program gets to answer a lone Esc before the next key is typed.
+const ESC_SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, PartialEq)]
 pub struct Script {
@@ -340,6 +342,28 @@ impl Session {
         }
     }
 
+    /// A lone Esc followed at once by more bytes reads as Alt plus the next key, so `keys esc q`
+    /// would never quit: the program must read the Esc before the next byte lands. Its answer
+    /// (any output) shows it has; a slow machine gets up to `ESC_SETTLE` for it. Output still
+    /// on its way from an earlier key would pass for that answer, so that is drained first.
+    fn send_lone_esc(&mut self) {
+        let quiet = Duration::from_millis(30);
+        let deadline = Instant::now() + ESC_SETTLE;
+        while Instant::now() < deadline {
+            match self.output.recv_timeout(quiet) {
+                Ok(bytes) => self.feed(&bytes),
+                Err(_) => break,
+            }
+        }
+        self.send(b"\x1b");
+        if let Ok(bytes) = self.output.recv_timeout(ESC_SETTLE) {
+            self.feed(&bytes);
+            while let Ok(bytes) = self.output.try_recv() {
+                self.feed(&bytes);
+            }
+        }
+    }
+
     fn send(&mut self, bytes: &[u8]) {
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
@@ -454,12 +478,10 @@ pub fn run(
                         match input {
                             Input::Key(k) => {
                                 let bytes = k.bytes(app_cursor);
-                                s.send(&bytes);
-                                // A lone Esc followed at once by more bytes reads as Alt plus
-                                // the next key, so `keys esc q` would never quit. A terminal
-                                // tells them apart by time; give the program that time.
                                 if bytes == b"\x1b" {
-                                    s.pump(Duration::from_millis(50));
+                                    s.send_lone_esc();
+                                } else {
+                                    s.send(&bytes);
                                 }
                             }
                             Input::Text(t) => s.send(t.as_bytes()),
@@ -633,6 +655,19 @@ mod tests {
         assert_eq!(bytes("pageup", false), b"\x1b[5~");
         assert_eq!(bytes("alt+x", false), b"\x1bx");
         assert_eq!(bytes("G", false), b"G");
+    }
+
+    /// The program reads the Esc, takes 300 ms to answer, then looks for input already waiting:
+    /// a `q` sent before the answer would have arrived with the Esc.
+    #[cfg(unix)]
+    #[test]
+    fn waits_for_the_answer_to_a_lone_esc() {
+        let program = "stty raw -echo; dd bs=1 count=1 >/dev/null 2>&1; sleep 0.3; \
+            stty min 0 time 0; n=$(dd bs=1 count=1 2>/dev/null | wc -c); \
+            if [ $n -eq 0 ]; then echo APART; else echo MERGED; fi; sleep 5";
+        let script = parse("wait 300ms\nkeys esc q\nwait-for APART").unwrap();
+        let args = ["-c".to_string(), program.to_string()];
+        assert!(run("esc", &script, Path::new("/bin/sh"), &args, false).unwrap());
     }
 
     #[test]

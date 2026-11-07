@@ -13,6 +13,8 @@ change commands, keys and file formats; patch versions only fix things.
   waits for text and checks the screen (`wait-for`, `expect`, `exits 0`, …). A failing step
   names its line and prints the screen. It drives the real binary, embedded Neovim included, with an empty home folder so
   it doesn't read your config or add to your list of vaults (`--real-home` to use yours).
+  After a lone Esc it waits for the program to answer before typing on, so `keys esc q` isn't
+  read as Alt-q on a slow machine.
 - `COLD_LAVA_EDITOR=none` opens notes in the reader even when Neovim is installed.
 - Back and forward, like a browser's, across the menu, the reader, search, the graph and
   whiteboards: `Ctrl-o`, `Alt-←` or `Backspace` (`history.back`) returns to where you were
