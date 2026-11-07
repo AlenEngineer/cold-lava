@@ -82,11 +82,26 @@ impl History {
         self.forward.last()
     }
 
-    /// Drop the places that show the note or board at `path` (it was deleted).
+    /// Drop the places that show the note or board at `path`, or anything in the folder at
+    /// `path` (it was deleted).
     pub fn forget(&mut self, path: &Path) {
-        let keep = |p: &Place| !matches!(p, Place::Note { path: q, .. } | Place::Board { path: q } if q == path);
+        let keep = |p: &Place| !matches!(p, Place::Note { path: q, .. } | Place::Board { path: q } if q.starts_with(path));
         self.back.retain(keep);
         self.forward.retain(keep);
+    }
+
+    /// The note, board or folder at `from` is at `to` now: so are the places that show it.
+    pub fn moved(&mut self, from: &Path, to: &Path) {
+        for place in self.back.iter_mut().chain(self.forward.iter_mut()) {
+            if let Place::Note { path, .. } | Place::Board { path } = place
+                && let Ok(rest) = path.strip_prefix(from)
+            {
+                *path = match rest.as_os_str().is_empty() {
+                    true => to.to_path_buf(),
+                    false => to.join(rest),
+                };
+            }
+        }
     }
 
     pub fn clear(&mut self) {
@@ -184,6 +199,23 @@ mod tests {
         h.visit(note("Kīlauea"));
         h.visit(note("Lava"));
         assert_eq!(h.back(Some(note("Lava"))), Some(note("Kīlauea")));
+    }
+
+    #[test]
+    fn follows_a_moved_folder_and_forgets_a_deleted_one() {
+        let mut h = History::default();
+        h.visit(note("People/Johnston"));
+        h.visit(note("Lava"));
+        h.moved(Path::new("People"), Path::new("Volcanologists"));
+        assert_eq!(h.back(None), Some(note("Lava")));
+        assert_eq!(h.back(None), Some(note("Volcanologists/Johnston")));
+
+        let mut h = History::default();
+        h.visit(note("Volcanologists/Johnston"));
+        h.visit(note("Lava"));
+        h.forget(Path::new("Volcanologists"));
+        assert_eq!(h.back(None), Some(note("Lava")));
+        assert_eq!(h.back(None), None);
     }
 
     #[test]

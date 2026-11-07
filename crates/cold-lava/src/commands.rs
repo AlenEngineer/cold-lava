@@ -32,6 +32,7 @@ pub enum MenuAction {
     Graph,
     Boards,
     NewNote,
+    NewFolder,
     Today,
     AddVault,
     Rescan,
@@ -192,7 +193,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.rename",
         Group::Note,
         "rename",
-        "rename the note (every link to it is updated)",
+        "rename the note or folder (every link to it is updated)",
         &["R"],
     ),
     cmd(
@@ -200,7 +201,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.move",
         Group::Note,
         "move",
-        "move the note to another folder (links updated)",
+        "move the note or folder into another folder (links updated)",
         &["m"],
     ),
     cmd(
@@ -208,7 +209,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.delete",
         Group::Note,
         "delete",
-        "delete the note or whiteboard (to the trash; shows what links to it first)",
+        "delete the note, whiteboard or folder (to the trash; shows what links to it first)",
         &["d"],
     ),
     cmd(
@@ -216,7 +217,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.undo-delete",
         Group::Note,
         "undo delete",
-        "put the last deleted note back where it was",
+        "put the last deleted note or folder back where it was",
         &["u"],
     ),
     cmd(
@@ -298,6 +299,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "new note",
         "new note in the selected folder (Tab picks a template)",
         &["n"],
+    ),
+    cmd(
+        MenuAction::NewFolder,
+        "note.new-folder",
+        Group::Note,
+        "new folder",
+        "new folder in the selected folder",
+        &["N"],
     ),
     cmd(
         MenuAction::Today,

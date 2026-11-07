@@ -1,12 +1,14 @@
-# Delete a note that others link to: the prompt lists them, n cancels, y sends it to the trash,
+# A folder asks first (n cancels). Delete a note that others link to: the prompt lists them, n cancels, y sends it to the trash,
 # u puts it back. Then a whiteboard, the tree's last row. tests/drive.rs checks the files.
 env COLD_LAVA_EDITOR=none
 wait-for example-vault 34 notes
 keys home
 wait-for ▾ Concepts
 keys d
-wait-for cold-lava doesn't delete folders yet
-expect-not Delete Concepts
+wait-for Delete Concepts/?
+expect It holds 13 notes, and everything else in it.
+keys n
+wait-for delete cancelled
 keys p lava
 wait-for Lava
 keys enter

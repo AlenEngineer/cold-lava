@@ -1,0 +1,59 @@
+# Folders: rename People (the preview lists every link that changes), move it into Guide,
+# make a folder in it, then delete it to the trash and undo. tests/drive.rs adds Inbox/Links.md
+# and Inbox/People.canvas, which link into People by path, and checks every link still resolves.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault 35 notes
+keys p johnston
+wait-for David A. Johnston
+keys enter
+wait-for People/David A. Johnston  reading
+keys esc h R
+wait-for rename · ⏎ preview · Esc cancel
+expect new name: People
+keys ctrl+u
+type Volcanologists
+keys enter
+wait-for People/  →  Volcanologists/
+expect 3 notes move with it.
+expect 5 links in 2 files will be updated:
+expect ▤ Inbox/Links  3 links
+expect [[Volcanologists/David A. Johnston]] and [Krafft](../Volcanologists/Katia%20and%20Maurice%20Krafft.md)
+expect ▤ Inbox/People.canvas  2 links
+screen
+keys enter
+wait-for renamed the folder to Volcanologists · 5 links updated in 2 files
+expect Volcanologists/David A. Johnston  reader
+expect ▾ Volcanologists
+expect-not ▾ People
+keys m
+wait-for move to folder · ⏎ preview
+keys ctrl+u
+type Guide
+keys enter
+wait-for Volcanologists/  →  Guide/Volcanologists/
+keys enter
+wait-for moved the folder to Guide/Volcanologists · 5 links updated in 2 files
+expect Guide/Volcanologists/David A. Johnston  reader
+keys N
+wait-for new folder · ⏎ create · Esc cancel
+type Field Notes
+keys enter
+wait-for created Guide/Volcanologists/Field Notes/
+expect example-vault 35 notes
+keys h d
+wait-for Delete Guide/Volcanologists/?
+expect It holds 3 notes, and everything else in it.
+expect 4 notes link to them from outside: Links, Mount St. Helens, Pyroclastic Flow, Vesuvius.
+expect y delete · n cancel
+screen
+keys y
+wait-for deleted Volcanologists · u undo
+wait-for example-vault 32 notes
+expect-not Guide/Volcanologists/David A. Johnston  reader
+keys u
+wait-for restored Guide/Volcanologists
+wait-for example-vault 35 notes
+expect ▾ Volcanologists
+expect Field Notes
+keys q
+exits 0

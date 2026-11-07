@@ -9,6 +9,15 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Folders in the main menu: `R` renames the selected folder and `m` moves it into another, with
+  every link into it, out of it and inside it kept correct (by path, by name, relative Markdown
+  links, attachments, frontmatter, whiteboard cards), shown in a preview first. A `[[Name]]`
+  link becomes a path only when the move would make it lead to another note. `d` deletes a
+  folder to the trash after saying how many notes it holds and which links into it will break,
+  and `u` puts it back. `N` (`note.new-folder`) makes a new folder in the selected one. Neovim
+  follows a note whose folder moved and drops one whose folder was deleted, and Back/Forward
+  follow moved notes. `cold-lava rename VAULT FOLDER NEW` renames or moves a folder too.
+
 - `cold-lava drive SCRIPT -- ARGS` runs cold-lava in a hidden terminal, types keys from a script,
   waits for text and checks the screen (`wait-for`, `expect`, `exits 0`, …). A failing step
   names its line and prints the screen. It drives the real binary, embedded Neovim included, with an empty home folder so
