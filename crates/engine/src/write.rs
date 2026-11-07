@@ -89,7 +89,15 @@ pub fn create_if_missing(path: &Path, bytes: &[u8]) -> Result<bool, WriteError> 
     }
 }
 
-/// Move a file, refusing to overwrite an existing one (except a case-only rename of itself).
+/// Create a new, empty folder (and any missing parents); refused if it already exists.
+pub fn create_dir(path: &Path) -> Result<(), WriteError> {
+    if path.exists() {
+        return Err(WriteError::Exists(path.to_path_buf()));
+    }
+    std::fs::create_dir_all(path).map_err(io_err(path))
+}
+
+/// Move a file or folder, refusing to overwrite an existing one (except a case-only rename of itself).
 pub fn move_file(from: &Path, to: &Path) -> Result<(), WriteError> {
     let same_file_case_change =
         to.exists() && from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
@@ -161,6 +169,12 @@ mod tests {
             matches!(move_file(&a, &b), Err(WriteError::Exists(_))),
             "won't overwrite"
         );
+        create_dir(&d.join("x/Empty/Inner")).unwrap();
+        assert!(d.join("x/Empty/Inner").is_dir());
+        assert!(matches!(
+            create_dir(&d.join("x/Empty")),
+            Err(WriteError::Exists(_))
+        ));
         let _ = std::fs::remove_dir_all(&d);
     }
 }
