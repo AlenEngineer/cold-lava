@@ -15,6 +15,13 @@ change commands, keys and file formats; patch versions only fix things.
   it doesn't read your config or add to your list of vaults (`--real-home` to use yours).
 - `COLD_LAVA_EDITOR=none` opens notes in the reader even when Neovim is installed.
 
+### Fixed
+
+- The whiteboard no longer overwrites a canvas file changed outside cold-lava between its merge
+  and its save, or one it couldn't read (for example while another app was halfway through
+  writing it). Your edits are kept and saved once the file can be read, and quitting first warns
+  that they aren't saved yet.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added
