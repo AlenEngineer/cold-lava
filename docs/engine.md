@@ -134,12 +134,12 @@ Obsidian) sees the same file.
 
 ## Engine and frontend
 
-The engine has no user interface. `core.rs`, `write.rs`, `vault.rs`, `index.rs`, `search.rs`,
-`markdown.rs`, `daily.rs` and `rename.rs` don't use ratatui or crossterm; two helpers still sit
-in UI files (`board::find_vault_root`, used by `tasks.rs`, and `home::config_dir`, used by
-`config.rs`) and should move. Everything is one crate today.
-
-The aim is the engine as its own library crate, with frontends beside it:
+The engine has no user interface. It is its own library crate, `cold-lava-engine` in
+`crates/engine` (the core, safe writes, scanning, the index, search, renames, Markdown flavours,
+items, tasks and daily notes), and it doesn't depend on ratatui, crossterm or the embedded
+terminal, so the compiler keeps UI code out of it. The terminal UI is the `cold-lava` binary in
+`crates/cold-lava`, which reads `config.toml` and hands the engine what it needs from it (the
+chosen Markdown flavour). Frontends sit beside the engine:
 
 ```
  cold-lava-engine   vault · flavours · blocks · types · items · safe writes · events
@@ -151,8 +151,7 @@ The aim is the engine as its own library crate, with frontends beside it:
 
 A frontend asks the engine and draws; the engine never knows which frontend is asking. That's
 what lets a language server, a graphical app or a script use exactly the same understanding of
-the vault as the terminal UI. Splitting the crate waits until items exist, so its interface is
-cut once, around the real thing.
+the vault as the terminal UI.
 
 ## What stays fixed
 
