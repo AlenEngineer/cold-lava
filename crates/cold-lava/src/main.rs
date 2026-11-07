@@ -17,8 +17,8 @@ mod term;
 mod whichkey;
 
 use cold_lava_engine::{
-    core, daily, frontmatter, index, items, markdown, paths, rename, search, tasks, templates,
-    trash, types, vault, write,
+    bookmarks, core, daily, frontmatter, index, items, markdown, paths, rename, search, tasks,
+    templates, trash, types, vault, write,
 };
 
 use anyhow::Result;
@@ -359,6 +359,9 @@ fn run() -> Result<()> {
                     for c in &e.changes {
                         println!("  {}:{}  {}", e.file, c.line, c.after.trim());
                     }
+                }
+                for c in plan.bookmarks.iter().flat_map(|b| &b.changes) {
+                    println!("  bookmark  {} → {}", c.before, c.after);
                 }
                 println!("{} links in {} files", plan.links(), plan.files());
                 for w in &plan.warnings {

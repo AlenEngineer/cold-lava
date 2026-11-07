@@ -16,6 +16,8 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long, at most, the program gets to answer a lone Esc before the next key is typed.
 const ESC_SETTLE: Duration = Duration::from_millis(500);
+/// A pause in the output this long means the program finished drawing its frame.
+const FRAME_SETTLE: Duration = Duration::from_millis(50);
 
 #[derive(Debug, PartialEq)]
 pub struct Script {
@@ -321,6 +323,19 @@ impl Session {
         }
     }
 
+    /// Take the output until the program pauses (for up to a second), so a check reads a whole
+    /// frame: a `wait-for` can match a frame of which the terminal has read only the first part.
+    fn settle(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            match self.output.recv_timeout(FRAME_SETTLE) {
+                Ok(bytes) => self.feed(&bytes),
+                Err(_) => break,
+            }
+        }
+        self.pump(Duration::ZERO);
+    }
+
     /// Pump until `done` holds or `timeout` passes. False on timeout, or if the program exited
     /// without `done` holding.
     fn until(&mut self, timeout: Duration, mut done: impl FnMut(&Session) -> bool) -> bool {
@@ -520,16 +535,16 @@ pub fn run(
                 None
             }
             Action::Expect(text) => {
-                s.pump(Duration::ZERO);
+                s.settle();
                 (!s.shows(text)).then(|| format!("expected {text:?} on the screen{}", s.exited()))
             }
             Action::ExpectNot(text) => {
-                s.pump(Duration::ZERO);
+                s.settle();
                 s.shows(text)
                     .then(|| format!("expected no {text:?} on the screen"))
             }
             Action::Screen => {
-                s.pump(Duration::ZERO);
+                s.settle();
                 s.print_screen(&format!("{name}:{}", step.line));
                 None
             }

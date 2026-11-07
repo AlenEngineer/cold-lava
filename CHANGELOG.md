@@ -9,6 +9,17 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Bookmarks, shared with Obsidian: they live in Obsidian's own `.obsidian/bookmarks.json`, so
+  a bookmark made in either app shows in both, and a change Obsidian makes shows at once. `B`
+  (`note.bookmark`) bookmarks the selected note or folder, or in the reader the heading you are
+  in; `Ctrl-b` (`search.bookmark`) in the search bookmarks what is typed; again removes it. `'`
+  (`bookmarks.open`) lists them with Obsidian's groups (`←`/`→` fold), type to filter, `Enter`
+  opens one (a note at its heading or block, a folder in the tree, a search, the graph, a board,
+  a link) and Back returns, `Del` removes one. Bookmarked notes and folders get a `★` in the tree.
+  Renaming or moving a note or folder moves its bookmarks with it; a deleted note's bookmark is
+  kept, like Obsidian keeps it, and shown as missing. Items and fields cold-lava doesn't know are
+  written back as they were, in their order.
+
 - Several notes at once: `space` (`note.mark`) marks notes and folders in the tree, shown with a
   `✓`, and `Esc` clears the marks. With marks, `m` moves them all into one folder as one plan
   (one preview, links between the moved notes kept right, refused if two would land on the same
@@ -136,6 +147,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- Opening a note at a heading, block or line (a link, a search result, a bookmark) in a note
+  short enough not to scroll no longer loses where it landed: the reader clamped the jump to a
+  page height it didn't know yet, so it fell back to the top and the breadcrumb lost the heading.
 - The menu no longer crashes when the last row of the note tree disappears (deleted here or in
   Obsidian): the selection was read through rows of the old tree.
 - Following a link to an attachment (`[[map.pdf]]`, `[map](Maps/map.pdf)`) no longer creates a

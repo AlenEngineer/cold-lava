@@ -124,6 +124,9 @@ impl Reader {
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
         self.height = area.height as usize;
+        if let Some(j) = self.pending_jump.take() {
+            self.jump(j);
+        }
         self.clamp();
         let Some(page) = &self.page else { return };
         let rows = page.lines.iter().skip(self.scroll).take(self.height);
@@ -350,7 +353,8 @@ impl Reader {
 
     /// Scrolls to a line of the note, a heading or a block id.
     pub fn jump(&mut self, jump: Jump) {
-        let Some(page) = &self.page else {
+        // It waits for the page's height too: clamped to an unknown height, it would be lost.
+        let Some(page) = self.page.as_ref().filter(|_| self.height > 0) else {
             self.pending_jump = Some(jump);
             return;
         };

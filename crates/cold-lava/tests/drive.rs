@@ -445,6 +445,56 @@ fn jumps_through_the_outline_and_heading_by_heading() {
 }
 
 #[test]
+fn bookmarks_are_obsidians_and_follow_a_rename() {
+    let dir = sandbox("bookmarks");
+    let file = dir.join("example-vault/.obsidian/bookmarks.json");
+    let theirs = std::fs::read_to_string(&file).unwrap().replacen(
+        "  \"items\": [\n",
+        "  \"items\": [\n    {\n      \"type\": \"graph\",\n      \"ctime\": 1,\n      \"title\": \"Volcano graph\",\n      \"options\": {\n        \"search\": \"path:Volcanoes\",\n        \"showTags\": false\n      }\n    },\n    {\n      \"type\": \"workspace-tab\",\n      \"ctime\": 2,\n      \"zeta\": [\n        1\n      ],\n      \"alpha\": \"kept\"\n    },\n",
+        1,
+    );
+    std::fs::write(&file, &theirs).unwrap();
+    let out = drive("bookmarks.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ours = std::fs::read_to_string(&file).unwrap();
+    let unknown = &theirs[..theirs.find("    {\n      \"type\": \"file\"").unwrap()];
+    assert!(
+        ours.starts_with(unknown),
+        "items it doesn't know, kept as they were:\n{ours}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&ours).unwrap();
+    let items = json["items"].as_array().unwrap();
+    let file_at = |path: &str, subpath: Option<&str>| {
+        items
+            .iter()
+            .any(|i| i["type"] == "file" && i["path"] == path && i["subpath"].as_str() == subpath)
+    };
+    assert!(file_at("Volcanoes/Krakatau.md", None), "{ours}");
+    assert!(
+        !ours.contains("Krakatoa.md"),
+        "the bookmark followed the rename"
+    );
+    assert!(file_at("Concepts/Lava.md", Some("#Temperature")));
+    assert!(
+        file_at("Concepts/Lava.md", Some("#Textures")),
+        "opening it kept it"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|i| i["type"] == "search" && i["query"] == "magma")
+    );
+    assert!(items.iter().all(|i| i["ctime"].is_u64()));
+    assert_eq!(items.len(), 9, "the group still holds its three");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_false_expect_fails_with_its_line_and_the_screen() {
     let dir = sandbox("fails");
     let out = drive("fails.drive", &dir);
