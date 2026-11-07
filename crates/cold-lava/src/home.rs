@@ -403,7 +403,19 @@ enum Peek {
     Attachment {
         name: String,
         kind: String,
+        /// Whether it is in the vault, so following it opens it.
+        found: bool,
     },
+}
+
+/// Where a wiki or Markdown link written in a note leads.
+enum Destination {
+    /// A note, at a heading or block when the link names one.
+    Note(PathBuf, Option<Jump>),
+    /// No note by this name yet: following the link creates it.
+    NewNote(String),
+    /// A file that isn't a note (`map.pdf`, a canvas), and where it is if it's in the vault.
+    Attachment { name: String, path: Option<PathBuf> },
 }
 
 /// What a link hint leads to: one of the reader's links, or a backlink.
@@ -469,6 +481,8 @@ pub struct Home {
     effects_left: usize,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
+    /// A screen a link led to, gone to once the key that followed it is handled.
+    go_to: Option<Place>,
     /// `Some` while the pane shows the reader: always without an editor, else after
     /// `note.read`.
     reader: Option<Reader>,
@@ -535,6 +549,7 @@ impl Home {
             effects_left: EFFECTS_PER_FRAME,
             shown: None,
             pending: None,
+            go_to: None,
             reader: None,
             flavour: markdown::flavour_for(Path::new("")),
             zoom: false,
@@ -615,6 +630,9 @@ impl Home {
             self.effects_left = EFFECTS_PER_FRAME;
             self.pump_pane();
             self.run_requested(terminal)?;
+            if let Some(place) = self.go_to.take() {
+                self.go_from_here(place, terminal)?;
+            }
             self.load_pending();
             self.check_disk();
             terminal.draw(|f| self.draw(f))?;
@@ -898,37 +916,53 @@ impl Home {
         self.bsel = self.bsel.min(self.backs.len().saturating_sub(1));
     }
 
-    /// Follow a link written in `from`: open the target note (at its heading or block), or
-    /// create it if it doesn't exist yet, like clicking an unresolved link in Obsidian.
-    fn follow(&mut self, from: &Path, raw: &str) {
+    /// Where a link written in `from` leads, resolved the way Obsidian resolves it.
+    fn destination(&self, from: &Path, raw: &str) -> Option<Destination> {
         let link = crate::index::split_link(raw);
-        let here = self.here();
-        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
-            return;
-        };
-        let from_i = ix.by_path(from);
+        let ix = &self.core.as_ref()?.index;
         let jump = link
             .heading
-            .clone()
             .map(Jump::Heading)
-            .or(link.block.clone().map(Jump::Block));
+            .or(link.block.map(Jump::Block));
         if link.note.is_empty() {
-            // [[#Heading]]: a heading in the same note.
-            if let Some(j) = jump {
-                self.leave(here, from, Some(&j));
-                self.show_at(from, Some(j));
-            }
-            return;
+            return Some(Destination::Note(from.to_path_buf(), jump));
         }
-        match ix.resolver.resolve(&link.note) {
-            Some(i) => {
-                let path = ix.path(i);
+        if let Some(i) = ix.resolver.resolve(&link.note) {
+            return Some(Destination::Note(ix.path(i), jump));
+        }
+        if vault::attachment_kind(&link.note).is_some() {
+            let path = ix.attachment(&link.note, ix.by_path(from));
+            return Some(Destination::Attachment {
+                name: link.note,
+                path,
+            });
+        }
+        Some(Destination::NewNote(link.note))
+    }
+
+    /// Follow a link written in `from`: open the target note (at its heading or block), or
+    /// create it if it doesn't exist yet, like clicking an unresolved link in Obsidian.
+    /// Attachments open in the system's app, whiteboards in the board; a missing one is
+    /// reported, never created.
+    fn follow(&mut self, from: &Path, raw: &str) {
+        let here = self.here();
+        let Some(to) = self.destination(from, raw) else {
+            return;
+        };
+        match to {
+            Destination::Note(path, jump) => {
+                if path == from && jump.is_none() {
+                    return;
+                }
                 self.leave(here, &path, jump.as_ref());
                 self.show_at(&path, jump);
                 self.select_path(&path);
             }
-            None => {
-                let path = ix.new_note_path(&link.note, from_i);
+            Destination::NewNote(name) => {
+                let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+                    return;
+                };
+                let path = ix.new_note_path(&name, ix.by_path(from));
                 if let Err(e) = crate::write::create_if_missing(&path, b"") {
                     return self.flash(format!("couldn't create the note: {e}"));
                 }
@@ -941,6 +975,24 @@ impl Home {
                 self.leave(here, &path, None);
                 self.show_at(&path, None);
                 self.select_path(&path);
+            }
+            Destination::Attachment { name, path: None } => {
+                self.flash(format!("{name} isn't in the vault"))
+            }
+            Destination::Attachment {
+                path: Some(path), ..
+            } if vault::attachment_kind(&path.to_string_lossy()) == Some("whiteboard") => {
+                self.go_to = Some(Place::Board { path })
+            }
+            Destination::Attachment {
+                name,
+                path: Some(path),
+            } => {
+                if term::open_url(&path.to_string_lossy()) {
+                    self.flash(format!("opened {name}"));
+                } else {
+                    self.flash(format!("couldn't open {name}"));
+                }
             }
         }
     }
@@ -1529,26 +1581,17 @@ impl Home {
         if link.kind == markdown::LinkKind::Url {
             return Some(Peek::Url(link.target.clone()));
         }
-        let target = crate::index::split_link(&link.target);
-        let jump = target
-            .heading
-            .map(Jump::Heading)
-            .or(target.block.map(Jump::Block));
-        let ix = &self.core.as_ref()?.index;
-        let path = match target.note.as_str() {
-            "" => self.shown.clone(),
-            note => ix.resolver.resolve(note).map(|i| ix.path(i)),
-        };
-        if let Some(path) = path {
-            return Some(self.peek_note(path, jump));
-        }
-        Some(match attachment_kind(&target.note) {
-            Some(kind) => Peek::Attachment {
-                name: target.note,
-                kind,
+        Some(
+            match self.destination(self.shown.as_deref()?, &link.target)? {
+                Destination::Note(path, jump) => self.peek_note(path, jump),
+                Destination::NewNote(name) => Peek::Missing(name),
+                Destination::Attachment { name, path } => Peek::Attachment {
+                    kind: attachment_label(&name).unwrap_or_default(),
+                    found: path.is_some(),
+                    name,
+                },
             },
-            None => Peek::Missing(target.note),
-        })
+        )
     }
 
     fn peek_note(&self, path: PathBuf, jump: Option<Jump>) -> Peek {
@@ -1586,7 +1629,6 @@ impl Home {
                 _ => {}
             }
         }
-        let attachment = matches!(view, Peek::Attachment { .. });
         let n = self.backs.len().max(1);
         match (a, from) {
             (ReaderAction::NextLink, PeekFrom::Link) => {
@@ -1609,7 +1651,6 @@ impl Home {
                 self.bsel = (self.bsel + n - 1) % n;
                 self.peek(from);
             }
-            (ReaderAction::Follow, _) if attachment => {}
             (ReaderAction::Follow, PeekFrom::Link) => {
                 self.mode = Mode::Normal;
                 self.follow_selected();
@@ -2875,12 +2916,15 @@ impl Home {
                     ),
                 ]),
             ),
-            Peek::Attachment { name, kind } => (
+            Peek::Attachment { name, kind, found } => (
                 format!(" {name} "),
                 Some(vec![
                     Line::styled(kind.clone(), Style::new().fg(NOTE)),
                     Line::styled(
-                        "an attachment: cold-lava doesn't show these",
+                        match found {
+                            true => format!("{enter} opens it"),
+                            false => format!("{name} isn't in the vault"),
+                        },
                         Style::new().fg(MUTED),
                     ),
                 ]),
@@ -3673,18 +3717,10 @@ fn resolves(ix: Option<&crate::index::Index>, raw: &str) -> bool {
 }
 
 /// What kind of attachment a link names (`photo.jpg` → `JPG image`); `None` for a note.
-fn attachment_kind(name: &str) -> Option<String> {
-    let (_, ext) = name.rsplit_once('.')?;
-    let ext = ext.to_lowercase();
-    let kind = match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "avif" => "image",
-        "mp3" | "wav" | "m4a" | "ogg" | "flac" | "3gp" => "audio",
-        "mp4" | "webm" | "ogv" | "mov" | "mkv" => "video",
-        "pdf" => "document",
-        "canvas" => "whiteboard",
-        _ => return None,
-    };
-    Some(format!("{} {kind}", ext.to_uppercase()))
+fn attachment_label(name: &str) -> Option<String> {
+    let kind = vault::attachment_kind(name)?;
+    let ext = name.rsplit_once('.')?.1.to_uppercase();
+    Some(format!("{ext} {kind}"))
 }
 
 /// A `w`×`h` popup under the point `at`, or above it when there is more room there, kept on
@@ -3996,14 +4032,14 @@ mod tests {
     #[test]
     fn attachments_are_named_by_type_and_dotted_note_names_are_notes() {
         assert_eq!(
-            attachment_kind("kilauea-lava-lake.jpg").as_deref(),
+            attachment_label("kilauea-lava-lake.jpg").as_deref(),
             Some("JPG image")
         );
         assert_eq!(
-            attachment_kind("Maps/Hawaii.PDF").as_deref(),
+            attachment_label("Maps/Hawaii.PDF").as_deref(),
             Some("PDF document")
         );
-        assert_eq!(attachment_kind("Mount St. Helens"), None);
-        assert_eq!(attachment_kind("Lahar"), None);
+        assert_eq!(attachment_label("Mount St. Helens"), None);
+        assert_eq!(attachment_label("Lahar"), None);
     }
 }

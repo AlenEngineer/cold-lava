@@ -202,6 +202,40 @@ impl Index {
         (self.backlinks[i].len(), self.outgoing[i])
     }
 
+    /// The file an attachment link (`[[map.pdf]]`, `[map](../Maps/map.pdf)`) leads to: by
+    /// vault path, then next to the note `from`, then by file name anywhere, shallowest first.
+    /// `None` when it isn't in the vault, or when `target` names a note.
+    pub fn attachment(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
+        crate::vault::attachment_kind(target)?;
+        let root = &self.vault.root;
+        let t = target
+            .trim()
+            .trim_start_matches("./")
+            .trim_start_matches('/');
+        let beside = from.and_then(|i| self.vault.notes[i].path.parent());
+        let in_vault = |p: PathBuf| {
+            p.canonicalize()
+                .ok()
+                .filter(|p| p.is_file() && p.starts_with(root))
+        };
+        if let Some(p) = std::iter::once(root.join(t))
+            .chain(beside.map(|d| d.join(target.trim())))
+            .find_map(in_vault)
+        {
+            return Some(p);
+        }
+        let name = t.rsplit('/').next().unwrap_or(t).to_lowercase();
+        walkdir::WalkDir::new(root)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| e.file_name().to_string_lossy().to_lowercase() == name)
+            .min_by_key(|e| e.depth())
+            .map(walkdir::DirEntry::into_path)
+    }
+
     /// Where a new note for an unresolved link goes, following Obsidian's
     /// "Default location for new notes" setting (`.obsidian/app.json`).
     pub fn new_note_path(&self, name: &str, from: Option<usize>) -> PathBuf {
@@ -241,6 +275,46 @@ mod tests {
             crate::vault::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"))
                 .unwrap(),
         )
+    }
+
+    #[test]
+    fn finds_attachments_by_path_beside_the_note_and_by_name() {
+        let dir = std::env::temp_dir().join(format!("cl-attach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let files = [
+            "vault/Maps/deep/map.pdf",
+            "vault/Notes/Trip.md",
+            "vault/Notes/ticket.pdf",
+            "vault/Mount St. Helens.md",
+            "outside.pdf",
+        ];
+        for f in files {
+            let p = dir.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "").unwrap();
+        }
+        let ix = Index::build(crate::vault::scan(&dir.join("vault")).unwrap());
+        let root = ix.vault.root.clone();
+        let trip = ix.by_rel("Notes/Trip");
+        let found = |t: &str| {
+            ix.attachment(t, trip)
+                .map(|p| p.strip_prefix(&root).unwrap().to_owned())
+        };
+        assert_eq!(found("Maps/deep/map.pdf"), Some("Maps/deep/map.pdf".into()));
+        assert_eq!(found("MAP.PDF"), Some("Maps/deep/map.pdf".into()));
+        assert_eq!(found("ticket.pdf"), Some("Notes/ticket.pdf".into()));
+        assert_eq!(
+            found("../Maps/deep/map.pdf"),
+            Some("Maps/deep/map.pdf".into())
+        );
+        assert_eq!(found("missing.pdf"), None);
+        assert_eq!(found("../../outside.pdf"), None, "outside the vault");
+        assert_eq!(
+            found("Mount St. Helens"),
+            None,
+            "a dotted note name is a note"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

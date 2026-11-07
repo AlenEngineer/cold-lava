@@ -80,7 +80,8 @@ headings, lists and tasks, quotes and callouts (folded ones show only their titl
 tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden. Links are
 underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the
 reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the next link and
-`Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser); a click
+`Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser,
+attachments like `[[map.pdf]]` in the system's app, canvases in the whiteboard); a click
 on a link follows it too. Faster still, `f` puts a label of one or two letters on every link on
 screen and every backlink in view: type a label to follow that link, or `Esc` to put them away.
 It works from the menu too, while the reader shows a note. `K` **peeks** at the selected link:
@@ -143,7 +144,7 @@ In the reader:
 | `space` / `PageDown` / `Ctrl-d`, `PageUp` / `Ctrl-u` | page down, page up |
 | `g` / `Home`, `G` / `End` | top, bottom |
 | `Tab` / `Shift-Tab` | select the next / previous link |
-| `Enter` | follow the selected link (creates missing notes) |
+| `Enter` | follow the selected link (creates missing notes; opens attachments in the system's app) |
 | `f`, then a label | link hints: follow the link or backlink with that label (`Esc` cancels) |
 | `K` | peek at the selected link (or backlink) in a popup: `j`/`k` scroll, `Tab` next link, `Enter` go there, `Esc` close |
 | `o` | outline: the note's headings; type to filter, `Enter` jumps to one (Back returns) |

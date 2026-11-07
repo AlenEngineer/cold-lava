@@ -57,10 +57,29 @@ pub struct Vault {
     pub item_settings: OnceLock<items::Settings>,
 }
 
-const ATTACHMENT_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "avif", "pdf", "mp3", "mp4", "webm", "wav",
-    "ogg", "m4a", "flac", "mov", "mkv", "canvas", "base",
+/// The files besides notes that links lead to, by extension, with what each is.
+const ATTACHMENTS: &[(&str, &[&str])] = &[
+    (
+        "image",
+        &["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "avif"],
+    ),
+    ("audio", &["mp3", "wav", "m4a", "ogg", "flac", "3gp"]),
+    ("video", &["mp4", "webm", "ogv", "mov", "mkv"]),
+    ("document", &["pdf"]),
+    ("whiteboard", &["canvas"]),
+    ("database", &["base"]),
 ];
+
+/// What kind of file a link target names when it isn't a note (`photo.jpg` → `image`).
+/// `Mount St. Helens` is a note: only the extensions above make an attachment.
+pub fn attachment_kind(target: &str) -> Option<&'static str> {
+    let file = target.rsplit('/').next().unwrap_or(target);
+    let ext = file.rsplit_once('.')?.1.to_ascii_lowercase();
+    ATTACHMENTS
+        .iter()
+        .find(|(_, exts)| exts.contains(&ext.as_str()))
+        .map(|(kind, _)| *kind)
+}
 
 struct Parsers {
     wikilink: Regex,
@@ -209,18 +228,10 @@ impl Vault {
     }
 }
 
-fn is_attachment(target: &str) -> bool {
-    let file = target.rsplit('/').next().unwrap_or(target);
-    match file.rsplit_once('.') {
-        Some((_, ext)) => ATTACHMENT_EXTS.contains(&ext.to_ascii_lowercase().as_str()),
-        None => false,
-    }
-}
-
 pub(crate) fn clean_target(t: &str) -> Option<String> {
     let t = t.trim().replace("%20", " ");
     let t = t.strip_suffix(".md").unwrap_or(&t).trim().to_string();
-    if t.is_empty() || is_attachment(&t) || t.contains("://") {
+    if t.is_empty() || attachment_kind(&t).is_some() || t.contains("://") {
         None
     } else {
         Some(t)
@@ -399,6 +410,17 @@ mod tests {
                 "folder/Deep"
             ]
         );
+    }
+
+    #[test]
+    fn attachments_are_known_file_types_and_dotted_note_names_are_notes() {
+        assert_eq!(attachment_kind("kilauea-lava-lake.jpg"), Some("image"));
+        assert_eq!(attachment_kind("Maps/Hawaii.PDF"), Some("document"));
+        assert_eq!(attachment_kind("Welcome.canvas"), Some("whiteboard"));
+        assert_eq!(attachment_kind("Mount St. Helens"), None);
+        assert_eq!(attachment_kind("David A. Johnston"), None);
+        assert_eq!(attachment_kind("v1.2/notes"), None);
+        assert_eq!(attachment_kind("Lahar"), None);
     }
 
     #[test]
