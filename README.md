@@ -59,6 +59,7 @@ cold-lava rename ~/vault NOTE NEW       # rename or move a note or folder, updat
 cold-lava task toggle FILE:LINE         # tick / untick a task
 cold-lava item set FILE ID FIELD VALUE  # set one field of a typed item, checked by reading back
 cold-lava types ~/vault                 # the vault's types, and what's wrong with them
+cold-lava types ~/vault --shadow        # tasks read by the built-in task definition, compared
 ```
 
 Flags: `--pixels` / `--braille` to force a renderer. Pixel mode is on automatically in Ghostty,
@@ -561,6 +562,21 @@ it's read and whether cold-lava could write it back, and its looks. Mistakes are
 line with the file and the type; the broken type is left out, the rest load, and the exit code
 is 1. `--json` prints the definitions as JSON. The full design is in
 [docs/extensions.md](docs/extensions.md#types).
+
+The task itself is becoming a type: its definition is built in
+([`crates/engine/types/task.toml`](crates/engine/types/task.toml)), written in the same TOML,
+with the vault's Tasks plugin settings (statuses, global filter) filled in. Tasks are still read
+the old way while the two are compared. `cold-lava types ~/vault --shadow` reads every task both
+ways and lists each field that reads differently (status, dates, priority, recurrence, words,
+tags, links, id), and exits 1 when one does; it writes nothing. With the definition, a type that
+`extends = "task"` (an `idea` with `where.tag = ["idea"]`) takes the tasks it matches and is still
+listed as a task.
+
+A shape can also read a task's checkbox (`checkbox = true`, a space included), leave strings out
+of the rest of the text (`rest = { without = ["#task"] }`), read the date of the daily note it is
+in (`note = "date"`), take an enum's values from a setting (`values = "${tasks.statuses}"`) and
+name fields a block must have to be of that type (`required = ["text"]`; without one the next
+type may take it).
 
 ## What it understands
 

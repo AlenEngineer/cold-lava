@@ -36,7 +36,7 @@ impl TasksSettings {
         TasksSettings::from_json(&json)
     }
 
-    fn from_json(json: &serde_json::Value) -> TasksSettings {
+    pub fn from_json(json: &serde_json::Value) -> TasksSettings {
         let mut statuses: BTreeMap<char, StatusType> = [
             (' ', StatusType::Todo),
             ('x', StatusType::Done),
@@ -114,7 +114,7 @@ impl StatusType {
     }
 
     /// The name `agenda --json` and `task toggle --json` have always used.
-    fn agenda_name(self) -> &'static str {
+    pub fn agenda_name(self) -> &'static str {
         match self {
             StatusType::Todo => "todo",
             StatusType::InProgress => "in_progress",

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[derive(Clone, Default)]
 pub struct Settings {
     /// Folder relative to the vault root ("" = root).
     pub folder: String,

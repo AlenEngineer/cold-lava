@@ -31,16 +31,23 @@ pub struct Settings {
     /// The types its notes are matched against, and what was wrong with the rest.
     pub types: Types,
     pub matcher: Matcher,
+    /// Tasks are read by `tasks::parse_line`, not by the built-in definition.
+    pub native_tasks: bool,
 }
 
 impl Settings {
     pub fn load(root: &Path) -> Settings {
+        Settings::load_with(root, types::for_vault(root))
+    }
+
+    /// The vault's settings, with these types.
+    pub fn load_with(root: &Path, types: Types) -> Settings {
         Settings::new(
             markdown::flavour_for(root),
             TasksSettings::load(root),
             daily::Settings::load(root),
             templates::Settings::load(root),
-            types::for_vault(root),
+            types,
         )
     }
 
@@ -49,10 +56,21 @@ impl Settings {
         tasks: TasksSettings,
         daily: daily::Settings,
         templates: templates::Settings,
-        types: Types,
+        mut types: Types,
     ) -> Settings {
+        types.fill(&types::Provided {
+            statuses: tasks
+                .statuses
+                .iter()
+                .map(|(c, t)| (c.to_string(), t.agenda_name().to_string()))
+                .collect(),
+            global_filter: tasks.global_filter.clone(),
+            tasks_format: if tasks.dataview { "dataview" } else { "emoji" }.into(),
+            daily_format: daily.format.clone(),
+        });
         let matcher = Matcher::new(&types, &flavour, &daily);
         Settings {
+            native_tasks: !types.types.iter().any(|t| t.name == "task"),
             flavour,
             tasks,
             daily,
@@ -410,8 +428,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                         } else {
                             (first, None)
                         };
-                        let task = flavour
-                            .has(Syntax::TaskLists)
+                        let task = (s.native_tasks && flavour.has(Syntax::TaskLists))
                             .then(|| tasks::parse_line(first, &s.tasks))
                             .flatten();
                         let typeable = want_lists && task.is_none();
