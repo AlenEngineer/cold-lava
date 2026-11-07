@@ -131,8 +131,8 @@ then a query and a view, not a parser of its own.
 ## Types
 
 *(design; definitions load, are checked and are listed: `crates/engine/src/types.rs`,
-`cold-lava types`; they match notes, table rows, list items, headings and paragraphs:
-`crates/engine/src/matcher.rs`. "Loading, as built" and "Matching, as built" below say where the
+`cold-lava types`; they match notes, table rows, list items, headings and paragraphs, and inline
+types match in their text: `crates/engine/src/matcher.rs`. "Loading, as built" and "Matching, as built" below say where the
 code settled what this design left open.)*
 
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
@@ -274,8 +274,9 @@ style.minutes = { badge = true, icon = "⏱" }
   only against the shapes on its primitive that passed. No `RegexSet` prefilter yet; that is for
   the performance step. `matcher.rs` holds the matching, `frontmatter.rs` the line-by-line
   frontmatter reader.
-- **Primitives so far:** `note`, `table-row`, `list-item`, `heading` and `paragraph` (a
-  paragraph outside list items). Shapes on `code`, `quote` and `inline` load but match nothing.
+- **Primitives so far:** `note`, `table-row`, `list-item`, `heading`, `paragraph` (a
+  paragraph outside list items) and `inline`. Shapes on `code` and `quote` load but match
+  nothing.
   Tasks stay native and win: a type on `list-item` never takes a task, so an `idea` that
   `extends = "task"` can't match a task yet; that changes when the task becomes a definition.
 - **What each primitive's text is:** a list item's first line after its marker (without a
@@ -288,6 +289,22 @@ style.minutes = { badge = true, icon = "⏱" }
   tagged `#idea`. Tags compare without case, and a nested tag counts. `where.inside` names the
   note's type (or a base of it), `quote`, `list-item`, or the kind or type of the list item it
   is nested in. `children` and `info` read nothing yet (`[]` and `null`).
+- **Inline types** run their `match` over the text of the blocks the pass already collects,
+  with every match an item (`captures_iter`): a paragraph's text, a list item's own lines after
+  its marker (its first line and the lines before a nested list; tasks too, since an inline
+  item doesn't replace the block), a heading's words and a table row's line; a quote's or
+  callout's paragraphs are paragraphs. Never code (the pass records code spans, code blocks and
+  math, and a match that touches one is dropped) and never the frontmatter (it is no block). A match the
+  same type already found in an outer block (a quote inside a list item) counts once. Its line
+  range is the lines the match covers without its leading and trailing spaces, so its `rev`
+  hashes those lines. Its parent is the item the block is: the list item or task, the heading,
+  a typed row or paragraph, a paragraph with a `^id`; a plain paragraph or row is no item, so
+  there the parent is `null`. Its key, without a shape `key`, is the matched text, so the id
+  survives lines added above and ticking its task, and a new value is a new item. `where.tag`
+  is the note's tags (a match has no text of its own to tag); `where.inside` also names the
+  block's primitive (`paragraph`, `list-item`, `heading`, `table-row`) and its kind or type
+  (`task`, `list`, a typed row's type), beside what the block itself sits inside. Two inline
+  types can match the same text; they don't compete. `write` loads and is not used yet.
 - **Values.** A field is a list when one of its sources gives a list (`inlines`, `children`,
   `section = "path"`); a list property fills it item by item. One value written where one is
   wanted, but several found (a list property on a text field), is `null`. Links are their
@@ -311,6 +328,13 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Settings.** `items::Settings` carries the loaded types and the compiled matcher, cached per
   vault. The frontend hands over extensions' and `config.toml`'s types once at startup
   (`types::set_configured`), and `types::for_vault` adds the vault's own file.
+- **Cost of inline types:** no second parse. When a type is `inline`, the pass collects every
+  paragraph, list item, heading and table row (otherwise only those some type reads) and the
+  code ranges, and each block's text runs each inline pattern that passed the note's gate.
+  Measured on a generated 3,000-note vault with two inline types finding 7 items per note
+  (21,000 in all): `cold-lava items` took 430 ms instead of 293 ms (release, median of 9).
+  The same two types with patterns that never match cost nothing measurable, so the time goes
+  to the items made, not to collecting blocks or running patterns.
 - **Cost,** measured on a generated 3,000-note vault (tags, a table, tasks and list items in
   every note) with four types (note, table-row, list-item, heading) finding 31,000 items:
   matching adds about 0.1 ms per note to `cold-lava items` on a loaded laptop. The perf step
@@ -572,7 +596,9 @@ after its call returns, so it never holds the menu's state.
       `example-vault/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows)
       *(done: `types::load`, definitions' JSON pinned for `types/list`)*;
       primitives with spans; typed blocks *(done for notes, table rows, list items, headings and
-      paragraphs: `matcher.rs`, `cold-lava items VAULT TYPE`)*; inline types; `set-field` with the read-back check;
+      paragraphs: `matcher.rs`, `cold-lava items VAULT TYPE`)*; inline types *(done: in
+      paragraphs, list items and tasks, headings and table rows, with the block as parent;
+      `vei` in the example vault)*; `set-field` with the read-back check;
       the task as a definition, first in shadow mode beside today's parser, then switched over;
       looks in the reader; the table view.
    6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and

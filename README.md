@@ -490,7 +490,7 @@ where each field is read (a table column, a frontmatter property, a `📅` marke
 
 Put them in `.cold-lava/types.toml` in the vault (it travels with the vault, and Obsidian ignores
 it), or under `[types.NAME]` in `~/.config/cold-lava/config.toml` for every vault. The vault's
-file starts with `version = 1`. The example vault has two:
+file starts with `version = 1`. The example vault has three:
 
 ```toml
 version = 1
@@ -500,6 +500,11 @@ on = "note"
 where.tag = ["volcano"]
 fields.country = { property = "country" }
 fields.elevation = { property = "elevation_m", type = "number" }
+
+[types.vei]                       # "VEI 6" anywhere in the text
+on = "inline"
+match = '\bVEI (?<n>\d)\b'
+fields.vei = { capture = "n", type = "number" }
 ```
 
 Every note and block a type matches is an item of that kind, so `cold-lava items` lists them
@@ -515,7 +520,10 @@ cold-lava items example-vault eruption --json
 Every field of the type is there, `null` (or `[]` for a list) when the note doesn't have it or
 its value doesn't read as the field's type: `elevation_m: high` is a `null` elevation, not an
 error. A tag condition counts nested tags (`#volcano/caldera` is a `volcano`). Notes, table rows,
-list items, headings and paragraphs can be typed so far. A note or block has at most one type:
+list items, headings and paragraphs can be typed so far, and an **inline** type (`on =
+"inline"`) is found by its `match` anywhere in the text of a paragraph, list item (a task too),
+heading or table row, as many times as it is written, but never in code, math or frontmatter;
+its `parent` is the block it sits in. A note or block has at most one type:
 the one with the higher `priority`, else a type that `extends` the other, else the shape with
 more conditions, else the vault's over `config.toml`'s over an extension's, else the first name.
 A typed block is listed under its type instead of `list` or `heading`, and an item whose type

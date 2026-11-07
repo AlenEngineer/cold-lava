@@ -23,3 +23,11 @@ on = "table-row"
 where.header = ["VEI", "Example"]
 key = ["vei"]
 fields = { vei = { column = "VEI" }, example = { column = "Example" }, volcanoes = { inlines = "links" } }
+
+# A VEI written in prose, like "its 1883 eruption (VEI 6, …)": an inline type, found anywhere in
+# a paragraph, list item, heading or table row, as many times as it is written.
+[types.vei]
+on = "inline"
+match = '\bVEI (?<n>\d)\b'
+fields.vei = { capture = "n", type = "number" }
+style.vei = { badge = true, colour = "orange" }

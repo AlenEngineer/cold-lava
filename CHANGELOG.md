@@ -7,6 +7,17 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- Inline types: a type with `on = "inline"` is found by its `match` anywhere in the text of
+  paragraphs, list items (tasks too), headings and table rows, any number of times per block,
+  and never in code spans, code blocks, math or frontmatter. Each match is an item of that type
+  with its `parent` the block it sits in, its fields read from the pattern's groups, the
+  section's heading or the note; `where` takes the note's folder, properties and tags, the
+  section, and `inside` (the block's primitive or kind, such as `task`). `cold-lava items VAULT
+  TYPE` lists them and `cold-lava types` counts them. The example vault's `vei` type finds a VEI
+  written in prose (`its 1883 eruption (VEI 6, …)`).
+
 ## [0.3.0] - 2026-11-07
 
 ### Added
