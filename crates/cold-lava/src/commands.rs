@@ -44,6 +44,9 @@ pub enum MenuAction {
     Hints,
     Outline,
     Peek,
+    Bookmarks,
+    Bookmark,
+    BookmarkSearch,
     History(HistoryAction),
 }
 
@@ -175,6 +178,22 @@ pub const MENU: &[Command<MenuAction>] = &[
         &["s", "ctrl+f"],
     ),
     cmd(
+        MenuAction::Bookmarks,
+        "bookmarks.open",
+        Group::Go,
+        "bookmarks",
+        "bookmarks, shared with Obsidian: open one (type to filter, Del removes it)",
+        &["'"],
+    ),
+    cmd(
+        MenuAction::BookmarkSearch,
+        "search.bookmark",
+        Group::Go,
+        "bookmark search",
+        "in the search: bookmark what is typed (again removes it)",
+        &["ctrl+b"],
+    ),
+    cmd(
         MenuAction::History(HistoryAction::Back),
         "history.back",
         Group::Go,
@@ -237,6 +256,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "tag",
         "add a tag to the marked notes' frontmatter, or the selected note's (-tag removes it)",
         &["#"],
+    ),
+    cmd(
+        MenuAction::Bookmark,
+        "note.bookmark",
+        Group::Note,
+        "bookmark",
+        "bookmark the selected note or folder, or in the reader the heading you are in (again removes it)",
+        &["B"],
     ),
     cmd(
         MenuAction::EditFullscreen,

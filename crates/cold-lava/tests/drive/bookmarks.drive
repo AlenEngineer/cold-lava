@@ -1,0 +1,64 @@
+# Bookmarks, shared with Obsidian in .obsidian/bookmarks.json: open one at its heading, bookmark
+# a heading, a note and a search, rename the note and the bookmark follows it. tests/drive.rs
+# adds items cold-lava doesn't know and checks the file keeps them.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault 34 notes
+keys '
+wait-for 8 bookmarks · type to filter
+expect ▾ Field trip
+expect § Lava › Textures
+expect ⌕ pyroclastic
+expect ▤ People/
+screen
+type textures
+wait-for 1 match
+keys enter
+wait-for Concepts/Lava › Textures  reading
+keys [
+wait-for Concepts/Lava › Temperature  reading
+keys B
+wait-for bookmarked Lava › Temperature · ' bookmarks
+keys esc p
+type krakatoa
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Krakatoa  reading
+keys B
+wait-for bookmarked Krakatoa · ' bookmarks
+keys esc
+wait-for Volcanoes/Krakatoa  reader
+expect Krakatoa                    ★ ←3
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Krakatau
+keys enter
+wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Krakatau.md
+expect 1 bookmark will follow it.
+keys enter
+wait-for 1 bookmark followed
+keys s
+type magma
+wait-for matching lines
+keys ctrl+b
+wait-for bookmarked magma
+keys esc '
+wait-for 11 bookmarks · type to filter
+expect • Krakatau
+expect § Lava › Temperature
+expect ⌕ magma
+expect-not • Krakatoa
+screen
+keys down down down down down left
+wait-for ▸ Field trip
+expect-not │   • Kīlauea
+keys right
+wait-for ▾ Field trip
+type people
+wait-for 1 match
+keys enter
+wait-gone 1 match
+expect ▾ People
+screen
+keys q
+exits 0

@@ -115,6 +115,7 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `Enter` in Neovim, `Ctrl-o` | follow the `[[link]]` under the cursor · go back |
 | `b` | show / hide backlinks |
 | `p` | quick switcher: jump to any note by name or alias |
+| `'` / `B` | bookmarks (Obsidian's): open one / bookmark the note, folder or reader's heading (again removes it) |
 | `Ctrl-o` / `Alt-←` / `Backspace`, `Alt-→` | back to where you were, forward again (see below) |
 | `:` | command palette: run any command by name (its key is shown next to it) |
 | `s` (or `Ctrl-f`) | search the text of every note |
@@ -217,6 +218,22 @@ cold-lava merges instead of overwriting: cards and arrows are matched by id and 
 by field. If Obsidian moves a card while you edit its text, both changes are kept. If the same
 field changed in both places, your cold-lava version wins and you get a notice. A card deleted
 on one side but edited on the other is kept.
+
+**Bookmarks.** cold-lava uses Obsidian's bookmarks: the core Bookmarks plugin's
+`.obsidian/bookmarks.json`, so a bookmark made in either app shows in both, and a change made in
+Obsidian shows at once. `B` (`note.bookmark`) bookmarks the selected note or folder in the tree;
+in the reader it bookmarks the heading you are in (the one the breadcrumb shows, saved as
+Obsidian's `#Heading` subpath), or the note at its top. In the search, `Ctrl-b`
+(`search.bookmark`) bookmarks what is typed. Doing it again removes the bookmark. `'`
+(`bookmarks.open`) lists them as Obsidian groups them, with `←`/`→` to fold a group: type to
+filter, `Enter` opens one (a note at its heading or block, a folder selected in the tree, a
+search with its words, the graph, a whiteboard, a link in the browser), Back returns, and `Del`
+removes one. Bookmarked notes and folders get a `★` in the tree. Renaming or moving a note or
+folder in cold-lava moves its bookmarks along (the rename preview says how many). A deleted
+note's bookmark stays, as in Obsidian, and shows as missing. Item types and fields cold-lava
+doesn't know (a graph's options, newer Obsidian additions) are written back as they were, in
+their order, and the file is only written when something changed; if Obsidian wrote it in the
+meantime, the change is made again on its version.
 
 **Quick switcher and search.** `p` opens the quick switcher: type a few letters of a note's
 name or one of its `aliases` (in order is enough: `msh` finds Mount St. Helens), `Enter` opens
@@ -458,6 +475,7 @@ is 1. `--json` prints the definitions as JSON. The full design is in
 
 - `[[wikilinks]]` (with aliases, headings and embeds), and `[text](note.md)` links
 - Obsidian-style link resolution, `#tags` and frontmatter `tags:`
+- Obsidian's bookmarks (`.obsidian/bookmarks.json`): notes, headings, blocks, folders, searches, groups
 - It skips code blocks, attachments and hidden folders
 - Colour-group queries: `path:`, `file:`, `tag:#…`, plain words, `-negation`, `"quotes"`, `OR`
 

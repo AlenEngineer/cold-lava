@@ -1,0 +1,42 @@
+{
+  "items": [
+    {
+      "type": "file",
+      "ctime": 1762300000000,
+      "path": "Guide/Start Here.md"
+    },
+    {
+      "type": "file",
+      "ctime": 1762300000001,
+      "path": "Concepts/Lava.md",
+      "subpath": "#Textures"
+    },
+    {
+      "type": "search",
+      "ctime": 1762300000002,
+      "query": "pyroclastic"
+    },
+    {
+      "type": "group",
+      "ctime": 1762300000003,
+      "items": [
+        {
+          "type": "file",
+          "ctime": 1762300000004,
+          "path": "Volcanoes/Kīlauea.md"
+        },
+        {
+          "type": "file",
+          "ctime": 1762300000005,
+          "path": "Volcanoes/Mount Fuji.md"
+        },
+        {
+          "type": "folder",
+          "ctime": 1762300000006,
+          "path": "People"
+        }
+      ],
+      "title": "Field trip"
+    }
+  ]
+}
