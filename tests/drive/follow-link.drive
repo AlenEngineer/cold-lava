@@ -9,7 +9,6 @@ expect Volcanoes/Kīlauea  reading
 keys tab enter
 wait-for Concepts/Shield Volcano  reading
 expect-not Volcanoes/Kīlauea  reading
-keys q
-wait-gone reading
-keys q
+# Esc then q in one step: back to the notes, then quit (not Alt-q).
+keys esc q
 exits 0

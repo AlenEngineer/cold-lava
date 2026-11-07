@@ -402,7 +402,16 @@ pub fn run(name: &str, script: &Script, program: &Path, args: &[String]) -> Resu
                     let app_cursor = s.parser.screen().application_cursor();
                     for input in inputs {
                         match input {
-                            Input::Key(k) => s.send(&k.bytes(app_cursor)),
+                            Input::Key(k) => {
+                                let bytes = k.bytes(app_cursor);
+                                s.send(&bytes);
+                                // A lone Esc followed at once by more bytes reads as Alt plus
+                                // the next key, so `keys esc q` would never quit. A terminal
+                                // tells them apart by time; give the program that time.
+                                if bytes == b"\x1b" {
+                                    s.pump(Duration::from_millis(50));
+                                }
+                            }
                             Input::Text(t) => s.send(t.as_bytes()),
                         }
                     }
