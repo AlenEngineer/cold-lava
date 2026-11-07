@@ -127,6 +127,134 @@ then a query and a view, not a parser of its own.
   subscription, ticking through `items/edit`. `cold-lava agenda --json` and `task toggle` keep
   their output, as thin clients of the same query and edit.
 
+## Types
+
+*(design; nothing of it exists yet)*
+
+Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
+row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
+datetime, duration, bool, link, tag, enum). A **type** gives them meaning, declared in TOML with
+no code, by you, by a vault, or by an extension. The built-in task is written in the same
+language anyone else uses.
+
+A type is a **schema** (its fields, their value types, how they look, and native actions by
+name) plus one or more **shapes**, the ways one shows up in a note:
+
+```toml
+[types.book]
+fields = { title = "text", author = "link", rating = "number",
+           status = { type = "enum", values = { "to read" = "todo", reading = "reading", read = "done" } } }
+style.rating = { icon = "★" }
+
+[[types.book.from]]                  # a row of any table whose header has Title and Author
+on = "table-row"
+where.header = ["Title", "Author"]
+key = ["title"]
+fields = { title = { column = "Title" }, author = { column = "Author" },
+           rating = { column = "Rating" }, status = { column = "Status" } }
+
+[[types.book.from]]                  # or a note whose frontmatter says type: book
+on = "note"
+where.property = { type = "book" }
+fields = { title = { property = "title", note = "name" }, author = { property = "author" },
+           rating = { property = "rating" }, status = { property = "status" } }
+
+[types.estimate]                     # ~30m anywhere in text
+on = "inline"
+match = '(?:^|\s)~(?<v>{duration})\b'
+fields.minutes = { capture = "v", type = "duration" }
+write = " ~{minutes}"
+style.minutes = { badge = true, icon = "⏱" }
+```
+
+- **Shapes** say which primitive (`on`), cheap conditions (`where`: table header, frontmatter
+  property, tag, folder, section, fence language, inside another type), an optional pattern,
+  and where each field is read. A note's types are found in the one pass that already reads it.
+- **Sources know how to write.** `marker = "📅"` (a glyph and a value), `inline = "due"`
+  (Dataview's `due::`, `[due:: …]`, `(due:: …)`), `flags` (which glyph is present), `column`,
+  `property`, `capture` (a pattern's group), the fence's `info`. Each can put a value back: only
+  the value's span changes, glyphs and brackets stay as written, a missing field is added the
+  way the line already writes them, a table is never re-padded, frontmatter is edited line by
+  line and never re-serialised. Some are read-only (`rest`, the leftover text; tags and links in
+  text; the note's name; child items).
+- **Every write is checked.** After an edit the engine re-reads the note in memory, and the item
+  must read back exactly the value set with nothing else changed, or the edit is refused before
+  anything is written. That makes your own patterns safe to write through.
+- **Values** parse by type: dates in moment.js formats (as daily notes use), durations like
+  `1h30m`, links resolved by Obsidian's rules when queried or drawn, enums mapping written forms
+  to names. A few **settings providers** (`${tasks.statuses}`, `${tasks.global-filter}`,
+  `${daily.format}`) let a definition follow the vault's own settings.
+- **Deliberately not there:** formulas, joins, conditions on other items, matching across
+  blocks, look-around in patterns (Rust's regex has none, so no pattern can hang), and new
+  grammar Obsidian would show raw. Behaviour is native code named in `actions`: the task's
+  definition reads and styles tasks, while ticking (done dates, recurrence) stays
+  `tasks.toggle`, written in Rust.
+- **Conflicts.** One type per note, one per block, any number inline. A typed block replaces its
+  structural kind, as a task replaces a list item today. Within a level the winner is: higher
+  `priority`, then a subtype (`extends`) over its base, then the more specific shape, then
+  origin (vault, user, extension, built-in). A subtype still answers to its base, so
+  `[types.idea] extends = "task"` with `where.tag = ["idea"]` stays in the agenda. Inside a
+  code fence only types that name it with `where.inside` match, so tasks are never read from
+  code. `cold-lava types --check` lists blocks two types wanted, and which won.
+- **Identity.** The same scheme as tasks today: an author's `^block-id`, else the shape's `key`
+  fields under the parent's key; `rev` hashes the item's own lines (a row's line, a note's
+  frontmatter, a fence). An inline item's parent is the block it sits in. Existing ids don't
+  change.
+- **Where definitions live,** in load order: built in (`types/*.toml` in the binary), extension
+  manifests (named `<extension>.<name>`), `[types.*]` in `config.toml`, and
+  `<vault>/.cold-lava/types.toml`, which travels with the vault. Built-in names can be extended
+  but not redefined. Mistakes are collected like `config.toml`'s: one line each, the broken type
+  is dropped and the rest load. `cold-lava types VAULT` lists every type, its fields and where
+  they're read, how many items it found and how long matching took. A file starts with
+  `version = 1`.
+- **Looks.** A small, closed set: a colour by name (Obsidian's six canvas colours, plus accent and
+  muted), badge, icon, dim, strike, bold, hide, a link to follow, and the same by enum value.
+  Colours are names, so a light terminal is one table in the frontend, never a property of a
+  type. The reader draws them, and every view uses the same looks.
+- **The table view** comes free with every type: `table.open` picks a type, and a built-in
+  extension queries its items and sends a table (columns typed by the schema, rows by item id).
+  Sorting and filtering happen in the frontend; editing a cell becomes `items/edit set-field`,
+  refused and refreshed if the item changed elsewhere.
+- **Performance.** A note is gated once (folder, tags, frontmatter keys), blocks are checked only
+  against types for their primitive, and one `RegexSet` per primitive tells which types could
+  match before any pattern runs. Targets on 10,000 notes with 30 types: the whole vault matched
+  in under 1.5 s on first use, one changed note in under 2 ms.
+
+## File types
+
+*(design)*
+
+Markdown is the engine's own format. Any other kind of file (`.canvas`, `.kanban`,
+`.excalidraw`, `.csv`) can have an **owner**: an extension that says so in its manifest.
+
+```toml
+[[file-types]]
+extension = "kanban"       # owns *.kanban files
+title = "Kanban board"
+new = "kanban.new"         # the command that makes one
+```
+
+- **Opening.** Selecting a `.kanban` file in the tree, clicking it on a canvas or following
+  `[[Projects.kanban]]` sends its owner `file/open {path}`. The owner reads it through the vault
+  gateway (`vault/read` gives `{text, rev}`), parses its own format, and describes a view
+  through the view gateway (a scene, a table, Markdown). A file with no owner shows its name, as
+  now; `vault/files {extension}` lists files of a kind, for pickers.
+- **Saving and creating.** `vault/write {path, text, expect: rev}` is refused if the file changed
+  since it was read, so the owner re-reads, merges and tries again. `vault/create` places a new
+  file where Obsidian would put it and never overwrites. Outside changes arrive as
+  `file/changed`, from the core's one watcher.
+- **Joining the vault.** An owner can contribute its file's **items and links**. A kanban card
+  becomes an item of the owner's type (`kanban.card`), queried and listed with Markdown tasks,
+  and edited through its owner. A card's `[[Lava]]` is reported as a link that the core
+  resolves by Obsidian's rules, so `Lava`'s backlinks list the board, the graph draws the
+  edge, and renaming `Lava` updates the board through its owner. Other file types are then part
+  of the vault, not opaque files only one extension understands.
+- **Previews.** `![[Projects.kanban]]` in a note, or a file card on a whiteboard, asks the owner
+  for a small view of the file.
+- **The whiteboard is the first owner:** `.canvas`, drawn as a scene, merged three ways on save,
+  contributing its cards and their links. Images get a view kind of their own (`image`, drawn
+  with Kitty pixels where the terminal has them), since every frontend can show a picture.
+
 ## Commands
 
 Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Commands are what
@@ -338,8 +466,14 @@ returns, so it never holds the menu's state.
    2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor.
    3. The protocol for items, and reads through `Host`.
    4. The declarative list view, and the agenda as an extension.
-   5. Properties, table rows and inline fields.
-   6. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
+   5. Types, in small steps: the loader and `cold-lava types` (with
+      `example-vault/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows);
+      primitives with spans; typed blocks; inline types; `set-field` with the read-back check;
+      the task as a definition, first in shadow mode beside today's parser, then switched over;
+      looks in the reader; the table view.
+   6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and
+      links contributed by owners; the whiteboard as the first owner.
+   7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
