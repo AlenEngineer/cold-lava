@@ -183,6 +183,9 @@ struct Board {
     redo: Vec<Doc>,
     msg: Option<(String, Instant)>,
     quit: bool,
+    /// The last save was refused (the file on disk changed and doesn't parse): quitting now
+    /// would lose edits, so `q` warns once first.
+    unsaved: bool,
     last_click: Option<(Instant, u16, u16)>,
     notes: Option<Vec<String>>,
     previews: HashMap<String, Vec<String>>,
@@ -373,6 +376,7 @@ impl Board {
             redo: Vec::new(),
             msg: None,
             quit: false,
+            unsaved: false,
             last_click: None,
             notes: None,
             previews: HashMap::new(),
@@ -498,17 +502,39 @@ impl Board {
         if buf == self.disk {
             return;
         }
-        let res = crate::write::write_atomic(&self.path, &buf);
-        match res {
+        // Only over the bytes we last read: a change made since (that the merge above didn't
+        // see, or a file that doesn't parse, so it couldn't be merged) is never overwritten.
+        match crate::write::replace(&self.path, &self.disk, &buf) {
             Ok(()) => {
                 self.base = self.doc.clone();
                 self.disk = buf;
+                self.unsaved = false;
             }
-            Err(e) => self.flash(format!("save failed: {e}")),
+            Err(crate::write::WriteError::Changed(_)) => {
+                self.unsaved = true;
+                self.flash(
+                    "not saved: the file changed on disk and can't be read yet. Your edits are \
+                     kept and saved once it can",
+                );
+            }
+            Err(e) => {
+                self.unsaved = true;
+                self.flash(format!("save failed: {e}"));
+            }
         }
     }
 
     /// Snapshot for undo; call before every change.
+    /// Quit, unless the last save was refused: then warn once, and quit on the next try.
+    fn request_quit(&mut self) {
+        if self.unsaved {
+            self.unsaved = false;
+            self.flash("your last edits aren't saved: quit again to leave anyway");
+        } else {
+            self.quit = true;
+        }
+    }
+
     fn checkpoint(&mut self) {
         self.undo.push(self.doc.clone());
         if self.undo.len() > 300 {
@@ -1235,7 +1261,7 @@ impl Board {
 
     fn run_action(&mut self, a: BoardAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match a {
-            BoardAction::Quit => self.quit = true,
+            BoardAction::Quit => self.request_quit(),
             BoardAction::Help => self.mode = Mode::Help,
             BoardAction::Escape => self.sel = None,
             BoardAction::Undo => self.undo(),
@@ -2313,6 +2339,38 @@ mod tests {
 
     fn card(id: &str, x: i64, text: &str) -> Value {
         json!({"id": id, "type": "text", "text": text, "x": x, "y": 0, "width": 250, "height": 60})
+    }
+
+    #[test]
+    fn never_saves_over_a_file_it_could_not_read() {
+        let dir = std::env::temp_dir().join(format!("cold-lava-board-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("B.canvas");
+        let canvas = |nodes: Vec<Value>| json!({"nodes": nodes, "edges": []}).to_string();
+        std::fs::write(&path, canvas(vec![card("a", 0, "A")])).unwrap();
+        let mut b = Board::open(path.clone(), &dir).unwrap();
+
+        // Our edit, while someone else is halfway through writing the file.
+        let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);
+        b.doc = parse(ours.as_bytes(), &path).unwrap();
+        std::fs::write(&path, "{\"nodes\": [").unwrap();
+        b.save();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"nodes\": [");
+        assert!(b.unsaved);
+
+        // Quitting now warns once instead of losing the edit.
+        b.request_quit();
+        assert!(!b.quit);
+
+        // Once the file is whole again, both sides end up in it.
+        let theirs = canvas(vec![card("a", 0, "A"), card("theirs", 600, "Theirs")]);
+        std::fs::write(&path, theirs).unwrap();
+        b.save();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(ids(&saved, "nodes"), ["a", "ours", "theirs"]);
+        assert!(!b.unsaved);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn ids(v: &Value, key: &str) -> Vec<String> {
