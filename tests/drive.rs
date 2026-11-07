@@ -16,7 +16,7 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// A fresh vault copy and an empty home, so the user's own vaults and config stay out of it.
+/// A fresh vault copy. `drive` gives the program an empty home itself.
 fn sandbox(name: &str) -> PathBuf {
     let dir =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("drive-{name}-{}", std::process::id()));
@@ -25,7 +25,6 @@ fn sandbox(name: &str) -> PathBuf {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault"),
         &dir.join("example-vault"),
     );
-    std::fs::create_dir_all(dir.join("home")).unwrap();
     dir
 }
 
@@ -38,8 +37,6 @@ fn drive(script: &str, dir: &Path) -> Output {
         .arg(&script)
         .arg("--")
         .arg(dir.join("example-vault"))
-        .env("HOME", dir.join("home"))
-        .env("XDG_CONFIG_HOME", dir.join("home/.config"))
         .output()
         .unwrap()
 }

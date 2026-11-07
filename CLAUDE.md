@@ -104,9 +104,9 @@ required checks on `main`.
 - `example-vault/` is the showcase vault and is used by tests (they count its notes and groups).
   Copy it to a temp folder before trying anything that writes.
 - Drive the TUI headless with `cold-lava drive SCRIPT -- VAULT` (`cold-lava --help` lists the
-  steps; `tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`. Set `HOME`
-  and `XDG_CONFIG_HOME` to a temp folder so runs don't add vaults to your own list, and
-  `env COLD_LAVA_EDITOR=none` for the reader instead of Neovim. The embedded editor needs `nvim`
+  steps; `tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`. Runs get an
+  empty home (so they don't read your config or add vaults to your list; `--real-home` to
+  use yours), and `env COLD_LAVA_EDITOR=none` for the reader instead of Neovim. The embedded editor needs `nvim`
   (or `vim`) installed.
 - Pixel mode only shows in terminals with the Kitty graphics protocol (Ghostty, Kitty, WezTerm),
   not in a pseudo-terminal or tmux; check it in the real terminal.

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 use std::io::Write;
 use std::num::NonZeroU16;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -237,7 +237,12 @@ struct Session {
 }
 
 impl Session {
-    fn spawn(script: &Script, program: &Path, args: &[String]) -> Result<Session> {
+    fn spawn(
+        script: &Script,
+        program: &Path,
+        args: &[String],
+        home: Option<&Path>,
+    ) -> Result<Session> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: script.rows,
@@ -251,6 +256,17 @@ impl Session {
         cmd.cwd(std::env::current_dir()?);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        if let Some(home) = home {
+            cmd.env("HOME", home);
+            for (var, dir) in [
+                ("XDG_CONFIG_HOME", ".config"),
+                ("XDG_DATA_HOME", ".local/share"),
+                ("XDG_STATE_HOME", ".local/state"),
+                ("XDG_CACHE_HOME", ".cache"),
+            ] {
+                cmd.env(var, home.join(dir));
+            }
+        }
         for (k, v) in &script.env {
             cmd.env(k, v);
         }
@@ -382,14 +398,48 @@ fn kill_group(pid: u32) {
 
 /// Run the script; `name` labels messages (`name:line: …`). Ok(false) when a step failed, after
 /// printing what failed and the screen.
-pub fn run(name: &str, script: &Script, program: &Path, args: &[String]) -> Result<bool> {
-    let mut s = Session::spawn(script, program, args)?;
+/// A fresh, empty folder to serve as the program's home, removed when the run ends.
+struct EmptyHome(PathBuf);
+
+impl EmptyHome {
+    fn new() -> Result<EmptyHome> {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cold-lava-drive-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("couldn't make an empty home in {}", dir.display()))?;
+        Ok(EmptyHome(dir))
+    }
+}
+
+impl Drop for EmptyHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Runs the script. Unless `real_home`, the program gets an empty home folder of its own (and
+/// XDG folders inside it), so it neither reads your config nor adds to your list of vaults.
+pub fn run(
+    name: &str,
+    script: &Script,
+    program: &Path,
+    args: &[String],
+    real_home: bool,
+) -> Result<bool> {
+    let home = (!real_home).then(EmptyHome::new).transpose()?;
+    let mut s = Session::spawn(script, program, args, home.as_ref().map(|h| h.0.as_path()))?;
     if let Some(pid) = s.child.process_id() {
         let name = name.to_string();
+        let home = home.as_ref().map(|h| h.0.clone());
         std::thread::spawn(move || {
             std::thread::sleep(OVERALL_TIMEOUT);
             println!("{name}: gave up after {}", secs(OVERALL_TIMEOUT));
             kill_group(pid);
+            if let Some(home) = home {
+                let _ = std::fs::remove_dir_all(home);
+            }
             std::process::exit(1);
         });
     }

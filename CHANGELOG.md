@@ -11,7 +11,8 @@ change commands, keys and file formats; patch versions only fix things.
 
 - `cold-lava drive SCRIPT -- ARGS` runs cold-lava in a hidden terminal, types keys from a script,
   waits for text and checks the screen (`wait-for`, `expect`, `exits 0`, …). A failing step
-  names its line and prints the screen. It drives the real binary, embedded Neovim included.
+  names its line and prints the screen. It drives the real binary, embedded Neovim included, with an empty home folder so
+  it doesn't read your config or add to your list of vaults (`--real-home` to use yours).
 - `COLD_LAVA_EDITOR=none` opens notes in the reader even when Neovim is installed.
 
 ## [0.2.0] - 2026-11-06
