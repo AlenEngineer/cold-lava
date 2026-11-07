@@ -1,0 +1,24 @@
+# Deleting the note open in Neovim: Neovim drops its buffer, so it can neither show the
+# deleted note nor write it back. tests/drive.rs checks the files.
+wait-for example-vault 33 notes
+keys p lava
+wait-for Lava
+keys enter
+wait-for 10s Molten rock
+keys ctrl+q
+wait-for ? help  q quit
+keys d
+wait-for Delete Concepts/Lava?
+keys y
+wait-for deleted Lava · u undo
+wait-for Concepts/Plate Tectonics  Neovim
+wait-for Earth's outer shell
+keys ctrl+q
+type :ls
+keys enter
+wait-for Plate Tectonics.md"
+expect-not Lava.md"
+keys enter ctrl+q
+wait-for ? help  q quit
+keys q
+exits 0

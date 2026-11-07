@@ -119,6 +119,7 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `:` | command palette: run any command by name (its key is shown next to it) |
 | `s` (or `Ctrl-f`) | search the text of every note |
 | `R` / `m` | rename / move the note, updating every link to it (with a preview first) |
+| `d` / `u` | delete the note or whiteboard (to the trash, after showing what links to it) / undo |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder / add a vault |
@@ -288,6 +289,15 @@ cold-lava rename ~/vault Lava "Geology/Hot Rock"                            # mo
 In the main menu, press `R` to rename the selected note or `m` to move it to another folder:
 you see every link that will change before confirming.
 
+### Deleting notes
+
+Press `d` on a note (or whiteboard) to delete it. First you see the notes that link to it, with
+the line: their links will become unresolved, and aren't rewritten (Obsidian doesn't either).
+cold-lava never deletes for good. The note goes where the vault's Obsidian setting
+("Deleted files" in Files and links) says: the system trash by default, or the vault's `.trash`
+folder. A vault set to delete permanently gets `.trash` too. `u` puts the last deleted note back
+(the last 20 deletes, until you quit). Folders can't be deleted yet.
+
 Every link to the note is updated, the way Obsidian does it: `[[wikilinks]]` with their
 aliases, headings and embeds, Markdown links (relative or vault paths), links in frontmatter,
 and whiteboard note cards and text cards. Each link keeps its style: a short `[[Name]]` stays
@@ -445,7 +455,8 @@ After a lone Esc (`keys esc q`), drive waits for the program to answer before ty
 `q` can't arrive with the Esc as Alt-q. `#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
 `cold-lava --help` lists every step. Without a SCRIPT, the script is read from stdin.
 The program runs with an empty home folder, so your `config.toml`, your Neovim config and your
-list of vaults stay out of it; `cold-lava drive --real-home` uses yours.
+list of vaults stay out of it; `cold-lava drive --real-home` uses yours, and
+`cold-lava drive --home DIR` uses DIR and keeps it, for a test to look inside afterwards.
 
 ## Versions and releases
 

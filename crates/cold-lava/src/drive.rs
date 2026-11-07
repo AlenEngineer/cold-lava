@@ -443,20 +443,41 @@ impl Drop for EmptyHome {
     }
 }
 
-/// Runs the script. Unless `real_home`, the program gets an empty home folder of its own (and
+/// The home folder the program under test gets.
+pub enum HomeChoice {
+    /// Yours.
+    Real,
+    /// An empty one, removed when the run ends.
+    Empty,
+    /// This folder (made if missing), left as the run leaves it, so a test can look inside.
+    At(PathBuf),
+}
+
+/// Runs the script. Unless the home is `Real`, the program gets a home folder of its own (and
 /// XDG folders inside it), so it neither reads your config nor adds to your list of vaults.
 pub fn run(
     name: &str,
     script: &Script,
     program: &Path,
     args: &[String],
-    real_home: bool,
+    choice: HomeChoice,
 ) -> Result<bool> {
-    let home = (!real_home).then(EmptyHome::new).transpose()?;
-    let mut s = Session::spawn(script, program, args, home.as_ref().map(|h| h.0.as_path()))?;
+    let empty = matches!(choice, HomeChoice::Empty)
+        .then(EmptyHome::new)
+        .transpose()?;
+    let home = match choice {
+        HomeChoice::Real => None,
+        HomeChoice::Empty => empty.as_ref().map(|h| h.0.clone()),
+        HomeChoice::At(dir) => {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("couldn't make the home {}", dir.display()))?;
+            Some(dir)
+        }
+    };
+    let mut s = Session::spawn(script, program, args, home.as_deref())?;
     if let Some(pid) = s.child.process_id() {
         let name = name.to_string();
-        let home = home.as_ref().map(|h| h.0.clone());
+        let home = empty.as_ref().map(|h| h.0.clone());
         std::thread::spawn(move || {
             std::thread::sleep(OVERALL_TIMEOUT);
             println!("{name}: gave up after {}", secs(OVERALL_TIMEOUT));
@@ -667,7 +688,16 @@ mod tests {
             if [ $n -eq 0 ]; then echo APART; else echo MERGED; fi; sleep 5";
         let script = parse("wait 300ms\nkeys esc q\nwait-for APART").unwrap();
         let args = ["-c".to_string(), program.to_string()];
-        assert!(run("esc", &script, Path::new("/bin/sh"), &args, false).unwrap());
+        assert!(
+            run(
+                "esc",
+                &script,
+                Path::new("/bin/sh"),
+                &args,
+                HomeChoice::Empty
+            )
+            .unwrap()
+        );
     }
 
     #[test]

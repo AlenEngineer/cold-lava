@@ -93,6 +93,9 @@ pub enum EditorRequest {
     /// extensions can follow the core's events, a rename tells the editor this way.
     #[serde(rename = "editor/renamed")]
     Renamed { from: PathBuf, to: PathBuf },
+    /// The note was moved to the trash: forget it without writing it back.
+    #[serde(rename = "editor/deleted")]
+    Deleted { note: PathBuf },
 }
 
 /// `command/run` (host → extension): run one of the commands it registered.
@@ -361,6 +364,12 @@ mod tests {
                 to: "/v/Rock/Lava.md".into(),
             },
             json!({"method": "editor/renamed", "params": {"from": "/v/Lava.md", "to": "/v/Rock/Lava.md"}}),
+        );
+        wire(
+            EditorRequest::Deleted {
+                note: "/v/Lava.md".into(),
+            },
+            json!({"method": "editor/deleted", "params": {"note": "/v/Lava.md"}}),
         );
         wire(
             PaneNews::Message {
