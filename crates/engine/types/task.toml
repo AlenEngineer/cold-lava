@@ -7,6 +7,10 @@ version = 1
 [types.task]
 requires = ["task-lists"]
 actions = ["tasks.toggle"]
+# Over other list-item types, so a checkbox stays a task (and in the agenda) unless a type says
+# it is one of its kind (`extends = "task"`, which starts at this priority too) or sets a higher
+# priority.
+priority = 1
 
 [types.task.fields]
 # The character between the brackets, and what the vault's statuses say it means.

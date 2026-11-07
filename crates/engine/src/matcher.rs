@@ -31,6 +31,9 @@ const READ: &[On] = &[
     On::Inline,
 ];
 
+/// A field's name, shared by every item of its type.
+pub type Name = std::sync::Arc<str>;
+
 /// A typed item's kind, the types it answers to, and its fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Typed {
@@ -38,9 +41,9 @@ pub struct Typed {
     /// Its bases, nearest first: an `idea` that extends `task` is also a `task`.
     pub is: Vec<String>,
     /// Every field of the schema, in its order: null (or [] for a list) when absent.
-    pub fields: IndexMap<String, Json>,
+    pub fields: IndexMap<Name, Json>,
     /// Where each value was read, in the note's bytes; a list field has one per value.
-    pub spans: IndexMap<String, Vec<Range<usize>>>,
+    pub spans: IndexMap<Name, Vec<Range<usize>>>,
     /// Values found that didn't parse as their field's type.
     pub unparsed: usize,
     /// Where it was read, for writing a field back (`edit.rs`); not on the wire.
@@ -54,7 +57,7 @@ pub struct Place {
     pub shape: usize,
     /// For each field that found something, which of its sources did (index in the shape's
     /// list for that field).
-    pub sources: IndexMap<String, usize>,
+    pub sources: IndexMap<Name, usize>,
     /// The block's text in the file, where a missing marker, flag or field is appended.
     pub text: Range<usize>,
     /// A table row's cells in the file, under their header.
@@ -70,6 +73,8 @@ pub struct Matcher {
     /// Some shape needs the note's tags, or its links.
     pub needs_tags: bool,
     pub needs_links: bool,
+    /// Some shape has `where.inside`.
+    pub needs_inside: bool,
     daily: daily::Settings,
 }
 
@@ -78,7 +83,9 @@ struct Compiled {
     is: Vec<String>,
     priority: i32,
     origin: u8,
-    schema: Vec<(String, Value, bool)>,
+    schema: Vec<(Name, Value, bool)>,
+    /// Every field of the schema empty: null, or [] for a list. Each item starts as a copy.
+    empty: IndexMap<Name, Json>,
     shapes: Vec<Shape>,
 }
 
@@ -93,6 +100,8 @@ struct Shape {
     /// Sources by schema field index.
     fields: Vec<(usize, Vec<Src>)>,
     conditions: usize,
+    /// Some field reads a group of `pattern`, so a match needs its captures.
+    captures: bool,
 }
 
 enum Src {
@@ -141,7 +150,7 @@ impl Matcher {
             if !usable {
                 continue;
             }
-            let schema: Vec<(String, Value, bool)> = d
+            let schema: Vec<(Name, Value, bool)> = d
                 .fields
                 .iter()
                 .map(|(name, value)| {
@@ -150,10 +159,10 @@ impl Matcher {
                         .iter()
                         .filter_map(|s| s.fields.get(name))
                         .any(|s| s.0.iter().any(is_list));
-                    (name.clone(), value.clone(), list)
+                    (Name::from(name.as_str()), value.clone(), list)
                 })
                 .collect();
-            let field = |name: &str| schema.iter().position(|f| f.0 == name);
+            let field = |name: &str| schema.iter().position(|f| &*f.0 == name);
             let mut shapes = Vec::new();
             for (index, shape) in d.from.iter().enumerate() {
                 if slot(shape.on).is_none() {
@@ -161,6 +170,7 @@ impl Matcher {
                 }
                 let w = &shape.conditions;
                 m.needs_tags |= matches!(shape.on, On::Note | On::Inline) && !w.tag.is_empty();
+                m.needs_inside |= !w.inside.is_empty();
                 let fields = shape
                     .fields
                     .iter()
@@ -194,6 +204,9 @@ impl Matcher {
                         .and_then(|p| crate::types::compile(p).ok()),
                     key: shape.key.iter().filter_map(|k| field(k)).collect(),
                     required: shape.required.iter().filter_map(|k| field(k)).collect(),
+                    captures: fields
+                        .iter()
+                        .any(|(_, s)| s.iter().any(|s| matches!(s, Src::Capture(_)))),
                     fields,
                     conditions,
                 });
@@ -201,13 +214,24 @@ impl Matcher {
             m.types.push(Compiled {
                 name: t.name.clone(),
                 is: bases(t, types),
-                priority: d.priority,
+                priority: priority(t, types),
                 origin: match t.origin {
                     Origin::Vault { .. } => 0,
                     Origin::Config { .. } => 1,
                     Origin::Extension { .. } => 2,
                     Origin::BuiltIn => 3,
                 },
+                empty: schema
+                    .iter()
+                    .map(|(name, _, list)| {
+                        let empty = if *list {
+                            Json::Array(Vec::new())
+                        } else {
+                            Json::Null
+                        };
+                        (name.clone(), empty)
+                    })
+                    .collect(),
                 schema,
                 shapes,
             });
@@ -255,6 +279,7 @@ impl Matcher {
             header: &[],
             cells: &[],
             inside: Vec::new(),
+            code: &[],
         };
         self.block(gate, note, &block)
     }
@@ -272,11 +297,12 @@ impl Matcher {
                 continue;
             }
             let caps = match &shape.pattern {
-                Some(re) => match re.captures(b.text) {
+                Some(re) if shape.captures => match re.captures(b.text) {
                     Some(c) => Some(c),
                     None => continue,
                 },
-                None => None,
+                Some(re) if !re.is_match(b.text) => continue,
+                _ => None,
             };
             passing.push((t, s, caps));
         }
@@ -305,7 +331,6 @@ impl Matcher {
         gate: &[Vec<bool>],
         note: &Note,
         b: &Block,
-        code: &[Range<usize>],
     ) -> Vec<(Typed, String, Range<usize>)> {
         let mut found: Vec<(usize, Typed, String, Range<usize>)> = Vec::new();
         let Some(slot) = slot(On::Inline) else {
@@ -319,11 +344,8 @@ impl Matcher {
             let Some(re) = &shape.pattern else { continue };
             for caps in re.captures_iter(b.text) {
                 let whole = caps.get(0).expect("group 0 is the match").range();
-                let (start, end) = (b.at + whole.start, b.at + whole.end);
-                let i = code.partition_point(|c| c.end <= start);
-                let in_code = code.get(i).is_some_and(|c| c.start < end);
                 let again = found.iter().any(|f| f.0 == t && f.3 == whole);
-                if whole.is_empty() || in_code || again {
+                if whole.is_empty() || b.in_code(&whole) || again {
                     continue;
                 }
                 let (typed, key) = self.read(t, s, Some(caps), note, b);
@@ -369,18 +391,7 @@ impl Matcher {
         let mut typed = Typed {
             kind: ty.name.clone(),
             is: ty.is.clone(),
-            fields: ty
-                .schema
-                .iter()
-                .map(|(name, _, list)| {
-                    let empty = if *list {
-                        Json::Array(Vec::new())
-                    } else {
-                        Json::Null
-                    };
-                    (name.clone(), empty)
-                })
-                .collect(),
+            fields: ty.empty.clone(),
             spans: IndexMap::new(),
             unparsed: 0,
             place: Place {
@@ -396,20 +407,27 @@ impl Matcher {
             },
         };
         // Byte ranges of the block's text that sources read, for `rest`.
-        let mut used: Vec<Range<usize>> = Vec::new();
+        let mut used: Vec<Range<usize>> = Vec::with_capacity(2 * shape.fields.len());
         let mut rest_field = None;
         for (f, sources) in &shape.fields {
+            // The first source with a value gives it; a value the others find is still the
+            // field's, and not words.
             let mut pieces = Vec::new();
             for (i, src) in sources.iter().enumerate() {
                 if let Src::Rest(without) = src {
                     rest_field = Some((*f, without));
                     continue;
                 }
-                pieces = read_source(src, caps.as_ref(), note, b, &self.daily, &mut used);
-                if !pieces.is_empty() {
-                    let name = ty.schema[*f].0.clone();
-                    typed.place.sources.insert(name, i);
-                    break;
+                let before = used.len();
+                let found = read_source(src, caps.as_ref(), note, b, &self.daily, &mut used);
+                if pieces.is_empty() {
+                    if !found.is_empty() {
+                        pieces = found;
+                        let name = ty.schema[*f].0.clone();
+                        typed.place.sources.insert(name, i);
+                    }
+                } else if !found.iter().all(|p| self.parses(&ty.schema[*f].1, p)) {
+                    used.truncate(before);
                 }
             }
             self.set(&mut typed, ty, *f, pieces);
@@ -465,6 +483,15 @@ impl Matcher {
         (typed, key)
     }
 
+    fn parses(&self, value: &Value, p: &Piece) -> bool {
+        p.value.is_some()
+            || if p.verbatim {
+                parse_as_written(value, &p.text, &self.daily.format).is_some()
+            } else {
+                parse(value, &p.text, &self.daily.format).is_some()
+            }
+    }
+
     /// Parses what a field's source found and puts it on the item.
     fn set(&self, typed: &mut Typed, ty: &Compiled, f: usize, pieces: Vec<Piece>) {
         let (name, value, list) = &ty.schema[f];
@@ -494,11 +521,32 @@ impl Matcher {
             typed.unparsed += parsed.len();
             Json::Null
         };
-        typed.fields[name.as_str()] = json;
+        // The schema's order is the fields' order.
+        typed.fields[f] = json;
         if !spans.is_empty() {
             typed.spans.insert(name.clone(), spans);
         }
     }
+}
+
+/// `t`'s priority: its own, else its nearest base's that has one, else 0.
+fn priority(t: &Type, types: &Types) -> i32 {
+    let mut t = t;
+    for _ in 0..types.types.len() {
+        if let Some(p) = t.definition.priority {
+            return p;
+        }
+        match t
+            .definition
+            .extends
+            .as_ref()
+            .and_then(|b| types.types.iter().find(|x| x.name == *b))
+        {
+            Some(base) => t = base,
+            None => break,
+        }
+    }
+    0
 }
 
 /// `t`'s bases, nearest first, ending with a native kind if the chain reaches one.
@@ -531,7 +579,7 @@ fn compile_source(s: &Source) -> Src {
             let k = regex::escape(key);
             Src::Inline(
                 Regex::new(&format!(
-                    r"(?m)\[{k}::[ \t]*([^\]\n]*)\]|\({k}::[ \t]*([^)\n]*)\)|(?:^|[ \t]){k}::[ \t]*([^\n]*)"
+                    r"(?m)\[{k}::[ \t]*([^\]\n]*)\]|\({k}::[ \t]*([^)\n]*)\)|^[ \t]*{k}::[ \t]*([^\n]*)"
                 ))
                 .expect("an escaped key makes a valid pattern"),
             )
@@ -562,6 +610,8 @@ pub struct Note<'a> {
     /// Its tags, frontmatter's then the body's, without `#`, each once.
     pub tags: Vec<String>,
     pub links: Vec<String>,
+    /// The date of the daily note it is, read once its blocks ask.
+    date: std::cell::OnceCell<Option<chrono::NaiveDate>>,
 }
 
 impl<'a> Note<'a> {
@@ -590,6 +640,7 @@ impl<'a> Note<'a> {
             tags: Vec::new(),
             links: Vec::new(),
             frontmatter,
+            date: Default::default(),
         };
         let (tags, end_line) = match &note.frontmatter {
             Some(fm) => (
@@ -667,6 +718,18 @@ pub struct Block<'a> {
     pub cells: &'a [Range<usize>],
     /// What it sits inside: primitives, kinds and types.
     pub inside: Vec<&'a str>,
+    /// The note's code spans, code blocks and math (ranges in `src`, in order), where no source
+    /// reads and no inline type matches.
+    pub code: &'a [Range<usize>],
+}
+
+impl Block<'_> {
+    /// Whether this range of its text touches code.
+    fn in_code(&self, r: &Range<usize>) -> bool {
+        let (start, end) = (self.at + r.start, self.at + r.end);
+        let i = self.code.partition_point(|c| c.end <= start);
+        self.code.get(i).is_some_and(|c| c.start < end)
+    }
 }
 
 fn note_passes(w: &crate::types::Where, note: &Note) -> bool {
@@ -746,36 +809,64 @@ fn read_source(
             Some((m, whole)) => found(m.range(), used, whole.range()),
             None => Vec::new(),
         },
-        Src::Pattern(re) => match re.captures(text) {
-            Some(c) => match c.get(1) {
-                Some(m) => found(m.range(), used, c.get(0).unwrap().range()),
+        Src::Pattern(re) if !re.is_match(text) => Vec::new(),
+        Src::Pattern(re) => {
+            let c = re
+                .captures_iter(text)
+                .find(|c| !b.in_code(&c.get(0).unwrap().range()));
+            match c {
+                Some(c) => match c.get(1) {
+                    Some(m) => found(m.range(), used, c.get(0).unwrap().range()),
+                    None => Vec::new(),
+                },
                 None => Vec::new(),
-            },
-            None => Vec::new(),
-        },
-        Src::Marker(glyph) => {
-            let Some(i) = text.find(glyph.as_str()) else {
-                return Vec::new();
-            };
-            // A variation selector after an emoji is part of the glyph: `⏳️` is `⏳`.
-            let after = i + glyph.len();
-            let after = after + text[after..].strip_prefix('\u{FE0F}').map_or(0, |_| 3);
-            let lead = text[after..].len() - text[after..].trim_start().len();
-            let start = after + lead;
-            let len = text[start..]
-                .find(char::is_whitespace)
-                .unwrap_or(text.len() - start);
-            found(start..start + len, used, i..start + len)
-        }
-        Src::Inline(re) => match re.captures(text) {
-            Some(c) => {
-                let m = (1..=3).find_map(|i| c.get(i)).expect("one form matched");
-                found(m.range(), used, c.get(0).unwrap().range())
             }
-            None => Vec::new(),
-        },
+        }
+        Src::Marker(glyph) => {
+            // Every one written is the field's; the first gives the value, as the Tasks plugin
+            // reads them.
+            let mut first = Vec::new();
+            for (i, _) in text.match_indices(glyph.as_str()) {
+                // A variation selector after an emoji is part of the glyph: `⏳️` is `⏳`.
+                let after = i + glyph.len();
+                let after = after + text[after..].strip_prefix('\u{FE0F}').map_or(0, |_| 3);
+                let lead = text[after..].len() - text[after..].trim_start().len();
+                let start = after + lead;
+                let len = text[start..]
+                    .find(char::is_whitespace)
+                    .unwrap_or(text.len() - start);
+                if b.in_code(&(i..start + len)) {
+                    continue;
+                }
+                let pieces = found(start..start + len, used, i..start + len);
+                if first.is_empty() {
+                    first = pieces;
+                }
+            }
+            first
+        }
+        // Every form has `key::`; most blocks have none.
+        Src::Inline(re) if !text.contains("::") || !re.is_match(text) => Vec::new(),
+        Src::Inline(re) => {
+            let mut first = Vec::new();
+            for c in re.captures_iter(text) {
+                let whole = c.get(0).unwrap().range();
+                if b.in_code(&whole) {
+                    continue;
+                }
+                let m = (1..=3).find_map(|i| c.get(i)).expect("one form matched");
+                let pieces = found(m.range(), used, whole);
+                if first.is_empty() {
+                    first = pieces;
+                }
+            }
+            first
+        }
         Src::Flag(glyph) => {
-            let at_glyph = text.find(glyph.as_str());
+            let at_glyph = text
+                .match_indices(glyph.as_str())
+                .map(|(i, _)| i)
+                .find(|&i| !b.in_code(&(i..i + glyph.len())));
             if let Some(i) = at_glyph {
                 used.push(i..i + glyph.len());
             }
@@ -789,15 +880,18 @@ fn read_source(
         Src::Flags(map) => {
             // Every glyph of the map is the source's text, though only the first one found
             // gives the value.
+            let outside = |glyph: &str| {
+                text.match_indices(glyph)
+                    .map(|(i, g)| i..i + g.len())
+                    .filter(|r| !b.in_code(r))
+                    .collect::<Vec<_>>()
+            };
             for glyph in map.keys() {
-                used.extend(
-                    text.match_indices(glyph.as_str())
-                        .map(|(i, g)| i..i + g.len()),
-                );
+                used.extend(outside(glyph));
             }
             let first = map
                 .iter()
-                .find_map(|(glyph, name)| Some((text.find(glyph.as_str())?, glyph, name)));
+                .find_map(|(glyph, name)| Some((outside(glyph).first()?.start, glyph, name)));
             match first {
                 Some((i, glyph, name)) => vec![Piece {
                     text: name.clone(),
@@ -851,6 +945,7 @@ fn read_source(
             })
             .collect(),
         Src::Inlines(InlineKind::Tags) => Note::tags_in(text)
+            .filter(|(_, r)| !b.in_code(r))
             .map(|(t, r)| Piece::text(t.to_string(), Some(at(r))))
             .collect(),
         Src::Inlines(InlineKind::Links) => vault::line_links(text)
@@ -862,7 +957,7 @@ fn read_source(
                 verbatim: false,
             })
             .collect(),
-        Src::Note(NotePart::Date) => match daily.date_of(note.path) {
+        Src::Note(NotePart::Date) => match *note.date.get_or_init(|| daily.date_of(note.path)) {
             Some(d) => vec![Piece {
                 value: Some(Json::String(d.format("%Y-%m-%d").to_string())),
                 ..Piece::text(d.to_string(), None)
@@ -930,15 +1025,28 @@ pub fn parse(value: &Value, text: &str, daily_format: &str) -> Option<Json> {
 }
 
 /// `parse` without trimming: a checkbox's ` ` is a status.
-fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option<Json> {
+pub fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option<Json> {
     if text.is_empty() {
         return None;
     }
     Some(match value {
         Value::Text => Json::String(text.to_string()),
         Value::Number => number(text.parse::<f64>().ok().filter(|n| n.is_finite())?),
-        Value::Date { format } => {
-            let format = format.as_deref().unwrap_or("YYYY-MM-DD");
+        // ISO, the format of nearly every date in a note, without the moment.js machinery.
+        Value::Date { format: None } => {
+            let iso = text.len() == 10
+                && text.bytes().enumerate().all(|(i, b)| match i {
+                    4 | 7 => b == b'-',
+                    _ => b.is_ascii_digit(),
+                });
+            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .ok()
+                .filter(|_| iso)?;
+            Json::String(text.to_string())
+        }
+        Value::Date {
+            format: Some(format),
+        } => {
             let format = format.replace("${daily.format}", daily_format);
             let date = daily::parse_date(text, &format)?;
             Json::String(date.format("%Y-%m-%d").to_string())
@@ -978,7 +1086,7 @@ fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option<Jso
                 .map()
                 .get(text)
                 .cloned()
-                .unwrap_or_else(|| "other".to_string()),
+                .or_else(|| values.other().map(String::from))?,
         ),
         Value::Duration => number(duration(text)?),
     })
@@ -1040,14 +1148,17 @@ mod tests {
     /// Settings with config.toml's `[types]` table written as `toml`.
     fn settings(toml: &str) -> Settings {
         let table: toml::Table = toml::from_str(toml).unwrap();
-        settings_with(vec![Layer::config(Path::new("config.toml"), table)])
+        settings_with(vec![
+            Layer::built_in(),
+            Layer::config(Path::new("config.toml"), table),
+        ])
     }
 
     fn typed(items: &[Item]) -> Vec<&Typed> {
         items
             .iter()
             .filter_map(|i| match &i.data {
-                Data::Typed(t) => Some(t),
+                Data::Typed(t) => Some(t.as_ref()),
                 _ => None,
             })
             .collect()
@@ -1061,7 +1172,12 @@ mod tests {
 
     fn fields(item: &Item) -> Json {
         match &item.data {
-            Data::Typed(t) => serde_json::to_value(&t.fields).unwrap(),
+            Data::Typed(t) => Json::Object(
+                t.fields
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.clone()))
+                    .collect(),
+            ),
             d => panic!("not typed: {d:?}"),
         }
     }
@@ -1546,7 +1662,7 @@ Survey the rim ~3h, not `~4h`, not~6h.
             ),
         };
         assert_eq!(p(status.clone(), "to read"), Some(json!("todo")));
-        assert_eq!(p(status, "skimmed"), Some(json!("other")));
+        assert_eq!(p(status, "skimmed"), None, "a form the table doesn't have");
         assert_eq!(p(Value::Duration, "30m"), Some(json!(30)));
         assert_eq!(p(Value::Duration, "2d"), Some(json!(2880)));
         assert_eq!(p(Value::Duration, "1h30"), None);
@@ -1742,7 +1858,7 @@ Survey the rim ~3h, not `~4h`, not~6h.
 
     #[test]
     fn no_types_no_work() {
-        let s = settings("");
+        let s = settings_with(Vec::new());
         assert!(s.matcher.is_empty());
         let all = extract("Note.md", "| a |\n| - |\n| 1 |\n\nWords.\n", &s);
         assert!(all.is_empty());

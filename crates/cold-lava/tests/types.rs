@@ -42,8 +42,12 @@ fn example_vault_listing() {
     assert!(out.status.success());
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
-        json["types"][1]["from"][0]["where"]["header"],
+        json["types"][2]["from"][0]["where"]["header"],
         serde_json::json!(["VEI", "Example"])
+    );
+    assert_eq!(
+        json["types"][0]["name"], "task",
+        "the built-in task comes first"
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -91,39 +95,5 @@ fn a_broken_types_file_exits_1_and_keeps_the_good_types() {
         )),
         "{stdout}"
     );
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn shadow_compares_the_task_definition_with_the_native_parser() {
-    let dir = scratch("shadow");
-    let out = types(&dir, &["example-vault", "--shadow"]);
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(out.status.success(), "{stdout}");
-    assert!(
-        stdout.starts_with("the task as a definition, beside the native parser: ")
-            && stdout.trim_end().ends_with(" · 0 differences"),
-        "{stdout}"
-    );
-
-    let vault = dir.join("vault");
-    std::fs::create_dir_all(&vault).unwrap();
-    std::fs::write(
-        vault.join("Todo.md"),
-        "- [ ] Pay rent 📅 2026-11-12 ⏫\n  - [x] Transfer ✅ 2026-11-10\n- [ ] Tagged #2026\n",
-    )
-    .unwrap();
-    let out = types(&dir, &[vault.to_str().unwrap(), "--shadow"]);
-    assert_eq!(out.status.code(), Some(1), "a difference exits 1");
-    assert_eq!(
-        String::from_utf8(out.stdout).unwrap(),
-        "the task as a definition, beside the native parser: 1 note · 3 tasks · 1 difference\n\
-         by field: tags 1\n\
-         Todo.md:3 tags: native [\"2026\"] · definition []\n"
-    );
-    let out = types(&dir, &[vault.to_str().unwrap(), "--shadow", "--json"]);
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["tasks"], 3);
-    assert_eq!(json["differences"][0]["field"], "tags");
     let _ = std::fs::remove_dir_all(dir);
 }
