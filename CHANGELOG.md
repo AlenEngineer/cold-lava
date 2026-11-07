@@ -86,6 +86,13 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- Following a link to an attachment (`[[map.pdf]]`, `[map](Maps/map.pdf)`) no longer creates a
+  note named `map.pdf.md`. The file opens in the system's app (`xdg-open`, `open` on macOS) when
+  it's in the vault, found the way Obsidian finds it: by path, next to the note, then by name
+  anywhere; a link to a canvas opens it in the whiteboard. A missing attachment says
+  `map.pdf isn't in the vault` and nothing is created. Notes with dots in their names
+  (`Mount St. Helens`) are still notes: only known attachment types (images, audio, video, PDF,
+  canvas, base) count. The peek says whether `Enter` opens the attachment or it's missing.
 - The whiteboard no longer overwrites a canvas file changed outside cold-lava between its merge
   and its save, or one it couldn't read (for example while another app was halfway through
   writing it). Your edits are kept and saved once the file can be read, and quitting first warns

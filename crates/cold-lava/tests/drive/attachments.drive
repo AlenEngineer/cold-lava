@@ -1,0 +1,31 @@
+# Links to attachments: a missing one is reported and nothing is created; a canvas opens the
+# whiteboard; a dotted note name is still a note. drive.rs adds Inbox/Field trip.md first.
+size 120x24
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p
+type field trip
+wait-for 1 notes
+keys enter
+wait-for Inbox/Field trip  reading
+wait-for reading · j
+keys tab
+keys K
+wait-for PDF document
+wait-for trail map.pdf isn't in the vault
+screen
+keys esc
+keys enter
+wait-for trail map.pdf isn't in the vault
+expect Inbox/Field trip  reading
+keys tab enter
+wait-for tickets/ticket.pdf isn't in the vault
+expect Inbox/Field trip  reading
+keys tab enter
+wait-for whiteboard Welcome
+keys ctrl+o
+wait-for Inbox/Field trip  reading
+keys tab enter
+wait-for Volcanoes/Mount St. Helens  reading
+keys esc q
+exits 0

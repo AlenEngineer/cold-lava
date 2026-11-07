@@ -55,7 +55,7 @@ pub fn open_in_obsidian(vault_name: &str, rel_path: &str) -> bool {
     ))
 }
 
-/// Open a URL with the system's handler (a browser, the Obsidian app).
+/// Open a URL or a file with the system's handler (a browser, the Obsidian app, a PDF viewer).
 pub fn open_url(url: &str) -> bool {
     let opener = if cfg!(target_os = "macos") {
         "open"
