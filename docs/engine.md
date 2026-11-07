@@ -5,7 +5,7 @@ parts are still to be designed; each layer says which.
 
 cold-lava is two things: an **engine** that understands a vault of Markdown notes, and
 **frontends** that show it (today one, the terminal UI). Extensions reach them through two
-gateways: the **notes gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
+gateways: the **vault gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
 plans in detail.
 
 ```
@@ -23,7 +23,7 @@ plans in detail.
 │ agenda · todo aggregator · kanban · graph · habit tracker …                    │
 │ an extension may use one gateway, the other, or both                           │
 └─────────────▲─────────────────────────────────────────────┬────────────────────┘
-NOTES GATEWAY │ items, events                               │ items/query · items/edit
+VAULT GATEWAY │ items, events                               │ items/query · items/edit
 ┌─────────────┴─────────────────────────────────────────────▼────────────────────┐
 │ ENGINE                                                                         │
 │ 4  ITEMS     typed, with ids and revs: task{status, due}, book{author} …       │
@@ -62,7 +62,7 @@ frontmatter) and inlines (text, link, emphasis, code span, tag). Values inside t
 set of types: text, number, date, datetime, link, tag, true/false, list. These are a note's
 bytes and integers.
 
-**3. Types** *(to design)*. Definitions of meaning over blocks: a task is a list item that
+**3. Types** *(designed in extensions.md, "Types")*. Definitions of meaning over blocks: a task is a list item that
 starts with `[ ]`, whose `📅 2026-11-12` is a date field `due`; a `book` is a table row whose
 header has `Author`. Built-in types (task, property, heading) are definitions like anyone
 else's, and you or an extension can add more in a few lines, with no code. Definitions are
@@ -80,10 +80,15 @@ that item changed meanwhile.
 with notes and show them: aggregate, edit, draw a board. They register commands; they never see
 keystrokes or draw pixels, so a broken one can't trap you.
 
+**Other file types** *(designed in extensions.md, "File types")*. Markdown is the engine's own
+format; a `.canvas`, `.kanban` or `.csv` file can have an owner, an extension that opens it,
+saves it safely, and contributes its items and links to the vault, so a card's `[[Lava]]` shows
+in `Lava`'s backlinks and the graph.
+
 ## Two gateways
 
-**The notes gateway** *(in-process half built: `ext/mod.rs`)* is the engine's protocol: items,
-types, queries, edits and events. It knows nothing about screens. An extension that only
+**The vault gateway** *(in-process half built: `ext/mod.rs`)* is the engine's protocol: files,
+items, types, queries, edits and events. It knows nothing about screens. An extension that only
 aggregates and ticks tasks, a script, or a language server needs nothing else.
 
 **The view gateway** is the frontend's: what an extension wants shown, and what you did to it.
@@ -102,6 +107,7 @@ The vocabulary stays small, and grows only when a real extension needs a new wor
 | **table** | a type's items as rows: books, people, projects | to design |
 | **scene** | nodes and edges: the graph, the whiteboard, mind maps | designed |
 | **pane** | the escape hatch: any terminal program (a GUI's could be a web view) | built |
+| **image** | pictures, with Kitty pixels where the terminal has them | to design |
 
 Types can say how their values look (a date as a chip, a status as a mark), and every view draws
 that the same way. A general UI toolkit for every language is a project of its own; this is
