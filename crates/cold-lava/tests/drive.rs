@@ -94,6 +94,19 @@ fn follows_links_and_backlinks_by_their_hints() {
 }
 
 #[test]
+fn jumps_through_the_outline_and_heading_by_heading() {
+    let dir = sandbox("outline");
+    let out = drive("outline.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_false_expect_fails_with_its_line_and_the_screen() {
     let dir = sandbox("fails");
     let out = drive("fails.drive", &dir);

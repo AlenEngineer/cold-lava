@@ -35,6 +35,7 @@ pub enum MenuAction {
     EditFullscreen,
     Read,
     Hints,
+    Outline,
     History(HistoryAction),
 }
 
@@ -154,6 +155,12 @@ pub const MENU: &[Command<MenuAction>] = &[
         &["f"],
     ),
     cmd(
+        MenuAction::Outline,
+        "note.outline",
+        "outline: the note's headings, type to filter, ⏎ to jump to one",
+        &["o"],
+    ),
+    cmd(
         MenuAction::Filter,
         "filter.open",
         "filter notes by name or path",
@@ -199,7 +206,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         MenuAction::OpenInObsidian,
         "note.open-in-obsidian",
         "open the selected note in Obsidian",
-        &["o"],
+        &["O"],
     ),
     cmd(
         MenuAction::Zoom,
@@ -560,6 +567,8 @@ pub enum ReaderAction {
     Bottom,
     NextLink,
     PreviousLink,
+    NextHeading,
+    PreviousHeading,
     Follow,
     Edit,
     Back,
@@ -609,6 +618,18 @@ pub const READER: &[Command<ReaderAction>] = &[
         "reader.previous-link",
         "select the previous link",
         &["shift+tab"],
+    ),
+    cmd(
+        ReaderAction::NextHeading,
+        "reader.next-heading",
+        "to the next heading",
+        &["]"],
+    ),
+    cmd(
+        ReaderAction::PreviousHeading,
+        "reader.previous-heading",
+        "to this section's heading, or the one before",
+        &["["],
     ),
     cmd(
         ReaderAction::Follow,
@@ -1052,6 +1073,7 @@ mod tests {
         assert_eq!(press(KeyCode::PageUp), Some(ReaderAction::PageUp));
         assert_eq!(press(KeyCode::End), Some(ReaderAction::Bottom));
         assert_eq!(press(KeyCode::Tab), Some(ReaderAction::NextLink));
+        assert_eq!(press(KeyCode::Char(']')), Some(ReaderAction::NextHeading));
         assert_eq!(press(KeyCode::Esc), Some(ReaderAction::Back));
         assert_eq!(press(KeyCode::Char('p')), None, "left to the menu");
     }
@@ -1123,7 +1145,7 @@ mod tests {
         let back = MenuAction::History(HistoryAction::Back);
         assert_eq!(keys.get(ctrl_o), Some(back));
         let o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE);
-        assert_eq!(keys.get(o), Some(MenuAction::OpenInObsidian));
+        assert_eq!(keys.get(o), Some(MenuAction::Outline));
     }
 
     #[test]

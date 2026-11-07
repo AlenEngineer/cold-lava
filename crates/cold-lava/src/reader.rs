@@ -37,14 +37,23 @@ struct Page {
     links: Vec<Link>,
     /// (source line, first rendered line) of every block, in order.
     anchors: Vec<(usize, usize)>,
-    headings: Vec<(String, usize)>,
+    headings: Vec<Heading>,
     block_ids: Vec<(String, usize)>,
+}
+
+/// A heading as the reader draws it: folded callouts hide theirs.
+pub struct Heading {
+    pub level: u8,
+    pub text: String,
+    /// The rendered line it starts on.
+    pub line: usize,
 }
 
 /// Where the reader is in a note, to come back to it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spot {
     scroll: usize,
+    reading: Option<usize>,
     selected: Option<usize>,
 }
 
@@ -52,6 +61,9 @@ pub struct Reader {
     doc: Doc,
     page: Option<Page>,
     scroll: usize,
+    /// The line jumped to, when the page couldn't scroll it to the top (near the end of the
+    /// note). Scrolling forgets it.
+    reading: Option<usize>,
     /// Rows the pane had when last drawn.
     height: usize,
     selected: Option<usize>,
@@ -65,6 +77,7 @@ impl Reader {
             doc,
             page: None,
             scroll: 0,
+            reading: None,
             height: 0,
             selected: None,
             pending_jump: None,
@@ -117,6 +130,11 @@ impl Reader {
         for (y, line) in (area.y..).zip(rows) {
             buf.set_line(area.x, y, line, area.width);
         }
+        // A jump that couldn't scroll its line to the top shows where it landed.
+        if let Some(row) = self.reading.and_then(|l| l.checked_sub(self.scroll)) {
+            let row = Rect::new(area.x, area.y + row as u16, area.width, 1);
+            buf.set_style(row.intersection(area), Style::new().bg(CODE_BG));
+        }
         let Some(link) = self.selected.map(|s| &page.links[s]) else {
             return;
         };
@@ -142,6 +160,7 @@ impl Reader {
 
     pub fn scroll_by(&mut self, n: isize) {
         self.scroll = self.scroll.saturating_add_signed(n);
+        self.reading = None;
         self.clamp();
     }
 
@@ -153,10 +172,67 @@ impl Reader {
 
     pub fn top(&mut self) {
         self.scroll = 0;
+        self.reading = None;
     }
 
     pub fn bottom(&mut self) {
         self.scroll = self.max_scroll();
+        self.reading = None;
+    }
+
+    /// Puts rendered line `at` at the top of the view, or as high as the page can scroll.
+    fn scroll_to(&mut self, at: usize) {
+        self.scroll = at;
+        self.clamp();
+        self.reading = (self.scroll != at).then_some(at);
+    }
+
+    /// The line being read: the top one, unless a jump landed lower.
+    fn reading_line(&self) -> usize {
+        self.reading.unwrap_or(self.scroll)
+    }
+
+    pub fn headings(&self) -> &[Heading] {
+        self.page.as_ref().map_or(&[], |p| &p.headings)
+    }
+
+    /// The headings the line being read is under, outermost first, as indices into `headings`.
+    pub fn section(&self) -> Vec<usize> {
+        let line = self.reading_line();
+        let headings = self.headings();
+        let mut path: Vec<usize> = Vec::new();
+        for (i, h) in headings
+            .iter()
+            .enumerate()
+            .take_while(|(_, h)| h.line <= line)
+        {
+            while path.last().is_some_and(|&p| headings[p].level >= h.level) {
+                path.pop();
+            }
+            path.push(i);
+        }
+        path
+    }
+
+    pub fn go_to_heading(&mut self, i: usize) {
+        if let Some(at) = self.headings().get(i).map(|h| h.line) {
+            self.scroll_to(at);
+        }
+    }
+
+    pub fn next_heading(&mut self) {
+        let line = self.reading_line();
+        if let Some(i) = self.headings().iter().position(|h| h.line > line) {
+            self.go_to_heading(i);
+        }
+    }
+
+    /// The heading of the section being read, or the one before it when it is at the top.
+    pub fn previous_heading(&mut self) {
+        let line = self.reading_line();
+        if let Some(i) = self.headings().iter().rposition(|h| h.line < line) {
+            self.go_to_heading(i);
+        }
     }
 
     fn links(&self) -> &[Link] {
@@ -207,8 +283,10 @@ impl Reader {
         self.selected = Some(i);
         if first < self.scroll {
             self.scroll = first;
+            self.reading = None;
         } else if last >= self.scroll + self.height {
             self.scroll = (last + 1).saturating_sub(self.height);
+            self.reading = None;
         }
         self.clamp();
     }
@@ -216,6 +294,7 @@ impl Reader {
     pub fn spot(&self) -> Spot {
         Spot {
             scroll: self.scroll,
+            reading: self.reading,
             selected: self.selected,
         }
     }
@@ -223,6 +302,7 @@ impl Reader {
     /// Back to a `spot` of this note; kept within the note once it is laid out.
     pub fn restore(&mut self, spot: Spot) {
         self.scroll = spot.scroll;
+        self.reading = spot.reading;
         self.selected = spot.selected;
         self.pending_jump = None;
     }
@@ -269,12 +349,12 @@ impl Reader {
                 .map(|(_, at)| *at),
             Jump::Heading(h) => {
                 let h = crate::vault::search_key(h.trim());
-                let key = |(text, _): &&(String, usize)| crate::vault::search_key(text);
+                let key = |x: &&Heading| crate::vault::search_key(&x.text);
                 let headings = || page.headings.iter();
                 headings()
                     .find(|x| key(x) == h)
                     .or_else(|| headings().find(|x| key(x).starts_with(&h)))
-                    .map(|(_, at)| *at)
+                    .map(|x| x.line)
             }
             Jump::Block(id) => page
                 .block_ids
@@ -283,8 +363,7 @@ impl Reader {
                 .map(|(_, at)| *at),
         };
         if let Some(at) = found {
-            self.scroll = at;
-            self.clamp();
+            self.scroll_to(at);
         }
     }
 }
@@ -374,7 +453,11 @@ impl Builder<'_> {
                         _ => " ",
                     })
                     .collect::<String>();
-                self.page.headings.push((text, at));
+                self.page.headings.push(Heading {
+                    level: *level,
+                    text,
+                    line: at,
+                });
                 self.wrap(toks, &mut g.nest(marker));
             }
             BlockKind::Paragraph(inlines) => {
@@ -897,6 +980,70 @@ mod tests {
         assert_eq!(lines(&r), ["│ ▸ note: Folded title"]);
         let r = reader("> [!tip] Open\n> shown body\n", 40, 5);
         assert_eq!(lines(&r), ["│ tip: Open", "│ shown body"]);
+    }
+
+    fn section(r: &Reader) -> Vec<&str> {
+        let headings = r.headings();
+        r.section()
+            .into_iter()
+            .map(|i| headings[i].text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn section_is_the_heading_path_of_the_top_line() {
+        let paras = "para\n\n".repeat(10);
+        let text = format!(
+            "# Top\n\n{paras}## One\n\n{paras}### Deep\n\n{paras}## Two\n\n{paras}Setext\n------\n\n{paras}"
+        );
+        let mut r = reader(&text, 40, 5);
+        assert_eq!(section(&r), ["Top"]);
+        let levels: Vec<u8> = r.headings().iter().map(|h| h.level).collect();
+        assert_eq!(levels, [1, 2, 3, 2, 2]);
+        r.jump(Jump::Heading("deep".into()));
+        assert_eq!(section(&r), ["Top", "One", "Deep"]);
+        r.scroll_by(3);
+        assert_eq!(section(&r), ["Top", "One", "Deep"], "still in the section");
+        r.next_heading();
+        assert_eq!(section(&r), ["Top", "Two"]);
+        r.next_heading();
+        assert_eq!(section(&r), ["Top", "Setext"]);
+        r.scroll_by(2);
+        r.previous_heading();
+        assert_eq!(
+            section(&r),
+            ["Top", "Setext"],
+            "first to this section's heading"
+        );
+        r.previous_heading();
+        assert_eq!(section(&r), ["Top", "Two"]);
+    }
+
+    #[test]
+    fn a_jump_near_the_end_reads_its_heading_until_scrolled() {
+        let mut r = reader("# A\n\ntext\n\n## B\n\ntext\n\n## C\n\ntext", 40, 20);
+        r.next_heading();
+        r.next_heading();
+        assert_eq!(r.scroll, 0, "everything fits, nothing scrolls");
+        assert_eq!(section(&r), ["A", "C"]);
+        let spot = r.spot();
+        r.top();
+        assert_eq!(section(&r), ["A"]);
+        r.restore(spot);
+        assert_eq!(section(&r), ["A", "C"]);
+        r.previous_heading();
+        assert_eq!(section(&r), ["A", "B"]);
+    }
+
+    #[test]
+    fn folded_callouts_hide_their_headings() {
+        let r = reader(
+            "# A\n\n> [!note]- Folded\n> ## Hidden\n\n> [!tip] Open\n> ## Shown\n",
+            40,
+            10,
+        );
+        let texts: Vec<&str> = r.headings().iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(texts, ["A", "Shown"]);
     }
 
     #[test]

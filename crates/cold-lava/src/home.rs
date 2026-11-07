@@ -368,6 +368,11 @@ enum Mode {
         scroll: usize,
     },
     Hints(Hints<HintTarget>),
+    /// The reader's headings, to jump to one; `sel` is a row of `outline_hits`.
+    Outline {
+        query: String,
+        sel: usize,
+    },
 }
 
 /// What a link hint leads to: one of the reader's links, or a backlink.
@@ -1224,6 +1229,10 @@ impl Home {
             self.switcher_key(k);
             return Ok(());
         }
+        if matches!(self.mode, Mode::Outline { .. }) {
+            self.outline_key(k);
+            return Ok(());
+        }
         if matches!(self.mode, Mode::Palette { .. }) {
             return self.palette_key(k, terminal);
         }
@@ -1306,7 +1315,8 @@ impl Home {
             | Mode::Search { .. }
             | Mode::Rename { .. }
             | Mode::ConfirmRename { .. }
-            | Mode::Hints(_) => return Ok(()),
+            | Mode::Hints(_)
+            | Mode::Outline { .. } => return Ok(()),
             Mode::Normal => {}
         }
 
@@ -1335,7 +1345,9 @@ impl Home {
             MenuCommand::Core(MenuAction::Read) => {
                 self.running_editor().is_some() && self.shown.is_some()
             }
-            MenuCommand::Core(MenuAction::Hints) => self.reader.is_some() && self.shown.is_some(),
+            MenuCommand::Core(MenuAction::Hints | MenuAction::Outline) => {
+                self.reader.is_some() && self.shown.is_some()
+            }
             MenuCommand::Core(MenuAction::History(HistoryAction::Back)) => {
                 self.history.peek_back().is_some()
             }
@@ -1359,6 +1371,8 @@ impl Home {
             ReaderAction::Bottom => r.bottom(),
             ReaderAction::NextLink => r.next_link(),
             ReaderAction::PreviousLink => r.previous_link(),
+            ReaderAction::NextHeading => r.next_heading(),
+            ReaderAction::PreviousHeading => r.previous_heading(),
             ReaderAction::Follow => self.follow_selected(),
             ReaderAction::Edit => {
                 let (Some(p), Some(root)) = (self.shown.clone(), self.root.clone()) else {
@@ -1457,6 +1471,7 @@ impl Home {
     fn run_action(&mut self, a: MenuAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match a {
             MenuAction::Hints => self.show_hints(),
+            MenuAction::Outline => self.open_outline(),
             // Shares pane.leave's default key, so that key goes back and forth; it never quits.
             MenuAction::FocusEditor => {
                 if self.pane.is_some() {
@@ -1747,6 +1762,91 @@ impl Home {
             _ => {}
         }
         self.mode = Mode::Switcher { query: q, sel: s };
+    }
+
+    /// The outline's rows, in the note's order: (heading, match).
+    fn outline_hits(&self, query: &str) -> Vec<(usize, crate::search::Fuzzy)> {
+        let headings = self.reader.as_ref().map_or(&[][..], Reader::headings);
+        let hits = headings.iter().enumerate();
+        hits.filter_map(|(i, h)| Some((i, crate::search::fuzzy(query, &h.text)?)))
+            .collect()
+    }
+
+    /// The row the outline selects for `query`: the heading being read, or the best match.
+    fn outline_start(&self, query: &str) -> usize {
+        if query.trim().is_empty() {
+            let section = self.reader.as_ref().map(Reader::section);
+            return section.and_then(|s| s.last().copied()).unwrap_or(0);
+        }
+        let hits = self.outline_hits(query);
+        let best = hits.iter().map(|(_, m)| m.score).max();
+        hits.iter()
+            .position(|(_, m)| Some(m.score) == best)
+            .unwrap_or(0)
+    }
+
+    fn open_outline(&mut self) {
+        if self.reader.as_ref().is_none_or(|r| r.headings().is_empty()) {
+            return self.flash("no headings in this note");
+        }
+        self.mode = Mode::Outline {
+            query: String::new(),
+            sel: self.outline_start(""),
+        };
+    }
+
+    fn outline_key(&mut self, k: KeyEvent) {
+        let Mode::Outline { query, sel } = &self.mode else {
+            return;
+        };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let (mut q, mut s) = (query.clone(), *sel);
+        let hits = self.outline_hits(&q);
+        let last = hits.len().saturating_sub(1);
+        match k.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(last),
+            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => s = (s + 1).min(last),
+            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
+            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
+            KeyCode::Backspace => {
+                q.pop();
+                s = self.outline_start(&q);
+            }
+            KeyCode::Char('u') if ctrl => {
+                q.clear();
+                s = self.outline_start(&q);
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                if let Some(&(i, _)) = hits.get(s) {
+                    self.jump_to_heading(i);
+                }
+                return;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                q.push(c);
+                s = self.outline_start(&q);
+            }
+            _ => {}
+        }
+        self.mode = Mode::Outline { query: q, sel: s };
+    }
+
+    /// Scrolls the reader to heading `i`; Back returns to where it was.
+    fn jump_to_heading(&mut self, i: usize) {
+        let from = self.here();
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
+        r.go_to_heading(i);
+        self.focus = Focus::Pane;
+        if let Some(from) = from.filter(|f| Some(f) != self.here().as_ref()) {
+            self.history.visit(from);
+        }
     }
 
     fn palette_hits(&self, query: &str) -> Vec<commands::Match<'_>> {
@@ -2475,6 +2575,9 @@ impl Home {
         if matches!(self.mode, Mode::Palette { .. }) {
             self.draw_palette(f, main);
         }
+        if matches!(self.mode, Mode::Outline { .. }) {
+            self.draw_outline(f, main);
+        }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
         }
@@ -2596,6 +2699,62 @@ impl Home {
         }
         if total == 0 {
             lines.push(Line::styled(" no notes match", Style::new().fg(MUTED)));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn draw_outline(&self, f: &mut Frame, area: Rect) {
+        let (Mode::Outline { query, sel }, Some(r)) = (&self.mode, &self.reader) else {
+            return;
+        };
+        let inner = picker_frame(f, area, " Outline ", " ↑↓ choose · ⏎ jump · Esc close ");
+        let headings = r.headings();
+        let hits = self.outline_hits(query);
+        let reading = r.section().last().copied();
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::new().fg(HIT)),
+                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+                Span::styled(
+                    format!("  {} of {} headings", hits.len(), headings.len()),
+                    Style::new().fg(MUTED),
+                ),
+            ]),
+            Line::raw(""),
+        ];
+        let top = headings.iter().map(|h| h.level).min().unwrap_or(1);
+        let rows = inner.height.saturating_sub(2) as usize;
+        let start = sel.saturating_sub(rows.saturating_sub(1));
+        for (row, (i, m)) in hits.iter().enumerate().skip(start).take(rows) {
+            let h = &headings[*i];
+            let selected = row == *sel;
+            let here = Some(*i) == reading;
+            let base = match (selected, here) {
+                (true, _) => Style::new().fg(Color::Black).bg(ACCENT),
+                (false, true) => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                (false, false) => Style::new().fg(NOTE),
+            };
+            let hl = if selected {
+                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
+            };
+            let indent = "  ".repeat((h.level - top) as usize);
+            let mark = if here { "▸ " } else { "  " };
+            let mut spans = vec![Span::styled(format!(" {indent}{mark}"), base)];
+            for (ci, ch) in h.text.chars().enumerate() {
+                let style = if m.positions.contains(&ci) { hl } else { base };
+                spans.push(Span::styled(ch.to_string(), style));
+            }
+            if selected {
+                let used: usize = spans.iter().map(Span::width).sum();
+                let pad = (inner.width as usize).saturating_sub(used);
+                spans.push(Span::styled(" ".repeat(pad), base));
+            }
+            lines.push(Line::from(spans));
+        }
+        if hits.is_empty() {
+            lines.push(Line::styled(" no headings match", Style::new().fg(MUTED)));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -2956,6 +3115,10 @@ impl Home {
     }
 
     fn draw_editor(&mut self, f: &mut Frame, area: Rect, inner: Rect) {
+        if let Some(r) = self.reader.as_mut() {
+            let ix = self.core.as_ref().map(|c| &c.index);
+            r.layout(inner.width, &|raw| resolves(ix, raw));
+        }
         let title = match &self.shown {
             Some(p) => {
                 let rel = self
@@ -2980,9 +3143,22 @@ impl Home {
                     (Some(c), false, false) => format!(" {c} · ⏎ edit · {read} read "),
                     (None, false, true) => String::new(),
                 };
+                let mut place = rel.trim_end_matches(".md").to_string();
+                if let Some(r) = &self.reader {
+                    place.push_str(&breadcrumb(r, p));
+                }
+                // Room inside the corners; the place keeps at least 24 columns before `who`.
+                let room = (area.width as usize).saturating_sub(4);
+                let who_width = Span::raw(&who).width();
+                let who = if room.saturating_sub(who_width) >= 24 {
+                    who
+                } else {
+                    String::new()
+                };
+                let place = cut_left(&place, room.saturating_sub(Span::raw(&who).width()));
                 Line::from(vec![
                     Span::styled(
-                        format!(" {} ", rel.trim_end_matches(".md")),
+                        format!(" {place} "),
                         Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(who, Style::new().fg(MUTED)),
@@ -2993,8 +3169,6 @@ impl Home {
         let block = self.block(title, Focus::Pane);
         f.render_widget(block, area);
         if let Some(r) = self.reader.as_mut() {
-            let ix = self.core.as_ref().map(|c| &c.index);
-            r.layout(inner.width, &|raw| resolves(ix, raw));
             r.render(inner, f.buffer_mut());
             return;
         }
@@ -3130,12 +3304,15 @@ impl Home {
             (Focus::Pane, _) if self.reader.is_some() => {
                 let k = |id| self.reader_keys.label(id);
                 format!(
-                    " reading · {} scroll · {} page · {} next link · {} follow · {} hints · {} edit · {} back to notes",
+                    " reading · {} scroll · {} page · {} next link · {} follow · {} hints · {} outline · {} {} headings · {} edit · {} back to notes",
                     k("reader.down"),
                     k("reader.page-down"),
                     k("reader.next-link"),
                     k("reader.follow"),
                     self.keys.label("note.hints"),
+                    self.keys.label("note.outline"),
+                    k("reader.next-heading"),
+                    k("reader.previous-heading"),
                     k("reader.edit"),
                     k("reader.back"),
                 )
@@ -3179,6 +3356,39 @@ impl Home {
 fn resolves(ix: Option<&crate::index::Index>, raw: &str) -> bool {
     let link = crate::index::split_link(raw);
     link.note.is_empty() || ix.is_some_and(|ix| ix.resolver.resolve(&link.note).is_some())
+}
+
+/// ` › Section › Subsection`: the headings the reader is under, without a first heading that
+/// only repeats the note's name.
+fn breadcrumb(r: &Reader, path: &Path) -> String {
+    let name = vault::search_key(&path.file_stem().unwrap_or_default().to_string_lossy());
+    let headings = r.headings();
+    let section = r.section();
+    let skip = section
+        .first()
+        .is_some_and(|&i| vault::search_key(&headings[i].text) == name);
+    let crumbs = section.iter().skip(skip as usize);
+    crumbs
+        .map(|&i| format!(" › {}", headings[i].text))
+        .collect()
+}
+
+/// `text` in at most `width` columns, cut from the left with `…`.
+fn cut_left(text: &str, width: usize) -> String {
+    if Span::raw(text).width() <= width {
+        return text.to_string();
+    }
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 1;
+    for c in text.chars().rev() {
+        let w = Span::raw(c.to_string()).width();
+        if used + w > width {
+            break;
+        }
+        used += w;
+        kept.push(c);
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
 }
 
 fn plural(n: usize, word: &str) -> String {
