@@ -94,26 +94,13 @@ pub fn ensure(root: &Path, date: NaiveDate) -> Result<PathBuf> {
             };
             let text = std::fs::read_to_string(root.join(&t))
                 .with_context(|| format!("reading the daily-note template {t}"))?;
-            fill_template(&text, date, &title, Local::now().time())
+            let now = date.and_time(Local::now().time());
+            crate::templates::fill(&text, &title, now, "YYYY-MM-DD", "HH:mm")
         }
         None => String::new(),
     };
     crate::write::create(&path, body.as_bytes())?;
     Ok(path)
-}
-
-/// Obsidian core Templates variables: {{title}}, {{date}}, {{time}}, {{date:FORMAT}}, {{time:FORMAT}}.
-pub fn fill_template(text: &str, date: NaiveDate, title: &str, now: NaiveTime) -> String {
-    let re = Regex::new(r"\{\{\s*(date|time|title)\s*(?::([^}]*))?\}\}").unwrap();
-    re.replace_all(text, |c: &regex::Captures| {
-        let fmt = c.get(2).map(|m| m.as_str().trim());
-        match &c[1] {
-            "title" => title.to_string(),
-            "date" => format_datetime(date, now, fmt.unwrap_or("YYYY-MM-DD")),
-            _ => format_datetime(date, now, fmt.unwrap_or("HH:mm")),
-        }
-    })
-    .into_owned()
 }
 
 // ---------- moment.js formats ----------
@@ -412,21 +399,6 @@ mod tests {
         assert_eq!(s.date_of("Journal/2026/01-09.md"), Some(d(2026, 1, 9)));
         assert_eq!(s.date_of("Other/2026/01-09.md"), None);
         assert_eq!(s.date_of("Journal/notes.md"), None);
-    }
-
-    #[test]
-    fn templates() {
-        let t = "# {{title}}\nCreated {{date}} at {{time}} ({{date:dddd}}, {{ time:HH:mm:ss }})";
-        let out = fill_template(
-            t,
-            d(2026, 11, 7),
-            "2026-11-07",
-            NaiveTime::from_hms_opt(9, 5, 0).unwrap(),
-        );
-        assert_eq!(
-            out,
-            "# 2026-11-07\nCreated 2026-11-07 at 09:05 (Saturday, 09:05:00)"
-        );
     }
 
     #[test]

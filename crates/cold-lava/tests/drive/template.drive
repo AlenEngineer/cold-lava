@@ -1,0 +1,38 @@
+# A new note from the Volcano template, next to Vesuvius: Tab picks the template under the name.
+# tests/drive.rs checks the file and that `cold-lava items` reads Etna as a volcano.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault 34 notes
+keys p vesuv
+wait-for Vesuvius
+keys enter
+wait-for Volcanoes/Vesuvius  reading
+keys n
+wait-for new note · Tab template · ⏎ create · Esc cancel
+expect │▸ No template
+expect │  Daily
+expect │  Volcano
+type Etna
+keys tab tab
+wait-for │▸ Volcano
+expect name: Etna
+screen
+keys shift+tab
+wait-for │▸ Daily
+keys tab
+keys enter
+wait-for created Volcanoes/Etna.md from Volcano
+wait-for Volcanoes/Etna  reading
+expect # Etna
+expect A volcano in ... Is it on the Ring of Fire, or over a Hotspot?
+expect-not {{
+expect example-vault 35 notes
+keys n
+wait-for new note · Tab template
+type Plain
+keys enter
+wait-for created Volcanoes/Plain.md
+expect-not Plain.md from
+keys q
+wait-for q quit
+keys q
+exits 0

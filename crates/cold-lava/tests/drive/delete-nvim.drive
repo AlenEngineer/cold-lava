@@ -1,6 +1,6 @@
 # Deleting the note open in Neovim: Neovim drops its buffer, so it can neither show the
 # deleted note nor write it back. tests/drive.rs checks the files.
-wait-for example-vault 33 notes
+wait-for example-vault 34 notes
 keys p lava
 wait-for Lava
 keys enter

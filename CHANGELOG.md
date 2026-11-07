@@ -76,9 +76,18 @@ change commands, keys and file formats; patch versions only fix things.
   20, this session). If something new is at that path, it offers a free name (`Lava 1.md`).
 - `cold-lava drive --home DIR` runs the program with DIR as its home and keeps it afterwards,
   so a test can look at what the program left there (the system trash, for one).
+- New notes from templates: if the vault has templates (the folder in Obsidian's core Templates
+  settings, `.obsidian/templates.json`, or Templater's templates folder), `n` lists them under the
+  name prompt, with "No template" first. `Tab` / `Shift-Tab` (or `↓`/`↑`) picks one. The note is
+  filled the way Obsidian fills it: `{{title}}`, `{{date}}`, `{{time}}` (in the settings' formats,
+  `YYYY-MM-DD` and `HH:mm` by default), `{{date:FORMAT}}` and `{{time:FORMAT}}` (moment.js).
+  Other `{{…}}` text and Templater's `<% … %>` are kept as written.
+- The example vault has a templates folder set up, with a new **Volcano** template.
 
 ### Changed
 
+- Notes in the templates folders aren't read as items: a template's tasks and typed blocks no
+  longer show up in the agenda or `cold-lava items`.
 - The status line shows only a few keys and `, keys` / `? help`; the reader's no longer runs
   past the edge of the screen.
 - `note.open-in-obsidian` moved from `o` to `O`: `o` opens the outline, which you use far more

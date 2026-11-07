@@ -11,6 +11,7 @@ use crate::daily;
 use crate::markdown::{self, Flavour, Syntax};
 use crate::matcher::{self, Matcher, Typed};
 use crate::tasks::{self, Task, TasksSettings, fnv};
+use crate::templates;
 use crate::types::{self, On, Types};
 use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
 use serde::de::{MapAccess, Visitor};
@@ -25,6 +26,8 @@ pub struct Settings {
     pub flavour: Flavour,
     pub tasks: TasksSettings,
     pub daily: daily::Settings,
+    /// Notes in the templates folders aren't read: a template's tasks and types aren't real ones.
+    pub templates: templates::Settings,
     /// The types its notes are matched against, and what was wrong with the rest.
     pub types: Types,
     pub matcher: Matcher,
@@ -36,6 +39,7 @@ impl Settings {
             markdown::flavour_for(root),
             TasksSettings::load(root),
             daily::Settings::load(root),
+            templates::Settings::load(root),
             types::for_vault(root),
         )
     }
@@ -44,6 +48,7 @@ impl Settings {
         flavour: Flavour,
         tasks: TasksSettings,
         daily: daily::Settings,
+        templates: templates::Settings,
         types: Types,
     ) -> Settings {
         let matcher = Matcher::new(&types, &flavour, &daily);
@@ -51,6 +56,7 @@ impl Settings {
             flavour,
             tasks,
             daily,
+            templates,
             types,
             matcher,
         }
@@ -211,6 +217,9 @@ struct Candidate {
 
 /// The items of the note at vault-relative `note` (with `.md`) whose text is `text`.
 pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
+    if s.templates.is_template(note) {
+        return Vec::new();
+    }
     let flavour = &s.flavour;
     let source = flavour.source(text);
     let src: &str = &source.text;
@@ -700,6 +709,7 @@ mod tests {
             Flavour::built_in(flavour).unwrap(),
             TasksSettings::load(nowhere),
             daily::Settings::load(nowhere),
+            templates::Settings::default(),
             Types::default(),
         )
     }

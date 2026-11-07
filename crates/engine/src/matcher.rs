@@ -878,6 +878,7 @@ mod tests {
             Flavour::built_in("obsidian").unwrap(),
             TasksSettings::load(nowhere),
             daily::Settings::load(nowhere),
+            crate::templates::Settings::default(),
             found,
         )
     }

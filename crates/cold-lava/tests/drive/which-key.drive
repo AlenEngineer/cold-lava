@@ -11,7 +11,7 @@ keys esc
 wait-gone keys · type one to run it
 keys p
 type lava
-wait-for 1 notes
+wait-for 2 notes
 keys enter
 wait-for Concepts/Lava  reading
 wait-for reading · j / ↓ scroll · Tab next link · Enter follow · , keys · ? help · Esc / q back to notes

@@ -3,7 +3,7 @@ env COLD_LAVA_EDITOR=none
 wait-for example-vault
 keys p
 type lava
-wait-for 1 notes
+wait-for 2 notes
 keys enter
 wait-for Concepts/Lava  reading
 wait-for reading · j
