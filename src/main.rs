@@ -42,7 +42,8 @@ Usage:
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
   cold-lava keys                      every command and its keys; checks config.toml
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
-                                      checking the screen as SCRIPT says (stdin if none)
+                                      checking the screen as SCRIPT says (stdin if none),
+                                      with an empty home unless --real-home
 
 Options:
   --braille            force braille rendering
@@ -349,13 +350,15 @@ fn run() -> Result<()> {
     }
 }
 
-/// `drive [SCRIPT] [-- ARGS…]`, parsed apart from `Args`: ARGS belong to the program under test.
+/// `drive [--real-home] [SCRIPT] [-- ARGS…]`, parsed apart from `Args`: ARGS belong to the program under test.
 fn drive() -> Result<()> {
     let mut words = std::env::args().skip(2);
     let mut ours: Vec<String> = words.by_ref().take_while(|w| w != "--").collect();
     let theirs: Vec<String> = words.collect();
+    let real_home = ours.iter().any(|w| w == "--real-home");
+    ours.retain(|w| w != "--real-home");
     if ours.len() > 1 {
-        anyhow::bail!("usage: cold-lava drive [SCRIPT] [-- ARGS…]");
+        anyhow::bail!("usage: cold-lava drive [--real-home] [SCRIPT] [-- ARGS…]");
     }
     let (name, src) = match ours.pop() {
         Some(path) => {
@@ -371,7 +374,13 @@ fn drive() -> Result<()> {
     };
     let script =
         drive::parse(&src).map_err(|e| anyhow::anyhow!("{name}:{}: {}", e.line, e.message))?;
-    if !drive::run(&name, &script, &std::env::current_exe()?, &theirs)? {
+    if !drive::run(
+        &name,
+        &script,
+        &std::env::current_exe()?,
+        &theirs,
+        real_home,
+    )? {
         std::process::exit(1);
     }
     Ok(())
