@@ -12,6 +12,7 @@ pub mod paths;
 pub mod rename;
 pub mod search;
 pub mod tasks;
+pub mod templates;
 pub mod trash;
 pub mod types;
 pub mod vault;
