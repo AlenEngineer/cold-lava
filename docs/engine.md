@@ -4,39 +4,44 @@ Status: **overview**. Parts are built, parts are designed in [extensions.md](ext
 parts are still to be designed; each layer says which.
 
 cold-lava is two things: an **engine** that understands a vault of Markdown notes, and
-**frontends** that show it (today one, the terminal UI). Extensions sit on the engine, not on
-the UI. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
+**frontends** that show it (today one, the terminal UI). Extensions reach them through two
+gateways: the **notes gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
 plans in detail.
 
 ```
- you ─ keys, mouse ──────────────────────────────────────────────────────┐
-                                                                         ▼
- ┌─ FRONTEND: VIEWS (drawn by the frontend) ─────────────────────────────────┐
- │ reader · lists and tables · scenes (graph, whiteboard) · panes (Neovim)   │
- │ type styling: a date as a chip, a status as a mark                        │
- └────────────▲─────────────────────────────────────┬────────────────────────┘
-              │ what to show                        │ commands (keys → ids)
- ┌─ EXTENSIONS (any language, own process) ─────────▼────────────────────────┐
- │ agenda · todo aggregator · kanban · graph · habit tracker …               │
- │ they query, subscribe, edit and describe views; they never draw or        │
- │ see keys                                                                  │
- └────────────▲─────────────────────────────────────┬────────────────────────┘
-              │ items, events                       │ items/query · items/edit
- ┌─ PROTOCOL ── JSON-RPC over a transport (stdio, socket, in-process) ───────┐
- └────────────▲─────────────────────────────────────┬────────────────────────┘
- ┌─ ENGINE ───┴─────────────────────────────────────▼────────────────────────┐
- │ 4  ITEMS     typed, with ids and revs: task{status, due}, book{author} …  │
- │ 3  TYPES     definitions over blocks: on list-item, match "[ ] ",         │
- │              field due = date (built in, yours, extensions')              │
- │ 2  BLOCKS    paragraph · heading · list item · table row · code · quote   │
- │              inlines: text · link · tag · code span (the primitives)      │
- │ 1  FLAVOUR   which syntax exists: commonmark · github · obsidian · yours  │
- │ 0  VAULT     files · one watcher · index (links, backlinks) · search ·    │
- │              safe writes (refused if the file changed since it was read)  │
- └───────────────────────────────────────────────────────────────────────────┘
-                                   ▲ ▼
-                   your .md files, also edited by Obsidian, Neovim, git
+ you ─ keys, mouse ─────────────────────────────────────────┐
+                                                            ▼
+┌───────────────────────────────────────────────────────────▼────────────────────┐
+│ FRONTEND · the terminal UI today; a GUI or a language server could be others   │
+│ draws views its own way: braille or pixels, a real canvas in a GUI             │
+│ owns keys, mouse and frame rate                                                │
+└─────────────▲─────────────────────────────────────────────┬────────────────────┘
+ VIEW GATEWAY │ views: markdown · list · table              │ selection, commands
+              │ · scene · pane                              │
+┌─────────────┴─────────────────────────────────────────────▼────────────────────┐
+│ EXTENSIONS · any language, own process                                         │
+│ agenda · todo aggregator · kanban · graph · habit tracker …                    │
+│ an extension may use one gateway, the other, or both                           │
+└─────────────▲─────────────────────────────────────────────┬────────────────────┘
+NOTES GATEWAY │ items, events                               │ items/query · items/edit
+┌─────────────┴─────────────────────────────────────────────▼────────────────────┐
+│ ENGINE                                                                         │
+│ 4  ITEMS     typed, with ids and revs: task{status, due}, book{author} …       │
+│ 3  TYPES     definitions over blocks: on list-item, match "[ ] ",              │
+│              field due = date (built in, yours, extensions')                   │
+│ 2  BLOCKS    paragraph · heading · list item · table row · code · quote        │
+│              inlines: text · link · tag · code span (the primitives)           │
+│ 1  FLAVOUR   which syntax exists: commonmark · github · obsidian · yours       │
+│ 0  VAULT     files · one watcher · index (links, backlinks) · search ·         │
+│              safe writes (refused if the file changed since it was read)       │
+└────────────────────────────────────────────────────────────────────────────────┘
+                                       ▲ ▼
+               your .md files, also edited by Obsidian, Neovim, git
 ```
+
+Both gateways are JSON-RPC messages over a transport (stdio, a socket, or in-process for
+built-in extensions), but they are separate protocols: the engine never sees the view gateway,
+and the frontend never parses a note.
 
 ## The layers
 
@@ -64,23 +69,44 @@ else's, and you or an extension can add more in a few lines, with no code. Defin
 declarative (patterns, fields, value types, how to show them), so matching stays fast and a bad
 one can't break anything.
 
-**4. Items** *(designed in extensions.md, "Notes as data"; tasks are being built)*. What the
+**4. Items** *(tasks, list items, headings and block ids are built: `items.rs`,
+`cold-lava items`; queries, events and edits are designed in extensions.md, "Notes as data")*. What the
 types find: typed values with an `id` that survives ticking, re-dating and lines added above,
 and a `rev` for the item's own lines. Extensions query them, subscribe to changes, and edit one
 item; the engine changes only that item's lines, through the safe write path, and refuses if
 that item changed meanwhile.
 
-**Protocol** *(in-process half built: `ext/mod.rs`)*. JSON-RPC 2.0, modelled on the language
-server protocol, over a transport chosen per extension. Built-in extensions use the same
-messages in-process.
-
 **Extensions** *(the Neovim editor is the first)*. Programs in any language that do things
-with the engine: aggregate, show, edit. They register commands and describe views; they never
-draw or see keystrokes, so a broken one can't trap you.
+with notes and show them: aggregate, edit, draw a board. They register commands; they never see
+keystrokes or draw pixels, so a broken one can't trap you.
 
-**Views** *(the reader and panes are built; lists, tables and scenes are designed)*. Drawn by
-the frontend: the reader, declarative lists and tables, scenes of nodes and edges (the graph and
-the whiteboard), and terminal programs in a pane. Types can say how their values look.
+## Two gateways
+
+**The notes gateway** *(in-process half built: `ext/mod.rs`)* is the engine's protocol: items,
+types, queries, edits and events. It knows nothing about screens. An extension that only
+aggregates and ticks tasks, a script, or a language server needs nothing else.
+
+**The view gateway** is the frontend's: what an extension wants shown, and what you did to it.
+It knows nothing about vaults; it speaks in rows, cells, nodes, edges, text and selection. Views
+are **declarative**: an extension says *what* to show, never *how* to draw it. So an extension in
+any language can be graphical (a kanban board is a few dozen lines of Python sending JSON), every
+frontend draws the same view its own way, and drawing, keys and frame rate stay with the
+frontend. Neovim's UI protocol works this way, and so, at the extreme, does HTML.
+
+The vocabulary stays small, and grows only when a real extension needs a new word:
+
+| View | For | Status |
+| --- | --- | --- |
+| **markdown** | text with the reader's styling | built (the reader) |
+| **list / tree** | the agenda, a todo aggregator, outlines | designed |
+| **table** | a type's items as rows: books, people, projects | to design |
+| **scene** | nodes and edges: the graph, the whiteboard, mind maps | designed |
+| **pane** | the escape hatch: any terminal program (a GUI's could be a web view) | built |
+
+Types can say how their values look (a date as a chip, a status as a mark), and every view draws
+that the same way. A general UI toolkit for every language is a project of its own; this is
+deliberately not one. If the view gateway proves general, the clean boundary lets it become its
+own project later.
 
 ## One line, all the way up and back
 
