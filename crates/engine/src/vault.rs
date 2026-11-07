@@ -217,7 +217,7 @@ fn is_attachment(target: &str) -> bool {
     }
 }
 
-fn clean_target(t: &str) -> Option<String> {
+pub(crate) fn clean_target(t: &str) -> Option<String> {
     let t = t.trim().replace("%20", " ");
     let t = t.strip_suffix(".md").unwrap_or(&t).trim().to_string();
     if t.is_empty() || is_attachment(&t) || t.contains("://") {

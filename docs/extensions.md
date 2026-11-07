@@ -83,7 +83,8 @@ flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals 
 
 ## Notes as data
 
-*(design; items for tasks, lists, headings and blocks exist: `crates/engine/src/items.rs`)*
+*(design; items for tasks, lists, headings, blocks and typed notes and blocks exist:
+`crates/engine/src/items.rs`)*
 
 You write notes, not data. But Markdown already has types, and Obsidian's community has settled
 how to read them: a checkbox is a task, with dates written the Tasks plugin's way
@@ -130,8 +131,9 @@ then a query and a view, not a parser of its own.
 ## Types
 
 *(design; definitions load, are checked and are listed: `crates/engine/src/types.rs`,
-`cold-lava types`. Nothing matches them against notes yet. "Loading, as built" below says where
-the loader settled what this design left open.)*
+`cold-lava types`; they match notes, table rows, list items, headings and paragraphs:
+`crates/engine/src/matcher.rs`. "Loading, as built" and "Matching, as built" below say where the
+code settled what this design left open.)*
 
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
 row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
@@ -261,8 +263,58 @@ style.minutes = { badge = true, icon = "⏱" }
   `.cold-lava/types.toml` must start with `version = 1`, and a missing or unknown version skips
   the file. A later origin replacing an earlier type is a note, not an error. `actions` must be
   native actions the engine has (`tasks.toggle`).
-- **Not yet:** item counts and timings in `cold-lava types`, and `--check` for conflicts; they
-  come with matching.
+- **Not yet:** timings in `cold-lava types`, and `--check` for conflicts.
+
+### Matching, as built
+
+- **One pass.** `items::extract` reads a note once with pulldown-cmark. When types are loaded,
+  the pass also collects the blocks some type reads (no table rows are collected when no type is
+  on `table-row`, and so on), and tags and links only when a shape needs them. After the pass the
+  note is gated once (folder, frontmatter properties, tags), and each collected block is checked
+  only against the shapes on its primitive that passed. No `RegexSet` prefilter yet; that is for
+  the performance step. `matcher.rs` holds the matching, `frontmatter.rs` the line-by-line
+  frontmatter reader.
+- **Primitives so far:** `note`, `table-row`, `list-item`, `heading` and `paragraph` (a
+  paragraph outside list items). Shapes on `code`, `quote` and `inline` load but match nothing.
+  Tasks stay native and win: a type on `list-item` never takes a task, so an `idea` that
+  `extends = "task"` can't match a task yet; that changes when the task becomes a definition.
+- **What each primitive's text is:** a list item's first line after its marker (without a
+  trailing `^id`), a heading's words, a paragraph's text, a whole table row's line. A note's
+  `match`, `capture` and `inline` read the text after the frontmatter. `rest` is that text with
+  every other source's match taken out (a marker with its value, a whole `[due:: …]`, a flag's
+  glyph, the whole `match` when a capture is read), spaces collapsed.
+- **`where.tag`** on a note shape is the note's tags (frontmatter and body); on a block shape it
+  is the block's own tags, not the note's: `[types.idea] where.tag = ["idea"]` means a list item
+  tagged `#idea`. Tags compare without case, and a nested tag counts. `where.inside` names the
+  note's type (or a base of it), `quote`, `list-item`, or the kind or type of the list item it
+  is nested in. `children` and `info` read nothing yet (`[]` and `null`).
+- **Values.** A field is a list when one of its sources gives a list (`inlines`, `children`,
+  `section = "path"`); a list property fills it item by item. One value written where one is
+  wanted, but several found (a list property on a text field), is `null`. Links are their
+  targets (`[[Lava|hot rock]]` is `Lava`), tags lose their `#`, enums map written forms to names
+  and anything else to `other`, durations are minutes, dates are `YYYY-MM-DD`; a `datetime` with
+  a `format` doesn't parse yet. A value that doesn't parse is `null` and counted, and `cold-lava
+  types` reports the count.
+- **Spans.** Every value keeps the byte range it was read from in the file as written, through
+  `%%comments%%` (`Flavour::source` maps offsets back); spans are not on the wire. Read-only
+  sources (`note`, `section`, links, a note's tags) have none.
+- **Ids.** A typed item's key is its shape's `key` fields; without one, a row's first cell, a
+  list item's or paragraph's text, a heading's words, or nothing for a note. Its id is the note,
+  its type and that key under its parent's, as for tasks, so a row keeps its id when other rows
+  change and when its own non-key cells do. A note item's lines are its frontmatter (line 1 when
+  it has none), so its `rev` changes with the frontmatter and not with the body. Items inside a
+  typed note keep `parent: null`; the note item is not their parent.
+- **Conflicts** go as designed, with "origin" as vault, then `config.toml`, then an extension,
+  and the type's name as the last tie-break. The more specific shape is the one with more
+  conditions: each header column and property counts, as do `tag`, `folder`, `section`,
+  `language`, `inside` and a `match`.
+- **Settings.** `items::Settings` carries the loaded types and the compiled matcher, cached per
+  vault. The frontend hands over extensions' and `config.toml`'s types once at startup
+  (`types::set_configured`), and `types::for_vault` adds the vault's own file.
+- **Cost,** measured on a generated 3,000-note vault (tags, a table, tasks and list items in
+  every note) with four types (note, table-row, list-item, heading) finding 31,000 items:
+  matching adds about 0.1 ms per note to `cold-lava items` on a loaded laptop. The perf step
+  owns the `RegexSet` and fewer per-item allocations.
 
 ## File types
 
@@ -517,7 +569,8 @@ after its call returns, so it never holds the menu's state.
    5. Types, in small steps: the loader and `cold-lava types` (with
       `example-vault/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows)
       *(done: `types::load`, definitions' JSON pinned for `types/list`)*;
-      primitives with spans; typed blocks; inline types; `set-field` with the read-back check;
+      primitives with spans; typed blocks *(done for notes, table rows, list items, headings and
+      paragraphs: `matcher.rs`, `cold-lava items VAULT TYPE`)*; inline types; `set-field` with the read-back check;
       the task as a definition, first in shadow mode beside today's parser, then switched over;
       looks in the reader; the table view.
    6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and

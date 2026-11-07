@@ -63,15 +63,16 @@ set of types: text, number, date, datetime, link, tag, true/false, list. These a
 bytes and integers.
 
 **3. Types** *(designed in extensions.md, "Types"; definitions load and are checked:
-`types.rs`, `cold-lava types`)*. Definitions of meaning over blocks: a task is a list item that
+`types.rs`, `cold-lava types`; they match notes, table rows, list items, headings and
+paragraphs: `matcher.rs`)*. Definitions of meaning over blocks: a task is a list item that
 starts with `[ ]`, whose `📅 2026-11-12` is a date field `due`; a `book` is a table row whose
 header has `Author`. Built-in types (task, property, heading) are definitions like anyone
 else's, and you or an extension can add more in a few lines, with no code. Definitions are
 declarative (patterns, fields, value types, how to show them), so matching stays fast and a bad
 one can't break anything.
 
-**4. Items** *(tasks, list items, headings and block ids are built: `items.rs`,
-`cold-lava items`; queries, events and edits are designed in extensions.md, "Notes as data")*. What the
+**4. Items** *(tasks, list items, headings, block ids and typed notes and blocks are built:
+`items.rs`, `cold-lava items`; queries, events and edits are designed in extensions.md, "Notes as data")*. What the
 types find: typed values with an `id` that survives ticking, re-dating and lines added above,
 and a `rev` for the item's own lines. Extensions query them, subscribe to changes, and edit one
 item; the engine changes only that item's lines, through the safe write path, and refuses if

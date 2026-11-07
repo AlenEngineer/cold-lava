@@ -1,6 +1,6 @@
 //! Type definitions: `[types.NAME]` tables that give blocks a meaning, declared in TOML by you, a
 //! vault or an extension (docs/extensions.md, "Types"). This module reads, checks and lists
-//! them; nothing matches them against notes yet.
+//! them; `matcher.rs` matches them against notes.
 //!
 //! A `Definition` is one type, normalised: its schema (`fields` and their value types) and its
 //! shapes (`from`), each saying which primitive it is found on and where each field is read. It
@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use indexmap::IndexMap;
 use regex::{Regex, RegexBuilder};
@@ -716,6 +717,7 @@ pub struct Type {
 }
 
 /// Definitions from one origin, read but not yet checked.
+#[derive(Clone)]
 pub struct Layer {
     origin: Origin,
     definitions: Vec<(String, Result<Definition, String>)>,
@@ -825,6 +827,20 @@ pub struct Types {
     pub errors: Vec<String>,
     /// Things worth knowing that aren't mistakes, such as a type replacing an earlier one.
     pub notes: Vec<String>,
+}
+
+static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
+
+/// The layers every vault gets before its own: extensions' types and config.toml's, which the
+/// frontend reads and sets once at startup.
+pub fn set_configured(layers: Vec<Layer>) {
+    let _ = CONFIGURED.set(layers);
+}
+
+/// The types a vault's notes are read with: the configured layers, then the vault's own file.
+pub fn for_vault(root: &Path) -> Types {
+    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+    load(configured.into_iter().chain(Layer::vault(root)))
 }
 
 /// Loads layers in order: built in, extensions, config.toml, the vault. A later definition of a
@@ -1148,7 +1164,7 @@ fn is_name(s: &str, dots: bool) -> bool {
 
 /// A `match` or `pattern` with its placeholders and settings filled in, compiled under the size
 /// limit. Settings stand for an empty group here: their values come from the vault.
-fn compile(pattern: &str) -> Result<Regex, String> {
+pub(crate) fn compile(pattern: &str) -> Result<Regex, String> {
     let expanded = expand(pattern)?;
     RegexBuilder::new(&expanded)
         .size_limit(REGEX_LIMIT)

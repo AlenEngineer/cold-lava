@@ -20,6 +20,7 @@ use cold_lava_engine::{
 use anyhow::Result;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
+use std::collections::HashMap;
 use std::io::{Write, stdout};
 use std::path::{Path, PathBuf};
 
@@ -32,12 +33,14 @@ Usage:
   cold-lava board [FILE.canvas|DIR]   whiteboard (Obsidian Canvas); no file = picker
   cold-lava daily VAULT_DIR [DATE]    open a day's daily note (created from your template)
   cold-lava agenda VAULT_DIR          dated tasks and daily notes, for other programs
-  cold-lava items VAULT_DIR KIND      the vault's tasks, lists, headings or blocks, one per line
+  cold-lava items VAULT_DIR KIND      the vault's tasks, lists, headings, blocks or a type's
+                                      items, one per line
   cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
   cold-lava keys                      every command and its keys; checks config.toml
-  cold-lava types [VAULT_DIR]         every type: where it comes from, its shapes and fields;
+  cold-lava types [VAULT_DIR]         every type: where it comes from, what it found, its
+                                      shapes and fields;
                                       checks [types] in config.toml and .cold-lava/types.toml
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
@@ -146,6 +149,14 @@ fn run() -> Result<()> {
     let json = args.has("json");
     let registry = ext::Registry::builtin();
     config::load(registry.commands());
+    let mut layers: Vec<types::Layer> = registry
+        .manifests()
+        .map(|m| types::Layer::extension(&m.name, &m.types))
+        .collect();
+    if let Some(path) = config::path() {
+        layers.push(types::Layer::config(&path, config::get().types.clone()));
+    }
+    types::set_configured(layers);
 
     match args.word(0) {
         Some("keys") => {
@@ -178,19 +189,12 @@ fn run() -> Result<()> {
                 Some(dir) => PathBuf::from(dir),
                 None => vault::find_vault_root(Path::new(".")),
             };
-            let mut layers: Vec<types::Layer> = registry
-                .manifests()
-                .map(|m| types::Layer::extension(&m.name, &m.types))
-                .collect();
-            if let Some(path) = config::path() {
-                layers.push(types::Layer::config(&path, config::get().types.clone()));
-            }
-            layers.extend(types::Layer::vault(&root));
-            let found = types::load(layers);
+            let found = types::for_vault(&root);
             if json {
                 println!("{}", serde_json::to_string_pretty(&found)?);
             } else {
-                print_types(&found);
+                let counts = vault::scan(&root).ok().map(|v| type_counts(&v));
+                print_types(&found, counts.as_ref());
                 if !found.errors.is_empty() {
                     eprintln!("errors:");
                     for e in &found.errors {
@@ -243,20 +247,26 @@ fn run() -> Result<()> {
         Some("items") => {
             let (Some(root), Some(kind)) = (args.word(1), args.word(2)) else {
                 anyhow::bail!(
-                    "usage: cold-lava items VAULT_DIR KIND [--json]\nKIND is one of: {}",
+                    "usage: cold-lava items VAULT_DIR KIND [--json]\nKIND is one of: {} or a type",
                     items::KINDS.join(", ")
                 );
             };
-            if !items::KINDS.contains(&kind) {
+            let vault = vault::scan(Path::new(root))?;
+            let settings = vault.item_settings();
+            if !items::KINDS.contains(&kind) && !settings.matcher.names().any(|n| n == kind) {
+                let kinds: Vec<&str> = items::KINDS
+                    .iter()
+                    .copied()
+                    .chain(settings.matcher.names())
+                    .collect();
                 anyhow::bail!(
                     "no item kind called {kind}; KIND is one of: {}",
-                    items::KINDS.join(", ")
+                    kinds.join(", ")
                 );
             }
-            let vault = vault::scan(Path::new(root))?;
             let mut out = std::io::stdout().lock();
             for note in &vault.notes {
-                for item in vault.items(note).iter().filter(|i| i.data.kind() == kind) {
+                for item in vault.items(note).iter().filter(|i| i.data.answers_to(kind)) {
                     let written = if json {
                         writeln!(out, "{}", serde_json::to_string(item)?)
                     } else {
@@ -460,11 +470,20 @@ fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
 
 /// `cold-lava types`: each type with where it comes from, then each shape with the fields it
 /// reads, where, and whether a value can be written back there.
-fn print_types(found: &types::Types) {
+fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usize)>>) {
     println!("{}  built in, read natively", found.native.join(", "));
     for t in &found.types {
         let d = &t.definition;
         println!("\n{}  {}", t.name, t.origin);
+        if let Some(counts) = counts {
+            let (n, unparsed) = counts.get(&t.name).copied().unwrap_or_default();
+            let mut line = format!("  found {n} item{}", if n == 1 { "" } else { "s" });
+            if unparsed > 0 {
+                let s = if unparsed == 1 { " didn't" } else { "s didn't" };
+                line += &format!(" · {unparsed} value{s} parse");
+            }
+            println!("{line}");
+        }
         let mut about = Vec::new();
         if let Some(base) = &d.extends {
             about.push(format!("extends {base}"));
@@ -544,6 +563,21 @@ fn print_types(found: &types::Types) {
             println!("  {n}");
         }
     }
+}
+
+/// Items found and values that didn't parse, by type: an item counts for its own type only.
+fn type_counts(vault: &vault::Vault) -> HashMap<String, (usize, usize)> {
+    let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
+    for note in &vault.notes {
+        for item in vault.items(note) {
+            if let items::Data::Typed(t) = &item.data {
+                let c = counts.entry(t.kind.clone()).or_default();
+                c.0 += 1;
+                c.1 += t.unparsed;
+            }
+        }
+    }
+    counts
 }
 
 fn value_label(v: &types::Value) -> String {
@@ -668,6 +702,25 @@ fn item_line(item: &items::Item) -> String {
         items::Data::List { text } => format!("- {text}"),
         items::Data::Heading { level, text } => format!("{} {text}", "#".repeat(*level as usize)),
         items::Data::Block => format!("^{}", item.block_id.as_deref().unwrap_or_default()),
+        items::Data::Typed(t) => {
+            let fields: Vec<String> = t
+                .fields
+                .iter()
+                .map(|(name, value)| match value {
+                    serde_json::Value::String(s) => format!("{name} {s}"),
+                    serde_json::Value::Array(a) => {
+                        let list: Vec<String> = a
+                            .iter()
+                            .map(|v| v.as_str().map_or_else(|| v.to_string(), String::from))
+                            .collect();
+                        format!("{name} [{}]", list.join(", "))
+                    }
+                    serde_json::Value::Null => format!("{name} -"),
+                    v => format!("{name} {v}"),
+                })
+                .collect();
+            format!("{}  {}", t.kind, fields.join(" · "))
+        }
     }
 }
 

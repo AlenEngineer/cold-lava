@@ -276,8 +276,8 @@ cold-lava daily ~/vault today --path          # create if needed, print the path
 cold-lava task toggle ~/vault/Bills.md:12 --id 3f2a9c81b7d0 --json
 ```
 
-Every task, list item, heading and block with a `^id` is an **item**, and `cold-lava items` lists
-the items of one kind:
+Every task, list item, heading and block with a `^id` is an **item**, and so is every note or
+block a [type](#types) matches. `cold-lava items` lists the items of one kind:
 
 ```bash
 cold-lava items ~/vault task                  # Journal/2026-11-05.md:9  [ ] Look up … due 2026-11-12
@@ -318,11 +318,31 @@ fields.country = { property = "country" }
 fields.elevation = { property = "elevation_m", type = "number" }
 ```
 
-`cold-lava types ~/vault` lists every type: where it comes from, the shapes it is read from, each
-field with its value type, where it's read and whether cold-lava could write it back, and its
-looks. Mistakes are listed one per line with the file and the type; the broken type is left out,
-the rest load, and the exit code is 1. `--json` prints the same as JSON. For now types are only
-loaded and checked: finding them in notes comes next. The full design is in
+Every note and block a type matches is an item of that kind, so `cold-lava items` lists them
+with their fields:
+
+```bash
+cold-lava items example-vault volcano
+# Volcanoes/Krakatoa.md:1  volcano  name Krakatoa · country Indonesia · elevation - · tags [volcano/caldera, eruption]
+cold-lava items example-vault eruption --json
+# {"id":"…","note":"Concepts/Volcanic Explosivity Index.md","line":11,…,"kind":"eruption","vei":4,"example":"[[Eyjafjallajökull]] 2010","volcanoes":["Eyjafjallajökull"]}
+```
+
+Every field of the type is there, `null` (or `[]` for a list) when the note doesn't have it or
+its value doesn't read as the field's type: `elevation_m: high` is a `null` elevation, not an
+error. A tag condition counts nested tags (`#volcano/caldera` is a `volcano`). Notes, table rows,
+list items, headings and paragraphs can be typed so far. A note or block has at most one type:
+the one with the higher `priority`, else a type that `extends` the other, else the shape with
+more conditions, else the vault's over `config.toml`'s over an extension's, else the first name.
+A typed block is listed under its type instead of `list` or `heading`, and an item whose type
+`extends` another is listed under both. Tasks stay tasks for now: a type on list items never
+takes a task.
+
+`cold-lava types ~/vault` lists every type: where it comes from, how many items it found (and
+how many values didn't parse), the shapes it is read from, each field with its value type, where
+it's read and whether cold-lava could write it back, and its looks. Mistakes are listed one per
+line with the file and the type; the broken type is left out, the rest load, and the exit code
+is 1. `--json` prints the definitions as JSON. The full design is in
 [docs/extensions.md](docs/extensions.md#types).
 
 ## What it understands
