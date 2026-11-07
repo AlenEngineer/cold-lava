@@ -157,6 +157,11 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- Markdown links with percent-encoded names, the way Obsidian writes non-ASCII names
+  (`[x](P%C4%81hoehoe.md)`), now lead to their note or attachment: in backlinks, the reader,
+  the peek and following links. Before, only `%20` was decoded. Renaming, moving and merging now
+  update these links too, and keep how they were written: a link that encoded non-ASCII
+  characters gets the new name encoded, one that only encoded spaces gets only spaces encoded.
 - Opening a note at a heading, block or line (a link, a search result, a bookmark) in a note
   short enough not to scroll no longer loses where it landed: the reader clamped the jump to a
   page height it didn't know yet, so it fell back to the top and the breadcrumb lost the heading.
