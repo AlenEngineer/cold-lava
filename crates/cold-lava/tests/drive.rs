@@ -28,6 +28,15 @@ fn sandbox(name: &str) -> PathBuf {
     dir
 }
 
+/// Where the system trash keeps deleted files, under the program's home.
+fn system_trash(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join(".Trash")
+    } else {
+        home.join(".local/share/Trash/files")
+    }
+}
+
 fn drive(script: &str, dir: &Path) -> Output {
     drive_with(script, dir, &[])
 }
@@ -61,18 +70,20 @@ fn deletes_a_note_to_the_system_trash_and_undoes_it() {
     );
     assert!(!vault.join("Concepts/Lava.md").exists());
     assert!(!vault.join(".trash").exists(), "not the vault's own trash");
-    let trash = home.join(".local/share/Trash");
-    let mut trashed = files_ending(&trash.join("files"), "");
+    let files = system_trash(&home);
+    let mut trashed = files_ending(&files, "");
     trashed.sort();
     assert_eq!(
         trashed,
-        [
-            trash.join("files/Lava.md"),
-            trash.join("files/Welcome.canvas")
-        ]
+        [files.join("Lava.md"), files.join("Welcome.canvas")]
     );
     assert!(!vault.join("Welcome.canvas").exists());
-    assert_eq!(std::fs::read(trash.join("files/Lava.md")).unwrap(), lava);
+    assert_eq!(std::fs::read(files.join("Lava.md")).unwrap(), lava);
+    if cfg!(target_os = "macos") {
+        let _ = std::fs::remove_dir_all(dir);
+        return;
+    }
+    let trash = home.join(".local/share/Trash");
     let info = std::fs::read_to_string(trash.join("info/Lava.md.trashinfo")).unwrap();
     assert!(
         info.starts_with("[Trash Info]\nPath=/")
@@ -274,6 +285,6 @@ fn deleting_the_note_open_in_neovim_doesnt_bring_it_back() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!dir.join("example-vault/Concepts/Lava.md").exists());
-    assert!(home.join(".local/share/Trash/files/Lava.md").exists());
+    assert!(system_trash(&home).join("Lava.md").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
