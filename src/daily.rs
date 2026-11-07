@@ -4,7 +4,9 @@
 use anyhow::{Context, Result};
 use chrono::{Datelike, Local, NaiveDate, NaiveTime, Timelike, Weekday};
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub struct Settings {
     /// Folder relative to the vault root ("" = root).
@@ -250,8 +252,22 @@ pub fn format_datetime(date: NaiveDate, time: NaiveTime, fmt: &str) -> String {
     s
 }
 
-/// Parse `s` strictly with a moment.js format (it must format back to exactly `s`).
-pub fn parse_date(s: &str, fmt: &str) -> Option<NaiveDate> {
+/// The regex that reads dates written in `fmt`, and what each of its groups holds. Compiled once
+/// per format: every note's path is checked against the daily-note format.
+fn pattern(fmt: &str) -> Option<Arc<(Regex, Vec<Tok>)>> {
+    type Cache = Mutex<HashMap<String, Option<Arc<(Regex, Vec<Tok>)>>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry(fmt.to_string())
+        .or_insert_with(|| compile(fmt).map(Arc::new))
+        .clone()
+}
+
+fn compile(fmt: &str) -> Option<(Regex, Vec<Tok>)> {
     let toks = tokenize(fmt);
     let mut re = String::from("^");
     let mut groups = Vec::new();
@@ -279,7 +295,14 @@ pub fn parse_date(s: &str, fmt: &str) -> Option<NaiveDate> {
         re += &pat;
     }
     re.push('$');
-    let caps = Regex::new(&re).ok()?.captures(s)?;
+    Some((Regex::new(&re).ok()?, groups))
+}
+
+/// Parse `s` strictly with a moment.js format (it must format back to exactly `s`).
+pub fn parse_date(s: &str, fmt: &str) -> Option<NaiveDate> {
+    let pattern = pattern(fmt)?;
+    let (re, groups) = &*pattern;
+    let caps = re.captures(s)?;
     let (mut y, mut m, mut d) = (None, None, None);
     for (i, t) in groups.iter().enumerate() {
         let v = caps.get(i + 1)?.as_str();
