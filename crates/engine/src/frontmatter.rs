@@ -177,8 +177,33 @@ pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, 
     if !is_tag(tag) {
         return Err(format!("{tag:?} isn't a tag"));
     }
+    edit_list(text, &["tags", "tag"], tag, edit)
+}
+
+/// The same for any list property: `item` added to or removed from the first of `keys` the
+/// frontmatter has (`keys[0]` is made when it has none). Items are matched ignoring case and a
+/// leading `#`; one that YAML would misread is written quoted.
+pub fn edit_list(
+    text: &str,
+    keys: &[&str],
+    item: &str,
+    edit: TagEdit,
+) -> Result<Option<String>, String> {
+    let item = item.trim();
+    let tags = keys.iter().any(|k| matches!(*k, "tags" | "tag"));
+    let fits = |s: &str| match tags {
+        true => is_tag(s.trim_start_matches('#')),
+        false => !needs_quotes(s),
+    };
+    let written = match needs_quotes(item) {
+        true => serde_json::to_string(item).unwrap_or_default(),
+        false => item.to_string(),
+    };
+    let new = written.as_str();
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let is = |w: &Written| w.text.trim_start_matches('#').to_lowercase() == tag.to_lowercase();
+    let is = |w: &Written| {
+        w.text.trim_start_matches('#').to_lowercase() == item.trim_start_matches('#').to_lowercase()
+    };
     let add = edit == TagEdit::Add;
     let Some(fm) = read(text) else {
         if lines(text)
@@ -187,26 +212,28 @@ pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, 
         {
             return Err("its frontmatter has no closing ---".into());
         }
-        return Ok(add.then(|| format!("---{nl}tags:{nl}  - {tag}{nl}---{nl}{text}")));
+        let key = keys[0];
+        return Ok(add.then(|| format!("---{nl}{key}:{nl}  - {new}{nl}---{nl}{text}")));
     };
     let fm_lines: Vec<(usize, &str)> = lines(text).take(fm.end_line).collect();
-    let key = ["tags", "tag"].into_iter().find(|k| fm.get(k).is_some());
+    let key = keys.iter().copied().find(|k| fm.get(k).is_some());
     let Some((key, value)) = key.and_then(|k| Some((k, fm.get(k)?))) else {
         let (close, _) = fm_lines[fm.end_line - 1];
-        return Ok(add.then(|| splice(text, close..close, &format!("tags:{nl}  - {tag}{nl}"))));
+        let key = keys[0];
+        return Ok(add.then(|| splice(text, close..close, &format!("{key}:{nl}  - {new}{nl}"))));
     };
     let (at, line) = *fm_lines
         .iter()
         .skip(1)
         .find(|(_, l)| top_level_key(l) == Some(key))
-        .ok_or("its tags key can't be found")?;
+        .ok_or(format!("its {key} key can't be found"))?;
     let line_end = at + line.len() + text[at + line.len()..].find('\n').map_or(0, |i| i + 1);
     let edited = match value {
-        Value::Nested => return Err("its tags aren't a plain list".into()),
-        Value::Empty if add => splice(text, line_end..line_end, &format!("  - {tag}{nl}")),
+        Value::Nested => return Err(format!("its {key} aren't a plain list")),
+        Value::Empty if add => splice(text, line_end..line_end, &format!("  - {new}{nl}")),
         Value::Empty => return Ok(None),
-        Value::Scalar(w) if !is_tag(w.text.trim_start_matches('#')) => {
-            return Err("its tags are one line of text, not a list".into());
+        Value::Scalar(w) if !fits(w.text) => {
+            return Err(format!("its {key} are one line of text, not a list"));
         }
         Value::Scalar(w) => {
             let quoted =
@@ -214,7 +241,7 @@ pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, 
             let whole = w.span.start - quoted as usize..w.span.end + quoted as usize;
             match (add, is(w)) {
                 (true, true) | (false, false) => return Ok(None),
-                (true, false) => splice(text, whole, &format!("[{}, {tag}]", w.text)),
+                (true, false) => splice(text, whole, &format!("[{}, {new}]", w.text)),
                 (false, true) => splice(text, whole, "[]"),
             }
         }
@@ -223,10 +250,13 @@ pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, 
                 .iter()
                 .any(|w| w.text.contains(['[', ']', '{', '}', '"', '\'']))
             {
-                return Err("its tags list has quotes or brackets inside".into());
+                return Err(format!("its {key} list has quotes or brackets inside"));
             }
             let open = at + line.find('[').unwrap_or(0) + 1;
-            let close = at + line.rfind(']').ok_or("its tags list isn't closed")?;
+            let close = at
+                + line
+                    .rfind(']')
+                    .ok_or(format!("its {key} list isn't closed"))?;
             let parts = flow_parts(text, open..close);
             match (
                 add,
@@ -235,8 +265,8 @@ pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, 
                     .position(|p| is(&scalar(&text[p.clone()], p.start))),
             ) {
                 (true, Some(_)) | (false, None) => return Ok(None),
-                (true, None) if items.is_empty() => splice(text, open..close, tag),
-                (true, None) => splice(text, close..close, &format!(", {tag}")),
+                (true, None) if items.is_empty() => splice(text, open..close, new),
+                (true, None) => splice(text, close..close, &format!(", {new}")),
                 (false, Some(0)) if parts.len() > 1 => {
                     let next = &text[parts[1].clone()];
                     let to = parts[1].start + next.len() - next.trim_start().len();
@@ -249,10 +279,10 @@ pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, 
         Value::List(items) => match (add, items.iter().find(|w| is(w))) {
             (true, Some(_)) | (false, None) => return Ok(None),
             (true, None) => {
-                let last = items.last().ok_or("its tags list is empty")?;
+                let last = items.last().ok_or(format!("its {key} list is empty"))?;
                 let (start, end) = line_around(text, last.span.start);
                 let prefix = text[start..last.span.start].trim_end_matches(['"', '\'']);
-                splice(text, end..end, &format!("{prefix}{tag}{nl}"))
+                splice(text, end..end, &format!("{prefix}{new}{nl}"))
             }
             (false, Some(w)) => {
                 let (start, end) = line_around(text, w.span.start);
@@ -260,9 +290,11 @@ pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, 
             }
         },
     };
-    // A tag listed twice goes entirely.
+    // An item listed twice goes entirely.
     if !add {
-        return Ok(Some(edit_tag(&edited, tag, edit)?.unwrap_or(edited)));
+        return Ok(Some(
+            edit_list(&edited, keys, item, edit)?.unwrap_or(edited),
+        ));
     }
     Ok(Some(edited))
 }
@@ -274,6 +306,35 @@ pub fn is_tag(tag: &str) -> bool {
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'))
         && !tag.chars().all(|c| c.is_ascii_digit())
+}
+
+/// The bytes of `text` that hold top-level property `key`: its line and the indented or `- `
+/// lines under it.
+pub fn property_lines(text: &str, key: &str) -> Option<Range<usize>> {
+    let fm = read(text)?;
+    let mut found: Option<Range<usize>> = None;
+    let mut at = 0;
+    for line in text.split_inclusive('\n').take(fm.end_line - 1) {
+        let start = at;
+        at += line.len();
+        match &mut found {
+            None if start > 0 && top_level_key(line.trim_end()) == Some(key) => {
+                found = Some(start..at)
+            }
+            None => {}
+            Some(r) if line.starts_with([' ', '\t', '-']) => r.end = at,
+            Some(_) => break,
+        }
+    }
+    found
+}
+
+/// Whether YAML would read `s` as something other than this plain text, so it must be quoted.
+fn needs_quotes(s: &str) -> bool {
+    s.is_empty()
+        || s != s.trim()
+        || s.starts_with(['-', '?', '!', '&', '*', '|', '>', '%', '@', '`', '#'])
+        || s.contains([',', '[', ']', '{', '}', '"', '\'', ':', '#'])
 }
 
 /// The key of a frontmatter line that isn't indented or a list item.

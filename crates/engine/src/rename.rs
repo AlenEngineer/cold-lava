@@ -272,7 +272,13 @@ impl Files {
     }
 
     fn new(rels: Vec<String>) -> Files {
-        let mut order: Vec<usize> = (0..rels.len()).collect();
+        Files::without(rels, None)
+    }
+
+    /// The files at `rels`, but links can't find the one at `gone` (it still has an index and a
+    /// path, so a link that led to it is written as that path).
+    pub(crate) fn without(rels: Vec<String>, gone: Option<usize>) -> Files {
+        let mut order: Vec<usize> = (0..rels.len()).filter(|&i| Some(i) != gone).collect();
         order.sort_by(|&a, &b| link_key(&rels[a]).cmp(link_key(&rels[b])));
         let (mut by_path, mut by_name, mut names) = (
             HashMap::new(),
@@ -349,9 +355,9 @@ fn patterns() -> &'static Patterns {
 }
 
 /// The vault before and after the move: same files (same indices), new paths for some.
-struct Rewriter {
-    before: Files,
-    after: Files,
+pub(crate) struct Rewriter {
+    pub(crate) before: Files,
+    pub(crate) after: Files,
 }
 
 impl Rewriter {
@@ -646,7 +652,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
 }
 
 /// Obsidian's bookmarks of what moves, pointed at where it goes (Obsidian does the same).
-fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileEdit>> {
+pub(crate) fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileEdit>> {
     let mut b = Bookmarks::read(root)?;
     let Some(old_text) = b.read_text().map(str::to_string) else {
         return Ok(None);
@@ -677,7 +683,7 @@ fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileEdit>> {
 }
 
 /// Every note and canvas whose links change.
-fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
+pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
     let mut edits = Vec::new();
     for (i, n) in ix.vault.notes.iter().enumerate() {
         let (dir_then, dir_now) = (dir_of(&rw.before.rels[i]), dir_of(&rw.after.rels[i]));

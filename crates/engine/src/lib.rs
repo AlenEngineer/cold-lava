@@ -9,6 +9,7 @@ pub mod index;
 pub mod items;
 pub mod markdown;
 pub mod matcher;
+pub mod merge;
 pub mod paths;
 pub mod rename;
 pub mod search;
