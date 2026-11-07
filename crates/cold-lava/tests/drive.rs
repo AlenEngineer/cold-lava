@@ -425,6 +425,24 @@ fn opens_a_note_follows_a_link_and_quits() {
 }
 
 #[test]
+fn draws_typed_values_with_their_looks() {
+    let dir = sandbox("looks");
+    std::fs::write(
+        dir.join("example-vault/Inbox/Today.md"),
+        "- [ ] Ring the observatory ⏫\n- [x] Read about [[Lava]] ✅ 2026-11-05\n",
+    )
+    .unwrap();
+    let out = drive("looks.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn peeks_at_a_link_without_going_there() {
     let dir = sandbox("peek");
     let out = drive("peek.drive", &dir);

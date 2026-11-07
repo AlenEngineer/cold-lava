@@ -17,12 +17,13 @@ use crate::ext::{
 use crate::frontmatter::{self, TagEdit};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
+use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
 use crate::reader::{Reader, Spot};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
-use crate::{board, templates, term, vault, whichkey};
+use crate::{board, items, templates, term, vault, whichkey};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -1279,7 +1280,7 @@ impl Home {
         }
         if self.registry.editor().is_none() || self.reader.is_some() {
             if !same || self.reader.is_none() {
-                self.reader = Some(Reader::new(self.read_shown()));
+                self.reader = Some(self.shown_reader());
             }
             if let (Some(r), Some(j)) = (self.reader.as_mut(), jump.clone()) {
                 r.jump(j);
@@ -1363,23 +1364,44 @@ impl Home {
     }
 
     /// The shown note, parsed.
-    fn read_shown(&self) -> markdown::Doc {
+    fn read_shown(&self) -> (markdown::Doc, Looks) {
         match &self.shown {
             Some(p) => self.read_note(p),
-            None => markdown::parse("", &self.flavour),
+            None => (markdown::parse("", &self.flavour), Looks::default()),
         }
     }
 
-    fn read_note(&self, path: &Path) -> markdown::Doc {
+    fn shown_reader(&self) -> Reader {
+        let (doc, looks) = self.read_shown();
+        Reader::new(doc, looks)
+    }
+
+    /// The note parsed, with its typed values' looks: from the items the core has for it when
+    /// they were read from this text, else read now.
+    fn read_note(&self, path: &Path) -> (markdown::Doc, Looks) {
         let text = std::fs::read_to_string(path).unwrap_or_default();
-        markdown::parse(&text, &self.flavour)
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return (markdown::parse(&text, &self.flavour), Looks::default());
+        };
+        let vault = &ix.vault;
+        let settings = vault.item_settings();
+        let read;
+        let items = match ix.by_path(path).map(|i| &vault.notes[i]) {
+            Some(note) if note.text == text => vault.items(note),
+            _ => {
+                let rel = path.strip_prefix(&vault.root).unwrap_or(path);
+                read = items::extract(&rel.to_string_lossy().replace('\\', "/"), &text, settings);
+                &read
+            }
+        };
+        looks::read(&text, &self.flavour, items, &settings.types)
     }
 
     /// Read the shown note again, keeping the reader's place.
     fn reload_reader(&mut self) {
-        let doc = self.read_shown();
+        let (doc, looks) = self.read_shown();
         if let Some(r) = self.reader.as_mut() {
-            r.set_doc(doc);
+            r.set_doc(doc, looks);
         }
     }
 
@@ -1808,7 +1830,8 @@ impl Home {
     }
 
     fn peek_note(&self, path: PathBuf, jump: Option<Jump>) -> Peek {
-        let mut reader = Reader::new(self.read_note(&path));
+        let (doc, looks) = self.read_note(&path);
+        let mut reader = Reader::new(doc, looks);
         if let Some(j) = jump {
             reader.jump(j);
         }
@@ -2009,7 +2032,7 @@ impl Home {
             MenuAction::Read => {
                 if self.reader.take().is_none() {
                     self.save_editor();
-                    self.reader = Some(Reader::new(self.read_shown()));
+                    self.reader = Some(self.shown_reader());
                 }
             }
         }

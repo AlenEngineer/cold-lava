@@ -192,6 +192,26 @@ impl Source<'_> {
         };
         start..end
     }
+
+    /// Where `file` of the file is in this text; `None` when either end is in removed text.
+    pub fn text_range(&self, file: Range<usize>) -> Option<Range<usize>> {
+        let at = |offset: usize| {
+            if self.pieces.is_empty() {
+                return Some(offset);
+            }
+            let k = self
+                .pieces
+                .partition_point(|p| p.1 <= offset)
+                .checked_sub(1)?;
+            let (here, from) = self.pieces[k];
+            let mapped = here + offset - from;
+            match self.pieces.get(k + 1) {
+                Some(&(next, _)) if mapped > next => None,
+                _ => Some(mapped),
+            }
+        };
+        Some(at(file.start)?..at(file.end)?)
+    }
 }
 
 static CONFIGURED: OnceLock<Option<Flavour>> = OnceLock::new();
@@ -217,6 +237,10 @@ pub fn flavour_for(vault_root: &Path) -> Flavour {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Doc {
     pub blocks: Vec<Block>,
+    /// For each mark `parse_marked` was given: whether it couldn't be placed exactly (it cuts
+    /// through text the source doesn't show as written, a tag or code, or a comment), so a
+    /// look on it is skipped rather than drawn in the wrong place.
+    pub broken: Vec<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -308,11 +332,35 @@ pub enum Inline {
     BlockId(String),
     SoftBreak,
     HardBreak,
+    /// Where the text of mark `id` (`parse_marked`) starts (`open`) or ends. A mark cut by a
+    /// container (a link it starts outside of) is opened and closed once on each side.
+    Mark {
+        id: usize,
+        open: bool,
+    },
 }
 
 pub fn parse(text: &str, flavour: &Flavour) -> Doc {
+    parse_marked(text, flavour, &[])
+}
+
+/// `parse`, with each of `marks` (byte ranges of the file) shown as `Inline::Mark`s around the
+/// text it covers.
+pub fn parse_marked(text: &str, flavour: &Flavour, marks: &[Range<usize>]) -> Doc {
     let options = flavour.options();
-    let text = flavour.source(text).text;
+    let source = flavour.source(text);
+    let mut broken = vec![false; marks.len()];
+    let marks: Vec<Range<usize>> = marks
+        .iter()
+        .zip(&mut broken)
+        .map(|(m, broken)| {
+            source.text_range(m.clone()).unwrap_or_else(|| {
+                *broken = true;
+                0..0
+            })
+        })
+        .collect();
+    let text = source.text;
     let mut reader = Reader {
         src: &text,
         flavour,
@@ -321,9 +369,13 @@ pub fn parse(text: &str, flavour: &Flavour) -> Doc {
             .peekable(),
         newlines: text.match_indices('\n').map(|(i, _)| i).collect(),
         tasks: Vec::new(),
+        marks,
+        broken,
+        within: None,
     };
     Doc {
         blocks: reader.blocks(),
+        broken: reader.broken,
     }
 }
 
@@ -337,6 +389,21 @@ struct Reader<'a> {
     /// One slot per open list item, for its task marker. Nested items open after the outer
     /// item's marker, so the marker always belongs to the last slot.
     tasks: Vec<Option<bool>>,
+    /// Marks to place, in this text's offsets (empty when broken already).
+    marks: Vec<Range<usize>>,
+    broken: Vec<bool>,
+    /// The inline container being read (a link, emphasis), whose marks it doesn't place when
+    /// they cover all of it: the level around it does.
+    within: Option<Range<usize>>,
+}
+
+/// What an inline is to a mark: text as written can be cut, a container holds its own marks,
+/// anything else is placed whole or not at all.
+#[derive(Clone, Copy, PartialEq)]
+enum Piece {
+    Written,
+    Container,
+    Atom,
 }
 
 fn is_inline(tag: &Tag) -> bool {
@@ -456,7 +523,9 @@ impl Reader<'_> {
         if self.flavour.has(S::BlockIds) {
             block_id(&mut inlines);
         }
-        let mut content = inlines.iter().filter(|i| !is_blank(i));
+        let mut content = inlines
+            .iter()
+            .filter(|i| !is_blank(i) && !matches!(i, Inline::Mark { .. }));
         let only = match (content.next(), content.next()) {
             (None, _) => return None,
             (Some(only), None) => Some(only),
@@ -528,6 +597,8 @@ impl Reader<'_> {
     /// list item's text) reading stops before the next block or the item's end.
     fn inlines(&mut self, explicit: bool) -> Vec<Inline> {
         let mut out = Vec::new();
+        // Where each of `out` is in the source, and what it is to a mark.
+        let mut at: Vec<(Range<usize>, Piece)> = Vec::new();
         loop {
             match self.events.peek() {
                 None => break,
@@ -544,6 +615,8 @@ impl Reader<'_> {
             let Some((event, range)) = self.events.next() else {
                 break;
             };
+            let before = out.len();
+            let container = matches!(event, Event::Start(_));
             match event {
                 Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => {
                     out.push(Inline::Text(t.into_string()))
@@ -562,11 +635,108 @@ impl Reader<'_> {
                         *slot = Some(done);
                     }
                 }
-                Event::Start(tag) => self.inline(tag, range, &mut out),
+                Event::Start(tag) => {
+                    let outer = self.within.replace(range.clone());
+                    self.inline(tag, range.clone(), &mut out);
+                    self.within = outer;
+                }
                 Event::End(_) | Event::Rule => unreachable!("handled above"),
             }
+            for inline in &out[before..] {
+                let piece = match inline {
+                    Inline::Text(t) if self.src.get(range.clone()) == Some(t.as_str()) => {
+                        Piece::Written
+                    }
+                    _ if container => Piece::Container,
+                    _ => Piece::Atom,
+                };
+                at.push((range.clone(), piece));
+            }
         }
+        let out = self.place_marks(out, at);
         extras(out, self.flavour)
+    }
+
+    /// Puts `Inline::Mark`s around the inlines each mark covers: text as written is cut at a
+    /// mark's ends, a container it covers only in part keeps the marks its own inlines got, and
+    /// anything else it covers only in part breaks the mark.
+    fn place_marks(&mut self, out: Vec<Inline>, at: Vec<(Range<usize>, Piece)>) -> Vec<Inline> {
+        let (Some(first), Some(last)) = (at.first(), at.last()) else {
+            return out;
+        };
+        let span = first.0.start..last.0.end.max(first.0.end);
+        let here: Vec<usize> = (0..self.marks.len())
+            .filter(|&i| {
+                let m = &self.marks[i];
+                let around = self
+                    .within
+                    .as_ref()
+                    .is_some_and(|w| m.start <= w.start && w.end <= m.end);
+                !self.broken[i] && !around && m.start < span.end && span.start < m.end
+            })
+            .collect();
+        if here.is_empty() {
+            return out;
+        }
+        let tags = self.flavour.has(S::Tags);
+        let mut pieces: Vec<(Inline, Range<usize>, Piece)> = Vec::with_capacity(out.len());
+        for (inline, (range, piece)) in out.into_iter().zip(at) {
+            let Inline::Text(text) = &inline else {
+                pieces.push((inline, range, piece));
+                continue;
+            };
+            if piece != Piece::Written {
+                pieces.push((inline, range, piece));
+                continue;
+            }
+            let mut cuts = BTreeSet::new();
+            for &i in &here {
+                for edge in [self.marks[i].start, self.marks[i].end] {
+                    if range.start < edge && edge < range.end {
+                        if safe_cut(text, edge - range.start, tags) {
+                            cuts.insert(edge - range.start);
+                        } else {
+                            self.broken[i] = true;
+                        }
+                    }
+                }
+            }
+            let mut from = 0;
+            for cut in cuts.into_iter().chain([text.len()]) {
+                pieces.push((
+                    Inline::Text(text[from..cut].to_string()),
+                    range.start + from..range.start + cut,
+                    Piece::Written,
+                ));
+                from = cut;
+            }
+        }
+        let mut placed = Vec::with_capacity(pieces.len() + 2 * here.len());
+        let mut open: Vec<usize> = Vec::new();
+        for (inline, range, piece) in pieces {
+            let mut covers = Vec::new();
+            for &i in &here {
+                let m = &self.marks[i];
+                if m.start <= range.start && range.end <= m.end {
+                    covers.push(i);
+                } else if m.start < range.end && range.start < m.end && piece != Piece::Container {
+                    self.broken[i] = true;
+                }
+            }
+            for &id in open.iter().filter(|i| !covers.contains(i)) {
+                placed.push(Inline::Mark { id, open: false });
+            }
+            open.retain(|i| covers.contains(i));
+            for id in covers {
+                if !open.contains(&id) {
+                    placed.push(Inline::Mark { id, open: true });
+                    open.push(id);
+                }
+            }
+            placed.push(inline);
+        }
+        placed.extend(open.into_iter().map(|id| Inline::Mark { id, open: false }));
+        placed
     }
 
     fn inline(&mut self, tag: Tag, range: Range<usize>, out: &mut Vec<Inline>) {
@@ -714,6 +884,27 @@ fn split_tokens(text: &str, tokens: &[Token]) -> Vec<Inline> {
     out
 }
 
+/// Whether `text` can be cut at `at` and still read the same: not inside a character, a `==`
+/// or a tag, and no new tag where the second part starts.
+fn safe_cut(text: &str, at: usize, tags: bool) -> bool {
+    let tag_spans = |text: &str, shift: usize| {
+        let mut found = Vec::new();
+        let mut from = 0;
+        while let Some((range, _)) = tag(text, from) {
+            from = range.end;
+            found.push(range.start + shift..range.end + shift);
+        }
+        found
+    };
+    text.is_char_boundary(at)
+        && !(text[..at].ends_with('=') && text[at..].starts_with('='))
+        && (!tags || {
+            let mut parts = tag_spans(&text[..at], 0);
+            parts.extend(tag_spans(&text[at..], at));
+            parts == tag_spans(text, 0)
+        })
+}
+
 fn tag(text: &str, from: usize) -> Option<(Range<usize>, Inline)> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(TAG).unwrap());
@@ -801,6 +992,17 @@ pub fn block_id_pattern() -> &'static Regex {
 
 /// A trailing `^id` (after a space, or alone on the paragraph's last line) names the block.
 fn block_id(inlines: &mut Vec<Inline>) {
+    let marks = inlines
+        .iter()
+        .rev()
+        .take_while(|i| matches!(i, Inline::Mark { .. }))
+        .count();
+    let tail = inlines.split_off(inlines.len() - marks);
+    trailing_block_id(inlines);
+    inlines.extend(tail);
+}
+
+fn trailing_block_id(inlines: &mut Vec<Inline>) {
     let Some(Inline::Text(text)) = inlines.last_mut() else {
         return;
     };
@@ -827,7 +1029,10 @@ fn callout(mut blocks: Vec<Block>) -> BlockKind {
     else {
         return BlockKind::Quote(blocks);
     };
-    let Some(Inline::Text(first)) = inlines.first_mut() else {
+    let Some(Inline::Text(first)) = inlines
+        .iter_mut()
+        .find(|i| !matches!(i, Inline::Mark { .. }))
+    else {
         return BlockKind::Quote(blocks);
     };
     let Some(c) = re.captures(first) else {
@@ -1245,6 +1450,51 @@ mod tests {
             [t("A claim"), I::BlockId("c2".into())]
         );
         assert_eq!(para(github("A claim. ^c")), [t("A claim. ^c")]);
+    }
+
+    #[test]
+    fn marks_wrap_the_text_they_cover() {
+        let m = |id, open| I::Mark { id, open };
+        let marked = |text: &str, marks: &[Range<usize>]| {
+            let doc = parse_marked(text, &Flavour::built_in("obsidian").unwrap(), marks);
+            (para(doc.blocks), doc.broken)
+        };
+        // File offsets map through a comment the reader never shows.
+        let text = "a %%note%% VEI 6 b\n";
+        let at = text.find("VEI").unwrap();
+        assert_eq!(
+            marked(text, std::slice::from_ref(&(at..at + 5))),
+            (
+                vec![t("a  "), m(0, true), t("VEI 6"), m(0, false), t(" b")],
+                vec![false]
+            )
+        );
+        // A whole link is marked around it, not again inside; a mark inside its text, inside.
+        let text = "see [[Lava]] now";
+        let link = |text: Vec<Inline>| I::Link {
+            target: "Lava".into(),
+            kind: LinkKind::Wiki,
+            text,
+        };
+        assert_eq!(
+            marked(text, &[4..12, 6..8]),
+            (
+                vec![
+                    t("see "),
+                    m(0, true),
+                    link(vec![m(1, true), t("La"), m(1, false), t("va")]),
+                    m(0, false),
+                    t(" now"),
+                ],
+                vec![false, false]
+            )
+        );
+        // Cutting through an entity, which isn't shown as written, can't be placed.
+        assert_eq!(marked("a &amp; b", std::slice::from_ref(&(3..5))).1, [true]);
+        assert_eq!(
+            marked("a &amp; b", std::slice::from_ref(&(2..7))).1,
+            [false]
+        );
     }
 
     #[test]

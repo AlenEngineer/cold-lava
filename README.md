@@ -78,7 +78,9 @@ the menu. Press `v` to switch the pane to the **reader** and back.
 
 **The reader** shows the note rendered, in the vault's [Markdown flavour](#markdown-flavour):
 headings, lists and tasks, quotes and callouts (folded ones show only their title), code blocks,
-tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden. Links are
+tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden; typed values are
+drawn with their [looks](#types) (a VEI on an orange chip, done tasks struck through), and the
+note's typed frontmatter fields go on a line above it. Links are
 underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the
 reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the next link and
 `Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser,
@@ -560,6 +562,27 @@ row's `key`, a list item's text), the item gets a new id, which `item set` print
 typed items too: `item set FILE ID status " "` unticks through the checkbox, `status_type done`
 writes the vault's done symbol, and dates go through their `📅` or `[due:: …]`; only `task
 toggle` adds done dates and recurrences.
+
+**Looks.** A type says how its values look, with `style.FIELD`, and the reader draws them:
+
+```toml
+style.elevation = { badge = true, icon = "▲" }            # a chip: " ▲ 2549 "
+style.vei = { badge = true, colour = "orange", whole = true }
+style.status_type = { by-value = { done = { dim = true, strike = true, whole = true } } }
+```
+
+`colour` (or `color`) is one of `red`, `orange`, `yellow`, `green`, `cyan`, `purple`, `accent`
+and `muted`; `badge` draws the value as a chip; `icon` puts a glyph before it; `dim`, `strike`
+and `bold` do what they say; `hide` takes the written value out (with a `badge` or `icon`, the
+chip shows the value in its place); `link` makes the value a link to follow with `Tab` and
+`Enter`; `whole` styles the whole item (the task's line, the whole `VEI 6`) instead of the
+field's own text; `by-value` gives an enum's values their own looks. Values in the frontmatter
+aren't in the text, so the note's typed fields with a look go on a line above it (`▲ 2549` on a
+volcano). The built-in task fades and strikes through done and cancelled tasks and puts its
+priority glyph on a chip coloured by urgency. A look is drawn only where the value can be found
+in the rendered text exactly; one that would cut through a tag, an `&amp;` or a `%%comment%%` is
+left out rather than drawn in the wrong place. With `NO_COLOR` set, chips are drawn in reverse
+video and colours are left out.
 
 `cold-lava types ~/vault` lists every type: where it comes from, how many items it found (and
 how many values didn't parse), the shapes it is read from, each field with its value type, where

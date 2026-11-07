@@ -18,6 +18,9 @@ task  built in
     tags         tag                                  inlines tags                                                            read-only
     links        link                                 inlines links                                                           read-only
     daily_note   date                                 note date                                                               read-only
+  looks
+    status_type  done: dim, strike, whole, cancelled: dim, strike, whole
+    priority     badge, highest: red, high: orange, medium: yellow, low: cyan, lowest: muted
 
 volcano  vault example-vault/.cold-lava/types.toml
   found 9 items
@@ -43,4 +46,4 @@ vei  vault example-vault/.cold-lava/types.toml
   on inline · match '\bVEI (?<n>\d)\b'
     vei  number  capture n  writable
   looks
-    vei  orange, badge
+    vei  orange, badge, whole

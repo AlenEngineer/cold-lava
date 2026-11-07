@@ -30,4 +30,5 @@ fields = { vei = { column = "VEI" }, example = { column = "Example" }, volcanoes
 on = "inline"
 match = '\bVEI (?<n>\d)\b'
 fields.vei = { capture = "n", type = "number" }
-style.vei = { badge = true, colour = "orange" }
+# The chip covers the whole match, "VEI 6", not only the digit.
+style.vei = { badge = true, colour = "orange", whole = true }

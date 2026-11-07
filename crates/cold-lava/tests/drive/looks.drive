@@ -1,0 +1,33 @@
+# Typed values drawn with their types' looks: a volcano's elevation (frontmatter) on the
+# properties line, a VEI in prose and in a table as chips, a task's priority as a chip.
+# tests/drive.rs adds Inbox/Today.md first. Colours can't be read here; chips' padding and
+# icons can.
+size 160x30
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p
+type st. helens
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Mount St. Helens  reading
+wait-for ▲ 2549
+expect VEI 5  eruption (see
+screen
+keys p
+type explosivity
+wait-for 1 notes
+keys enter
+wait-for Index (VEI)  reading
+expect ┃ 6  │ Krakatoa 1883
+expect-not ▲
+screen
+keys p
+type today
+wait-for 1 notes
+keys enter
+wait-for Inbox/Today  reading
+wait-for Ring the observatory  ⏫
+expect Read about Lava ✅ 2026-11-05
+screen
+keys esc q
+exits 0

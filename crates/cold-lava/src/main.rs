@@ -11,6 +11,7 @@ mod hints;
 mod history;
 mod home;
 mod kitty;
+mod looks;
 mod reader;
 mod scene;
 mod term;

@@ -4,7 +4,9 @@
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
 use crate::commands::{self, BoardAction, HistoryAction, Key, KeyHint, Keymap};
 use crate::history::{Exit, Nav};
+use crate::looks;
 use crate::term;
+use crate::types::Colour;
 use anyhow::{Context as _, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{
@@ -111,12 +113,12 @@ fn new_id() -> String {
 fn canvas_color(c: &Option<String>) -> Option<Color> {
     let c = c.as_deref()?;
     Some(match c {
-        "1" => Color::Rgb(233, 73, 73),
-        "2" => Color::Rgb(233, 151, 63),
-        "3" => Color::Rgb(224, 222, 113),
-        "4" => Color::Rgb(68, 207, 110),
-        "5" => Color::Rgb(83, 223, 221),
-        "6" => Color::Rgb(168, 130, 255),
+        "1" => looks::colour(Colour::Red),
+        "2" => looks::colour(Colour::Orange),
+        "3" => looks::colour(Colour::Yellow),
+        "4" => looks::colour(Colour::Green),
+        "5" => looks::colour(Colour::Cyan),
+        "6" => looks::colour(Colour::Purple),
         hex if hex.starts_with('#') && hex.len() == 7 => {
             let v = u32::from_str_radix(&hex[1..], 16).ok()?;
             Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)

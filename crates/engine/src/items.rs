@@ -644,13 +644,14 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                 inside: inside.iter().map(String::as_str).collect(),
                 code: &code,
             };
-            for (typed, key, r) in m.inline(&gate, &found, &block) {
+            for (mut typed, key, r) in m.inline(&gate, &found, &block) {
                 let written = &block.text[r.clone()];
                 let start = c.own.start + r.start + (written.len() - written.trim_start().len());
                 let end = c.own.start + r.start + written.trim_end().len();
                 if !inline_seen.insert((typed.kind.clone(), start)) {
                     continue;
                 }
+                typed.place.span = source.file_range(start..end);
                 let line = line_of(start);
                 raws.push(Raw {
                     line,
