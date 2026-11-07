@@ -1,0 +1,49 @@
+# The outline lists the reader's headings; Enter jumps to one, Back returns, ] and [ step through them.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p
+type lava
+wait-for 1 notes
+keys enter
+wait-for Concepts/Lava  reading
+wait-for reading · j
+keys o
+wait-for 3 of 3 headings
+expect ▸ Lava
+expect Temperature
+expect Textures
+screen
+type tex
+wait-for 1 of 3 headings
+keys enter
+wait-for Concepts/Lava › Textures  reading
+screen
+keys ctrl+o
+wait-for Concepts/Lava  reading
+wait-gone › Textures
+keys ]
+wait-for Concepts/Lava › Temperature  reading
+keys ]
+wait-for Concepts/Lava › Textures  reading
+keys [
+wait-for Concepts/Lava › Temperature  reading
+keys [
+wait-for Concepts/Lava  reading
+# Esc closes the outline where the reader was.
+keys o
+wait-for 3 of 3 headings
+keys esc
+wait-gone 3 of 3 headings
+expect Concepts/Lava  reading
+# From the notes too, while the reader shows a note; nothing to filter jumps nowhere.
+keys esc
+wait-for ? help  q quit
+keys o
+wait-for 3 of 3 headings
+type zzz
+wait-for no headings match
+keys enter
+wait-gone no headings match
+expect Concepts/Lava  reader
+keys q
+exits 0

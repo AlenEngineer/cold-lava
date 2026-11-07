@@ -83,7 +83,11 @@ reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the nex
 `Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser); a click
 on a link follows it too. Faster still, `f` puts a label of one or two letters on every link on
 screen and every backlink in view: type a label to follow that link, or `Esc` to put them away.
-It works from the menu too, while the reader shows a note. `e` edits the note in `$EDITOR` full screen, and `Esc` goes back to
+It works from the menu too, while the reader shows a note. `o` opens the **outline**: the note's
+headings, indented by level, with the one you're reading marked. Type a few letters to filter
+them (accents ignored), `Enter` jumps there, and Back returns to where you were. `]` and `[` step
+from heading to heading. The reader's title shows where you are, as `Concepts/Lava ›
+Temperature`. `e` edits the note in `$EDITOR` full screen, and `Esc` goes back to
 the notes. The reader updates when the note changes on disk and keeps its place.
 
 **Links and backlinks.** Inside Neovim, press `Enter` (or `gf`) on a `[[link]]` or
@@ -113,7 +117,7 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder / add a vault |
-| `z`, `e`, `o` | zoom the editor · edit in `$EDITOR` full screen · open in Obsidian |
+| `z`, `e`, `O` | zoom the editor · edit in `$EDITOR` full screen · open in Obsidian |
 
 If Neovim gets into a bad state, or you changed its config, run `nvim.restart` from the
 palette. It saves every note, quits Neovim, and starts it again on the same note.
@@ -128,6 +132,8 @@ In the reader:
 | `Tab` / `Shift-Tab` | select the next / previous link |
 | `Enter` | follow the selected link (creates missing notes) |
 | `f`, then a label | link hints: follow the link or backlink with that label (`Esc` cancels) |
+| `o` | outline: the note's headings; type to filter, `Enter` jumps to one (Back returns) |
+| `]` / `[` | next heading / this section's heading, or the one before |
 | `e` | edit the note in `$EDITOR` full screen |
 | `Esc` / `q` | back to the notes |
 

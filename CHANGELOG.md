@@ -20,6 +20,15 @@ change commands, keys and file formats; patch versions only fix things.
   labels every link on screen and every backlink in view with one or two letters from the home
   row. Typing a label follows that link the way `Enter` does (Back returns), `Esc` or a letter
   no label has cancels, and after the first letter of a pair only the labels it starts stay.
+- Outline: `o` (`note.outline`) in the reader, or in the menu while the reader shows a note,
+  lists the note's headings indented by level, with the one you're reading marked. Type to
+  filter (fuzzy, accents ignored), `↑↓` or `Ctrl-n`/`Ctrl-p` to choose, `Enter` to jump there
+  (Back returns to where you were in the note), `Esc` to close.
+- The reader's title shows where you are in the note: `Concepts/Lava › Temperature`, the
+  headings above the top line, cut from the left with `…` when too long. A first heading that
+  only repeats the note's name is left out.
+- `]` / `[` (`reader.next-heading`, `reader.previous-heading`) jump to the next heading, and to
+  the start of the section you're in or the heading before it.
 - Back and forward, like a browser's, across the menu, the reader, search, the graph and
   whiteboards: `Ctrl-o`, `Alt-←` or `Backspace` (`history.back`) returns to where you were
   before following a link or opening a note, a search result, the graph or a board, with the
@@ -44,6 +53,10 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- `note.open-in-obsidian` moved from `o` to `O`: `o` opens the outline, which you use far more
+  often while reading. To get the old key back, give the outline another key too (two commands
+  on one key both keep their defaults): `"note.open-in-obsidian" = "o"` and
+  `"note.outline" = "ctrl+l"`. The graph keeps `o` for Obsidian.
 - `Ctrl-o` is now Back (`history.back`) instead of a second key for the quick switcher, which
   keeps `p`. To get the old key back: `"note.switch" = ["p", "ctrl+o"]` and
   `"history.back" = ["alt+left", "backspace"]` in `[keys]`.
