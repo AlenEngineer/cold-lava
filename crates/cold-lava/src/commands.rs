@@ -8,11 +8,13 @@ use std::fmt;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::ext::{ExtId, Manifest};
+use crate::history::Nav;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MenuAction {
     Quit,
     Help,
+    Keys,
     FocusNext,
     FocusPrevious,
     FocusEditor,
@@ -48,9 +50,45 @@ pub enum HistoryAction {
     Forward,
 }
 
+/// The heading a command is listed under in the which-key popup, in the popup's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Group {
+    Move,
+    Go,
+    Links,
+    Note,
+    Cards,
+    Colour,
+    View,
+    Show,
+    App,
+    /// Commands extensions registered.
+    Extension,
+}
+
+impl Group {
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Move => "move",
+            Group::Go => "go",
+            Group::Links => "links",
+            Group::Note => "note",
+            Group::Cards => "cards",
+            Group::Colour => "colour",
+            Group::View => "view",
+            Group::Show => "show",
+            Group::App => "app",
+            Group::Extension => "extensions",
+        }
+    }
+}
+
 pub struct Command<A> {
     pub action: A,
     pub id: &'static str,
+    pub group: Group,
+    /// A few words for the which-key popup; `title` is the help screen's longer line.
+    pub name: &'static str,
     pub title: &'static str,
     pub keys: &'static [&'static str],
 }
@@ -58,12 +96,16 @@ pub struct Command<A> {
 const fn cmd<A>(
     action: A,
     id: &'static str,
+    group: Group,
+    name: &'static str,
     title: &'static str,
     keys: &'static [&'static str],
 ) -> Command<A> {
     Command {
         action,
         id,
+        group,
+        name,
         title,
         keys,
     }
@@ -74,163 +116,232 @@ pub const MENU: &[Command<MenuAction>] = &[
     cmd(
         MenuAction::FocusNext,
         "focus.next",
+        Group::Go,
+        "next pane",
         "switch between vaults, notes, editor and backlinks",
         &["tab"],
     ),
     cmd(
         MenuAction::FocusPrevious,
         "focus.previous",
+        Group::Go,
+        "previous pane",
         "back to the notes, or from the notes to the vaults",
         &["shift+tab"],
     ),
     cmd(
         MenuAction::Palette,
         "app.palette",
+        Group::App,
+        "commands",
         "command palette: run any command by name",
         &[":"],
     ),
     cmd(
         MenuAction::FocusEditor,
         "editor.focus",
+        Group::Go,
+        "editor",
         "in the menu: back to the editor",
         &["ctrl+q"],
     ),
     cmd(
         MenuAction::ToggleBacklinks,
         "backlinks.toggle",
+        Group::View,
+        "backlinks",
         "show / hide backlinks under the editor",
         &["b"],
     ),
     cmd(
         MenuAction::Switcher,
         "note.switch",
+        Group::Go,
+        "go to note",
         "quick switcher: jump to any note by name",
         &["p"],
     ),
     cmd(
         MenuAction::Search,
         "search.open",
+        Group::Go,
+        "search",
         "search the text of every note",
         &["s", "ctrl+f"],
     ),
     cmd(
         MenuAction::History(HistoryAction::Back),
         "history.back",
+        Group::Go,
+        "back",
         "back to where you were: a note, a search, the graph, a board",
         &["ctrl+o", "alt+left", "backspace"],
     ),
     cmd(
         MenuAction::History(HistoryAction::Forward),
         "history.forward",
+        Group::Go,
+        "forward",
         "forward again, after going back",
         &["alt+right"],
     ),
     cmd(
         MenuAction::Rename,
         "note.rename",
+        Group::Note,
+        "rename",
         "rename the note (every link to it is updated)",
         &["R"],
     ),
     cmd(
         MenuAction::Move,
         "note.move",
+        Group::Note,
+        "move",
         "move the note to another folder (links updated)",
         &["m"],
     ),
     cmd(
         MenuAction::EditFullscreen,
         "note.edit",
+        Group::Note,
+        "edit",
         "edit the note in $EDITOR, full screen",
         &["e"],
     ),
     cmd(
         MenuAction::Read,
         "note.read",
+        Group::Note,
+        "reader / editor",
         "read the note: switch the pane between the reader and the editor",
         &["v"],
     ),
     cmd(
         MenuAction::Hints,
         "note.hints",
+        Group::Links,
+        "hints",
         "link hints: label the links on screen, type a label to follow it",
         &["f"],
     ),
     cmd(
         MenuAction::Outline,
         "note.outline",
+        Group::Note,
+        "outline",
         "outline: the note's headings, type to filter, ⏎ to jump to one",
         &["o"],
     ),
     cmd(
         MenuAction::Peek,
         "note.peek",
+        Group::Links,
+        "peek",
         "peek: show where the selected link or backlink leads, without going there",
         &["K"],
     ),
     cmd(
         MenuAction::Filter,
         "filter.open",
+        Group::View,
+        "filter",
         "filter notes by name or path",
         &["/"],
     ),
     cmd(
         MenuAction::ClearFilter,
         "filter.clear",
+        Group::View,
+        "clear filter",
         "clear the filter",
         &["esc"],
     ),
     cmd(
         MenuAction::Graph,
         "graph.open",
+        Group::Go,
+        "graph",
         "graph view of this vault",
         &["g"],
     ),
     cmd(
         MenuAction::Boards,
         "boards.open",
+        Group::Go,
+        "whiteboards",
         "whiteboards of this vault",
         &["w"],
     ),
     cmd(
         MenuAction::NewNote,
         "note.new",
+        Group::Note,
+        "new note",
         "new note in the selected folder",
         &["n"],
     ),
     cmd(
         MenuAction::Today,
         "daily.today",
+        Group::Note,
+        "today",
         "today's daily note (created from your template)",
         &["t"],
     ),
     cmd(
         MenuAction::AddVault,
         "vault.add",
+        Group::App,
+        "add vault",
         "add a vault (any folder of Markdown files)",
         &["a"],
     ),
     cmd(
         MenuAction::OpenInObsidian,
         "note.open-in-obsidian",
+        Group::Note,
+        "in Obsidian",
         "open the selected note in Obsidian",
         &["O"],
     ),
     cmd(
         MenuAction::Zoom,
         "editor.zoom",
+        Group::View,
+        "zoom",
         "zoom the editor to full width",
         &["z"],
     ),
     cmd(
         MenuAction::Rescan,
         "vault.rescan",
+        Group::App,
+        "rescan",
         "rescan the vault",
         &["r"],
     ),
-    cmd(MenuAction::Help, "app.help", "this help", &["?"]),
+    cmd(
+        MenuAction::Keys,
+        "app.keys",
+        Group::App,
+        "keys",
+        "which key: this screen's commands by group; type one's key to run it",
+        &[","],
+    ),
+    cmd(
+        MenuAction::Help,
+        "app.help",
+        Group::App,
+        "help",
+        "this help",
+        &["?"],
+    ),
     cmd(
         MenuAction::Quit,
         "app.quit",
+        Group::App,
+        "quit",
         "quit (notes are saved)",
         &["q", "ctrl+c"],
     ),
@@ -264,6 +375,7 @@ pub enum GraphAction {
     Rescan,
     Escape,
     Help,
+    Keys,
     Quit,
 }
 
@@ -273,140 +385,227 @@ pub const GRAPH: &[Command<GraphAction>] = &[
     cmd(
         GraphAction::CycleLinks,
         "graph.cycle-links",
+        Group::Links,
+        "next link",
         "cycle through the selected note's links",
         &["tab"],
     ),
     cmd(
         GraphAction::CycleLinksBack,
         "graph.cycle-links-back",
+        Group::Links,
+        "previous link",
         "cycle back through the selected note's links",
         &["shift+tab"],
     ),
     cmd(
         GraphAction::Back,
         "graph.back",
+        Group::Links,
+        "last selection",
         "go back to the previous selection",
         &["b", "backspace"],
     ),
-    cmd(GraphAction::Search, "graph.search", "search notes", &["/"]),
+    cmd(
+        GraphAction::Search,
+        "graph.search",
+        Group::Go,
+        "search",
+        "search notes",
+        &["/"],
+    ),
     cmd(
         GraphAction::NextMatch,
         "graph.next-match",
+        Group::Go,
+        "next match",
         "jump to the next match",
         &["n"],
     ),
     cmd(
         GraphAction::PreviousMatch,
         "graph.previous-match",
+        Group::Go,
+        "previous match",
         "jump to the previous match",
         &["N"],
     ),
     cmd(
         GraphAction::OpenNote,
         "graph.open-note",
+        Group::Note,
+        "open",
         "open in $EDITOR (creates unresolved notes)",
         &["enter", "e"],
     ),
     cmd(
         GraphAction::OpenInObsidian,
         "graph.open-in-obsidian",
+        Group::Note,
+        "in Obsidian",
         "open the note in the Obsidian app",
         &["o"],
     ),
     cmd(
         GraphAction::Boards,
         "graph.boards",
+        Group::Go,
+        "whiteboards",
         "whiteboards (Obsidian .canvas files)",
         &["w"],
     ),
     cmd(
         GraphAction::Local,
         "graph.local",
+        Group::View,
+        "local graph",
         "local graph around the selection",
         &["f"],
     ),
     cmd(
         GraphAction::DepthMore,
         "graph.depth-more",
+        Group::View,
+        "deeper",
         "local graph one link deeper",
         &["]"],
     ),
     cmd(
         GraphAction::DepthLess,
         "graph.depth-less",
+        Group::View,
+        "shallower",
         "local graph one link shallower",
         &["["],
     ),
     cmd(
         GraphAction::Groups,
         "graph.groups",
+        Group::Show,
+        "colour groups",
         "colour groups: obsidian → folder → tag → off",
         &["g"],
     ),
     cmd(
         GraphAction::Pixels,
         "graph.pixels",
+        Group::View,
+        "pixels",
         "pixel rendering (Kitty graphics) ↔ braille",
         &["p"],
     ),
-    cmd(GraphAction::ZoomIn, "graph.zoom-in", "zoom in", &["+", "="]),
+    cmd(
+        GraphAction::ZoomIn,
+        "graph.zoom-in",
+        Group::View,
+        "zoom in",
+        "zoom in",
+        &["+", "="],
+    ),
     cmd(
         GraphAction::ZoomOut,
         "graph.zoom-out",
+        Group::View,
+        "zoom out",
         "zoom out",
         &["-", "_"],
     ),
-    cmd(GraphAction::Fit, "graph.fit", "fit graph to screen", &["0"]),
+    cmd(
+        GraphAction::Fit,
+        "graph.fit",
+        Group::View,
+        "fit",
+        "fit graph to screen",
+        &["0"],
+    ),
     cmd(
         GraphAction::Center,
         "graph.center",
+        Group::View,
+        "centre",
         "centre on selection",
         &["c"],
     ),
     cmd(
         GraphAction::ToggleTags,
         "graph.toggle-tags",
+        Group::Show,
+        "tags",
         "show / hide tags",
         &["t"],
     ),
     cmd(
         GraphAction::ToggleUnresolved,
         "graph.toggle-unresolved",
+        Group::Show,
+        "unresolved",
         "show / hide unresolved links",
         &["u"],
     ),
     cmd(
         GraphAction::ToggleOrphans,
         "graph.toggle-orphans",
+        Group::Show,
+        "orphans",
         "show / hide orphans",
         &["O"],
     ),
     cmd(
         GraphAction::Labels,
         "graph.labels",
+        Group::Show,
+        "labels",
         "labels: auto → all → selection only",
         &["a"],
     ),
     cmd(
         GraphAction::Pause,
         "graph.pause",
+        Group::View,
+        "pause layout",
         "pause / resume the layout",
         &["space"],
     ),
     cmd(
         GraphAction::Rescan,
         "graph.rescan",
+        Group::App,
+        "rescan",
         "rescan the vault",
         &["r"],
     ),
     cmd(
         GraphAction::Escape,
         "graph.escape",
+        Group::App,
+        "clear",
         "leave local graph, clear selection",
         &["esc"],
     ),
-    cmd(GraphAction::Help, "graph.help", "this help", &["?"]),
-    cmd(GraphAction::Quit, "graph.quit", "quit", &["q", "ctrl+c"]),
+    cmd(
+        GraphAction::Keys,
+        "graph.keys",
+        Group::App,
+        "keys",
+        "which key: the graph's commands by group; type one's key to run it",
+        &[","],
+    ),
+    cmd(
+        GraphAction::Help,
+        "graph.help",
+        Group::App,
+        "help",
+        "this help",
+        &["?"],
+    ),
+    cmd(
+        GraphAction::Quit,
+        "graph.quit",
+        Group::App,
+        "quit",
+        "quit",
+        &["q", "ctrl+c"],
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -431,6 +630,7 @@ pub enum BoardAction {
     Reload,
     Escape,
     Help,
+    Keys,
     Quit,
 }
 
@@ -440,125 +640,208 @@ pub const BOARD: &[Command<BoardAction>] = &[
     cmd(
         BoardAction::NewCard,
         "board.new-card",
+        Group::Cards,
+        "new card",
         "new text card (double-click empty space works too)",
         &["n"],
     ),
     cmd(
         BoardAction::NewLinkedCard,
         "board.new-linked-card",
+        Group::Cards,
+        "linked card",
         "new card linked from the selected one",
         &["a"],
     ),
     cmd(
         BoardAction::AddNote,
         "board.add-note",
+        Group::Cards,
+        "add note",
         "add a note from the vault as a card",
         &["f"],
     ),
     cmd(
         BoardAction::NewGroup,
         "board.new-group",
+        Group::Cards,
+        "group",
         "new group (around the selected card)",
         &["G"],
     ),
     cmd(
         BoardAction::Connect,
         "board.connect",
+        Group::Cards,
+        "connect",
         "draw an arrow: pick a target, ⏎ (again removes it)",
         &["c"],
     ),
     cmd(
         BoardAction::Edit,
         "board.edit",
+        Group::Cards,
+        "edit",
         "edit text · open note cards in $EDITOR",
         &["enter", "e"],
     ),
     cmd(
         BoardAction::EditExternal,
         "board.edit-external",
+        Group::Cards,
+        "edit in $EDITOR",
         "edit a text card in $EDITOR",
         &["E"],
     ),
     cmd(
         BoardAction::Colour(1),
         "board.colour-1",
+        Group::Colour,
+        "red",
         "colour red (Obsidian preset 1)",
         &["1"],
     ),
     cmd(
         BoardAction::Colour(2),
         "board.colour-2",
+        Group::Colour,
+        "orange",
         "colour orange (Obsidian preset 2)",
         &["2"],
     ),
     cmd(
         BoardAction::Colour(3),
         "board.colour-3",
+        Group::Colour,
+        "yellow",
         "colour yellow (Obsidian preset 3)",
         &["3"],
     ),
     cmd(
         BoardAction::Colour(4),
         "board.colour-4",
+        Group::Colour,
+        "green",
         "colour green (Obsidian preset 4)",
         &["4"],
     ),
     cmd(
         BoardAction::Colour(5),
         "board.colour-5",
+        Group::Colour,
+        "cyan",
         "colour cyan (Obsidian preset 5)",
         &["5"],
     ),
     cmd(
         BoardAction::Colour(6),
         "board.colour-6",
+        Group::Colour,
+        "purple",
         "colour purple (Obsidian preset 6)",
         &["6"],
     ),
     cmd(
         BoardAction::ColourClear,
         "board.colour-clear",
+        Group::Colour,
+        "no colour",
         "clear colour",
         &["0"],
     ),
     cmd(
         BoardAction::Delete,
         "board.delete",
+        Group::Cards,
+        "delete",
         "delete the card and its arrows",
         &["d", "delete"],
     ),
-    cmd(BoardAction::Undo, "board.undo", "undo", &["u", "ctrl+z"]),
+    cmd(
+        BoardAction::Undo,
+        "board.undo",
+        Group::Cards,
+        "undo",
+        "undo",
+        &["u", "ctrl+z"],
+    ),
     cmd(
         BoardAction::Redo,
         "board.redo",
+        Group::Cards,
+        "redo",
         "redo",
         &["U", "ctrl+y", "ctrl+r"],
     ),
-    cmd(BoardAction::ZoomIn, "board.zoom-in", "zoom in", &["+", "="]),
+    cmd(
+        BoardAction::ZoomIn,
+        "board.zoom-in",
+        Group::View,
+        "zoom in",
+        "zoom in",
+        &["+", "="],
+    ),
     cmd(
         BoardAction::ZoomOut,
         "board.zoom-out",
+        Group::View,
+        "zoom out",
         "zoom out",
         &["-", "_"],
     ),
-    cmd(BoardAction::Fit, "board.fit", "fit everything", &["z"]),
+    cmd(
+        BoardAction::Fit,
+        "board.fit",
+        Group::View,
+        "fit",
+        "fit everything",
+        &["z"],
+    ),
     cmd(
         BoardAction::OpenInObsidian,
         "board.open-in-obsidian",
+        Group::App,
+        "in Obsidian",
         "open the note (or this board) in Obsidian",
         &["o"],
     ),
     cmd(
         BoardAction::Reload,
         "board.reload",
+        Group::View,
+        "reload",
         "reload the file from disk",
         &["R"],
     ),
-    cmd(BoardAction::Escape, "board.escape", "deselect", &["esc"]),
-    cmd(BoardAction::Help, "board.help", "this help", &["?"]),
+    cmd(
+        BoardAction::Escape,
+        "board.escape",
+        Group::App,
+        "deselect",
+        "deselect",
+        &["esc"],
+    ),
+    cmd(
+        BoardAction::Keys,
+        "board.keys",
+        Group::App,
+        "keys",
+        "which key: the whiteboard's commands by group; type one's key to run it",
+        &[","],
+    ),
+    cmd(
+        BoardAction::Help,
+        "board.help",
+        Group::App,
+        "help",
+        "this help",
+        &["?"],
+    ),
     cmd(
         BoardAction::Quit,
         "board.quit",
+        Group::App,
+        "quit",
         "leave the whiteboard",
         &["q", "ctrl+c"],
     ),
@@ -586,73 +869,104 @@ pub const READER: &[Command<ReaderAction>] = &[
     cmd(
         ReaderAction::Down,
         "reader.down",
+        Group::Move,
+        "down",
         "scroll down",
         &["j", "down"],
     ),
-    cmd(ReaderAction::Up, "reader.up", "scroll up", &["k", "up"]),
+    cmd(
+        ReaderAction::Up,
+        "reader.up",
+        Group::Move,
+        "up",
+        "scroll up",
+        &["k", "up"],
+    ),
     cmd(
         ReaderAction::PageDown,
         "reader.page-down",
+        Group::Move,
+        "page down",
         "page down",
         &["pagedown", "space", "ctrl+d"],
     ),
     cmd(
         ReaderAction::PageUp,
         "reader.page-up",
+        Group::Move,
+        "page up",
         "page up",
         &["pageup", "ctrl+u"],
     ),
     cmd(
         ReaderAction::Top,
         "reader.top",
+        Group::Move,
+        "top",
         "to the top",
         &["g", "home"],
     ),
     cmd(
         ReaderAction::Bottom,
         "reader.bottom",
+        Group::Move,
+        "bottom",
         "to the bottom",
         &["G", "end"],
     ),
     cmd(
         ReaderAction::NextLink,
         "reader.next-link",
+        Group::Links,
+        "next link",
         "select the next link",
         &["tab"],
     ),
     cmd(
         ReaderAction::PreviousLink,
         "reader.previous-link",
+        Group::Links,
+        "previous link",
         "select the previous link",
         &["shift+tab"],
     ),
     cmd(
         ReaderAction::NextHeading,
         "reader.next-heading",
+        Group::Move,
+        "next heading",
         "to the next heading",
         &["]"],
     ),
     cmd(
         ReaderAction::PreviousHeading,
         "reader.previous-heading",
+        Group::Move,
+        "heading before",
         "to this section's heading, or the one before",
         &["["],
     ),
     cmd(
         ReaderAction::Follow,
         "reader.follow",
+        Group::Links,
+        "follow",
         "follow the selected link (creates missing notes)",
         &["enter"],
     ),
     cmd(
         ReaderAction::Edit,
         "reader.edit",
+        Group::Note,
+        "edit",
         "edit the note in $EDITOR, full screen",
         &["e"],
     ),
     cmd(
         ReaderAction::Back,
         "reader.back",
+        Group::Go,
+        "notes",
         "back to the notes",
         &["esc", "q"],
     ),
@@ -668,6 +982,8 @@ pub enum PaneAction {
 pub const PANE: &[Command<PaneAction>] = &[cmd(
     PaneAction::Leave,
     "pane.leave",
+    Group::Go,
+    "menu",
     "leave the pane, back to the menu",
     &["ctrl+q"],
 )];
@@ -685,19 +1001,7 @@ pub fn ids() -> impl Iterator<Item = &'static str> {
 /// The history commands' keys for a screen of its own (the graph, the whiteboard): the
 /// menu's, with config.toml's overrides, less those `screen` binds.
 pub fn history_keys<A: Copy>(screen: &Keymap<A>) -> Keymap<HistoryAction> {
-    let table: Vec<Entry<HistoryAction>> = entries(MENU)
-        .into_iter()
-        .filter_map(|e| match e.action {
-            MenuAction::History(action) => Some(Entry {
-                action,
-                id: e.id,
-                title: e.title,
-                keys: e.keys,
-            }),
-            _ => None,
-        })
-        .collect();
-    let mut keys = Keymap::configured(&table);
+    let mut keys = Keymap::configured(&history_entries());
     keys.by_key.retain(|k, _| !screen.by_key.contains_key(k));
     for ks in keys.by_id.values_mut() {
         ks.retain(|k| !screen.by_key.contains_key(k));
@@ -705,11 +1009,82 @@ pub fn history_keys<A: Copy>(screen: &Keymap<A>) -> Keymap<HistoryAction> {
     keys
 }
 
+fn history_entries() -> Vec<Entry<HistoryAction>> {
+    entries(MENU)
+        .into_iter()
+        .filter_map(|e| match e.action {
+            MenuAction::History(action) => Some(Entry {
+                action,
+                id: e.id,
+                group: e.group,
+                name: e.name,
+                title: e.title,
+                keys: e.keys,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The which-key lines of a screen of its own (the graph, the whiteboard): its commands that
+/// `show` lets through, then Back and Forward when there is somewhere to go.
+pub fn screen_key_hints<A: Copy>(
+    table: &[Command<A>],
+    keys: &Keymap<A>,
+    show: impl Fn(A) -> bool,
+    history: Option<&(Nav, Keymap<HistoryAction>)>,
+) -> Vec<KeyHint> {
+    let mut hints = key_hints(&entries(table), keys, |_| false, show);
+    if let Some((nav, keys)) = history {
+        let can = |a| match a {
+            HistoryAction::Back => nav.back.is_some(),
+            HistoryAction::Forward => nav.forward.is_some(),
+        };
+        hints.extend(key_hints(&history_entries(), keys, |_| false, can));
+    }
+    hints
+}
+
 /// The history commands as a screen's help lists them: (keys, title).
 pub fn history_help(keys: &Keymap<HistoryAction>) -> Vec<(String, &'static str)> {
     MENU.iter()
         .filter(|c| matches!(c.action, MenuAction::History(_)))
         .map(|c| (keys.label(c.id), c.title))
+        .collect()
+}
+
+/// A line of the which-key popup: a command's key and short name, under its group.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyHint {
+    pub group: Group,
+    pub key: Key,
+    pub name: String,
+}
+
+/// `table`'s commands as the which-key popup lists them, each with its first key that `taken`
+/// doesn't claim (a screen's own keys shadow the menu's) and isn't Esc, which closes the popup.
+/// Commands left without a key aren't listed; `show` can leave out more.
+pub fn key_hints<A: Copy>(
+    table: &[Entry<A>],
+    keys: &Keymap<A>,
+    taken: impl Fn(&Key) -> bool,
+    show: impl Fn(A) -> bool,
+) -> Vec<KeyHint> {
+    let esc = Key::parse("esc");
+    table
+        .iter()
+        .filter(|c| show(c.action))
+        .filter_map(|c| {
+            let key = keys
+                .keys(&c.id)
+                .iter()
+                .find(|k| Some(**k) != esc && !taken(k))?;
+            Some(KeyHint {
+                group: c.group,
+                key: *key,
+                name: c.name.clone(),
+            })
+        })
         .collect()
 }
 
@@ -725,6 +1100,8 @@ pub enum MenuCommand {
 pub struct Entry<A> {
     pub action: A,
     pub id: String,
+    pub group: Group,
+    pub name: String,
     pub title: String,
     /// Its default keys.
     pub keys: Vec<Key>,
@@ -736,6 +1113,8 @@ pub fn entries<A: Copy>(table: &[Command<A>]) -> Vec<Entry<A>> {
         .map(|c| Entry {
             action: c.action,
             id: c.id.to_string(),
+            group: c.group,
+            name: c.name.to_string(),
             title: c.title.to_string(),
             keys: c.keys.iter().map(|s| default_key(c.id, s)).collect(),
         })
@@ -753,6 +1132,8 @@ pub fn menu<'a>(
         .map(|e| Entry {
             action: MenuCommand::Core(e.action),
             id: e.id,
+            group: e.group,
+            name: e.name,
             title: e.title,
             keys: e.keys,
         })
@@ -795,6 +1176,8 @@ pub fn menu<'a>(
             table.push(Entry {
                 action: MenuCommand::Ext(ext, i),
                 id: id.clone(),
+                group: Group::Extension,
+                name: c.title.clone(),
                 title: c.title.clone(),
                 keys,
             });
@@ -1000,8 +1383,20 @@ impl<A: Copy> Keymap<A> {
         self.by_key.get(&Key::from(k)).copied()
     }
 
+    pub fn has(&self, k: &Key) -> bool {
+        self.by_key.contains_key(k)
+    }
+
     pub fn keys(&self, id: &str) -> &[Key] {
         self.by_id.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// A command's first key as shown to the user, for a status line: "s".
+    pub fn first_label(&self, id: &str) -> String {
+        self.keys(id)
+            .first()
+            .map(Key::to_string)
+            .unwrap_or_default()
     }
 
     /// A command's keys as shown to the user: "s / Ctrl-f".
@@ -1058,6 +1453,57 @@ mod tests {
         assert_keys_parse_and_are_bound_once(BOARD);
         assert_keys_parse_and_are_bound_once(READER);
         assert_keys_parse_and_are_bound_once(PANE);
+    }
+
+    #[test]
+    fn every_command_has_a_short_name() {
+        let names = MENU.iter().map(|c| (c.id, c.name, c.title));
+        let names = names
+            .chain(GRAPH.iter().map(|c| (c.id, c.name, c.title)))
+            .chain(BOARD.iter().map(|c| (c.id, c.name, c.title)))
+            .chain(READER.iter().map(|c| (c.id, c.name, c.title)));
+        for (id, name, title) in names {
+            assert!(!name.is_empty() && name.len() <= 20, "{id}: {name:?}");
+            assert!(name.len() <= title.len(), "{id}: the name is the short one");
+        }
+    }
+
+    #[test]
+    fn which_key_shows_free_keys_and_leaves_out_esc() {
+        let reader = Keymap::new(READER);
+        let menu = Keymap::new(MENU);
+        let hints = key_hints(&entries(MENU), &menu, |k| reader.has(k), |_| true);
+        let key = |name: &str| {
+            let h = hints.iter().find(|h| h.name == name);
+            h.map(|h| h.key.to_string())
+        };
+        assert_eq!(key("outline").as_deref(), Some("o"));
+        assert_eq!(key("hints").as_deref(), Some("f"));
+        assert_eq!(key("quit").as_deref(), Some("Ctrl-c"), "q is the reader's");
+        assert_eq!(
+            key("graph"),
+            None,
+            "g is the reader's and the graph has no other key"
+        );
+        assert_eq!(key("clear filter"), None, "Esc closes the popup");
+        let reader_hints = key_hints(&entries(READER), &reader, |_| false, |_| true);
+        let back = reader_hints.iter().find(|h| h.name == "notes").unwrap();
+        assert_eq!(back.key.to_string(), "q");
+        assert_eq!(back.group, Group::Go);
+    }
+
+    #[test]
+    fn which_key_shows_the_configured_key() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "note.outline".to_string(),
+            vec![Key::parse("ctrl+t").unwrap()],
+        );
+        let (menu, errors) = Keymap::with(&entries(MENU), &overrides);
+        assert!(errors.is_empty());
+        let hints = key_hints(&entries(MENU), &menu, |_| false, |_| true);
+        let outline = hints.iter().find(|h| h.name == "outline").unwrap();
+        assert_eq!(outline.key.to_string(), "Ctrl-t");
     }
 
     #[test]

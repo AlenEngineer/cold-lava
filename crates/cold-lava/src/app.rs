@@ -1,6 +1,6 @@
 //! The graph view: state, input handling and drawing.
 
-use crate::commands::{self, GraphAction, HistoryAction, Keymap};
+use crate::commands::{self, GraphAction, HistoryAction, Key, KeyHint, Keymap};
 use crate::core::{Core, Event as CoreEvent};
 use crate::graph::{self, BuildOpts, Graph, Kind};
 use crate::groups::{self, Assignment};
@@ -46,6 +46,8 @@ enum Mode {
     Normal,
     Search(String),
     Help,
+    /// Which key: the graph's commands by group, until a key is typed.
+    Keys,
 }
 
 enum Drag {
@@ -526,6 +528,13 @@ impl App {
     }
 
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        if matches!(self.mode, Mode::Keys) {
+            self.mode = Mode::Normal;
+            self.dirty = true;
+            if !self.key_hints().iter().any(|h| h.key == Key::from(k)) {
+                return Ok(());
+            }
+        }
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
@@ -559,7 +568,7 @@ impl App {
                 }
                 return Ok(());
             }
-            Mode::Normal => {}
+            Mode::Normal | Mode::Keys => {}
         }
 
         // A command whose guard fails leaves the key unused (n / N without search hits).
@@ -600,6 +609,12 @@ impl App {
         Ok(())
     }
 
+    /// The which-key popup's lines: the commands that can run now, and Back / Forward.
+    fn key_hints(&self) -> Vec<KeyHint> {
+        let show = |a| a != GraphAction::Keys && self.enabled(a);
+        commands::screen_key_hints(commands::GRAPH, &self.keys, show, self.nav.as_ref())
+    }
+
     fn enabled(&self, a: GraphAction) -> bool {
         match a {
             GraphAction::NextMatch | GraphAction::PreviousMatch => !self.hits.is_empty(),
@@ -620,6 +635,7 @@ impl App {
                 }
             }
             GraphAction::Help => self.mode = Mode::Help,
+            GraphAction::Keys => self.mode = Mode::Keys,
             GraphAction::Search => {
                 self.mode = Mode::Search(String::new());
                 self.hits.clear();
@@ -1184,9 +1200,16 @@ impl App {
         self.draw_legend(f, inner);
 
         self.draw_status(f, status);
-        if matches!(self.mode, Mode::Help) {
-            self.hide_image_later();
-            draw_help(f, main, &self.keys, self.nav.as_ref().map(|(_, k)| k));
+        match self.mode {
+            Mode::Help => {
+                self.hide_image_later();
+                draw_help(f, main, &self.keys, self.nav.as_ref().map(|(_, k)| k));
+            }
+            Mode::Keys => {
+                self.hide_image_later();
+                crate::whichkey::draw(f, main, &self.key_hints());
+            }
+            _ => {}
         }
     }
 
@@ -1289,10 +1312,21 @@ impl App {
                 ])
             }
             (_, Some((m, _))) => Line::from(Span::styled(format!(" {m}"), Style::new().fg(HIT))),
-            _ => Line::from(Span::styled(
-                " ↑↓←→ move  Tab links  ⏎ edit  / search  f local  g groups  w whiteboard  p pixels  ? help  q quit",
-                Style::new().fg(DIM),
-            )),
+            _ => {
+                let k = |id| self.keys.first_label(id);
+                Line::from(Span::styled(
+                    format!(
+                        " ↑↓←→ move  {} links  {} open  {} search  {} keys  {} help  {} quit",
+                        k("graph.cycle-links"),
+                        k("graph.open-note"),
+                        k("graph.search"),
+                        k("graph.keys"),
+                        k("graph.help"),
+                        k("graph.quit"),
+                    ),
+                    Style::new().fg(DIM),
+                ))
+            }
         };
         if let Some((nav, keys)) = &self.nav {
             let first = |id| keys.keys(id).first();

@@ -14,6 +14,7 @@ mod kitty;
 mod reader;
 mod scene;
 mod term;
+mod whichkey;
 
 use cold_lava_engine::{
     core, daily, index, items, markdown, paths, rename, search, tasks, types, vault, write,

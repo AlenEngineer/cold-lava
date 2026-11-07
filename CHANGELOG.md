@@ -58,9 +58,16 @@ change commands, keys and file formats; patch versions only fix things.
   types VAULT` says how many items each type found and how many values didn't parse. One type
   wins per note and per block (priority, then subtype, then the more specific shape, then
   origin, then name); a type that `extends` another is also listed under it. Tasks stay tasks.
+- Which key: `,` (`app.keys`, `graph.keys`, `board.keys`) opens a popup at the bottom of the
+  menu, the reader, the graph or a whiteboard that lists the commands you can run there now,
+  grouped (move, go, links, note, view, app, extensions), each with its key and a short name.
+  Typing a listed key runs that command, `Esc` closes it. The groups and names live in the
+  command tables, so the popup follows `[keys]` in config.toml. `?` still opens the full help.
 
 ### Changed
 
+- The status line shows only a few keys and `, keys` / `? help`; the reader's no longer runs
+  past the edge of the screen.
 - `note.open-in-obsidian` moved from `o` to `O`: `o` opens the outline, which you use far more
   often while reading. To get the old key back, give the outline another key too (two commands
   on one key both keep their defaults): `"note.open-in-obsidian" = "o"` and
