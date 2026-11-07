@@ -67,6 +67,42 @@ fn peeks_at_a_link_without_going_there() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Every file under `dir` whose name ends in `suffix`.
+fn files_ending(dir: &Path, suffix: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(files_ending(&path, suffix));
+        } else if path.to_string_lossy().ends_with(suffix) {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
+fn follows_attachment_links_without_creating_notes_for_them() {
+    let dir = sandbox("attachments");
+    std::fs::write(
+        dir.join("example-vault/Inbox/Field trip.md"),
+        "# Field trip\n\nBring [[trail map.pdf]] and the [ticket](tickets/ticket.pdf). \
+         Plan it on [[Welcome.canvas]]; read up on [[Mount St. Helens]].\n",
+    )
+    .unwrap();
+    let out = drive("attachments.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut created = files_ending(&dir, ".pdf.md");
+    created.extend(files_ending(&dir, ".canvas.md"));
+    assert!(created.is_empty(), "created {created:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn goes_back_and_forward_through_notes_and_a_search() {
     let dir = sandbox("history");
