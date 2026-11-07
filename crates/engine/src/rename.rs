@@ -1,14 +1,22 @@
-//! Renaming and moving notes with every link to them updated, like Obsidian's
+//! Renaming and moving notes and folders with every link to them updated, like Obsidian's
 //! "Automatically update internal links".
 //!
-//! `plan` works out every change without touching anything; `apply` checks nothing changed
-//! since, then moves the note and rewrites the other files atomically, one by one.
+//! `plan` (a note) and `plan_folder` (a folder and everything in it) work out every change
+//! without touching anything; `apply` checks nothing changed since, then moves the note or
+//! folder and rewrites the other files atomically, one by one.
+//!
+//! The rule for links: every link in the vault is resolved as the vault is now and as it will
+//! be after the move. A link that still leads to the same file, the same way, is left alone;
+//! any other is rewritten in the style it was written in. So `[[Lava]]` survives a folder move,
+//! but becomes a path when the move makes another `Lava` the shallowest one.
 
 use crate::index::Index;
+use crate::vault::attachment_kind;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use walkdir::WalkDir;
 
@@ -37,13 +45,17 @@ pub struct FileEdit {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Plan {
+    /// Vault-relative: a note with `.md`, or a folder.
     pub from: String,
     pub to: String,
+    pub folder: bool,
     #[serde(skip)]
     pub from_path: PathBuf,
     #[serde(skip)]
     pub to_path: PathBuf,
-    /// Other files whose links change (the moved note's own edits are included, under `from`).
+    /// The files that move (vault-relative, as they are now): the note, or what the folder holds.
+    pub moving: Vec<String>,
+    /// Files whose links change, moving ones included (under their path as it is now).
     pub edits: Vec<FileEdit>,
     pub warnings: Vec<String>,
 }
@@ -56,38 +68,79 @@ impl Plan {
     pub fn files(&self) -> usize {
         self.edits.len()
     }
+
+    /// Each moving file's path now and after the move.
+    pub fn moves(&self) -> Vec<(PathBuf, PathBuf)> {
+        if !self.folder {
+            return vec![(self.from_path.clone(), self.to_path.clone())];
+        }
+        let prefix = format!("{}/", self.from);
+        (self.moving.iter())
+            .filter_map(|r| r.strip_prefix(&prefix))
+            .map(|rest| (self.from_path.join(rest), self.to_path.join(rest)))
+            .collect()
+    }
+
+    /// Where a file at `path` is after the move (itself if it doesn't move).
+    pub fn moved(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix(&self.from_path) {
+            Ok(rest) if rest.as_os_str().is_empty() => self.to_path.clone(),
+            Ok(rest) => self.to_path.join(rest),
+            Err(_) => path.to_path_buf(),
+        }
+    }
 }
 
 /// Where `new` puts the note at `old_rel` (both vault-relative, `.md` included in the result):
 /// a bare name renames it in its folder, `folder/` moves it keeping its name, anything else is
 /// a full vault path.
 pub fn target_rel(old_rel: &str, new: &str) -> Result<String> {
-    let new = new.trim().replace('\\', "/");
+    let new = new.trim();
+    let new = new.strip_suffix(".md").unwrap_or(new);
+    Ok(format!(
+        "{}.md",
+        target_path(old_rel.trim_end_matches(".md"), new)?
+    ))
+}
+
+/// The same for the folder at `old_rel`: a bare name renames it, `folder/` moves it into that
+/// folder, anything else is a full vault path.
+pub fn folder_target(old_rel: &str, new: &str) -> Result<String> {
+    target_path(old_rel.trim_matches('/'), new.trim())
+}
+
+fn target_path(old_rel: &str, new: &str) -> Result<String> {
+    let new = new.replace('\\', "/");
     let new = new.trim_start_matches('/');
-    let old_rel = old_rel.trim_end_matches(".md");
     let (old_dir, old_name) = old_rel.rsplit_once('/').unwrap_or(("", old_rel));
     let rel = if new.is_empty() {
         bail!("the new name is empty");
     } else if let Some(dir) = new.strip_suffix('/') {
         join(dir.trim_matches('/'), old_name)
     } else if new.contains('/') {
-        new.trim_end_matches(".md").to_string()
+        new.to_string()
     } else {
-        join(old_dir, new.trim_end_matches(".md"))
+        join(old_dir, new)
     };
+    check_path(&rel)?;
+    Ok(rel)
+}
+
+/// A path a note or folder can have: inside the vault, not hidden, and one links can name.
+pub fn check_path(rel: &str) -> Result<()> {
     if rel
         .split('/')
         .any(|c| c.is_empty() || c == "." || c == ".." || c.starts_with('.'))
     {
-        bail!("not a valid note path inside the vault: {new}");
+        bail!("not a valid path inside the vault: {rel}");
     }
     if rel
         .chars()
         .any(|c| matches!(c, '[' | ']' | '|' | '#' | '^'))
     {
-        bail!("note names can't contain [ ] | # or ^ (links couldn't point to them)");
+        bail!("names can't contain [ ] | # or ^ (links couldn't point to them)");
     }
-    Ok(format!("{rel}.md"))
+    Ok(())
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -127,23 +180,109 @@ fn relative(from_dir: &str, to: &str) -> String {
     parts.join("/")
 }
 
-/// Which note a link written in a note in `dir` points to (Obsidian's rules, plus `./` and
-/// `../` relative paths).
-pub fn resolve_from(ix: &Index, dir: &str, raw: &str) -> Option<usize> {
-    let raw = raw.trim().replace("%20", " ");
-    let raw = raw.trim_end_matches(".md");
-    if raw.starts_with("./") || raw.starts_with("../") {
-        return ix.by_rel(&normalize(&join(dir, raw))?);
-    }
-    if raw.contains('/') {
-        if let Some(i) = ix.by_rel(raw.trim_start_matches('/')) {
-            return Some(i);
+/// How a link names a file: notes without `.md`, other files with their extension.
+fn link_key(rel: &str) -> &str {
+    rel.strip_suffix(".md").unwrap_or(rel)
+}
+
+/// How a link found its file.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Via {
+    Path,
+    Name,
+}
+
+/// Every file a link can lead to, and how links find them: notes by path or by name (the
+/// shallowest wins), `./` and `../` paths, other files (images, PDFs, canvases) by path, next
+/// to the linking note, or by name.
+pub struct Files {
+    /// Vault-relative, with extension; the index's notes first, in its order.
+    pub rels: Vec<String>,
+    by_path: HashMap<String, usize>,
+    by_name: HashMap<String, usize>,
+    /// How many files have each name.
+    names: HashMap<String, usize>,
+}
+
+impl Files {
+    /// The vault's notes, and its other files read from disk.
+    pub fn of_vault(ix: &Index) -> Files {
+        let mut rels: Vec<String> = ix
+            .vault
+            .notes
+            .iter()
+            .map(|n| format!("{}.md", n.rel))
+            .collect();
+        let root = &ix.vault.root;
+        let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
+            let n = e.file_name().to_string_lossy();
+            e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
+        });
+        for e in walker.filter_map(|e| e.ok()) {
+            if e.file_type().is_file() && e.path().extension().is_none_or(|x| x != "md") {
+                let rel = e.path().strip_prefix(root).unwrap_or(e.path());
+                rels.push(rel.to_string_lossy().replace('\\', "/"));
+            }
         }
-        if let Some(i) = normalize(&join(dir, raw)).and_then(|p| ix.by_rel(&p)) {
-            return Some(i);
+        Files::new(rels)
+    }
+
+    fn new(rels: Vec<String>) -> Files {
+        let mut order: Vec<usize> = (0..rels.len()).collect();
+        order.sort_by(|&a, &b| link_key(&rels[a]).cmp(link_key(&rels[b])));
+        let (mut by_path, mut by_name, mut names) = (
+            HashMap::new(),
+            HashMap::<String, usize>::new(),
+            HashMap::new(),
+        );
+        for i in order {
+            let key = link_key(&rels[i]).to_lowercase();
+            let name = key.rsplit('/').next().unwrap_or(&key).to_string();
+            let depth = key.matches('/').count();
+            *names.entry(name.clone()).or_insert(0) += 1;
+            let e = by_name.entry(name).or_insert(i);
+            if depth < link_key(&rels[*e]).matches('/').count() {
+                *e = i;
+            }
+            by_path.insert(key, i);
+        }
+        Files {
+            rels,
+            by_path,
+            by_name,
+            names,
         }
     }
-    ix.resolver.resolve(raw)
+
+    /// The file a link written in a file in `dir` leads to.
+    pub fn resolve(&self, dir: &str, raw: &str) -> Option<usize> {
+        self.find(dir, raw).map(|(i, _)| i)
+    }
+
+    fn path(&self, key: &str) -> Option<usize> {
+        self.by_path.get(&key.to_lowercase()).copied()
+    }
+
+    fn find(&self, dir: &str, raw: &str) -> Option<(usize, Via)> {
+        let raw = raw.trim().replace("%20", " ");
+        let other = attachment_kind(&raw).is_some();
+        let key = if other { raw.as_str() } else { link_key(&raw) };
+        let by_path = |p: Option<String>| p.and_then(|p| self.path(&p)).map(|i| (i, Via::Path));
+        if key.starts_with("./") || key.starts_with("../") {
+            return by_path(normalize(&join(dir, key)));
+        }
+        let beside = other || key.contains('/');
+        by_path(Some(key.trim_start_matches('/').to_string()))
+            .or_else(|| by_path(normalize(&join(dir, key)).filter(|_| beside)))
+            .or_else(|| {
+                let name = key.rsplit('/').next().unwrap_or(key).to_lowercase();
+                self.by_name.get(&name).map(|&i| (i, Via::Name))
+            })
+    }
+
+    fn unique(&self, name: &str) -> bool {
+        self.names.get(&name.to_lowercase()).copied().unwrap_or(0) <= 1
+    }
 }
 
 struct Patterns {
@@ -158,74 +297,59 @@ fn patterns() -> &'static Patterns {
     P.get_or_init(|| Patterns {
         // [[target#heading|alias]] — target is group 1.
         wikilink: Regex::new(r"\[\[([^\]\|#\^]*)((?:[#\^][^\]\|]*)?)((?:\|[^\]]*)?)\]\]").unwrap(),
-        // [text](path.md#heading) — path is group 1.
-        mdlink: Regex::new(r"\]\(([^)\s]+?\.md)((?:#[^)]*)?)\)").unwrap(),
+        // [text](path#heading) — path is group 1; kept if it names a note or an attachment.
+        mdlink: Regex::new(r"\]\(([^)\s#]+)((?:#[^)]*)?)\)").unwrap(),
         inline_code: Regex::new(r"`[^`\n]*`").unwrap(),
         canvas_field: Regex::new(r#""(file|text)"(\s*:\s*)("(?:[^"\\]|\\.)*")"#).unwrap(),
     })
 }
 
-/// What a link should become, given how it was written.
-struct Rewriter<'a> {
-    ix: &'a Index,
-    note: usize,
-    new_rel: String,
-    /// Another note already has the new file name: write links as paths.
-    ambiguous: bool,
+/// The vault before and after the move: same files (same indices), new paths for some.
+struct Rewriter {
+    before: Files,
+    after: Files,
 }
 
-impl Rewriter<'_> {
-    /// `dir_then` is the linking file's folder for resolving (before the move), `dir_now` the
-    /// folder to compute relative paths from (after the move; differs only for the moved note).
-    fn wikilink(&self, raw: &str, dir_then: &str, dir_now: &str) -> Option<String> {
-        let target = resolve_from(self.ix, dir_then, raw)?;
-        let had_md = raw.trim_end().ends_with(".md");
-        let new_rel = self.new_rel.trim_end_matches(".md");
-        let rel = |s: String| if had_md { format!("{s}.md") } else { s };
-        if target == self.note {
-            let name = new_rel.rsplit('/').next().unwrap_or(new_rel);
-            let out = if raw.starts_with("./") || raw.starts_with("../") {
-                rel(relative(dir_now, new_rel))
-            } else if raw.contains('/') || self.ambiguous {
-                rel(new_rel.to_string())
-            } else {
-                rel(name.to_string())
-            };
-            return (out != raw).then_some(out);
-        }
-        // The moved note's own relative links to other notes.
-        if dir_then != dir_now && (raw.starts_with("./") || raw.starts_with("../")) {
-            let other = self.ix.vault.notes[target].rel.clone();
-            let out = rel(relative(dir_now, &other));
-            return (out != raw).then_some(out);
-        }
-        None
-    }
-
-    fn mdlink(&self, raw: &str, dir_then: &str, dir_now: &str) -> Option<String> {
-        let target = resolve_from(self.ix, dir_then, raw)?;
-        let decoded = raw.replace("%20", " ");
-        // Vault-absolute ("Folder/Note.md", "/Folder/Note.md") or relative to the note?
-        let absolute = decoded.starts_with('/')
-            || (!decoded.starts_with('.')
-                && self.ix.by_rel(decoded.trim_start_matches('/')) == Some(target)
-                && !dir_then.is_empty());
-        let dest = if target == self.note {
-            self.new_rel.trim_end_matches(".md").to_string()
-        } else if dir_then != dir_now && !absolute {
-            self.ix.vault.notes[target].rel.clone()
-        } else {
+impl Rewriter {
+    /// What the link `raw` should become, or `None` if it still leads where it did. `dir_then`
+    /// is the linking file's folder before the move, `dir_now` after.
+    fn link(&self, raw: &str, md: bool, dir_then: &str, dir_now: &str) -> Option<String> {
+        let (target, via) = self.before.find(dir_then, raw)?;
+        let still = self.after.find(dir_now, raw);
+        if still.is_some_and(|(t, v)| t == target && !(via == Via::Path && v == Via::Name)) {
             return None;
-        };
-        let path = if absolute {
-            format!(
-                "{}{dest}.md",
-                if decoded.starts_with('/') { "/" } else { "" }
-            )
+        }
+        let new_rel = &self.after.rels[target];
+        let decoded = raw.trim().replace("%20", " ");
+        let relative_style = decoded.starts_with("./") || decoded.starts_with("../");
+        let out = if md {
+            // Vault-absolute ("Folder/Note.md", "/Folder/Note.md") or relative to the note?
+            let absolute = decoded.starts_with('/')
+                || (!decoded.starts_with('.')
+                    && self.before.path(link_key(&decoded)) == Some(target)
+                    && !dir_then.is_empty());
+            let path = if absolute {
+                let slash = if decoded.starts_with('/') { "/" } else { "" };
+                format!("{slash}{new_rel}")
+            } else {
+                relative(dir_now, new_rel)
+            };
+            path.replace(' ', "%20")
         } else {
-            format!("{}.md", relative(dir_now, &dest))
+            let shown = if decoded.ends_with(".md") {
+                new_rel.as_str()
+            } else {
+                link_key(new_rel)
+            };
+            let name = shown.rsplit('/').next().unwrap_or(shown);
+            if relative_style {
+                relative(dir_now, shown)
+            } else if decoded.contains('/') || !self.after.unique(link_key(name)) {
+                shown.to_string()
+            } else {
+                name.to_string()
+            }
         };
-        let out = path.replace(' ', "%20");
         (out != raw).then_some(out)
     }
 
@@ -275,16 +399,19 @@ impl Rewriter<'_> {
             let m = c.get(1).unwrap();
             if !in_code(m.start())
                 && !m.as_str().trim().is_empty()
-                && let Some(new) = self.wikilink(m.as_str(), dir_then, dir_now)
+                && let Some(new) = self.link(m.as_str(), false, dir_then, dir_now)
             {
                 reps.push((m.start(), m.end(), new));
             }
         }
         for c in p.mdlink.captures_iter(body) {
             let m = c.get(1).unwrap();
+            let target = m.as_str();
+            let names_a_file = target.ends_with(".md") || attachment_kind(target).is_some();
             if !in_code(m.start())
-                && !m.as_str().contains("://")
-                && let Some(new) = self.mdlink(m.as_str(), dir_then, dir_now)
+                && names_a_file
+                && !target.contains("://")
+                && let Some(new) = self.link(target, true, dir_then, dir_now)
             {
                 reps.push((m.start(), m.end(), new));
             }
@@ -316,138 +443,186 @@ pub fn plan(ix: &Index, note: usize, new_rel: &str) -> Result<Plan> {
     if to_path.exists() && new_rel.to_lowercase() != from_rel.to_lowercase() {
         bail!("{new_rel} already exists");
     }
-    let new_name = new_rel
-        .trim_end_matches(".md")
-        .rsplit('/')
-        .next()
-        .unwrap_or("")
-        .to_string();
-    let ambiguous = ix
-        .vault
-        .notes
-        .iter()
-        .enumerate()
-        .any(|(i, other)| i != note && other.name.to_lowercase() == new_name.to_lowercase());
+    let before = Files::of_vault(ix);
+    let mut rels = before.rels.clone();
+    rels[note] = new_rel.clone();
+    let rw = Rewriter {
+        before,
+        after: Files::new(rels),
+    };
+    let new_name = link_key(&new_rel).rsplit('/').next().unwrap_or("");
     let mut warnings = Vec::new();
-    if ambiguous {
+    if !rw.after.unique(new_name) {
         warnings.push(format!(
             "another note is also called \"{new_name}\": links to this one are written as full paths, \
              and existing [[{new_name}]] links may now point to whichever is closer to the vault root"
         ));
     }
-    let rw = Rewriter {
-        ix,
-        note,
-        new_rel: new_rel.clone(),
-        ambiguous,
-    };
-    let new_dir = dir_of(new_rel.trim_end_matches(".md")).to_string();
+    let edits = edits(ix, &rw)?;
+    Ok(Plan {
+        from: from_rel.clone(),
+        to: new_rel,
+        folder: false,
+        from_path: n.path.clone(),
+        to_path,
+        moving: vec![from_rel],
+        edits,
+        warnings,
+    })
+}
 
+/// Work out everything moving the folder `from` (vault-relative) to `to` would change: every
+/// file in it moves, and every link that would lead elsewhere afterwards is rewritten.
+/// Nothing is written.
+pub fn plan_folder(ix: &Index, from: &str, to: &str) -> Result<Plan> {
+    let (from, to) = (from.trim_matches('/'), to.trim_matches('/'));
+    if from.is_empty() {
+        bail!("that's the vault itself");
+    }
+    if from.split('/').any(|c| c.starts_with('.')) {
+        bail!("{from} is a hidden folder; cold-lava leaves it alone");
+    }
+    check_path(to)?;
+    let root = &ix.vault.root;
+    let from_path = root.join(from);
+    if !from_path.is_dir() {
+        bail!("there's no folder {from}");
+    }
+    if to == from {
+        bail!("that's already its name");
+    }
+    if to
+        .to_lowercase()
+        .starts_with(&format!("{}/", from.to_lowercase()))
+    {
+        bail!("a folder can't move into itself");
+    }
+    let to_path = root.join(to);
+    if to_path.exists() && to.to_lowercase() != from.to_lowercase() {
+        bail!("{to} already exists");
+    }
+    let before = Files::of_vault(ix);
+    let prefix = format!("{from}/");
+    let mut moving = Vec::new();
+    let rels = before
+        .rels
+        .iter()
+        .map(|r| match r.strip_prefix(&prefix) {
+            Some(rest) => {
+                moving.push(r.clone());
+                format!("{to}/{rest}")
+            }
+            None => r.clone(),
+        })
+        .collect();
+    moving.sort();
+    let rw = Rewriter {
+        before,
+        after: Files::new(rels),
+    };
+    let edits = edits(ix, &rw)?;
+    Ok(Plan {
+        from: from.to_string(),
+        to: to.to_string(),
+        folder: true,
+        from_path,
+        to_path,
+        moving,
+        edits,
+        warnings: Vec::new(),
+    })
+}
+
+/// Every note and canvas whose links change.
+fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
     let mut edits = Vec::new();
-    for (i, other) in ix.vault.notes.iter().enumerate() {
-        let dir = dir_of(&other.rel).to_string();
-        let dir_now = if i == note {
-            new_dir.clone()
-        } else {
-            dir.clone()
-        };
-        let (new_text, changes, links) = rw.note_text(&other.text, &dir, &dir_now);
+    for (i, n) in ix.vault.notes.iter().enumerate() {
+        let (dir_then, dir_now) = (dir_of(&rw.before.rels[i]), dir_of(&rw.after.rels[i]));
+        let (new_text, changes, links) = rw.note_text(&n.text, dir_then, dir_now);
         if links > 0 {
             edits.push(FileEdit {
-                file: format!("{}.md", other.rel),
-                path: other.path.clone(),
-                old_text: other.text.clone(),
+                file: rw.before.rels[i].clone(),
+                path: n.path.clone(),
+                old_text: n.text.clone(),
                 new_text,
                 links,
                 changes,
             });
         }
     }
-    edits.extend(canvas_edits(ix, &rw, &from_rel)?);
-    Ok(Plan {
-        from: from_rel,
-        to: new_rel,
-        from_path: n.path.clone(),
-        to_path,
-        edits,
-        warnings,
-    })
-}
-
-/// Obsidian Canvas files: note cards pointing at the note, and links in text cards.
-/// Edited as text, so the rest of the file stays exactly as Obsidian wrote it.
-fn canvas_edits(ix: &Index, rw: &Rewriter, from_rel: &str) -> Result<Vec<FileEdit>> {
-    let root = &ix.vault.root;
-    let mut edits = Vec::new();
-    let walker = WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
-    for e in walker.filter_map(|e| e.ok()) {
-        if !e.file_type().is_file() || e.path().extension().is_none_or(|x| x != "canvas") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(e.path()) else {
-            continue;
-        };
-        let rel = e
-            .path()
-            .strip_prefix(root)
-            .unwrap_or(e.path())
-            .to_string_lossy()
-            .replace('\\', "/");
-        let dir = dir_of(&rel).to_string();
-        let mut links = 0;
-        let mut changes = Vec::new();
-        let mut out = String::with_capacity(text.len());
-        let mut last = 0;
-        for c in patterns().canvas_field.captures_iter(&text) {
-            let whole = c.get(0).unwrap();
-            let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
-                continue;
-            };
-            let new_value = match &c[1] {
-                "file" if value.to_lowercase() == from_rel.to_lowercase() => {
-                    links += 1;
-                    Some(rw.new_rel.clone())
-                }
-                "text" => {
-                    let (t, _, n) = rw.note_text(&value, &dir, &dir);
-                    links += n;
-                    (n > 0).then_some(t)
-                }
-                _ => None,
-            };
-            if let Some(v) = new_value {
-                let line = text[..whole.start()].matches('\n').count() + 1;
-                let encoded = serde_json::to_string(&v)?;
-                let replacement = format!("\"{}\"{}{}", &c[1], &c[2], encoded);
-                changes.push(Change {
-                    line,
-                    before: whole.as_str().to_string(),
-                    after: replacement.clone(),
-                });
-                out.push_str(&text[last..whole.start()]);
-                out.push_str(&replacement);
-                last = whole.end();
-            }
-        }
-        if links > 0 {
-            out.push_str(&text[last..]);
-            edits.push(FileEdit {
-                file: rel,
-                path: e.path().to_path_buf(),
-                old_text: text,
-                new_text: out,
-                links,
-                changes,
-            });
+    for i in 0..rw.before.rels.len() {
+        if rw.before.rels[i].ends_with(".canvas") {
+            edits.extend(canvas_edit(ix, rw, i)?);
         }
     }
     Ok(edits)
 }
 
-/// Carry out a plan: refuse if any file changed since it was made, then move the note and
-/// write each changed file atomically.
+/// An Obsidian Canvas file: file cards pointing at moved files, and links in text cards.
+/// Edited as text, so the rest of the file stays exactly as Obsidian wrote it.
+fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> {
+    let rel = &rw.before.rels[i];
+    let path = ix.vault.root.join(rel);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    let (dir_then, dir_now) = (dir_of(rel), dir_of(&rw.after.rels[i]));
+    let mut links = 0;
+    let mut changes = Vec::new();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for c in patterns().canvas_field.captures_iter(&text) {
+        let whole = c.get(0).unwrap();
+        let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
+            continue;
+        };
+        let new_value = match &c[1] {
+            "file" => rw
+                .before
+                .path(link_key(&value))
+                .map(|f| &rw.after.rels[f])
+                .filter(|new| **new != value)
+                .map(|new| {
+                    links += 1;
+                    new.clone()
+                }),
+            "text" => {
+                let (t, _, n) = rw.note_text(&value, dir_then, dir_now);
+                links += n;
+                (n > 0).then_some(t)
+            }
+            _ => None,
+        };
+        if let Some(v) = new_value {
+            let line = text[..whole.start()].matches('\n').count() + 1;
+            let encoded = serde_json::to_string(&v)?;
+            let replacement = format!("\"{}\"{}{}", &c[1], &c[2], encoded);
+            changes.push(Change {
+                line,
+                before: whole.as_str().to_string(),
+                after: replacement.clone(),
+            });
+            out.push_str(&text[last..whole.start()]);
+            out.push_str(&replacement);
+            last = whole.end();
+        }
+    }
+    if links == 0 {
+        return Ok(None);
+    }
+    out.push_str(&text[last..]);
+    Ok(Some(FileEdit {
+        file: rel.clone(),
+        path,
+        old_text: text,
+        new_text: out,
+        links,
+        changes,
+    }))
+}
+
+/// Carry out a plan: refuse if any file changed since it was made, then move the note or
+/// folder and write each changed file atomically.
 pub fn apply(plan: &Plan) -> Result<()> {
     for e in &plan.edits {
         let now =
@@ -469,21 +644,17 @@ pub fn apply(plan: &Plan) -> Result<()> {
         .with_context(|| format!("moving {} to {}", plan.from, plan.to))?;
     let mut failed = Vec::new();
     for e in &plan.edits {
-        // The moved note's own edit goes to its new place.
-        let path = if e.path == plan.from_path {
-            &plan.to_path
-        } else {
-            &e.path
-        };
         // Still guarded: a file edited between the check above and now is left alone.
-        if let Err(err) = crate::write::replace(path, e.old_text.as_bytes(), e.new_text.as_bytes())
+        let path = plan.moved(&e.path);
+        if let Err(err) = crate::write::replace(&path, e.old_text.as_bytes(), e.new_text.as_bytes())
         {
             failed.push(format!("{} ({err})", e.file));
         }
     }
     if !failed.is_empty() {
         bail!(
-            "moved the note, but couldn't update links in: {}",
+            "moved {}, but couldn't update links in: {}",
+            plan.from,
             failed.join(", ")
         );
     }
@@ -635,6 +806,117 @@ mod tests {
             dir.join("A.md").exists() && !dir.join("Z.md").exists(),
             "nothing moved"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn folder_move_rewrites_links_in_and_out() {
+        let canvas = "{\"nodes\":[\n{\"id\":\"a\",\"type\":\"file\",\"file\":\"People/Krafft.md\"},\n{\"id\":\"b\",\"type\":\"file\",\"file\":\"People/photo.png\"},\n{\"id\":\"c\",\"type\":\"text\",\"text\":\"[[People/Johnston]]\"},\n{\"id\":\"d\",\"type\":\"file\",\"file\":\"Volcanoes/Helens.md\"}\n],\"edges\":[]}";
+        let (dir, ix) = vault_with(
+            "folder",
+            &[
+                (
+                    "People/Johnston.md",
+                    "[[Helens]] [up](../Volcanoes/Helens.md) [sib](Krafft.md) [[./Krafft]] \
+                     [rel](./Krafft.md) ![[People/photo.png]] ![p](photo.png)\n",
+                ),
+                ("People/Krafft.md", "x"),
+                ("People/photo.png", ""),
+                (
+                    "Volcanoes/Helens.md",
+                    "---\nrelated: \"[[People/Johnston]]\"\n---\n[[Johnston]] [[People/Krafft|K]] \
+                     [md](../People/Johnston.md) [abs](People/Johnston.md) ![[photo.png]] \
+                     ![img](../People/photo.png)\n",
+                ),
+                ("Board.canvas", canvas),
+            ],
+        );
+        let p = plan_folder(&ix, "People", "Scientists/Volcanologists").unwrap();
+        assert_eq!(
+            p.moving,
+            ["People/Johnston.md", "People/Krafft.md", "People/photo.png"]
+        );
+        apply(&p).unwrap();
+        assert!(!dir.join("People").exists());
+        assert_eq!(
+            read(&dir, "Scientists/Volcanologists/Johnston.md"),
+            "[[Helens]] [up](../../Volcanoes/Helens.md) [sib](Krafft.md) [[./Krafft]] \
+             [rel](./Krafft.md) ![[Scientists/Volcanologists/photo.png]] ![p](photo.png)\n"
+        );
+        assert_eq!(
+            read(&dir, "Volcanoes/Helens.md"),
+            "---\nrelated: \"[[Scientists/Volcanologists/Johnston]]\"\n---\n[[Johnston]] \
+             [[Scientists/Volcanologists/Krafft|K]] [md](../Scientists/Volcanologists/Johnston.md) \
+             [abs](Scientists/Volcanologists/Johnston.md) ![[photo.png]] \
+             ![img](../Scientists/Volcanologists/photo.png)\n"
+        );
+        assert_eq!(
+            read(&dir, "Board.canvas"),
+            canvas.replace("People/", "Scientists/Volcanologists/")
+        );
+        assert!(dir.join("Scientists/Volcanologists/photo.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_names_become_paths_only_when_another_note_would_win() {
+        let files = [
+            ("A/Lava.md", "near the top"),
+            ("B/C/Lava.md", "deeper"),
+            ("Notes.md", "[[Lava]] [[B/C/Lava]]\n"),
+        ];
+        let (dir, ix) = vault_with("shallow-same", &files);
+        let p = plan_folder(&ix, "A", "D").unwrap();
+        assert_eq!(p.links(), 0, "A/Lava is still the shallowest Lava");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, ix) = vault_with("shallow", &files);
+        let p = plan_folder(&ix, "A", "X/Y/A").unwrap();
+        apply(&p).unwrap();
+        assert_eq!(
+            read(&dir, "Notes.md"),
+            "[[X/Y/A/Lava]] [[B/C/Lava]]\n",
+            "B/C/Lava would win [[Lava]] now"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_moves_that_are_refused() {
+        let (dir, ix) = vault_with(
+            "refuse",
+            &[
+                ("A/x.md", ""),
+                ("A/sub/y.md", ""),
+                ("B/z.md", ""),
+                (".obsidian/app.json", "{}"),
+            ],
+        );
+        for (from, to) in [
+            ("A", "A/sub/A"),
+            ("A", "A/inner"),
+            ("A", "B"),
+            ("A", "A"),
+            ("A", ".trash/A"),
+            ("A", "../outside"),
+            (".obsidian", "Settings"),
+            ("", "Root"),
+            ("Missing", "Found"),
+        ] {
+            assert!(plan_folder(&ix, from, to).is_err(), "{from} → {to}");
+        }
+        assert_eq!(folder_target("A/sub", "Deep").unwrap(), "A/Deep");
+        assert_eq!(folder_target("A/sub", "B/").unwrap(), "B/sub");
+        assert!(folder_target("A", "a|b").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_apply_refuses_if_a_file_changed() {
+        let (dir, ix) = vault_with("folder-guard", &[("A/a.md", "x"), ("B.md", "[[A/a]]\n")]);
+        let p = plan_folder(&ix, "A", "Z").unwrap();
+        std::fs::write(dir.join("B.md"), "[[A/a]] edited elsewhere\n").unwrap();
+        assert!(apply(&p).is_err());
+        assert!(dir.join("A/a.md").exists() && !dir.join("Z").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

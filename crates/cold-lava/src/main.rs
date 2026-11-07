@@ -41,7 +41,7 @@ Usage:
                                       items, one per line
   cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
-  cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
+  cold-lava rename VAULT_DIR NOTE NEW rename or move a note or folder, updating every link
   cold-lava keys                      every command and its keys; checks config.toml
   cold-lava types [VAULT_DIR]         every type: where it comes from, what it found, its
                                       shapes and fields;
@@ -327,17 +327,22 @@ fn run() -> Result<()> {
             else {
                 anyhow::bail!(
                     "usage: cold-lava rename VAULT_DIR NOTE NEW [--dry-run] [--json]\n\
-                     NOTE is a note's name or path; NEW is a new name (same folder), \
-                     a folder ending in / (keeps the name), or a full path"
+                     NOTE is a note's name or path, or a folder; NEW is a new name (same \
+                     folder), a folder ending in / (keeps the name), or a full path"
                 );
             };
             let ix = index::Index::build(vault::scan(Path::new(root))?);
-            let i = ix
-                .by_rel(note)
-                .or_else(|| ix.resolver.resolve(note))
-                .ok_or_else(|| anyhow::anyhow!("no note called {note}"))?;
-            let to = rename::target_rel(&format!("{}.md", ix.vault.notes[i].rel), new)?;
-            let plan = rename::plan(&ix, i, &to)?;
+            let folder = note.trim_matches('/');
+            let plan = if !folder.is_empty() && ix.vault.root.join(folder).is_dir() {
+                rename::plan_folder(&ix, folder, &rename::folder_target(folder, new)?)?
+            } else {
+                let i = ix
+                    .by_rel(note)
+                    .or_else(|| ix.resolver.resolve(note))
+                    .ok_or_else(|| anyhow::anyhow!("no note or folder called {note}"))?;
+                let to = rename::target_rel(&format!("{}.md", ix.vault.notes[i].rel), new)?;
+                rename::plan(&ix, i, &to)?
+            };
             let dry = args.has("dry-run");
             if !dry {
                 rename::apply(&plan)?;

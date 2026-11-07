@@ -348,6 +348,8 @@ enum Mode {
         template: Option<usize>,
     },
     AddVault(String),
+    /// Typing a new folder's name.
+    NewFolder(String),
     Help,
     /// Which key: the commands this screen has, by group, until a key is typed.
     Keys,
@@ -366,9 +368,9 @@ enum Mode {
         query: String,
         sel: usize,
     },
-    /// Typing a note's new name (or folder, when moving).
+    /// Typing a note's or folder's new name (or the folder to move it into).
     Rename {
-        note: PathBuf,
+        path: PathBuf,
         input: String,
         moving: bool,
     },
@@ -377,7 +379,7 @@ enum Mode {
         plan: Box<crate::rename::Plan>,
         scroll: usize,
     },
-    /// Asking before a note goes to the trash.
+    /// Asking before a note or folder goes to the trash.
     ConfirmDelete(Box<PendingDelete>),
     /// Undoing a delete whose old path is taken now: put it back under a free name?
     ConfirmRestore {
@@ -402,7 +404,10 @@ struct PendingDelete {
     path: PathBuf,
     /// Vault-relative, without `.md`.
     rel: String,
-    bytes: Vec<u8>,
+    contents: trash::Contents,
+    /// For a folder: how many notes it holds.
+    notes: Option<usize>,
+    /// Links from outside to it (or to the notes in the folder).
     backlinks: Vec<BackRow>,
     /// Which trash it goes to, as the prompt says it.
     goes: String,
@@ -1473,6 +1478,26 @@ impl Home {
                 }
                 return Ok(());
             }
+            Mode::NewFolder(name) => {
+                match k.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Backspace => {
+                        name.pop();
+                    }
+                    KeyCode::Char('u') if ctrl => name.clear(),
+                    KeyCode::Char(_) if ctrl => {}
+                    KeyCode::Char(c) => name.push(c),
+                    KeyCode::Enter => {
+                        let text = name.trim().to_string();
+                        self.mode = Mode::Normal;
+                        if !text.is_empty() {
+                            self.create_folder(&text);
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             Mode::AddVault(name) => {
                 match k.code {
                     KeyCode::Esc => self.mode = Mode::Normal,
@@ -1545,7 +1570,9 @@ impl Home {
     fn enabled(&self, c: MenuCommand) -> bool {
         match c {
             MenuCommand::Core(MenuAction::ClearFilter) => !self.filter.is_empty(),
-            MenuCommand::Core(MenuAction::NewNote | MenuAction::Delete) => self.root.is_some(),
+            MenuCommand::Core(MenuAction::NewNote | MenuAction::NewFolder | MenuAction::Delete) => {
+                self.root.is_some()
+            }
             MenuCommand::Core(MenuAction::UndoDelete) => !self.trashed.is_empty(),
             MenuCommand::Core(MenuAction::Read) => {
                 self.running_editor().is_some() && self.shown.is_some()
@@ -1856,6 +1883,7 @@ impl Home {
             }
             MenuAction::Today => self.open_today(),
             MenuAction::AddVault => self.mode = Mode::AddVault(String::new()),
+            MenuAction::NewFolder => self.mode = Mode::NewFolder(String::new()),
             MenuAction::Rescan => {
                 if let Some(core) = self.core.as_mut() {
                     core.rescan(); // applied on the next poll, as a Rescanned event
@@ -2313,11 +2341,20 @@ impl Home {
         }
     }
 
+    /// The folder selected in the tree, when the tree has the focus.
+    fn selected_folder(&self) -> Option<PathBuf> {
+        match (self.focus, self.current()) {
+            (Focus::Notes, Some(it)) if it.kind == ItemKind::Folder => self.current_path(),
+            _ => None,
+        }
+    }
+
     fn start_rename(&mut self, moving: bool) {
-        let (Some(note), Some(root)) = (self.rename_target(), self.root.clone()) else {
-            return self.flash("select a note to rename or move");
+        let target = self.selected_folder().or_else(|| self.rename_target());
+        let (Some(path), Some(root)) = (target, self.root.clone()) else {
+            return self.flash("select a note or folder to rename or move");
         };
-        let rel = note
+        let rel = path
             .strip_prefix(&root)
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
@@ -2333,7 +2370,7 @@ impl Home {
             name.to_string()
         };
         self.mode = Mode::Rename {
-            note,
+            path,
             input,
             moving,
         };
@@ -2364,7 +2401,7 @@ impl Home {
     fn rename_key(&mut self, k: KeyEvent) {
         match &mut self.mode {
             Mode::Rename {
-                note,
+                path,
                 input,
                 moving,
             } => match k.code {
@@ -2376,9 +2413,9 @@ impl Home {
                 KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
                 KeyCode::Char(c) => input.push(c),
                 KeyCode::Enter => {
-                    let (note, input, moving) = (note.clone(), input.clone(), *moving);
+                    let (path, input, moving) = (path.clone(), input.clone(), *moving);
                     self.mode = Mode::Normal;
-                    self.plan_rename(&note, &input, moving);
+                    self.plan_rename(&path, &input, moving);
                 }
                 _ => {}
             },
@@ -2400,7 +2437,7 @@ impl Home {
         }
     }
 
-    fn plan_rename(&mut self, note: &Path, input: &str, moving: bool) {
+    fn plan_rename(&mut self, path: &Path, input: &str, moving: bool) {
         // A folder typed without a trailing slash still means "move into it".
         let input =
             if moving && !input.ends_with('/') && !input.ends_with(".md") && !input.is_empty() {
@@ -2415,17 +2452,32 @@ impl Home {
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return;
         };
-        let Some(i) = ix.by_path(note) else {
-            return self.flash("that note is no longer there");
-        };
-        let from = format!("{}.md", ix.vault.notes[i].rel);
-        // Moving to the root: "/" means "no folder".
-        let target = if input == "/" {
-            Ok(format!("{}.md", ix.vault.notes[i].name))
+        let plan = if path.is_dir() {
+            let from = path
+                .strip_prefix(&ix.vault.root)
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let name = from.rsplit('/').next().unwrap_or(&from).to_string();
+            // Moving to the root: "/" means "no folder".
+            let target = if input == "/" {
+                Ok(name)
+            } else {
+                crate::rename::folder_target(&from, &input)
+            };
+            target.and_then(|to| crate::rename::plan_folder(ix, &from, &to))
         } else {
-            crate::rename::target_rel(&from, &input)
+            let Some(i) = ix.by_path(path) else {
+                return self.flash("that note is no longer there");
+            };
+            let from = format!("{}.md", ix.vault.notes[i].rel);
+            let target = if input == "/" {
+                Ok(format!("{}.md", ix.vault.notes[i].name))
+            } else {
+                crate::rename::target_rel(&from, &input)
+            };
+            target.and_then(|to| crate::rename::plan(ix, i, &to))
         };
-        match target.and_then(|to| crate::rename::plan(ix, i, &to)) {
+        match plan {
             Ok(plan) => {
                 self.mode = Mode::ConfirmRename {
                     plan: Box::new(plan),
@@ -2441,25 +2493,48 @@ impl Home {
             self.reload_tree();
             return self.flash(format!("rename failed: {e}"));
         }
-        let (old, new) = (plan.from_path.clone(), plan.to_path.clone());
         if let Some(editor) = self.running_editor() {
-            let request = EditorRequest::Renamed {
-                from: old.clone(),
-                to: new.clone(),
-            };
-            self.call(editor, |e, host| e.editor(request, host));
+            for (from, to) in plan.moves() {
+                if from.extension().is_some_and(|e| e == "md") {
+                    let request = EditorRequest::Renamed { from, to };
+                    self.call(editor, |e, host| e.editor(request, host));
+                }
+            }
         }
-        if self.shown.as_deref() == Some(old.as_path()) {
-            self.shown = Some(new.clone());
+        self.shown = self.shown.as_deref().map(|p| plan.moved(p));
+        if let Some((p, _)) = self.pending.as_mut() {
+            *p = plan.moved(p);
         }
-        self.mru.retain(|p| p != &old);
+        for p in &mut self.mru {
+            *p = plan.moved(p);
+        }
+        self.history.moved(&plan.from_path, &plan.to_path);
+        if plan.folder {
+            let under = |r: &str| r == plan.from || r.starts_with(&format!("{}/", plan.from));
+            let expanded: Vec<String> =
+                self.expanded.iter().filter(|r| under(r)).cloned().collect();
+            for r in expanded {
+                self.expanded.remove(&r);
+                self.expanded
+                    .insert(format!("{}{}", plan.to, &r[plan.from.len()..]));
+            }
+        }
         self.reload_tree();
-        self.select_path(&new);
+        self.select_path(&plan.to_path);
         let links = plan.links();
-        let moved_own = plan.edits.iter().any(|e| e.path == plan.from_path) as usize;
+        let moved_own = plan
+            .edits
+            .iter()
+            .filter(|e| plan.moved(&e.path) != e.path)
+            .count();
         let files = plan.files() - moved_own;
         let moved = dir_of_rel(&plan.from) != dir_of_rel(&plan.to);
-        let verb = if moved { "moved" } else { "renamed" };
+        let verb = match (plan.folder, moved) {
+            (false, true) => "moved",
+            (false, false) => "renamed",
+            (true, true) => "moved the folder",
+            (true, false) => "renamed the folder",
+        };
         self.flash(if links == 0 {
             format!("{verb} to {} (no links needed updating)", plan.to)
         } else {
@@ -2498,27 +2573,42 @@ impl Home {
             ));
         let inner = block.inner(r);
         f.render_widget(block, r);
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(format!(" {}", plan.from), Style::new().fg(MUTED)),
-                Span::styled("  →  ", Style::new().fg(ACCENT)),
-                Span::styled(
-                    plan.to.clone(),
-                    Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::styled(
-                match plan.links() {
-                    0 => " No links point to it, so only the file moves.".to_string(),
+        let slash = if plan.folder { "/" } else { "" };
+        let mut lines = vec![Line::from(vec![
+            Span::styled(format!(" {}{slash}", plan.from), Style::new().fg(MUTED)),
+            Span::styled("  →  ", Style::new().fg(ACCENT)),
+            Span::styled(
+                format!("{}{slash}", plan.to),
+                Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+            ),
+        ])];
+        if plan.folder {
+            let notes = plan.moving.iter().filter(|r| r.ends_with(".md")).count();
+            let others = plan.moving.len() - notes;
+            lines.push(Line::styled(
+                match others {
+                    0 => format!(" {} move with it.", plural(notes, "note")),
                     n => format!(
-                        " {} in {} will be updated:",
-                        plural(n, "link"),
-                        plural(plan.files(), "file")
+                        " {} and {} move with it.",
+                        plural(notes, "note"),
+                        plural(n, "other file")
                     ),
                 },
                 Style::new().fg(NOTE),
-            ),
-        ];
+            ));
+        }
+        lines.extend([Line::styled(
+            match plan.links() {
+                0 if plan.folder => " No links need changing.".to_string(),
+                0 => " No links point to it, so only the file moves.".to_string(),
+                n => format!(
+                    " {} in {} will be updated:",
+                    plural(n, "link"),
+                    plural(plan.files(), "file")
+                ),
+            },
+            Style::new().fg(NOTE),
+        )]);
         for w in &plan.warnings {
             lines.push(Line::styled(format!(" ! {w}"), Style::new().fg(HIT)));
         }
@@ -2565,12 +2655,9 @@ impl Home {
 
     // ---------- delete & undo ----------
 
-    /// The note or board to delete: the tree's selection, else the note in the pane.
+    /// The note, board or folder to delete: the tree's selection, else the note in the pane.
     fn delete_target(&self) -> Result<PathBuf, &'static str> {
         match (self.focus, self.current()) {
-            (Focus::Notes, Some(it)) if it.kind == ItemKind::Folder => {
-                Err("cold-lava doesn't delete folders yet: delete the notes in it, or use Obsidian")
-            }
             (Focus::Notes, Some(_)) => self.current_path().ok_or("select a note to delete"),
             _ => self.rename_target().ok_or("select a note to delete"),
         }
@@ -2585,13 +2672,13 @@ impl Home {
             (_, Err(why)) => return self.flash(why),
         };
         self.mode = Mode::Normal;
-        if self.shown.as_deref() == Some(path.as_path()) {
+        if self.shown.as_deref().is_some_and(|s| s.starts_with(&path)) {
             self.save_editor();
         }
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Ok(contents) = trash::Contents::read(&path) else {
             self.reload_tree();
             return self.flash("that note is no longer there");
         };
@@ -2600,22 +2687,27 @@ impl Home {
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
         let rel = rel.trim_end_matches(".md").to_string();
+        // The note, or every note in the folder, and the links to them from outside it.
         let mut backlinks = Vec::new();
-        if let Some(ix) = self.core.as_ref().map(|c| &c.index)
-            && let Some(i) = ix.by_path(&path)
-        {
-            backlinks = ix
-                .backlinks(i)
-                .iter()
-                .filter(|b| b.from != i)
-                .map(|b| BackRow {
-                    name: ix.vault.notes[b.from].name.clone(),
-                    path: ix.path(b.from),
-                    line: b.line,
-                    context: b.context.clone(),
-                })
-                .collect();
+        let mut notes = 0;
+        if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
+            let inside = |i: usize| ix.vault.notes[i].path.starts_with(&path);
+            for i in (0..ix.vault.notes.len()).filter(|&i| inside(i)) {
+                notes += 1;
+                backlinks.extend(ix.backlinks(i).iter().filter(|b| !inside(b.from)).map(|b| {
+                    BackRow {
+                        name: ix.vault.notes[b.from].name.clone(),
+                        path: ix.path(b.from),
+                        line: b.line,
+                        context: b.context.clone(),
+                    }
+                }));
+            }
         }
+        // A line linking to two notes in the folder is one row.
+        backlinks.sort_by_cached_key(|b| (b.name.to_lowercase(), b.path.clone(), b.line));
+        backlinks.dedup_by(|a, b| a.path == b.path && a.line == b.line);
+        let notes = path.is_dir().then_some(notes);
         let goes = match TrashOption::of_vault(&root) {
             TrashOption::System if trash::system_bin().is_some() => "goes to the system trash.",
             TrashOption::System | TrashOption::Local => "goes to the vault's .trash folder.",
@@ -2626,7 +2718,8 @@ impl Home {
         self.mode = Mode::ConfirmDelete(Box::new(PendingDelete {
             path,
             rel,
-            bytes,
+            contents,
+            notes,
             backlinks,
             goes: goes.to_string(),
             changed,
@@ -2670,7 +2763,7 @@ impl Home {
             return;
         };
         let system = trash::system_bin();
-        let t = match trash::delete(&root, &p.path, &p.bytes, system.as_ref()) {
+        let t = match trash::delete(&root, &p.path, &p.contents, system.as_ref()) {
             Ok(t) => t,
             Err(crate::write::WriteError::Changed(_)) => return self.start_delete(true),
             Err(e) => {
@@ -2681,18 +2774,29 @@ impl Home {
         let Mode::ConfirmDelete(p) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return;
         };
-        let was_shown = self.shown.as_deref() == Some(p.path.as_path());
-        if was_shown {
-            if let Some(editor) = self.running_editor() {
-                let request = EditorRequest::Deleted {
-                    note: p.path.clone(),
-                };
+        let was_shown = self
+            .shown
+            .as_deref()
+            .is_some_and(|s| s.starts_with(&p.path));
+        if let Some(editor) = self.running_editor() {
+            let gone: Vec<PathBuf> = match self.core.as_ref() {
+                Some(core) if p.notes.is_some() => (core.index.vault.notes.iter())
+                    .filter(|n| n.path.starts_with(&p.path))
+                    .map(|n| n.path.clone())
+                    .collect(),
+                _ if was_shown => vec![p.path.clone()],
+                _ => Vec::new(),
+            };
+            for note in gone {
+                let request = EditorRequest::Deleted { note };
                 self.call(editor, |e, host| e.editor(request, host));
             }
+        }
+        if was_shown {
             self.shown = None;
             self.pending = None;
         }
-        self.mru.retain(|m| m != &p.path);
+        self.mru.retain(|m| !m.starts_with(&p.path));
         self.history.forget(&p.path);
         self.reload_tree();
         if was_shown {
@@ -2741,6 +2845,12 @@ impl Home {
             return self.flash(format!("couldn't put it back: {e}"));
         }
         self.reload_tree();
+        if to.is_dir()
+            && let Some(rel) = self.root.as_deref().and_then(|r| to.strip_prefix(r).ok())
+        {
+            self.expanded
+                .insert(rel.to_string_lossy().replace('\\', "/"));
+        }
         self.select_path(to);
         if to.extension().is_some_and(|e| e == "md") {
             self.pending = None;
@@ -2758,10 +2868,11 @@ impl Home {
         let (title, hint, lines, detail, scroll) = match &self.mode {
             Mode::ConfirmDelete(p) => {
                 let name = p.rel.rsplit('/').next().unwrap_or(&p.rel);
+                let slash = if p.notes.is_some() { "/" } else { "" };
                 let mut lines = vec![Line::from(vec![
                     Span::styled(" Delete ", Style::new().fg(NOTE)),
                     Span::styled(
-                        p.rel.clone(),
+                        format!("{}{slash}", p.rel),
                         Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("?", Style::new().fg(NOTE)),
@@ -2779,8 +2890,27 @@ impl Home {
                     }
                 }
                 let note = p.path.extension().is_some_and(|e| e == "md");
+                if let Some(n) = p.notes {
+                    lines.push(Line::styled(
+                        format!(
+                            " It holds {}, and everything else in it.",
+                            plural(n, "note")
+                        ),
+                        Style::new().fg(NOTE),
+                    ));
+                }
                 lines.push(Line::styled(
                     match names.len() {
+                        0 if p.notes.is_some() => " Nothing outside it links to them.".to_string(),
+                        n if p.notes.is_some() => format!(
+                            " {} from outside: {}. Their links will become unresolved.",
+                            if n == 1 {
+                                "1 note links to them".to_string()
+                            } else {
+                                format!("{n} notes link to them")
+                            },
+                            names.join(", ")
+                        ),
                         0 if !note => " Links to it in notes will become unresolved.".to_string(),
                         0 => " Nothing links to it.".to_string(),
                         n => format!(
@@ -3131,16 +3261,7 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return Ok(());
         };
-        // In the selected folder, or next to the selected note.
-        let folder = match self.current() {
-            Some(it) if it.kind == ItemKind::Folder => it.rel.clone(),
-            Some(it) => it
-                .rel
-                .rsplit_once('/')
-                .map(|(d, _)| d.to_string())
-                .unwrap_or_default(),
-            None => String::new(),
-        };
+        let folder = self.selected_dir();
         let file = if name.ends_with(".md") {
             name.to_string()
         } else {
@@ -3185,6 +3306,37 @@ impl Home {
             self.focus_pane();
         }
         Ok(())
+    }
+
+    /// Where new notes and folders go: the selected folder, or the selected note's.
+    fn selected_dir(&self) -> String {
+        match self.current() {
+            Some(it) if it.kind == ItemKind::Folder => it.rel.clone(),
+            Some(it) => dir_of_rel(&it.rel).to_string(),
+            None => String::new(),
+        }
+    }
+
+    fn create_folder(&mut self, name: &str) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let parent = self.selected_dir();
+        let name = name.trim_matches('/');
+        let rel = if parent.is_empty() {
+            name.to_string()
+        } else {
+            format!("{parent}/{name}")
+        };
+        let made = crate::rename::check_path(&rel)
+            .and_then(|()| Ok(crate::write::create_dir(&root.join(&rel))?));
+        if let Err(e) = made {
+            return self.flash(format!("can't create {rel}/: {e}"));
+        }
+        self.flash(format!("created {rel}/"));
+        self.filter.clear();
+        self.reload_tree();
+        self.select_path(&root.join(&rel));
     }
 
     fn add_vault(&mut self, text: &str) {
@@ -3310,6 +3462,15 @@ impl Home {
                 templates,
                 template,
             } => draw_new_note(f, main, name, templates, *template),
+            Mode::NewFolder(name) => {
+                prompt(
+                    f,
+                    main,
+                    " new folder · ⏎ create · Esc cancel ",
+                    "folder name: ",
+                    name,
+                );
+            }
             Mode::AddVault(name) => {
                 prompt(
                     f,

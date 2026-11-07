@@ -55,7 +55,7 @@ cold-lava daily ~/vault [DATE]          # open (or create) a day's daily note
 cold-lava agenda ~/vault --json         # dated tasks and daily notes, for other programs
 cold-lava items ~/vault task            # every task (or list, heading, block), one per line
 cold-lava search ~/vault WORDS…         # full-text search
-cold-lava rename ~/vault NOTE NEW       # rename or move a note, updating every link to it
+cold-lava rename ~/vault NOTE NEW       # rename or move a note or folder, updating every link
 cold-lava task toggle FILE:LINE         # tick / untick a task
 cold-lava types ~/vault                 # the vault's types, and what's wrong with them
 ```
@@ -118,11 +118,12 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `Ctrl-o` / `Alt-←` / `Backspace`, `Alt-→` | back to where you were, forward again (see below) |
 | `:` | command palette: run any command by name (its key is shown next to it) |
 | `s` (or `Ctrl-f`) | search the text of every note |
-| `R` / `m` | rename / move the note, updating every link to it (with a preview first) |
-| `d` / `u` | delete the note or whiteboard (to the trash, after showing what links to it) / undo |
+| `R` / `m` | rename / move the note or folder, updating every link to it (with a preview first) |
+| `d` / `u` | delete the note, whiteboard or folder (to the trash, after showing what links to it) / undo |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder (`Tab` picks a template) / add a vault |
+| `N` | new folder in the selected folder |
 | `z`, `e`, `O` | zoom the editor · edit in `$EDITOR` full screen · open in Obsidian |
 | `,` | which key: this screen's commands by group; type one's key to run it, `Esc` closes |
 | `?` | help: every key, with a longer description |
@@ -300,32 +301,40 @@ note tagged `#volcano`, a [type](#types) the vault defines.
 
 A link to a note that doesn't exist yet still creates a plain note when you follow it.
 
-### Renaming and moving notes
+### Renaming and moving notes and folders
 
 ```bash
 cold-lava rename ~/vault "Mount St. Helens" "Mount Saint Helens" --dry-run   # show what would change
 cold-lava rename ~/vault Lava Geology/                                      # move, keeping the name
 cold-lava rename ~/vault Lava "Geology/Hot Rock"                            # move and rename
+cold-lava rename ~/vault People Volcanologists                              # rename a folder
 ```
 
-In the main menu, press `R` to rename the selected note or `m` to move it to another folder:
-you see every link that will change before confirming.
+In the main menu, press `R` to rename the selected note or folder, or `m` to move it into another
+folder (`/` is the vault's top): you see every link that will change before confirming. A
+folder takes everything in it along, attachments and empty folders included. It can't move into
+itself or onto a folder that exists, and hidden folders (`.obsidian`, `.trash`) are left alone.
+`N` makes a new, empty folder in the selected one (Obsidian shows empty folders too).
 
-### Deleting notes
+Every link to what moves is updated, the way Obsidian does it: `[[wikilinks]]` with their
+aliases, headings and embeds, Markdown links (relative or vault paths), links to attachments,
+links in frontmatter, and whiteboard file cards and text cards. Each link keeps its style: a
+short `[[Name]]` stays short unless another note has the same name, `[[Folder/Name]]` keeps its
+path, and relative Markdown links are recomputed. When a note moves folder, its own relative
+links are fixed too. A short `[[Name]]` survives a folder move, except when the move makes
+another note called Name the one closest to the vault's top (Obsidian picks that one): then it
+becomes a path, so it still leads to the same note. Code is never touched. If any file changes
+between the plan and writing it, nothing is changed.
+
+### Deleting notes and folders
 
 Press `d` on a note (or whiteboard) to delete it. First you see the notes that link to it, with
 the line: their links will become unresolved, and aren't rewritten (Obsidian doesn't either).
-cold-lava never deletes for good. The note goes where the vault's Obsidian setting
-("Deleted files" in Files and links) says: the system trash by default, or the vault's `.trash`
-folder. A vault set to delete permanently gets `.trash` too. `u` puts the last deleted note back
-(the last 20 deletes, until you quit). Folders can't be deleted yet.
-
-Every link to the note is updated, the way Obsidian does it: `[[wikilinks]]` with their
-aliases, headings and embeds, Markdown links (relative or vault paths), links in frontmatter,
-and whiteboard note cards and text cards. Each link keeps its style: a short `[[Name]]` stays
-short unless another note has the same name, `[[Folder/Name]]` keeps its path, and relative
-Markdown links are recomputed. When a note moves folder, its own relative links are fixed too.
-Code is never touched. If any file changes between the plan and writing it, nothing is changed.
+On a folder, `d` says how many notes it holds and lists the links into it from outside, then
+deletes the whole folder. cold-lava never deletes for good. It goes where the vault's Obsidian
+setting ("Deleted files" in Files and links) says: the system trash by default, or the vault's
+`.trash` folder. A vault set to delete permanently gets `.trash` too. `u` puts the last deleted
+note or folder back (the last 20 deletes, until you quit).
 
 ### Agenda, daily notes and tasks (for scripts and status bars)
 

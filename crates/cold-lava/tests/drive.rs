@@ -98,6 +98,86 @@ fn deletes_a_note_to_the_system_trash_and_undoes_it() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Links in notes that lead nowhere, as `note name: target` (names survive folder moves).
+fn unresolved(vault: &Path) -> Vec<String> {
+    use cold_lava_engine::{index::Index, rename::Files, vault};
+    let ix = Index::build(vault::scan(vault).unwrap());
+    let files = Files::of_vault(&ix);
+    let mut out = Vec::new();
+    for n in &ix.vault.notes {
+        let dir = n.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        for r in &n.refs {
+            if files.resolve(dir, &r.target).is_none() {
+                out.push(format!("{}: {}", n.name, r.target));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn renames_moves_creates_and_deletes_folders_keeping_links() {
+    let dir = sandbox("folders");
+    let home = dir.join("home");
+    let vault = dir.join("example-vault");
+    std::fs::write(
+        vault.join("Inbox/Links.md"),
+        "---\nrelated: \"[[People/Pliny the Younger]]\"\n---\n# Links\n\
+         [[People/David A. Johnston]] and [Krafft](../People/Katia%20and%20Maurice%20Krafft.md) \
+         and [[Pliny the Younger]].\n",
+    )
+    .unwrap();
+    let canvas = "{\"nodes\":[\n\
+        {\"id\":\"a\",\"type\":\"file\",\"file\":\"People/David A. Johnston.md\",\"x\":0,\"y\":0,\"width\":400,\"height\":400},\n\
+        {\"id\":\"b\",\"type\":\"text\",\"text\":\"[[People/Pliny the Younger]]\",\"x\":500,\"y\":0,\"width\":400,\"height\":100}\n\
+        ],\"edges\":[]}\n";
+    std::fs::write(vault.join("Inbox/People.canvas"), canvas).unwrap();
+    let before = unresolved(&vault);
+    let out = drive_with(
+        "folders.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = unresolved(&vault);
+    eprintln!(
+        "unresolved links: {} before, {} after",
+        before.len(),
+        after.len()
+    );
+    assert_eq!(after, before, "every link still leads where it did");
+    assert!(!vault.join("People").exists());
+    let moved = vault.join("Guide/Volcanologists");
+    assert!(moved.join("David A. Johnston.md").is_file());
+    assert!(
+        moved.join("Field Notes").is_dir(),
+        "the new folder came back too"
+    );
+    assert_eq!(
+        std::fs::read_to_string(vault.join("Inbox/Links.md")).unwrap(),
+        "---\nrelated: \"[[Guide/Volcanologists/Pliny the Younger]]\"\n---\n# Links\n\
+         [[Guide/Volcanologists/David A. Johnston]] and \
+         [Krafft](../Guide/Volcanologists/Katia%20and%20Maurice%20Krafft.md) \
+         and [[Pliny the Younger]].\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(vault.join("Inbox/People.canvas")).unwrap(),
+        canvas.replace("People/", "Guide/Volcanologists/")
+    );
+    assert!(
+        files_ending(&system_trash(&home), "").is_empty(),
+        "undo took the folder out of the trash"
+    );
+    assert!(!vault.join(".trash").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn creates_a_note_from_a_template() {
     let dir = sandbox("template");
