@@ -9,6 +9,16 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Duplicating and merging notes. `D` (`note.duplicate`) copies the selected note or whiteboard
+  to `Name 1` beside it (Obsidian's naming) and opens it. `M` (`note.merge`) merges the
+  selected note into another picked in the switcher, like Obsidian's Note composer: its text is
+  appended after a blank line, its frontmatter merged line by line (missing keys copied, lists
+  such as `tags` and `aliases` joined, conflicting values kept as the target has them and listed),
+  its name added to the target's aliases, every link to it rewritten to the target in its own
+  style (headings, embeds, Markdown and relative links, frontmatter, whiteboard cards,
+  bookmarks), and it goes to the trash. A preview shows all of it first; nothing is written if a
+  file changed since. `u` undoes the whole merge.
+
 - Bookmarks, shared with Obsidian: they live in Obsidian's own `.obsidian/bookmarks.json`, so
   a bookmark made in either app shows in both, and a change Obsidian makes shows at once. `B`
   (`note.bookmark`) bookmarks the selected note or folder, or in the reader the heading you are

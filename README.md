@@ -120,7 +120,8 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `:` | command palette: run any command by name (its key is shown next to it) |
 | `s` (or `Ctrl-f`) | search the text of every note |
 | `R` / `m` | rename / move the note or folder, updating every link to it (with a preview first) |
-| `d` / `u` | delete the note, whiteboard or folder (to the trash, after showing what links to it) / undo |
+| `d` / `u` | delete the note, whiteboard or folder (to the trash, after showing what links to it) / undo the last delete or merge |
+| `D` / `M` | duplicate the note or whiteboard / merge the note into another, links and all (with a preview first) |
 | `space` | mark the selected note or folder, to move, delete or tag several at once (`Esc` clears the marks) |
 | `#` | add a tag to the marked notes (or the selected one); `-tag` removes it |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
@@ -354,6 +355,31 @@ deletes the whole folder. cold-lava never deletes for good. It goes where the va
 setting ("Deleted files" in Files and links) says: the system trash by default, or the vault's
 `.trash` folder. A vault set to delete permanently gets `.trash` too. `u` puts the last deleted
 note or folder back (the last 20 deletes, until you quit).
+
+### Duplicating and merging notes
+
+`D` (`note.duplicate`) copies the selected note or whiteboard beside it as `Name 1` (the next
+free number, as Obsidian names copies) and opens the copy; `R` renames it. Links aren't touched:
+it is a new note.
+
+`M` (`note.merge`) merges the selected note into another, like Obsidian's Note composer: pick
+the other note in the switcher, check the preview, confirm.
+
+- Its text, without its frontmatter, goes at the end of the other note after a blank line.
+- Its frontmatter is merged line by line, never rewritten: keys the other note lacks are copied,
+  `tags`, `aliases` and other lists both have are joined, and a value both have differently stays
+  the other note's (the preview lists each). Its name is added to the other note's `aliases`, so
+  searching for it still finds the note (Obsidian doesn't do this).
+- Every link to it is pointed at the other note in its own style, with the same machinery as a
+  rename: `[[Name#Heading|text]]` becomes `[[Other#Heading|text]]` (the heading now lives
+  there), embeds, Markdown and relative links, frontmatter links, whiteboard cards and bookmarks
+  follow. Its own relative links are fixed for the other note's folder.
+- It goes to the trash, like `d`.
+
+The preview shows what is appended, the frontmatter changes and conflicts, and every link that
+will change. If any of those files changes before you confirm, nothing is written. `u` undoes the
+whole merge: the note comes back from the trash and every rewritten file gets its old text back,
+unless one of them was edited since (then nothing is undone).
 
 ### Several notes at once
 

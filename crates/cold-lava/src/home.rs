@@ -355,10 +355,12 @@ enum Mode {
     Help,
     /// Which key: the commands this screen has, by group, until a key is typed.
     Keys,
-    /// Quick switcher: jump to a note by (fuzzy) name.
+    /// Quick switcher: jump to a note by (fuzzy) name, or with `merging` pick the note to merge
+    /// that one into.
     Switcher {
         query: String,
         sel: usize,
+        merging: Option<PathBuf>,
     },
     /// Command palette: run a command by (fuzzy) name.
     Palette {
@@ -391,6 +393,11 @@ enum Mode {
         scroll: usize,
         /// It moves the marked items, so the marks are done with afterwards.
         marked: bool,
+    },
+    /// Showing what merging a note into another will change before doing it.
+    ConfirmMerge {
+        plan: Box<crate::merge::Merge>,
+        scroll: usize,
     },
     /// Asking before a note or folder goes to the trash.
     ConfirmDelete(Box<PendingDelete>),
@@ -438,7 +445,14 @@ struct PendingDelete {
     scroll: usize,
 }
 
-/// Deletes (one item, or the marked ones) that `note.undo-delete` can still put back.
+/// Something `note.undo-delete` can put back.
+enum Undo {
+    /// A delete: one item, or the marked ones.
+    Delete(Vec<Trashed>),
+    Merge(Box<crate::merge::Merged>),
+}
+
+/// Deletes and merges that `note.undo-delete` can still put back.
 const UNDO_DELETES: usize = 20;
 
 /// What a peek looks at: Tab sweeps through these and Enter goes where the selected one leads.
@@ -539,8 +553,8 @@ pub struct Home {
     effects_left: usize,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
-    /// What was deleted this session, most recent last: each delete's items together.
-    trashed: Vec<Vec<Trashed>>,
+    /// What was deleted or merged this session, most recent last.
+    undo: Vec<Undo>,
     /// Marked tree rows (vault-relative, as `Item::rel`), for moving, deleting and tagging
     /// several at once.
     marks: BTreeSet<String>,
@@ -614,7 +628,7 @@ impl Home {
             effects_left: EFFECTS_PER_FRAME,
             shown: None,
             pending: None,
-            trashed: Vec::new(),
+            undo: Vec::new(),
             marks: BTreeSet::new(),
             folded: HashSet::new(),
             go_to: None,
@@ -1437,6 +1451,10 @@ impl Home {
             self.delete_key(k);
             return Ok(());
         }
+        if matches!(self.mode, Mode::ConfirmMerge { .. }) {
+            self.merge_key(k);
+            return Ok(());
+        }
         if matches!(self.mode, Mode::Keys) {
             self.mode = Mode::Normal;
             if !self.key_hints().iter().any(|h| h.key == Key::from(k)) {
@@ -1571,6 +1589,7 @@ impl Home {
             | Mode::Tag { .. }
             | Mode::ConfirmRename { .. }
             | Mode::ConfirmDelete(_)
+            | Mode::ConfirmMerge { .. }
             | Mode::ConfirmRestore(_)
             | Mode::Hints(_)
             | Mode::Outline { .. }
@@ -1621,12 +1640,17 @@ impl Home {
                 !self.filter.is_empty() || !self.marks.is_empty()
             }
             MenuCommand::Core(
-                MenuAction::NewNote | MenuAction::NewFolder | MenuAction::Delete | MenuAction::Tag,
+                MenuAction::NewNote
+                | MenuAction::NewFolder
+                | MenuAction::Delete
+                | MenuAction::Tag
+                | MenuAction::Duplicate,
             ) => self.root.is_some(),
+            MenuCommand::Core(MenuAction::Merge) => self.core.is_some(),
             MenuCommand::Core(MenuAction::Mark) => {
                 self.focus == Focus::Notes && self.current().is_some()
             }
-            MenuCommand::Core(MenuAction::UndoDelete) => !self.trashed.is_empty(),
+            MenuCommand::Core(MenuAction::UndoDelete) => !self.undo.is_empty(),
             MenuCommand::Core(MenuAction::Bookmarks | MenuAction::Bookmark) => self.core.is_some(),
             MenuCommand::Core(MenuAction::BookmarkSearch) => {
                 matches!(self.mode, Mode::Search { .. })
@@ -1914,6 +1938,8 @@ impl Home {
             MenuAction::Move => self.start_rename(true),
             MenuAction::Delete => self.start_delete(false),
             MenuAction::UndoDelete => self.undo_delete(),
+            MenuAction::Duplicate => self.duplicate(),
+            MenuAction::Merge => self.start_merge(),
             MenuAction::Search => self.open_search(),
             MenuAction::ToggleBacklinks => {
                 self.show_backlinks = !self.show_backlinks;
@@ -2065,6 +2091,7 @@ impl Home {
         self.mode = Mode::Switcher {
             query: String::new(),
             sel: 0,
+            merging: None,
         };
     }
 
@@ -2124,6 +2151,19 @@ impl Home {
         hits
     }
 
+    /// The switcher's list, without the note being merged when it picks where to merge it.
+    fn switcher_targets(
+        &self,
+        query: &str,
+        merging: Option<&Path>,
+    ) -> Vec<crate::search::SwitchHit> {
+        let mut hits = self.switcher_hits(query);
+        if let (Some(source), Some(ix)) = (merging, self.core.as_ref().map(|c| &c.index)) {
+            hits.retain(|h| ix.vault.notes[h.note].path != source);
+        }
+        hits
+    }
+
     /// Whether the switcher offers "create note" (a query that isn't exactly an existing name).
     fn offers_create(&self, query: &str) -> bool {
         let q = vault::search_key(query.trim());
@@ -2137,12 +2177,30 @@ impl Home {
     }
 
     fn switcher_key(&mut self, k: KeyEvent) {
-        let Mode::Switcher { query, sel } = &mut self.mode else {
+        let Mode::Switcher {
+            query,
+            sel,
+            merging,
+        } = &mut self.mode
+        else {
             return;
         };
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let (mut q, mut s) = (query.clone(), *sel);
-        let total = self.switcher_hits(&q).len() + self.offers_create(&q) as usize;
+        let (mut q, mut s, merging) = (query.clone(), *sel, merging.clone());
+        if let Some(source) = merging.as_deref()
+            && k.code == KeyCode::Enter
+        {
+            let hits = self.switcher_targets(&q, Some(source));
+            self.mode = Mode::Normal;
+            self.back_to_editor = false;
+            let ix = self.core.as_ref().map(|c| &c.index);
+            return match hits.get(s).zip(ix).map(|(h, ix)| ix.path(h.note)) {
+                Some(target) => self.plan_merge(source, &target),
+                None => self.flash("merge cancelled: no note picked"),
+            };
+        }
+        let create = merging.is_none() && self.offers_create(&q);
+        let total = self.switcher_targets(&q, merging.as_deref()).len() + create as usize;
         match k.code {
             KeyCode::Esc => return self.close_overlay(),
             KeyCode::Down | KeyCode::Tab => s = (s + 1).min(total.saturating_sub(1)),
@@ -2190,7 +2248,11 @@ impl Home {
             }
             _ => {}
         }
-        self.mode = Mode::Switcher { query: q, sel: s };
+        self.mode = Mode::Switcher {
+            query: q,
+            sel: s,
+            merging,
+        };
     }
 
     /// The outline's rows, in the note's order: (heading, match).
@@ -3200,37 +3262,291 @@ impl Home {
         }
         lines.push(Line::raw(""));
         for e in &plan.edits {
-            detail.push(Line::from(vec![
-                Span::styled(
-                    format!(" ▤ {}", e.file.trim_end_matches(".md")),
-                    Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  {} link{}", e.links, if e.links == 1 { "" } else { "s" }),
-                    Style::new().fg(DIM),
-                ),
-            ]));
-            for c in e.changes.iter().take(3) {
-                let mut t: String = c
-                    .after
-                    .trim()
-                    .chars()
-                    .take(inner.width.saturating_sub(10) as usize)
-                    .collect();
-                if c.after.trim().chars().count() > t.chars().count() {
-                    t.push('…');
+            detail.extend(link_changes(e, inner.width));
+        }
+        let room = (inner.height as usize).saturating_sub(lines.len());
+        let start = (*scroll).min(detail.len().saturating_sub(room));
+        lines.extend(detail.into_iter().skip(start).take(room));
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
+    // ---------- duplicate & merge ----------
+
+    /// Copy the selected note or whiteboard to `Name 1` beside it and open the copy.
+    fn duplicate(&mut self) {
+        let Ok(path) = self.delete_target() else {
+            return self.flash("select a note or whiteboard to duplicate");
+        };
+        if path.is_dir() {
+            return self.flash("only notes and whiteboards can be duplicated");
+        }
+        if self.shown.as_deref() == Some(path.as_path()) {
+            self.save_editor();
+        }
+        let copy = match crate::merge::duplicate(&path) {
+            Ok(copy) => copy,
+            Err(e) => return self.flash(format!("can't duplicate: {e}")),
+        };
+        self.reload_tree();
+        if copy.extension().is_some_and(|e| e == "md") {
+            let from = self.here();
+            self.open_found(from, &copy, None);
+        } else {
+            self.select_path(&copy);
+        }
+        let name = copy.file_stem().unwrap_or_default().to_string_lossy();
+        let rename = self.keys.first_label("note.rename");
+        self.flash(format!("duplicated as {name} · {rename} rename"));
+    }
+
+    /// Pick the note to merge the selected one into, in the quick switcher.
+    fn start_merge(&mut self) {
+        let Some(source) = self.rename_target() else {
+            return self.flash("select a note to merge into another");
+        };
+        self.open_switcher();
+        if let Mode::Switcher { merging, .. } = &mut self.mode {
+            *merging = Some(source);
+        }
+    }
+
+    fn plan_merge(&mut self, source: &Path, target: &Path) {
+        self.save_editor();
+        self.reload_tree();
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
+        let (Some(s), Some(t)) = (ix.by_path(source), ix.by_path(target)) else {
+            return self.flash("that note is no longer there");
+        };
+        match crate::merge::plan(ix, s, t) {
+            Ok(plan) => {
+                self.mode = Mode::ConfirmMerge {
+                    plan: Box::new(plan),
+                    scroll: 0,
                 }
-                detail.push(Line::from(vec![
-                    Span::styled(format!("   {:>4}  ", c.line), Style::new().fg(DIM)),
-                    Span::styled(t, Style::new().fg(NOTE)),
-                ]));
             }
-            if e.changes.len() > 3 {
-                detail.push(Line::styled(
-                    format!("         … {} more lines", e.changes.len() - 3),
-                    Style::new().fg(DIM),
-                ));
+            Err(e) => self.flash(format!("can't merge: {e}")),
+        }
+    }
+
+    fn merge_key(&mut self, k: KeyEvent) {
+        let Mode::ConfirmMerge { scroll, .. } = &mut self.mode else {
+            return;
+        };
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('n') => {
+                self.mode = Mode::Normal;
+                self.flash("merge cancelled");
             }
+            KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
+            KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Char('y') => {
+                if let Mode::ConfirmMerge { plan, .. } =
+                    std::mem::replace(&mut self.mode, Mode::Normal)
+                {
+                    self.apply_merge(*plan);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_merge(&mut self, plan: crate::merge::Merge) {
+        let done = match crate::merge::apply(&plan, trash::system_bin().as_ref()) {
+            Ok(done) => done,
+            Err(e) => {
+                self.reload_tree();
+                return self.flash(format!("merge failed: {e:#}"));
+            }
+        };
+        let (source, target) = (&plan.source_path, &plan.target_path);
+        if let Some(editor) = self.running_editor() {
+            let request = EditorRequest::Deleted {
+                note: source.clone(),
+            };
+            self.call(editor, |e, host| e.editor(request, host));
+        }
+        let was_shown = self.shown.as_ref() == Some(source);
+        if was_shown {
+            self.shown = None;
+        }
+        if self.pending.as_ref().is_some_and(|(p, _)| p == source) {
+            self.pending = None;
+        }
+        for p in &mut self.mru {
+            if p == source {
+                *p = target.clone();
+            }
+        }
+        let mut seen = HashSet::new();
+        self.mru.retain(|p| seen.insert(p.clone()));
+        self.history.moved(source, target);
+        self.marks.remove(&plan.source);
+        self.reload_tree();
+        if self.shown.as_ref() == Some(target) {
+            // The editor reloads it itself: wiping the source checks every buffer's file.
+            if self.running_editor().is_none() {
+                self.reload_reader();
+            }
+            self.select_path(target);
+        } else {
+            let from = self.here();
+            self.open_found(from, target, None);
+        }
+        let name = |rel: &str| {
+            let rel = rel.trim_end_matches(".md");
+            rel.rsplit('/').next().unwrap_or(rel).to_string()
+        };
+        let (s, t) = (name(&plan.source), name(&plan.target));
+        let undo = self.keys.first_label("note.undo-delete");
+        let mut msg = format!("merged {s} into {t}");
+        if plan.links() > 0 {
+            msg.push_str(&format!(
+                " · {} now lead there",
+                plural(plan.links(), "link")
+            ));
+        }
+        self.flash(format!("{msg} · {undo} undo"));
+        self.push_undo(Undo::Merge(Box::new(done)));
+    }
+
+    fn undo_merge(&mut self, m: crate::merge::Merged) {
+        self.save_editor();
+        if let Err(e) = crate::merge::undo(&m) {
+            self.flash(format!("{e:#}"));
+            return self.push_undo(Undo::Merge(Box::new(m)));
+        }
+        self.reload_tree();
+        if self.shown.as_ref() == Some(&m.target_path) && self.running_editor().is_none() {
+            self.reload_reader();
+        }
+        let from = self.here();
+        self.open_found(from, &m.source_path, None);
+        let root = self.root.clone().unwrap_or_default();
+        let rel = |p: &Path| p.strip_prefix(&root).unwrap_or(p).display().to_string();
+        self.flash(format!(
+            "merge undone: {} is back and {} is as it was",
+            rel(&m.source_path),
+            rel(&m.target_path)
+        ));
+    }
+
+    fn draw_confirm_merge(&self, f: &mut Frame, area: Rect) {
+        let Mode::ConfirmMerge { plan, scroll } = &self.mode else {
+            return;
+        };
+        let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
+        let h = (area.height * 2 / 3).clamp(10.min(area.height), 34);
+        let r = Rect::new(
+            area.x + (area.width - w) / 2,
+            area.y + area.height / 6,
+            w,
+            h,
+        );
+        f.render_widget(Clear, r);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(ACCENT))
+            .title(Line::styled(
+                " Merge ",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ))
+            .title_bottom(Line::styled(
+                " ⏎ merge · Esc cancel · ↑↓ scroll ",
+                Style::new().fg(MUTED),
+            ));
+        let inner = block.inner(r);
+        f.render_widget(block, r);
+        let name = |rel: &str| {
+            let rel = rel.trim_end_matches(".md");
+            rel.rsplit('/').next().unwrap_or(rel).to_string()
+        };
+        let (s, t) = (name(&plan.source), name(&plan.target));
+        let text = Style::new().fg(NOTE);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    format!(" {}", plan.source.trim_end_matches(".md")),
+                    Style::new().fg(MUTED),
+                ),
+                Span::styled("  into  ", Style::new().fg(ACCENT)),
+                Span::styled(
+                    plan.target.trim_end_matches(".md").to_string(),
+                    text.add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::styled(
+                match plan.appended {
+                    0 => format!(" {s} has no text to add; it goes to the trash."),
+                    n => format!(
+                        " Its text ({}) goes at the end of {t}; {s} goes to the trash.",
+                        plural(n, "line")
+                    ),
+                },
+                text,
+            ),
+        ];
+        if plan.own_links > 0 {
+            lines.push(Line::styled(
+                format!(
+                    " {} in its text will be rewritten to work from {t}.",
+                    plural(plan.own_links, "link")
+                ),
+                text,
+            ));
+        }
+        for p in &plan.properties {
+            lines.push(match p {
+                crate::merge::Property::Added(key) => {
+                    Line::styled(format!(" + {key}: copied from {s}"), text)
+                }
+                crate::merge::Property::Joined { key, items } => {
+                    Line::styled(format!(" + {key}: {}", items.join(", ")), text)
+                }
+                crate::merge::Property::Alias(alias) => Line::styled(
+                    format!(" + aliases: {alias}, so searching for it still finds {t}"),
+                    text,
+                ),
+                crate::merge::Property::Kept { key, source } => Line::styled(
+                    format!(" ! {key}: {t}'s value stays ({s} had {source})"),
+                    Style::new().fg(HIT),
+                ),
+            });
+        }
+        lines.push(Line::styled(
+            match plan.links() {
+                0 => format!(" Nothing else links to {s}."),
+                n => format!(
+                    " {} in {} will lead to {t}:",
+                    plural(n, "link"),
+                    plural(
+                        plan.edits.len() + (plan.target_edit.links > 0) as usize,
+                        "file"
+                    )
+                ),
+            },
+            text,
+        ));
+        if let Some(b) = &plan.bookmarks {
+            lines.push(Line::styled(
+                format!(" {} will follow it.", plural(b.links, "bookmark")),
+                text,
+            ));
+        }
+        for w in &plan.warnings {
+            lines.push(Line::styled(format!(" ! {w}"), Style::new().fg(HIT)));
+        }
+        let undo = self.keys.first_label("note.undo-delete");
+        lines.push(Line::styled(
+            format!(" {undo} undoes the whole merge."),
+            Style::new().fg(MUTED),
+        ));
+        lines.push(Line::raw(""));
+        let mut detail = Vec::new();
+        let target = Some(&plan.target_edit).filter(|e| e.links > 0);
+        for e in plan.edits.iter().chain(target) {
+            detail.extend(link_changes(e, inner.width));
         }
         let room = (inner.height as usize).saturating_sub(lines.len());
         let start = (*scroll).min(detail.len().saturating_sub(room));
@@ -3344,8 +3660,8 @@ impl Home {
                 if yes {
                     self.restore(batch);
                 } else {
-                    self.trashed
-                        .push(batch.into_iter().map(|(t, _)| t).collect());
+                    let batch = batch.into_iter().map(|(t, _)| t).collect();
+                    self.undo.push(Undo::Delete(batch));
                     self.flash("undo cancelled");
                 }
             }
@@ -3440,17 +3756,24 @@ impl Home {
             None => msg,
         });
         if !batch.is_empty() {
-            self.trashed.push(batch);
-        }
-        if self.trashed.len() > UNDO_DELETES {
-            self.trashed.remove(0);
+            self.push_undo(Undo::Delete(batch));
         }
     }
 
-    /// Put the last delete back, or ask about free names for items whose paths are taken now.
+    fn push_undo(&mut self, u: Undo) {
+        self.undo.push(u);
+        if self.undo.len() > UNDO_DELETES {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Undo the last merge, or put the last delete back (asking about free names for items whose
+    /// paths are taken now).
     fn undo_delete(&mut self) {
-        let Some(batch) = self.trashed.pop() else {
-            return self.flash("nothing to undo");
+        let batch = match self.undo.pop() {
+            None => return self.flash("nothing to undo"),
+            Some(Undo::Merge(m)) => return self.undo_merge(*m),
+            Some(Undo::Delete(batch)) => batch,
         };
         let taken = batch.iter().any(|t| t.from.exists());
         let batch: Vec<(Trashed, PathBuf)> = (batch.into_iter())
@@ -3474,7 +3797,7 @@ impl Home {
                 Ok(()) => back.push(to),
                 Err(e) => {
                     failed.push(format!("couldn't put {} back: {e}", t.from.display()));
-                    self.trashed.push(vec![t]);
+                    self.undo.push(Undo::Delete(vec![t]));
                 }
             }
         }
@@ -4135,6 +4458,9 @@ impl Home {
         if matches!(self.mode, Mode::ConfirmDelete(_) | Mode::ConfirmRestore(_)) {
             self.draw_confirm_delete(f, main);
         }
+        if matches!(self.mode, Mode::ConfirmMerge { .. }) {
+            self.draw_confirm_merge(f, main);
+        }
         if let Mode::Rename { input, moving, .. } = &self.mode {
             let (title, label) = if *moving {
                 (" move to folder · ⏎ preview · Esc cancel ", "folder: ")
@@ -4288,15 +4614,28 @@ impl Home {
     }
 
     fn draw_switcher(&self, f: &mut Frame, area: Rect) {
-        let Mode::Switcher { query, sel } = &self.mode else {
+        let Mode::Switcher {
+            query,
+            sel,
+            merging,
+        } = &self.mode
+        else {
             return;
         };
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return;
         };
-        let inner = picker_frame(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close ");
-        let hits = self.switcher_hits(query);
-        let create = self.offers_create(query);
+        let inner = match merging.as_deref().and_then(|p| ix.by_path(p)) {
+            Some(i) => picker_frame(
+                f,
+                area,
+                &format!(" Merge {} into… ", ix.vault.notes[i].name),
+                " ↑↓ choose · ⏎ preview the merge · Esc cancel ",
+            ),
+            None => picker_frame(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close "),
+        };
+        let hits = self.switcher_targets(query, merging.as_deref());
+        let create = merging.is_none() && self.offers_create(query);
         let mut lines = vec![
             Line::from(vec![
                 Span::styled(" ▸ ", Style::new().fg(HIT)),
@@ -5237,6 +5576,39 @@ fn cut_left(text: &str, width: usize) -> String {
         kept.push(c);
     }
     std::iter::once('…').chain(kept.into_iter().rev()).collect()
+}
+
+/// A file's rewritten links in a preview: its name, then the first few changed lines.
+fn link_changes(e: &crate::rename::FileEdit, width: u16) -> Vec<Line<'static>> {
+    let mut out = vec![Line::from(vec![
+        Span::styled(
+            format!(" ▤ {}", e.file.trim_end_matches(".md")),
+            Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {} link{}", e.links, if e.links == 1 { "" } else { "s" }),
+            Style::new().fg(DIM),
+        ),
+    ])];
+    for c in e.changes.iter().take(3) {
+        let mut t: String = (c.after.trim().chars())
+            .take(width.saturating_sub(10) as usize)
+            .collect();
+        if c.after.trim().chars().count() > t.chars().count() {
+            t.push('…');
+        }
+        out.push(Line::from(vec![
+            Span::styled(format!("   {:>4}  ", c.line), Style::new().fg(DIM)),
+            Span::styled(t, Style::new().fg(NOTE)),
+        ]));
+    }
+    if e.changes.len() > 3 {
+        out.push(Line::styled(
+            format!("         … {} more lines", e.changes.len() - 3),
+            Style::new().fg(DIM),
+        ));
+    }
+    out
 }
 
 fn plural(n: usize, word: &str) -> String {
