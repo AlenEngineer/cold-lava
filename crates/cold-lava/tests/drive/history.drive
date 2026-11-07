@@ -39,9 +39,10 @@ keys backspace
 wait-for ▸ magma
 wait-for 3 notes · 3 matching lines
 wait-for Alt-→ ⟶ Lava
+# Wait for the reader's own hints: the notes' hints show under the search too.
 keys esc
-wait-gone ▸ magma
+wait-for reading · j
 keys esc
-wait-for Concepts/Lava.md
+wait-for ? help  q quit
 keys q
 exits 0

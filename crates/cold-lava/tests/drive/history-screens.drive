@@ -3,8 +3,9 @@ env COLD_LAVA_EDITOR=none
 wait-for example-vault
 keys p lava enter
 wait-for Concepts/Lava  reading
+wait-for reading · j
 keys esc
-wait-for Concepts/Lava.md
+wait-for ? help  q quit
 keys g
 wait-for Ctrl-o ⟵ Lava
 keys tab
@@ -27,7 +28,8 @@ keys q
 wait-for Concepts/Lava  reading
 wait-for Ctrl-o ⟵ graph
 wait-gone ⟶
+wait-for reading · j
 keys esc
-wait-for Concepts/Lava.md
+wait-for ? help  q quit
 keys q
 exits 0
