@@ -20,6 +20,7 @@ use crate::history::{Exit, History, Nav, Place};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
 use crate::reader::{Reader, Spot};
+use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::{board, templates, term, vault, whichkey};
 use anyhow::{Result, anyhow};
@@ -420,6 +421,8 @@ enum Mode {
         query: String,
         sel: usize,
     },
+    /// What nothing uses: orphan notes, unused attachments, empty folders, unresolved links.
+    Tidy(Box<TidyView>),
 }
 
 /// A note, board or folder about to go to the trash, as the user was shown it.
@@ -443,6 +446,8 @@ struct PendingDelete {
     /// It changed on disk after the first prompt, so this is the question again.
     changed: bool,
     scroll: usize,
+    /// Asked from the Tidy view, which comes back afterwards.
+    tidy: Option<Box<TidyView>>,
 }
 
 /// Something `note.undo-delete` can put back.
@@ -1332,6 +1337,9 @@ impl Home {
         }
         self.refresh_rows();
         self.refresh_backlinks();
+        if let (Mode::Tidy(view), Some(core)) = (&mut self.mode, &self.core) {
+            view.update(crate::tidy::report(&core.index));
+        }
         let shown_rel = self
             .shown
             .as_ref()
@@ -1427,6 +1435,10 @@ impl Home {
         }
         if matches!(self.mode, Mode::Bookmarks { .. }) {
             self.bookmarks_key(k);
+            return Ok(());
+        }
+        if matches!(self.mode, Mode::Tidy(_)) {
+            self.tidy_key(k);
             return Ok(());
         }
         if matches!(self.mode, Mode::Palette { .. }) {
@@ -1594,6 +1606,7 @@ impl Home {
             | Mode::Hints(_)
             | Mode::Outline { .. }
             | Mode::Bookmarks { .. }
+            | Mode::Tidy(_)
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
         }
@@ -1651,7 +1664,9 @@ impl Home {
                 self.focus == Focus::Notes && self.current().is_some()
             }
             MenuCommand::Core(MenuAction::UndoDelete) => !self.undo.is_empty(),
-            MenuCommand::Core(MenuAction::Bookmarks | MenuAction::Bookmark) => self.core.is_some(),
+            MenuCommand::Core(MenuAction::Bookmarks | MenuAction::Bookmark | MenuAction::Tidy) => {
+                self.core.is_some()
+            }
             MenuCommand::Core(MenuAction::BookmarkSearch) => {
                 matches!(self.mode, Mode::Search { .. })
             }
@@ -1926,6 +1941,7 @@ impl Home {
             }
             MenuAction::Switcher => self.open_switcher(),
             MenuAction::Bookmarks => self.open_bookmarks(),
+            MenuAction::Tidy => self.open_tidy(),
             MenuAction::Bookmark => match self.bookmark_target() {
                 Some(target) => self.toggle_bookmark(target),
                 None => self.flash("select a note or folder to bookmark"),
@@ -3554,6 +3570,98 @@ impl Home {
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
+    // ---------- tidy ----------
+
+    fn open_tidy(&mut self) {
+        let Some(core) = self.core.as_ref() else {
+            return;
+        };
+        let view = TidyView::new(crate::tidy::report(&core.index));
+        if self.focus == Focus::Pane {
+            self.focus = Focus::Notes;
+        }
+        self.mode = Mode::Tidy(Box::new(view));
+    }
+
+    /// Show the Tidy view again after the vault changed under it: read the vault now rather
+    /// than when the watcher reports it, so what was just deleted or created is gone at once.
+    fn show_tidy(&mut self, view: Box<TidyView>) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        core.rescan_now();
+        self.mode = Mode::Tidy(view);
+        self.sync_with_core(&[CoreEvent::Rescanned]);
+    }
+
+    fn tidy_key(&mut self, k: KeyEvent) {
+        let Mode::Tidy(mut view) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return;
+        };
+        if self.keys.get(k) == Some(MenuCommand::Core(MenuAction::UndoDelete)) {
+            self.undo_delete();
+            // Asking where to put things back takes over; the view is closed then.
+            if matches!(self.mode, Mode::Normal) {
+                self.show_tidy(view);
+            }
+            return;
+        }
+        let root = self.root.clone().unwrap_or_default();
+        let here = self.here();
+        match view.key(k) {
+            tidy_view::Action::Stay => self.mode = Mode::Tidy(view),
+            tidy_view::Action::Close => {}
+            tidy_view::Action::OpenNote(rel, line) => {
+                self.open_found(here, &root.join(rel), line.map(Jump::Line));
+            }
+            tidy_view::Action::OpenFile(rel) => {
+                self.mode = Mode::Tidy(view);
+                match term::open_url(&root.join(&rel).to_string_lossy()) {
+                    true => self.flash(format!("opened {rel}")),
+                    false => self.flash(format!("couldn't open {rel}")),
+                }
+            }
+            tidy_view::Action::OpenFolder(rel) => {
+                self.expanded.insert(rel.clone());
+                self.refresh_rows();
+                self.select_path(&root.join(rel));
+                self.focus = Focus::Notes;
+            }
+            tidy_view::Action::Delete(rels) => {
+                let paths = rels.iter().map(|r| root.join(r)).collect();
+                self.ask_delete(paths, false, Some(view));
+            }
+            tidy_view::Action::Create { target, from } => {
+                let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+                    return;
+                };
+                let path = ix.new_note_path(&target, ix.by_rel(&from));
+                let created = crate::write::create_if_missing(&path, b"");
+                self.reload_tree();
+                self.show_tidy(view);
+                let rel = path.strip_prefix(&root).unwrap_or(&path).display();
+                match created {
+                    Ok(_) => self.flash(format!("created {rel}")),
+                    Err(e) => self.flash(format!("couldn't create {rel}: {e}")),
+                }
+            }
+        }
+    }
+
+    fn draw_tidy(&self, f: &mut Frame, area: Rect, view: &TidyView) {
+        let undo = self.keys.first_label("note.undo-delete");
+        let hint = format!(
+            " ⏎ open · space mark · d delete · {undo} undo · n create note · a all no-backlinks · Esc close "
+        );
+        let title = match view.marks() {
+            0 => " Tidy ".to_string(),
+            n => format!(" Tidy · {n} marked "),
+        };
+        let inner = picker_frame(f, area, &title, &hint);
+        let lines = view.lines(inner.width as usize, inner.height as usize);
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
     // ---------- delete & undo ----------
 
     /// The note, board or folder to delete: the tree's selection, else the note in the pane.
@@ -3570,6 +3678,10 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
+        let tidy = match &mut self.mode {
+            Mode::ConfirmDelete(p) => p.tidy.take(),
+            _ => None,
+        };
         let paths: Vec<PathBuf> = match (&self.mode, self.delete_target()) {
             (Mode::ConfirmDelete(p), _) => p.doomed.iter().map(|d| d.path.clone()).collect(),
             _ if !self.marks.is_empty() => {
@@ -3577,6 +3689,14 @@ impl Home {
             }
             (_, Ok(p)) => vec![p],
             (_, Err(why)) => return self.flash(why),
+        };
+        self.ask_delete(paths, changed, tidy);
+    }
+
+    /// Ask before `paths` go to the trash. `tidy`: asked from the Tidy view, shown again after.
+    fn ask_delete(&mut self, paths: Vec<PathBuf>, changed: bool, tidy: Option<Box<TidyView>>) {
+        let Some(root) = self.root.clone() else {
+            return;
         };
         self.mode = Mode::Normal;
         let doomed_path = |p: &Path| paths.iter().any(|d| p.starts_with(d));
@@ -3591,6 +3711,9 @@ impl Home {
                 .unwrap_or_default();
             let Ok(contents) = trash::Contents::read(path) else {
                 self.reload_tree();
+                if let Some(view) = tidy {
+                    self.show_tidy(view);
+                }
                 return self.flash(format!("{rel} is no longer there"));
             };
             let rel = rel.trim_end_matches(".md").to_string();
@@ -3635,6 +3758,7 @@ impl Home {
             goes: goes.to_string(),
             changed,
             scroll: 0,
+            tidy,
         }));
     }
 
@@ -3644,7 +3768,11 @@ impl Home {
         match &mut self.mode {
             Mode::ConfirmDelete(p) => match k.code {
                 _ if no => {
+                    let tidy = p.tidy.take();
                     self.mode = Mode::Normal;
+                    if let Some(view) = tidy {
+                        self.show_tidy(view);
+                    }
                     self.flash("delete cancelled");
                 }
                 KeyCode::Down | KeyCode::Char('j') => p.scroll += 1,
@@ -3723,7 +3851,7 @@ impl Home {
         for d in &gone {
             self.history.forget(&d.path);
         }
-        if gone.len() == p.doomed.len() {
+        if gone.len() == p.doomed.len() && p.tidy.is_none() {
             self.marks.clear();
         }
         self.reload_tree();
@@ -3757,6 +3885,9 @@ impl Home {
         });
         if !batch.is_empty() {
             self.push_undo(Undo::Delete(batch));
+        }
+        if let Some(view) = p.tidy {
+            self.show_tidy(view);
         }
     }
 
@@ -4448,6 +4579,9 @@ impl Home {
         }
         if matches!(self.mode, Mode::Bookmarks { .. }) {
             self.draw_bookmarks(f, main);
+        }
+        if let Mode::Tidy(view) = &self.mode {
+            self.draw_tidy(f, main, view);
         }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);

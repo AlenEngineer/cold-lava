@@ -9,6 +9,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Tidying a vault. `T` (`vault.tidy`) lists orphan notes (no links in or out; `a` adds notes
+  only without backlinks, daily notes are grouped last), attachments no note, embed or
+  whiteboard links to, empty folders (not the ones the vault's settings name), and unresolved
+  links by target with where each is. `space` marks rows, `d` deletes the marked or selected
+  ones to the trash after one prompt that lists each, `u` undoes the whole batch, `Enter` opens
+  the note, link, attachment or folder, and `n` creates the missing note for an unresolved link.
+  `cold-lava tidy VAULT_DIR [--json] [--no-backlinks]` prints the same, read-only.
+
 - Duplicating and merging notes. `D` (`note.duplicate`) copies the selected note or whiteboard
   to `Name 1` beside it (Obsidian's naming) and opens it. `M` (`note.merge`) merges the
   selected note into another picked in the switcher, like Obsidian's Note composer: its text is
@@ -157,6 +165,11 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- Markdown links with percent-encoded names, the way Obsidian writes non-ASCII names
+  (`[x](P%C4%81hoehoe.md)`), now lead to their note or attachment: in backlinks, the reader,
+  the peek and following links. Before, only `%20` was decoded. Renaming, moving and merging now
+  update these links too, and keep how they were written: a link that encoded non-ASCII
+  characters gets the new name encoded, one that only encoded spaces gets only spaces encoded.
 - Opening a note at a heading, block or line (a link, a search result, a bookmark) in a note
   short enough not to scroll no longer loses where it landed: the reader clamped the jump to a
   page height it didn't know yet, so it fell back to the top and the breadcrumb lost the heading.

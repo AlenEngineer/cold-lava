@@ -14,11 +14,12 @@ mod kitty;
 mod reader;
 mod scene;
 mod term;
+mod tidy_view;
 mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, frontmatter, index, items, markdown, merge, paths, rename, search,
-    tasks, templates, trash, types, vault, write,
+    tasks, templates, tidy, trash, types, vault, write,
 };
 
 use anyhow::Result;
@@ -42,6 +43,8 @@ Usage:
   cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note or folder, updating every link
+  cold-lava tidy VAULT_DIR            orphan notes, unused attachments, empty folders and
+                                      unresolved links (read-only)
   cold-lava keys                      every command and its keys; checks config.toml
   cold-lava types [VAULT_DIR]         every type: where it comes from, what it found, its
                                       shapes and fields;
@@ -55,11 +58,12 @@ Options:
   --braille            force braille rendering
   --pixels             force pixel rendering (Kitty graphics protocol)
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
-  --json               machine-readable output (agenda, items, types, task toggle)
+  --json               machine-readable output (agenda, items, types, task toggle, tidy)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
   --dry-run            rename: show what would change, change nothing
+  --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
   -V, --version        print the version
   -h, --help           this help
 
@@ -286,6 +290,17 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
+        Some("tidy") => {
+            let root = PathBuf::from(args.word(1).unwrap_or("."));
+            let ix = index::Index::build(vault::scan(&root)?);
+            let report = tidy::report(&ix);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_tidy(&report, args.has("no-backlinks"));
+            }
+            Ok(())
+        }
         Some("search") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
             let query = args.words.get(2..).map(|w| w.join(" ")).unwrap_or_default();
@@ -474,6 +489,49 @@ fn drive() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn print_tidy(r: &tidy::Report, no_backlinks: bool) {
+    let section = |title: &str, n: usize| match n {
+        0 => println!("{title}: none"),
+        n => println!("{title}: {n}"),
+    };
+    let orphans: Vec<&tidy::Orphan> = (r.orphans.iter())
+        .filter(|o| no_backlinks || o.both_ways())
+        .collect();
+    let (daily, notes): (Vec<_>, Vec<_>) = orphans.iter().partition(|o| o.daily);
+    match no_backlinks {
+        true => section("Notes nothing links to", orphans.len()),
+        false => section("Orphans (no links in or out)", orphans.len()),
+    }
+    let line = |o: &tidy::Orphan| match o.links_out {
+        0 => o.note.clone(),
+        n => format!("{}  (links to {n})", o.note),
+    };
+    for o in notes {
+        println!("  {}", line(o));
+    }
+    if !daily.is_empty() {
+        println!("  daily notes:");
+        for o in daily {
+            println!("    {}", line(o));
+        }
+    }
+    section("Unused attachments", r.unused_attachments.len());
+    for a in &r.unused_attachments {
+        println!("  {a}");
+    }
+    section("Empty folders", r.empty_folders.len());
+    for f in &r.empty_folders {
+        println!("  {f}/");
+    }
+    section("Unresolved links", r.unresolved.len());
+    for u in &r.unresolved {
+        println!("  {}", u.target);
+        for l in &u.from {
+            println!("    {}:{}  {}", l.note, l.line, l.context);
+        }
+    }
 }
 
 fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {

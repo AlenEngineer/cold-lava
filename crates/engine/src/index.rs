@@ -72,22 +72,22 @@ pub struct LinkTarget {
 /// Split `Note#Heading|alias` / `Note#^block` into its parts.
 pub fn split_link(raw: &str) -> LinkTarget {
     let raw = raw.split('|').next().unwrap_or(raw).trim();
-    let raw = raw.replace("%20", " ");
+    let decode = |s: &str| crate::vault::decode_target(s.trim());
     match raw.split_once('#') {
         Some((note, rest)) => match rest.strip_prefix('^') {
             Some(block) => LinkTarget {
-                note: note.trim().into(),
+                note: decode(note),
                 heading: None,
-                block: Some(block.trim().into()),
+                block: Some(decode(block)),
             },
             None => LinkTarget {
-                note: note.trim().into(),
-                heading: Some(rest.trim().into()),
+                note: decode(note),
+                heading: Some(decode(rest)),
                 block: None,
             },
         },
         None => LinkTarget {
-            note: raw.to_string(),
+            note: decode(raw),
             heading: None,
             block: None,
         },
@@ -202,38 +202,15 @@ impl Index {
         (self.backlinks[i].len(), self.outgoing[i])
     }
 
-    /// The file an attachment link (`[[map.pdf]]`, `[map](../Maps/map.pdf)`) leads to: by
-    /// vault path, then next to the note `from`, then by file name anywhere, shallowest first.
-    /// `None` when it isn't in the vault, or when `target` names a note.
+    /// The file an attachment link (`[[map.pdf]]`, `[map](../Maps/map.pdf)`, already decoded)
+    /// leads to: by vault path, then next to the note `from`, then by file name anywhere,
+    /// shallowest first. `None` when it isn't in the vault, or when `target` names a note.
     pub fn attachment(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
         crate::vault::attachment_kind(target)?;
-        let root = &self.vault.root;
-        let t = target
-            .trim()
-            .trim_start_matches("./")
-            .trim_start_matches('/');
-        let beside = from.and_then(|i| self.vault.notes[i].path.parent());
-        let in_vault = |p: PathBuf| {
-            p.canonicalize()
-                .ok()
-                .filter(|p| p.is_file() && p.starts_with(root))
-        };
-        if let Some(p) = std::iter::once(root.join(t))
-            .chain(beside.map(|d| d.join(target.trim())))
-            .find_map(in_vault)
-        {
-            return Some(p);
-        }
-        let name = t.rsplit('/').next().unwrap_or(t).to_lowercase();
-        walkdir::WalkDir::new(root)
-            .sort_by_file_name()
-            .into_iter()
-            .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| e.file_name().to_string_lossy().to_lowercase() == name)
-            .min_by_key(|e| e.depth())
-            .map(walkdir::DirEntry::into_path)
+        let files = crate::rename::Files::of_vault(self);
+        let dir = from.map_or("", |i| crate::rename::dir_of(&self.vault.notes[i].rel));
+        let i = files.resolve(dir, target)?;
+        Some(self.vault.root.join(&files.rels[i]))
     }
 
     /// Where a new note for an unresolved link goes, following Obsidian's
@@ -330,6 +307,12 @@ mod tests {
             Some("Volcanoes/Vesuvius".into())
         );
         assert_eq!(ix.resolver.resolve("Lahar"), None);
+        let link = split_link("Volcanoes/K%C4%ABlauea.md#Lava%20lake");
+        assert_eq!(
+            name(ix.resolver.resolve(&link.note)),
+            Some("Volcanoes/Kīlauea".into())
+        );
+        assert_eq!(link.heading.as_deref(), Some("Lava lake"));
     }
 
     #[test]

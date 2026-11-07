@@ -12,7 +12,7 @@
 
 use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
-use crate::vault::attachment_kind;
+use crate::vault::{attachment_kind, decode_target, encode_target_like};
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
@@ -195,7 +195,7 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
-fn dir_of(rel: &str) -> &str {
+pub(crate) fn dir_of(rel: &str) -> &str {
     rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
 
@@ -304,19 +304,21 @@ impl Files {
         }
     }
 
-    /// The file a link written in a file in `dir` leads to.
-    pub fn resolve(&self, dir: &str, raw: &str) -> Option<usize> {
-        self.find(dir, raw).map(|(i, _)| i)
+    /// The file a link written in a file in `dir` leads to (`target` already decoded:
+    /// `vault::decode_target`).
+    pub fn resolve(&self, dir: &str, target: &str) -> Option<usize> {
+        self.find(dir, target).map(|(i, _)| i)
     }
 
-    fn path(&self, key: &str) -> Option<usize> {
+    /// The file at a vault path (notes with or without `.md`).
+    pub(crate) fn path(&self, key: &str) -> Option<usize> {
         self.by_path.get(&key.to_lowercase()).copied()
     }
 
-    fn find(&self, dir: &str, raw: &str) -> Option<(usize, Via)> {
-        let raw = raw.trim().replace("%20", " ");
-        let other = attachment_kind(&raw).is_some();
-        let key = if other { raw.as_str() } else { link_key(&raw) };
+    fn find(&self, dir: &str, target: &str) -> Option<(usize, Via)> {
+        let target = target.trim();
+        let other = attachment_kind(target).is_some();
+        let key = if other { target } else { link_key(target) };
         let by_path = |p: Option<String>| p.and_then(|p| self.path(&p)).map(|i| (i, Via::Path));
         if key.starts_with("./") || key.starts_with("../") {
             return by_path(normalize(&join(dir, key)));
@@ -364,13 +366,13 @@ impl Rewriter {
     /// What the link `raw` should become, or `None` if it still leads where it did. `dir_then`
     /// is the linking file's folder before the move, `dir_now` after.
     fn link(&self, raw: &str, md: bool, dir_then: &str, dir_now: &str) -> Option<String> {
-        let (target, via) = self.before.find(dir_then, raw)?;
-        let still = self.after.find(dir_now, raw);
+        let decoded = decode_target(raw.trim());
+        let (target, via) = self.before.find(dir_then, &decoded)?;
+        let still = self.after.find(dir_now, &decoded);
         if still.is_some_and(|(t, v)| t == target && !(via == Via::Path && v == Via::Name)) {
             return None;
         }
         let new_rel = &self.after.rels[target];
-        let decoded = raw.trim().replace("%20", " ");
         let relative_style = decoded.starts_with("./") || decoded.starts_with("../");
         let out = if md {
             // Vault-absolute ("Folder/Note.md", "/Folder/Note.md") or relative to the note?
@@ -384,7 +386,7 @@ impl Rewriter {
             } else {
                 relative(dir_now, new_rel)
             };
-            path.replace(' ', "%20")
+            encode_target_like(&path, raw)
         } else {
             let shown = if decoded.ends_with(".md") {
                 new_rel.as_str()
@@ -437,33 +439,11 @@ impl Rewriter {
     }
 
     fn line(&self, body: &str, dir_then: &str, dir_now: &str, p: &Patterns) -> (String, usize) {
-        let code: Vec<(usize, usize)> = p
-            .inline_code
-            .find_iter(body)
-            .map(|m| (m.start(), m.end()))
-            .collect();
-        let in_code = |s: usize| code.iter().any(|&(a, b)| s >= a && s < b);
         // Collect replacements (byte range of the target, new text), then apply from the end.
         let mut reps: Vec<(usize, usize, String)> = Vec::new();
-        for c in p.wikilink.captures_iter(body) {
-            let m = c.get(1).unwrap();
-            if !in_code(m.start())
-                && !m.as_str().trim().is_empty()
-                && let Some(new) = self.link(m.as_str(), false, dir_then, dir_now)
-            {
-                reps.push((m.start(), m.end(), new));
-            }
-        }
-        for c in p.mdlink.captures_iter(body) {
-            let m = c.get(1).unwrap();
-            let target = m.as_str();
-            let names_a_file = target.ends_with(".md") || attachment_kind(target).is_some();
-            if !in_code(m.start())
-                && names_a_file
-                && !target.contains("://")
-                && let Some(new) = self.link(target, true, dir_then, dir_now)
-            {
-                reps.push((m.start(), m.end(), new));
+        for (r, md) in line_targets(body, p) {
+            if let Some(new) = self.link(&body[r.clone()], md, dir_then, dir_now) {
+                reps.push((r.start, r.end, new));
             }
         }
         reps.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -473,6 +453,61 @@ impl Rewriter {
         }
         (s, reps.len())
     }
+}
+
+/// The links on one line outside inline code, as (byte range of the target, Markdown link?):
+/// wikilinks, then Markdown links naming a note or an attachment.
+fn line_targets(body: &str, p: &Patterns) -> Vec<(std::ops::Range<usize>, bool)> {
+    let code: Vec<(usize, usize)> = p
+        .inline_code
+        .find_iter(body)
+        .map(|m| (m.start(), m.end()))
+        .collect();
+    let in_code = |s: usize| code.iter().any(|&(a, b)| s >= a && s < b);
+    let wiki = (p.wikilink.captures_iter(body))
+        .map(|c| c.get(1).unwrap())
+        .filter(|m| !m.as_str().trim().is_empty())
+        .map(|m| (m.range(), false));
+    let md = (p.mdlink.captures_iter(body))
+        .map(|c| c.get(1).unwrap())
+        .filter(|m| {
+            let t = m.as_str();
+            (t.ends_with(".md") || attachment_kind(t).is_some()) && !t.contains("://")
+        })
+        .map(|m| (m.range(), true));
+    wiki.chain(md).filter(|(r, _)| !in_code(r.start)).collect()
+}
+
+/// Every link target in a note's (or a canvas text card's) text outside code, as written.
+pub(crate) fn link_targets(text: &str) -> Vec<&str> {
+    let p = patterns();
+    let mut in_fence = false;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            out.extend(line_targets(line, p).into_iter().map(|(r, _)| &line[r]));
+        }
+    }
+    out
+}
+
+/// What an Obsidian Canvas file links to: its file cards' vault paths, and the links written in
+/// its text cards.
+pub(crate) fn canvas_targets(text: &str) -> (Vec<String>, Vec<String>) {
+    let (mut files, mut links) = (Vec::new(), Vec::new());
+    for c in patterns().canvas_field.captures_iter(text) {
+        let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
+            continue;
+        };
+        match &c[1] {
+            "file" => files.push(value),
+            _ => links.extend(link_targets(&value).into_iter().map(str::to_string)),
+        }
+    }
+    (files, links)
 }
 
 /// Work out everything renaming/moving note `note` to vault-relative `new_rel` (with `.md`)
@@ -890,6 +925,61 @@ mod tests {
              Also [md](../Geology/Hot%20Rock.md) and [abs](Geology/Hot%20Rock.md#Textures).\n\
              Code `[[Lava]]` stays.\n```\n[[Lava]]\n```\n[[Lavender]] too.\n"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn percent_encoded_links_are_followed_and_keep_their_encoding() {
+        let (dir, ix) = vault_with(
+            "percent",
+            &[
+                ("Lava/Pāhoehoe.md", "x"),
+                ("Lava/flow map.png", ""),
+                (
+                    "Notes.md",
+                    "[a](Lava/P%C4%81hoehoe.md) [b](Lava/P%c4%81hoehoe.md#Top) [[Pāhoehoe]]\n\
+                     ![m](Lava/flow%20map.png)\n",
+                ),
+            ],
+        );
+        let p = plan(
+            &ix,
+            ix.by_rel("Lava/Pāhoehoe").unwrap(),
+            "Lava/ʻAʻā flow.md",
+        )
+        .unwrap();
+        assert_eq!(p.links(), 3);
+        apply(&p).unwrap();
+        assert_eq!(
+            read(&dir, "Notes.md"),
+            "[a](Lava/%CA%BBA%CA%BB%C4%81%20flow.md) [b](Lava/%CA%BBA%CA%BB%C4%81%20flow.md#Top) \
+             [[ʻAʻā flow]]\n![m](Lava/flow%20map.png)\n"
+        );
+        let ix = Index::build(crate::vault::scan(&dir).unwrap());
+        let png = ix
+            .by_rel("Notes")
+            .and_then(|n| ix.attachment("Lava/flow map.png", Some(n)));
+        assert!(png.is_some_and(|p| p.ends_with("Lava/flow map.png")));
+        let p = plan_folder(&ix, "Lava", "Rock flows").unwrap();
+        apply(&p).unwrap();
+        assert_eq!(
+            read(&dir, "Notes.md"),
+            "[a](Rock%20flows/%CA%BBA%CA%BB%C4%81%20flow.md) \
+             [b](Rock%20flows/%CA%BBA%CA%BB%C4%81%20flow.md#Top) [[ʻAʻā flow]]\n\
+             ![m](Rock%20flows/flow%20map.png)\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn links_that_only_escaped_spaces_stay_that_way() {
+        let (dir, ix) = vault_with(
+            "spaces",
+            &[("Hot Rock.md", "x"), ("Notes.md", "[a](Hot%20Rock.md)\n")],
+        );
+        let p = plan(&ix, ix.by_rel("Hot Rock").unwrap(), "Pāhoehoe lava.md").unwrap();
+        apply(&p).unwrap();
+        assert_eq!(read(&dir, "Notes.md"), "[a](Pāhoehoe%20lava.md)\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

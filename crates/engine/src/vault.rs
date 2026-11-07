@@ -228,8 +228,62 @@ impl Vault {
     }
 }
 
+/// A link target as the file it names: `%XX` escapes decoded as UTF-8, the way Obsidian writes
+/// spaces and non-ASCII names in Markdown links (`P%C4%81hoehoe.md` is `Pāhoehoe.md`). A `%`
+/// not followed by two hex digits, or escapes that aren't valid UTF-8, stay as written.
+pub fn decode_target(t: &str) -> String {
+    let b = t.as_bytes();
+    let hex = |i: usize| {
+        b.get(i..i + 3)
+            .filter(|e| e[0] == b'%' && e[1].is_ascii_hexdigit() && e[2].is_ascii_hexdigit())
+            .and_then(|e| u8::from_str_radix(std::str::from_utf8(&e[1..]).ok()?, 16).ok())
+    };
+    let mut out = String::with_capacity(t.len());
+    let mut i = 0;
+    while i < b.len() {
+        let start = i;
+        let mut bytes = Vec::new();
+        while let Some(byte) = hex(i) {
+            bytes.push(byte);
+            i += 3;
+        }
+        if bytes.is_empty() {
+            let c = t[i..].chars().next().unwrap_or_default();
+            out.push(c);
+            i += c.len_utf8();
+        } else {
+            match String::from_utf8(bytes) {
+                Ok(s) => out.push_str(&s),
+                Err(_) => out.push_str(&t[start..i]),
+            }
+        }
+    }
+    out
+}
+
+/// `path` written as a Markdown link target in the style of `original`: spaces always as
+/// `%20`; non-ASCII characters (and `%`) as UTF-8 escapes only if `original` wrote one that way.
+pub fn encode_target_like(path: &str, original: &str) -> String {
+    let escapes_non_ascii = original.is_ascii() && !decode_target(original).is_ascii();
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            ' ' => out.push_str("%20"),
+            '%' if escapes_non_ascii => out.push_str("%25"),
+            c if escapes_non_ascii && !c.is_ascii() => {
+                let mut buf = [0; 4];
+                for byte in c.encode_utf8(&mut buf).bytes() {
+                    out.push_str(&format!("%{byte:02X}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub(crate) fn clean_target(t: &str) -> Option<String> {
-    let t = t.trim().replace("%20", " ");
+    let t = decode_target(t.trim());
     let t = t.strip_suffix(".md").unwrap_or(&t).trim().to_string();
     if t.is_empty() || attachment_kind(&t).is_some() || t.contains("://") {
         None
@@ -426,10 +480,33 @@ mod tests {
     #[test]
     fn markdown_links_and_attachments() {
         let (links, _) = links_and_tags(
-            "[a](Other%20Note.md) [b](https://example.com/x.md) ![[photo.png]] [[file.pdf]] [[v1.2 notes]]",
+            "[a](Other%20Note.md) [b](https://example.com/x.md) ![[photo.png]] [[file.pdf]] [[v1.2 notes]] [c](K%C4%ABlauea.md)",
         );
         // Wikilinks are collected before markdown links on each line.
-        assert_eq!(links, ["v1.2 notes", "Other Note"]);
+        assert_eq!(links, ["v1.2 notes", "Other Note", "Kīlauea"]);
+    }
+
+    #[test]
+    fn percent_decoding() {
+        assert_eq!(decode_target("P%C4%81hoehoe.md"), "Pāhoehoe.md");
+        assert_eq!(decode_target("%E2%9C%93%20done%f0%9f%8c%8b"), "✓ done🌋");
+        assert_eq!(decode_target("100%25.md"), "100%.md");
+        assert_eq!(decode_target("50% off%2"), "50% off%2", "not an escape");
+        assert_eq!(decode_target("%zz%C4"), "%zz%C4", "not UTF-8");
+        assert_eq!(decode_target("Kīlauea"), "Kīlauea");
+        assert_eq!(
+            encode_target_like("ʻAʻā 100%.md", "P%C4%81hoehoe.md"),
+            "%CA%BBA%CA%BB%C4%81%20100%25.md"
+        );
+        assert_eq!(
+            encode_target_like("ʻAʻā 100%.md", "Hot%20Rock.md"),
+            "ʻAʻā%20100%.md"
+        );
+        assert_eq!(
+            encode_target_like("ʻAʻā.md", "Pāhoehoe.md"),
+            "ʻAʻā.md",
+            "written unescaped"
+        );
     }
 
     #[test]

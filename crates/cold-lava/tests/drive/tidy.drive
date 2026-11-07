@@ -1,0 +1,51 @@
+# tests/drive.rs adds Inbox/Stray.md (an orphan), Inbox/stray.png (unused) and Empty/Deeper/ (an
+# empty folder). Tidy lists them; the orphan and the image go to the trash together after one
+# prompt, u brings both back, then they go again for tests/drive.rs to find in the sandbox trash.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault 35 notes
+keys T
+wait-for Orphans: no links in or out · 2
+expect • Inbox/Loose thought.md
+expect • Inbox/Stray.md
+expect Unused attachments · 1
+expect ▫ Inbox/stray.png
+expect Empty folders · 1
+expect ▤ Empty/
+expect Unresolved links · 3
+expect ? Lahar
+expect ← Volcanoes/Mount St. Helens:12
+screen
+keys a
+wait-for Notes nothing links to · 
+keys a
+wait-for Orphans: no links in or out · 2
+keys down space space
+wait-for Tidy · 2 marked
+expect ✓ • Inbox/Stray.md
+expect ✓ ▫ Inbox/stray.png
+keys d
+wait-for Delete 2 marked items?
+expect ✕ Inbox/Stray
+expect ✕ Inbox/stray.png
+expect They go to the system trash.
+keys y
+wait-for deleted 2 items · u undo
+wait-for Orphans: no links in or out · 1
+expect Unused attachments · 0
+expect-not Inbox/Stray.md
+expect Empty folders · 1
+screen
+keys u
+wait-for restored 2 items
+wait-for Orphans: no links in or out · 2
+expect ▫ Inbox/stray.png
+expect-not Tidy · 2 marked
+keys home down space space d
+wait-for Delete 2 marked items?
+keys y
+wait-for deleted 2 items · u undo
+wait-for Unused attachments · 0
+keys esc
+wait-gone Unused attachments
+keys q
+exits 0

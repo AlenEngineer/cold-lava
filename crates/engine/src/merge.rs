@@ -531,8 +531,8 @@ mod tests {
         assert_eq!(
             read(&dir, "Top.md"),
             "---\nrelated: \"[[B/Lava]]\"\n---\n[[Lava#Flow|ropy]] ![[Lava]] \
-             [md](A/P%C4%81hoehoe.md) [rel](B/Lava.md#Flow) [[Lava]]\n",
-            "an encoded name this resolver doesn't decode stays as it was"
+             [md](B/Lava.md) [rel](B/Lava.md#Flow) [[Lava]]\n",
+            "a percent-encoded link is followed too"
         );
         assert_eq!(
             read(&dir, "B/Lava.md"),
