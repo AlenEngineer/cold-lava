@@ -11,6 +11,7 @@ mod graph;
 mod groups;
 mod home;
 mod index;
+mod items;
 mod kitty;
 mod markdown;
 mod reader;
@@ -25,7 +26,7 @@ mod write;
 use anyhow::Result;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
-use std::io::stdout;
+use std::io::{Write, stdout};
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "cold-lava — Obsidian's graph view and canvas, in the terminal
@@ -37,6 +38,7 @@ Usage:
   cold-lava board [FILE.canvas|DIR]   whiteboard (Obsidian Canvas); no file = picker
   cold-lava daily VAULT_DIR [DATE]    open a day's daily note (created from your template)
   cold-lava agenda VAULT_DIR          dated tasks and daily notes, for other programs
+  cold-lava items VAULT_DIR KIND      the vault's tasks, lists, headings or blocks, one per line
   cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note, updating every link to it
@@ -49,7 +51,7 @@ Options:
   --braille            force braille rendering
   --pixels             force pixel rendering (Kitty graphics protocol)
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
-  --json               machine-readable output (agenda, task toggle)
+  --json               machine-readable output (agenda, items, task toggle)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
@@ -204,11 +206,42 @@ fn run() -> Result<()> {
             if to < from {
                 anyhow::bail!("--to is before --from");
             }
-            let agenda = tasks::agenda(&root, from, to)?;
+            let agenda = tasks::agenda(&vault::scan(&root)?, from, to);
             if json {
                 println!("{}", serde_json::to_string_pretty(&agenda)?);
             } else {
                 print_agenda(&agenda);
+            }
+            Ok(())
+        }
+        Some("items") => {
+            let (Some(root), Some(kind)) = (args.word(1), args.word(2)) else {
+                anyhow::bail!(
+                    "usage: cold-lava items VAULT_DIR KIND [--json]\nKIND is one of: {}",
+                    items::KINDS.join(", ")
+                );
+            };
+            if !items::KINDS.contains(&kind) {
+                anyhow::bail!(
+                    "no item kind called {kind}; KIND is one of: {}",
+                    items::KINDS.join(", ")
+                );
+            }
+            let vault = vault::scan(Path::new(root))?;
+            let mut out = std::io::stdout().lock();
+            for note in &vault.notes {
+                for item in vault.items(note).iter().filter(|i| i.data.kind() == kind) {
+                    let written = if json {
+                        writeln!(out, "{}", serde_json::to_string(item)?)
+                    } else {
+                        writeln!(out, "{}:{}  {}", item.note, item.line, item_line(item))
+                    };
+                    match written {
+                        // The reader stopped early (`| head`): that's not an error.
+                        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+                        r => r?,
+                    }
+                }
             }
             Ok(())
         }
@@ -397,6 +430,29 @@ fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
         println!("  {:id_width$}  {label:key_width$}  {}", c.id, c.title);
     }
     println!();
+}
+
+/// An item in a few words, for `cold-lava items`.
+fn item_line(item: &items::Item) -> String {
+    match &item.data {
+        items::Data::Task(t) => {
+            let dates = [
+                ("due", t.due),
+                ("scheduled", t.scheduled),
+                ("start", t.start),
+            ];
+            let mut line = format!("[{}] {}", t.status, t.text);
+            for (name, date) in dates {
+                if let Some(d) = date {
+                    line.push_str(&format!("  {name} {d}"));
+                }
+            }
+            line
+        }
+        items::Data::List { text } => format!("- {text}"),
+        items::Data::Heading { level, text } => format!("{} {text}", "#".repeat(*level as usize)),
+        items::Data::Block => format!("^{}", item.block_id.as_deref().unwrap_or_default()),
+    }
 }
 
 fn print_agenda(a: &tasks::Agenda) {

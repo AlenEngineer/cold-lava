@@ -83,7 +83,7 @@ flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals 
 
 ## Notes as data
 
-*(design; nothing of it exists yet)*
+*(design; items for tasks, lists, headings and blocks exist: `src/items.rs`)*
 
 You write notes, not data. But Markdown already has types, and Obsidian's community has settled
 how to read them: a checkbox is a task, with dates written the Tasks plugin's way
@@ -332,7 +332,9 @@ returns, so it never holds the menu's state.
    *(in progress: the interface, extension commands and the Neovim editor exist)* Then, in
    small PRs each checked with `cold-lava drive`:
    1. Notes as data: tasks, lists, headings and block ids, with `agenda` and `task toggle`
-      rebuilt on them and `cold-lava items VAULT KIND`.
+      rebuilt on them and `cold-lava items VAULT KIND`. *(done: `items::extract` reads a
+      note in one pass, `Vault::items` caches it per note, ids and revs are pinned by tests,
+      and the item JSON is pinned for `items/query`)*
    2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor.
    3. The protocol for items, and reads through `Host`.
    4. The declarative list view, and the agenda as an extension.

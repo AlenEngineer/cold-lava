@@ -304,6 +304,7 @@ mod tests {
             aliases: vec![],
             text: String::new(),
             tags: tags.iter().map(|s| s.to_string()).collect(),
+            items: Default::default(),
         }
     }
 
@@ -312,6 +313,7 @@ mod tests {
             root: PathBuf::from("/v"),
             name: "v".into(),
             notes,
+            item_settings: Default::default(),
         }
     }
 

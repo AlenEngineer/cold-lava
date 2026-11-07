@@ -38,7 +38,13 @@ required checks on `main`.
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `vault.rs`.
-- `tasks.rs`, `daily.rs`: Obsidian Tasks format, Daily notes settings, moment.js date formats.
+- `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
+  in one pulldown-cmark pass in the vault's flavour; `Vault::items()` caches them per note on
+  first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`
+  hashes the item's lines. Read tasks through items, not by scanning lines.
+- `tasks.rs`, `daily.rs`: Obsidian Tasks format (`parse_line` for one task line, statuses from
+  the plugin's settings; `agenda` and `toggle` read items), Daily notes settings, moment.js date
+  formats.
 
 **Extensions** (`ext/`, step 3 of `docs/extensions.md`):
 
