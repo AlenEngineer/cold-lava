@@ -151,6 +151,7 @@ impl<'de> Deserialize<'de> for Typed {
                     fields: Default::default(),
                     spans: Default::default(),
                     unparsed: 0,
+                    place: Default::default(),
                 };
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {

@@ -330,7 +330,7 @@ pub fn property_lines(text: &str, key: &str) -> Option<Range<usize>> {
 }
 
 /// Whether YAML would read `s` as something other than this plain text, so it must be quoted.
-fn needs_quotes(s: &str) -> bool {
+pub fn needs_quotes(s: &str) -> bool {
     s.is_empty()
         || s != s.trim()
         || s.starts_with(['-', '?', '!', '&', '*', '|', '>', '%', '@', '`', '#'])

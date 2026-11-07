@@ -187,3 +187,66 @@ fn a_task_keeps_its_id_through_a_toggle_by_rev() {
     assert_eq!(stale.status.code(), Some(3), "a stale rev is refused");
     let _ = std::fs::remove_dir_all(vault.parent().unwrap());
 }
+
+#[test]
+fn item_set_writes_one_cell_and_refuses_a_stale_rev() {
+    let vault = sandbox("set");
+    let v = vault.to_str().unwrap();
+    let note = "Concepts/Volcanic Explosivity Index.md";
+    let file = format!("{v}/{note}");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let row = |vault: &Path, vei: i64| -> serde_json::Value {
+        run(vault, &["items", v, "eruption", "--json"])
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|i| i["vei"] == vei)
+            .unwrap()
+    };
+    let before = row(&vault, 6);
+    let id = before["id"].as_str().unwrap();
+    let rev = before["rev"].as_str().unwrap();
+    let value = "[[Krakatoa]] 1883, 416";
+
+    let dry = run(
+        &vault,
+        &["item", "set", &file, id, "example", value, "--dry-run"],
+    );
+    assert!(dry.starts_with(&format!("would set {note}:13")), "{dry}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+
+    let set: serde_json::Value = serde_json::from_str(&run(
+        &vault,
+        &[
+            "item", "set", &file, id, "example", value, "--rev", rev, "--json",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(set["applied"], true);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        original.replace(
+            "| 6 | [[Krakatoa]] 1883 |",
+            "| 6 | [[Krakatoa]] 1883, 416 |"
+        ),
+        "only the cell changed"
+    );
+    let after = row(&vault, 6);
+    assert_eq!(after["id"], before["id"], "example is not the row's key");
+    assert_eq!(set["item"], after, "set reports the item as it reads now");
+
+    let stale = cold_lava(&vault)
+        .args(["item", "set", &file, id, "example", "x", "--rev", rev])
+        .output()
+        .unwrap();
+    assert_eq!(stale.status.code(), Some(3), "a stale rev is refused");
+    let read_only = cold_lava(&vault)
+        .args(["item", "set", &file, id, "volcanoes", "Etna"])
+        .output()
+        .unwrap();
+    assert_eq!(read_only.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&read_only.stderr).contains("can't be written"),
+        "links in text are read-only"
+    );
+    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+}

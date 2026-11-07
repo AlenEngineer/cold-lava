@@ -43,6 +43,22 @@ pub struct Typed {
     pub spans: IndexMap<String, Vec<Range<usize>>>,
     /// Values found that didn't parse as their field's type.
     pub unparsed: usize,
+    /// Where it was read, for writing a field back (`edit.rs`); not on the wire.
+    pub place: Place,
+}
+
+/// Where a typed item was read: what `edit::set_field` needs to put a value back.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Place {
+    /// Its shape, by index in its type's `from`.
+    pub shape: usize,
+    /// For each field that found something, which of its sources did (index in the shape's
+    /// list for that field).
+    pub sources: IndexMap<String, usize>,
+    /// The block's text in the file, where a missing marker, flag or field is appended.
+    pub text: Range<usize>,
+    /// A table row's cells in the file, under their header.
+    pub cells: Vec<(String, Range<usize>)>,
 }
 
 /// The loaded types, compiled for matching.
@@ -67,6 +83,8 @@ struct Compiled {
 }
 
 struct Shape {
+    /// Its index in the definition's `from`.
+    index: usize,
     on: On,
     w: crate::types::Where,
     pattern: Option<Regex>,
@@ -134,7 +152,7 @@ impl Matcher {
                 .collect();
             let field = |name: &str| schema.iter().position(|f| f.0 == name);
             let mut shapes = Vec::new();
-            for shape in &d.from {
+            for (index, shape) in d.from.iter().enumerate() {
                 if slot(shape.on).is_none() {
                     continue;
                 }
@@ -164,6 +182,7 @@ impl Matcher {
                         .count()
                     + shape.pattern.is_some() as usize;
                 shapes.push(Shape {
+                    index,
                     on: shape.on,
                     w: w.clone(),
                     pattern: shape
@@ -351,19 +370,32 @@ impl Matcher {
                 .collect(),
             spans: IndexMap::new(),
             unparsed: 0,
+            place: Place {
+                shape: shape.index,
+                sources: IndexMap::new(),
+                text: note.file(b.at..b.at + b.text.len()),
+                cells: b
+                    .header
+                    .iter()
+                    .zip(b.cells)
+                    .map(|(h, c)| (h.clone(), note.file(c.clone())))
+                    .collect(),
+            },
         };
         // Byte ranges of the block's text that sources read, for `rest`.
         let mut used: Vec<Range<usize>> = Vec::new();
         let mut rest_field = None;
         for (f, sources) in &shape.fields {
             let mut pieces = Vec::new();
-            for src in sources {
+            for (i, src) in sources.iter().enumerate() {
                 if matches!(src, Src::Rest) {
                     rest_field = Some(*f);
                     continue;
                 }
                 pieces = read_source(src, caps.as_ref(), note, b, &mut used);
                 if !pieces.is_empty() {
+                    let name = ty.schema[*f].0.clone();
+                    typed.place.sources.insert(name, i);
                     break;
                 }
             }
@@ -876,7 +908,8 @@ pub fn parse(value: &Value, text: &str, daily_format: &str) -> Option<Json> {
     })
 }
 
-fn number(n: f64) -> Json {
+/// A number as items carry it: whole numbers without a fraction.
+pub fn number(n: f64) -> Json {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         Json::from(n as i64)
     } else {
