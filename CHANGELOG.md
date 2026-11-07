@@ -136,6 +136,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- Opening a note at a heading, block or line (a link, a search result, a bookmark) in a note
+  short enough not to scroll no longer loses where it landed: the reader clamped the jump to a
+  page height it didn't know yet, so it fell back to the top and the breadcrumb lost the heading.
 - The menu no longer crashes when the last row of the note tree disappears (deleted here or in
   Obsidian): the selection was read through rows of the old tree.
 - Following a link to an attachment (`[[map.pdf]]`, `[map](Maps/map.pdf)`) no longer creates a
