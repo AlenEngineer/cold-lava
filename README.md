@@ -343,9 +343,9 @@ loaded and checked: finding them in notes comes next. The full design is in
 How it fits together: [docs/engine.md](docs/engine.md) (the engine, its layers and the
 frontends) and [docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
 
-The engine (`crates/engine`, no user interface), the terminal UI (`crates/cold-lava`) and the
-frontend framework (`crates/views`, filled as its parts are extracted) are crates in one Cargo
-workspace. A graphical window on Tauri lives in `crates/gui`, outside the workspace so normal
+The engine (`crates/engine`, no user interface), the terminal UI (`crates/cold-lava`), the
+frontend framework (`crates/views`, filled as its parts are extracted) and a small headless text
+editor both frontends render (`crates/editor`) are crates in one Cargo workspace. A graphical window on Tauri lives in `crates/gui`, outside the workspace so normal
 builds never compile a webview: `cargo run --manifest-path crates/gui/Cargo.toml` (on Linux it
 needs webkit2gtk-4.1). The terminal UI is and stays the main way to use cold-lava.
 
