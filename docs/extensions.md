@@ -80,6 +80,52 @@ flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals 
   fenced code block in `mermaid` or a callout type of a plugin's own, an extension can draw
   through `view/render`.
 
+## Notes as data
+
+*(design; nothing of it exists yet)*
+
+You write notes, not data. But Markdown already has types, and Obsidian's community has settled
+how to read them: a checkbox is a task, with dates written the Tasks plugin's way
+(`📅 2026-11-12`) or Dataview's (`[due:: 2026-11-12]`); frontmatter is typed properties; a table
+is rows of records; `key:: value` is a field; a heading starts a section. The core reads every
+note this way, keeps it current as files change, and lets extensions ask for it and change it.
+An extension that lists every open todo in the vault, or a reading list built from a table, is
+then a query and a view, not a parser of its own.
+
+- **Items.** One pass per changed note, in the core, gated by the vault's flavour (no
+  `task-lists`, no tasks). Each item has a kind (`task`, `list`, `heading`, `property`, `row`,
+  `field`, `link`, `tag`, `block`), a note, a line range, the heading path it sits under
+  (`section`), and its own fields: a task's status symbol and type, its dates, recurrence,
+  priority, tags and links; a property's key, Obsidian type (`.obsidian/types.json`, else
+  inferred) and value. A table's rows are items of their own, so one row can change without the
+  rest. Items are parsed on first use and cached per note, so the `search` and `rename` commands
+  pay nothing for them.
+- **Identity.** An item's `id` comes from its note and its anchor: the author's `^block-id`,
+  a property's key, a heading's path, else a hash of its text without status and dates (and the
+  nth identical one). It survives ticking, re-dating, re-indenting and lines added above, and it
+  is the same after a restart and in every process. Editing a task's words reads as one removed
+  and one added. Separately, `rev` hashes only the item's own lines: it says *which version*, and
+  edits refuse a stale one. The core never adds `^ids` by itself.
+- **Reading.** `items/query` takes a `kind` and a fixed filter (notes under a folder or with a
+  tag, status, a date range on `due`, `scheduled`, `start`, `done` or `agenda`, text, a property
+  key), returns items ordered by note and line, and pages. No query language in the core: an
+  extension that wants Dataview's can compile it to this. Reads are answered at once; they don't
+  change anything, so effects stay queued.
+- **Hearing changes.** `items/subscribe` (kinds and the same filter), then `items/changed` with
+  what was added, updated and removed, by id. After a full rescan, `items/reset` says to query
+  again.
+- **Changing.** `items/edit` names an item, its `rev` and ops: `toggle`, `set-status`,
+  `set-date`, `set-property`, `set-cell`, `set-field`, `replace`, `insert-after`. The core finds
+  the item in the note as it is now, checks the `rev`, splices only its lines, and writes through
+  `write::replace`. If something else in the note changed, the edit still applies; if this item
+  changed, it is refused as `changed`. Obsidian's rules stay in the core: Tasks' done dates and
+  recurring tasks, emoji or Dataview format as written, and YAML edited line by line, never
+  re-serialised (nested values are refused). If the note is open in the editor, it is saved
+  first.
+- **The agenda becomes an extension** on top: a list view grouped by day, kept live by a
+  subscription, ticking through `items/edit`. `cold-lava agenda --json` and `task toggle` keep
+  their output, as thin clients of the same query and edit.
+
 ## Commands
 
 Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Commands are what
@@ -156,7 +202,7 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
     when the program never started).
 - The extension calls the host: `vault/notes`, `vault/read`, `vault/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
-  `tasks/agenda`, `ui/notify`, `ui/openNote`, `events/subscribe`, and:
+  `items/query`, `items/subscribe` and `items/edit` (see "Notes as data"), `ui/notify`, `ui/openNote`, `events/subscribe`, and:
   - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
     core command or another extension's. Core commands ignore `args`, except
     `note.follow-link` (`from`, `link`), which only extensions can run, and `search.open`
@@ -217,9 +263,51 @@ keys = ["W"]                     # default keys; config.toml can change them
 Extensions can't draw into cold-lava's terminal directly. A view is one of:
 
 - **Declarative:** a list, a tree or Markdown, described as JSON and drawn by cold-lava (fits most
-  panels: outlines, task lists, search results).
+  panels: outlines, task lists, search results). Rows carry item ids, so a command run on the
+  selected row knows what it is about.
 - **A terminal program in a pane:** the extension names a command and cold-lava runs it in a pane,
-  the same way the main menu embeds Neovim. Full freedom, any TUI library.
+  the same way the main menu embeds Neovim. Full freedom, any TUI library, but no pixel graphics:
+  the pane goes through a terminal emulator.
+- **A scene** *(design)*: nodes, edges and labels that the core draws, for the graph, the
+  whiteboard, and anything shaped like them (a mind map, a kanban board, a timeline).
+
+### Scenes
+
+The graph and the whiteboard are both nodes and edges with positions, zoom, pan, selection and
+dragging. The extension says what exists and what it means; the core does everything that runs
+at frame rate, so nothing crosses the connection per frame and a slow extension never makes
+zooming wait.
+
+- **The core:** the camera, hit-testing, selection and moving it by arrow or along links,
+  dragging and resizing, edges attached to card sides, label placement, dimming around the
+  selection, the local-graph neighbourhood, search over labels, help and the status line, and
+  drawing in braille or Kitty pixels. Layouts: `fixed` (positions are the extension's data) and
+  `force` (the core simulates; Barnes–Hut belongs here).
+- **The extension:** which nodes and edges exist, their shapes (`dot`, `card`, `group`), labels,
+  colours, a card's Markdown or the note it shows, the legend; the document, saving and merging
+  it; what its commands mean.
+- **Messages.** `view/open` with the whole scene, then `scene/update` deltas by id (upsert,
+  remove, style), each numbered. Back come `scene/selected`, `scene/activated` (Enter or
+  double-click), `scene/clicked` on empty space, `scene/moved` once on drop (fixed layouts only),
+  and the results of `scene/pick` (choose a node, for connecting) and `ui/input`.
+- **Keys.** The core binds navigation (arrows, pan, zoom, Tab, Enter, Esc, `?`, `q`) as
+  `scene.*` commands. Everything else is an extension command scoped to its view type
+  (`CommandSpec.view`): it runs with the selection in its `args`, and its keys only clash within
+  that view.
+- **Text.** Card text is typed into a core input anchored on the card (`ui/input`), or in
+  `$EDITOR`; the extension hears the result once. Keys never reach it.
+- **Positions.** In a force layout the core owns them and keeps them by id across updates. In a
+  fixed layout the core moves dragged nodes itself, reports the drop once, and the extension's
+  next update is authoritative.
+- **Colour groups** move with the graph extension, which reads `graph.json` through the core.
+  The **three-way merge** moves with the whiteboard extension, which reads with a revision and
+  writes with `vault/write` expecting it, merging and retrying when refused.
+
+The graph moves first: it's read-only, already draws through a backend-neutral `Scene`, and is
+where the performance risk is (a 5k-note vault is about 1.3 MB of `view/open`, sent once). The
+whiteboard follows once the graph has carried the protocol; if input and picking make the scene
+protocol grow into a UI toolkit, keeping the whiteboard in the core is a fair outcome. Scenes
+start full screen; one beside the tree waits for a way to keep Kitty images under overlays.
 
 ## Built-in features become extensions
 
@@ -240,7 +328,17 @@ returns, so it never holds the menu's state.
 2. Commands, command palette, configurable keys. The Markdown reader can land alongside, since
    it's core.
 3. The `Extension` interface; move built-in features onto it, starting with the Neovim editor.
-   *(in progress: the interface, extension commands and the Neovim editor exist)*
+   *(in progress: the interface, extension commands and the Neovim editor exist)* Then, in
+   small PRs each checked with `cold-lava drive`:
+   1. Notes as data: tasks, lists, headings and block ids, with `agenda` and `task toggle`
+      rebuilt on them and `cold-lava items VAULT KIND`.
+   2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor.
+   3. The protocol for items, and reads through `Host`.
+   4. The declarative list view, and the agenda as an extension.
+   5. Properties, table rows and inline fields.
+   6. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
+      scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
+      extension. Then the whiteboard.
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
