@@ -60,6 +60,9 @@ pub struct Place {
     pub sources: IndexMap<Name, usize>,
     /// The block's text in the file, where a missing marker, flag or field is appended.
     pub text: Range<usize>,
+    /// The item's own text in the file: the block's text, an inline type's match, a note's
+    /// body. A look with `whole` covers it.
+    pub span: Range<usize>,
     /// A table row's cells in the file, under their header.
     pub cells: Vec<(String, Range<usize>)>,
 }
@@ -398,6 +401,7 @@ impl Matcher {
                 shape: shape.index,
                 sources: IndexMap::new(),
                 text: note.file(b.at..b.at + b.text.len()),
+                span: note.file(b.at..b.at + b.text.len()),
                 cells: b
                     .header
                     .iter()

@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, GHOST, HIT, MUTED, NOTE, TAG};
 use crate::core::Jump;
+use crate::looks::{self, Looks};
 use crate::markdown::{Block, BlockKind, Doc, Inline, LinkKind};
 
 const LINK: Color = Color::Rgb(150, 180, 250);
@@ -39,6 +40,8 @@ struct Page {
     anchors: Vec<(usize, usize)>,
     headings: Vec<Heading>,
     block_ids: Vec<(String, usize)>,
+    /// Lines of the properties above the note: reading starts below them.
+    head: usize,
 }
 
 /// A heading as the reader draws it: folded callouts hide theirs.
@@ -59,6 +62,7 @@ pub struct Spot {
 
 pub struct Reader {
     doc: Doc,
+    looks: Looks,
     page: Option<Page>,
     scroll: usize,
     /// The line jumped to, when the page couldn't scroll it to the top (near the end of the
@@ -72,9 +76,10 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn new(doc: Doc) -> Reader {
+    pub fn new(doc: Doc, looks: Looks) -> Reader {
         Reader {
             doc,
+            looks,
             page: None,
             scroll: 0,
             reading: None,
@@ -85,8 +90,9 @@ impl Reader {
     }
 
     /// The same note, read again: keeps the scroll position.
-    pub fn set_doc(&mut self, doc: Doc) {
+    pub fn set_doc(&mut self, doc: Doc, looks: Looks) {
         self.doc = doc;
+        self.looks = looks;
         self.page = None;
     }
 
@@ -109,7 +115,12 @@ impl Reader {
                 ..Page::default()
             },
             depth: 0,
+            looks: &self.looks,
+            broken: &self.doc.broken,
+            active: Vec::new(),
         };
+        b.properties(&mut Gutter::default());
+        b.page.head = b.page.lines.len();
         b.blocks(&self.doc.blocks, &mut Gutter::default(), NOTE.into(), true);
         let page = b.page;
         if self.selected.is_some_and(|s| s >= page.links.len()) {
@@ -196,7 +207,8 @@ impl Reader {
 
     /// The line being read: the top one, unless a jump landed lower.
     fn reading_line(&self) -> usize {
-        self.reading.unwrap_or(self.scroll)
+        let head = self.page.as_ref().map_or(0, |p| p.head);
+        self.reading.unwrap_or(self.scroll).max(head)
     }
 
     pub fn headings(&self) -> &[Heading] {
@@ -438,9 +450,39 @@ struct Builder<'a> {
     page: Page,
     /// How deep in lists, for the bullet.
     depth: usize,
+    looks: &'a Looks,
+    /// `Doc::broken`: marks whose look is skipped.
+    broken: &'a [bool],
+    /// The marks around the inline being flattened, outermost first, with the link a `link`
+    /// look made.
+    active: Vec<(usize, Option<usize>)>,
 }
 
 impl Builder<'_> {
+    /// The note's own typed values its body doesn't show (frontmatter), on a line above it.
+    fn properties(&mut self, g: &mut Gutter) {
+        let mut inlines = Vec::new();
+        for &id in &self.looks.header {
+            let mark = &self.looks.marks[id];
+            if !inlines.is_empty() {
+                inlines.push(Inline::Text("  ".into()));
+            }
+            if mark.look.icon.is_none() {
+                inlines.push(Inline::Text(format!("{} ", mark.field)));
+            }
+            inlines.push(Inline::Mark { id, open: true });
+            inlines.push(Inline::Text(mark.value.clone()));
+            inlines.push(Inline::Mark { id, open: false });
+        }
+        if inlines.is_empty() {
+            return;
+        }
+        let toks = self.tokens(&inlines, MUTED.into());
+        self.wrap(toks, g);
+        let gutter = g.take();
+        self.page.lines.push(Line::from(gutter));
+    }
+
     fn blocks(&mut self, blocks: &[Block], g: &mut Gutter, base: Style, spaced: bool) {
         for (i, b) in blocks.iter().enumerate() {
             if i > 0 && spaced {
@@ -464,13 +506,8 @@ impl Builder<'_> {
                 let style = Style::new().fg(colour).add_modifier(Modifier::BOLD);
                 let marker = Span::styled(format!("{} ", "#".repeat(*level as usize)), DIM);
                 let toks = self.tokens(inlines, style);
-                let text = toks
-                    .iter()
-                    .map(|t| match t {
-                        Tok::Word((w, ..)) => w.as_str(),
-                        _ => " ",
-                    })
-                    .collect::<String>();
+                let mut text = String::new();
+                plain(inlines, &mut text);
                 self.page.headings.push(Heading {
                     level: *level,
                     text,
@@ -575,8 +612,80 @@ impl Builder<'_> {
 
     fn tokens(&mut self, inlines: &[Inline], style: Style) -> Vec<Tok> {
         let mut out = Vec::new();
+        self.active.clear();
         self.flatten(inlines, style, None, &mut out);
+        self.active.clear();
         out
+    }
+
+    /// The mark's look, unless it couldn't be placed.
+    fn mark(&self, id: usize) -> Option<&'_ looks::Mark> {
+        if self.broken.get(id).copied().unwrap_or(true) {
+            return None;
+        }
+        self.looks.marks.get(id)
+    }
+
+    /// `style` and `link` with the looks of the marks around them on.
+    fn marked(&self, style: Style, link: Option<usize>) -> (Style, Option<usize>) {
+        let mut style = style;
+        let mut link = link;
+        for &(id, made) in &self.active {
+            let Some(mark) = self.mark(id) else { continue };
+            if let Some(made) = made {
+                let colour = if (self.resolved)(&mark.value) {
+                    LINK
+                } else {
+                    GHOST
+                };
+                style = style.fg(colour).add_modifier(Modifier::UNDERLINED);
+                link = link.or(Some(made));
+            }
+            style = looks::apply(style, &mark.look);
+        }
+        (style, link)
+    }
+
+    fn hiding(&self) -> bool {
+        self.active
+            .iter()
+            .any(|&(id, _)| self.mark(id).is_some_and(|m| m.look.hide))
+    }
+
+    /// A mark's start or end: a badge's padding, its icon, and the value in place of hidden
+    /// text.
+    fn edge(&mut self, id: usize, open: bool, style: Style, out: &mut Vec<Tok>) {
+        let Some(mark) = self.mark(id).cloned() else {
+            return;
+        };
+        let look = &mark.look;
+        if open {
+            let made = look.link.then(|| {
+                self.page.links.push(Link {
+                    target: mark.value.clone(),
+                    kind: LinkKind::Wiki,
+                    pieces: Vec::new(),
+                });
+                self.page.links.len() - 1
+            });
+            self.active.push((id, made));
+            let (style, link) = self.marked(style, None);
+            if look.badge {
+                out.push(Tok::Word((" ".into(), style, link)));
+            }
+            if let Some(icon) = &look.icon {
+                out.push(Tok::Word((format!("{icon} "), style, link)));
+            }
+            if look.hide && (look.badge || look.icon.is_some()) {
+                words(&mark.value, style, link, out);
+            }
+        } else if let Some(at) = self.active.iter().rposition(|a| a.0 == id) {
+            let (style, link) = self.marked(style, None);
+            if look.badge {
+                out.push(Tok::Word((" ".into(), style, link)));
+            }
+            self.active.remove(at);
+        }
     }
 
     fn flatten(
@@ -586,8 +695,19 @@ impl Builder<'_> {
         link: Option<usize>,
         out: &mut Vec<Tok>,
     ) {
+        let (base, outer) = (style, link);
         for inline in inlines {
+            if let Inline::Mark { id, open } = inline {
+                self.edge(*id, *open, base, out);
+                continue;
+            }
+            if self.hiding() && !matches!(inline, Inline::BlockId(_)) {
+                continue;
+            }
+            let (style, link) = self.marked(base, outer);
+            let before = out.len();
             match inline {
+                Inline::Mark { .. } => {}
                 Inline::Text(s) => words(s, style, link, out),
                 Inline::Strong(c) => self.flatten(c, style.add_modifier(Modifier::BOLD), link, out),
                 Inline::Emph(c) => self.flatten(c, style.add_modifier(Modifier::ITALIC), link, out),
@@ -632,7 +752,21 @@ impl Builder<'_> {
                     }
                 }
             }
+            // A chip stays on one line.
+            if self.in_chip() {
+                for tok in &mut out[before..] {
+                    if let Tok::Space(style, link) = *tok {
+                        *tok = Tok::Word((" ".into(), style, link));
+                    }
+                }
+            }
         }
+    }
+
+    fn in_chip(&self) -> bool {
+        self.active
+            .iter()
+            .any(|&(id, _)| self.mark(id).is_some_and(|m| m.look.badge))
     }
 
     /// Fills lines word by word. Words written together (`[[link]]s`, `**a**b`) stay together;
@@ -778,6 +912,30 @@ impl Builder<'_> {
     }
 }
 
+/// The text of inlines as the reader shows them, without any look: a heading's name.
+fn plain(inlines: &[Inline], out: &mut String) {
+    for inline in inlines {
+        match inline {
+            Inline::Text(s) | Inline::Code(s) | Inline::Math(s) => {
+                out.extend(s.chars().map(|c| if c.is_whitespace() { ' ' } else { c }))
+            }
+            Inline::Strong(c) | Inline::Emph(c) | Inline::Strike(c) | Inline::Highlight(c) => {
+                plain(c, out)
+            }
+            Inline::Link { target, text, .. } if text.is_empty() => out.push_str(target),
+            Inline::Link { text, .. } => plain(text, out),
+            Inline::Tag(t) => {
+                out.push('#');
+                out.push_str(t);
+            }
+            Inline::FootnoteRef(l) => out.push_str(&format!("[^{l}]")),
+            Inline::Embed { target } => out.push_str(&embed_label(target)),
+            Inline::SoftBreak | Inline::HardBreak => out.push(' '),
+            Inline::BlockId(_) | Inline::Mark { .. } => {}
+        }
+    }
+}
+
 fn words(text: &str, style: Style, link: Option<usize>, out: &mut Vec<Tok>) {
     let mut word = String::new();
     for c in text.chars() {
@@ -871,7 +1029,7 @@ mod tests {
 
     fn reader(text: &str, width: u16, height: u16) -> Reader {
         let doc = parse(text, &Flavour::built_in("obsidian").unwrap());
-        let mut r = Reader::new(doc);
+        let mut r = Reader::new(doc, Looks::default());
         r.layout(width, &|t| t.starts_with("Shield"));
         r.render(
             Rect::new(0, 0, width, height),
@@ -990,6 +1148,87 @@ mod tests {
         };
         assert_ne!(at(0).fg, at(1).fg);
         assert!(at(0).add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn looks_draw_chips_hide_link_and_strike() {
+        use crate::types::Look;
+        let text = "Due 2026-11-12 and Lava here.\n";
+        let mark = |look: Look, value: &str| looks::Mark {
+            look,
+            field: "f".into(),
+            value: value.into(),
+        };
+        let marks = vec![
+            mark(
+                Look {
+                    hide: true,
+                    badge: true,
+                    icon: Some("📅".into()),
+                    ..Look::default()
+                },
+                "soon",
+            ),
+            mark(
+                Look {
+                    link: true,
+                    ..Look::default()
+                },
+                "Lava",
+            ),
+            mark(
+                Look {
+                    strike: true,
+                    ..Look::default()
+                },
+                "here",
+            ),
+        ];
+        let flavour = Flavour::built_in("obsidian").unwrap();
+        let doc = crate::markdown::parse_marked(text, &flavour, &[4..14, 19..23, 24..28]);
+        let looks = Looks {
+            marks,
+            header: Vec::new(),
+        };
+        let mut r = Reader::new(doc, looks);
+        r.layout(60, &|_| true);
+        let line = &lines(&r)[0];
+        assert_eq!(line, "Due  📅 soon  and Lava here.");
+        let chip = style_at(&r, 0, 5);
+        assert!(chip.bg.is_some() || chip.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(r.links()[0].target, "Lava");
+        // "Due ", the chip " 📅 soon " (the icon two cells wide), " and ".
+        assert_eq!(r.links()[0].pieces, [(0, 18..22)]);
+        assert!(
+            style_at(&r, 0, 23)
+                .add_modifier
+                .contains(Modifier::CROSSED_OUT)
+        );
+    }
+
+    #[test]
+    fn a_broken_mark_draws_nothing() {
+        let flavour = Flavour::built_in("obsidian").unwrap();
+        let doc = crate::markdown::parse_marked(
+            "see #volcano\n",
+            &flavour,
+            std::slice::from_ref(&(4..8)),
+        );
+        let looks = Looks {
+            marks: vec![looks::Mark {
+                look: crate::types::Look {
+                    badge: true,
+                    icon: Some("▲".into()),
+                    ..Default::default()
+                },
+                field: "f".into(),
+                value: "v".into(),
+            }],
+            header: Vec::new(),
+        };
+        let mut r = Reader::new(doc, looks);
+        r.layout(60, &|_| true);
+        assert_eq!(lines(&r), ["see #volcano"]);
     }
 
     #[test]

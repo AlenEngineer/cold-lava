@@ -269,6 +269,10 @@ impl EnumValues {
 /// The settings that give an enum its values.
 pub const ENUM_PROVIDERS: &[&str] = &["tasks.statuses"];
 
+/// The names `${tasks.statuses}` gives its symbols, whichever symbols a vault has, so a look
+/// can be given by status type.
+pub const STATUS_TYPES: &[&str] = &["todo", "in_progress", "done", "cancelled", "non_task"];
+
 const VALUE_TYPES: &[&str] = &[
     "text", "number", "date", "datetime", "bool", "link", "tag", "enum", "duration",
 ];
@@ -1276,8 +1280,14 @@ fn check(name: &str, d: &Definition) -> Vec<String> {
             }
             match value {
                 Value::Enum { values } if values.map().values().any(|v| v == name) => {}
-                Value::Enum { values: EnumValues::Setting(s) } => p.push(format!(
-                    "style.{field}.by-value: {field}'s values come from {s}, so they can't be named here"
+                Value::Enum {
+                    values: EnumValues::Setting(_) | EnumValues::Statuses(_),
+                } if STATUS_TYPES.contains(&name.as_str()) => {}
+                Value::Enum {
+                    values: EnumValues::Setting(_) | EnumValues::Statuses(_),
+                } => p.push(format!(
+                    "style.{field}.by-value: {name:?} is not a status type ({})",
+                    STATUS_TYPES.join(", ")
                 )),
                 Value::Enum { values } => {
                     let names: Vec<&str> = values.map().values().map(String::as_str).collect();
@@ -1746,6 +1756,11 @@ mod tests {
                 "on = \"note\"\nfields.s = { type = \"enum\", values = { \"[ ]\" = \"todo\" } }\n\
                  style.s = { by-value = { done = { dim = true } } }",
                 "\"done\" is not one of its values (todo)",
+            ),
+            (
+                "on = \"note\"\nfields.s = { type = \"enum\", values = \"${tasks.statuses}\" }\n\
+                 style.s = { by-value = { done = { dim = true }, finished = { dim = true } } }",
+                "\"finished\" is not a status type (todo, in_progress, done, cancelled, non_task)",
             ),
             (
                 "on = \"note\"\nwhere.header = [\"A\"]",

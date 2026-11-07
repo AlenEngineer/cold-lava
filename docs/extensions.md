@@ -135,9 +135,10 @@ then a query and a view, not a parser of its own.
 types match in their text: `crates/engine/src/matcher.rs`; one field of a typed item is set
 with the read-back check: `crates/engine/src/edit.rs`, `cold-lava item set`; the task is a
 built-in definition, the only way tasks are read: `crates/engine/types/task.toml`, with
-`agenda` and `task toggle` on its items (`crates/engine/src/tasks.rs`). "Loading, as built", "Matching, as
-built", "Writing, as built" and "The task as a definition, as built" below say where the code
-settled what this design left open.)*
+`agenda` and `task toggle` on its items (`crates/engine/src/tasks.rs`); the reader draws
+values with their looks: `crates/cold-lava/src/looks.rs`. "Loading, as built", "Matching, as
+built", "Writing, as built", "The task as a definition, as built" and "Looks, as built" below
+say where the code settled what this design left open.)*
 
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
 row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
@@ -258,7 +259,9 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Looks:** `colour` (or `color`): `red`, `orange`, `yellow`, `green`, `cyan`, `purple`,
   `accent`, `muted`; `badge`, `icon`, `dim`, `strike`, `bold`, `hide`, `link` (the value is
   followed as a link), `whole` (the look covers the whole item), and `by-value` (looks by enum
-  value name, not nested).
+  value name, not nested). A field whose values are `${tasks.statuses}` takes the status types
+  by name in `by-value` (`todo`, `in_progress`, `done`, `cancelled`, `non_task`), whatever
+  symbols the vault gives them.
 - **`required`** in a shape names fields a block must have a value for (not `null`, not `[]`)
   to be of that shape: the task requires its words. A block that matches a shape but lacks one
   goes to the next shape that matches, as if the first hadn't.
@@ -509,6 +512,50 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Not yet:** the `write` template for adding a pattern's value or a whole inline item, and
   writing a list field (tags, links, children are read-only anyway, and a property holding
   several values is refused).
+
+### Looks, as built
+
+- **Who does what.** The engine places marks; the frontend decides what they look like.
+  `markdown::parse_marked(text, flavour, marks)` takes byte ranges of the file and puts
+  `Inline::Mark { id, open }` around the inlines each covers; `Doc::broken` says which it
+  couldn't place. `crates/cold-lava/src/looks.rs` turns a note's items into those ranges and
+  their looks, and `reader.rs` draws them. The colour names become terminal colours in one
+  table there (`looks::colour`), which the whiteboard's canvas presets use too.
+- **Which text.** Each value with a look is one mark over its span (`Typed::spans`, one per
+  value of a list field); `whole` is one mark over the item's own text, `Place::span`: the
+  block's text, or an inline type's match without its outer spaces. `by-value` picks the
+  value's look over the field's; a look given only by value is none for the other values. A
+  subtype without a look for a field uses its base's.
+- **From file offsets to the rendered text.** Spans are file offsets; `Source::text_range` maps
+  them through removed `%%comments%%` (an end inside one breaks the mark). While reading inlines,
+  each pulldown-cmark event keeps its source range: text whose content is exactly its source
+  bytes can be cut at a mark's ends; a container (link, emphasis) a mark covers only in part
+  leaves it to the inlines inside, which get their own marks (so a mark can open and close more
+  than once, a chip around a link's half and the text beside it); a container a mark covers
+  whole is marked around, not again inside. A mark is **broken**, and its look skipped, when it
+  covers only part of anything else (an entity like `&amp;`, code, math, a footnote reference),
+  or a cut would change what the extras read: inside a tag, in a `==`, or a new tag where the
+  second part starts. Marks are placed before the extras run, and the extras look through them
+  (a callout's `[!type]`, a trailing `^id`, an embed alone in its paragraph).
+- **Drawing.** The reader keeps the marks open around each inline (outermost first) and patches
+  the style with each look: `colour` the foreground, `dim` the dim grey (or the dim modifier
+  with a colour), `strike`, `bold`; `badge` a chip, the colour on a dark tint of it with a space
+  of padding at each end, unbroken by wrapping; `icon` and a space before the value; `hide`
+  drops the written text and, with a badge or icon, draws the value in its place; `link`
+  registers a wiki link to the value, which `Tab`, `Enter`, `f` and `K` treat like any other.
+  `NO_COLOR` (non-empty) leaves colours out and draws chips in reverse video. Heading names
+  (outline, jumps) are read without looks.
+- **Frontmatter.** It isn't rendered, so a note type's values read from it can't be drawn in
+  place. The note's typed fields with a look whose mark appears nowhere in the body, and isn't
+  broken, go on a properties line above the note: the icon and value, or the field's name and
+  value without an icon (`▲ 2549`). Reading starts below it, so the title's breadcrumb is the
+  first heading's as before. A note type's `whole` is skipped: it would be the whole body.
+- **Cost.** Once per note load and per change on disk, not per frame: the items come from the
+  core's cache (`Vault::items`) when the core's text is the text on disk, else are read once,
+  and the marks are placed in the same pulldown-cmark pass that builds the `Doc`. The reader
+  lays the marks out with the page, again only when the width or the note changes.
+- **Not yet:** other views (the table view, the agenda) drawing the same looks, a light
+  terminal's table, and looks in the GUI.
 
 ## File types
 
@@ -773,7 +820,8 @@ after its call returns, so it never holds the menu's state.
       the task as a definition, first in shadow mode beside today's parser, then switched
       over *(done: `types/task.toml` is how tasks are read; `agenda` and `task toggle` read
       typed tasks)*;
-      looks in the reader; the table view.
+      looks in the reader *(done: `looks.rs`, `markdown::parse_marked`; the task's done and
+      cancelled lines and priorities, the example vault's elevation and VEI)*; the table view.
    6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and
       links contributed by owners; the whiteboard as the first owner.
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The

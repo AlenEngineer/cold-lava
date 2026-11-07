@@ -9,6 +9,15 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- The reader draws typed values with their types' looks: `badge` as a chip, `icon`, a colour by
+  name (one table in the frontend, so a light terminal can swap it), `dim`, `strike`, `bold`,
+  `hide`, `link` (the value becomes a link `Tab` and `Enter` follow), `whole` (the whole item)
+  and `by-value`. The note's typed frontmatter fields with a look go on a line above it. A look
+  is skipped rather than drawn in the wrong place when its value can't be found exactly in the
+  rendered text. The built-in task fades and strikes through done and cancelled tasks and puts
+  its priority on a chip coloured by urgency; the example vault's `vei` chip covers the whole
+  `VEI 6`. With `NO_COLOR`, chips are reverse video and colours are left out. `by-value` on a
+  `${tasks.statuses}` field takes the status types (`done`, `cancelled`, …).
 - Inline types: a type with `on = "inline"` is found by its `match` anywhere in the text of
   paragraphs, list items (tasks too), headings and table rows, any number of times per block,
   and never in code spans, code blocks, math or frontmatter. Each match is an item of that type

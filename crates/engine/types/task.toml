@@ -31,6 +31,12 @@ links = "link"
 # The date of the daily note it is in.
 daily_note = "date"
 
+[types.task.style]
+# A finished task fades and is struck through, as Obsidian draws a ticked one.
+status_type = { by-value = { done = { dim = true, strike = true, whole = true }, cancelled = { dim = true, strike = true, whole = true } } }
+# The priority glyph on a chip coloured by how urgent it is.
+priority = { badge = true, by-value = { highest = { colour = "red" }, high = { colour = "orange" }, medium = { colour = "yellow" }, low = { colour = "cyan" }, lowest = { colour = "muted" } } }
+
 [[types.task.from]]
 on = "list-item"
 # A checkbox, a space and words; with a global filter, only lines that carry it.
