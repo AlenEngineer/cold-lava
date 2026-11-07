@@ -157,7 +157,39 @@ chosen Markdown flavour). Frontends sit beside the engine:
 
 A frontend asks the engine and draws; the engine never knows which frontend is asking. That's
 what lets a language server, a graphical app or a script use exactly the same understanding of
-the vault as the terminal UI.
+the vault as the terminal UI. Which frontend gets the effort is the next section.
+
+## The frontend: one, opinionated
+
+*(vision; the reader and panes exist, the rest follows file types and scenes)*
+
+The engine stays separate because that's good design, not because we expect many frontends.
+The aim is **one frontend, opinionated enough that nobody needs to replace it**: extensions
+change what it shows, never how it works.
+
+- **The UI is a host of views.** The frontend owns layout, drawing, keys, mouse and frame rate.
+  Everything it shows (the reader, the agenda, a type's table, a whiteboard) is a view; the
+  built-in ones use the same view gateway as anyone's. File-type owners only say how to show
+  their files; what the frontend does with that (where, how big, inline or full screen) is its
+  call.
+- **The document view.** The reader grows into the place you think in: a note rendered with
+  its embeds alive in place. Between two paragraphs, `![[eruptions.canvas]]` is the whiteboard
+  itself, drawn as a scene you can select and move around in; a ` ```mermaid ` fence (what
+  Obsidian renders natively) is the diagram; `![[Projects.kanban]]` is the board, drawn by its
+  owner. Each is still its own file (or fence), referenced from the note, so the note stays
+  plain Markdown that Obsidian shows the same way.
+- **Making things where you are.** "Insert a whiteboard here" creates `….canvas` through
+  `vault/create`, puts `![[…]]` at the cursor, and opens it in place. Same for a diagram or any
+  file type whose owner declares a `new` command. You write, drop in a board, keep writing.
+- **Text is still typed in your editor.** A text editor good enough to live in is a project of
+  its own, so Neovim (or yours) keeps typing; cold-lava inserts references and edits items for
+  you. A light block editor for quick, one-paragraph edits may come later, never a full editor.
+- **A framework, extracted, not designed up front.** The frontend is built concrete and
+  opinionated first. Once its parts have proven themselves (the view host, the document
+  layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a
+  real app instead of guesses.
+- **Honest limits.** A terminal draws whiteboards, diagrams, boards and graphs well, with Kitty
+  pixels where the terminal has them and braille elsewhere. It won't feel like a tablet.
 
 ## What stays fixed
 
