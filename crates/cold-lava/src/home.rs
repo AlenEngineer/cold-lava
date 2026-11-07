@@ -1292,7 +1292,9 @@ impl Home {
         let tree_changed = events.iter().any(|e| {
             !matches!(
                 e,
-                CoreEvent::NoteChanged(_) | CoreEvent::GraphSettingsChanged
+                CoreEvent::NoteChanged(_)
+                    | CoreEvent::GraphSettingsChanged
+                    | CoreEvent::BookmarksChanged
             )
         });
         if tree_changed {
@@ -1317,7 +1319,9 @@ impl Home {
             | CoreEvent::NoteCreated(rel)
             | CoreEvent::NoteRemoved(rel) => Some(rel.as_str()) == shown_rel,
             CoreEvent::Rescanned => true,
-            CoreEvent::BoardChanged(_) | CoreEvent::GraphSettingsChanged => false,
+            CoreEvent::BoardChanged(_)
+            | CoreEvent::GraphSettingsChanged
+            | CoreEvent::BookmarksChanged => false,
         });
         if reread {
             self.reload_reader();

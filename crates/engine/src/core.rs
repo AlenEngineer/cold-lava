@@ -2,6 +2,7 @@
 //! re-reads just the notes that change, and tells subscribers what changed, whatever caused it
 //! (cold-lava, Obsidian, Neovim, git…).
 
+use crate::bookmarks::Bookmarks;
 use crate::index::Index;
 use crate::vault::{self, NoteChange};
 use anyhow::Result;
@@ -24,6 +25,8 @@ pub enum Event {
     BoardChanged(String),
     /// Obsidian's graph settings (colour groups) changed.
     GraphSettingsChanged,
+    /// `.obsidian/bookmarks.json` changed; `Core::bookmarks` has been read again.
+    BookmarksChanged,
 }
 
 impl From<NoteChange> for Event {
@@ -51,12 +54,14 @@ const SETTLE: Duration = Duration::from_millis(250);
 
 pub struct Core {
     pub index: Index,
+    bookmarks: Result<Bookmarks, String>,
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<RecommendedWatcher>,
     changed: Vec<PathBuf>,
     boards: Vec<String>,
     rescan: bool,
     graph_settings: bool,
+    bookmarks_changed: bool,
     due: Option<Instant>,
     subscribers: Vec<Sender<Event>>,
 }
@@ -66,6 +71,7 @@ impl Core {
         let index = Index::build(vault::scan(root)?);
         let (fs_events, watcher) = watch(&index.vault.root);
         Ok(Core {
+            bookmarks: read_bookmarks(&index.vault.root),
             index,
             fs_events,
             _watcher: watcher,
@@ -73,6 +79,7 @@ impl Core {
             boards: Vec::new(),
             rescan: false,
             graph_settings: false,
+            bookmarks_changed: false,
             due: None,
             subscribers: Vec::new(),
         })
@@ -80,6 +87,16 @@ impl Core {
 
     pub fn root(&self) -> &Path {
         &self.index.vault.root
+    }
+
+    /// The vault's bookmarks (Obsidian's), or why they can't be read.
+    pub fn bookmarks(&self) -> Result<&Bookmarks, &str> {
+        self.bookmarks.as_ref().map_err(String::as_str)
+    }
+
+    /// Read the bookmarks again now (after cold-lava itself changed them).
+    pub fn reload_bookmarks(&mut self) {
+        self.bookmarks = read_bookmarks(self.root());
     }
 
     /// Whether the vault folder is being watched (if not, call `note_changed` / `rescan`).
@@ -115,6 +132,7 @@ impl Core {
     pub fn rescan_now(&mut self) {
         if let Ok(v) = vault::scan(&self.index.vault.root) {
             self.index = Index::build(v);
+            self.reload_bookmarks();
             self.changed.clear();
             self.subscribers
                 .retain(|s| s.send(Event::Rescanned).is_ok());
@@ -138,7 +156,10 @@ impl Core {
         if std::mem::take(&mut self.rescan) {
             self.changed.clear();
             match vault::scan(self.root()) {
-                Ok(v) => self.index = Index::build(v),
+                Ok(v) => {
+                    self.index = Index::build(v);
+                    self.reload_bookmarks();
+                }
                 Err(_) => return Vec::new(), // the folder vanished; keep what we had
             }
             events.push(Event::Rescanned);
@@ -153,6 +174,10 @@ impl Core {
         );
         if std::mem::take(&mut self.graph_settings) {
             events.push(Event::GraphSettingsChanged);
+        }
+        if std::mem::take(&mut self.bookmarks_changed) {
+            self.reload_bookmarks();
+            events.push(Event::BookmarksChanged);
         }
         self.subscribers
             .retain(|s| events.iter().all(|e| s.send(e.clone()).is_ok()));
@@ -173,6 +198,7 @@ impl Core {
                         }
                     }
                     Kind::GraphSettings => self.graph_settings = true,
+                    Kind::Bookmarks => self.bookmarks_changed = true,
                     Kind::Folder => self.rescan = true,
                     Kind::Ignored => continue,
                 }
@@ -189,6 +215,7 @@ enum Kind {
     Note,
     Board(String),
     GraphSettings,
+    Bookmarks,
     /// Something without an extension: most likely a folder that was moved or deleted, which
     /// only a full rescan catches reliably.
     Folder,
@@ -202,6 +229,9 @@ fn classify(root: &Path, path: &Path) -> Kind {
     let rel_s = rel.to_string_lossy().replace('\\', "/");
     if rel_s == ".obsidian/graph.json" {
         return Kind::GraphSettings;
+    }
+    if rel_s == crate::bookmarks::FILE {
+        return Kind::Bookmarks;
     }
     if rel
         .components()
@@ -218,6 +248,10 @@ fn classify(root: &Path, path: &Path) -> Kind {
         None if !path.is_file() => Kind::Folder,
         _ => Kind::Ignored,
     }
+}
+
+fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {
+    Bookmarks::read(root).map_err(|e| e.to_string())
 }
 
 fn watch(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
@@ -262,6 +296,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cold-lava-core-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Sub")).unwrap();
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
         std::fs::write(dir.join("A.md"), "[[B]]").unwrap();
         let mut core = Core::open(&dir).unwrap();
         let rx = core.subscribe();
@@ -304,6 +339,17 @@ mod tests {
                     || ev.contains(&Event::Rescanned),
                 "{ev:?}"
             );
+            std::fs::write(
+                root.join(crate::bookmarks::FILE),
+                r#"{"items":[{"type":"search","ctime":1,"query":"lava"}]}"#,
+            )
+            .unwrap();
+            let ev = wait_for(&mut core, |e| e.contains(&Event::BookmarksChanged));
+            assert!(
+                ev.contains(&Event::BookmarksChanged) || ev.contains(&Event::Rescanned),
+                "{ev:?}"
+            );
+            assert_eq!(core.bookmarks().unwrap().entries().len(), 1);
         }
 
         core.rescan();

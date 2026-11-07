@@ -360,6 +360,9 @@ fn run() -> Result<()> {
                         println!("  {}:{}  {}", e.file, c.line, c.after.trim());
                     }
                 }
+                for c in plan.bookmarks.iter().flat_map(|b| &b.changes) {
+                    println!("  bookmark  {} → {}", c.before, c.after);
+                }
                 println!("{} links in {} files", plan.links(), plan.files());
                 for w in &plan.warnings {
                     eprintln!("warning: {w}");
