@@ -1,0 +1,76 @@
+# Several notes at once: mark three notes in different folders, move them into one folder (one
+# preview, every link kept), tag two of them, then delete those two and undo it.
+# tests/drive.rs adds links between the moved notes and checks files, tags and links.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault 35 notes
+keys p pliny
+wait-for Pliny the Younger
+keys enter
+wait-for People/Pliny the Younger  reading
+keys esc space
+wait-for 1 marked · m move · d delete · # tag · Esc clear
+expect ✓ Pliny the Younger
+keys esc
+wait-for marks cleared
+expect-not ✓
+keys k space
+wait-for ✓ Pliny the Younger
+keys p vesuvius
+wait-for Vesuvius
+keys enter
+wait-for Volcanoes/Vesuvius  reading
+keys esc space
+keys p hotspot
+wait-for Hotspot
+keys enter
+wait-for Concepts/Hotspot  reading
+keys esc space
+wait-for 3 marked · m move · d delete · # tag · Esc clear
+expect ✓ Pliny the Younger
+expect ✓ Vesuvius
+expect ✓ Hotspot
+screen
+keys m
+wait-for move 3 marked into folder · ⏎ preview · Esc cancel
+type Archive
+keys enter
+wait-for Move 3 items into Archive/
+screen
+keys enter
+wait-for moved 3 items to Archive
+expect-not ✓
+keys p loose
+wait-for Loose thought
+keys enter
+wait-for Inbox/Loose thought  reading
+keys esc space
+keys p hotspot
+wait-for Hotspot
+keys enter
+wait-for Archive/Hotspot  reading
+keys esc space
+wait-for 2 marked
+keys #
+wait-for tag 2 marked notes
+type review
+keys enter
+wait-for tagged 2 notes #review
+keys #
+type perso
+keys tab
+wait-for tag: #person
+screen
+keys enter
+wait-for tagged 2 notes #person
+keys d
+wait-for Delete 2 marked items?
+expect They go to the system trash.
+screen
+keys y
+wait-for deleted 2 items · u undo
+wait-for example-vault 33 notes
+keys u
+wait-for restored 2 items
+wait-for example-vault 35 notes
+keys q
+exits 0

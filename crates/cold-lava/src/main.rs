@@ -17,8 +17,8 @@ mod term;
 mod whichkey;
 
 use cold_lava_engine::{
-    core, daily, index, items, markdown, paths, rename, search, tasks, templates, trash, types,
-    vault, write,
+    core, daily, frontmatter, index, items, markdown, paths, rename, search, tasks, templates,
+    trash, types, vault, write,
 };
 
 use anyhow::Result;
@@ -352,7 +352,9 @@ fn run() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
                 let verb = if dry { "would rename" } else { "renamed" };
-                println!("{verb} {} → {}", plan.from, plan.to);
+                for m in &plan.moves {
+                    println!("{verb} {} → {}", m.from, m.to);
+                }
                 for e in &plan.edits {
                     for c in &e.changes {
                         println!("  {}:{}  {}", e.file, c.line, c.after.trim());

@@ -178,6 +178,102 @@ fn renames_moves_creates_and_deletes_folders_keeping_links() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Trash entries in the user's real system trash that came from `dir`: there must be none.
+fn in_real_trash(dir: &Path) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let info = Path::new(&home).join(".local/share/Trash/info");
+    let Ok(entries) = std::fs::read_dir(&info) else {
+        return Vec::new();
+    };
+    let dir = dir.to_string_lossy().replace(' ', "%20");
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains(&dir)))
+        .collect()
+}
+
+#[test]
+fn moves_tags_and_deletes_marked_notes() {
+    let dir = sandbox("multiselect");
+    let home = dir.join("home");
+    let vault = dir.join("example-vault");
+    std::fs::write(
+        vault.join("Inbox/Links.md"),
+        "# Links\n[[People/Pliny the Younger]], [[Volcanoes/Vesuvius]] and \
+         [Hotspot](../Concepts/Hotspot.md).\n",
+    )
+    .unwrap();
+    let vesuvius = vault.join("Volcanoes/Vesuvius.md");
+    let text = std::fs::read_to_string(&vesuvius).unwrap();
+    std::fs::write(
+        &vesuvius,
+        format!(
+            "{text}\nSee [Pliny](../People/Pliny%20the%20Younger.md) and [[Concepts/Hotspot]].\n"
+        ),
+    )
+    .unwrap();
+    let before = unresolved(&vault);
+    let out = drive_with(
+        "multiselect.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        unresolved(&vault),
+        before,
+        "every link still leads where it did"
+    );
+    let archive = vault.join("Archive");
+    for gone in [
+        "People/Pliny the Younger.md",
+        "Volcanoes/Vesuvius.md",
+        "Concepts/Hotspot.md",
+    ] {
+        assert!(!vault.join(gone).exists(), "{gone} moved");
+    }
+    let read = |p: PathBuf| std::fs::read_to_string(p).unwrap();
+    assert_eq!(
+        read(vault.join("Inbox/Links.md")),
+        "# Links\n[[Archive/Pliny the Younger]], [[Archive/Vesuvius]] and \
+         [Hotspot](../Archive/Hotspot.md).\n"
+    );
+    assert!(
+        read(archive.join("Vesuvius.md"))
+            .ends_with("\nSee [Pliny](Pliny%20the%20Younger.md) and [[Archive/Hotspot]].\n"),
+        "links between moved notes"
+    );
+    let hotspot = read(archive.join("Hotspot.md"));
+    assert!(
+        hotspot.starts_with("---\ntags: [concept, review, person]\n---\n# Hotspot\n"),
+        "{hotspot}"
+    );
+    let loose = read(vault.join("Inbox/Loose thought.md"));
+    assert!(
+        loose.starts_with("---\ntags:\n  - review\n  - person\n---\nIs there a volcano on Mars"),
+        "{loose}"
+    );
+    assert!(
+        files_ending(&system_trash(&home), "").is_empty(),
+        "undo took both out of the trash"
+    );
+    assert!(!vault.join(".trash").exists());
+    assert_eq!(
+        in_real_trash(&dir),
+        Vec::<PathBuf>::new(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn creates_a_note_from_a_template() {
     let dir = sandbox("template");
