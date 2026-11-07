@@ -7,6 +7,8 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
 ### Added
 
 - Tidying a vault. `T` (`vault.tidy`) lists orphan notes (no links in or out; `a` adds notes
@@ -278,6 +280,7 @@ The first release.
 - Live updates when notes change on disk, accent-insensitive matching everywhere, and an example
   vault that shows every feature.
 
-[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AlenEngineer/cold-lava/releases/tag/v0.1.0
