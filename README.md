@@ -526,7 +526,7 @@ exits 0
 ```
 
 After a lone Esc (`keys esc q`), drive waits for the program to answer before typing on, so the
-`q` can't arrive with the Esc as Alt-q. `#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
+`q` can't arrive with the Esc as Alt-q. `expect`, `expect-not` and `screen` first read the output until the program pauses, so they see the whole frame a `wait-for` matched. `#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
 `cold-lava --help` lists every step. Without a SCRIPT, the script is read from stdin.
 The program runs with an empty home folder, so your `config.toml`, your Neovim config and your
 list of vaults stay out of it; `cold-lava drive --real-home` uses yours, and
