@@ -16,6 +16,10 @@ change commands, keys and file formats; patch versions only fix things.
   After a lone Esc it waits for the program to answer before typing on, so `keys esc q` isn't
   read as Alt-q on a slow machine.
 - `COLD_LAVA_EDITOR=none` opens notes in the reader even when Neovim is installed.
+- Link hints: `f` (`note.hints`) in the reader, or in the menu while the reader shows a note,
+  labels every link on screen and every backlink in view with one or two letters from the home
+  row. Typing a label follows that link the way `Enter` does (Back returns), `Esc` or a letter
+  no label has cancels, and after the first letter of a pair only the labels it starts stay.
 - Back and forward, like a browser's, across the menu, the reader, search, the graph and
   whiteboards: `Ctrl-o`, `Alt-←` or `Backspace` (`history.back`) returns to where you were
   before following a link or opening a note, a search result, the graph or a board, with the

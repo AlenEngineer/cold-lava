@@ -81,7 +81,9 @@ tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden. Lin
 underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the
 reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the next link and
 `Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser); a click
-on a link follows it too. `e` edits the note in `$EDITOR` full screen, and `Esc` goes back to
+on a link follows it too. Faster still, `f` puts a label of one or two letters on every link on
+screen and every backlink in view: type a label to follow that link, or `Esc` to put them away.
+It works from the menu too, while the reader shows a note. `e` edits the note in `$EDITOR` full screen, and `Esc` goes back to
 the notes. The reader updates when the note changes on disk and keeps its place.
 
 **Links and backlinks.** Inside Neovim, press `Enter` (or `gf`) on a `[[link]]` or
@@ -125,6 +127,7 @@ In the reader:
 | `g` / `Home`, `G` / `End` | top, bottom |
 | `Tab` / `Shift-Tab` | select the next / previous link |
 | `Enter` | follow the selected link (creates missing notes) |
+| `f`, then a label | link hints: follow the link or backlink with that label (`Esc` cancels) |
 | `e` | edit the note in `$EDITOR` full screen |
 | `Esc` / `q` | back to the notes |
 

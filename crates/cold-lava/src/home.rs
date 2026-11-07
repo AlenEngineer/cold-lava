@@ -12,6 +12,7 @@ use crate::ext::{
     CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId, PaneNews,
     PaneSpec, Registry,
 };
+use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
@@ -366,6 +367,24 @@ enum Mode {
         plan: Box<crate::rename::Plan>,
         scroll: usize,
     },
+    Hints(Hints<HintTarget>),
+}
+
+/// What a link hint leads to: one of the reader's links, or a backlink.
+#[derive(Clone, Copy)]
+enum HintTarget {
+    Link(usize),
+    Backlink(usize),
+}
+
+/// What is inside a pane's border.
+fn inner(a: Rect) -> Rect {
+    Rect::new(
+        a.x + 1,
+        a.y + 1,
+        a.width.saturating_sub(2),
+        a.height.saturating_sub(2),
+    )
 }
 
 /// One row of the search results: a note header, or one of its matching lines.
@@ -1179,6 +1198,28 @@ impl Home {
             }
             return Ok(());
         }
+        if let Mode::Hints(hints) = &mut self.mode {
+            let plain = !k
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+            match k.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Char(c) if plain => match hints.type_char(c) {
+                    Typed::Pending => {}
+                    Typed::NoMatch => {
+                        let typed = hints.typed().to_string();
+                        self.mode = Mode::Normal;
+                        self.flash(format!("no link labelled {typed}"));
+                    }
+                    Typed::Chosen(target) => {
+                        self.mode = Mode::Normal;
+                        self.follow_hint(target);
+                    }
+                },
+                _ => {}
+            }
+            return Ok(());
+        }
         if matches!(self.mode, Mode::Switcher { .. }) {
             self.switcher_key(k);
             return Ok(());
@@ -1264,7 +1305,8 @@ impl Home {
             | Mode::Palette { .. }
             | Mode::Search { .. }
             | Mode::Rename { .. }
-            | Mode::ConfirmRename { .. } => return Ok(()),
+            | Mode::ConfirmRename { .. }
+            | Mode::Hints(_) => return Ok(()),
             Mode::Normal => {}
         }
 
@@ -1293,6 +1335,7 @@ impl Home {
             MenuCommand::Core(MenuAction::Read) => {
                 self.running_editor().is_some() && self.shown.is_some()
             }
+            MenuCommand::Core(MenuAction::Hints) => self.reader.is_some() && self.shown.is_some(),
             MenuCommand::Core(MenuAction::History(HistoryAction::Back)) => {
                 self.history.peek_back().is_some()
             }
@@ -1349,8 +1392,71 @@ impl Home {
         self.follow(&from, &target);
     }
 
+    /// Label the reader's links and the backlinks on screen, for `f` then a label to follow one.
+    fn show_hints(&mut self) {
+        let links = self.reader.as_ref().map(Reader::visible_links);
+        let links = links.unwrap_or_default().into_iter().map(|(i, ..)| i);
+        let backs = self.visible_backlinks(inner(self.areas[3]).height);
+        let targets = links
+            .map(HintTarget::Link)
+            .chain(backs.map(HintTarget::Backlink));
+        let hints = Hints::new(targets);
+        if hints.is_empty() {
+            return self.flash("no links on screen");
+        }
+        self.mode = Mode::Hints(hints);
+    }
+
+    fn follow_hint(&mut self, target: HintTarget) {
+        match target {
+            HintTarget::Link(i) => {
+                let Some(r) = self.reader.as_mut() else {
+                    return;
+                };
+                r.select(i);
+                self.focus = Focus::Pane;
+                self.follow_selected();
+            }
+            HintTarget::Backlink(i) => {
+                self.bsel = i;
+                self.open_backlink(i);
+            }
+        }
+    }
+
+    /// The backlinks the pane shows when it has `rows` rows: it scrolls to keep the selected one
+    /// in view.
+    fn visible_backlinks(&self, rows: u16) -> std::ops::Range<usize> {
+        let h = rows as usize;
+        let start = (self.bsel + 1).saturating_sub(h);
+        start..(start + h).min(self.backs.len())
+    }
+
+    fn draw_hints(&self, buf: &mut ratatui::buffer::Buffer, hints: &Hints<HintTarget>) {
+        let [_, _, ea, ba] = self.areas;
+        let ba = inner(ba);
+        let links = self.reader.as_ref().map(Reader::visible_links);
+        let links = links.unwrap_or_default();
+        let backs = self.visible_backlinks(ba.height);
+        for (label, target) in hints.matching() {
+            let at = match *target {
+                HintTarget::Link(i) => links
+                    .iter()
+                    .find(|l| l.0 == i)
+                    .map(|&(_, row, col)| (ea, ea.x + col, ea.y + row)),
+                HintTarget::Backlink(i) => backs
+                    .contains(&i)
+                    .then(|| (ba, ba.x + 1, ba.y + (i - backs.start) as u16)),
+            };
+            if let Some((area, x, y)) = at {
+                hints.draw(buf, area, x, y, label);
+            }
+        }
+    }
+
     fn run_action(&mut self, a: MenuAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match a {
+            MenuAction::Hints => self.show_hints(),
             // Shares pane.leave's default key, so that key goes back and forth; it never quits.
             MenuAction::FocusEditor => {
                 if self.pane.is_some() {
@@ -2110,15 +2216,7 @@ impl Home {
             }
             return;
         }
-        let inside = |a: Rect| {
-            Rect::new(
-                a.x + 1,
-                a.y + 1,
-                a.width.saturating_sub(2),
-                a.height.saturating_sub(2),
-            )
-            .contains(pos)
-        };
+        let inside = |a: Rect| inner(a).contains(pos);
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if !self.zoom && inside(va) {
@@ -2356,12 +2454,7 @@ impl Home {
         } else {
             (ea, Rect::default())
         };
-        let editor_inner = Rect::new(
-            ea.x + 1,
-            ea.y + 1,
-            ea.width.saturating_sub(2),
-            ea.height.saturating_sub(2),
-        );
+        let editor_inner = inner(ea);
         self.areas = [va, na, editor_inner, ba];
 
         if !self.zoom {
@@ -2371,6 +2464,9 @@ impl Home {
         self.draw_editor(f, ea, editor_inner);
         if ba.height > 0 {
             self.draw_backlinks(f, ba);
+        }
+        if let Mode::Hints(hints) = &self.mode {
+            self.draw_hints(f.buffer_mut(), hints);
         }
         self.draw_status(f, status);
         if matches!(self.mode, Mode::Switcher { .. }) {
@@ -2950,15 +3046,14 @@ impl Home {
             );
             return;
         }
-        let h = inner.height as usize;
-        let start = if self.bsel >= h { self.bsel + 1 - h } else { 0 };
+        let shown = self.visible_backlinks(inner.height);
         let focused = self.focus == Focus::Backlinks;
         let lines: Vec<Line> = self
             .backs
             .iter()
             .enumerate()
-            .skip(start)
-            .take(h)
+            .skip(shown.start)
+            .take(shown.len())
             .map(|(i, b)| {
                 let sel = i == self.bsel && focused;
                 let name_st = if sel {
@@ -3029,14 +3124,18 @@ impl Home {
         }
         let hints = match (self.focus, &self.mode) {
             (_, Mode::Filter) => " type to filter · ↑↓ move · ⏎ keep · Esc clear".to_string(),
+            (_, Mode::Hints(_)) => {
+                " link hints · type a label to follow its link · Esc cancel".to_string()
+            }
             (Focus::Pane, _) if self.reader.is_some() => {
                 let k = |id| self.reader_keys.label(id);
                 format!(
-                    " reading · {} scroll · {} page · {} next link · {} follow · {} edit · {} back to notes",
+                    " reading · {} scroll · {} page · {} next link · {} follow · {} hints · {} edit · {} back to notes",
                     k("reader.down"),
                     k("reader.page-down"),
                     k("reader.next-link"),
                     k("reader.follow"),
+                    self.keys.label("note.hints"),
                     k("reader.edit"),
                     k("reader.back"),
                 )

@@ -1,0 +1,58 @@
+# Link hints: f labels the links on screen, typing a label follows its link.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p kilau
+wait-for Kīlauea
+keys enter
+wait-for Volcanoes/Kīlauea  reading
+wait-for reading · j
+keys f
+wait-for link hints · type a label
+# Five links and six backlinks: single letters for the links, then l and ; and the a pairs.
+expect It's a shield Volcano fed
+expect Neighbour: kauna Loa.
+expect │ adShield Volcano
+screen
+# Other keys are swallowed while the labels show.
+keys down tab
+wait 200ms
+expect link hints · type a label
+keys s
+wait-for Concepts/Shield Volcano  reading
+wait-for Ctrl-o ⟵ Kīlauea
+keys ctrl+o
+wait-for Volcanoes/Kīlauea  reading
+wait-for It's a Shield Volcano fed
+# Esc puts the labels away and leaves the reader as it was.
+keys f
+wait-for link hints · type a label
+keys esc
+wait-gone link hints
+expect It's a Shield Volcano fed
+expect Volcanoes/Kīlauea  reading
+# A letter no label has cancels, and says so.
+keys f
+wait-for link hints · type a label
+keys g
+wait-for no link labelled g
+expect It's a Shield Volcano fed
+expect Volcanoes/Kīlauea  reading
+# After the first letter of a pair only the labels it starts are left; the second follows a backlink.
+keys f
+wait-for link hints · type a label
+keys a
+wait-for It's a Shield Volcano fed
+expect │ adShield Volcano
+keys d
+wait-for Concepts/Shield Volcano  reading
+# From the notes too, while the reader shows a note.
+keys ctrl+o
+wait-for Volcanoes/Kīlauea  reading
+keys esc
+wait-for ? help  q quit
+keys f
+wait-for link hints · type a label
+keys k
+wait-for Volcanoes/Mauna Loa  reading
+keys esc q
+exits 0
