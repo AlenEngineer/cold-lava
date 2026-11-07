@@ -2494,7 +2494,7 @@ impl Home {
             return self.flash(format!("rename failed: {e}"));
         }
         if let Some(editor) = self.running_editor() {
-            for (from, to) in plan.moves() {
+            for (from, to) in plan.file_moves() {
                 if from.extension().is_some_and(|e| e == "md") {
                     let request = EditorRequest::Renamed { from, to };
                     self.call(editor, |e, host| e.editor(request, host));
@@ -2508,19 +2508,23 @@ impl Home {
         for p in &mut self.mru {
             *p = plan.moved(p);
         }
-        self.history.moved(&plan.from_path, &plan.to_path);
-        if plan.folder {
-            let under = |r: &str| r == plan.from || r.starts_with(&format!("{}/", plan.from));
-            let expanded: Vec<String> =
-                self.expanded.iter().filter(|r| under(r)).cloned().collect();
-            for r in expanded {
-                self.expanded.remove(&r);
-                self.expanded
-                    .insert(format!("{}{}", plan.to, &r[plan.from.len()..]));
+        for m in &plan.moves {
+            self.history.moved(&m.from_path, &m.to_path);
+            if m.folder {
+                let under = |r: &str| r == m.from || r.starts_with(&format!("{}/", m.from));
+                let expanded: Vec<String> =
+                    self.expanded.iter().filter(|r| under(r)).cloned().collect();
+                for r in expanded {
+                    self.expanded.remove(&r);
+                    self.expanded
+                        .insert(format!("{}{}", m.to, &r[m.from.len()..]));
+                }
             }
         }
         self.reload_tree();
-        self.select_path(&plan.to_path);
+        if let Some(first) = plan.moves.first() {
+            self.select_path(&first.to_path);
+        }
         let links = plan.links();
         let moved_own = plan
             .edits
@@ -2528,19 +2532,27 @@ impl Home {
             .filter(|e| plan.moved(&e.path) != e.path)
             .count();
         let files = plan.files() - moved_own;
-        let moved = dir_of_rel(&plan.from) != dir_of_rel(&plan.to);
-        let verb = match (plan.folder, moved) {
-            (false, true) => "moved",
-            (false, false) => "renamed",
-            (true, true) => "moved the folder",
-            (true, false) => "renamed the folder",
+        let (verb, to) = match plan.moves.as_slice() {
+            [m] => {
+                let moved = dir_of_rel(&m.from) != dir_of_rel(&m.to);
+                let verb = match (m.folder, moved) {
+                    (false, true) => "moved",
+                    (false, false) => "renamed",
+                    (true, true) => "moved the folder",
+                    (true, false) => "renamed the folder",
+                };
+                (verb.to_string(), m.to.clone())
+            }
+            ms => (
+                format!("moved {}", plural(ms.len(), "item")),
+                destination(ms),
+            ),
         };
         self.flash(if links == 0 {
-            format!("{verb} to {} (no links needed updating)", plan.to)
+            format!("{verb} to {to} (no links needed updating)")
         } else {
             format!(
-                "{verb} to {} · {} updated in {}",
-                plan.to,
+                "{verb} to {to} · {} updated in {}",
                 plural(links, "link"),
                 plural(files.max(1), "file")
             )
@@ -2560,46 +2572,73 @@ impl Home {
             h,
         );
         f.render_widget(Clear, r);
+        let (title, hint) = match plan.moves.len() {
+            1 => (" Rename ", " ⏎ rename · Esc cancel · ↑↓ scroll "),
+            _ => (" Move ", " ⏎ move · Esc cancel · ↑↓ scroll "),
+        };
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(ACCENT))
             .title(Line::styled(
-                " Rename ",
+                title,
                 Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
             ))
-            .title_bottom(Line::styled(
-                " ⏎ rename · Esc cancel · ↑↓ scroll ",
-                Style::new().fg(MUTED),
-            ));
+            .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
         let inner = block.inner(r);
         f.render_widget(block, r);
-        let slash = if plan.folder { "/" } else { "" };
-        let mut lines = vec![Line::from(vec![
-            Span::styled(format!(" {}{slash}", plan.from), Style::new().fg(MUTED)),
-            Span::styled("  →  ", Style::new().fg(ACCENT)),
-            Span::styled(
-                format!("{}{slash}", plan.to),
-                Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
-            ),
-        ])];
-        if plan.folder {
-            let notes = plan.moving.iter().filter(|r| r.ends_with(".md")).count();
-            let others = plan.moving.len() - notes;
-            lines.push(Line::styled(
-                match others {
-                    0 => format!(" {} move with it.", plural(notes, "note")),
-                    n => format!(
-                        " {} and {} move with it.",
-                        plural(notes, "note"),
-                        plural(n, "other file")
-                    ),
-                },
-                Style::new().fg(NOTE),
-            ));
+        let arrow = |m: &crate::rename::Move| {
+            let slash = if m.folder { "/" } else { "" };
+            Line::from(vec![
+                Span::styled(format!(" {}{slash}", m.from), Style::new().fg(MUTED)),
+                Span::styled("  →  ", Style::new().fg(ACCENT)),
+                Span::styled(
+                    format!("{}{slash}", m.to),
+                    Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+                ),
+            ])
+        };
+        let notes = plan.moving.iter().filter(|r| r.ends_with(".md")).count();
+        let others = plan.moving.len() - notes;
+        let folders = plan.moves.iter().any(|m| m.folder);
+        let mut lines = Vec::new();
+        let mut detail = Vec::new();
+        match plan.moves.as_slice() {
+            [m] => {
+                lines.push(arrow(m));
+                if m.folder {
+                    lines.push(Line::styled(
+                        match others {
+                            0 => format!(" {} move with it.", plural(notes, "note")),
+                            n => format!(
+                                " {} and {} move with it.",
+                                plural(notes, "note"),
+                                plural(n, "other file")
+                            ),
+                        },
+                        Style::new().fg(NOTE),
+                    ));
+                }
+            }
+            ms => {
+                let into = match dir_of_rel(&ms[0].to) {
+                    "" => "the vault's root".to_string(),
+                    d => format!("{d}/"),
+                };
+                let mut what = format!(" Move {} into {into}", plural(ms.len(), "item"));
+                if folders {
+                    what.push_str(&format!(": {} in all", plural(notes, "note")));
+                }
+                lines.push(Line::styled(
+                    what,
+                    Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+                ));
+                detail.extend(ms.iter().map(arrow));
+                detail.push(Line::raw(""));
+            }
         }
         lines.extend([Line::styled(
             match plan.links() {
-                0 if plan.folder => " No links need changing.".to_string(),
+                0 if folders || plan.moves.len() > 1 => " No links need changing.".to_string(),
                 0 => " No links point to it, so only the file moves.".to_string(),
                 n => format!(
                     " {} in {} will be updated:",
@@ -2613,7 +2652,6 @@ impl Home {
             lines.push(Line::styled(format!(" ! {w}"), Style::new().fg(HIT)));
         }
         lines.push(Line::raw(""));
-        let mut detail = Vec::new();
         for e in &plan.edits {
             detail.push(Line::from(vec![
                 Span::styled(
@@ -4406,6 +4444,14 @@ fn plural(n: usize, word: &str) -> String {
         format!("1 {word}")
     } else {
         format!("{n} {word}s")
+    }
+}
+
+/// The folder several moves go into, as the user typed it: `Archive`, or the vault's root.
+fn destination(moves: &[crate::rename::Move]) -> String {
+    match moves.first().map(|m| dir_of_rel(&m.to)) {
+        Some("") | None => "the vault's root".to_string(),
+        Some(d) => d.to_string(),
     }
 }
 

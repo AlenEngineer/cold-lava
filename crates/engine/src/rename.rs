@@ -1,9 +1,9 @@
 //! Renaming and moving notes and folders with every link to them updated, like Obsidian's
 //! "Automatically update internal links".
 //!
-//! `plan` (a note) and `plan_folder` (a folder and everything in it) work out every change
-//! without touching anything; `apply` checks nothing changed since, then moves the note or
-//! folder and rewrites the other files atomically, one by one.
+//! `plan` (a note), `plan_folder` (a folder and everything in it) and `plan_into` (several of
+//! them into one folder) work out every change without touching anything; `apply` checks nothing
+//! changed since, then makes the moves and rewrites the other files atomically, one by one.
 //!
 //! The rule for links: every link in the vault is resolved as the vault is now and as it will
 //! be after the move. A link that still leads to the same file, the same way, is left alone;
@@ -43,9 +43,10 @@ pub struct FileEdit {
     pub changes: Vec<Change>,
 }
 
+/// One note, other file or folder that moves.
 #[derive(Serialize, Clone, Debug)]
-pub struct Plan {
-    /// Vault-relative: a note with `.md`, or a folder.
+pub struct Move {
+    /// Vault-relative: a file with its extension, or a folder.
     pub from: String,
     pub to: String,
     pub folder: bool,
@@ -53,7 +54,35 @@ pub struct Plan {
     pub from_path: PathBuf,
     #[serde(skip)]
     pub to_path: PathBuf,
-    /// The files that move (vault-relative, as they are now): the note, or what the folder holds.
+}
+
+impl Move {
+    /// Where the file at vault-relative `rel` is after this move, if it moves with it.
+    fn moved_rel(&self, rel: &str) -> Option<String> {
+        if !self.folder {
+            return (rel == self.from).then(|| self.to.clone());
+        }
+        let rest = rel.strip_prefix(&self.from)?.strip_prefix('/')?;
+        Some(format!("{}/{rest}", self.to))
+    }
+
+    /// Where a file at `path` is after this move, if it moves with it.
+    fn moved(&self, path: &Path) -> Option<PathBuf> {
+        let rest = path.strip_prefix(&self.from_path).ok()?;
+        Some(match rest.as_os_str().is_empty() {
+            true => self.to_path.clone(),
+            false => self.to_path.join(rest),
+        })
+    }
+}
+
+/// Everything moving some notes and folders at once changes. Every link is resolved once
+/// against the vault before all the moves and after all of them, so a link between two moving
+/// notes is right, and each changed file is listed once.
+#[derive(Serialize, Clone, Debug)]
+pub struct Plan {
+    pub moves: Vec<Move>,
+    /// The files that move (vault-relative, as they are now): the notes, and what the folders hold.
     pub moving: Vec<String>,
     /// Files whose links change, moving ones included (under their path as it is now).
     pub edits: Vec<FileEdit>,
@@ -70,23 +99,35 @@ impl Plan {
     }
 
     /// Each moving file's path now and after the move.
-    pub fn moves(&self) -> Vec<(PathBuf, PathBuf)> {
-        if !self.folder {
-            return vec![(self.from_path.clone(), self.to_path.clone())];
+    pub fn file_moves(&self) -> Vec<(PathBuf, PathBuf)> {
+        let mut out = Vec::new();
+        for m in &self.moves {
+            if !m.folder {
+                out.push((m.from_path.clone(), m.to_path.clone()));
+                continue;
+            }
+            let prefix = format!("{}/", m.from);
+            out.extend(
+                (self.moving.iter())
+                    .filter_map(|r| r.strip_prefix(&prefix))
+                    .map(|rest| (m.from_path.join(rest), m.to_path.join(rest))),
+            );
         }
-        let prefix = format!("{}/", self.from);
-        (self.moving.iter())
-            .filter_map(|r| r.strip_prefix(&prefix))
-            .map(|rest| (self.from_path.join(rest), self.to_path.join(rest)))
-            .collect()
+        out
     }
 
-    /// Where a file at `path` is after the move (itself if it doesn't move).
+    /// Where a file at `path` is after the moves (itself if it doesn't move).
     pub fn moved(&self, path: &Path) -> PathBuf {
-        match path.strip_prefix(&self.from_path) {
-            Ok(rest) if rest.as_os_str().is_empty() => self.to_path.clone(),
-            Ok(rest) => self.to_path.join(rest),
-            Err(_) => path.to_path_buf(),
+        (self.moves.iter())
+            .find_map(|m| m.moved(path))
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
+    /// What moves, for a message: the one item's path, or `3 items`.
+    fn what(&self) -> String {
+        match self.moves.as_slice() {
+            [m] => m.from.clone(),
+            ms => format!("{} items", ms.len()),
         }
     }
 }
@@ -435,40 +476,20 @@ pub fn plan(ix: &Index, note: usize, new_rel: &str) -> Result<Plan> {
     } else {
         format!("{new_rel}.md")
     };
-    let to_path = ix.vault.root.join(&new_rel);
     if new_rel == from_rel {
         bail!("that's already its name");
     }
-    // A case-only rename of the same file is fine; anything else that exists isn't.
-    if to_path.exists() && new_rel.to_lowercase() != from_rel.to_lowercase() {
-        bail!("{new_rel} already exists");
-    }
-    let before = Files::of_vault(ix);
-    let mut rels = before.rels.clone();
-    rels[note] = new_rel.clone();
-    let rw = Rewriter {
-        before,
-        after: Files::new(rels),
-    };
-    let new_name = link_key(&new_rel).rsplit('/').next().unwrap_or("");
-    let mut warnings = Vec::new();
-    if !rw.after.unique(new_name) {
-        warnings.push(format!(
-            "another note is also called \"{new_name}\": links to this one are written as full paths, \
-             and existing [[{new_name}]] links may now point to whichever is closer to the vault root"
-        ));
-    }
-    let edits = edits(ix, &rw)?;
-    Ok(Plan {
-        from: from_rel.clone(),
-        to: new_rel,
-        folder: false,
-        from_path: n.path.clone(),
-        to_path,
-        moving: vec![from_rel],
-        edits,
-        warnings,
-    })
+    let to_path = ix.vault.root.join(&new_rel);
+    resolve(
+        ix,
+        vec![Move {
+            from: from_rel,
+            to: new_rel,
+            folder: false,
+            from_path: n.path.clone(),
+            to_path,
+        }],
+    )
 }
 
 /// Work out everything moving the folder `from` (vault-relative) to `to` would change: every
@@ -476,41 +497,115 @@ pub fn plan(ix: &Index, note: usize, new_rel: &str) -> Result<Plan> {
 /// Nothing is written.
 pub fn plan_folder(ix: &Index, from: &str, to: &str) -> Result<Plan> {
     let (from, to) = (from.trim_matches('/'), to.trim_matches('/'));
+    check_folder(ix, from)?;
+    check_path(to)?;
+    if to == from {
+        bail!("that's already its name");
+    }
+    let root = &ix.vault.root;
+    resolve(
+        ix,
+        vec![Move {
+            from: from.to_string(),
+            to: to.to_string(),
+            folder: true,
+            from_path: root.join(from),
+            to_path: root.join(to),
+        }],
+    )
+}
+
+/// Work out everything moving several notes, other files and folders (vault-relative: files with
+/// their extension) into `folder` (`""` is the vault's root) would change, as one plan. Items
+/// already in it stay. Nothing is written.
+pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
+    let folder = folder.trim_matches('/');
+    if !folder.is_empty() {
+        check_path(folder)?;
+    }
+    let root = &ix.vault.root;
+    let mut moves = Vec::new();
+    for rel in items {
+        let rel = rel.trim_matches('/');
+        let from_path = root.join(rel);
+        let is_dir = from_path.is_dir();
+        if is_dir {
+            check_folder(ix, rel)?;
+        } else if !from_path.is_file() {
+            bail!("{rel} is no longer there");
+        }
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        let to = join(folder, name);
+        if to == rel {
+            continue;
+        }
+        moves.push(Move {
+            from: rel.to_string(),
+            folder: is_dir,
+            from_path,
+            to_path: root.join(&to),
+            to,
+        });
+    }
+    if moves.is_empty() {
+        bail!(
+            "they're already in {}",
+            if folder.is_empty() {
+                "the vault's root"
+            } else {
+                folder
+            }
+        );
+    }
+    resolve(ix, moves)
+}
+
+/// A folder cold-lava may move.
+fn check_folder(ix: &Index, from: &str) -> Result<()> {
     if from.is_empty() {
         bail!("that's the vault itself");
     }
     if from.split('/').any(|c| c.starts_with('.')) {
         bail!("{from} is a hidden folder; cold-lava leaves it alone");
     }
-    check_path(to)?;
-    let root = &ix.vault.root;
-    let from_path = root.join(from);
-    if !from_path.is_dir() {
+    if !ix.vault.root.join(from).is_dir() {
         bail!("there's no folder {from}");
     }
-    if to == from {
-        bail!("that's already its name");
-    }
-    if to
-        .to_lowercase()
-        .starts_with(&format!("{}/", from.to_lowercase()))
-    {
-        bail!("a folder can't move into itself");
-    }
-    let to_path = root.join(to);
-    if to_path.exists() && to.to_lowercase() != from.to_lowercase() {
-        bail!("{to} already exists");
+    Ok(())
+}
+
+/// The plan for `moves`: refused if two land on the same path, one is inside a moving folder or
+/// lands in one, or a target exists; otherwise every link resolved before and after them all.
+fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
+    let lower = |s: &str| s.to_lowercase();
+    let inside = |rel: &str, folder: &Move| {
+        folder.folder && lower(rel).starts_with(&format!("{}/", lower(&folder.from)))
+    };
+    for (i, m) in moves.iter().enumerate() {
+        if let Some(other) = moves[..i].iter().find(|o| lower(&o.to) == lower(&m.to)) {
+            bail!("{} and {} would both be {}", other.from, m.from, m.to);
+        }
+        if let Some(f) = moves.iter().find(|f| inside(&m.from, f)) {
+            bail!("{} is inside {}, which moves too", m.from, f.from);
+        }
+        if let Some(f) = moves.iter().find(|f| inside(&m.to, f)) {
+            match std::ptr::eq(f, m) {
+                true => bail!("a folder can't move into itself"),
+                false => bail!("{} can't move into {}: it moves too", m.from, f.from),
+            }
+        }
+        // A case-only rename of the same file is fine; anything else that exists isn't.
+        if m.to_path.exists() && lower(&m.to) != lower(&m.from) {
+            bail!("{} already exists", m.to);
+        }
     }
     let before = Files::of_vault(ix);
-    let prefix = format!("{from}/");
     let mut moving = Vec::new();
-    let rels = before
-        .rels
-        .iter()
-        .map(|r| match r.strip_prefix(&prefix) {
-            Some(rest) => {
+    let rels = (before.rels.iter())
+        .map(|r| match moves.iter().find_map(|m| m.moved_rel(r)) {
+            Some(to) => {
                 moving.push(r.clone());
-                format!("{to}/{rest}")
+                to
             }
             None => r.clone(),
         })
@@ -520,16 +615,22 @@ pub fn plan_folder(ix: &Index, from: &str, to: &str) -> Result<Plan> {
         before,
         after: Files::new(rels),
     };
+    let mut warnings = Vec::new();
+    for m in moves.iter().filter(|m| !m.folder) {
+        let name = link_key(&m.to).rsplit('/').next().unwrap_or("");
+        if !rw.after.unique(name) {
+            warnings.push(format!(
+                "another note is also called \"{name}\": links to this one are written as full paths, \
+                 and existing [[{name}]] links may now point to whichever is closer to the vault root"
+            ));
+        }
+    }
     let edits = edits(ix, &rw)?;
     Ok(Plan {
-        from: from.to_string(),
-        to: to.to_string(),
-        folder: true,
-        from_path,
-        to_path,
+        moves,
         moving,
         edits,
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -621,8 +722,8 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
     }))
 }
 
-/// Carry out a plan: refuse if any file changed since it was made, then move the note or
-/// folder and write each changed file atomically.
+/// Carry out a plan: refuse if any file changed since it was made, then make the moves (undoing
+/// the ones made if one fails) and write each changed file atomically.
 pub fn apply(plan: &Plan) -> Result<()> {
     for e in &plan.edits {
         let now =
@@ -634,14 +735,22 @@ pub fn apply(plan: &Plan) -> Result<()> {
             );
         }
     }
-    if !plan.from_path.exists() {
-        bail!("{} no longer exists", plan.from);
+    for m in &plan.moves {
+        if !m.from_path.exists() {
+            bail!("{} no longer exists", m.from);
+        }
+        if m.to_path.exists() && m.to.to_lowercase() != m.from.to_lowercase() {
+            bail!("{} already exists", m.to);
+        }
     }
-    if plan.to_path.exists() && plan.to.to_lowercase() != plan.from.to_lowercase() {
-        bail!("{} already exists", plan.to);
+    for (i, m) in plan.moves.iter().enumerate() {
+        if let Err(e) = crate::write::move_file(&m.from_path, &m.to_path) {
+            for done in plan.moves[..i].iter().rev() {
+                let _ = crate::write::move_file(&done.to_path, &done.from_path);
+            }
+            return Err(e).with_context(|| format!("moving {} to {}", m.from, m.to));
+        }
     }
-    crate::write::move_file(&plan.from_path, &plan.to_path)
-        .with_context(|| format!("moving {} to {}", plan.from, plan.to))?;
     let mut failed = Vec::new();
     for e in &plan.edits {
         // Still guarded: a file edited between the check above and now is left alone.
@@ -654,7 +763,7 @@ pub fn apply(plan: &Plan) -> Result<()> {
     if !failed.is_empty() {
         bail!(
             "moved {}, but couldn't update links in: {}",
-            plan.from,
+            plan.what(),
             failed.join(", ")
         );
     }
@@ -917,6 +1026,114 @@ mod tests {
         std::fs::write(dir.join("B.md"), "[[A/a]] edited elsewhere\n").unwrap();
         assert!(apply(&p).is_err());
         assert!(dir.join("A/a.md").exists() && !dir.join("Z").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn several_moves_are_one_plan_with_links_between_them_right() {
+        let (dir, ix) = vault_with(
+            "many",
+            &[
+                ("A/One.md", "[[Two]] [two](../B/Two.md) [[B/Two]]\n"),
+                ("B/Two.md", "[one](../A/One.md) [[A/One]]\n"),
+                ("C/Three.md", "[[One]] [[Two]]\n"),
+                ("D/Stay.md", "[[A/One]] [[B/Two]] [[C/Three]] [[Three]]\n"),
+                (
+                    "Board.canvas",
+                    "{\"nodes\":[{\"id\":\"a\",\"type\":\"file\",\"file\":\"A/One.md\"}],\"edges\":[]}",
+                ),
+            ],
+        );
+        let items = ["A/One.md", "B/Two.md", "C"].map(String::from);
+        let p = plan_into(&ix, &items, "Archive").unwrap();
+        assert_eq!(p.moves.len(), 3);
+        let mut files: Vec<&str> = p.edits.iter().map(|e| e.file.as_str()).collect();
+        files.sort();
+        assert_eq!(
+            files,
+            ["A/One.md", "B/Two.md", "Board.canvas", "D/Stay.md"],
+            "each file once; Three's bare names still resolve"
+        );
+        apply(&p).unwrap();
+        assert_eq!(
+            read(&dir, "Archive/One.md"),
+            "[[Two]] [two](Two.md) [[Archive/Two]]\n"
+        );
+        assert_eq!(
+            read(&dir, "Archive/Two.md"),
+            "[one](One.md) [[Archive/One]]\n"
+        );
+        assert_eq!(read(&dir, "Archive/C/Three.md"), "[[One]] [[Two]]\n");
+        assert_eq!(
+            read(&dir, "D/Stay.md"),
+            "[[Archive/One]] [[Archive/Two]] [[Archive/C/Three]] [[Three]]\n"
+        );
+        assert!(read(&dir, "Board.canvas").contains("\"file\":\"Archive/One.md\""));
+        assert!(!dir.join("A/One.md").exists() && !dir.join("C").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn several_moves_that_are_refused() {
+        let (dir, ix) = vault_with(
+            "many-refuse",
+            &[
+                ("A/Same.md", ""),
+                ("B/Same.md", ""),
+                ("F/sub/x.md", ""),
+                ("F/y.md", ""),
+                ("G/z.md", ""),
+                ("Archive/Taken.md", ""),
+                ("Taken.md", ""),
+            ],
+        );
+        let refused = |items: &[&str], to: &str| {
+            let items: Vec<String> = items.iter().map(|s| s.to_string()).collect();
+            plan_into(&ix, &items, to).unwrap_err().to_string()
+        };
+        assert_eq!(
+            refused(&["A/Same.md", "B/Same.md"], "Archive"),
+            "A/Same.md and B/Same.md would both be Archive/Same.md"
+        );
+        assert_eq!(
+            refused(&["F", "G"], "F/sub"),
+            "a folder can't move into itself"
+        );
+        assert_eq!(
+            refused(&["G", "F/sub"], "F/sub"),
+            "G can't move into F/sub: it moves too"
+        );
+        assert_eq!(
+            refused(&["F", "F/y.md"], "Archive"),
+            "F/y.md is inside F, which moves too"
+        );
+        assert_eq!(
+            refused(&["Taken.md"], "Archive"),
+            "Archive/Taken.md already exists"
+        );
+        assert_eq!(refused(&["F/y.md"], "F"), "they're already in F");
+        let items = ["F/y.md", "G/z.md"].map(String::from);
+        let p = plan_into(&ix, &items, "F").unwrap();
+        assert_eq!(p.moves.len(), 1, "an item already there stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn several_moves_change_nothing_if_a_file_changed() {
+        let (dir, ix) = vault_with(
+            "many-guard",
+            &[
+                ("A/a.md", "x"),
+                ("B/b.md", "y"),
+                ("Links.md", "[[A/a]] [[B/b]]\n"),
+            ],
+        );
+        let items = ["A/a.md", "B/b.md"].map(String::from);
+        let p = plan_into(&ix, &items, "Z").unwrap();
+        std::fs::write(dir.join("Links.md"), "edited elsewhere\n").unwrap();
+        assert!(apply(&p).is_err());
+        assert!(dir.join("A/a.md").exists() && dir.join("B/b.md").exists());
+        assert!(!dir.join("Z").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
