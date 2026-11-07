@@ -120,6 +120,8 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `s` (or `Ctrl-f`) | search the text of every note |
 | `R` / `m` | rename / move the note or folder, updating every link to it (with a preview first) |
 | `d` / `u` | delete the note, whiteboard or folder (to the trash, after showing what links to it) / undo |
+| `space` | mark the selected note or folder, to move, delete or tag several at once (`Esc` clears the marks) |
+| `#` | add a tag to the marked notes (or the selected one); `-tag` removes it |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder (`Tab` picks a template) / add a vault |
@@ -335,6 +337,29 @@ deletes the whole folder. cold-lava never deletes for good. It goes where the va
 setting ("Deleted files" in Files and links) says: the system trash by default, or the vault's
 `.trash` folder. A vault set to delete permanently gets `.trash` too. `u` puts the last deleted
 note or folder back (the last 20 deletes, until you quit).
+
+### Several notes at once
+
+In the tree, `space` (`note.mark`) marks the selected note or folder with a `✓` and moves down;
+`space` again unmarks it, and `Esc` clears every mark. A marked folder counts as one item:
+everything in it goes along. With marks, the status line says how many and what you can do:
+
+- `m` moves them all into one folder as one plan: the preview lists each move and every link
+  that changes, once, and links between the moved notes come out right. It is refused when two
+  of them would land on the same path, when a folder would move into itself or into another
+  marked folder, or when a marked note is inside a marked folder. If a file changes before you
+  confirm, nothing is changed.
+- `d` deletes them all to the trash after one prompt: how many notes go, and the links from
+  notes that stay that will break (links among the deleted ones don't count). `u` puts the
+  whole batch back.
+- `#` (`note.tag`) asks for a tag (`Tab` completes it from the vault's tags) and adds it to each
+  marked note's frontmatter `tags`; `-tag` removes it. Without marks it tags the selected note.
+  The list keeps its style, `tags: [a, b]` or `- a` lines, and only that line changes; a note
+  without frontmatter or without `tags` gets them. A note whose `tags` isn't a plain list (or is
+  one line like `tags: a, b`) is left alone and named in the message, and so is one that
+  changed on disk since it was read.
+
+Marks follow the tree: a marked note that is renamed or deleted elsewhere drops out.
 
 ### Agenda, daily notes and tasks (for scripts and status bars)
 

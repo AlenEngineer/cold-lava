@@ -9,6 +9,15 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Several notes at once: `space` (`note.mark`) marks notes and folders in the tree, shown with a
+  `✓`, and `Esc` clears the marks. With marks, `m` moves them all into one folder as one plan
+  (one preview, links between the moved notes kept right, refused if two would land on the same
+  path or a folder would move into a marked one), `d` deletes them all to the trash after one
+  prompt and `u` brings the whole batch back. `#` (`note.tag`) adds a tag to the marked notes'
+  frontmatter, or the selected note's, completing from the vault's tags; `-tag` removes it. The
+  `tags` list keeps its style (`[a, b]` or `- a` lines), only that line changes, and a note
+  whose `tags` isn't a plain list is left alone and named.
+
 - Folders in the main menu: `R` renames the selected folder and `m` moves it into another, with
   every link into it, out of it and inside it kept correct (by path, by name, relative Markdown
   links, attachments, frontmatter, whiteboard cards), shown in a preview first. A `[[Name]]`
@@ -95,6 +104,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- `cold-lava rename --json`: the plan lists what moves as `moves: [{from, to, folder}]` instead
+  of `from`, `to` and `folder` at the top, since a plan can now hold several moves.
+- `Esc` (`filter.clear`) clears the tree's marks first, then the filter.
 - Notes in the templates folders aren't read as items: a template's tasks and typed blocks no
   longer show up in the agenda or `cold-lava items`.
 - The status line shows only a few keys and `, keys` / `? help`; the reader's no longer runs

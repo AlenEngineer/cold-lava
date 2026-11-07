@@ -13,6 +13,7 @@ use crate::ext::{
     CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId, PaneNews,
     PaneSpec, Registry,
 };
+use crate::frontmatter::{self, TagEdit};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
 use crate::markdown::{self, Flavour};
@@ -32,7 +33,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
@@ -374,18 +375,27 @@ enum Mode {
         input: String,
         moving: bool,
     },
+    /// Typing the folder to move the marked notes and folders into.
+    MoveMarked(String),
+    /// Typing a tag to add to the marked notes (or the selected one); `-tag` removes it. `all`
+    /// is the vault's tags, and `sel` the one Tab completed to among those matching `typed`.
+    Tag {
+        typed: String,
+        all: Vec<String>,
+        sel: Option<usize>,
+    },
     /// Showing what a rename will change before doing it.
     ConfirmRename {
         plan: Box<crate::rename::Plan>,
         scroll: usize,
+        /// It moves the marked items, so the marks are done with afterwards.
+        marked: bool,
     },
     /// Asking before a note or folder goes to the trash.
     ConfirmDelete(Box<PendingDelete>),
-    /// Undoing a delete whose old path is taken now: put it back under a free name?
-    ConfirmRestore {
-        trashed: Trashed,
-        to: PathBuf,
-    },
+    /// Undoing a delete whose old paths are taken now: put those back under free names? Each
+    /// item with where it goes back to.
+    ConfirmRestore(Vec<(Trashed, PathBuf)>),
     Hints(Hints<HintTarget>),
     /// The reader's headings, to jump to one; `sel` is a row of `outline_hits`.
     Outline {
@@ -399,15 +409,21 @@ enum Mode {
     },
 }
 
-/// A delete waiting for a yes: the content the user is deciding on, and what links to it.
-struct PendingDelete {
+/// A note, board or folder about to go to the trash, as the user was shown it.
+struct Doomed {
     path: PathBuf,
     /// Vault-relative, without `.md`.
     rel: String,
     contents: trash::Contents,
-    /// For a folder: how many notes it holds.
+}
+
+/// A delete waiting for a yes: what the user is deciding on, and what links to it.
+struct PendingDelete {
+    /// One item, or the marked ones.
+    doomed: Vec<Doomed>,
+    /// For a folder, or several items: how many notes go.
     notes: Option<usize>,
-    /// Links from outside to it (or to the notes in the folder).
+    /// Links from outside to them (or to the notes in the folders).
     backlinks: Vec<BackRow>,
     /// Which trash it goes to, as the prompt says it.
     goes: String,
@@ -416,7 +432,7 @@ struct PendingDelete {
     scroll: usize,
 }
 
-/// Deletes that `note.undo-delete` can still put back.
+/// Deletes (one item, or the marked ones) that `note.undo-delete` can still put back.
 const UNDO_DELETES: usize = 20;
 
 /// What a peek looks at: Tab sweeps through these and Enter goes where the selected one leads.
@@ -517,8 +533,11 @@ pub struct Home {
     effects_left: usize,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
-    /// What was deleted this session, most recent last.
-    trashed: Vec<Trashed>,
+    /// What was deleted this session, most recent last: each delete's items together.
+    trashed: Vec<Vec<Trashed>>,
+    /// Marked tree rows (vault-relative, as `Item::rel`), for moving, deleting and tagging
+    /// several at once.
+    marks: BTreeSet<String>,
     /// A screen a link led to, gone to once the key that followed it is handled.
     go_to: Option<Place>,
     /// `Some` while the pane shows the reader: always without an editor, else after
@@ -588,6 +607,7 @@ impl Home {
             shown: None,
             pending: None,
             trashed: Vec::new(),
+            marks: BTreeSet::new(),
             go_to: None,
             reader: None,
             flavour: markdown::flavour_for(Path::new("")),
@@ -895,6 +915,7 @@ impl Home {
         self.flavour = markdown::flavour_for(&v.path);
         self.expanded.clear();
         self.filter.clear();
+        self.marks.clear();
         self.nsel = 0;
         self.nscroll = 0;
         self.core = None; // a different vault: start a fresh core
@@ -1162,6 +1183,8 @@ impl Home {
     /// (`rows` index the old items, so it's read before they go).
     fn set_items(&mut self, items: Vec<Item>) {
         let keep = self.current().map(|it| it.rel.clone());
+        let rels: HashSet<&str> = items.iter().map(|it| it.rel.as_str()).collect();
+        self.marks.retain(|r| rels.contains(r.as_str()));
         self.items = items;
         self.rows_keeping(keep);
     }
@@ -1381,14 +1404,18 @@ impl Home {
             self.search_key(k);
             return Ok(());
         }
-        if matches!(self.mode, Mode::Rename { .. } | Mode::ConfirmRename { .. }) {
+        if matches!(
+            self.mode,
+            Mode::Rename { .. } | Mode::ConfirmRename { .. } | Mode::MoveMarked(_)
+        ) {
             self.rename_key(k);
             return Ok(());
         }
-        if matches!(
-            self.mode,
-            Mode::ConfirmDelete(_) | Mode::ConfirmRestore { .. }
-        ) {
+        if matches!(self.mode, Mode::Tag { .. }) {
+            self.tag_key(k);
+            return Ok(());
+        }
+        if matches!(self.mode, Mode::ConfirmDelete(_) | Mode::ConfirmRestore(_)) {
             self.delete_key(k);
             return Ok(());
         }
@@ -1522,9 +1549,11 @@ impl Home {
             | Mode::Palette { .. }
             | Mode::Search { .. }
             | Mode::Rename { .. }
+            | Mode::MoveMarked(_)
+            | Mode::Tag { .. }
             | Mode::ConfirmRename { .. }
             | Mode::ConfirmDelete(_)
-            | Mode::ConfirmRestore { .. }
+            | Mode::ConfirmRestore(_)
             | Mode::Hints(_)
             | Mode::Outline { .. }
             | Mode::Peek { .. } => return Ok(()),
@@ -1569,9 +1598,14 @@ impl Home {
 
     fn enabled(&self, c: MenuCommand) -> bool {
         match c {
-            MenuCommand::Core(MenuAction::ClearFilter) => !self.filter.is_empty(),
-            MenuCommand::Core(MenuAction::NewNote | MenuAction::NewFolder | MenuAction::Delete) => {
-                self.root.is_some()
+            MenuCommand::Core(MenuAction::ClearFilter) => {
+                !self.filter.is_empty() || !self.marks.is_empty()
+            }
+            MenuCommand::Core(
+                MenuAction::NewNote | MenuAction::NewFolder | MenuAction::Delete | MenuAction::Tag,
+            ) => self.root.is_some(),
+            MenuCommand::Core(MenuAction::Mark) => {
+                self.focus == Focus::Notes && self.current().is_some()
             }
             MenuCommand::Core(MenuAction::UndoDelete) => !self.trashed.is_empty(),
             MenuCommand::Core(MenuAction::Read) => {
@@ -1845,6 +1879,9 @@ impl Home {
             }
             MenuAction::Switcher => self.open_switcher(),
             MenuAction::Rename => self.start_rename(false),
+            MenuAction::Move if !self.marks.is_empty() => {
+                self.mode = Mode::MoveMarked(String::new())
+            }
             MenuAction::Move => self.start_rename(true),
             MenuAction::Delete => self.start_delete(false),
             MenuAction::UndoDelete => self.undo_delete(),
@@ -1866,10 +1903,16 @@ impl Home {
                 self.mode = Mode::Filter;
                 self.focus = Focus::Notes;
             }
+            MenuAction::ClearFilter if !self.marks.is_empty() => {
+                self.marks.clear();
+                self.flash("marks cleared");
+            }
             MenuAction::ClearFilter => {
                 self.filter.clear();
                 self.refresh_rows();
             }
+            MenuAction::Mark => self.toggle_mark(),
+            MenuAction::Tag => self.start_tag(),
             MenuAction::Zoom => self.zoom = !self.zoom,
             MenuAction::Graph => self.go_from_here(Place::Graph { selected: None }, terminal)?,
             MenuAction::Boards => self.open_boards(terminal, None)?,
@@ -2419,7 +2462,26 @@ impl Home {
                 }
                 _ => {}
             },
-            Mode::ConfirmRename { plan, scroll } => match k.code {
+            Mode::MoveMarked(input) => match k.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => input.clear(),
+                KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
+                KeyCode::Char(c) => input.push(c),
+                KeyCode::Enter => {
+                    let input = std::mem::take(input);
+                    self.mode = Mode::Normal;
+                    self.plan_move_marked(&input);
+                }
+                _ => {}
+            },
+            Mode::ConfirmRename {
+                plan,
+                scroll,
+                marked,
+            } => match k.code {
                 KeyCode::Esc | KeyCode::Char('n') => {
                     self.mode = Mode::Normal;
                     self.flash("rename cancelled");
@@ -2427,9 +2489,9 @@ impl Home {
                 KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
                 KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    let plan = (**plan).clone();
+                    let (plan, marked) = ((**plan).clone(), *marked);
                     self.mode = Mode::Normal;
-                    self.apply_rename(plan);
+                    self.apply_rename(plan, marked);
                 }
                 _ => {}
             },
@@ -2482,13 +2544,205 @@ impl Home {
                 self.mode = Mode::ConfirmRename {
                     plan: Box::new(plan),
                     scroll: 0,
+                    marked: false,
                 }
             }
             Err(e) => self.flash(format!("can't rename: {e}")),
         }
     }
 
-    fn apply_rename(&mut self, plan: crate::rename::Plan) {
+    /// Plan moving every marked note and folder into the folder typed (`/` is the vault's root).
+    fn plan_move_marked(&mut self, input: &str) {
+        let folder = input.trim();
+        if folder.is_empty() {
+            return self.flash("type a folder, e.g. Archive/ (or / for the vault root)");
+        }
+        self.save_editor();
+        self.reload_tree();
+        let items: Vec<String> = self.marks.iter().cloned().collect();
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
+        if items.is_empty() {
+            return self.flash("the marked notes are no longer there");
+        }
+        match crate::rename::plan_into(ix, &items, folder) {
+            Ok(plan) => {
+                self.mode = Mode::ConfirmRename {
+                    plan: Box::new(plan),
+                    scroll: 0,
+                    marked: true,
+                }
+            }
+            Err(e) => self.flash(format!("can't move: {e}")),
+        }
+    }
+
+    // ---------- marks & tags ----------
+
+    /// Mark the selected row, or unmark it, and go to the next one.
+    fn toggle_mark(&mut self) {
+        let Some(rel) = self.current().map(|it| it.rel.clone()) else {
+            return;
+        };
+        if !self.marks.remove(&rel) {
+            self.marks.insert(rel);
+        }
+        self.select_row(self.nsel + 1);
+    }
+
+    /// The marked rows that aren't inside a marked folder (they go with it).
+    fn marked_tops(&self) -> Vec<String> {
+        let inside = |r: &str| {
+            (self.marks.iter()).any(|f| {
+                r.len() > f.len() && r.starts_with(f.as_str()) && r[f.len()..].starts_with('/')
+            })
+        };
+        self.marks.iter().filter(|r| !inside(r)).cloned().collect()
+    }
+
+    fn start_tag(&mut self) {
+        let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+            return;
+        };
+        let all: BTreeSet<String> = (ix.vault.notes.iter())
+            .flat_map(|n| n.tags.iter().cloned())
+            .collect();
+        self.mode = Mode::Tag {
+            typed: String::new(),
+            all: all.into_iter().collect(),
+            sel: None,
+        };
+    }
+
+    fn tag_key(&mut self, k: KeyEvent) {
+        let Mode::Tag { typed, all, sel } = &mut self.mode else {
+            return;
+        };
+        let shown = tag_shown(typed, all, *sel);
+        let matches = tag_matches(typed, all).len();
+        match k.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Tab | KeyCode::Down if matches > 0 => {
+                *sel = Some(sel.map_or(0, |i| (i + 1) % matches));
+            }
+            KeyCode::BackTab | KeyCode::Up if matches > 0 => {
+                *sel = Some(sel.map_or(matches - 1, |i| (i + matches - 1) % matches));
+            }
+            KeyCode::Backspace => {
+                *typed = shown;
+                *sel = None;
+                typed.pop();
+            }
+            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                typed.clear();
+                *sel = None;
+            }
+            KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
+            KeyCode::Char(c) => {
+                *typed = shown;
+                *sel = None;
+                typed.push(c);
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                self.apply_tag(&shown);
+            }
+            _ => {}
+        }
+    }
+
+    /// Add `input`'s tag to the marked notes' frontmatter (or the selected note's), or remove it
+    /// for `-tag`. A note that changed since it was read, or whose tags can't be edited safely,
+    /// is left alone and named.
+    fn apply_tag(&mut self, input: &str) {
+        let input = input.trim();
+        let (edit, tag) = match input.strip_prefix('-') {
+            Some(t) => (TagEdit::Remove, t.trim().trim_start_matches('#')),
+            None => (TagEdit::Add, input.trim_start_matches('#')),
+        };
+        if !frontmatter::is_tag(tag) {
+            return self.flash(format!(
+                "\"{tag}\" isn't a tag: letters, digits, _ - and /, not only digits"
+            ));
+        }
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let (notes, skipped): (Vec<String>, Vec<String>) = match self.marks.is_empty() {
+            false => self.marks.iter().cloned().partition(|r| r.ends_with(".md")),
+            true => match self.rename_target() {
+                Some(p) => (
+                    vec![
+                        p.strip_prefix(&root)
+                            .unwrap_or(&p)
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                    ],
+                    Vec::new(),
+                ),
+                None => return self.flash("select a note to tag"),
+            },
+        };
+        if notes.is_empty() {
+            return self.flash("only notes have tags: mark some notes");
+        }
+        self.save_editor();
+        let (mut changed, mut unchanged, mut refused) = (Vec::new(), 0, Vec::new());
+        for rel in &notes {
+            let path = root.join(rel);
+            let name = rel
+                .rsplit('/')
+                .next()
+                .unwrap_or(rel)
+                .trim_end_matches(".md");
+            let result = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| match frontmatter::edit_tag(&text, tag, edit)? {
+                    Some(new) => crate::write::replace(&path, text.as_bytes(), new.as_bytes())
+                        .map(|()| true)
+                        .map_err(|e| e.to_string()),
+                    None => Ok(false),
+                });
+            match result {
+                Ok(true) => changed.push(path),
+                Ok(false) => unchanged += 1,
+                Err(why) => refused.push(format!("{name}: {why}")),
+            }
+        }
+        self.reload_tree();
+        if let Some(shown) = self.shown.clone().filter(|s| changed.contains(s)) {
+            match self.running_editor() {
+                Some(editor) => {
+                    let request = EditorRequest::Open {
+                        note: shown,
+                        jump: None,
+                    };
+                    self.call(editor, |e, host| e.editor(request, host));
+                }
+                None => self.reload_reader(),
+            }
+        }
+        let mut msg = match (edit, changed.len()) {
+            (TagEdit::Add, n) => format!("tagged {} #{tag}", plural(n, "note")),
+            (TagEdit::Remove, n) => format!("removed #{tag} from {}", plural(n, "note")),
+        };
+        if unchanged > 0 {
+            msg.push_str(&match edit {
+                TagEdit::Add => format!(" · {unchanged} had it already"),
+                TagEdit::Remove => format!(" · {unchanged} didn't have it"),
+            });
+        }
+        if !skipped.is_empty() {
+            msg.push_str(&format!(" · {} skipped (not notes)", skipped.len()));
+        }
+        if !refused.is_empty() {
+            msg.push_str(&format!(" · left alone: {}", refused.join("; ")));
+        }
+        self.flash(msg);
+    }
+
+    fn apply_rename(&mut self, plan: crate::rename::Plan, marked: bool) {
         if let Err(e) = crate::rename::apply(&plan) {
             self.reload_tree();
             return self.flash(format!("rename failed: {e}"));
@@ -2520,6 +2774,17 @@ impl Home {
                         .insert(format!("{}{}", m.to, &r[m.from.len()..]));
                 }
             }
+        }
+        if marked {
+            self.marks.clear();
+        } else if let Some(root) = self.root.clone() {
+            self.marks = (self.marks.iter())
+                .map(|r| {
+                    let to = plan.moved(&root.join(r));
+                    let to = to.strip_prefix(&root).unwrap_or(&to);
+                    to.to_string_lossy().replace('\\', "/")
+                })
+                .collect();
         }
         self.reload_tree();
         if let Some(first) = plan.moves.first() {
@@ -2560,7 +2825,7 @@ impl Home {
     }
 
     fn draw_confirm_rename(&self, f: &mut Frame, area: Rect) {
-        let Mode::ConfirmRename { plan, scroll } = &self.mode else {
+        let Mode::ConfirmRename { plan, scroll, .. } = &self.mode else {
             return;
         };
         let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
@@ -2701,35 +2966,47 @@ impl Home {
         }
     }
 
-    /// Ask before deleting, showing the notes whose links will break. `changed`: asking again
-    /// because the note changed on disk after the first time.
+    /// Ask before deleting the selected item, or the marked ones, showing the notes whose links
+    /// will break. `changed`: asking again because one changed on disk after the first time.
     fn start_delete(&mut self, changed: bool) {
-        let path = match (&self.mode, self.delete_target()) {
-            (Mode::ConfirmDelete(p), _) => p.path.clone(),
-            (_, Ok(p)) => p,
-            (_, Err(why)) => return self.flash(why),
-        };
-        self.mode = Mode::Normal;
-        if self.shown.as_deref().is_some_and(|s| s.starts_with(&path)) {
-            self.save_editor();
-        }
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Ok(contents) = trash::Contents::read(&path) else {
-            self.reload_tree();
-            return self.flash("that note is no longer there");
+        let paths: Vec<PathBuf> = match (&self.mode, self.delete_target()) {
+            (Mode::ConfirmDelete(p), _) => p.doomed.iter().map(|d| d.path.clone()).collect(),
+            _ if !self.marks.is_empty() => {
+                (self.marked_tops().iter()).map(|r| root.join(r)).collect()
+            }
+            (_, Ok(p)) => vec![p],
+            (_, Err(why)) => return self.flash(why),
         };
-        let rel = path
-            .strip_prefix(&root)
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default();
-        let rel = rel.trim_end_matches(".md").to_string();
-        // The note, or every note in the folder, and the links to them from outside it.
+        self.mode = Mode::Normal;
+        let doomed_path = |p: &Path| paths.iter().any(|d| p.starts_with(d));
+        if self.shown.as_deref().is_some_and(doomed_path) {
+            self.save_editor();
+        }
+        let mut doomed = Vec::new();
+        for path in &paths {
+            let rel = path
+                .strip_prefix(&root)
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let Ok(contents) = trash::Contents::read(path) else {
+                self.reload_tree();
+                return self.flash(format!("{rel} is no longer there"));
+            };
+            let rel = rel.trim_end_matches(".md").to_string();
+            doomed.push(Doomed {
+                path: path.clone(),
+                rel,
+                contents,
+            });
+        }
+        // The notes that go, and the links to them from notes that stay.
         let mut backlinks = Vec::new();
         let mut notes = 0;
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
-            let inside = |i: usize| ix.vault.notes[i].path.starts_with(&path);
+            let inside = |i: usize| doomed_path(&ix.vault.notes[i].path);
             for i in (0..ix.vault.notes.len()).filter(|&i| inside(i)) {
                 notes += 1;
                 backlinks.extend(ix.backlinks(i).iter().filter(|b| !inside(b.from)).map(|b| {
@@ -2742,21 +3019,19 @@ impl Home {
                 }));
             }
         }
-        // A line linking to two notes in the folder is one row.
+        // A line linking to two notes that go is one row.
         backlinks.sort_by_cached_key(|b| (b.name.to_lowercase(), b.path.clone(), b.line));
         backlinks.dedup_by(|a, b| a.path == b.path && a.line == b.line);
-        let notes = path.is_dir().then_some(notes);
+        let notes = (doomed.len() > 1 || paths[0].is_dir()).then_some(notes);
         let goes = match TrashOption::of_vault(&root) {
-            TrashOption::System if trash::system_bin().is_some() => "goes to the system trash.",
-            TrashOption::System | TrashOption::Local => "goes to the vault's .trash folder.",
+            TrashOption::System if trash::system_bin().is_some() => "the system trash.",
+            TrashOption::System | TrashOption::Local => "the vault's .trash folder.",
             TrashOption::Permanent => {
-                "goes to .trash: this vault deletes permanently in Obsidian, cold-lava never does."
+                ".trash: this vault deletes permanently in Obsidian, cold-lava never does."
             }
         };
         self.mode = Mode::ConfirmDelete(Box::new(PendingDelete {
-            path,
-            rel,
-            contents,
+            doomed,
             notes,
             backlinks,
             goes: goes.to_string(),
@@ -2779,16 +3054,16 @@ impl Home {
                 _ if yes => self.apply_delete(),
                 _ => {}
             },
-            Mode::ConfirmRestore { .. } if yes || no => {
-                let Mode::ConfirmRestore { trashed, to } =
-                    std::mem::replace(&mut self.mode, Mode::Normal)
+            Mode::ConfirmRestore(_) if yes || no => {
+                let Mode::ConfirmRestore(batch) = std::mem::replace(&mut self.mode, Mode::Normal)
                 else {
                     return;
                 };
                 if yes {
-                    self.restore(trashed, &to);
+                    self.restore(batch);
                 } else {
-                    self.trashed.push(trashed);
+                    self.trashed
+                        .push(batch.into_iter().map(|(t, _)| t).collect());
                     self.flash("undo cancelled");
                 }
             }
@@ -2800,32 +3075,44 @@ impl Home {
         let (Mode::ConfirmDelete(p), Some(root)) = (&self.mode, self.root.clone()) else {
             return;
         };
+        // Everything is checked before anything goes, so a change means nothing went.
+        if (p.doomed.iter())
+            .any(|d| trash::Contents::read(&d.path).ok() != Some(d.contents.clone()))
+        {
+            return self.start_delete(true);
+        }
         let system = trash::system_bin();
-        let t = match trash::delete(&root, &p.path, &p.contents, system.as_ref()) {
-            Ok(t) => t,
-            Err(crate::write::WriteError::Changed(_)) => return self.start_delete(true),
-            Err(e) => {
-                self.mode = Mode::Normal;
-                return self.flash(format!("couldn't delete: {e}"));
+        let mut batch = Vec::new();
+        let mut failed = None;
+        for d in &p.doomed {
+            match trash::delete(&root, &d.path, &d.contents, system.as_ref()) {
+                Ok(t) => batch.push(t),
+                Err(e) => {
+                    failed = Some(format!("couldn't delete {}: {e}", d.rel));
+                    break;
+                }
             }
-        };
+        }
         let Mode::ConfirmDelete(p) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return;
         };
-        let was_shown = self
-            .shown
-            .as_deref()
-            .is_some_and(|s| s.starts_with(&p.path));
+        let gone: Vec<&Doomed> = p.doomed.iter().take(batch.len()).collect();
+        let went = |path: &Path| gone.iter().any(|d| path.starts_with(&d.path));
+        let was_shown = self.shown.as_deref().is_some_and(went);
         if let Some(editor) = self.running_editor() {
-            let gone: Vec<PathBuf> = match self.core.as_ref() {
-                Some(core) if p.notes.is_some() => (core.index.vault.notes.iter())
-                    .filter(|n| n.path.starts_with(&p.path))
+            let notes: Vec<PathBuf> = match self.core.as_ref() {
+                Some(core) => (core.index.vault.notes.iter())
+                    .filter(|n| went(&n.path))
                     .map(|n| n.path.clone())
                     .collect(),
-                _ if was_shown => vec![p.path.clone()],
-                _ => Vec::new(),
+                None => self
+                    .shown
+                    .clone()
+                    .filter(|_| was_shown)
+                    .into_iter()
+                    .collect(),
             };
-            for note in gone {
+            for note in notes {
                 let request = EditorRequest::Deleted { note };
                 self.call(editor, |e, host| e.editor(request, host));
             }
@@ -2834,8 +3121,13 @@ impl Home {
             self.shown = None;
             self.pending = None;
         }
-        self.mru.retain(|m| !m.starts_with(&p.path));
-        self.history.forget(&p.path);
+        self.mru.retain(|m| !went(m));
+        for d in &gone {
+            self.history.forget(&d.path);
+        }
+        if gone.len() == p.doomed.len() {
+            self.marks.clear();
+        }
         self.reload_tree();
         if was_shown {
             match (self.current().map(|it| it.kind), self.current_path()) {
@@ -2844,77 +3136,121 @@ impl Home {
                 _ => {}
             }
         }
-        let name = p.rel.rsplit('/').next().unwrap_or(&p.rel).to_string();
         let undo = self.keys.first_label("note.undo-delete");
-        self.flash(match (t.went, TrashOption::of_vault(&root)) {
-            (Went::VaultTrash, TrashOption::Permanent) => format!(
+        let name = match gone.as_slice() {
+            [d] => d.rel.rsplit('/').next().unwrap_or(&d.rel).to_string(),
+            ds => plural(ds.len(), "item"),
+        };
+        let local = batch.iter().any(|t| t.went == Went::VaultTrash);
+        let msg = match (local, TrashOption::of_vault(&root)) {
+            (true, TrashOption::Permanent) => format!(
                 "moved {name} to .trash: this vault deletes permanently in Obsidian, cold-lava never does · {undo} undo"
             ),
-            (Went::VaultTrash, TrashOption::Local) => {
-                format!("deleted {name} (to .trash) · {undo} undo")
-            }
-            (Went::VaultTrash, TrashOption::System) => format!(
+            (true, TrashOption::Local) => format!("deleted {name} (to .trash) · {undo} undo"),
+            (true, TrashOption::System) => format!(
                 "deleted {name} (to .trash: the system trash couldn't take it) · {undo} undo"
             ),
-            (Went::System, _) => format!("deleted {name} · {undo} undo"),
+            (false, _) => format!("deleted {name} · {undo} undo"),
+        };
+        self.flash(match failed {
+            Some(why) if batch.is_empty() => why,
+            Some(why) => format!("{msg} · {why}"),
+            None => msg,
         });
-        self.trashed.push(t);
+        if !batch.is_empty() {
+            self.trashed.push(batch);
+        }
         if self.trashed.len() > UNDO_DELETES {
             self.trashed.remove(0);
         }
     }
 
-    /// Put the last deleted note back, or ask about a free name if its path is taken now.
+    /// Put the last delete back, or ask about free names for items whose paths are taken now.
     fn undo_delete(&mut self) {
-        let Some(t) = self.trashed.pop() else {
+        let Some(batch) = self.trashed.pop() else {
             return self.flash("nothing to undo");
         };
-        if t.from.exists() {
-            let to = trash::free_path(&t.from);
-            self.mode = Mode::ConfirmRestore { trashed: t, to };
+        let taken = batch.iter().any(|t| t.from.exists());
+        let batch: Vec<(Trashed, PathBuf)> = (batch.into_iter())
+            .map(|t| {
+                let to = trash::free_path(&t.from);
+                (t, to)
+            })
+            .collect();
+        if taken {
+            self.mode = Mode::ConfirmRestore(batch);
             return;
         }
-        let to = t.from.clone();
-        self.restore(t, &to);
+        self.restore(batch);
     }
 
-    fn restore(&mut self, t: Trashed, to: &Path) {
-        if let Err(e) = trash::restore(&t, to) {
-            return self.flash(format!("couldn't put it back: {e}"));
+    fn restore(&mut self, batch: Vec<(Trashed, PathBuf)>) {
+        let mut back = Vec::new();
+        let mut failed = Vec::new();
+        for (t, to) in batch {
+            match trash::restore(&t, &to) {
+                Ok(()) => back.push(to),
+                Err(e) => {
+                    failed.push(format!("couldn't put {} back: {e}", t.from.display()));
+                    self.trashed.push(vec![t]);
+                }
+            }
         }
         self.reload_tree();
-        if to.is_dir()
-            && let Some(rel) = self.root.as_deref().and_then(|r| to.strip_prefix(r).ok())
+        let root = self.root.clone().unwrap_or_default();
+        for to in back.iter().filter(|to| to.is_dir()) {
+            if let Ok(rel) = to.strip_prefix(&root) {
+                self.expanded
+                    .insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        if let Some(first) = back.first() {
+            self.select_path(first);
+        }
+        if let [to] = back.as_slice()
+            && to.extension().is_some_and(|e| e == "md")
         {
-            self.expanded
-                .insert(rel.to_string_lossy().replace('\\', "/"));
-        }
-        self.select_path(to);
-        if to.extension().is_some_and(|e| e == "md") {
+            let to = to.clone();
             self.pending = None;
-            self.show(to);
+            self.show(&to);
         }
-        let rel = self
-            .root
-            .as_deref()
-            .and_then(|r| to.strip_prefix(r).ok())
-            .unwrap_or(to);
-        self.flash(format!("restored {}", rel.display()));
+        let msg = match back.as_slice() {
+            [] => String::new(),
+            [to] => format!(
+                "restored {}",
+                to.strip_prefix(&root).unwrap_or(to).display()
+            ),
+            all => format!("restored {}", plural(all.len(), "item")),
+        };
+        let parts: Vec<String> = [msg]
+            .into_iter()
+            .chain(failed)
+            .filter(|m| !m.is_empty())
+            .collect();
+        self.flash(parts.join(" · "));
     }
 
     fn draw_confirm_delete(&self, f: &mut Frame, area: Rect) {
         let (title, hint, lines, detail, scroll) = match &self.mode {
             Mode::ConfirmDelete(p) => {
-                let name = p.rel.rsplit('/').next().unwrap_or(&p.rel);
-                let slash = if p.notes.is_some() { "/" } else { "" };
-                let mut lines = vec![Line::from(vec![
-                    Span::styled(" Delete ", Style::new().fg(NOTE)),
-                    Span::styled(
-                        format!("{}{slash}", p.rel),
+                let several = p.doomed.len() > 1;
+                let mut lines = vec![match p.doomed.as_slice() {
+                    [d] => {
+                        let slash = if p.notes.is_some() { "/" } else { "" };
+                        Line::from(vec![
+                            Span::styled(" Delete ", Style::new().fg(NOTE)),
+                            Span::styled(
+                                format!("{}{slash}", d.rel),
+                                Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled("?", Style::new().fg(NOTE)),
+                        ])
+                    }
+                    ds => Line::styled(
+                        format!(" Delete {} marked items?", ds.len()),
                         Style::new().fg(NOTE).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("?", Style::new().fg(NOTE)),
-                ])];
+                }];
                 if p.changed {
                     lines.push(Line::styled(
                         " ! It changed on disk since you asked: this is the new version.",
@@ -2927,19 +3263,25 @@ impl Home {
                         names.push(&b.name);
                     }
                 }
-                let note = p.path.extension().is_some_and(|e| e == "md");
-                if let Some(n) = p.notes {
-                    lines.push(Line::styled(
+                let note = p.doomed[0].path.extension().is_some_and(|e| e == "md");
+                match p.notes {
+                    Some(n) if several => lines.push(Line::styled(
+                        format!(" {} in all.", plural(n, "note")),
+                        Style::new().fg(NOTE),
+                    )),
+                    Some(n) => lines.push(Line::styled(
                         format!(
                             " It holds {}, and everything else in it.",
                             plural(n, "note")
                         ),
                         Style::new().fg(NOTE),
-                    ));
+                    )),
+                    None => {}
                 }
+                let them = if several { "them" } else { "it" };
                 lines.push(Line::styled(
                     match names.len() {
-                        0 if p.notes.is_some() => " Nothing outside it links to them.".to_string(),
+                        0 if p.notes.is_some() => format!(" Nothing outside {them} links to them."),
                         n if p.notes.is_some() => format!(
                             " {} from outside: {}. Their links will become unresolved.",
                             if n == 1 {
@@ -2963,33 +3305,41 @@ impl Home {
                     },
                     Style::new().fg(NOTE),
                 ));
+                let who = match p.doomed.as_slice() {
+                    [d] => format!("{} goes", d.rel.rsplit('/').next().unwrap_or(&d.rel)),
+                    _ => "They go".to_string(),
+                };
                 lines.push(Line::styled(
-                    format!(" {name} {}", p.goes),
+                    format!(" {who} to {}", p.goes),
                     Style::new().fg(MUTED),
                 ));
                 lines.push(Line::raw(""));
                 let inner_w = popup_width(area).saturating_sub(2) as usize;
-                let detail: Vec<Line> = p
-                    .backlinks
-                    .iter()
-                    .map(|b| {
-                        let head = format!(" ▤ {}  {:>4}  ", b.name, b.line);
-                        let room = inner_w.saturating_sub(head.chars().count());
-                        let mut context: String = b.context.trim().chars().take(room).collect();
-                        if b.context.trim().chars().count() > room {
-                            context.pop();
-                            context.push('…');
-                        }
-                        Line::from(vec![
-                            Span::styled(
-                                format!(" ▤ {}", b.name),
-                                Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(format!("  {:>4}  ", b.line), Style::new().fg(DIM)),
-                            Span::styled(context, Style::new().fg(NOTE)),
-                        ])
-                    })
-                    .collect();
+                let mut detail: Vec<Line> = Vec::new();
+                if several {
+                    detail.extend(p.doomed.iter().map(|d| {
+                        let slash = if d.path.is_dir() { "/" } else { "" };
+                        Line::styled(format!("   ✕ {}{slash}", d.rel), Style::new().fg(NOTE))
+                    }));
+                    detail.push(Line::raw(""));
+                }
+                detail.extend(p.backlinks.iter().map(|b| {
+                    let head = format!(" ▤ {}  {:>4}  ", b.name, b.line);
+                    let room = inner_w.saturating_sub(head.chars().count());
+                    let mut context: String = b.context.trim().chars().take(room).collect();
+                    if b.context.trim().chars().count() > room {
+                        context.pop();
+                        context.push('…');
+                    }
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" ▤ {}", b.name),
+                            Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("  {:>4}  ", b.line), Style::new().fg(DIM)),
+                        Span::styled(context, Style::new().fg(NOTE)),
+                    ])
+                }));
                 (
                     " Delete ",
                     " y delete · n cancel · ↑↓ scroll ",
@@ -2998,22 +3348,45 @@ impl Home {
                     p.scroll,
                 )
             }
-            Mode::ConfirmRestore { trashed, to } => {
+            Mode::ConfirmRestore(batch) => {
                 let file = |p: &Path| {
                     p.file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default()
                 };
-                let lines = vec![
-                    Line::styled(
-                        format!(" {} exists now.", file(&trashed.from)),
-                        Style::new().fg(NOTE),
-                    ),
-                    Line::styled(
-                        format!(" Put the deleted one back as {}?", file(to)),
-                        Style::new().fg(NOTE),
-                    ),
-                ];
+                let taken: Vec<&(Trashed, PathBuf)> =
+                    batch.iter().filter(|(t, _)| t.from.exists()).collect();
+                let lines = match taken.as_slice() {
+                    [(t, to)] if batch.len() == 1 => vec![
+                        Line::styled(
+                            format!(" {} exists now.", file(&t.from)),
+                            Style::new().fg(NOTE),
+                        ),
+                        Line::styled(
+                            format!(" Put the deleted one back as {}?", file(to)),
+                            Style::new().fg(NOTE),
+                        ),
+                    ],
+                    _ => vec![
+                        Line::styled(
+                            format!(
+                                " {} of the {} exist now.",
+                                taken.len(),
+                                plural(batch.len(), "deleted item")
+                            ),
+                            Style::new().fg(NOTE),
+                        ),
+                        Line::styled(
+                            format!(
+                                " Put them back as {}?",
+                                (taken.iter().map(|(_, to)| file(to)))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            Style::new().fg(NOTE),
+                        ),
+                    ],
+                };
                 (
                     " Undo delete ",
                     " y restore · n cancel ",
@@ -3474,10 +3847,7 @@ impl Home {
         if matches!(self.mode, Mode::ConfirmRename { .. }) {
             self.draw_confirm_rename(f, main);
         }
-        if matches!(
-            self.mode,
-            Mode::ConfirmDelete(_) | Mode::ConfirmRestore { .. }
-        ) {
+        if matches!(self.mode, Mode::ConfirmDelete(_) | Mode::ConfirmRestore(_)) {
             self.draw_confirm_delete(f, main);
         }
         if let Mode::Rename { input, moving, .. } = &self.mode {
@@ -3487,6 +3857,16 @@ impl Home {
                 (" rename · ⏎ preview · Esc cancel ", "new name: ")
             };
             prompt(f, main, title, label, input);
+        }
+        if let Mode::MoveMarked(input) = &self.mode {
+            let title = format!(
+                " move {} marked into folder · ⏎ preview · Esc cancel ",
+                self.marks.len()
+            );
+            prompt(f, main, &title, "folder: ", input);
+        }
+        if let Mode::Tag { typed, all, sel } = &self.mode {
+            draw_tag(f, main, typed, all, *sel, self.marks.len());
         }
         match &self.mode {
             Mode::Help => {
@@ -4051,7 +4431,9 @@ impl Home {
             } else {
                 "  ".repeat(it.depth)
             };
+            let marked = self.marks.contains(&it.rel);
             let (icon, icon_color) = match it.kind {
+                _ if marked => ("✓ ", HIT),
                 ItemKind::Folder if self.expanded.contains(&it.rel) => ("▾ ", MUTED),
                 ItemKind::Folder => ("▸ ", MUTED),
                 ItemKind::Board => ("▦ ", Color::Rgb(83, 223, 221)),
@@ -4079,6 +4461,8 @@ impl Home {
                 (Color::Black, Some(ACCENT))
             } else if sel {
                 (ACCENT, None)
+            } else if marked {
+                (HIT, None)
             } else if it.kind == ItemKind::Folder {
                 (ACCENT_SOFT, None)
             } else {
@@ -4346,6 +4730,17 @@ impl Home {
             (Focus::Backlinks, _) => {
                 " backlinks · ↑↓ choose · ⏎ open at the link · ← back to notes · b hide".to_string()
             }
+            _ if !self.marks.is_empty() => {
+                let k = |id| self.keys.first_label(id);
+                format!(
+                    " {} marked · {} move · {} delete · {} tag · {} clear",
+                    self.marks.len(),
+                    k("note.move"),
+                    k("note.delete"),
+                    k("note.tag"),
+                    k("filter.clear"),
+                )
+            }
             _ => {
                 let edit = if self.reader.is_some() {
                     "⏎ read"
@@ -4445,6 +4840,74 @@ fn plural(n: usize, word: &str) -> String {
     } else {
         format!("{n} {word}s")
     }
+}
+
+/// The vault's tags that start with what was typed (after a `-` and a `#`).
+fn tag_matches<'a>(typed: &str, all: &'a [String]) -> Vec<&'a String> {
+    let q = typed
+        .trim_start_matches('-')
+        .trim_start_matches('#')
+        .to_lowercase();
+    all.iter().filter(|t| t.starts_with(&q)).collect()
+}
+
+/// What the tag prompt holds: what was typed, or the tag Tab completed it to (keeping a `-`).
+fn tag_shown(typed: &str, all: &[String], sel: Option<usize>) -> String {
+    match sel.and_then(|i| tag_matches(typed, all).get(i).copied()) {
+        Some(t) if typed.starts_with('-') => format!("-{t}"),
+        Some(t) => t.clone(),
+        None => typed.to_string(),
+    }
+}
+
+/// The tag prompt, with the vault's tags that match under it.
+fn draw_tag(
+    f: &mut Frame,
+    area: Rect,
+    typed: &str,
+    all: &[String],
+    sel: Option<usize>,
+    marked: usize,
+) {
+    let whom = match marked {
+        0 => "the note".to_string(),
+        n => plural(n, "marked note"),
+    };
+    let title = format!(" tag {whom} · -tag removes · Tab · ⏎ ");
+    let r = prompt(f, area, &title, "tag: #", &tag_shown(typed, all, sel));
+    let hits = tag_matches(typed, all);
+    let room = area.bottom().saturating_sub(r.bottom()) as usize;
+    let rows = hits.len().min(8).min(room.saturating_sub(2));
+    if rows == 0 {
+        return;
+    }
+    let start = sel.map_or(0, |i| (i + 1).saturating_sub(rows));
+    let list = Rect::new(r.x, r.bottom(), r.width, rows as u16 + 2);
+    let width = list.width.saturating_sub(2) as usize;
+    let lines: Vec<Line> = (hits.iter().enumerate().skip(start).take(rows))
+        .map(|(i, t)| {
+            let on = Some(i) == sel;
+            let style = match on {
+                true => Style::new().fg(Color::Black).bg(ACCENT),
+                false => Style::new().fg(NOTE),
+            };
+            let mark = if on { "▸" } else { " " };
+            Line::styled(
+                format!("{mark} #{t:<w$}", w = width.saturating_sub(3)),
+                style,
+            )
+        })
+        .collect();
+    f.render_widget(Clear, list);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(ACCENT_SOFT))
+                .title(format!(" {} ", plural(hits.len(), "tag"))),
+        ),
+        list,
+    );
 }
 
 /// The folder several moves go into, as the user typed it: `Archive`, or the vault's root.
