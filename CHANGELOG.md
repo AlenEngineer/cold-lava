@@ -25,12 +25,19 @@ change commands, keys and file formats; patch versions only fix things.
   and nothing is written unless the item reads back exactly the new value with nothing else in
   the note changed. A stale rev exits with code 3. The engine's `edit::set_field` does it, for
   the coming `items/edit set-field`.
-- The task as a type definition, in shadow mode: `crates/engine/types/task.toml` defines `task`
-  in the same TOML as anyone's types, with the vault's Tasks plugin statuses and global filter
-  filled in. Tasks are still read the old way. `cold-lava types VAULT --shadow` (`--json`)
-  reads every task both ways and lists each field that reads differently (status, dates,
-  priority, recurrence, words, tags, links, id), exiting 1 when one does. With the definition, a
-  type that `extends = "task"` takes the tasks it matches and still answers to `task`.
+- The task is a type: `crates/engine/types/task.toml` defines `task` in the same TOML as
+  anyone's types, with the vault's Tasks plugin statuses and global filter filled in, and every
+  task is read through it; `cold-lava types` lists it. `cold-lava items`, `agenda` and `task
+  toggle` read the same tasks with the same ids, and `agenda --json` and `task toggle` print the
+  same as before. A type that `extends = "task"` (an `idea` with `where.tag = ["idea"]`) takes
+  the tasks it matches, still answers to `task`, is in the agenda and is ticked by `task
+  toggle`.
+- `task toggle` follows the Tasks plugin's custom statuses: the status goes to its
+  `nextStatusSymbol` (` ` → `/` → `x`, say), with the done date when the next one is done.
+- `cold-lava item set` works on tasks: `status " "` unticks through the checkbox (a space is a
+  status), `status_type done` writes the vault's done symbol, and dates, priority and recurrence
+  go through their markers or Dataview fields. A field read from the same text (a status's type)
+  may change with the one set.
 - Types can read a task's checkbox (`checkbox = true`, a space included), leave strings out of
   the rest of the text (`rest = { without = ["#task"] }`), read the date of the daily note they
   are in (`note = "date"`), take an enum's values from `${tasks.statuses}`, and name fields a
@@ -41,6 +48,21 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- Tasks in `cold-lava items --json` list their tags without `#` (`"tags": ["home"]`), as every
+  type's tags are; the other keys, their order and the ids stay.
+- Tasks are read as the Tasks plugin and the vault read them where the old reading differed:
+  nothing in a code span is a date or a tag; of a field written twice (`📅 a 📅 b`) the first
+  counts and both leave the words; an unbracketed `due:: x` in the middle of a task's line is
+  words (Dataview reads it only at a line's start); `#2026` is no tag and `(#paren)` is.
+- Type matching: an enum's written form that isn't in its table doesn't parse (`null`, counted
+  by `cold-lava types`) instead of reading `other`; an unbracketed Dataview field (`key:: value`)
+  is read only at the start of a line; no source reads in code spans or math; every source of a
+  field, and every occurrence of a marker or Dataview field, is left out of the rest of the text;
+  a type without a `priority` has its base's.
+- The built-in task has `priority = 1`, so a type on list items takes a task only when it
+  extends `task` or sets a higher priority (before, tasks were never typed).
+- Removing a marker with an emoji variation selector (`⏳️ 2026-11-05`) through `item set`
+  takes the selector too.
 - A typed item whose shape has a `key` with a text field is identified by that text as written,
   not as a JSON string, as tasks are; such items get a new id once.
 

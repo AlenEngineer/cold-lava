@@ -1,0 +1,7 @@
+- [ ] Tags #2026 and (#paren)
+- [ ] Code `📅 2026-01-01` in it
+- [ ] Twice 📅 2026-11-12 📅 2026-11-13
+- [ ] Both [due:: 2026-11-12] 📅 2026-11-13
+- [ ] Unbracketed due:: 2026-11-12
+- [ ] Odd priority [priority:: urgent]
+- [ ] Recurs oddly 🔁 every day (or so)

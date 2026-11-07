@@ -29,7 +29,11 @@ pub const VAULT_FILE: &str = ".cold-lava/types.toml";
 
 /// Kinds the engine reads natively (`items.rs`). They can be extended but not redefined, until
 /// they are written as definitions themselves.
-pub const NATIVE: &[&str] = &["task", "list", "heading", "block"];
+pub const NATIVE: &[&str] = &["list", "heading", "block"];
+
+/// The types built into the engine (`types/*.toml`). Like native kinds, they can be extended but
+/// not redefined.
+pub const BUILT_IN: &[&str] = &["task"];
 
 /// Every item has these, so no type can name a field after them.
 pub const RESERVED_FIELDS: &[&str] = &[
@@ -73,8 +77,10 @@ pub struct Definition {
     pub from: Vec<Shape>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub priority: i32,
+    /// Wins over other types matching the same block when higher; without one, a subtype has
+    /// its base's, and any other type 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
     /// Syntax the vault's flavour must have for the type to match.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
@@ -87,10 +93,6 @@ pub struct Definition {
     /// How an inline type is written when one is added: `" ~{minutes}"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write: Option<String>,
-}
-
-fn is_zero(n: &i32) -> bool {
-    *n == 0
 }
 
 fn is_false(b: &bool) -> bool {
@@ -242,6 +244,9 @@ pub enum EnumValues {
     /// `"${tasks.statuses}"`: filled in from the vault when its notes are read
     /// (`Types::fill`).
     Setting(String),
+    /// The vault's status symbols, filled in; a symbol its settings don't name is `non_task`, as
+    /// the Tasks plugin wouldn't act on it.
+    Statuses(IndexMap<String, String>),
 }
 
 impl EnumValues {
@@ -249,9 +254,15 @@ impl EnumValues {
     pub fn map(&self) -> &IndexMap<String, String> {
         static NONE: OnceLock<IndexMap<String, String>> = OnceLock::new();
         match self {
-            EnumValues::Written(m) => m,
+            EnumValues::Written(m) | EnumValues::Statuses(m) => m,
             EnumValues::Setting(_) => NONE.get_or_init(IndexMap::new),
         }
+    }
+
+    /// The name of a written form `map` doesn't have, if there is one; in a table there isn't,
+    /// and the value doesn't parse.
+    pub fn other(&self) -> Option<&'static str> {
+        matches!(self, EnumValues::Statuses(_)).then_some("non_task")
     }
 }
 
@@ -715,8 +726,7 @@ struct Written {
     key: Option<Vec<String>>,
     required: Option<Vec<String>>,
     extends: Option<String>,
-    #[serde(default)]
-    priority: i32,
+    priority: Option<i32>,
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
@@ -958,15 +968,9 @@ pub fn set_configured(layers: Vec<Layer>) {
     let _ = CONFIGURED.set(layers);
 }
 
-/// The types a vault's notes are read with: the configured layers, then the vault's own file.
+/// The types a vault's notes are read with: the built-in ones, the configured layers, then the
+/// vault's own file.
 pub fn for_vault(root: &Path) -> Types {
-    let configured = CONFIGURED.get().cloned().unwrap_or_default();
-    load(configured.into_iter().chain(Layer::vault(root)))
-}
-
-/// The same with the built-in definitions first, so the task is read by its definition: shadow
-/// mode (`shadow.rs`) until the switch-over.
-pub fn with_built_in(root: &Path) -> Types {
     let configured = CONFIGURED.get().cloned().unwrap_or_default();
     load(
         std::iter::once(Layer::built_in())
@@ -988,7 +992,10 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
         for (name, parsed) in layer.definitions {
             let problems = match &parsed {
                 Err(e) => vec![e.clone()],
-                Ok(_) if NATIVE.contains(&name.as_str()) && layer.origin != Origin::BuiltIn => {
+                Ok(_)
+                    if (NATIVE.contains(&name.as_str()) || BUILT_IN.contains(&name.as_str()))
+                        && layer.origin != Origin::BuiltIn =>
+                {
                     vec![format!(
                         "{name} is built in: it can be extended (extends = \"{name}\") but not redefined"
                     )]
@@ -1046,11 +1053,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
         }
     }
     Types {
-        native: NATIVE
-            .iter()
-            .filter(|n| !kept.get(**n).is_some_and(|t| t.origin == Origin::BuiltIn))
-            .map(|n| n.to_string())
-            .collect(),
+        native: NATIVE.iter().map(|n| n.to_string()).collect(),
         types: kept.into_values().collect(),
         errors,
         notes,
@@ -1108,7 +1111,7 @@ impl Types {
                 if let Value::Enum { values } = value
                     && let EnumValues::Setting(_) = values
                 {
-                    *values = EnumValues::Written(p.statuses.clone());
+                    *values = EnumValues::Statuses(p.statuses.clone());
                 }
             }
             for shape in &mut d.from {
@@ -1796,17 +1799,21 @@ mod tests {
 
     #[test]
     fn built_in_names_are_extended_not_redefined() {
-        let t = load([config(
-            "[task]\non = \"list-item\"\n[idea]\nextends = \"task\"\non = \"list-item\"\n\
-             where.tag = [\"idea\"]\n",
-        )]);
-        assert_eq!(names(&t), ["idea"]);
-        assert_eq!(t.errors.len(), 1, "{:?}", t.errors);
+        let t = load([
+            Layer::built_in(),
+            config(
+                "[task]\non = \"list-item\"\n[idea]\nextends = \"task\"\non = \"list-item\"\n\
+                 where.tag = [\"idea\"]\n[list]\non = \"list-item\"\n",
+            ),
+        ]);
+        assert_eq!(names(&t), ["task", "idea"]);
+        assert_eq!(t.errors.len(), 2, "{:?}", t.errors);
         assert!(
             t.errors[0].contains("[types.task] task is built in"),
             "{:?}",
             t.errors
         );
+        assert!(t.errors[1].contains("[types.list] list is built in"));
         assert_eq!(t.native, NATIVE);
     }
 
@@ -1863,6 +1870,7 @@ mod tests {
         );
         let t = load(
             [
+                Some(Layer::built_in()),
                 Some(Layer::extension("word-count", &ext)),
                 Some(config(
                     "[book]\non = \"note\"\n[idea]\nextends = \"task\"\non = \"list-item\"\n",
@@ -1873,7 +1881,10 @@ mod tests {
             .flatten(),
         );
         assert!(t.errors.is_empty(), "{:?}", t.errors);
-        assert_eq!(names(&t), ["word-count.count", "idea", "book", "tally"]);
+        assert_eq!(
+            names(&t),
+            ["task", "word-count.count", "idea", "book", "tally"]
+        );
         let file = root.join(VAULT_FILE);
         assert_eq!(
             t.notes,
@@ -1882,8 +1893,8 @@ mod tests {
                 file.display()
             )]
         );
-        assert_eq!(t.types[2].origin, Origin::Vault { path: file });
-        assert_eq!(t.types[2].definition.from[0].on, On::TableRow);
+        assert_eq!(t.types[3].origin, Origin::Vault { path: file });
+        assert_eq!(t.types[3].definition.from[0].on, On::TableRow);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1993,7 +2004,7 @@ mod tests {
             "the JSON reads back as the same definition"
         );
         let list = serde_json::to_value(&t).unwrap();
-        assert_eq!(list["native"], json!(["task", "list", "heading", "block"]));
+        assert_eq!(list["native"], json!(["list", "heading", "block"]));
         assert_eq!(list["errors"], json!([]));
     }
 

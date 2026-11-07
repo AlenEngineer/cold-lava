@@ -59,7 +59,6 @@ cold-lava rename ~/vault NOTE NEW       # rename or move a note or folder, updat
 cold-lava task toggle FILE:LINE         # tick / untick a task
 cold-lava item set FILE ID FIELD VALUE  # set one field of a typed item, checked by reading back
 cold-lava types ~/vault                 # the vault's types, and what's wrong with them
-cold-lava types ~/vault --shadow        # tasks read by the built-in task definition, compared
 ```
 
 Flags: `--pixels` / `--braille` to force a renderer. Pixel mode is on automatically in Ghostty,
@@ -474,11 +473,13 @@ Each item has an `id` that stays the same when a task is ticked, re-dated, re-in
 down by lines added above it (an author's `^block-id` keeps it even when the words change), the
 `section` (headings) it sits under, its `parent` list item, and a `rev` that changes whenever its
 lines do. Items are read in the vault's Markdown flavour: tasks in callouts count, tasks in code
-blocks and `%%comments%%` don't, and custom statuses follow the Tasks plugin's settings.
+blocks and `%%comments%%` don't, a date in a code span (`` `📅 2026-11-12` ``) is words, and
+custom statuses follow the Tasks plugin's settings.
 
-`task toggle` works like Obsidian Tasks: it adds the done date (`✅`, or `[completion:: …]`),
-removes it when unticking, and for recurring tasks inserts the next occurrence with its dates
-moved forward. Pass the `id` from the agenda: if the line has changed since, nothing is touched
+`task toggle` works like Obsidian Tasks: it moves the status to its next one (the Tasks plugin's
+custom statuses say which; else done, and back to todo), adds the done date (`✅`, or
+`[completion:: …]`), removes it when unticking, and for recurring tasks inserts the next
+occurrence with its dates moved forward. Pass the `id` from the agenda: if the line has changed since, nothing is touched
 and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note.
 
 ### Types
@@ -529,8 +530,9 @@ its `parent` is the block it sits in. A note or block has at most one type:
 the one with the higher `priority`, else a type that `extends` the other, else the shape with
 more conditions, else the vault's over `config.toml`'s over an extension's, else the first name.
 A typed block is listed under its type instead of `list` or `heading`, and an item whose type
-`extends` another is listed under both. Tasks stay tasks for now: a type on list items never
-takes a task.
+`extends` another is listed under both. A type without a `priority` has its base's, else 0, and
+the built-in task has 1: a type on list items takes a task only when it `extends = "task"` (it
+is then still a task, in the agenda and ticked by `task toggle`) or sets a higher priority.
 
 `cold-lava item set` changes one field of one typed item, with the `id` (and `rev`) from
 `cold-lava items --json`:
@@ -554,7 +556,10 @@ name or the headings above are read-only. Before writing, cold-lava reads the no
 memory: unless the item reads back exactly the new value, with its other fields and every other
 item in the note unchanged, nothing is written and it says why. A stale `--rev`, or a file
 changed since it was read, exits with code **3**. When the field is part of the item's key (a
-row's `key`, a list item's text), the item gets a new id, which `item set` prints.
+row's `key`, a list item's text), the item gets a new id, which `item set` prints. Tasks are
+typed items too: `item set FILE ID status " "` unticks through the checkbox, `status_type done`
+writes the vault's done symbol, and dates go through their `📅` or `[due:: …]`; only `task
+toggle` adds done dates and recurrences.
 
 `cold-lava types ~/vault` lists every type: where it comes from, how many items it found (and
 how many values didn't parse), the shapes it is read from, each field with its value type, where
@@ -563,14 +568,12 @@ line with the file and the type; the broken type is left out, the rest load, and
 is 1. `--json` prints the definitions as JSON. The full design is in
 [docs/extensions.md](docs/extensions.md#types).
 
-The task itself is becoming a type: its definition is built in
+The task itself is a type: its definition is built in
 ([`crates/engine/types/task.toml`](crates/engine/types/task.toml)), written in the same TOML,
-with the vault's Tasks plugin settings (statuses, global filter) filled in. Tasks are still read
-the old way while the two are compared. `cold-lava types ~/vault --shadow` reads every task both
-ways and lists each field that reads differently (status, dates, priority, recurrence, words,
-tags, links, id), and exits 1 when one does; it writes nothing. With the definition, a type that
-`extends = "task"` (an `idea` with `where.tag = ["idea"]`) takes the tasks it matches and is still
-listed as a task.
+with the vault's Tasks plugin settings (statuses, global filter) filled in, and `cold-lava
+types` lists it. `cold-lava items`, the agenda and `task toggle` read tasks through it. A type
+that `extends = "task"` (an `idea` with `where.tag = ["idea"]`) takes the tasks it matches, is
+still listed as a task, is in the agenda and `task toggle` ticks it.
 
 A shape can also read a task's checkbox (`checkbox = true`, a space included), leave strings out
 of the rest of the text (`rest = { without = ["#task"] }`), read the date of the daily note it is

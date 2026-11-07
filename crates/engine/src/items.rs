@@ -3,14 +3,14 @@
 //! "Notes as data" in docs/extensions.md.
 //!
 //! One pass of pulldown-cmark per note, in the vault's flavour, over the same text the reader
-//! parses. Tasks are list items whose first line `tasks::parse_line` reads as one. Loaded types
-//! match in the same pass: the pass collects the blocks some type reads, and `matcher` says
-//! which type each one is and which inline types sit in its text.
+//! parses. Types match in the same pass: the pass collects the blocks some type reads, and
+//! `matcher` says which type each one is and which inline types sit in its text. A task is a
+//! list item the built-in `task` type (`types/task.toml`) matches.
 
 use crate::daily;
 use crate::markdown::{self, Flavour, Syntax};
 use crate::matcher::{self, Matcher, Typed};
-use crate::tasks::{self, Task, TasksSettings, fnv};
+use crate::tasks::{self, TasksSettings, fnv};
 use crate::templates;
 use crate::types::{self, On, Types};
 use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
@@ -31,8 +31,6 @@ pub struct Settings {
     /// The types its notes are matched against, and what was wrong with the rest.
     pub types: Types,
     pub matcher: Matcher,
-    /// Tasks are read by `tasks::parse_line`, not by the built-in definition.
-    pub native_tasks: bool,
 }
 
 impl Settings {
@@ -58,11 +56,18 @@ impl Settings {
         templates: templates::Settings,
         mut types: Types,
     ) -> Settings {
-        types.fill(&types::Provided {
-            statuses: tasks
-                .statuses
+        // The plugin's core symbols first, so a status set by its type is written as they are.
+        let mut statuses: Vec<(&char, &tasks::StatusType)> = tasks.statuses.iter().collect();
+        statuses.sort_by_key(|(c, _)| {
+            [' ', 'x', '/', '-']
                 .iter()
-                .map(|(c, t)| (c.to_string(), t.agenda_name().to_string()))
+                .position(|k| k == *c)
+                .unwrap_or(usize::MAX)
+        });
+        types.fill(&types::Provided {
+            statuses: statuses
+                .into_iter()
+                .map(|(c, t)| (c.to_string(), t.name().to_string()))
                 .collect(),
             global_filter: tasks.global_filter.clone(),
             tasks_format: if tasks.dataview { "dataview" } else { "emoji" }.into(),
@@ -70,7 +75,6 @@ impl Settings {
         });
         let matcher = Matcher::new(&types, &flavour, &daily);
         Settings {
-            native_tasks: !types.types.iter().any(|t| t.name == "task"),
             flavour,
             tasks,
             daily,
@@ -105,7 +109,6 @@ pub struct Item {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Data {
-    Task(Task),
     List {
         text: String,
     },
@@ -117,15 +120,14 @@ pub enum Data {
     Block,
     /// A block or note a type matched: `kind` is the type's name.
     #[serde(untagged)]
-    Typed(Typed),
+    Typed(Box<Typed>),
 }
 
-pub const KINDS: &[&str] = &["task", "list", "heading", "block"];
+pub const KINDS: &[&str] = &["list", "heading", "block"];
 
 impl Data {
     pub fn kind(&self) -> &str {
         match self {
-            Data::Task(_) => "task",
             Data::List { .. } => "list",
             Data::Heading { .. } => "heading",
             Data::Block => "block",
@@ -148,7 +150,7 @@ impl Serialize for Typed {
             map.serialize_entry("is", &self.is)?;
         }
         for (name, value) in &self.fields {
-            map.serialize_entry(name, value)?;
+            map.serialize_entry(&**name, value)?;
         }
         map.end()
     }
@@ -177,7 +179,7 @@ impl<'de> Deserialize<'de> for Typed {
                         "is" => t.is = map.next_value()?,
                         _ => {
                             let value = map.next_value()?;
-                            t.fields.insert(key, value);
+                            t.fields.insert(key.into(), value);
                         }
                     }
                 }
@@ -220,8 +222,7 @@ struct Candidate {
     on: On,
     /// Its text in the source.
     text: Range<usize>,
-    /// Whether a type on its primitive may take it (tasks stay tasks); else it is only searched
-    /// for inline types.
+    /// Whether a type on its primitive may take it; else it is only searched for inline types.
     typeable: bool,
     /// Where inline types are looked for: its text, or all of a list item's own lines.
     own: Range<usize>,
@@ -252,7 +253,6 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let src_lines: Vec<&str> = src.lines().collect();
     let src_line = |n: usize| src_lines.get(n - 1).copied().unwrap_or_default();
     let is_blank = |n: usize| src_line(n).trim().trim_start_matches('>').trim().is_empty();
-    let daily_note = s.daily.date_of(note);
 
     let m = &s.matcher;
     let typing = !m.is_empty();
@@ -291,7 +291,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
             Event::Text(t) if m.needs_tags && verbatim == 0 && t.contains('#') => {
                 body_tags.extend(matcher::Note::tags_in(&t).map(|(tag, _)| tag.to_string()));
             }
-            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) if want_inline => {
+            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) if typing => {
                 code.push(range)
             }
             Event::Start(tag) => {
@@ -360,7 +360,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                     Tag::BlockQuote(_) => quotes += 1,
                     Tag::CodeBlock(_) => {
                         verbatim += 1;
-                        if want_inline {
+                        if typing {
                             code.push(range.clone());
                         }
                     }
@@ -428,17 +428,13 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                         } else {
                             (first, None)
                         };
-                        let task = (s.native_tasks && flavour.has(Syntax::TaskLists))
-                            .then(|| tasks::parse_line(first, &s.tasks))
-                            .flatten();
-                        let typeable = want_lists && task.is_none();
-                        if typeable || want_inline {
+                        if want_lists || want_inline {
                             let start = frame.start + list_text_start(first);
                             let end = frame.start + first.trim_end().len();
                             let own_end = start + src[start..line_end(last)].trim_end().len();
                             candidates.push(Candidate {
                                 on: On::ListItem,
-                                typeable,
+                                typeable: want_lists,
                                 own: start..own_end.max(start),
                                 text: start..end.max(start),
                                 raw: Some(at),
@@ -455,11 +451,8 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                         let raw = &mut raws[at];
                         raw.end_line = last;
                         raw.block_id = block_id;
-                        raw.data = match task {
-                            Some(t) => Data::Task(Task { daily_note, ..t }),
-                            None => Data::List {
-                                text: list_text(first),
-                            },
+                        raw.data = Data::List {
+                            text: list_text(first),
                         };
                     }
                     (TagEnd::Paragraph, _) if parent_item.is_none() => {
@@ -565,7 +558,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                 section: Vec::new(),
                 parent: None,
                 block_id: None,
-                data: Data::Typed(typed),
+                data: Data::Typed(Box::new(typed)),
                 key,
             });
         }
@@ -575,11 +568,13 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
         // a table) doesn't find it twice.
         let mut inline_seen: std::collections::HashSet<(String, usize)> = Default::default();
         for c in candidates {
-            let mut inside = note_is.clone();
-            if c.in_quote {
+            // What it sits inside, when some type asks.
+            let ask = m.needs_inside;
+            let mut inside = if ask { note_is.clone() } else { Vec::new() };
+            if ask && c.in_quote {
                 inside.push("quote".into());
             }
-            if let Some(p) = c.parent {
+            if let Some(p) = c.parent.filter(|_| ask) {
                 inside.push("list-item".into());
                 inside.push(raws[p].data.kind().to_string());
                 if let Data::Typed(t) = &raws[p].data {
@@ -600,6 +595,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             header: tables.get(c.table).map_or(&[], Vec::as_slice),
                             cells: &c.cells,
                             inside: inside.iter().map(String::as_str).collect(),
+                            code: &code,
                         },
                     )
                 })
@@ -609,7 +605,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
             if let Some((typed, key)) = matched {
                 match c.raw {
                     Some(i) => {
-                        raws[i].data = Data::Typed(typed);
+                        raws[i].data = Data::Typed(Box::new(typed));
                         raws[i].key = key;
                     }
                     None => {
@@ -620,7 +616,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                             section: c.section.clone(),
                             parent: c.parent,
                             block_id: c.block_id.clone(),
-                            data: Data::Typed(typed),
+                            data: Data::Typed(Box::new(typed)),
                             key,
                         });
                     }
@@ -629,8 +625,10 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
             if !want_inline {
                 continue;
             }
-            inside.push(c.on.name().into());
-            if let Some(h) = host {
+            if ask {
+                inside.push(c.on.name().into());
+            }
+            if let Some(h) = host.filter(|_| ask) {
                 inside.push(raws[h].data.kind().to_string());
                 if let Data::Typed(t) = &raws[h].data {
                     inside.extend(t.is.iter().cloned());
@@ -644,8 +642,9 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                 header: &[],
                 cells: &[],
                 inside: inside.iter().map(String::as_str).collect(),
+                code: &code,
             };
-            for (typed, key, r) in m.inline(&gate, &found, &block, &code) {
+            for (typed, key, r) in m.inline(&gate, &found, &block) {
                 let written = &block.text[r.clone()];
                 let start = c.own.start + r.start + (written.len() - written.trim_start().len());
                 let end = c.own.start + r.start + written.trim_end().len();
@@ -659,7 +658,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                     section: c.section.clone(),
                     parent: host,
                     block_id: None,
-                    data: Data::Typed(typed),
+                    data: Data::Typed(Box::new(typed)),
                     key,
                 });
             }
@@ -685,7 +684,6 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
                 path.push(text.clone());
                 path.join("#")
             }
-            (None, Data::Task(t)) => format!("{parent_key}/{:016x}", fnv(t.text.as_bytes())),
             (None, Data::List { text }) => format!("{parent_key}/{:016x}", fnv(text.as_bytes())),
             (None, Data::Typed(_)) if raw.key.is_empty() => parent_key.to_string(),
             (None, Data::Typed(_)) => format!("{parent_key}/{:016x}", fnv(raw.key.as_bytes())),
@@ -799,7 +797,6 @@ fn list_text(first: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::StatusType;
     use serde_json::json;
 
     fn settings(flavour: &str) -> Settings {
@@ -809,8 +806,16 @@ mod tests {
             TasksSettings::load(nowhere),
             daily::Settings::load(nowhere),
             templates::Settings::default(),
-            Types::default(),
+            types::load([types::Layer::built_in()]),
         )
+    }
+
+    /// A typed item's text field.
+    fn field<'a>(i: &'a Item, name: &str) -> &'a str {
+        match &i.data {
+            Data::Typed(t) => t.fields.get(name).and_then(|v| v.as_str()).unwrap_or(""),
+            _ => "",
+        }
     }
 
     fn items(text: &str) -> Vec<Item> {
@@ -823,13 +828,16 @@ mod tests {
             .iter()
             .map(|i| {
                 let text = match &i.data {
-                    Data::Task(t) => format!("[{}] {}", t.status, t.text),
+                    Data::Typed(t) if t.kind == "task" => {
+                        format!("[{}] {}", field(i, "status"), field(i, "text"))
+                    }
                     Data::List { text } => text.clone(),
                     Data::Heading { text, .. } => text.clone(),
                     Data::Block => format!("^{}", i.block_id.as_deref().unwrap_or("")),
                     Data::Typed(t) => t.kind.clone(),
                 };
                 let kind = match &i.data {
+                    Data::Typed(t) if t.kind == "task" => "task",
                     Data::Typed(_) => "typed",
                     d => KINDS.iter().find(|k| **k == d.kind()).unwrap(),
                 };
@@ -851,9 +859,9 @@ mod tests {
         items
             .iter()
             .find(|i| match &i.data {
-                Data::Task(t) => t.text == text,
                 Data::List { text: t } | Data::Heading { text: t, .. } => t == text,
-                Data::Block | Data::Typed(_) => false,
+                Data::Typed(_) => field(i, "text") == text,
+                Data::Block => false,
             })
             .unwrap_or_else(|| panic!("no item {text:?} in {:?}", summary(items)))
     }
@@ -948,17 +956,14 @@ Setext
         let all = items("- [/] going\n- [-] dropped\n- [?] unsure\n- [ ] \n");
         let types: Vec<_> = all
             .iter()
-            .map(|i| match &i.data {
-                Data::Task(t) => Some(t.status_type),
-                _ => None,
-            })
+            .map(|i| (i.data.kind() == "task").then(|| field(i, "status_type")))
             .collect();
         assert_eq!(
             types,
             [
-                Some(StatusType::InProgress),
-                Some(StatusType::Cancelled),
-                Some(StatusType::NonTask),
+                Some("in_progress"),
+                Some("cancelled"),
+                Some("non_task"),
                 None,
             ],
             "an empty checkbox is a list item"
@@ -989,7 +994,7 @@ Setext
         let id = |text: &str, which: &str, nth: usize| {
             let all = items(text);
             all.iter()
-                .filter(|i| matches!(&i.data, Data::Task(t) if t.text == which))
+                .filter(|i| i.data.kind() == "task" && field(i, "text") == which)
                 .nth(nth)
                 .unwrap()
                 .id
@@ -1049,10 +1054,7 @@ Setext
     fn daily_notes_date_their_tasks() {
         let s = settings("obsidian");
         let all = extract("2026-11-05.md", "- [ ] Water plants\n", &s);
-        let Data::Task(t) = &all[0].data else {
-            panic!()
-        };
-        assert_eq!(t.daily_note, chrono::NaiveDate::from_ymd_opt(2026, 11, 5));
+        assert_eq!(field(&all[0], "daily_note"), "2026-11-05");
     }
 
     #[test]
@@ -1090,7 +1092,8 @@ Setext
         assert_eq!(all.len(), wire.len());
         for (item, json) in all.iter().zip(wire) {
             assert_eq!(serde_json::to_value(item).unwrap(), json);
-            assert_eq!(&serde_json::from_value::<Item>(json).unwrap(), item);
+            let back = serde_json::from_value::<Item>(json.clone()).unwrap();
+            assert_eq!(serde_json::to_value(back).unwrap(), json, "it reads back");
         }
         assert!(all.iter().all(|i| i.id.len() == 16 && i.rev.len() == 12));
     }

@@ -90,6 +90,11 @@ Journal/2026-11-05.md:9  [ ] Look up the 2022 eruption of [[Mauna Loa]]  due 202
 Journal/2026-11-05.md:10  [ ] Review the eruption timeline board  scheduled 2026-11-09
 "
     );
+    assert_eq!(
+        run(&vault, &["items", v, "task", "--json"]),
+        golden("items-task.json"),
+        "the tasks' ids and JSON, as the native parser had them before the built-in definition"
+    );
     let headings = run(&vault, &["items", v, "heading"]);
     assert!(
         headings.contains("Concepts/Lava.md:8  ## Temperature\n"),

@@ -19,7 +19,7 @@ mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, edit, frontmatter, index, items, markdown, merge, paths, rename,
-    search, shadow, tasks, templates, tidy, trash, types, vault, write,
+    search, tasks, templates, tidy, trash, types, vault, write,
 };
 
 use anyhow::Result;
@@ -51,9 +51,7 @@ Usage:
   cold-lava keys                      every command and its keys; checks config.toml
   cold-lava types [VAULT_DIR]         every type: where it comes from, what it found, its
                                       shapes and fields;
-                                      checks [types] in config.toml and .cold-lava/types.toml;
-                                      --shadow reads every task with the built-in task
-                                      definition too and lists what reads differently
+                                      checks [types] in config.toml and .cold-lava/types.toml
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
                                       with an empty home unless --real-home
@@ -210,18 +208,6 @@ fn run() -> Result<()> {
                 Some(dir) => PathBuf::from(dir),
                 None => vault::find_vault_root(Path::new(".")),
             };
-            if args.has("shadow") {
-                let report = shadow::compare(&vault::scan(&root)?);
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
-                } else {
-                    print_shadow(&report);
-                }
-                if !report.differences.is_empty() || !report.errors.is_empty() {
-                    std::process::exit(1);
-                }
-                return Ok(());
-            }
             let found = types::for_vault(&root);
             if json {
                 println!("{}", serde_json::to_string_pretty(&found)?);
@@ -281,16 +267,27 @@ fn run() -> Result<()> {
             let (Some(root), Some(kind)) = (args.word(1), args.word(2)) else {
                 anyhow::bail!(
                     "usage: cold-lava items VAULT_DIR KIND [--json]\nKIND is one of: {} or a type",
-                    items::KINDS.join(", ")
+                    types::BUILT_IN
+                        .iter()
+                        .chain(items::KINDS)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             };
             let vault = vault::scan(Path::new(root))?;
             let settings = vault.item_settings();
             if !items::KINDS.contains(&kind) && !settings.matcher.names().any(|n| n == kind) {
-                let kinds: Vec<&str> = items::KINDS
+                let kinds: Vec<&str> = types::BUILT_IN
                     .iter()
+                    .chain(items::KINDS)
                     .copied()
-                    .chain(settings.matcher.names())
+                    .chain(
+                        settings
+                            .matcher
+                            .names()
+                            .filter(|n| !types::BUILT_IN.contains(n)),
+                    )
                     .collect();
                 anyhow::bail!(
                     "no item kind called {kind}; KIND is one of: {}",
@@ -635,41 +632,6 @@ fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
 
 /// `cold-lava types`: each type with where it comes from, then each shape with the fields it
 /// reads, where, and whether a value can be written back there.
-/// `types --shadow`: how the task's definition reads the vault beside `tasks::parse_line`.
-fn print_shadow(report: &shadow::Report) {
-    let plural =
-        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-    println!(
-        "the task as a definition, beside the native parser: {} · {} · {}",
-        plural(report.notes, "note", "notes"),
-        plural(report.tasks, "task", "tasks"),
-        plural(report.differences.len(), "difference", "differences"),
-    );
-    if report.subtyped > 0 {
-        println!(
-            "{} read as a subtype of task",
-            plural(report.subtyped, "task", "tasks")
-        );
-    }
-    let by_field = report.by_field();
-    if !by_field.is_empty() {
-        let fields: Vec<String> = by_field.iter().map(|(f, n)| format!("{f} {n}")).collect();
-        println!("by field: {}", fields.join(", "));
-    }
-    for d in &report.differences {
-        println!(
-            "{}:{} {}: native {} · definition {}",
-            d.note, d.line, d.field, d.native, d.definition
-        );
-    }
-    if !report.errors.is_empty() {
-        eprintln!("errors:");
-        for e in &report.errors {
-            eprintln!("  {e}");
-        }
-    }
-}
-
 fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usize)>>) {
     println!("{}  built in, read natively", found.native.join(", "));
     for t in &found.types {
@@ -688,8 +650,8 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
         if let Some(base) = &d.extends {
             about.push(format!("extends {base}"));
         }
-        if d.priority != 0 {
-            about.push(format!("priority {}", d.priority));
+        if let Some(p) = d.priority {
+            about.push(format!("priority {p}"));
         }
         if !d.requires.is_empty() {
             about.push(format!("requires {}", d.requires.join(", ")));
@@ -893,15 +855,15 @@ fn look_label(l: &types::Look) -> String {
 /// An item in a few words, for `cold-lava items`.
 fn item_line(item: &items::Item) -> String {
     match &item.data {
-        items::Data::Task(t) => {
-            let dates = [
-                ("due", t.due),
-                ("scheduled", t.scheduled),
-                ("start", t.start),
-            ];
-            let mut line = format!("[{}] {}", t.status, t.text);
-            for (name, date) in dates {
-                if let Some(d) = date {
+        items::Data::Typed(t) if item.data.answers_to("task") => {
+            let field = |name: &str| t.fields.get(name).and_then(|v| v.as_str());
+            let mut line = format!(
+                "[{}] {}",
+                field("status").unwrap_or(" "),
+                field("text").unwrap_or_default()
+            );
+            for name in ["due", "scheduled", "start"] {
+                if let Some(d) = field(name) {
                     line.push_str(&format!("  {name} {d}"));
                 }
             }
