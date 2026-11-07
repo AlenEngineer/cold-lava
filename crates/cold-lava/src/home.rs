@@ -881,7 +881,7 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
-        self.items = scan_tree(&root);
+        self.set_items(scan_tree(&root));
         self.links.clear();
         match self.core.as_mut() {
             Some(core) => core.rescan_now(),
@@ -1119,8 +1119,20 @@ impl Home {
         }
     }
 
+    /// Replace the tree's items, keeping the selection on the same path when it's still there
+    /// (`rows` index the old items, so it's read before they go).
+    fn set_items(&mut self, items: Vec<Item>) {
+        let keep = self.current().map(|it| it.rel.clone());
+        self.items = items;
+        self.rows_keeping(keep);
+    }
+
     fn refresh_rows(&mut self) {
         let keep = self.current().map(|it| it.rel.clone());
+        self.rows_keeping(keep);
+    }
+
+    fn rows_keeping(&mut self, keep: Option<String>) {
         self.rows = visible(&self.items, &self.expanded, &self.filter);
         self.nsel = keep
             .and_then(|r| self.rows.iter().position(|&i| self.items[i].rel == r))
@@ -1222,7 +1234,7 @@ impl Home {
             )
         });
         if tree_changed {
-            self.items = scan_tree(&root);
+            self.set_items(scan_tree(&root));
         }
         self.links.clear();
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
