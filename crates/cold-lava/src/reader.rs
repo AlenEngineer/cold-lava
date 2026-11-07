@@ -231,6 +231,19 @@ impl Reader {
         self.links().get(self.selected?)
     }
 
+    /// The links on screen in reading order: (link, row, column in the pane) of where the first
+    /// piece on screen starts.
+    pub fn visible_links(&self) -> Vec<(usize, u16, u16)> {
+        let rows = self.scroll..self.scroll + self.height;
+        let links = self.links().iter().enumerate();
+        links
+            .filter_map(|(i, l)| {
+                let (line, cols) = l.pieces.iter().find(|(at, _)| rows.contains(at))?;
+                Some((i, (line - self.scroll) as u16, cols.start as u16))
+            })
+            .collect()
+    }
+
     /// The link drawn at `row`, `col` of the pane.
     pub fn link_at(&self, row: usize, col: usize) -> Option<usize> {
         let line = self.scroll + row;

@@ -34,6 +34,7 @@ pub enum MenuAction {
     OpenInObsidian,
     EditFullscreen,
     Read,
+    Hints,
     History(HistoryAction),
 }
 
@@ -145,6 +146,12 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.read",
         "read the note: switch the pane between the reader and the editor",
         &["v"],
+    ),
+    cmd(
+        MenuAction::Hints,
+        "note.hints",
+        "link hints: label the links on screen, type a label to follow it",
+        &["f"],
     ),
     cmd(
         MenuAction::Filter,

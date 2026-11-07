@@ -81,7 +81,9 @@ tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden. Lin
 underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the
 reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the next link and
 `Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser); a click
-on a link follows it too. `e` edits the note in `$EDITOR` full screen, and `Esc` goes back to
+on a link follows it too. Faster still, `f` puts a label of one or two letters on every link on
+screen and every backlink in view: type a label to follow that link, or `Esc` to put them away.
+It works from the menu too, while the reader shows a note. `e` edits the note in `$EDITOR` full screen, and `Esc` goes back to
 the notes. The reader updates when the note changes on disk and keeps its place.
 
 **Links and backlinks.** Inside Neovim, press `Enter` (or `gf`) on a `[[link]]` or
@@ -125,6 +127,7 @@ In the reader:
 | `g` / `Home`, `G` / `End` | top, bottom |
 | `Tab` / `Shift-Tab` | select the next / previous link |
 | `Enter` | follow the selected link (creates missing notes) |
+| `f`, then a label | link hints: follow the link or backlink with that label (`Esc` cancels) |
 | `e` | edit the note in `$EDITOR` full screen |
 | `Esc` / `q` | back to the notes |
 
@@ -414,7 +417,8 @@ keys q q
 exits 0
 ```
 
-`#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
+After a lone Esc (`keys esc q`), drive waits for the program to answer before typing on, so the
+`q` can't arrive with the Esc as Alt-q. `#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
 `cold-lava --help` lists every step. Without a SCRIPT, the script is read from stdin.
 The program runs with an empty home folder, so your `config.toml`, your Neovim config and your
 list of vaults stay out of it; `cold-lava drive --real-home` uses yours.
