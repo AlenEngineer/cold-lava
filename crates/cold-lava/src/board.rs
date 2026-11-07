@@ -2,7 +2,8 @@
 //! https://jsoncanvas.org). Boards made here open in Obsidian, and vice versa.
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
-use crate::commands::{self, BoardAction, Keymap};
+use crate::commands::{self, BoardAction, HistoryAction, Keymap};
+use crate::history::{Exit, Nav};
 use crate::term;
 use anyhow::{Context as _, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -198,6 +199,9 @@ struct Board {
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<RecommendedWatcher>,
     keys: Keymap<BoardAction>,
+    /// Inside the main menu: where Back and Forward lead, and their keys.
+    nav: Option<(Nav, Keymap<HistoryAction>)>,
+    exit: Exit,
 }
 
 // ---------- entry points ----------
@@ -216,12 +220,26 @@ pub fn launch(
             None => return Ok(()),
         },
     };
-    crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
-    let mut b = Board::open(path, vault_root)?;
-    b.run(terminal)
+    open(terminal, vault_root, path, None)?;
+    Ok(())
 }
 
-fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<PathBuf>> {
+/// Runs the board at `path` (created if missing) until it is left. With `nav`, from the main
+/// menu, the history keys leave it too.
+pub fn open(
+    terminal: &mut DefaultTerminal,
+    vault_root: &Path,
+    path: PathBuf,
+    nav: Option<Nav>,
+) -> Result<Exit> {
+    crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
+    let mut b = Board::open(path, vault_root)?;
+    b.nav = nav.map(|nav| (nav, commands::history_keys(&b.keys)));
+    b.run(terminal)?;
+    Ok(b.exit)
+}
+
+pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<PathBuf>> {
     let mut boards: Vec<String> = WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
@@ -371,6 +389,8 @@ impl Board {
             fs_events: watcher.is_some().then_some(rx),
             _watcher: watcher,
             keys: Keymap::new(commands::BOARD),
+            nav: None,
+            exit: Exit::Quit,
         };
         b.fit_pending();
         Ok(b)
@@ -1206,6 +1226,21 @@ impl Board {
         if let Some(a) = self.keys.get(k) {
             return self.run_action(a, terminal);
         }
+        if let Some((nav, keys)) = &self.nav
+            && let Some(a) = keys.get(k)
+        {
+            let (exit, to) = match a {
+                HistoryAction::Back => (Exit::Back, &nav.back),
+                HistoryAction::Forward => (Exit::Forward, &nav.forward),
+            };
+            if to.is_some() {
+                self.request_quit();
+                if self.quit {
+                    self.exit = exit;
+                }
+            }
+            return Ok(());
+        }
         let has_sel = self.sel.is_some();
         match k.code {
             // Resize: Ctrl+arrows, or [ ] { }
@@ -1544,7 +1579,7 @@ impl Board {
 
         self.draw_status(f, status);
         match &self.mode {
-            Mode::Help => draw_help(f, main, &self.keys),
+            Mode::Help => draw_help(f, main, &self.keys, self.nav.as_ref().map(|(_, k)| k)),
             Mode::PickFile { query, pos } => {
                 let (q, p) = (query.clone(), *pos);
                 self.draw_picker(f, main, &q, p);
@@ -1842,7 +1877,7 @@ impl Board {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
-        let info = match self.sel.as_ref().and_then(|s| self.node(s)) {
+        let mut info = match self.sel.as_ref().and_then(|s| self.node(s)) {
             Some(n) => {
                 let links = self
                     .doc
@@ -1885,6 +1920,14 @@ impl Board {
             .is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3))
         {
             self.msg = None;
+        }
+        if let Some((nav, keys)) = &self.nav {
+            let first = |id| keys.keys(id).first();
+            let hint = nav.hint(first("history.back"), first("history.forward"));
+            if !hint.is_empty() {
+                info.spans
+                    .push(Span::styled(format!("   {hint}"), Style::new().fg(MUTED)));
+            }
         }
         let second = match (&self.mode, &self.msg) {
             (Mode::Edit { .. }, _) => Line::styled(
@@ -2274,7 +2317,12 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
-fn draw_help(f: &mut Frame, area: Rect, keys: &Keymap<BoardAction>) {
+fn draw_help(
+    f: &mut Frame,
+    area: Rect,
+    keys: &Keymap<BoardAction>,
+    history: Option<&Keymap<HistoryAction>>,
+) {
     let fixed: &[(&str, &str)] = &[
         (
             "↑↓←→ / hjkl, Tab",
@@ -2292,6 +2340,7 @@ fn draw_help(f: &mut Frame, area: Rect, keys: &Keymap<BoardAction>) {
         .iter()
         .map(|&(k, d)| (k.to_string(), d))
         .chain(commands)
+        .chain(history.map(commands::history_help).unwrap_or_default())
         .collect();
     let lines: Vec<Line> = rows
         .iter()

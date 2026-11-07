@@ -1,0 +1,48 @@
+# Back and forward through followed links, then back to a search with its query.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p kilau
+wait-for Kīlauea
+keys enter
+wait-for Volcanoes/Kīlauea  reading
+keys tab enter
+wait-for Concepts/Shield Volcano  reading
+wait-for Ctrl-o ⟵ Kīlauea
+keys tab enter
+wait-for Concepts/Lava  reading
+wait-for Ctrl-o ⟵ Shield Volcano
+keys ctrl+o
+wait-for Concepts/Shield Volcano  reading
+wait-for Ctrl-o ⟵ Kīlauea · Alt-→ ⟶ Lava
+keys alt+left
+wait-for Volcanoes/Kīlauea  reading
+keys alt+right
+wait-for Concepts/Shield Volcano  reading
+wait-for Ctrl-o ⟵ Kīlauea · Alt-→ ⟶ Lava
+# Somewhere new drops the way forward: Alt-→ stays on Vesuvius.
+keys p vesuv
+wait-for Vesuvius
+keys enter
+wait-for Volcanoes/Vesuvius  reading
+wait-gone ⟶
+keys alt+right
+wait 300ms
+expect Volcanoes/Vesuvius  reading
+wait-for Ctrl-o ⟵ Shield Volcano
+keys s
+type magma
+wait-for 3 notes · 3 matching lines
+keys enter
+wait-for Concepts/Lava  reading
+wait-for Ctrl-o ⟵ search “magma”
+keys backspace
+wait-for ▸ magma
+wait-for 3 notes · 3 matching lines
+wait-for Alt-→ ⟶ Lava
+# Wait for the reader's own hints: the notes' hints show under the search too.
+keys esc
+wait-for reading · j
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

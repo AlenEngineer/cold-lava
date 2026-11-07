@@ -55,6 +55,32 @@ fn opens_a_note_follows_a_link_and_quits() {
 }
 
 #[test]
+fn goes_back_and_forward_through_notes_and_a_search() {
+    let dir = sandbox("history");
+    let out = drive("history.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn goes_back_and_forward_between_a_note_the_graph_and_a_board() {
+    let dir = sandbox("history-screens");
+    let out = drive("history-screens.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_false_expect_fails_with_its_line_and_the_screen() {
     let dir = sandbox("fails");
     let out = drive("fails.drive", &dir);

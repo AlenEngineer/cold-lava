@@ -7,6 +7,7 @@ mod embed;
 mod ext;
 mod graph;
 mod groups;
+mod history;
 mod home;
 mod kitty;
 mod reader;

@@ -253,8 +253,8 @@ mod tests {
             menu("[keys]\n\"note.switch\" = [\"p\", \"ctrl+p\"]\n\"vault.add\" = []\n");
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(keys.label("note.switch"), "p / Ctrl-p");
-        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
-        assert_eq!(keys.get(ctrl_o), None);
+        let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(keys.get(ctrl_p), core(MenuAction::Switcher));
         assert_eq!(keys.label("vault.add"), "");
         assert_eq!(keys.get(press('a')), None);
     }

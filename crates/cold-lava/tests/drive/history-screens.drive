@@ -1,0 +1,35 @@
+# Back and forward between a note, the graph and a whiteboard; the graph keeps its selection.
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys p lava enter
+wait-for Concepts/Lava  reading
+wait-for reading · j
+keys esc
+wait-for ? help  q quit
+keys g
+wait-for Ctrl-o ⟵ Lava
+keys tab
+wait-for ● Start Here
+keys w
+wait-for Eruptions Timeline.canvas
+keys enter
+wait-for whiteboard Eruptions Timeline
+wait-for Ctrl-o ⟵ graph
+keys alt+left
+wait-for ● Start Here
+wait-for Ctrl-o ⟵ Lava · Alt-→ ⟶ Eruptions Timeline
+keys ctrl+o
+wait-for Concepts/Lava  reading
+wait-for Alt-→ ⟶ graph
+keys alt+right
+wait-for ● Start Here
+# Quitting the graph is going to the menu: Back returns to the graph.
+keys q
+wait-for Concepts/Lava  reading
+wait-for Ctrl-o ⟵ graph
+wait-gone ⟶
+wait-for reading · j
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

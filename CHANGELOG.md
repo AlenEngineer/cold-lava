@@ -14,6 +14,11 @@ change commands, keys and file formats; patch versions only fix things.
   names its line and prints the screen. It drives the real binary, embedded Neovim included, with an empty home folder so
   it doesn't read your config or add to your list of vaults (`--real-home` to use yours).
 - `COLD_LAVA_EDITOR=none` opens notes in the reader even when Neovim is installed.
+- Back and forward, like a browser's, across the menu, the reader, search, the graph and
+  whiteboards: `Ctrl-o`, `Alt-←` or `Backspace` (`history.back`) returns to where you were
+  before following a link or opening a note, a search result, the graph or a board, with the
+  reader's scroll position and selected link or the search's words; `Alt-→` (`history.forward`)
+  goes forward again. The status line shows where they lead (`Ctrl-o ⟵ Lava`).
 - `cold-lava items VAULT KIND [--json]` lists the vault's tasks, list items, headings or blocks
   with a `^id`, one per line (`note:line` and a short form), or as JSON lines with each item's
   id, line range, section, parent, block id and data. A task's id stays the same when it is
@@ -33,6 +38,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- `Ctrl-o` is now Back (`history.back`) instead of a second key for the quick switcher, which
+  keeps `p`. To get the old key back: `"note.switch" = ["p", "ctrl+o"]` and
+  `"history.back" = ["alt+left", "backspace"]` in `[keys]`.
 - Building from source is now `cargo install --path crates/cold-lava`: the repository is a
   Cargo workspace, with the engine as its own crate (`cold-lava-engine`) beside the terminal UI.
 - `agenda` and `task toggle` read tasks the way Obsidian and the Tasks plugin do, from the same
