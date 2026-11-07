@@ -36,6 +36,7 @@ pub enum MenuAction {
     Read,
     Hints,
     Outline,
+    Peek,
     History(HistoryAction),
 }
 
@@ -159,6 +160,12 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.outline",
         "outline: the note's headings, type to filter, ⏎ to jump to one",
         &["o"],
+    ),
+    cmd(
+        MenuAction::Peek,
+        "note.peek",
+        "peek: show where the selected link or backlink leads, without going there",
+        &["K"],
     ),
     cmd(
         MenuAction::Filter,
@@ -1146,6 +1153,15 @@ mod tests {
         assert_eq!(keys.get(ctrl_o), Some(back));
         let o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE);
         assert_eq!(keys.get(o), Some(MenuAction::Outline));
+    }
+
+    #[test]
+    fn shift_k_peeks_and_k_still_scrolls_the_reader() {
+        let shift_k = KeyEvent::new(KeyCode::Char('K'), KeyModifiers::SHIFT);
+        assert_eq!(Keymap::new(MENU).get(shift_k), Some(MenuAction::Peek));
+        assert_eq!(Keymap::new(READER).get(shift_k), None, "left to the menu");
+        let k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(Keymap::new(READER).get(k), Some(ReaderAction::Up));
     }
 
     #[test]

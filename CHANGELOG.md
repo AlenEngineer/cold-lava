@@ -24,6 +24,14 @@ change commands, keys and file formats; patch versions only fix things.
   lists the note's headings indented by level, with the one you're reading marked. Type to
   filter (fuzzy, accents ignored), `↑↓` or `Ctrl-n`/`Ctrl-p` to choose, `Enter` to jump there
   (Back returns to where you were in the note), `Esc` to close.
+- Peek: `K` (`note.peek`) on the reader's selected link shows where it leads in a popup under
+  the link, without going there: the note, drawn by the reader in the vault's flavour and
+  scrolled to the link's `#heading` or `#^block`, sized to its text up to 40% of the screen.
+  The reader's keys scroll it, `Tab` / `Shift-Tab` move to the next or previous link and the
+  peek follows, `Enter` goes there (Back returns), `Esc` or `K` closes it. A missing note says
+  `Enter` creates it, a URL says `Enter` opens it in the browser, and a link to an attachment
+  names its type. On a backlink, `K` peeks at the linking note at the line with the link, and
+  `Tab` sweeps through the backlinks.
 - The reader's title shows where you are in the note: `Concepts/Lava › Temperature`, the
   headings above the top line, cut from the left with `…` when too long. A first heading that
   only repeats the note's name is left out.

@@ -373,6 +373,34 @@ enum Mode {
         query: String,
         sel: usize,
     },
+    /// Where the reader's selected link or the selected backlink leads, shown over the reader.
+    Peek {
+        from: PeekFrom,
+        view: Peek,
+    },
+}
+
+/// What a peek looks at: Tab sweeps through these and Enter goes where the selected one leads.
+#[derive(Clone, Copy, PartialEq)]
+enum PeekFrom {
+    Link,
+    Backlink,
+}
+
+/// Where a link leads, as a peek shows it.
+enum Peek {
+    /// The note, in its own reader, at the link's heading, block or line.
+    Note {
+        path: PathBuf,
+        reader: Box<Reader>,
+    },
+    /// No note by this name yet: following the link creates it.
+    Missing(String),
+    Url(String),
+    Attachment {
+        name: String,
+        kind: String,
+    },
 }
 
 /// What a link hint leads to: one of the reader's links, or a backlink.
@@ -1171,11 +1199,14 @@ impl Home {
 
     /// The shown note, parsed.
     fn read_shown(&self) -> markdown::Doc {
-        let text = self
-            .shown
-            .as_ref()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .unwrap_or_default();
+        match &self.shown {
+            Some(p) => self.read_note(p),
+            None => markdown::parse("", &self.flavour),
+        }
+    }
+
+    fn read_note(&self, path: &Path) -> markdown::Doc {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
         markdown::parse(&text, &self.flavour)
     }
 
@@ -1223,6 +1254,10 @@ impl Home {
                 },
                 _ => {}
             }
+            return Ok(());
+        }
+        if matches!(self.mode, Mode::Peek { .. }) {
+            self.peek_key(k);
             return Ok(());
         }
         if matches!(self.mode, Mode::Switcher { .. }) {
@@ -1316,7 +1351,8 @@ impl Home {
             | Mode::Rename { .. }
             | Mode::ConfirmRename { .. }
             | Mode::Hints(_)
-            | Mode::Outline { .. } => return Ok(()),
+            | Mode::Outline { .. }
+            | Mode::Peek { .. } => return Ok(()),
             Mode::Normal => {}
         }
 
@@ -1348,6 +1384,13 @@ impl Home {
             MenuCommand::Core(MenuAction::Hints | MenuAction::Outline) => {
                 self.reader.is_some() && self.shown.is_some()
             }
+            MenuCommand::Core(MenuAction::Peek) => match self.focus {
+                Focus::Backlinks => !self.backs.is_empty(),
+                _ => self
+                    .reader
+                    .as_ref()
+                    .is_some_and(|r| r.selected_link().is_some()),
+            },
             MenuCommand::Core(MenuAction::History(HistoryAction::Back)) => {
                 self.history.peek_back().is_some()
             }
@@ -1438,6 +1481,121 @@ impl Home {
         }
     }
 
+    /// Peeks at the selected link or backlink, or closes the peek when there is none.
+    fn peek(&mut self, from: PeekFrom) {
+        let view = match from {
+            PeekFrom::Link => self.peek_link(),
+            PeekFrom::Backlink => {
+                let b = self.backs.get(self.bsel);
+                b.map(|b| self.peek_note(b.path.clone(), Some(Jump::Line(b.line))))
+            }
+        };
+        self.mode = match view {
+            Some(view) => Mode::Peek { from, view },
+            None => Mode::Normal,
+        };
+    }
+
+    /// Where the reader's selected link leads, resolved the way `follow` resolves it.
+    fn peek_link(&self) -> Option<Peek> {
+        let link = self.reader.as_ref()?.selected_link()?;
+        if link.kind == markdown::LinkKind::Url {
+            return Some(Peek::Url(link.target.clone()));
+        }
+        let target = crate::index::split_link(&link.target);
+        let jump = target
+            .heading
+            .map(Jump::Heading)
+            .or(target.block.map(Jump::Block));
+        let ix = &self.core.as_ref()?.index;
+        let path = match target.note.as_str() {
+            "" => self.shown.clone(),
+            note => ix.resolver.resolve(note).map(|i| ix.path(i)),
+        };
+        if let Some(path) = path {
+            return Some(self.peek_note(path, jump));
+        }
+        Some(match attachment_kind(&target.note) {
+            Some(kind) => Peek::Attachment {
+                name: target.note,
+                kind,
+            },
+            None => Peek::Missing(target.note),
+        })
+    }
+
+    fn peek_note(&self, path: PathBuf, jump: Option<Jump>) -> Peek {
+        let mut reader = Reader::new(self.read_note(&path));
+        if let Some(j) = jump {
+            reader.jump(j);
+        }
+        Peek::Note {
+            path,
+            reader: Box::new(reader),
+        }
+    }
+
+    /// The reader's keys scroll the peek, sweep the selection and go where it leads.
+    fn peek_key(&mut self, k: KeyEvent) {
+        let Mode::Peek { from, view } = &mut self.mode else {
+            return;
+        };
+        let from = *from;
+        if self.keys.get(k) == Some(MenuCommand::Core(MenuAction::Peek)) {
+            self.mode = Mode::Normal;
+            return;
+        }
+        let Some(a) = self.reader_keys.get(k) else {
+            return;
+        };
+        if let Peek::Note { reader, .. } = &mut *view {
+            match a {
+                ReaderAction::Down => reader.scroll_by(1),
+                ReaderAction::Up => reader.scroll_by(-1),
+                ReaderAction::PageDown => reader.page(1),
+                ReaderAction::PageUp => reader.page(-1),
+                ReaderAction::Top => reader.top(),
+                ReaderAction::Bottom => reader.bottom(),
+                _ => {}
+            }
+        }
+        let attachment = matches!(view, Peek::Attachment { .. });
+        let n = self.backs.len().max(1);
+        match (a, from) {
+            (ReaderAction::NextLink, PeekFrom::Link) => {
+                if let Some(r) = self.reader.as_mut() {
+                    r.next_link();
+                }
+                self.peek(from);
+            }
+            (ReaderAction::PreviousLink, PeekFrom::Link) => {
+                if let Some(r) = self.reader.as_mut() {
+                    r.previous_link();
+                }
+                self.peek(from);
+            }
+            (ReaderAction::NextLink, PeekFrom::Backlink) => {
+                self.bsel = (self.bsel + 1) % n;
+                self.peek(from);
+            }
+            (ReaderAction::PreviousLink, PeekFrom::Backlink) => {
+                self.bsel = (self.bsel + n - 1) % n;
+                self.peek(from);
+            }
+            (ReaderAction::Follow, _) if attachment => {}
+            (ReaderAction::Follow, PeekFrom::Link) => {
+                self.mode = Mode::Normal;
+                self.follow_selected();
+            }
+            (ReaderAction::Follow, PeekFrom::Backlink) => {
+                self.mode = Mode::Normal;
+                self.open_backlink(self.bsel);
+            }
+            (ReaderAction::Back, _) => self.mode = Mode::Normal,
+            _ => {}
+        }
+    }
+
     /// The backlinks the pane shows when it has `rows` rows: it scrolls to keep the selected one
     /// in view.
     fn visible_backlinks(&self, rows: u16) -> std::ops::Range<usize> {
@@ -1472,6 +1630,10 @@ impl Home {
         match a {
             MenuAction::Hints => self.show_hints(),
             MenuAction::Outline => self.open_outline(),
+            MenuAction::Peek => match self.focus {
+                Focus::Backlinks => self.peek(PeekFrom::Backlink),
+                _ => self.peek(PeekFrom::Link),
+            },
             // Shares pane.leave's default key, so that key goes back and forth; it never quits.
             MenuAction::FocusEditor => {
                 if self.pane.is_some() {
@@ -2271,6 +2433,15 @@ impl Home {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
+        if let Mode::Peek { view, .. } = &mut self.mode {
+            match (m.kind, &mut *view) {
+                (MouseEventKind::ScrollDown, Peek::Note { reader, .. }) => reader.scroll_by(3),
+                (MouseEventKind::ScrollUp, Peek::Note { reader, .. }) => reader.scroll_by(-3),
+                (MouseEventKind::Down(_), _) => self.mode = Mode::Normal,
+                _ => {}
+            }
+            return;
+        }
         let pos = Position::new(m.column, m.row);
         let [va, na, ea, ba] = self.areas;
         if ba.contains(pos) {
@@ -2569,6 +2740,9 @@ impl Home {
             self.draw_hints(f.buffer_mut(), hints);
         }
         self.draw_status(f, status);
+        if matches!(self.mode, Mode::Peek { .. }) {
+            self.draw_peek(f, main);
+        }
         if matches!(self.mode, Mode::Switcher { .. }) {
             self.draw_switcher(f, main);
         }
@@ -2613,6 +2787,103 @@ impl Home {
                 name,
             ),
             _ => {}
+        }
+    }
+
+    /// Where the peek points from: the selected link in the reader, or the selected backlink.
+    fn peek_anchor(&self, from: PeekFrom) -> Option<(u16, u16)> {
+        let [_, _, ea, ba] = self.areas;
+        match from {
+            PeekFrom::Link => {
+                let (row, col) = self.reader.as_ref()?.selected_at()?;
+                Some((ea.x + col, ea.y + row))
+            }
+            PeekFrom::Backlink => {
+                let ba = inner(ba);
+                let shown = self.visible_backlinks(ba.height);
+                let row = self.bsel.checked_sub(shown.start)? as u16;
+                Some((ba.x + 1, ba.y + row))
+            }
+        }
+    }
+
+    fn draw_peek(&mut self, f: &mut Frame, screen: Rect) {
+        let Mode::Peek { from, .. } = &self.mode else {
+            return;
+        };
+        let ea = self.areas[2];
+        let anchor = self.peek_anchor(*from).unwrap_or((ea.x, ea.y));
+        let w = ea.width.clamp(40, 80).min(screen.width);
+        let room = w.saturating_sub(2);
+        let enter = self.reader_keys.label("reader.follow");
+        let ix = self.core.as_ref().map(|c| &c.index);
+        let root = self.root.as_deref().unwrap_or(Path::new(""));
+        let Mode::Peek { view, .. } = &mut self.mode else {
+            return;
+        };
+        let (title, body) = match &mut *view {
+            Peek::Note { path, reader } => {
+                reader.layout(room, &|raw| resolves(ix, raw));
+                let rel = path.strip_prefix(root).unwrap_or(path);
+                let rel = rel.to_string_lossy();
+                let place = rel.trim_end_matches(".md").to_string() + &breadcrumb(reader, path);
+                (format!(" {place} "), None)
+            }
+            Peek::Missing(name) => (
+                format!(" {name} "),
+                Some(vec![Line::styled(
+                    format!("No note named {name} yet · {enter} creates it"),
+                    Style::new().fg(MUTED),
+                )]),
+            ),
+            Peek::Url(url) => (
+                " link ".to_string(),
+                Some(vec![
+                    Line::styled(url.clone(), Style::new().fg(NOTE)),
+                    Line::styled(
+                        format!("{enter} opens in the browser"),
+                        Style::new().fg(MUTED),
+                    ),
+                ]),
+            ),
+            Peek::Attachment { name, kind } => (
+                format!(" {name} "),
+                Some(vec![
+                    Line::styled(kind.clone(), Style::new().fg(NOTE)),
+                    Line::styled(
+                        "an attachment: cold-lava doesn't show these",
+                        Style::new().fg(MUTED),
+                    ),
+                ]),
+            ),
+        };
+        let rows = match (&body, &*view) {
+            (Some(lines), _) => lines
+                .iter()
+                .map(|l| l.width().div_ceil(room as usize).max(1))
+                .sum(),
+            (None, Peek::Note { reader, .. }) => reader.line_count(),
+            (None, _) => 0,
+        };
+        let most = (screen.height * 2 / 5).clamp(6, 20);
+        let h = (rows as u16 + 2).min(most);
+        let area = popup_near(anchor, w, h, screen);
+        f.render_widget(Clear, area);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(ACCENT))
+            .title(Line::styled(
+                cut_left(&title, area.width.saturating_sub(4) as usize),
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        match (body, &mut *view) {
+            (Some(lines), _) => {
+                f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner)
+            }
+            (None, Peek::Note { reader, .. }) => reader.render(inner, f.buffer_mut()),
+            (None, _) => {}
         }
     }
 
@@ -3301,6 +3572,18 @@ impl Home {
             (_, Mode::Hints(_)) => {
                 " link hints · type a label to follow its link · Esc cancel".to_string()
             }
+            (_, Mode::Peek { .. }) => {
+                let k = |id| self.reader_keys.label(id);
+                format!(
+                    " peek · {} scroll · {} page · {} {} next / previous · {} go there · {} close",
+                    k("reader.down"),
+                    k("reader.page-down"),
+                    k("reader.next-link"),
+                    k("reader.previous-link"),
+                    k("reader.follow"),
+                    k("reader.back"),
+                )
+            }
             (Focus::Pane, _) if self.reader.is_some() => {
                 let k = |id| self.reader_keys.label(id);
                 format!(
@@ -3356,6 +3639,37 @@ impl Home {
 fn resolves(ix: Option<&crate::index::Index>, raw: &str) -> bool {
     let link = crate::index::split_link(raw);
     link.note.is_empty() || ix.is_some_and(|ix| ix.resolver.resolve(&link.note).is_some())
+}
+
+/// What kind of attachment a link names (`photo.jpg` → `JPG image`); `None` for a note.
+fn attachment_kind(name: &str) -> Option<String> {
+    let (_, ext) = name.rsplit_once('.')?;
+    let ext = ext.to_lowercase();
+    let kind = match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "avif" => "image",
+        "mp3" | "wav" | "m4a" | "ogg" | "flac" | "3gp" => "audio",
+        "mp4" | "webm" | "ogv" | "mov" | "mkv" => "video",
+        "pdf" => "document",
+        "canvas" => "whiteboard",
+        _ => return None,
+    };
+    Some(format!("{} {kind}", ext.to_uppercase()))
+}
+
+/// A `w`×`h` popup under the point `at`, or above it when there is more room there, kept on
+/// `screen` and shrunk to fit.
+fn popup_near(at: (u16, u16), w: u16, h: u16, screen: Rect) -> Rect {
+    let (x, y) = at;
+    let below = screen.bottom().saturating_sub(y + 1);
+    let above = y.saturating_sub(screen.y);
+    let (top, h) = if below >= h || below >= above {
+        (y + 1, h.min(below))
+    } else {
+        (y - h.min(above), h.min(above))
+    };
+    let w = w.min(screen.width);
+    let left = x.saturating_sub(2).clamp(screen.x, screen.right() - w);
+    Rect::new(left, top, w, h)
 }
 
 /// ` › Section › Subsection`: the headings the reader is under, without a first heading that
@@ -3630,5 +3944,35 @@ mod tests {
 
         let found = visible(&items, &HashSet::new(), "kil");
         assert_eq!(items[found[0]].rel, "Volcanoes/Kīlauea.md");
+    }
+
+    #[test]
+    fn peek_opens_under_the_link_or_above_it_near_the_bottom() {
+        let screen = Rect::new(0, 0, 100, 40);
+        assert_eq!(
+            popup_near((30, 5), 60, 16, screen),
+            Rect::new(28, 6, 60, 16)
+        );
+        assert_eq!(
+            popup_near((90, 35), 60, 16, screen),
+            Rect::new(40, 19, 60, 16)
+        );
+        let small = Rect::new(0, 0, 30, 10);
+        let r = popup_near((0, 4), 60, 16, small);
+        assert_eq!(r, Rect::new(0, 5, 30, 5), "shrunk to the room below");
+    }
+
+    #[test]
+    fn attachments_are_named_by_type_and_dotted_note_names_are_notes() {
+        assert_eq!(
+            attachment_kind("kilauea-lava-lake.jpg").as_deref(),
+            Some("JPG image")
+        );
+        assert_eq!(
+            attachment_kind("Maps/Hawaii.PDF").as_deref(),
+            Some("PDF document")
+        );
+        assert_eq!(attachment_kind("Mount St. Helens"), None);
+        assert_eq!(attachment_kind("Lahar"), None);
     }
 }
