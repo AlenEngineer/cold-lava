@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn scans_example_vault() {
-        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault")).unwrap();
+        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault")).unwrap();
         assert_eq!(v.name, "example-vault");
         assert_eq!(v.notes.len(), 33);
         // Hidden folders (.obsidian) are skipped; subfolders and non-ASCII names are included.

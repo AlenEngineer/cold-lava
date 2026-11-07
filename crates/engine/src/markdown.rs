@@ -1284,7 +1284,7 @@ mod tests {
                 .sum()
         }
         let flavour = Flavour::built_in("obsidian").unwrap();
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault");
         let mut notes = 0;
         let mut found = 0;
         for entry in walkdir::WalkDir::new(&root) {

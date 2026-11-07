@@ -2,27 +2,20 @@ mod app;
 mod board;
 mod commands;
 mod config;
-mod core;
-mod daily;
 mod drive;
 mod embed;
 mod ext;
 mod graph;
 mod groups;
 mod home;
-mod index;
-mod items;
 mod kitty;
-mod markdown;
-mod paths;
 mod reader;
-mod rename;
 mod scene;
-mod search;
-mod tasks;
 mod term;
-mod vault;
-mod write;
+
+use cold_lava_engine::{
+    core, daily, index, items, markdown, paths, rename, search, tasks, vault, write,
+};
 
 use anyhow::Result;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};

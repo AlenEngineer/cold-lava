@@ -156,7 +156,7 @@ pub fn discover(extra: &[PathBuf]) -> Vec<VaultEntry> {
     // The bundled example vault, when run from the repository.
     for base in [
         std::env::current_dir().ok(),
-        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
+        Some(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))),
     ]
     .into_iter()
     .flatten()
@@ -3133,7 +3133,7 @@ mod tests {
 
     #[test]
     fn tree_sorting_and_folding() {
-        let items = scan_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault"));
+        let items = scan_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"));
         let rels: Vec<&str> = items.iter().map(|i| i.rel.as_str()).collect();
         // Folders first, then top-level files; boards are included.
         assert_eq!(rels[0], "Concepts");

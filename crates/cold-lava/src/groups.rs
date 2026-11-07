@@ -333,8 +333,9 @@ mod tests {
 
     #[test]
     fn reads_obsidian_graph_json() {
-        let g =
-            load_obsidian(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault"));
+        let g = load_obsidian(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"),
+        );
         assert_eq!(g.len(), 4);
         assert_eq!(g[0].label, "path:Guide");
         assert_eq!(g[0].color, Color::Rgb(250, 214, 90));

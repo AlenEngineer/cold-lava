@@ -24,7 +24,7 @@ fn sandbox(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     let vault = dir.join("example-vault");
     copy_dir(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"),
         &vault,
     );
     vault.canonicalize().unwrap()

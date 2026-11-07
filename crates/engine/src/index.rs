@@ -238,7 +238,7 @@ mod tests {
 
     fn example() -> Index {
         Index::build(
-            crate::vault::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("example-vault"))
+            crate::vault::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"))
                 .unwrap(),
         )
     }
