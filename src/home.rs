@@ -11,6 +11,7 @@ use crate::ext::{
     PaneSpec, Registry,
 };
 use crate::markdown::{self, Flavour};
+use crate::paths::{config_dir, home_dir};
 use crate::reader::Reader;
 use crate::{board, term, vault};
 use anyhow::{Result, anyhow};
@@ -40,18 +41,6 @@ pub struct VaultEntry {
     pub source: &'static str,
     /// Last opened (ms since epoch), for sorting.
     pub ts: u64,
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-}
-
-pub fn config_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|h| h.join(".config")))
 }
 
 /// Where Obsidian keeps its list of vaults on each platform (including Flatpak and Snap installs).

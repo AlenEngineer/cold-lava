@@ -14,6 +14,7 @@ mod index;
 mod items;
 mod kitty;
 mod markdown;
+mod paths;
 mod reader;
 mod rename;
 mod scene;
@@ -179,7 +180,7 @@ fn run() -> Result<()> {
         }
         Some("board") => {
             let target = PathBuf::from(args.word(1).unwrap_or("."));
-            let root = board::find_vault_root(&target);
+            let root = vault::find_vault_root(&target);
             let file = (target.extension().is_some_and(|e| e == "canvas")).then_some(target);
             with_terminal(|t| board::launch(t, &root, file, false))
         }
@@ -320,7 +321,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("daily") => {
-            let root = board::find_vault_root(&PathBuf::from(args.word(1).unwrap_or(".")));
+            let root = vault::find_vault_root(&PathBuf::from(args.word(1).unwrap_or(".")));
             let date = daily::parse_cli_date(args.word(2).unwrap_or("today"))?;
             let path = daily::ensure(&root, date)?;
             if args.has("path") {

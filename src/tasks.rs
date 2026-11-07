@@ -509,7 +509,7 @@ pub fn toggle(
     let path = path
         .canonicalize()
         .with_context(|| format!("no such file: {}", path.display()))?;
-    let root = crate::board::find_vault_root(&path);
+    let root = crate::vault::find_vault_root(&path);
     let item_settings = items::Settings::load(&root);
     let settings = &item_settings.tasks;
     let rel = path

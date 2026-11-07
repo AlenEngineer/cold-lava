@@ -49,13 +49,14 @@ fn commonmark() -> String {
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
 pub fn path() -> Option<PathBuf> {
-    crate::home::config_dir().map(|c| c.join("cold-lava/config.toml"))
+    crate::paths::config_dir().map(|c| c.join("cold-lava/config.toml"))
 }
 
 /// Reads the file, checking `[keys]` against every screen's commands, with `menu` as the menu's:
 /// the core's and the loaded extensions'.
 pub fn load(menu: &[Entry<MenuCommand>]) {
     let _ = CONFIG.set(read(path(), menu));
+    crate::markdown::set_configured(get().flavour.clone());
 }
 
 fn read(path: Option<PathBuf>, menu: &[Entry<MenuCommand>]) -> Config {
