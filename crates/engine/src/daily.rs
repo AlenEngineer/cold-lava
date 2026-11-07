@@ -165,27 +165,61 @@ enum Tok {
     Lit(char),
 }
 
+/// moment.js tokens cold-lava reads, longest first so `MMMM` wins over `MM`.
+const TOKENS: [(&str, Tok); 18] = [
+    ("YYYY", Tok::Year4),
+    ("MMMM", Tok::MonthName),
+    ("dddd", Tok::WeekdayName),
+    ("MMM", Tok::MonthShort),
+    ("ddd", Tok::WeekdayShort),
+    ("YY", Tok::Year2),
+    ("MM", Tok::Month2),
+    ("Do", Tok::DayOrd),
+    ("DD", Tok::Day2),
+    ("WW", Tok::IsoWeek2),
+    ("HH", Tok::Hour2),
+    ("mm", Tok::Minute2),
+    ("ss", Tok::Second2),
+    ("M", Tok::Month),
+    ("D", Tok::Day),
+    ("W", Tok::IsoWeek),
+    ("h", Tok::Hour12),
+    ("A", Tok::AmPm),
+];
+
+/// Letters in `fmt` that are moment.js tokens cold-lava doesn't read (`Q`, `X`, `gggg`), which
+/// `tokenize` would keep as literal text. Text in `[brackets]` is literal on purpose.
+pub fn unknown_tokens(fmt: &str) -> Vec<String> {
+    let mut unknown: Vec<String> = Vec::new();
+    let mut rest = fmt;
+    'outer: while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix('[') {
+            let end = r.find(']').unwrap_or(r.len());
+            rest = r.get(end + 1..).unwrap_or("");
+            continue;
+        }
+        for (pat, _) in TOKENS {
+            if let Some(r) = rest.strip_prefix(pat) {
+                rest = r;
+                continue 'outer;
+            }
+        }
+        let c = rest.chars().next().unwrap();
+        if c.is_ascii_alphabetic() {
+            let run = rest.len() - rest.trim_start_matches(c).len();
+            let token = rest[..run].to_string();
+            if !unknown.contains(&token) {
+                unknown.push(token);
+            }
+            rest = &rest[run..];
+        } else {
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    unknown
+}
+
 fn tokenize(fmt: &str) -> Vec<Tok> {
-    let table: [(&str, Tok); 18] = [
-        ("YYYY", Tok::Year4),
-        ("MMMM", Tok::MonthName),
-        ("dddd", Tok::WeekdayName),
-        ("MMM", Tok::MonthShort),
-        ("ddd", Tok::WeekdayShort),
-        ("YY", Tok::Year2),
-        ("MM", Tok::Month2),
-        ("Do", Tok::DayOrd),
-        ("DD", Tok::Day2),
-        ("WW", Tok::IsoWeek2),
-        ("HH", Tok::Hour2),
-        ("mm", Tok::Minute2),
-        ("ss", Tok::Second2),
-        ("M", Tok::Month),
-        ("D", Tok::Day),
-        ("W", Tok::IsoWeek),
-        ("h", Tok::Hour12),
-        ("A", Tok::AmPm),
-    ];
     let mut out = Vec::new();
     let mut rest = fmt;
     'outer: while !rest.is_empty() {
@@ -196,7 +230,7 @@ fn tokenize(fmt: &str) -> Vec<Tok> {
             rest = r.get(end + 1..).unwrap_or("");
             continue;
         }
-        for (pat, tok) in table {
+        for (pat, tok) in TOKENS {
             if let Some(r) = rest.strip_prefix(pat) {
                 out.push(tok);
                 rest = r;
@@ -393,5 +427,11 @@ mod tests {
             out,
             "# 2026-11-07\nCreated 2026-11-07 at 09:05 (Saturday, 09:05:00)"
         );
+    }
+
+    #[test]
+    fn unknown_tokens_are_found_outside_brackets() {
+        assert!(unknown_tokens("YYYY-MM-DD dddd [Week] WW, Do MMM h:mm A").is_empty());
+        assert_eq!(unknown_tokens("YYYY-Q gggg [Q] x"), ["Q", "gggg", "x"]);
     }
 }

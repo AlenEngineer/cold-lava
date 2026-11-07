@@ -10,6 +10,7 @@ pub mod nvim;
 
 use crate::commands::{self, Entry, MenuCommand};
 use crate::core::Jump;
+use crate::types::Definitions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -34,6 +35,9 @@ pub struct Manifest {
     pub hints: Vec<(String, String)>,
     /// What it adds to the menu's commands, for keys, the palette, the help and config.toml.
     pub commands: Vec<CommandSpec>,
+    /// Types it defines, named `<extension name>.<type>` once loaded.
+    #[serde(default, skip_serializing_if = "Definitions::is_empty")]
+    pub types: Definitions,
 }
 
 /// A command an extension registers. Its id is `<extension name>.<something>`.
@@ -245,6 +249,10 @@ impl Registry {
         &self.loaded[ext.0].1
     }
 
+    pub fn manifests(&self) -> impl Iterator<Item = &Manifest> {
+        self.loaded.iter().map(|(_, m)| m)
+    }
+
     /// Call one extension and return what it asked for, for the caller to apply.
     pub fn call(
         &mut self,
@@ -399,6 +407,7 @@ mod tests {
                 roles: vec![Role::Editor],
                 hints: vec![("Ctrl-o".into(), "back".into())],
                 commands: vec![command("nvim.restart", &["ctrl+r"])],
+                types: Definitions::new(),
             },
             json!({
                 "name": "nvim",
@@ -424,6 +433,7 @@ mod tests {
                 roles: Vec::new(),
                 hints: Vec::new(),
                 commands: self.commands.clone(),
+                types: Definitions::new(),
             }
         }
         fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}

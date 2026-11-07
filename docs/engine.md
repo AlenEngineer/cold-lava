@@ -62,7 +62,8 @@ frontmatter) and inlines (text, link, emphasis, code span, tag). Values inside t
 set of types: text, number, date, datetime, link, tag, true/false, list. These are a note's
 bytes and integers.
 
-**3. Types** *(designed in extensions.md, "Types")*. Definitions of meaning over blocks: a task is a list item that
+**3. Types** *(designed in extensions.md, "Types"; definitions load and are checked:
+`types.rs`, `cold-lava types`)*. Definitions of meaning over blocks: a task is a list item that
 starts with `[ ]`, whose `📅 2026-11-12` is a date field `due`; a `book` is a table row whose
 header has `Author`. Built-in types (task, property, heading) are definitions like anyone
 else's, and you or an extension can add more in a few lines, with no code. Definitions are

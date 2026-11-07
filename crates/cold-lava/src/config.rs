@@ -17,6 +17,8 @@ pub struct Config {
     pub keys: BTreeMap<String, Vec<Key>>,
     /// `[markdown] flavour`, resolved. `None` lets the vault decide (`markdown::flavour_for`).
     pub flavour: Option<Flavour>,
+    /// `[types]` as written, for the engine to check (`types::Layer::config`).
+    pub types: toml::Table,
     /// One human-readable line per problem in the file.
     pub errors: Vec<String>,
 }
@@ -28,6 +30,8 @@ struct File {
     keys: BTreeMap<String, toml::Value>,
     #[serde(default)]
     markdown: toml::Table,
+    #[serde(default)]
+    types: toml::Table,
 }
 
 /// `[markdown.flavours.NAME]`.
@@ -106,6 +110,7 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
         }
     }
     config.flavour = markdown(file.markdown, &mut config.errors);
+    config.types = file.types;
     config.errors.extend(Keymap::with(menu, &config.keys).1);
     let keys = &config.keys;
     config

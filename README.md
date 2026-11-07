@@ -57,6 +57,7 @@ cold-lava items ~/vault task            # every task (or list, heading, block), 
 cold-lava search ~/vault WORDS…         # full-text search
 cold-lava rename ~/vault NOTE NEW       # rename or move a note, updating every link to it
 cold-lava task toggle FILE:LINE         # tick / untick a task
+cold-lava types ~/vault                 # the vault's types, and what's wrong with them
 ```
 
 Flags: `--pixels` / `--braille` to force a renderer. Pixel mode is on automatically in Ghostty,
@@ -293,6 +294,36 @@ blocks and `%%comments%%` don't, and custom statuses follow the Tasks plugin's s
 removes it when unticking, and for recurring tasks inserts the next occurrence with its dates
 moved forward. Pass the `id` from the agenda: if the line has changed since, nothing is touched
 and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note.
+
+### Types
+
+A **type** says what some of your notes or blocks mean: a `volcano` is a note tagged
+`#volcano`, with `country` and `elevation` read from its frontmatter; an `eruption` is a row of
+any table whose header has `VEI` and `Example`. Types are written in TOML, with no code: the
+fields and their value types (text, number, date, datetime, bool, link, tag, enum, duration),
+where each field is read (a table column, a frontmatter property, a `📅` marker, a Dataview
+`due::` field, a pattern's group, …), and how it looks.
+
+Put them in `.cold-lava/types.toml` in the vault (it travels with the vault, and Obsidian ignores
+it), or under `[types.NAME]` in `~/.config/cold-lava/config.toml` for every vault. The vault's
+file starts with `version = 1`. The example vault has two:
+
+```toml
+version = 1
+
+[types.volcano]
+on = "note"
+where.tag = ["volcano"]
+fields.country = { property = "country" }
+fields.elevation = { property = "elevation_m", type = "number" }
+```
+
+`cold-lava types ~/vault` lists every type: where it comes from, the shapes it is read from, each
+field with its value type, where it's read and whether cold-lava could write it back, and its
+looks. Mistakes are listed one per line with the file and the type; the broken type is left out,
+the rest load, and the exit code is 1. `--json` prints the same as JSON. For now types are only
+loaded and checked: finding them in notes comes next. The full design is in
+[docs/extensions.md](docs/extensions.md#types).
 
 ## What it understands
 

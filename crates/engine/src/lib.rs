@@ -10,5 +10,6 @@ pub mod paths;
 pub mod rename;
 pub mod search;
 pub mod tasks;
+pub mod types;
 pub mod vault;
 pub mod write;

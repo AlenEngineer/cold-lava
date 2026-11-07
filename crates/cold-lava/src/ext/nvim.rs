@@ -120,6 +120,7 @@ impl Extension for Nvim {
                 ),
                 keys: Vec::new(),
             }],
+            types: Default::default(),
         }
     }
 
