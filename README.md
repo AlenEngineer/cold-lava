@@ -152,7 +152,7 @@ In the reader:
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, `↑↓` | scroll |
+| `j` / `k`, `↑↓` | scroll; on the last page (or a note shorter than the pane) the highlighted line moves instead |
 | `space` / `PageDown` / `Ctrl-d`, `PageUp` / `Ctrl-u` | page down, page up |
 | `g` / `Home`, `G` / `End` | top, bottom |
 | `Tab` / `Shift-Tab` | select the next / previous link |
@@ -161,6 +161,7 @@ In the reader:
 | `K` | peek at the selected link (or backlink) in a popup: `j`/`k` scroll, `Tab` next link, `Enter` go there, `Esc` close |
 | `o` | outline: the note's headings; type to filter, `Enter` jumps to one (Back returns) |
 | `]` / `[` | next heading / this section's heading, or the one before |
+| `x` | tick or untick a task, like Obsidian Tasks: the one the selected link is in, else the highlighted line's, else the first task on screen below it |
 | `e` | edit the note in `$EDITOR` full screen |
 | `,` | which key: the reader's commands and the menu's, by group |
 | `Esc` / `q` | back to the notes |
@@ -484,7 +485,14 @@ custom statuses follow the Tasks plugin's settings.
 custom statuses say which; else done, and back to todo), adds the done date (`✅`, or
 `[completion:: …]`), removes it when unticking, and for recurring tasks inserts the next
 occurrence with its dates moved forward. Pass the `id` from the agenda: if the line has changed since, nothing is touched
-and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note.
+and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note,
+and `x` in the reader ticks a task the same way. Custom statuses whose next status is a
+cancelled one get the cancelled date (`❌`, or `[cancelled:: …]`) unless the plugin's "set
+cancelled date" is off.
+
+`COLD_LAVA_TODAY=2026-11-07` makes every command and the menu take that date as today (the
+agenda, done and cancelled dates, recurrence), so scripted runs and their tests read the same on
+any day.
 
 ### Types
 

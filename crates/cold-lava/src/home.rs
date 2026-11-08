@@ -1767,6 +1767,7 @@ impl Home {
             ReaderAction::NextHeading => r.next_heading(),
             ReaderAction::PreviousHeading => r.previous_heading(),
             ReaderAction::Follow => self.follow_selected(),
+            ReaderAction::Tick => self.tick_in_reader(),
             ReaderAction::Edit => {
                 let (Some(p), Some(root)) = (self.shown.clone(), self.root.clone()) else {
                     return Ok(());
@@ -1797,6 +1798,69 @@ impl Home {
             return;
         }
         self.follow(&from, &target);
+    }
+
+    /// Tick the reader's task (`Reader::task_line`) as the core last read it.
+    fn tick_in_reader(&mut self) {
+        let line = self.reader.as_ref().and_then(Reader::task_line);
+        let (Some(line), Some(path), Some(root)) = (line, self.shown.clone(), self.root.clone())
+        else {
+            return self.flash("no task on screen");
+        };
+        let task = self.core.as_ref().and_then(|core| {
+            let note = &core.index.vault.notes[core.index.by_path(&path)?];
+            let raw = note.text.lines().nth(line - 1)?;
+            let settings = &core.index.vault.item_settings().tasks;
+            (core.index.vault.items(note).iter())
+                .filter(|i| i.line == line)
+                .find_map(|i| Some((i.rev.clone(), crate::tasks::Task::of(i, raw, settings)?)))
+        });
+        let Some((rev, task)) = task else {
+            return self.flash(format!("line {line} is no task"));
+        };
+        let rel = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy();
+        self.tick(&rel.replace('\\', "/"), line, &rev, &task.text);
+    }
+
+    /// Tick the task on `line` of `note` (vault-relative, with `.md`) the way the Tasks plugin
+    /// does, refused if it is no longer the version `rev`. The core reads the note at once, so
+    /// every view shows the change, or what refused it, on the next frame. Returns the line the
+    /// ticked task is on now. `text` is its words, for the status line.
+    fn tick(&mut self, note: &str, line: usize, rev: &str, text: &str) -> Option<usize> {
+        let path = self.root.as_ref()?.join(note);
+        let name = note.trim_end_matches(".md");
+        let (msg, at) = match crate::tasks::toggle(&path, line, Some(rev), crate::tasks::today()) {
+            Ok(t) => {
+                let what = match t.status {
+                    "done" => "done",
+                    "cancelled" => "cancelled",
+                    "in_progress" => "in progress",
+                    "todo" => "open again",
+                    _ => "ticked",
+                };
+                let mut msg = format!("{what}: {text}");
+                if t.next.is_some() {
+                    msg.push_str(" · next occurrence added");
+                }
+                if let Some(w) = &t.warning {
+                    msg = format!("{msg} · {w}");
+                }
+                (msg, Some(t.line))
+            }
+            Err(e) if e.downcast_ref::<crate::tasks::Changed>().is_some() => (
+                format!("not ticked: {name} changed since it was read · read again"),
+                None,
+            ),
+            Err(e) => (format!("not ticked: {e:#}"), None),
+        };
+        if let Some(core) = self.core.as_mut() {
+            let events = core.note_changed_now(&path);
+            if !events.is_empty() {
+                self.sync_with_core(&events);
+            }
+        }
+        self.flash(msg);
+        at
     }
 
     /// Label the reader's links and the backlinks on screen, for `f` then a label to follow one.

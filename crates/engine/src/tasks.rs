@@ -23,6 +23,7 @@ use std::sync::OnceLock;
 pub struct TasksSettings {
     pub global_filter: String,
     pub set_done_date: bool,
+    pub set_cancelled_date: bool,
     pub recurrence_below: bool,
     pub dataview: bool,
     /// What each status symbol means: the defaults, then the plugin's `statusSettings`.
@@ -82,6 +83,10 @@ impl TasksSettings {
                 .to_string(),
             set_done_date: json
                 .get("setDoneDate")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            set_cancelled_date: json
+                .get("setCancelledDate")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
             recurrence_below: json
@@ -506,31 +511,41 @@ pub fn toggle(
     let mut next = None;
 
     let new_char = settings.next_symbol(task.status);
-    let new_body = if settings.status_type(new_char) == StatusType::Done {
-        let mut b = body.clone();
-        if settings.set_done_date {
-            b = add_field(&b, "✅", "completion", today, dataview);
-        }
-        if let Some(rule) = &task.recurrence {
-            match next_occurrence(&task, rule, today) {
-                Some(dates) => {
-                    let mut nb = strip_field(&body, "✅", "completion");
-                    for (emoji, field, new) in dates {
-                        nb = replace_date(&nb, emoji, field, new);
+    let without = |b: &str, emoji, dv| strip_field(b, emoji, dv);
+    let new_body = match settings.status_type(new_char) {
+        StatusType::Done => {
+            let mut b = without(&body, "❌", "cancelled");
+            if settings.set_done_date {
+                b = add_field(&b, "✅", "completion", today, dataview);
+            }
+            if let Some(rule) = &task.recurrence {
+                match next_occurrence(&task, rule, today) {
+                    Some(dates) => {
+                        let mut nb =
+                            without(&without(&body, "✅", "completion"), "❌", "cancelled");
+                        for (emoji, field, new) in dates {
+                            nb = replace_date(&nb, emoji, field, new);
+                        }
+                        next = Some(format!("{prefix} {mid}{nb}"));
                     }
-                    next = Some(format!("{prefix} {mid}{nb}"));
-                }
-                None => {
-                    warning = Some(format!(
-                        "couldn't work out the next date for \"{rule}\"; no new occurrence was added"
-                    ))
+                    None => {
+                        warning = Some(format!(
+                            "couldn't work out the next date for \"{rule}\"; no new occurrence was added"
+                        ))
+                    }
                 }
             }
+            b
         }
-        b
-    } else {
+        StatusType::Cancelled => {
+            let b = without(&body, "✅", "completion");
+            match settings.set_cancelled_date {
+                true => add_field(&b, "❌", "cancelled", today, dataview),
+                false => b,
+            }
+        }
         // Open again: drop the done / cancelled date.
-        strip_field(&strip_field(&body, "✅", "completion"), "❌", "cancelled")
+        _ => without(&without(&body, "✅", "completion"), "❌", "cancelled"),
     };
     let new_line = format!("{prefix}{new_char}{mid}{new_body}");
     lines[line - 1] = new_line.clone();
@@ -706,8 +721,13 @@ fn next_weekday(base: NaiveDate, days: &[Weekday]) -> Option<NaiveDate> {
         .find(|d| days.contains(&d.weekday()))
 }
 
+/// Today on the local clock, or the date `COLD_LAVA_TODAY` pins (YYYY-MM-DD), so that scripted
+/// runs and their tests read the same day whenever they run.
 pub fn today() -> NaiveDate {
-    Local::now().date_naive()
+    std::env::var("COLD_LAVA_TODAY")
+        .ok()
+        .and_then(|d| NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok())
+        .unwrap_or_else(|| Local::now().date_naive())
 }
 
 pub fn first_of_month(d: NaiveDate) -> NaiveDate {
@@ -955,6 +975,38 @@ mod tests {
                 ("todo", "- [ ] Paint 📅 2026-11-07\n".to_string()),
             ]
         );
+        let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
+    fn a_status_cancelled_by_its_next_symbol_gets_the_cancelled_date() {
+        let v = temp_vault("cancel");
+        std::fs::create_dir_all(v.join(".obsidian/plugins/obsidian-tasks-plugin")).unwrap();
+        let data = v.join(".obsidian/plugins/obsidian-tasks-plugin/data.json");
+        let statuses = r#"{"statusSettings": {"coreStatuses": [
+                {"symbol": "x", "type": "DONE", "nextStatusSymbol": "-"},
+                {"symbol": "-", "type": "CANCELLED", "nextStatusSymbol": " "}
+            ]}"#;
+        std::fs::write(&data, format!("{statuses}}}")).unwrap();
+        let f = v.join("Plan.md");
+        std::fs::write(&f, "- [x] Hike 📅 2026-11-07 ✅ 2026-11-04\n").unwrap();
+        let today = d("2026-11-05");
+        let r = toggle(&f, 1, None, today).unwrap();
+        assert_eq!(r.status, "cancelled");
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "- [-] Hike 📅 2026-11-07 ❌ 2026-11-05\n",
+            "the done date goes, the cancelled date comes"
+        );
+        toggle(&f, 1, None, today).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "- [ ] Hike 📅 2026-11-07\n"
+        );
+        std::fs::write(&data, format!("{statuses}, \"setCancelledDate\": false}}")).unwrap();
+        std::fs::write(&f, "- [x] Hike [completion:: 2026-11-04]\n").unwrap();
+        toggle(&f, 1, None, today).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "- [-] Hike\n");
         let _ = std::fs::remove_dir_all(&v);
     }
 

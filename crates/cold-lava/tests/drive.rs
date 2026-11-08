@@ -471,6 +471,30 @@ fn edits_table_cells_in_their_notes() {
 }
 
 #[test]
+fn ticks_tasks_in_the_reader() {
+    let dir = sandbox("reader-tick");
+    let out = drive("reader-tick.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let journal = std::fs::read_to_string(dir.join("example-vault/Journal/2026-11-05.md")).unwrap();
+    assert!(
+        journal.ends_with(
+            "\n- [ ] Write a note on lahars ([[Lahar]] is still unresolved)\n\
+             - [x] Add the [[Volcanic Explosivity Index]] table ✅ 2026-11-05\n\
+             - [ ] Look up the 2022 eruption of [[Mauna Loa]] 📅 2026-11-12\n\
+             - [ ] Review the eruption timeline board 🔁 every week ⏳ 2026-11-16\n\
+             - [x] Review the eruption timeline board 🔁 every week ⏳ 2026-11-09 ✅ 2026-11-07\n"
+        ),
+        "{journal}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn draws_typed_values_with_their_looks() {
     let dir = sandbox("looks");
     std::fs::write(

@@ -40,6 +40,9 @@ struct Page {
     anchors: Vec<(usize, usize)>,
     headings: Vec<Heading>,
     block_ids: Vec<(String, usize)>,
+    /// (source line, rendered lines) of every task; a nested task's lines are inside its
+    /// parent's.
+    tasks: Vec<(usize, Range<usize>)>,
     /// Lines of the properties above the note: reading starts below them.
     head: usize,
 }
@@ -176,7 +179,22 @@ impl Reader {
         self.scroll = self.scroll.min(self.max_scroll());
     }
 
+    /// Scrolls `n` lines. Where the page can't scroll further down, the line being read moves
+    /// instead, so every line of the last page can be the one being read.
     pub fn scroll_by(&mut self, n: isize) {
+        let line = self.reading.unwrap_or(self.scroll);
+        let last = self.line_count().saturating_sub(1);
+        if n > 0 && self.scroll + n as usize > self.max_scroll() {
+            let to = line.saturating_add(n as usize).min(last);
+            self.scroll = self.max_scroll();
+            self.reading = (to > self.scroll).then_some(to);
+            return;
+        }
+        if n < 0 && line > self.scroll {
+            let to = line.saturating_add_signed(n);
+            self.reading = (to > self.scroll).then_some(to);
+            return;
+        }
         self.scroll = self.scroll.saturating_add_signed(n);
         self.reading = None;
         self.clamp();
@@ -252,6 +270,31 @@ impl Reader {
         if let Some(i) = self.headings().iter().rposition(|h| h.line < line) {
             self.go_to_heading(i);
         }
+    }
+
+    /// The source line of the task `x` ticks: the one the selected link is in, else the one
+    /// being read, else the first one on screen below it.
+    pub fn task_line(&self) -> Option<usize> {
+        let page = self.page.as_ref()?;
+        let innermost = |line: usize| {
+            (page.tasks.iter())
+                .filter(|(_, at)| at.contains(&line))
+                .max_by_key(|(_, at)| at.start)
+                .map(|t| t.0)
+        };
+        if let Some(t) = self.selected_at().and_then(|_| {
+            let link = self.selected_link()?;
+            innermost(link.pieces[0].0)
+        }) {
+            return Some(t);
+        }
+        let line = self.reading_line();
+        innermost(line).or_else(|| {
+            (page.tasks.iter())
+                .filter(|(_, at)| at.start >= line && at.start < self.scroll + self.height)
+                .min_by_key(|(_, at)| at.start)
+                .map(|t| t.0)
+        })
     }
 
     fn links(&self) -> &[Link] {
@@ -535,7 +578,12 @@ impl Builder<'_> {
                             (Span::styled(bullet, ACCENT_SOFT), base)
                         }
                     };
+                    let start = self.page.lines.len();
                     self.blocks(&item.blocks, &mut g.nest(marker), style, false);
+                    if let (Some(_), Some(first)) = (item.task, item.blocks.first()) {
+                        let lines = start..self.page.lines.len();
+                        self.page.tasks.push((first.line, lines));
+                    }
                 }
                 self.depth -= 1;
             }
@@ -1314,5 +1362,36 @@ mod tests {
         r.jump(Jump::Heading("last".into()));
         let shown = &lines(&r)[r.scroll..r.scroll + 5];
         assert!(shown.iter().any(|l| l == "## Last"), "{shown:?}");
+    }
+
+    #[test]
+    fn x_picks_the_task_being_read_or_the_first_one_below() {
+        let text =
+            "intro\n\n- [ ] one\n- [x] two\n    - [ ] two.a [[Shield]]\n- plain\n- [ ] three\n";
+        let mut r = reader(text, 40, 20);
+        assert_eq!(
+            r.task_line(),
+            Some(3),
+            "nothing read yet: the first on screen"
+        );
+        r.scroll_by(3);
+        assert_eq!(lines(&r)[3], "☑ two");
+        assert_eq!(
+            r.task_line(),
+            Some(4),
+            "the short note can't scroll: the cursor moves"
+        );
+        r.scroll_by(1);
+        assert_eq!(r.task_line(), Some(5), "the nested task, not its parent");
+        r.scroll_by(1);
+        assert_eq!(r.task_line(), Some(7), "a plain item: the next task below");
+        r.scroll_by(-5);
+        assert_eq!(r.reading, None, "back at the top line");
+        r.next_link();
+        assert_eq!(r.task_line(), Some(5), "the task the selected link is in");
+        let mut r = reader("no tasks\n", 40, 20);
+        assert_eq!(r.task_line(), None);
+        r.scroll_by(1);
+        assert_eq!(r.reading, None, "one line: nowhere to move");
     }
 }

@@ -406,7 +406,10 @@ style.minutes = { badge = true, icon = "⏱" }
   (`tasks.toggle`): the status goes to its next symbol (the plugin's `nextStatusSymbol`, else
   done for an open task and todo for a closed one); to a done status it adds the done date
   (`✅` or `[completion:: …]`, as the line writes its fields) and, for a recurring task, the next
-  occurrence with its dates moved; otherwise it takes the done and cancelled dates out.
+  occurrence with its dates moved; to a cancelled status it adds the cancelled date (`❌` or
+  `[cancelled:: …]`, unless the plugin's `setCancelledDate` is off) and takes the done date
+  out; otherwise it takes the done and cancelled dates out. `tasks::today()` is the local date,
+  or `COLD_LAVA_TODAY` when set (scripted runs and their tests).
 - **Results.** The shadow comparison's corpus (`crates/engine/tests/tasks/corpus.md`: every
   format, priority, recurrence, variation selectors, custom statuses, the global filter and the
   Dataview setting, nesting, quotes, callouts, continuation lines, block ids, fences, comments)
@@ -857,7 +860,10 @@ after its call returns, so it never holds the menu's state.
       rebuilt on them and `cold-lava items VAULT KIND`. *(done: `items::extract` reads a
       note in one pass, `Vault::items` caches it per note, ids and revs are pinned by tests,
       and the item JSON is pinned for `items/query`)*
-   2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor.
+   2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor. *(done:
+      `task toggle --id` and `edit::set_field` refuse a stale `rev`; `x` ticks the task the
+      selected link is in, else the highlighted line's, else the first on screen below it, with
+      the `rev` the core read, through `tasks::toggle`)*
    3. The protocol for items, and reads through `Host`.
    4. The declarative list view, and the agenda as an extension.
    5. Types, in small steps: the loader and `cold-lava types` (with
