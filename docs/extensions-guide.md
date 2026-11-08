@@ -94,7 +94,8 @@ this:
 4. You run *move every overdue open task to today*. cold-lava sends `command/run`. The
    extension queries the overdue tasks and sets each one's `due` with `items/edit`. Each edit is
    checked against the `rev` it read, so a task changed elsewhere meanwhile is refused as
-   `changed` and left alone.
+   `changed` and left alone. A task in a file another extension owns (a CSV's) is edited the
+   same way; its answer only takes longer, while that owner writes it.
 5. On quit, cold-lava sends `shutdown`, then `exit`, then closes its input.
 
 ```python
@@ -283,8 +284,40 @@ def file_read(params):
   workspace opens with your files' items before you have started. Change `version` when you
   change what you give. Answer within 10 s; an error, a late answer or an answer that doesn't
   read is said on the status line, and the file keeps what you gave before.
-- **Not yet.** Items in your files can't be edited through `items/edit`, and renaming a note
-  doesn't rewrite links in your files: both are refused or left alone for now.
+
+## Writing items back
+
+When an extension edits an item of one of your files (`items/edit`), or the user renames a note
+your files link to, cold-lava makes the change to what you gave and asks `file/edit` with the
+file's `path`, `rev` and `text` and a list of `changes`, each at one of your places. You answer
+the file's new `text`; cold-lava writes it. Again you never parse Markdown or know about types:
+
+```python
+@ext.on("file/edit")
+def file_edit(params):
+    rows = parse(params["text"])
+    for change in params["changes"]:
+        ...                          # put change["text"] back at change["place"]
+    return {"text": unparse(rows)}
+```
+
+- **A Markdown piece's new text.** `{"place": "Krakatoa#Notes", "text": "- [x] Read the report
+  📅 2026-11-20 ✅ 2026-11-08"}`: cold-lava ticked or set it the way it edits a note, Tasks'
+  done dates and all, or rewrote its links for a rename. Put the text back where the piece came
+  from. The example parses a row's one-row table back into its cells.
+- **A typed item's field.** `{"place": "4", "field": "vei", "value": 7}`, in the form items carry
+  it or as text its type reads; `null` removes it.
+- **A link you reported.** `{"place": "4", "link": "Krakatoa", "to": "Krakatau"}`: the target as
+  you gave it, and what it becomes.
+- **Read back, then written.** cold-lava asks `file/read` for your new text before it writes it,
+  and writes it only when it reads as what you gave before with the changes made: the same items
+  and links, wherever they are. Otherwise nothing is written and whoever asked hears why. It
+  writes the text itself, refused if the file changed since `rev`, so don't write the file
+  yourself; `file/changed` then comes with the new `rev`, like after your own saves.
+- **Refusing.** Raise an error (the example refuses a row without its first cell) and the edit
+  is refused with your message. Answer within 10 s, else it is refused as not answered.
+- **Places can change.** A rename can change a row's key, and so its place; cold-lava compares
+  what you give, not where.
 
 ## When something goes wrong
 

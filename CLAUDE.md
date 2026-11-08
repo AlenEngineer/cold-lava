@@ -61,6 +61,12 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs` (in the `rename-core` PR until it's merged): rename/move with every link updated;
   `plan()` then `apply()`.
+- `owner/`: the owner interface: what reads a kind of file into items and links and writes
+  edits back. `markdown.rs` is Markdown's (read, items, edit, relink); an extension owns other
+  kinds: `given.rs` reads its `file/read` answer, `cache.rs` keeps it by `rev`, `edits.rs`
+  holds an edit while its owner answers `file/edit` and reads the new text back. `Core` asks
+  owners through `take_reads`/`take_file_edits` and never waits; an `items/edit` of an owned
+  file is answered `Later` (`take_edited`).
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
@@ -81,7 +87,8 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an
-  edit goes through `edit::set_field` or `tasks::toggle`, is read again at once and emits
+  edit goes through `edit::set_field` or `tasks::toggle` (in a file another owner reads,
+  through that owner: `owner/edits.rs`), is read again and emits
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
 - `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`,
   `workspace/write` refused unless the file is still that version, `workspace/create` where
