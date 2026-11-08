@@ -317,11 +317,9 @@ fn run() -> Result<()> {
             }
             let mut out = std::io::stdout().lock();
             for note in &workspace.notes {
-                for item in workspace
-                    .items(note)
-                    .iter()
-                    .filter(|i| i.data.answers_to(kind))
-                {
+                // Each note's items once, not kept: nothing reads them again.
+                let items = items::extract(&format!("{}.md", note.rel), &note.text, settings);
+                for item in items.iter().filter(|i| i.data.answers_to(kind)) {
                     let written = if json {
                         writeln!(out, "{}", serde_json::to_string(item)?)
                     } else {
