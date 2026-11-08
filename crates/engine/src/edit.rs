@@ -184,8 +184,8 @@ fn target<'a>(
     sources: &'a [Source],
     dataview: bool,
 ) -> Result<(&'a Source, Option<Range<usize>>), EditError> {
-    let read_from = typed.place.sources.get(field).copied();
-    let spans = typed.spans.get(field).map_or(&[][..], Vec::as_slice);
+    let read_from = (typed.place.sources.iter()).find_map(|(f, j)| (&**f == field).then_some(*j));
+    let spans = typed.spans.get(field).unwrap_or_default();
     if spans.len() > 1 {
         return Err(Refused(format!(
             "{field} is written {} times here; set-field writes one value",
@@ -200,8 +200,8 @@ fn target<'a>(
     let before = read_from.unwrap_or(sources.len());
     let candidates: Vec<&Source> = sources[..before].iter().filter(|s| writable(s)).collect();
     let used: Vec<&str> = (typed.place.sources.iter())
-        .filter(|(f, _)| &***f != field && !typed.fields[&***f].is_null())
-        .filter_map(|(f, &j)| shape.fields.get(&**f)?.0.get(j))
+        .filter(|(f, _)| &**f != field && !typed.fields[&**f].is_null())
+        .filter_map(|(f, j)| shape.fields.get(&**f)?.0.get(*j))
         .map(Source::kind)
         .collect();
     let preferred = if dataview { "inline" } else { "marker" };

@@ -397,6 +397,10 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
 
 /// The link targets on one line outside inline code: wikilinks, then Markdown links.
 pub fn line_links(line: &str) -> Vec<String> {
+    // Without code to take out, a link needs `[[` or `](`; most lines have neither.
+    if !line.contains('`') && !line.contains("[[") && !line.contains("](") {
+        return Vec::new();
+    }
     let p = parsers();
     let line = p.inline_code.replace_all(line, "");
     let wiki = p.wikilink.captures_iter(&line);

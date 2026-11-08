@@ -8,6 +8,7 @@
 //! (workspace, config, extension), then name. Inline types don't compete: every match of each is an
 //! item.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -31,8 +32,7 @@ const READ: &[On] = &[
     On::Inline,
 ];
 
-/// A field's name, shared by every item of its type.
-pub type Name = std::sync::Arc<str>;
+pub use crate::fields::{Fields, Name, Spans};
 
 /// A typed item's kind, the types it answers to, and its fields.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,9 +41,9 @@ pub struct Typed {
     /// Its bases, nearest first: an `idea` that extends `task` is also a `task`.
     pub is: Vec<String>,
     /// Every field of the schema, in its order: null (or [] for a list) when absent.
-    pub fields: IndexMap<Name, Json>,
+    pub fields: Fields,
     /// Where each value was read, in the note's bytes; a list field has one per value.
-    pub spans: IndexMap<Name, Vec<Range<usize>>>,
+    pub spans: Spans,
     /// Values found that didn't parse as their field's type.
     pub unparsed: usize,
     /// Where it was read, for writing a field back (`edit.rs`); not on the wire.
@@ -57,7 +57,7 @@ pub struct Place {
     pub shape: usize,
     /// For each field that found something, which of its sources did (index in the shape's
     /// list for that field).
-    pub sources: IndexMap<Name, usize>,
+    pub sources: Vec<(Name, usize)>,
     /// The block's text in the file, where a missing marker, flag or field is appended.
     pub text: Range<usize>,
     /// The item's own text in the file: the block's text, an inline type's match, a note's
@@ -87,8 +87,8 @@ struct Compiled {
     priority: i32,
     origin: u8,
     schema: Vec<(Name, Value, bool)>,
-    /// Every field of the schema empty: null, or [] for a list. Each item starts as a copy.
-    empty: IndexMap<Name, Json>,
+    /// The schema's names, shared by its items' fields.
+    names: crate::fields::Schema,
     shapes: Vec<Shape>,
 }
 
@@ -224,16 +224,9 @@ impl Matcher {
                     Origin::Extension { .. } => 2,
                     Origin::BuiltIn => 3,
                 },
-                empty: schema
+                names: schema
                     .iter()
-                    .map(|(name, _, list)| {
-                        let empty = if *list {
-                            Json::Array(Vec::new())
-                        } else {
-                            Json::Null
-                        };
-                        (name.clone(), empty)
-                    })
+                    .map(|(name, _, list)| (name.clone(), *list))
                     .collect(),
                 schema,
                 shapes,
@@ -394,12 +387,12 @@ impl Matcher {
         let mut typed = Typed {
             kind: ty.name.clone(),
             is: ty.is.clone(),
-            fields: ty.empty.clone(),
-            spans: IndexMap::new(),
+            fields: Fields::new(ty.names.clone()),
+            spans: Spans::default(),
             unparsed: 0,
             place: Place {
                 shape: shape.index,
-                sources: IndexMap::new(),
+                sources: Vec::new(),
                 text: note.file(b.at..b.at + b.text.len()),
                 span: note.file(b.at..b.at + b.text.len()),
                 cells: b
@@ -428,7 +421,7 @@ impl Matcher {
                     if !found.is_empty() {
                         pieces = found;
                         let name = ty.schema[*f].0.clone();
-                        typed.place.sources.insert(name, i);
+                        typed.place.sources.push((name, i));
                     }
                 } else if !found.iter().all(|p| self.parses(&ty.schema[*f].1, p)) {
                     used.truncate(before);
@@ -473,17 +466,23 @@ impl Matcher {
                 _ => b.text.trim().to_string(),
             }
         } else {
-            shape
-                .key
-                .iter()
-                .map(|&f| match &typed.fields[f] {
+            let mut key = String::new();
+            for (n, &f) in shape.key.iter().enumerate() {
+                if n > 0 {
+                    key.push('\u{1f}');
+                }
+                match &typed.fields[f] {
                     // Text as itself, so a task keyed by its words keeps the id it always had.
-                    Json::String(s) => s.clone(),
-                    v => v.to_string(),
-                })
-                .collect::<Vec<_>>()
-                .join("\u{1f}")
+                    Json::String(s) => key.push_str(s),
+                    v => key.push_str(&v.to_string()),
+                }
+            }
+            key
         };
+        // Kept for as long as the note is: no room for values it won't get.
+        typed.fields.shrink_to_fit();
+        typed.spans.shrink_to_fit();
+        typed.place.sources.shrink_to_fit();
         (typed, key)
     }
 
@@ -502,34 +501,32 @@ impl Matcher {
         if pieces.is_empty() {
             return;
         }
-        let spans: Vec<Range<usize>> = pieces.iter().filter_map(|p| p.span.clone()).collect();
-        let mut parsed = Vec::new();
-        for p in &pieces {
-            let format = &self.daily.format;
-            let read = if p.verbatim {
-                parse_as_written(value, &p.text, format)
-            } else {
-                parse(value, &p.text, format)
-            };
-            match p.value.clone().or(read) {
-                Some(v) => parsed.push(v),
-                None => typed.unparsed += 1,
-            }
+        if pieces.iter().any(|p| p.span.is_some()) {
+            let spans = pieces.iter().filter_map(|p| p.span.clone());
+            typed.spans.insert(name.clone(), spans);
         }
+        let format = &self.daily.format;
+        let parse = |p: Piece| match p.value {
+            Some(v) => Some(v),
+            None if p.verbatim => parse_as_written(value, &p.text, format),
+            None => parse(value, &p.text, format),
+        };
+        let n = pieces.len();
         let json = if *list {
+            let parsed: Vec<Json> = pieces.into_iter().filter_map(parse).collect();
+            typed.unparsed += n - parsed.len();
             Json::Array(parsed)
-        } else if pieces.len() == 1 {
-            parsed.pop().unwrap_or(Json::Null)
+        } else if n == 1 {
+            let parsed = pieces.into_iter().next().and_then(parse);
+            typed.unparsed += parsed.is_none() as usize;
+            parsed.unwrap_or(Json::Null)
         } else {
             // One value was wanted and several were written.
-            typed.unparsed += parsed.len();
+            typed.unparsed += n;
             Json::Null
         };
         // The schema's order is the fields' order.
-        typed.fields[f] = json;
-        if !spans.is_empty() {
-            typed.spans.insert(name.clone(), spans);
-        }
+        typed.fields.set(f, json);
     }
 }
 
@@ -765,18 +762,18 @@ fn block_passes(w: &crate::types::Where, note: &Note, b: &Block) -> bool {
 
 /// One value a source found: the text as written, where it is in the file, and its value when
 /// the source already knows it (a flag's true or false).
-struct Piece {
-    text: String,
+struct Piece<'a> {
+    text: Cow<'a, str>,
     span: Option<Range<usize>>,
     value: Option<Json>,
     /// Its text is the value as written, spaces and all (a checkbox's ` `).
     verbatim: bool,
 }
 
-impl Piece {
-    fn text(text: String, span: Option<Range<usize>>) -> Piece {
+impl<'a> Piece<'a> {
+    fn text(text: impl Into<Cow<'a, str>>, span: Option<Range<usize>>) -> Piece<'a> {
         Piece {
-            text,
+            text: text.into(),
             span,
             value: None,
             verbatim: false,
@@ -786,14 +783,14 @@ impl Piece {
 
 /// What one source reads in a block; empty when it finds nothing. `used` collects the block's
 /// text it read, for `rest`.
-fn read_source(
-    src: &Src,
-    caps: Option<&regex::Captures>,
-    note: &Note,
-    b: &Block,
+fn read_source<'a>(
+    src: &'a Src,
+    caps: Option<&regex::Captures<'a>>,
+    note: &'a Note,
+    b: &Block<'a>,
     daily: &daily::Settings,
     used: &mut Vec<Range<usize>>,
-) -> Vec<Piece> {
+) -> Vec<Piece<'a>> {
     let text = b.text;
     let at = |r: Range<usize>| note.file(b.at + r.start..b.at + r.end);
     let found = |r: Range<usize>, used: &mut Vec<Range<usize>>, whole: Range<usize>| {
@@ -803,10 +800,7 @@ fn read_source(
             return Vec::new();
         }
         let start = r.start + (text[r.clone()].len() - text[r.clone()].trim_start().len());
-        vec![Piece::text(
-            value.to_string(),
-            Some(at(start..start + value.len())),
-        )]
+        vec![Piece::text(value, Some(at(start..start + value.len())))]
     };
     match src {
         Src::Capture(g) => match caps.and_then(|c| Some((c.name(g)?, c.get(0)?))) {
@@ -830,7 +824,7 @@ fn read_source(
             // Every one written is the field's; the first gives the value, as the Tasks plugin
             // reads them.
             let mut first = Vec::new();
-            for (i, _) in text.match_indices(glyph.as_str()) {
+            for i in glyph_at(text, glyph) {
                 // A variation selector after an emoji is part of the glyph: `⏳️` is `⏳`.
                 let after = i + glyph.len();
                 let after = after + text[after..].strip_prefix('\u{FE0F}').map_or(0, |_| 3);
@@ -867,15 +861,12 @@ fn read_source(
             first
         }
         Src::Flag(glyph) => {
-            let at_glyph = text
-                .match_indices(glyph.as_str())
-                .map(|(i, _)| i)
-                .find(|&i| !b.in_code(&(i..i + glyph.len())));
+            let at_glyph = glyph_at(text, glyph).find(|&i| !b.in_code(&(i..i + glyph.len())));
             if let Some(i) = at_glyph {
                 used.push(i..i + glyph.len());
             }
             vec![Piece {
-                text: String::new(),
+                text: Cow::Borrowed(""),
                 span: at_glyph.map(|i| at(i..i + glyph.len())),
                 value: Some(Json::Bool(at_glyph.is_some())),
                 verbatim: false,
@@ -885,8 +876,8 @@ fn read_source(
             // Every glyph of the map is the source's text, though only the first one found
             // gives the value.
             let outside = |glyph: &str| {
-                text.match_indices(glyph)
-                    .map(|(i, g)| i..i + g.len())
+                glyph_at(text, glyph)
+                    .map(|i| i..i + glyph.len())
                     .filter(|r| !b.in_code(r))
                     .collect::<Vec<_>>()
             };
@@ -898,7 +889,7 @@ fn read_source(
                 .find_map(|(glyph, name)| Some((outside(glyph).first()?.start, glyph, name)));
             match first {
                 Some((i, glyph, name)) => vec![Piece {
-                    text: name.clone(),
+                    text: Cow::Borrowed(name),
                     span: Some(at(i..i + glyph.len())),
                     value: Some(Json::String(name.clone())),
                     verbatim: false,
@@ -912,7 +903,7 @@ fn read_source(
             };
             match b.cells.get(i) {
                 Some(cell) if !cell.is_empty() => vec![Piece::text(
-                    note.src[cell.clone()].to_string(),
+                    &note.src[cell.clone()],
                     Some(note.file(cell.clone())),
                 )],
                 _ => Vec::new(),
@@ -924,11 +915,11 @@ fn read_source(
             };
             match fm.get(key) {
                 Some(frontmatter::Value::Scalar(w)) => {
-                    vec![Piece::text(w.text.to_string(), Some(w.span.clone()))]
+                    vec![Piece::text(w.text, Some(w.span.clone()))]
                 }
                 Some(frontmatter::Value::List(l)) => l
                     .iter()
-                    .map(|w| Piece::text(w.text.to_string(), Some(w.span.clone())))
+                    .map(|w| Piece::text(w.text, Some(w.span.clone())))
                     .collect(),
                 _ => Vec::new(),
             }
@@ -936,13 +927,13 @@ fn read_source(
         Src::Inlines(InlineKind::Tags) if b.on == On::Note => note
             .tags
             .iter()
-            .map(|t| Piece::text(t.clone(), None))
+            .map(|t| Piece::text(t.as_str(), None))
             .collect(),
         Src::Inlines(InlineKind::Links) if b.on == On::Note => note
             .links
             .iter()
             .map(|l| Piece {
-                text: l.clone(),
+                text: Cow::Borrowed(l),
                 span: None,
                 value: Some(Json::String(l.clone())),
                 verbatim: false,
@@ -950,13 +941,13 @@ fn read_source(
             .collect(),
         Src::Inlines(InlineKind::Tags) => Note::tags_in(text)
             .filter(|(_, r)| !b.in_code(r))
-            .map(|(t, r)| Piece::text(t.to_string(), Some(at(r))))
+            .map(|(t, r)| Piece::text(t, Some(at(r))))
             .collect(),
         Src::Inlines(InlineKind::Links) => workspace::line_links(text)
             .into_iter()
             .map(|l| Piece {
                 value: Some(Json::String(l.clone())),
-                text: l,
+                text: Cow::Owned(l),
                 span: None,
                 verbatim: false,
             })
@@ -975,7 +966,7 @@ fn read_source(
                 NotePart::Path => note.path,
                 NotePart::Folder => folder,
             };
-            vec![Piece::text(value.to_string(), None)]
+            vec![Piece::text(value, None)]
         }
         Src::Checkbox => {
             let Some(symbol) = text
@@ -995,16 +986,26 @@ fn read_source(
         Src::Section(SectionPart::Heading) => b
             .section
             .last()
-            .map(|h| Piece::text(h.clone(), None))
+            .map(|h| Piece::text(h.as_str(), None))
             .into_iter()
             .collect(),
         Src::Section(SectionPart::Path) => b
             .section
             .iter()
-            .map(|h| Piece::text(h.clone(), None))
+            .map(|h| Piece::text(h.as_str(), None))
             .collect(),
         Src::Rest(_) | Src::Later => Vec::new(),
     }
+}
+
+/// Where `glyph` is written in `text`. Most blocks have few of the glyphs a type looks for, and
+/// its first character, looked for alone, rules the rest out quickly.
+fn glyph_at<'t>(text: &'t str, glyph: &'t str) -> impl Iterator<Item = usize> + 't {
+    let written = glyph.chars().next().is_some_and(|c| text.contains(c));
+    written
+        .then(|| text.match_indices(glyph).map(|(i, _)| i))
+        .into_iter()
+        .flatten()
 }
 
 /// The text no source read, with its spaces collapsed.
@@ -1014,13 +1015,22 @@ fn rest_of(text: &str, used: &mut [Range<usize>]) -> String {
     let mut at = 0;
     for r in used.iter() {
         if r.start > at {
-            out.push_str(&text[at..r.start]);
-            out.push(' ');
+            push_words(&mut out, &text[at..r.start]);
         }
         at = at.max(r.end);
     }
-    out.push_str(&text[at.min(text.len())..]);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    push_words(&mut out, &text[at.min(text.len())..]);
+    out
+}
+
+/// Adds `text`'s words to `out`, one space between each.
+pub(crate) fn push_words(out: &mut String, text: &str) {
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
 }
 
 /// A written value as its field's type; `None` when it doesn't parse.
@@ -1043,9 +1053,11 @@ pub fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option
                     4 | 7 => b == b'-',
                     _ => b.is_ascii_digit(),
                 });
-            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
-                .ok()
-                .filter(|_| iso)?;
+            if !iso {
+                return None;
+            }
+            let n = |r: Range<usize>| text[r].parse::<u32>().ok();
+            chrono::NaiveDate::from_ymd_opt(n(0..4)? as i32, n(5..7)?, n(8..10)?)?;
             Json::String(text.to_string())
         }
         Value::Date {
