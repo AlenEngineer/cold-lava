@@ -1,0 +1,55 @@
+# The agenda: A shows the vault's tasks by day around a pinned today (tests/drive.rs adds
+# Inbox/Errands.md and reads the journal back). x ticks a task and it stays, done, where it
+# was; ticking the recurring one adds its next occurrence, a week on, under Later. Enter opens
+# a task's note at its line, x there unticks it, and Ctrl-o comes back to the agenda as it was.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for example-vault
+keys A
+wait-for ↑↓ move · x tick · ⏎ open
+expect ▾ Overdue  1
+expect Write a note on lahars (Lahar is still unresolved)
+expect Thu 5 Nov  2026-11-05
+expect ▾ Today · Sat 7 Nov  1
+expect ☐ Pay the observatory bill  ⏫
+expect ▾ Mon 9 Nov  1
+expect Review the eruption timeline board 🔁
+expect ▾ Thu 12 Nov  1
+expect ▸ Undated  1
+expect-not Sort the rock photos
+expect 5 rows
+screen
+keys j x
+wait-for done: Write a note on lahars (Lahar is still unresolved)
+wait-for ☑ Write a note on lahars
+keys j j j j x
+wait-for done: Review the eruption timeline board · next occurrence added
+wait-for ▾ Later  1
+expect Mon 16 Nov  2026-11-05
+expect 6 rows
+keys G l
+wait-for Sort the rock photos
+keys /
+type photos
+wait-for / photos▏
+keys enter
+wait-for 1 of 6 rows · /photos
+keys esc
+wait-for 6 rows
+screen
+keys g j enter
+wait-for Journal/2026-11-05  reading
+wait-for Ctrl-o ⟵ agenda
+keys x
+wait-for open again: Write a note on lahars
+keys ctrl+o
+wait-for ☐ Write a note on lahars
+expect ▾ Later  1
+keys d
+wait-for Agenda · with done tasks
+expect ▾ Earlier  2
+expect Add the Volcanic Explosivity Index table
+screen
+keys q q
+exits 0

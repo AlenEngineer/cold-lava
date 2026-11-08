@@ -130,6 +130,7 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `#` | add a tag to the marked notes (or the selected one); `-tag` removes it |
 | `T` | tidy: orphan notes, unused attachments, empty folders and unresolved links, to open, delete or create |
 | `i` | [table](#tables) of a type's items (volcanoes, eruptions, tasks): sort, filter, edit a value, open its note |
+| `A` | [agenda](#agenda): the vault's tasks by day, to tick and open |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder (`Tab` picks a template) / add a vault |
@@ -441,6 +442,27 @@ Marks follow the tree: a marked note that is renamed or deleted elsewhere drops 
 Nothing is deleted without that prompt. `cold-lava tidy VAULT_DIR` prints the same sections
 (`--no-backlinks` adds the notes that link elsewhere, `--json` gives every note nothing links
 to with how many links it has); it never changes anything.
+
+### Agenda
+
+`A` (`agenda.open`) shows every task in the vault by day: **Overdue**, **Today**, each of the
+next seven days that has tasks, **Later**, and **Undated** (folded) last. A task's day is its due
+date, else scheduled, else start, else the date of the daily note it is in, as `cold-lava
+agenda` reads it. Each row has its checkbox, its words (links as their text), `🔁` when it
+recurs and its priority on a chip, and on the right the date (red when overdue) and the note.
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, `↑↓`, `g` / `G` | move |
+| `x` | tick or untick the task, like Obsidian Tasks (done date, next occurrence, custom statuses) |
+| `Enter` | open the note at the task (`x` there ticks it too); `Ctrl-o` comes back to the agenda as it was |
+| `h` / `l`, `Tab` | fold / open the group |
+| `/` | filter (accents ignored); `Esc` clears it |
+| `d` | show / hide done and cancelled tasks (tasks closed today always show, where they were) |
+| `Esc` / `q` | back to the menu |
+
+The agenda follows changes on disk, keeping your place. A task changed elsewhere since the
+agenda was read isn't touched: the status line says so and the agenda reads it again.
 
 ### Agenda, daily notes and tasks (for scripts and status bars)
 

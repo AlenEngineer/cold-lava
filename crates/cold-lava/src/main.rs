@@ -1,3 +1,4 @@
+mod agenda;
 mod app;
 mod board;
 mod commands;
@@ -11,6 +12,7 @@ mod hints;
 mod history;
 mod home;
 mod kitty;
+mod list;
 mod looks;
 mod reader;
 mod scene;

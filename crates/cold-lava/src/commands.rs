@@ -51,6 +51,7 @@ pub enum MenuAction {
     BookmarkSearch,
     Tidy,
     Table,
+    Agenda,
     History(HistoryAction),
 }
 
@@ -204,6 +205,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "table",
         "a type's items as a table: pick a type, then sort, filter and edit its values",
         &["i"],
+    ),
+    cmd(
+        MenuAction::Agenda,
+        "agenda.open",
+        Group::Go,
+        "agenda",
+        "the vault's tasks by day: overdue, today, the next seven days, later, undated; x ticks one",
+        &["A"],
     ),
     cmd(
         MenuAction::BookmarkSearch,

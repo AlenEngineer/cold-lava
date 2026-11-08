@@ -12,7 +12,7 @@ wait-for 1 note
 keys enter
 wait-for Journal/2026-11-05  reading
 keys x
-wait-for done: Write a note on lahars ([[Lahar]] is still unresolved)
+wait-for done: Write a note on lahars (Lahar is still unresolved)
 wait-for ☑ Write a note on lahars
 keys x
 wait-for open again: Write a note on lahars

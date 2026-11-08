@@ -100,6 +100,10 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
   cross the view gateway). `type_table.rs` builds a type's table from the core's items; edits
   go through `edit::set_field`.
+- `list.rs`: the declarative list / tree view (groups of rows by id with a checkbox, pieces of
+  text with looks, a right side; selection, folding, filtering; events back; serde like the
+  table). `agenda.rs` builds the agenda from typed tasks (`A`, `agenda.open`); ticks go through
+  `tasks::toggle` with the row's `rev`, as `x` in the reader does.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
   with vt100, cursor-position queries answered.

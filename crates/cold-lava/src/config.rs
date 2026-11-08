@@ -261,11 +261,11 @@ mod tests {
 
     #[test]
     fn unknown_command_is_reported_and_the_rest_applies() {
-        let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"vault.add\" = \"A\"\n");
+        let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"vault.add\" = \"V\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("graph.opne"));
         assert_eq!(keys.label("graph.open"), "g");
-        assert_eq!(keys.label("vault.add"), "A");
+        assert_eq!(keys.label("vault.add"), "V");
     }
 
     #[test]

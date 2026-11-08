@@ -9,6 +9,18 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- The agenda screen. `A` (`agenda.open`) lists the vault's tasks (anything that answers to
+  `task`, subtypes too) by day: Overdue, Today, each of the next seven days, Later, and Undated
+  (folded) last, filed by the date `cold-lava agenda` uses (due, scheduled, start, else the
+  daily note's). Rows show the checkbox, the words with links as text, `🔁`, the priority chip
+  and the type's looks, the date and the note. `x` ticks a task through `tasks::toggle` (refused
+  with the reason when it changed elsewhere), `Enter` opens its note at the task and `Ctrl-o`
+  comes back, `h` / `l` / `Tab` fold groups, `/` filters, `d` shows done tasks. Tasks closed
+  today stay in place, dimmed. The agenda follows changes on disk, keeping the selection.
+- The declarative list view (`crates/cold-lava/src/list.rs`): groups of rows by id, with a
+  checkbox, text pieces with looks, a right side and nesting depth; selection, folding and
+  filtering in the view; `activated`, `toggled` and the sender's own key commands back. Serde
+  like the table, shaped to cross the view gateway.
 - `x` in the reader ticks a task the way `task toggle` does (done and cancelled dates, the next
   occurrence of a recurring task, custom statuses), refused with the reason on the status line
   when the task changed since the note was read. It ticks the task the selected link is in, else

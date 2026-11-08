@@ -204,11 +204,13 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "chrono",
  "cold-lava-engine",
  "flate2",
  "notify",
  "portable-pty",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "tiny-skia",
