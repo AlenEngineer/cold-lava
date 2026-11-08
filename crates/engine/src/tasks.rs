@@ -394,7 +394,7 @@ pub fn agenda(workspace: &Workspace, from: NaiveDate, to: NaiveDate) -> Agenda {
             });
         }
         let lines: Vec<&str> = note.text.lines().collect();
-        for item in workspace.items(note) {
+        for item in workspace.items_once(note).iter() {
             let raw = lines.get(item.line - 1).copied().unwrap_or_default();
             if let Some(t) = Task::of(item, raw, &settings.tasks)
                 && t.agenda_date().is_some_and(|(d, _)| in_range(d))
