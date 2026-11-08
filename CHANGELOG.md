@@ -126,6 +126,13 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- Items are faster and much smaller on large workspaces. A typed item (every task) keeps only
+  the fields it has and shares its type's field names, and reading one copies and parses less.
+  On a 3,000-note workspace with 33,000 tasks, the items kept for every note take 79 MB instead
+  of 153 MB; `cold-lava items` and `cold-lava agenda` no longer keep every note's items while
+  they go through them, so `items WORKSPACE task` takes 1.4 s and 30 MB instead of 1.9 s and
+  202 MB, and `agenda --json` 1.6 s and 76 MB instead of 2.0 s and 248 MB. Output is unchanged.
+  `scripts/bench-items.py` measures these on a generated workspace.
 - The agenda (`A`) is a built-in extension: it reads its tasks through `items/query` and
   `items/subscribe`, ticks through `items/edit` and shows its list through `view/open`, the path
   an extension in Python takes. It looks and works as before. `cold-lava ext list` names it.

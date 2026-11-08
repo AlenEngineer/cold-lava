@@ -17,6 +17,7 @@ cargo clippy --workspace --all-targets -- -D warnings   # CI runs the latest sta
 cargo test --workspace
 cargo run --release -- example-workspace                # main menu on the example workspace
 scripts/release-check.sh                                # is this commit a release, and is it ready?
+scripts/bench-items.py BINARY...                        # time and peak RSS of items/agenda/table, per binary, on a 3k-note workspace
 ```
 
 All three checks must pass before pushing: CI runs them on Ubuntu and macOS, and they are
