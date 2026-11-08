@@ -1032,6 +1032,90 @@ graph all see the new date. None of them knew what a canvas is.
   (they start no extension; the cache could serve them), owner-shipped types need a shape like
   any type, and an owned file has no backlinks pane of its own.
 
+### Link resolver
+
+*(design; step 1, Obsidian's rules in one engine module, is built: "Link resolver, as built"
+below)*
+
+**Owners find links; the resolver says what they mean.** An owner reports what is written and
+where (`[[Lava#Textures|molten rock]]` on line 12, a CSV cell's `[[Krakatoa]]`). The resolver
+decides which file or item that link leads to. The index builds everything else from those
+answers: backlinks, the graph's edges, tidy's orphans and unresolved links, and the set of links
+a rename rewrites. Resolving is a role, like owning a file type, and Obsidian's rules are its
+built-in default, as Markdown is the default owner.
+
+**One resolver per workspace, never one per extension.** Backlinks, the graph and renames must
+agree on where a link leads, so they ask the same resolver. The default follows Obsidian's
+rules, and that is what keeps "the same link opens the same file in Obsidian":
+
+- `#heading`, `#^block` and `|alias` are split off first.
+- A note is found by its workspace path, then by its name anywhere; of several notes with
+  that name, the shallowest wins.
+- An attachment or another owner's file is found by its path, then beside the linking note,
+  then by its name with its extension.
+- `./` and `../` start from the linking file's folder.
+- A link that leads nowhere creates its note where Obsidian would put a new one
+  (`newFileLocation` and `newFileFolderPath` in `.obsidian/app.json`), or in the folder the
+  link names.
+
+**It works in both directions, and the two agree.**
+
+| Direction | In | Out | Used by |
+| --- | --- | --- | --- |
+| resolve | the link's text and the file it is in | a file (later, an item) | the index, the graph, tidy, following a link |
+| write | a target and the file the link goes in, in a style | the link's text | renames and merges, inserting a link, the note behind an unresolved link |
+
+A link the resolver writes resolves back to the target it was written for. A rename depends on
+that: it writes each link again in the style it had (`[[Name]]` short, paths stay paths,
+relative links stay relative), and the link must still lead to the renamed file.
+
+**A pure function, run in batches.** The answer depends only on the link's text, the linking
+file and the workspace's file list (later, its items too). So the engine can cache answers and
+run the resolver again over every link when files come and go. It runs for every link on every
+change, so a resolver runs in-process (Rust, later WASM) or takes a whole batch at once. A
+round trip per link is never acceptable.
+
+**Plan.**
+
+1. The interface in the engine, with Obsidian's rules as its only implementation. *(built)*
+2. Fallbacks from extensions: for a link the default leaves unresolved, an extension may name
+   the target, including an item and not only a file. For example, `[[@smith2020]]` leads to an
+   entry a `.bib` owner gave, and `[[202611081432]]` leads to a Zettelkasten note by its id.
+   The default answers first, so a link Obsidian resolves keeps its meaning.
+3. Replacing the rules, as a setting of the workspace: Logseq-, Dendron- or Foam-style rules,
+   or a Hugo site's. This breaks parity with Obsidian, so it is the user's deliberate choice and
+   never a default.
+
+### Link resolver, as built
+
+- **One module.** `crates/engine/src/resolver.rs` holds both directions of Obsidian's rules.
+  It is functions and data shapes, not a trait: a trait waits for a second implementation
+  (step 3).
+- **Resolve.** `split_link` splits off the heading, block and alias. `Resolver` is the index's
+  table for notes and owned files, by path then by name (`resolve`, `resolve_owned`): the
+  index, the graph, following a link to a note, tidy's unresolved links and the CLI's `rename
+  NOTE` use it. `Files` sees every file on disk and knows the linking file's folder:
+  `Files::resolve` handles attachments, `./` and `../`, and files beside the note. Renames,
+  merges, tidy's orphans and `workspace/files` use it, and so do `resolver::attachment` and
+  `resolver::file` (following a link to an attachment or an owned file).
+- **Write.** `Files::write(target, dir, style)` writes a link to a file from a folder.
+  `Style` is how a link is written: `Wiki {relative, folder, extension}` or `Markdown {root,
+  like}`. `Rewriter::link` resolves a link before and after a move and writes it again in its
+  own style when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the
+  links and puts the new text in place. `resolver::new_note_path` and `new_file_path` say where
+  a new note or file goes.
+- **Agreement is tested.** `resolver.rs`'s tests write a link to every file from every note in
+  every style, over the example workspace and over a fixture with same-name notes, and check
+  that it resolves back to the same file, and that `Resolver` reads each link that doesn't start
+  from the linking file's folder the same way.
+- **Not yet:** `Resolver` and `Files` are two tables for one set of rules, kept as they were
+  before the move. They differ where a link starts from its file's folder: `Resolver` ignores
+  that folder, so `[[../Top]]` and `[t](../Top.md)` find the shallowest `Top` in backlinks and
+  the graph, not the one the path names. A rename also writes a relative link to a note in the
+  linking note's own folder as a bare name (`[t](Top.md)`), which finds a shallower `Top` if
+  there is one; the round-trip test skips that case. Fixing these changes what some links lead
+  to, so each is its own change. Items as targets and fallbacks are step 2.
+
 ## Commands
 
 Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Commands are what
@@ -1469,8 +1553,9 @@ after its call returns, so it never holds the menu's state.
       `workspace/create` and `workspace/files`, with the `csv-table` example, are done ("File
       types, as built"), and so are Markdown as the first owner behind the owner interface and
       items and links from owners in other processes, cached by `rev` ("Owners and types, as
-      built"), and so are edits and renames through owners (`file/edit`); next is the
-      whiteboard)*
+      built"), and so are edits and renames through owners (`file/edit`), and the link
+      resolver's first step, Obsidian's rules in one module for both directions ("Link
+      resolver"); next is the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.
