@@ -2,12 +2,13 @@
 //! "orphans"), attachments no note or canvas links to, folders with no files, and links to
 //! notes that don't exist. Read-only: deleting is the caller's, through `trash`.
 //!
-//! Every link is resolved by `rename::Files`, the way Obsidian resolves it (percent-encoded
+//! Every link is resolved by `resolver::Files`, the way Obsidian resolves it (percent-encoded
 //! Markdown links included), from notes, canvas cards and canvas text.
 
 use crate::index::Index;
 use crate::owner::markdown::link_targets;
-use crate::rename::{Files, canvas_targets, dir_of};
+use crate::rename::canvas_targets;
+use crate::resolver::{Files, dir_of};
 use crate::workspace::{attachment_kind, decode_target};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
@@ -176,7 +177,7 @@ pub fn report(ix: &Index) -> Report {
         if settings.templates.is_template(&files.rels[i]) {
             continue;
         }
-        let dir = crate::rename::dir_of(&n.rel);
+        let dir = dir_of(&n.rel);
         // A link to a file that isn't a note (`[[Eruptions.csv]]`) leads somewhere too.
         let nowhere = |r: &&crate::workspace::Ref| {
             ix.resolver.resolve(&r.target).is_none() && files.resolve(dir, &r.target).is_none()

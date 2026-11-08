@@ -3,13 +3,14 @@
 //! target, and the source goes to the trash.
 //!
 //! The links are the rename's: the merge is planned as the source moving onto the target's path
-//! (`rename::Rewriter`), with the source gone from what links can find afterwards. So
+//! (`resolver::Rewriter`), with the source gone from what links can find afterwards. So
 //! `[[Source#Heading|text]]` becomes `[[Target#Heading|text]]` in its own style, and links in the
 //! source's text that were relative to its folder are fixed for the target's.
 
 use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
-use crate::rename::{self, FileEdit, Files, Move, Rewriter};
+use crate::rename::{self, FileEdit, Move};
+use crate::resolver::{Files, Rewriter};
 use crate::trash::{self, Bin, Contents, Trashed};
 use crate::write::{self, WriteError};
 use anyhow::{Context, Result, bail};

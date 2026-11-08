@@ -46,10 +46,11 @@ and the frontend never parses a note.
 
 ## The layers
 
-**0. Workspace** *(built: `core.rs`, `workspace.rs`, `index.rs`, `search.rs`, `write.rs`, `rename.rs`)*.
-One live workspace: one file watcher, re-reading only the notes that change, an index of links and
-backlinks resolved by Obsidian's rules, full-text search, and the only write path, which writes
-atomically and refuses when the file changed since it was read. Events say what changed,
+**0. Workspace** *(built: `core.rs`, `workspace.rs`, `index.rs`, `resolver.rs`, `search.rs`, `write.rs`, `rename.rs`)*.
+One live workspace: one file watcher, re-reading only the notes that change, one link resolver
+(Obsidian's rules by default; extensions.md, "Link resolver") that says where a link leads and
+how to write one, an index of links and backlinks built from its answers, full-text search, and
+the only write path, which writes atomically and refuses when the file changed since it was read. Events say what changed,
 whoever changed it.
 
 **1. Flavour** *(built: `markdown.rs`)*. Markdown is not one language. A flavour is a named set
