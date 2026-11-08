@@ -18,7 +18,7 @@ use crate::ext::view::{self, Content, Happened, ViewId, ViewNews};
 use crate::ext::{
     AGENDA, CommandRequest, EditorRequest, Extension, Host, Manifest, PaneNews, Permission,
 };
-use crate::gateway::{Edit, News, Op, Reason};
+use crate::gateway::{self, Answer, Edit, Edited, News, Op, Reason, Ticket};
 use crate::items::{Data, Item};
 use crate::list::{Check, Group, KeyCommand, List, Piece, Row};
 use crate::type_table::{At, Feed};
@@ -244,6 +244,8 @@ pub struct Agenda {
     /// What day it is: `tasks::today`, or a fixed day in tests.
     today: Box<dyn Fn() -> NaiveDate>,
     shown: Option<Shown>,
+    /// Ticks answered later (of tasks in files other owners read): the task's words and file.
+    waiting: HashMap<Ticket, (String, String)>,
 }
 
 impl Default for Agenda {
@@ -275,11 +277,10 @@ impl Shown {
         }
     }
 
-    /// `items/edit toggle` on the row's task, as the version the agenda shows.
-    fn tick(&mut self, row: &str, host: &mut Host<'_>) {
-        let Some(at) = self.at.get(row).cloned() else {
-            return;
-        };
+    /// `items/edit toggle` on the row's task, as the version the agenda shows. Returns the
+    /// ticket when the answer comes later, with the task's words and file.
+    fn tick(&mut self, row: &str, host: &mut Host<'_>) -> Option<(Ticket, (String, String))> {
+        let at = self.at.get(row).cloned()?;
         let words = (self.feed.items().iter())
             .find(|i| i.id == row)
             .and_then(|i| field(i, "text"))
@@ -290,32 +291,44 @@ impl Shown {
             rev: at.rev,
             op: Op::Toggle,
         };
-        let message = match host.edit_item(&edit) {
-            Ok(e) => {
-                let what = match field(&e.item, "status_type") {
-                    Some("done") => "done",
-                    Some("cancelled") => "cancelled",
-                    Some("in_progress") => "in progress",
-                    Some("todo") => "open again",
-                    _ => "ticked",
-                };
-                self.select = Some(e.item.id.clone());
-                let mut message = format!("{what}: {words}");
-                if e.next.is_some() {
-                    message.push_str(" · next occurrence added");
-                }
-                if let Some(w) = &e.warning {
-                    message = format!("{message} · {w}");
-                }
-                message
-            }
-            Err(e) if e.reason == Reason::Changed => {
-                let name = at.note.trim_end_matches(".md");
-                format!("not ticked: {name} changed since it was read · read again")
-            }
-            Err(e) => format!("not ticked: {e}"),
+        let note = at.note.trim_end_matches(".md").to_string();
+        let answer = match host.edit_item(&edit) {
+            Ok(Answer::Later(ticket)) => return Some((ticket, (words, note))),
+            Ok(Answer::Now(e)) => Ok(*e),
+            Err(e) => Err(e),
         };
-        host.notify(message);
+        if let Ok(e) = &answer {
+            self.select = Some(e.item.id.clone());
+        }
+        host.notify(ticked(&words, &note, answer));
+        None
+    }
+}
+
+/// What the status line says after a tick of the task with these words in `note`.
+fn ticked(words: &str, note: &str, answer: Result<Edited, gateway::Error>) -> String {
+    match answer {
+        Ok(e) => {
+            let what = match field(&e.item, "status_type") {
+                Some("done") => "done",
+                Some("cancelled") => "cancelled",
+                Some("in_progress") => "in progress",
+                Some("todo") => "open again",
+                _ => "ticked",
+            };
+            let mut message = format!("{what}: {words}");
+            if e.next.is_some() {
+                message.push_str(" · next occurrence added");
+            }
+            if let Some(w) = &e.warning {
+                message = format!("{message} · {w}");
+            }
+            message
+        }
+        Err(e) if e.reason == Reason::Changed => {
+            format!("not ticked: {note} changed since it was read · read again")
+        }
+        Err(e) => format!("not ticked: {e}"),
     }
 }
 
@@ -325,6 +338,7 @@ impl Agenda {
         Agenda {
             today: Box::new(today),
             shown: None,
+            waiting: HashMap::new(),
         }
     }
 
@@ -422,7 +436,11 @@ impl Extension for Agenda {
                         host.open_note(at.note.clone().into(), Some(at.line), Some(row));
                     }
                 }
-                view::Event::Toggled { row } => shown.tick(&row, host),
+                view::Event::Toggled { row } => {
+                    if let Some((ticket, task)) = shown.tick(&row, host) {
+                        self.waiting.insert(ticket, task);
+                    }
+                }
                 view::Event::Command { command, .. } if command == SHOW_DONE => {
                     shown.show_done = !shown.show_done;
                     shown.send((self.today)(), host);
@@ -431,6 +449,21 @@ impl Extension for Agenda {
             },
             _ => {}
         }
+    }
+
+    fn edited(
+        &mut self,
+        ticket: Ticket,
+        answer: Result<Edited, gateway::Error>,
+        host: &mut Host<'_>,
+    ) {
+        let Some((words, note)) = self.waiting.remove(&ticket) else {
+            return;
+        };
+        if let (Ok(e), Some(shown)) = (&answer, self.shown.as_mut()) {
+            shown.select = Some(e.item.id.clone());
+        }
+        host.notify(ticked(&words, &note, answer));
     }
 
     /// Past midnight the tasks are filed by the new day.

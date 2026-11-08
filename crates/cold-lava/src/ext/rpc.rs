@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use super::view::{Content, ViewId};
 use super::{Host, PaneId, PaneSpec};
 use crate::files;
-use crate::gateway::{self, Reason, Request, Subscribed};
+use crate::gateway::{self, Answer, Reason, Request, Subscribed, Ticket};
 
 /// The API version cold-lava speaks, sent in `initialize` and checked against a manifest's `api`.
 pub const API_VERSION: u32 = 1;
@@ -138,7 +138,7 @@ fn to_bytes(v: Value) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap_or_default()
 }
 
-fn answer<T: Serialize>(v: Result<T, gateway::Error>) -> Result<Value, RpcError> {
+pub fn answer<T: Serialize>(v: Result<T, gateway::Error>) -> Result<Value, RpcError> {
     Ok(serde_json::to_value(v?).unwrap_or(Value::Null))
 }
 
@@ -229,9 +229,33 @@ const FILES: &[&str] = &[
     "workspace/files",
 ];
 
-/// Answer one request from an extension. The gateway's are answered now, within its manifest's
-/// permissions and the kinds of file it owns; the rest queue effects and answer `null`.
-pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Result<Value, RpcError> {
+/// What `serve` answers: now, or later under a ticket, which `Extension::edited` brings back
+/// with the answer (an `items/edit` of a file another owner reads).
+#[derive(Debug)]
+pub enum Served {
+    Now(Result<Value, RpcError>),
+    Later(Ticket),
+}
+
+/// Answer one request from an extension. The gateway's are answered within its manifest's
+/// permissions and the kinds of file it owns, now, except an edit of a file another owner
+/// reads; the rest queue effects and answer `null`.
+pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Served {
+    let mut later = None;
+    let now = serve_now(method, params, host, &mut later);
+    match later {
+        Some(ticket) => Served::Later(ticket),
+        None => Served::Now(now),
+    }
+}
+
+/// `serve`, setting `later` when the answer comes later.
+fn serve_now(
+    method: &str,
+    params: Option<Value>,
+    host: &mut Host<'_>,
+    later: &mut Option<Ticket>,
+) -> Result<Value, RpcError> {
     let mut message = json!({ "method": method });
     match params {
         None | Some(Value::Null) => {}
@@ -253,7 +277,14 @@ pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Result
                     .map(|subscription| Subscribed { subscription }),
             ),
             Request::Unsubscribe { subscription } => answer(host.unsubscribe_items(subscription)),
-            Request::Edit(edit) => answer(host.edit_item(&edit)),
+            Request::Edit(edit) => match host.edit_item(&edit) {
+                Ok(Answer::Now(edited)) => answer(Ok(edited)),
+                Ok(Answer::Later(ticket)) => {
+                    *later = Some(ticket);
+                    Ok(Value::Null)
+                }
+                Err(e) => Err(e.into()),
+            },
             Request::TypesList => answer(host.types()),
         };
     }
@@ -389,7 +420,10 @@ mod tests {
             owners: &[],
             core: Some(core),
         };
-        let answer = serve(method, Some(params), &mut host);
+        let answer = match serve(method, Some(params), &mut host) {
+            Served::Now(answer) => answer,
+            Served::Later(_) => panic!("{method} on a note is answered at once"),
+        };
         (answer, host.effects)
     }
 

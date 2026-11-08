@@ -10,12 +10,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::installed::Installed;
-use super::rpc::{self, Message};
+use super::rpc::{self, Message, Served};
 use super::transport::{self, Connector, Launch, Received, Transport};
 use super::view::ViewNews;
 use super::{CommandRequest, EditorRequest, Extension, FileNews, Host, Manifest, PaneNews};
-use crate::gateway::{News, SubId};
+use crate::gateway::{self, Edited, News, SubId, Ticket};
 use crate::owner::cache::FileRead;
+use crate::owner::edits::{FileEdit, NewText};
 
 /// At most this many messages are read from one extension per frame; the rest wait for the next.
 const PER_POLL: usize = 64;
@@ -60,6 +61,8 @@ struct Live {
     waiting: HashMap<u64, (Asked, Instant)>,
     /// Subscriptions it made, stopped when it stops.
     subscriptions: Vec<SubId>,
+    /// Its `items/edit` requests answered later, by ticket: their request ids.
+    later: HashMap<Ticket, Value>,
 }
 
 #[derive(Debug)]
@@ -68,6 +71,11 @@ enum Asked {
     Command(String),
     /// `file/read` for the file at `path`, at version `rev`.
     Read {
+        path: String,
+        rev: String,
+    },
+    /// `file/edit` for the file at `path`, at version `rev`.
+    Edit {
         path: String,
         rev: String,
     },
@@ -112,6 +120,7 @@ impl Process {
             next_id: 1,
             waiting: HashMap::new(),
             subscriptions: Vec::new(),
+            later: HashMap::new(),
         });
         self.ask(Asked::Initialize, "initialize", params, host);
     }
@@ -149,8 +158,14 @@ impl Process {
             let _ = host.unsubscribe_items(sub);
         }
         for (asked, _) in live.waiting.into_values() {
-            if let Asked::Read { path, rev } = asked {
-                host.file_given(&path, &rev, Err(format!("it stopped: {why}")));
+            match asked {
+                Asked::Read { path, rev } => {
+                    host.file_given(&path, &rev, Err(format!("it stopped: {why}")))
+                }
+                Asked::Edit { path, rev } => {
+                    host.file_edited(&path, &rev, Err(format!("it stopped: {why}")))
+                }
+                _ => {}
             }
         }
         let last = (self.launch.log.as_ref())
@@ -188,6 +203,14 @@ impl Process {
                 });
                 host.file_given(&path, &rev, given);
             }
+            (Asked::Edit { path, rev }, outcome) => {
+                let text = outcome.map_err(|e| e.message).and_then(|v| {
+                    serde_json::from_value::<NewText>(v)
+                        .map(|t| t.text)
+                        .map_err(|e| format!("its answer doesn't read: {e}"))
+                });
+                host.file_edited(&path, &rev, text);
+            }
             _ => {}
         }
     }
@@ -202,7 +225,7 @@ impl Process {
             .filter(|(_, (asked, sent))| {
                 let limit = match asked {
                     Asked::Initialize => t.start,
-                    Asked::Command(_) | Asked::Read { .. } => t.request,
+                    Asked::Command(_) | Asked::Read { .. } | Asked::Edit { .. } => t.request,
                 };
                 sent.elapsed() > limit
             })
@@ -226,6 +249,11 @@ impl Process {
                     let secs = t.request.as_secs_f32();
                     let why = format!("it didn't answer file/read in {secs} s");
                     host.file_given(&path, &rev, Err(why));
+                }
+                Asked::Edit { path, rev } => {
+                    let secs = t.request.as_secs_f32();
+                    let why = format!("it didn't answer file/edit in {secs} s");
+                    host.file_edited(&path, &rev, Err(why));
                 }
             }
         }
@@ -286,6 +314,33 @@ impl Extension for Process {
         self.ask(asked, "file/read", params, host);
     }
 
+    fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
+        if !self.running() {
+            let why = format!("{} isn't running", self.manifest.name);
+            return host.file_edited(&edit.path, &edit.rev, Err(why));
+        }
+        let asked = Asked::Edit {
+            path: edit.path.clone(),
+            rev: edit.rev.clone(),
+        };
+        let params = serde_json::to_value(edit).unwrap_or_default();
+        self.ask(asked, "file/edit", params, host);
+    }
+
+    fn edited(
+        &mut self,
+        ticket: Ticket,
+        answer: Result<Edited, gateway::Error>,
+        host: &mut Host<'_>,
+    ) {
+        let State::Live(live) = &mut self.state else {
+            return;
+        };
+        if let Some(id) = live.later.remove(&ticket) {
+            self.tell(rpc::response(id, rpc::answer(answer)), host);
+        }
+    }
+
     fn workspace(&mut self, root: Option<&Path>, host: &mut Host<'_>) {
         self.shutdown();
         if let Some(root) = root {
@@ -307,7 +362,13 @@ impl Extension for Process {
                 Message::Request { id, method, params } => {
                     let sub = |v: Option<&Value>| v?.get("subscription")?.as_u64().map(SubId);
                     let dropped = sub(params.as_ref());
-                    let answer = rpc::serve(&method, params, host);
+                    let answer = match rpc::serve(&method, params, host) {
+                        Served::Now(answer) => answer,
+                        Served::Later(ticket) => {
+                            live.later.insert(ticket, id);
+                            continue;
+                        }
+                    };
                     match (&answer, method.as_str()) {
                         (Ok(made), "items/subscribe") => live.subscriptions.extend(sub(Some(made))),
                         (Ok(_), "items/unsubscribe") => {
@@ -371,8 +432,8 @@ impl Extension for Process {
 mod tests {
     use super::*;
     use crate::core::Core;
-    use crate::ext::{Effect, ExtId, Registry};
-    use crate::gateway::{Edit, Filter, Op, Query, Select};
+    use crate::ext::{Effect, ExtId, Permission, Registry};
+    use crate::gateway::{Answer, Edit, Filter, Op, Query, Select};
     use std::collections::VecDeque;
     use std::path::PathBuf;
 
@@ -601,6 +662,127 @@ mod tests {
 
         tick_first(&mut core, tasks(&[]));
         assert_eq!(core.take_item_news(), [], "its subscription went with it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_edit_of_an_owned_file_is_answered_once_its_owner_wrote_it() {
+        use crate::ext::FileType;
+        static OWNER: Scripted = Scripted(|m| {
+            let (method, params) = (m["method"].as_str(), &m["params"]);
+            let given = |vei: u32| json!({"items": [{"place": "1", "type": "eruption", "fields": {"vei": vei}}]});
+            Some(match method {
+                Some("initialize") => vec![answer(m, json!({}))],
+                Some("file/read") => {
+                    let vei = params["text"].as_str().unwrap().trim();
+                    vec![answer(m, given(vei.parse().unwrap()))]
+                }
+                // 8 is never answered.
+                Some("file/edit") => match params["changes"][0]["value"].as_u64() {
+                    Some(7) => vec![answer(m, json!({"text": "7\n"}))],
+                    _ => Vec::new(),
+                },
+                Some("command/run") => vec![
+                    answer(m, Value::Null),
+                    json!({"jsonrpc": "2.0", "id": 100, "method": "items/query",
+                           "params": {"kind": "eruption"}}),
+                ],
+                None if m["id"] == 100 => {
+                    let item = &m["result"]["items"][0];
+                    let edit = json!({"id": item["id"], "rev": item["rev"], "op": "set-field",
+                                      "field": "vei", "value": 7});
+                    vec![json!({"jsonrpc": "2.0", "id": 101, "method": "items/edit",
+                                "params": edit})]
+                }
+                None if m["id"] == 101 => {
+                    let said = format!("vei {}", m["result"]["item"]["vei"]);
+                    vec![json!({"jsonrpc": "2.0", "method": "ui/notify",
+                                "params": {"message": said}})]
+                }
+                _ => Vec::new(),
+            })
+        });
+        let dir = workspace("owner-edit");
+        std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
+        let types = "version = 1\n[types.eruption]\non = \"table-row\"\nwhere.header = [\"VEI\"]\n\
+                     fields.vei = { column = \"VEI\", type = \"number\" }\n";
+        std::fs::write(dir.join(".cold-lava/types.toml"), types).unwrap();
+        std::fs::write(dir.join("Eruptions.csv"), "6\n").unwrap();
+        let mut owner = installed(dir.clone(), None);
+        owner.manifest.permissions = vec![Permission::ItemsRead, Permission::ItemsEdit];
+        owner.manifest.file_types = vec![FileType {
+            extension: "csv".into(),
+            title: "CSV".into(),
+            new: None,
+        }];
+        let p = Process::with(owner, &OWNER, QUICK);
+        let mut r = Registry::new(vec![Box::new(p)]);
+        let mut core = Core::open(&dir).unwrap();
+        r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
+        core.set_owners(r.owned_kinds(), None);
+        // What the menu does each frame: poll, ask the owner, hand out the answers.
+        let frames = |r: &mut Registry, core: &mut Core, n: usize| {
+            let mut effects = Vec::new();
+            for _ in 0..n {
+                effects.extend(r.call(ExtId(0), Some(core), |e, h| e.poll(h)));
+                for (_, read) in core.take_reads() {
+                    effects.extend(r.call(ExtId(0), Some(core), |e, h| e.read_file(read, h)));
+                }
+                for (_, edit) in core.take_file_edits() {
+                    effects.extend(r.call(ExtId(0), Some(core), |e, h| e.edit_file(edit, h)));
+                }
+                for (_, ticket, answer) in core.take_edited() {
+                    let f = |e: &mut dyn Extension, h: &mut Host<'_>| e.edited(ticket, answer, h);
+                    effects.extend(r.call(ExtId(0), Some(core), f));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            effects
+        };
+        frames(&mut r, &mut core, 5);
+        r.call(ExtId(0), Some(&mut core), |e, h| {
+            e.command(run("fake.go"), h)
+        });
+        let effects = frames(&mut r, &mut core, 20);
+        assert_eq!(notes(&effects), ["vei 7"], "the answer once it is written");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Eruptions.csv")).unwrap(),
+            "7\n"
+        );
+
+        let query = Query {
+            select: Select {
+                kind: "eruption".into(),
+                ..Select::default()
+            },
+            ..Query::default()
+        };
+        let row = core.query_items(&query).unwrap().items.remove(0);
+        let set = Edit {
+            id: row.id,
+            rev: row.rev,
+            op: Op::SetField {
+                field: "vei".into(),
+                value: json!(8),
+            },
+        };
+        assert!(matches!(core.edit_item("test", &set), Ok(Answer::Later(_))));
+        frames(&mut r, &mut core, 2);
+        std::thread::sleep(Duration::from_millis(150));
+        r.call(ExtId(0), Some(&mut core), |e, h| e.poll(h));
+        let answered = core.take_edited();
+        let [(by, _, Err(e))] = &answered[..] else {
+            panic!("{answered:?}");
+        };
+        assert_eq!(by, "test");
+        assert_eq!(
+            e.message,
+            "fake didn't edit Eruptions.csv: it didn't answer file/edit in 0.1 s"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Eruptions.csv")).unwrap(),
+            "7\n"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

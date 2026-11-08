@@ -15,7 +15,9 @@ use crate::ext::view::{self, Content, Happened, ViewId, ViewNews};
 use crate::ext::{
     CommandRequest, EditorRequest, Extension, Host, Manifest, PaneNews, Permission, TABLE,
 };
-use crate::gateway::{self, Edit, News, Op, Page, Query, Reason, Select, SubId};
+use crate::gateway::{
+    self, Answer, Edit, Edited, News, Op, Page, Query, Reason, Select, SubId, Ticket,
+};
 use crate::items::{Data, Item};
 use crate::table::{Column, Kind, Row, Table};
 use crate::types::{Definition, Source, Type, Value};
@@ -149,6 +151,15 @@ pub const OPEN: &str = "table.open";
 pub struct Tables {
     picker: Option<ViewId>,
     open: HashMap<ViewId, Shown>,
+    /// Edits answered later (of items in files other owners read), with their table.
+    waiting: HashMap<Ticket, (ViewId, Setting)>,
+}
+
+/// One cell being set: its column, the value, and the item's file.
+struct Setting {
+    column: String,
+    value: String,
+    name: String,
 }
 
 /// One type's table as shown, and where each row's item is.
@@ -228,10 +239,18 @@ impl Shown {
         }
     }
 
-    /// `items/edit set-field` on the row's item, as the version the table shows.
-    fn edit(&mut self, row: &str, column: &str, value: String, host: &mut Host<'_>) {
+    /// `items/edit set-field` on the row's item, as the version the table shows. Returns the
+    /// ticket when the answer comes later.
+    fn edit(
+        &mut self,
+        row: &str,
+        column: &str,
+        value: String,
+        host: &mut Host<'_>,
+    ) -> Option<(Ticket, Setting)> {
         let Some(at) = self.at.get(row) else {
-            return host.notify(format!("{row} is gone"));
+            host.notify(format!("{row} is gone"));
+            return None;
         };
         let edit = Edit {
             id: row.to_string(),
@@ -241,22 +260,37 @@ impl Shown {
                 value: Json::String(value.clone()),
             },
         };
-        let name = at.note.trim_end_matches(".md").to_string();
-        let message = match host.edit_item(&edit) {
-            Ok(set) if !set.changed => format!("{column} is already {value}"),
-            Ok(set) => {
-                self.select = Some(set.item.id.clone());
-                match value.trim() {
-                    "" => format!("{name}: {column} removed"),
-                    v => format!("{name}: {column} set to {v}"),
-                }
-            }
-            Err(e) if e.reason == Reason::Changed => {
-                format!("not saved, {} · the table is read again", e.message)
-            }
-            Err(e) => format!("not saved: {e}"),
+        let setting = Setting {
+            column: column.to_string(),
+            value,
+            name: at.note.trim_end_matches(".md").to_string(),
         };
-        host.notify(message);
+        let answer = match host.edit_item(&edit) {
+            Ok(Answer::Later(ticket)) => return Some((ticket, setting)),
+            Ok(Answer::Now(set)) => Ok(*set),
+            Err(e) => Err(e),
+        };
+        if let Ok(set) = &answer {
+            self.select = Some(set.item.id.clone());
+        }
+        host.notify(set(&setting, answer));
+        None
+    }
+}
+
+/// What the status line says after setting a cell.
+fn set(s: &Setting, answer: Result<Edited, gateway::Error>) -> String {
+    let (column, name) = (&s.column, &s.name);
+    match answer {
+        Ok(set) if !set.changed => format!("{column} is already {}", s.value),
+        Ok(_) => match s.value.trim() {
+            "" => format!("{name}: {column} removed"),
+            v => format!("{name}: {column} set to {v}"),
+        },
+        Err(e) if e.reason == Reason::Changed => {
+            format!("not saved, {} · the table is read again", e.message)
+        }
+        Err(e) => format!("not saved: {e}"),
     }
 }
 
@@ -328,7 +362,9 @@ impl Extension for Tables {
                         }
                     }
                     view::Event::Edit { row, column, value } => {
-                        shown.edit(&row, &column, value, host)
+                        if let Some((ticket, setting)) = shown.edit(&row, &column, value, host) {
+                            self.waiting.insert(ticket, (view, setting));
+                        }
                     }
                     _ => {}
                 }
@@ -336,10 +372,26 @@ impl Extension for Tables {
         }
     }
 
+    fn edited(
+        &mut self,
+        ticket: Ticket,
+        answer: Result<Edited, gateway::Error>,
+        host: &mut Host<'_>,
+    ) {
+        let Some((view, setting)) = self.waiting.remove(&ticket) else {
+            return;
+        };
+        if let (Ok(set), Some(shown)) = (&answer, self.open.get_mut(&view)) {
+            shown.select = Some(set.item.id.clone());
+        }
+        host.notify(set(&setting, answer));
+    }
+
     /// Another workspace: its views and subscriptions went with the old one.
     fn workspace(&mut self, _: Option<&Path>, _: &mut Host<'_>) {
         self.picker = None;
         self.open.clear();
+        self.waiting.clear();
     }
 }
 

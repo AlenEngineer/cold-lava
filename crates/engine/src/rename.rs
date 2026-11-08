@@ -12,6 +12,7 @@
 
 use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
+use crate::owner::given::{Change as Ask, Given, GivenItem};
 use crate::owner::markdown::{self, link_targets};
 use crate::workspace::{attachment_kind, decode_target, encode_target_like};
 use anyhow::{Context, Result, bail};
@@ -43,6 +44,18 @@ pub struct FileEdit {
     /// Links rewritten in this file.
     pub links: usize,
     pub changes: Vec<Change>,
+    /// For a file another owner reads, what to ask it: `new_text` is then empty, and the owner
+    /// makes it (`Core::relink_owned`) once the moves are made.
+    #[serde(skip)]
+    pub owned: Option<Through>,
+}
+
+/// The changes to ask the owner of a file for (`file/edit`), and what it gave before them.
+#[derive(Clone, Debug)]
+pub struct Through {
+    pub owner: String,
+    pub changes: Vec<Ask>,
+    pub given: Given,
 }
 
 /// One note, other file or folder that moves.
@@ -575,7 +588,8 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
             ));
         }
     }
-    let edits = edits(ix, &rw)?;
+    let mut edits = edits(ix, &rw)?;
+    edits.extend(owned_edits(ix, &rw, &mut warnings));
     let bookmarks = match bookmarks_edit(&ix.workspace.root, &moves) {
         Ok(b) => b,
         Err(e) => {
@@ -620,6 +634,7 @@ pub(crate) fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileE
                 after,
             })
             .collect(),
+        owned: None,
     }))
 }
 
@@ -637,6 +652,7 @@ pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
                 new_text,
                 links,
                 changes,
+                owned: None,
             });
         }
     }
@@ -708,11 +724,84 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
         new_text: out,
         links,
         changes,
+        owned: None,
     }))
 }
 
+/// Every file another owner reads whose links change: each Markdown piece's links rewritten as
+/// a note's are, and each link the owner reported on its own. Nothing is made here; the owner
+/// makes the file's new text once the moves are made (`Core::relink_owned`). A file its owner
+/// hasn't read as it is now is left out, with a warning.
+fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>) -> Vec<FileEdit> {
+    let mut out = Vec::new();
+    for f in &ix.workspace.owned {
+        let Some(i) = rw.before.rels.iter().position(|r| *r == f.rel) else {
+            continue;
+        };
+        let (dir_then, dir_now) = (dir_of(&rw.before.rels[i]), dir_of(&rw.after.rels[i]));
+        let (mut asks, mut changes, mut links) = (Vec::new(), Vec::new(), 0);
+        for item in &f.given.items {
+            let GivenItem::Markdown { place, text } = item else {
+                continue;
+            };
+            let (text, lines, n) = rw.note_text(text, dir_then, dir_now);
+            if n > 0 {
+                links += n;
+                changes.extend(lines.into_iter().map(|c| Change { line: 0, ..c }));
+                asks.push(Ask::Text {
+                    place: place.clone(),
+                    text,
+                });
+            }
+        }
+        for l in &f.given.links {
+            if let Some(to) = rw.link(&l.target, false, dir_then, dir_now) {
+                links += 1;
+                changes.push(Change {
+                    line: 0,
+                    before: format!("[[{}]]", l.target),
+                    after: format!("[[{to}]]"),
+                });
+                asks.push(Ask::Link {
+                    place: l.place.clone(),
+                    link: l.target.clone(),
+                    to,
+                });
+            }
+        }
+        if links == 0 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&f.path) else {
+            continue;
+        };
+        if f.rev.as_deref() != Some(crate::files::rev(text.as_bytes()).as_str()) {
+            warnings.push(format!(
+                "{} hasn't read {} as it is now, so its links there aren't updated",
+                f.owner, f.rel
+            ));
+            continue;
+        }
+        out.push(FileEdit {
+            file: f.rel.clone(),
+            path: f.path.clone(),
+            old_text: text,
+            new_text: String::new(),
+            links,
+            changes,
+            owned: Some(Through {
+                owner: f.owner.clone(),
+                changes: asks,
+                given: f.given.clone(),
+            }),
+        });
+    }
+    out
+}
+
 /// Carry out a plan: refuse if any file changed since it was made, then make the moves (undoing
-/// the ones made if one fails) and write each changed file atomically.
+/// the ones made if one fails) and write each changed file atomically. Files other owners read
+/// are left to `Core::relink_owned`.
 pub fn apply(plan: &Plan) -> Result<()> {
     for e in plan.edits.iter().chain(&plan.bookmarks) {
         let now =
@@ -741,7 +830,7 @@ pub fn apply(plan: &Plan) -> Result<()> {
         }
     }
     let mut failed = Vec::new();
-    for e in plan.edits.iter().chain(&plan.bookmarks) {
+    for e in (plan.edits.iter().chain(&plan.bookmarks)).filter(|e| e.owned.is_none()) {
         // Still guarded: a file edited between the check above and now is left alone.
         let path = plan.moved(&e.path);
         if let Err(err) = crate::write::replace(&path, e.old_text.as_bytes(), e.new_text.as_bytes())

@@ -51,6 +51,137 @@ pub struct GivenLink {
     pub text: String,
 }
 
+/// One change `file/edit` asks of an owner, at one of the places it gave.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Change {
+    /// A Markdown piece's new text, which the engine made as it edits a note.
+    Text { place: String, text: String },
+    /// A typed item's field, in the form items carry it or as text its type reads; `null`
+    /// removes it.
+    Field {
+        place: String,
+        field: String,
+        value: Json,
+    },
+    /// A link the owner reported: its target as written, and what it becomes (a rename).
+    Link {
+        place: String,
+        link: String,
+        to: String,
+    },
+}
+
+/// What the owner should give for the file once `changes` are made to what it gave.
+pub fn apply(given: &Given, changes: &[Change]) -> Given {
+    let mut out = given.clone();
+    for c in changes {
+        match c {
+            Change::Text { place, text } => {
+                for item in &mut out.items {
+                    if let GivenItem::Markdown { place: p, text: t } = item
+                        && p == place
+                    {
+                        *t = text.clone();
+                    }
+                }
+            }
+            Change::Field {
+                place,
+                field,
+                value,
+            } => {
+                for item in &mut out.items {
+                    if let GivenItem::Typed {
+                        place: p, fields, ..
+                    } = item
+                        && p == place
+                    {
+                        let removes =
+                            value.is_null() || value.as_str().is_some_and(|v| v.trim().is_empty());
+                        match removes {
+                            true => fields.remove(field),
+                            false => fields.insert(field.clone(), value.clone()),
+                        };
+                    }
+                }
+            }
+            Change::Link { place, link, to } => {
+                for l in &mut out.links {
+                    if l.place == *place && l.target == *link {
+                        l.target = to.clone();
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether what an owner gave reads as what was asked of it: the same items (their kinds and
+/// fields, wherever they are and whatever their ids) and the same link targets. Places may
+/// differ, since an owner's place can be part of what changed (a CSV row's first cell). Else
+/// what differs, for a message.
+pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
+    let items = |r: &Read| -> Vec<String> {
+        let mut v: Vec<String> = r.items.iter().map(data_key).collect();
+        v.sort();
+        v
+    };
+    let links = |r: &Read| -> Vec<String> {
+        let mut v: Vec<String> = r.links.iter().map(|(l, _)| l.target.clone()).collect();
+        v.sort();
+        v
+    };
+    let only = |a: &[String], b: &[String]| -> Vec<String> {
+        let mut b = b.to_vec();
+        let mut out = Vec::new();
+        for x in a {
+            match b.iter().position(|y| y == x) {
+                Some(i) => drop(b.remove(i)),
+                None => out.push(x.clone()),
+            }
+        }
+        out
+    };
+    let short = |v: Vec<String>| -> String {
+        let s = v.join(", ");
+        match s.chars().count() > 200 {
+            true => format!("{}…", s.chars().take(200).collect::<String>()),
+            false => s,
+        }
+    };
+    let (want, got) = (items(asked), items(gave));
+    if want != got {
+        let (missing, extra) = (only(&want, &got), only(&got, &want));
+        return Err(match (missing.is_empty(), extra.is_empty()) {
+            (false, false) => format!("{} where {} was asked", short(extra), short(missing)),
+            (false, true) => format!("{} is missing", short(missing)),
+            _ => format!("{} wasn't asked for", short(extra)),
+        });
+    }
+    let (want, got) = (links(asked), links(gave));
+    if want != got {
+        let (missing, extra) = (only(&want, &got), only(&got, &want));
+        return Err(format!(
+            "links to {} where links to {} were asked",
+            short(extra),
+            short(missing)
+        ));
+    }
+    Ok(())
+}
+
+/// Whether two items say the same: their kinds and fields, not where they are.
+pub fn same_data(a: &Item, b: &Item) -> bool {
+    data_key(a) == data_key(b)
+}
+
+/// An item's kind and fields as JSON, without where they were read.
+fn data_key(item: &Item) -> String {
+    serde_json::to_string(&item.data).unwrap_or_default()
+}
+
 /// A file's items and links, read from what its owner gave, with the owner's place for each.
 #[derive(Default)]
 pub struct Read {

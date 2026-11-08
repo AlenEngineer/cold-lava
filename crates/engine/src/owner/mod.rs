@@ -8,8 +8,10 @@
 //! The engine keeps everything that has to be shared and trusted: the watcher, the index and its
 //! one link resolver, types, permissions, the safe write and the read-back check. Markdown is the
 //! engine's own format and the first owner (`markdown`). An extension can own another kind of
-//! file: it reads it in its own process and answers later (`given`, `cache`).
+//! file: it reads it in its own process and answers later (`given`, `cache`), and writes it
+//! when asked (`edits`).
 
 pub mod cache;
+pub mod edits;
 pub mod given;
 pub mod markdown;

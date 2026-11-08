@@ -399,6 +399,7 @@ mod tests {
                 },
                 "2".into(),
             )],
+            given: Default::default(),
         });
         let g = build(&v, ALL, &HashMap::new());
         let mut l = labels(&g);

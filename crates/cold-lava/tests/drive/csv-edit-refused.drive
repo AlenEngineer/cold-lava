@@ -1,0 +1,40 @@
+# An owner that refuses an edit, or doesn't answer it, leaves its file as it was and the status
+# line says why (docs/extensions.md, "Owners and types, as built"). tests/drive.rs installs a
+# csv-table whose file/edit refuses everything, and doesn't answer at all for a VEI of 9:
+# cold-lava gives up after 10 s, and the menu goes on meanwhile.
+size 140x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys /
+type krakatoa
+wait-for Krakatoa
+keys enter
+wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+keys left A
+wait-for Read the Royal Society report on Krakatoa
+keys G x
+wait-for 12s not ticked: csv-table didn't edit Volcanoes/Eruptions.csv: this copy is read-only
+expect ☐ Read the Royal Society report on Krakatoa
+keys esc
+keys i
+wait-for eruption        8
+keys j j enter
+wait-for 8 rows
+keys /
+type krakatoa
+keys enter
+wait-for 2 of 8 rows · /krakatoa
+keys j e ctrl+u
+type 9
+keys enter
+# While csv-table says nothing, another edit of the file is refused at once.
+keys e ctrl+u
+type 8
+keys enter
+wait-for not saved, Volcanoes/Eruptions.csv has an edit waiting for csv-table: try again
+keys k
+wait-for 15s not saved: csv-table didn't edit Volcanoes/Eruptions.csv: it didn't answer file/edit in 10 s
+expect   6   ·
+screen
+keys q q
+exits 0

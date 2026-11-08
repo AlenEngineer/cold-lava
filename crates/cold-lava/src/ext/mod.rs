@@ -24,8 +24,11 @@ pub mod view;
 use crate::commands::{self, Entry, MenuCommand};
 use crate::core::{Core, Jump};
 use crate::files::{self, Create, Created, Listed, Text, Written};
-use crate::gateway::{self, Edit, Edited, Found, News, Query, Reason, Select, SubId};
+use crate::gateway::{
+    self, Answer, Edit, Edited, Found, News, Query, Reason, Select, SubId, Ticket,
+};
 use crate::owner::cache::{FileRead, Kind};
+use crate::owner::edits::FileEdit;
 use crate::owner::given::Given;
 use crate::types::{Definitions, Type};
 use serde::{Deserialize, Serialize};
@@ -293,6 +296,21 @@ pub trait Extension {
         let why = "it doesn't read files".to_string();
         host.file_given(&read.path, &read.rev, Err(why));
     }
+    /// `file/edit`: the new text of a file of a kind it owns with some changes made, answered
+    /// now or later with `Host::file_edited`.
+    fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
+        let why = "it doesn't edit files".to_string();
+        host.file_edited(&edit.path, &edit.rev, Err(why));
+    }
+    /// The answer to an `items/edit` that `Host::edit_item` answered `Later`: an edit of a file
+    /// another owner reads, now written, or why not.
+    fn edited(
+        &mut self,
+        _ticket: Ticket,
+        _answer: Result<Edited, gateway::Error>,
+        _host: &mut Host<'_>,
+    ) {
+    }
     /// The menu opened a workspace (`None`: it has none open). An extension in a process starts
     /// here, with `initialize`, and stops when the workspace closes.
     fn workspace(&mut self, _root: Option<&Path>, _host: &mut Host<'_>) {}
@@ -432,6 +450,18 @@ impl Host<'_> {
         }
     }
 
+    /// The answer to `file/edit` for a file of a kind it owns: the file's new text, or why not.
+    /// Only the file's owner may answer.
+    pub fn file_edited(&mut self, path: &str, rev: &str, text: Result<String, String>) {
+        let me = self.me;
+        let owns = (self.owners.iter())
+            .any(|(x, owner)| Some(x) == files::extension_of(path).as_ref() && Some(*owner) == me);
+        let name = self.name;
+        if let (true, Some(core)) = (owns, self.core.as_deref_mut()) {
+            core.file_edited(name, path, rev, text);
+        }
+    }
+
     /// The core, when the caller's manifest asks for `needs`.
     fn core(&mut self, needs: Permission) -> Result<&mut Core, gateway::Error> {
         if !self.permissions.contains(&needs) {
@@ -467,8 +497,9 @@ impl Host<'_> {
         Ok(())
     }
 
-    /// `items/edit`, made at once through the core's safe edits and attributed to the caller.
-    pub fn edit_item(&mut self, edit: &Edit) -> Result<Edited, gateway::Error> {
+    /// `items/edit` through the core's safe edits, attributed to the caller: made at once in a
+    /// note; in a file another owner reads, answered `Later`, through `Extension::edited`.
+    pub fn edit_item(&mut self, edit: &Edit) -> Result<Answer, gateway::Error> {
         let name = self.name;
         self.core(Permission::ItemsEdit)?.edit_item(name, edit)
     }
@@ -1033,7 +1064,7 @@ mod tests {
             };
             log.ticked = Some(
                 host.edit_item(&tick)
-                    .map(|e| e.changed)
+                    .map(|e| matches!(e, Answer::Now(e) if e.changed))
                     .map_err(|e| e.reason),
             );
         }

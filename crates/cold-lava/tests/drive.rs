@@ -943,6 +943,92 @@ fn a_csv_files_rows_links_and_tasks_join_the_workspace() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// csv-table from the examples, installed in the drive's home; `patch` changes its `main.py`.
+fn install_csv_table(home: &Path, patch: impl Fn(String) -> String) {
+    let installed = home.join(".config/cold-lava/extensions/csv-table");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions/csv-table"),
+        &installed,
+    );
+    let main = std::fs::read_to_string(installed.join("main.py")).unwrap();
+    std::fs::write(installed.join("main.py"), patch(main)).unwrap();
+}
+
+#[test]
+fn items_and_links_in_a_csv_file_are_edited_through_csv_table() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-edit");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| main);
+    let out = drive_with(
+        "csv-edit.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let workspace = dir.join("example-workspace");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv")).unwrap(),
+        "Volcano,Year,VEI,Notes\n[[Vesuvius]],79,5,\n\
+         [[Krakatau]],1883,7,- [x] Read the Royal Society report on [[Krakatau]] 📅 2026-11-20 \
+         ✅ 2026-11-07\n[[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n",
+        "ticked in the agenda, set in the table, relinked by the rename"
+    );
+    assert!(workspace.join("Volcanoes/Krakatau.md").is_file());
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_owner_that_refuses_or_doesnt_answer_an_edit_leaves_its_file_alone() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-edit-refused");
+    let home = dir.join("home");
+    let stubborn = r#"import time
+
+
+@ext.on("file/edit")
+def stubborn(params):
+    if any("| 9 |" in c.get("text", "") for c in params["changes"]):
+        time.sleep(30)
+    raise ValueError("this copy is read-only")
+
+
+ext.run()"#;
+    install_csv_table(&home, |main| main.replace("ext.run()", stubborn));
+    let csv = dir.join("example-workspace/Volcanoes/Eruptions.csv");
+    let before = std::fs::read(&csv).unwrap();
+    let out = drive_with(
+        "csv-edit-refused.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&csv).unwrap(), before, "nothing written");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn ext_list_prints_what_each_extension_may_do() {
     let dir = sandbox("ext-list");

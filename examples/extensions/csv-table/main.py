@@ -1,12 +1,15 @@
 """CSV tables: opens the workspace's .csv files as tables cold-lava draws, saves an edited cell,
 follows changes made elsewhere, and makes new tables. It also tells cold-lava what each file
 says: every row as a one-row Markdown table, so the workspace's table-row types match it and
-its [[links]] are links, and a cell that is Markdown of its own (a task) as Markdown. An example
-cold-lava extension that owns a kind of file (docs/extensions-guide.md, "Owning a kind of file"
-and "Giving items and links")."""
+its [[links]] are links, and a cell that is Markdown of its own (a task) as Markdown. When an
+item in a file is edited, or a note it links to renamed, cold-lava says what each piece now says
+and it puts that back in its cells. An example cold-lava extension that owns a kind of file
+(docs/extensions-guide.md, "Owning a kind of file", "Giving items and links" and "Writing
+items back")."""
 
 import csv
 import io
+import re
 
 from cold_lava import Extension, Refused
 
@@ -84,6 +87,40 @@ def given(text):
 @ext.on("file/read")
 def file_read(params):
     return given(params["text"])
+
+
+def row_cells(piece):
+    """The cells of a one-row Markdown table's row, as `given` wrote it."""
+    line = piece.strip().splitlines()[-1].strip()
+    cells = re.split(r"(?<!\\)\|", line.strip("|"))
+    return [c.strip().replace("\\|", "|") for c in cells]
+
+
+@ext.on("file/edit")
+def file_edit(params):
+    """The file's new text with each piece put back where `given` took it from: a row's cells
+    from its one-row table (its Markdown cells stay, as the row showed them empty), a Markdown
+    cell from its text. A row needs its first cell, since that names it."""
+    rows = parse(params["text"])
+    names = columns(rows)
+    at = dict(zip(places(rows), range(1, len(rows))))
+    for change in params["changes"]:
+        place = change["place"]
+        row_place, _, column = place.rpartition("#") if place not in at else (place, "", "")
+        row = at.get(row_place)
+        if row is None or "text" not in change:
+            raise ValueError(f"nothing at {place} takes this change")
+        rows[row] += [""] * (len(names) - len(rows[row]))
+        if column:
+            rows[row][names.index(column)] = change["text"]
+            continue
+        cells = row_cells(change["text"])
+        if not cells or not cells[0]:
+            raise ValueError("a row needs its first cell: it names the row")
+        for i, value in enumerate(cells[: len(names)]):
+            if not is_markdown(rows[row][i]):
+                rows[row][i] = value
+    return {"text": unparse(rows)}
 
 
 def content(path, rows):

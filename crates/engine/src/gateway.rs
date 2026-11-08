@@ -148,6 +148,19 @@ pub struct Edited {
     pub warning: Option<String>,
 }
 
+/// The answer to `items/edit` as the core gives it: now, or, for an item in a file another
+/// owner reads, once that owner has written it (`Core::take_edited`, under this ticket). Over
+/// the wire both are the same answer, the second one later.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    Now(Box<Edited>),
+    Later(Ticket),
+}
+
+/// An `items/edit` that is answered later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Ticket(pub u64);
+
 /// Why a request was refused. On the wire it is the JSON-RPC error's `data`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Error {
@@ -633,10 +646,6 @@ pub(crate) struct Written {
 /// Make the edit on disk: the note's owner makes its new text, which is written with
 /// `write::replace`, refused if the note changed since it was read.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
-    if let Some(f) = (workspace.owned.iter()).find(|f| f.items.iter().any(|i| i.id == req.id)) {
-        let message = format!("{} is read by {}, which can't edit it yet", f.rel, f.owner);
-        return Err(Error::new(Reason::Refused, message));
-    }
     let item = (workspace.notes.iter())
         .flat_map(|n| workspace.items(n))
         .find(|i| i.id == req.id)
@@ -719,6 +728,14 @@ mod tests {
     use std::fmt::Debug;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    /// An edit of a note, which is answered at once.
+    fn now(answer: Result<Answer, Error>) -> Result<Edited, Error> {
+        answer.map(|a| match a {
+            Answer::Now(edited) => *edited,
+            Answer::Later(_) => panic!("an edit of a note is answered at once"),
+        })
+    }
 
     /// `value` is exactly `json` on the wire, and reads back from it.
     fn wire<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: T, json: Json) {
@@ -914,7 +931,7 @@ fields.text = { rest = true }
         assert_eq!(field(&chore, "status"), "/", "read from its line");
         assert_eq!(field(&chore, "status_type"), "in_progress");
         let sub = core.subscribe_items("t", select("task", Filter::default()));
-        let edited = core.edit_item("t", &tick(&chore)).unwrap();
+        let edited = now(core.edit_item("t", &tick(&chore))).unwrap();
         assert_eq!(
             field(&edited.item, "status_type"),
             "done",
@@ -1025,7 +1042,7 @@ fields.text = { rest = true }
 
         // Ticking "Pay rent" takes it out of the open tasks; ideas hear nothing.
         let rent = task(&core, "Pay rent");
-        core.edit_item("test", &tick(&rent)).unwrap();
+        now(core.edit_item("test", &tick(&rent))).unwrap();
         let news = core.take_item_news();
         let removed = News::Changed {
             subscription: todo,
@@ -1077,7 +1094,7 @@ fields.text = { rest = true }
         let dir = workspace("edit");
         let mut core = Core::open(&dir).unwrap();
         let rent = task(&core, "Pay rent");
-        let done = core.edit_item("table", &set(&rent, "due", json!("2026-12-01")));
+        let done = now(core.edit_item("table", &set(&rent, "due", json!("2026-12-01"))));
         let done = done.unwrap();
         assert!(done.changed);
         assert_eq!(done.item.id, rent.id);
@@ -1096,14 +1113,15 @@ fields.text = { rest = true }
         };
         assert_eq!(core.poll(), [Event::NoteChanged("Plan".into()), edited]);
 
-        let again = core.edit_item("table", &set(&done.item, "due", json!("2026-12-01")));
+        let again = now(core.edit_item("table", &set(&done.item, "due", json!("2026-12-01"))));
         assert!(!again.unwrap().changed);
         assert_eq!(core.poll(), [], "nothing written, nothing to hear");
-        let removed = core.edit_item("table", &set(&done.item, "due", Json::Null));
+        let removed = now(core.edit_item("table", &set(&done.item, "due", Json::Null)));
         assert!(removed.unwrap().changed);
         assert!(matches!(&core.poll()[1], Event::ItemEdited { what, .. } if what == "removed due"));
 
-        let refused = |core: &mut Core, edit: &Edit| core.edit_item("table", edit).unwrap_err();
+        let refused =
+            |core: &mut Core, edit: &Edit| now(core.edit_item("table", edit)).unwrap_err();
         let stale = refused(&mut core, &set(&rent, "due", json!("2026-12-02")));
         assert_eq!(stale.reason, Reason::Changed, "{stale}");
         let rent = task(&core, "Pay rent");
@@ -1128,7 +1146,7 @@ fields.text = { rest = true }
 
         // Ticking a recurring task: done, with its next occurrence.
         let water = task(&core, "Water plants");
-        let ticked = core.edit_item("agenda", &tick(&water)).unwrap();
+        let ticked = now(core.edit_item("agenda", &tick(&water))).unwrap();
         let field = |i: &Item, f: &str| match &i.data {
             Data::Typed(t) => t.fields[f].as_str().map(String::from),
             _ => None,
