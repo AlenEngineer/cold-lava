@@ -97,6 +97,11 @@ impl Feed {
         self.sub
     }
 
+    /// By note and line.
+    pub fn items(&self) -> &[Item] {
+        &self.items
+    }
+
     pub fn table(&self) -> TypeTable {
         build(&self.ty, &self.items)
     }

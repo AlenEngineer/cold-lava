@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
+use super::view::{Content, ViewId};
 use super::{Host, PaneId, PaneSpec};
 use crate::gateway::{self, Reason, Request, Subscribed};
 
@@ -163,6 +164,23 @@ enum Call {
     OpenPane(PaneSpec),
     #[serde(rename = "pane/input")]
     PaneInput { pane: PaneId, text: String },
+    #[serde(rename = "view/open")]
+    OpenView { content: Content },
+    #[serde(rename = "view/update")]
+    UpdateView {
+        view: ViewId,
+        content: Content,
+        #[serde(default)]
+        select: Option<String>,
+    },
+    #[serde(rename = "view/close")]
+    CloseView { view: ViewId },
+    #[serde(rename = "workspace/open")]
+    OpenNote {
+        note: PathBuf,
+        #[serde(default)]
+        line: Option<usize>,
+    },
 }
 
 /// The methods an extension may call, sent in `initialize` as its `capabilities`.
@@ -179,6 +197,10 @@ pub const HOST_METHODS: &[&str] = &[
     "editor/opened",
     "pane/open",
     "pane/input",
+    "view/open",
+    "view/update",
+    "view/close",
+    "workspace/open",
 ];
 
 const GATEWAY: &[&str] = &[
@@ -229,6 +251,16 @@ pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Result
         Call::EditorOpened { note } => host.editor_opened(note),
         Call::OpenPane(spec) => return Ok(json!({ "pane": host.open_pane(spec) })),
         Call::PaneInput { pane, text } => host.pane_input(pane, text),
+        Call::OpenView { content } => {
+            return answer(host.open_view(content).map(|view| json!({ "view": view })));
+        }
+        Call::UpdateView {
+            view,
+            content,
+            select,
+        } => return answer(host.update_view(view, content, select)),
+        Call::CloseView { view } => host.close_view(view),
+        Call::OpenNote { note, line } => host.open_note(note, line),
     }
     Ok(Value::Null)
 }
@@ -317,10 +349,11 @@ mod tests {
         method: &str,
         params: Value,
     ) -> (Result<Value, RpcError>, Vec<Effect>) {
-        let mut next_pane = 0;
+        let (mut next_pane, mut next_view) = (0, 0);
         let mut host = Host {
             effects: Vec::new(),
             next_pane: &mut next_pane,
+            next_view: &mut next_view,
             name: "wc",
             permissions,
             core: Some(core),
@@ -420,6 +453,65 @@ mod tests {
         let (pane, effects) = served(&mut core, &[], "pane/open", spec);
         assert_eq!(pane, Ok(json!({"pane": 1})));
         assert!(matches!(&effects[..], [Effect::OpenPane { .. }]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn views_open_update_and_close_over_the_wire() {
+        use crate::ext::view::{Content, MAX_ROWS, ViewId};
+        let dir = workspace("views");
+        let mut core = Core::open(&dir).unwrap();
+        let list = json!({"kind": "list", "title": "Open", "groups": []});
+        let (opened, effects) = served(&mut core, &[], "view/open", json!({"content": list}));
+        assert_eq!(opened, Ok(json!({"view": 1})), "no permission needed");
+        let Content::List(sent) = serde_json::from_value(list.clone()).unwrap() else {
+            unreachable!()
+        };
+        let content = Content::List(sent);
+        assert_eq!(
+            effects,
+            [Effect::OpenView {
+                view: ViewId(1),
+                content: content.clone()
+            }]
+        );
+        let update = json!({"view": 1, "content": list, "select": "r2"});
+        let (updated, effects) = served(&mut core, &[], "view/update", update);
+        assert_eq!(updated, Ok(Value::Null));
+        assert_eq!(
+            effects,
+            [Effect::UpdateView {
+                view: ViewId(1),
+                content,
+                select: Some("r2".into())
+            }]
+        );
+        let (_, effects) = served(&mut core, &[], "view/close", json!({"view": 1}));
+        assert_eq!(effects, [Effect::CloseView { view: ViewId(1) }]);
+        let open = json!({"note": "Plan.md", "line": 1});
+        let (_, effects) = served(&mut core, &[], "workspace/open", open);
+        let note = Effect::OpenNote {
+            note: "Plan.md".into(),
+            line: Some(1),
+        };
+        assert_eq!(effects, [note]);
+
+        let rows: Vec<Value> = (0..MAX_ROWS)
+            .map(|i| json!({"id": format!("r{i}"), "text": []}))
+            .collect();
+        let huge = json!({"content": {"kind": "list", "title": "Huge",
+                          "groups": [{"id": "g", "title": "g", "rows": rows}]}});
+        let (refused, effects) = served(&mut core, &[], "view/open", huge);
+        let refused = refused.unwrap_err();
+        assert_eq!((refused.code, reason(&refused)), (REFUSED, "refused"));
+        assert!(effects.is_empty(), "nothing is shown");
+        let (bad, _) = served(
+            &mut core,
+            &[],
+            "view/open",
+            json!({"content": {"kind": "map"}}),
+        );
+        assert_eq!(bad.unwrap_err().code, INVALID_PARAMS);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

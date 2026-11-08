@@ -827,6 +827,42 @@ fn the_python_example_extension_counts_and_moves_tasks() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Needs python3, which CI's runners have.
+#[test]
+fn the_python_example_extension_lists_tasks_in_a_view_of_its_own() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("open-tasks-list");
+    let home = dir.join("home");
+    install_open_tasks(&dir, &home);
+    let out = drive_with(
+        "open-tasks-list.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ticked = std::fs::read_to_string(dir.join("example-workspace/Inbox/Seismograph.md"));
+    assert_eq!(
+        ticked.unwrap(),
+        "- [x] Check the seismograph 📅 2026-11-01 ✅ 2026-11-07\n",
+        "ticked in the extension's list"
+    );
+    let log = home.join(".cache/cold-lava/extensions/open-tasks.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn ext_list_prints_what_each_extension_may_do() {
     let dir = sandbox("ext-list");
@@ -853,12 +889,17 @@ fn ext_list_prints_what_each_extension_may_do() {
     let installed = home.join(".config/cold-lava/extensions/open-tasks");
     let log = home.join(".cache/cold-lava/extensions/open-tasks.log");
     let expected = format!(
-        "open-tasks 0.1.0  {}\n\
-         \x20 Counts the workspace's open tasks in the status line, and moves overdue ones to today\n\
+        "agenda  built in\n\
+         \x20 The workspace's tasks by day\n\
+         \x20 permissions: items.read, items.edit\n\
+         open-tasks 0.1.0  {}\n\
+         \x20 Counts the workspace's open tasks in the status line, moves overdue ones to today, \
+         and lists them by note\n\
          \x20 runs: python3 main.py (stdio)\n\
          \x20 permissions: items.read, items.edit\n\
          \x20 command: open-tasks.count  say how many tasks are open, and how many are overdue\n\
          \x20 command: open-tasks.reschedule  move every overdue open task to today\n\
+         \x20 command: open-tasks.list  list the open tasks by note\n\
          \x20 log: {}\n\
          carried  {}\n\
          \x20 not loaded: extensions inside a workspace aren't loaded yet; copy it to the \

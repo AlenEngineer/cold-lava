@@ -1,21 +1,31 @@
-//! The agenda as a list (docs/extensions.md, "The agenda, as built"): what the built-in agenda
-//! extension will send. Every item that answers to `task` (subtypes too), filed by the date
-//! `cold-lava agenda` files it under (due, else scheduled, else start, else its daily note's):
-//! overdue, today, each of the next seven days, later, and undated last.
+//! The agenda (docs/extensions.md, "The list view and the agenda, as built"): a built-in
+//! extension on the same path as one in a process. It follows every item that answers to
+//! `task` (subtypes too) through the workspace gateway (`items/query`, `items/subscribe`),
+//! sends them as a list through the view gateway (`view/open`, `view/update`), filed by the
+//! date `cold-lava agenda` files them under (due, else scheduled, else start, else its daily
+//! note's): overdue, today, each of the next seven days, later, and undated last. It ticks
+//! through `items/edit` and opens a task's note with `workspace/open`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use chrono::{Datelike, Days, NaiveDate};
 use regex::Regex;
 use serde_json::Value as Json;
 
+use crate::ext::view::{self, Content, Happened, ViewId, ViewNews};
+use crate::ext::{
+    AGENDA, CommandRequest, EditorRequest, Extension, Host, Manifest, PaneNews, Permission,
+};
+use crate::gateway::{Edit, News, Op, Reason};
 use crate::items::{Data, Item};
 use crate::list::{Check, Group, KeyCommand, List, Piece, Row};
-use crate::tasks::{StatusType, Task};
-use crate::type_table::At;
-use crate::types::{Colour, Definition, Look};
-use crate::workspace::Workspace;
+use crate::type_table::{At, Feed};
+use crate::types::{Colour, Definition, Look, Type};
+
+/// The command that opens it: a core command (`A`) the menu hands to it.
+pub const OPEN: &str = "agenda.open";
 
 /// The command `d` sends: show or hide done and cancelled tasks.
 pub const SHOW_DONE: &str = "show-done";
@@ -23,7 +33,8 @@ pub const SHOW_DONE: &str = "show-done";
 /// Days after today that get a group of their own.
 const WEEK: u64 = 7;
 
-pub struct Agenda {
+/// The agenda's list, and where each row's task is.
+pub struct Built {
     pub list: List,
     pub at: HashMap<String, At>,
 }
@@ -83,66 +94,73 @@ fn day(d: NaiveDate, today: NaiveDate) -> String {
     }
 }
 
-/// The agenda on `today`: open tasks, tasks closed today (so a tick doesn't make one vanish),
-/// and with `show_done` every closed task.
-pub fn build(workspace: &Workspace, today: NaiveDate, show_done: bool) -> Agenda {
-    let settings = workspace.item_settings();
-    let defs: HashMap<&str, &Definition> = (settings.types.types.iter())
+/// A task's field as text.
+fn field<'a>(item: &'a Item, name: &str) -> Option<&'a str> {
+    match &item.data {
+        Data::Typed(t) => t.fields.get(name).and_then(Json::as_str),
+        _ => None,
+    }
+}
+
+fn date(item: &Item, name: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(field(item, name)?, "%Y-%m-%d").ok()
+}
+
+/// The agenda on `today` of these task items (as the gateway gives them, each with its
+/// `status_type`), with the looks of `types`: open tasks, tasks closed today (so a tick doesn't
+/// make one vanish), and with `show_done` every closed task.
+pub fn build(types: &[Type], tasks: &[Item], today: NaiveDate, show_done: bool) -> Built {
+    let defs: HashMap<&str, &Definition> = (types.iter())
         .map(|t| (t.name.as_str(), &t.definition))
         .collect();
     let mut found: Vec<(Bucket, Option<NaiveDate>, &str, usize, Row)> = Vec::new();
     let mut at = HashMap::new();
-    for note in &workspace.notes {
-        let lines: Vec<&str> = note.text.lines().collect();
-        for item in workspace.items(note) {
-            let raw = lines.get(item.line - 1).copied().unwrap_or_default();
-            let Some(task) = Task::of(item, raw, &settings.tasks) else {
-                continue;
-            };
-            let check = match task.status_type {
-                StatusType::Todo => Check::Unchecked,
-                StatusType::InProgress => Check::Partial,
-                StatusType::Done => Check::Checked,
-                StatusType::Cancelled => Check::Crossed,
-                StatusType::NonTask => continue,
-            };
-            let closed_today = task.done == Some(today) || task.cancelled == Some(today);
-            let open = matches!(check, Check::Unchecked | Check::Partial);
-            if !open && !closed_today && !show_done {
-                continue;
-            }
-            let date = task.agenda_date().map(|d| d.0);
-            let bucket = Bucket::of(date, today);
-            let mut right = Vec::new();
-            if let (true, Some(d)) = (bucket.dated_rows(), date) {
-                let late = Look {
-                    colour: Some(Colour::Red),
-                    ..Look::default()
-                };
-                right.push(Piece {
-                    text: day(d, today),
-                    look: (open && d < today).then_some(late),
-                });
-            }
-            right.push(Piece::plain(note.name.clone()));
-            let row = Row {
-                id: item.id.clone(),
-                text: text(item, &task, &defs),
-                check: Some(check),
-                right,
-                depth: 0,
-                look: style(item, &defs, "status_type").filter(|l| l.whole),
-            };
-            at.insert(
-                item.id.clone(),
-                At {
-                    note: item.note.clone(),
-                    line: item.line,
-                    rev: item.rev.clone(),
-                },
-            );
-            found.push((bucket, date, item.note.as_str(), item.line, row));
+    for item in tasks {
+        let check = match field(item, "status_type") {
+            Some("todo") => Check::Unchecked,
+            Some("in_progress") => Check::Partial,
+            Some("done") => Check::Checked,
+            Some("cancelled") => Check::Crossed,
+            _ => continue,
+        };
+        let closed_today = [date(item, "done"), date(item, "cancelled")].contains(&Some(today));
+        let open = matches!(check, Check::Unchecked | Check::Partial);
+        if !open && !closed_today && !show_done {
+            continue;
         }
+        let filed =
+            (["due", "scheduled", "start", "daily_note"].iter()).find_map(|f| date(item, f));
+        let bucket = Bucket::of(filed, today);
+        let mut right = Vec::new();
+        if let (true, Some(d)) = (bucket.dated_rows(), filed) {
+            let late = Look {
+                colour: Some(Colour::Red),
+                ..Look::default()
+            };
+            right.push(Piece {
+                text: day(d, today),
+                look: (open && d < today).then_some(late),
+            });
+        }
+        let name = Path::new(&item.note).file_stem().unwrap_or_default();
+        right.push(Piece::plain(name.to_string_lossy()));
+        let row = Row {
+            id: item.id.clone(),
+            text: text(item, &defs),
+            check: Some(check),
+            right,
+            depth: 0,
+            look: style(item, &defs, "status_type").filter(|l| l.whole),
+        };
+        at.insert(
+            item.id.clone(),
+            At {
+                note: item.note.clone(),
+                line: item.line,
+                rev: item.rev.clone(),
+            },
+        );
+        found.push((bucket, filed, item.note.as_str(), item.line, row));
     }
     found.sort_by(|a, b| (a.0, a.1, a.2, a.3).cmp(&(b.0, b.1, b.2, b.3)));
     let mut groups: Vec<Group> = Vec::new();
@@ -176,14 +194,15 @@ pub fn build(workspace: &Workspace, today: NaiveDate, show_done: bool) -> Agenda
         }],
         empty: Some("no tasks: write one as - [ ] in any note".into()),
     };
-    Agenda { list, at }
+    Built { list, at }
 }
 
 /// The task's words with links as their text, then its priority on a chip and 🔁 when it
 /// recurs.
-fn text(item: &Item, task: &Task, defs: &HashMap<&str, &Definition>) -> Vec<Piece> {
-    let mut out = vec![Piece::plain(links_as_text(&task.text))];
-    if task.recurrence.is_some() {
+fn text(item: &Item, defs: &HashMap<&str, &Definition>) -> Vec<Piece> {
+    let words = field(item, "text").unwrap_or_default();
+    let mut out = vec![Piece::plain(links_as_text(words))];
+    if field(item, "recurrence").is_some() {
         out.push(Piece {
             text: "🔁".into(),
             look: Some(Look {
@@ -192,8 +211,8 @@ fn text(item: &Item, task: &Task, defs: &HashMap<&str, &Definition>) -> Vec<Piec
             }),
         });
     }
-    if let Some(p) = &task.priority {
-        let glyph = match p.as_str() {
+    if let Some(p) = field(item, "priority") {
+        let glyph = match p {
             "highest" => "🔺",
             "high" => "⏫",
             "medium" => "🔼",
@@ -220,6 +239,186 @@ fn style(item: &Item, defs: &HashMap<&str, &Definition>, field: &str) -> Option<
     crate::looks::for_value(look, t.fields.get(field).unwrap_or(&Json::Null))
 }
 
+/// The agenda extension, and while its view is open, what it shows.
+#[derive(Default)]
+pub struct Agenda {
+    shown: Option<Shown>,
+}
+
+struct Shown {
+    view: ViewId,
+    feed: Feed,
+    types: Vec<Type>,
+    at: HashMap<String, At>,
+    show_done: bool,
+    /// The row to select with the next update: a ticked task, under its id now.
+    select: Option<String>,
+}
+
+impl Shown {
+    fn send(&mut self, host: &mut Host<'_>) {
+        let today = crate::tasks::today();
+        let built = build(&self.types, self.feed.items(), today, self.show_done);
+        self.at = built.at;
+        let select = self.select.take();
+        if let Err(e) = host.update_view(self.view, Content::List(built.list), select) {
+            host.notify(format!("the agenda couldn't be shown: {e}"));
+        }
+    }
+
+    /// `items/edit toggle` on the row's task, as the version the agenda shows.
+    fn tick(&mut self, row: &str, host: &mut Host<'_>) {
+        let Some(at) = self.at.get(row).cloned() else {
+            return;
+        };
+        let words = (self.feed.items().iter())
+            .find(|i| i.id == row)
+            .and_then(|i| field(i, "text"))
+            .map(links_as_text)
+            .unwrap_or_default();
+        let edit = Edit {
+            id: row.to_string(),
+            rev: at.rev,
+            op: Op::Toggle,
+        };
+        let message = match host.edit_item(&edit) {
+            Ok(e) => {
+                let what = match field(&e.item, "status_type") {
+                    Some("done") => "done",
+                    Some("cancelled") => "cancelled",
+                    Some("in_progress") => "in progress",
+                    Some("todo") => "open again",
+                    _ => "ticked",
+                };
+                self.select = Some(e.item.id.clone());
+                let mut message = format!("{what}: {words}");
+                if e.next.is_some() {
+                    message.push_str(" · next occurrence added");
+                }
+                if let Some(w) = &e.warning {
+                    message = format!("{message} · {w}");
+                }
+                message
+            }
+            Err(e) if e.reason == Reason::Changed => {
+                let name = at.note.trim_end_matches(".md");
+                format!("not ticked: {name} changed since it was read · read again")
+            }
+            Err(e) => format!("not ticked: {e}"),
+        };
+        host.notify(message);
+    }
+}
+
+impl Agenda {
+    /// A new view of the tasks, in place of the one it had open.
+    fn open(&mut self, host: &mut Host<'_>) -> Result<(), String> {
+        if let Some(old) = self.shown.take() {
+            host.close_view(old.view);
+            old.feed.close(host);
+        }
+        let types = host.types().map_err(|e| e.to_string())?;
+        let feed = match Feed::open(host, "task") {
+            Ok(Some(feed)) => feed,
+            Ok(None) => return Err("the workspace has no task type".into()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let built = build(&types, feed.items(), crate::tasks::today(), false);
+        match host.open_view(Content::List(built.list)) {
+            Ok(view) => {
+                self.shown = Some(Shown {
+                    view,
+                    feed,
+                    types,
+                    at: built.at,
+                    show_done: false,
+                    select: None,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                feed.close(host);
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
+impl Extension for Agenda {
+    fn initialize(&mut self) -> Manifest {
+        Manifest {
+            name: AGENDA.into(),
+            title: "Agenda".into(),
+            version: String::new(),
+            description: "The workspace's tasks by day".into(),
+            roles: Vec::new(),
+            hints: Vec::new(),
+            commands: Vec::new(),
+            types: Default::default(),
+            permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
+        }
+    }
+
+    fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
+
+    fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+
+    fn command(&mut self, request: CommandRequest, host: &mut Host<'_>) {
+        let CommandRequest::Run { id, .. } = request;
+        if id != OPEN {
+            return host.notify(format!("the agenda has no command {id}"));
+        }
+        if let Err(e) = self.open(host) {
+            host.notify(format!("no agenda: {e}"));
+        }
+    }
+
+    fn items(&mut self, news: News, host: &mut Host<'_>) {
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+        if shown.feed.subscription() != news.subscription() {
+            return;
+        }
+        match shown.feed.heard(host, news) {
+            Ok(()) => shown.send(host),
+            Err(e) => host.notify(format!("the agenda couldn't be read again: {e}")),
+        }
+    }
+
+    fn view(&mut self, news: ViewNews, host: &mut Host<'_>) {
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+        match news {
+            ViewNews::Closed { view } if view == shown.view => {
+                if let Some(shown) = self.shown.take() {
+                    shown.feed.close(host);
+                }
+            }
+            ViewNews::Event(Happened { view, event }) if view == shown.view => match event {
+                view::Event::Activated { row } => {
+                    if let Some(at) = shown.at.get(&row) {
+                        host.open_note(at.note.clone().into(), Some(at.line));
+                    }
+                }
+                view::Event::Toggled { row } => shown.tick(&row, host),
+                view::Event::Command { command, .. } if command == SHOW_DONE => {
+                    shown.show_done = !shown.show_done;
+                    shown.send(host);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Another workspace: its view and subscription went with the old one.
+    fn workspace(&mut self, _: Option<&Path>, _: &mut Host<'_>) {
+        self.shown = None;
+    }
+}
+
 /// `[[Note|alias]]` as `alias`, `[[Note#Heading]]` as `Note#Heading`, `[text](url)` as `text`.
 pub fn links_as_text(s: &str) -> String {
     static RE: OnceLock<(Regex, Regex)> = OnceLock::new();
@@ -241,10 +440,21 @@ pub fn links_as_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::Workspace;
     use std::path::PathBuf;
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    /// The agenda of the workspace's tasks, as the gateway gives them.
+    fn built(v: &Workspace, today: NaiveDate, show_done: bool) -> Built {
+        let query = crate::gateway::Query {
+            select: crate::type_table::select("task"),
+            ..Default::default()
+        };
+        let tasks = crate::gateway::query(v, &query).unwrap().items;
+        build(&v.item_settings().types.types, &tasks, today, show_done)
     }
 
     fn workspace(name: &str, notes: &[(&str, &str)]) -> (PathBuf, Workspace) {
@@ -267,7 +477,7 @@ mod tests {
     }
 
     /// Each group's title and its rows' text and right side.
-    fn shown(a: &Agenda) -> Vec<(String, Vec<String>)> {
+    fn shown(a: &Built) -> Vec<(String, Vec<String>)> {
         (a.list.groups.iter())
             .map(|g| {
                 let rows = (g.rows.iter())
@@ -307,7 +517,7 @@ mod tests {
                 ("Journal/2026-11-05.md", "- [ ] From the journal\n"),
             ],
         );
-        let a = build(&v, d("2026-11-07"), false);
+        let a = built(&v, d("2026-11-07"), false);
         assert_eq!(
             shown(&a),
             [
@@ -363,7 +573,7 @@ mod tests {
         let at = &a.at[&groups[1].rows[0].id];
         assert_eq!((at.note.as_str(), at.line), ("Plan.md", 1));
 
-        let all = build(&v, d("2026-11-07"), true);
+        let all = built(&v, d("2026-11-07"), true);
         assert_eq!(all.list.groups[0].title, "Earlier");
         assert_eq!(
             all.list.groups[0].rows.len(),
@@ -396,7 +606,7 @@ mod tests {
             ],
         );
         assert_eq!(v.item_settings().types.errors, Vec::<String>::new());
-        let a = build(&v, d("2026-11-07"), false);
+        let a = built(&v, d("2026-11-07"), false);
         assert_eq!(
             shown(&a),
             [(
@@ -404,6 +614,73 @@ mod tests {
                 vec!["Glass from sand #idea | Ideas".into()]
             )]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_agenda_is_an_extension_of_the_gateways() {
+        use crate::ext::{Effect, ExtId, Registry};
+        let (dir, _) = workspace(
+            "extension",
+            &[(
+                "Plan.md",
+                "- [ ] Pay rent 📅 2026-11-07\n- [ ] Call the plumber\n",
+            )],
+        );
+        let mut core = crate::core::Core::open(&dir).unwrap();
+        let mut r = Registry::new(vec![Box::new(Agenda::default())]);
+        let ext = ExtId(0);
+        let run = CommandRequest::Run {
+            id: OPEN.into(),
+            args: Json::Null,
+        };
+        let effects = r.call(ext, Some(&mut core), |e, h| e.command(run, h));
+        let [Effect::OpenView { view, content }] = &effects[..] else {
+            panic!("{effects:?}")
+        };
+        let Content::List(list) = content else {
+            panic!()
+        };
+        let rent = list.groups[0].rows[0].id.clone();
+        let happened = |event| ViewNews::Event(Happened { view: *view, event });
+
+        let tick = happened(view::Event::Toggled { row: rent.clone() });
+        let effects = r.call(ext, Some(&mut core), |e, h| e.view(tick, h));
+        let done = Effect::Notify {
+            message: "done: Pay rent".into(),
+        };
+        assert_eq!(effects, [done]);
+        let text = std::fs::read_to_string(dir.join("Plan.md")).unwrap();
+        assert!(
+            text.starts_with("- [x] Pay rent 📅 2026-11-07 ✅ "),
+            "{text}"
+        );
+        let mut updates = Vec::new();
+        for (_, news) in core.take_item_news() {
+            updates.extend(r.call(ext, Some(&mut core), |e, h| e.items(news, h)));
+        }
+        let [Effect::UpdateView { select, .. }] = &updates[..] else {
+            panic!("{updates:?}")
+        };
+        assert_eq!(
+            select.as_deref(),
+            Some(rent.as_str()),
+            "the ticked row stays"
+        );
+
+        let open = happened(view::Event::Activated { row: rent });
+        let effects = r.call(ext, Some(&mut core), |e, h| e.view(open, h));
+        let note = Effect::OpenNote {
+            note: "Plan.md".into(),
+            line: Some(1),
+        };
+        assert_eq!(effects, [note]);
+
+        let closed = ViewNews::Closed { view: *view };
+        r.call(ext, Some(&mut core), |e, h| e.view(closed, h));
+        std::fs::write(dir.join("Plan.md"), "- [ ] Water the fern\n").unwrap();
+        core.note_changed_now(&dir.join("Plan.md"));
+        assert_eq!(core.take_item_news(), [], "it stopped following the tasks");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

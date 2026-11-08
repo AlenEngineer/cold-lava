@@ -38,7 +38,7 @@ class Extension:
 
     def on(self, method):
         """Handle a request or notification from cold-lava: `initialize`, `items/changed`,
-        `items/reset`, `shutdown`. The handler gets the params; a request is answered with what
+        `items/reset`, `view/event`, `view/closed`, `shutdown`. The handler gets the params; a request is answered with what
         it returns."""
 
         def register(handler):
@@ -121,6 +121,30 @@ class Extension:
         """Change one item, refused as `changed` if it isn't the version you read."""
         params = {"id": item["id"], "rev": item["rev"], "op": op, **fields}
         return self.request("items/edit", params)
+
+    def open_view(self, content):
+        """Show a list or a table ({"kind": "list", ...}) in cold-lava, which draws it and owns
+        its keys. Returns the view's id, which `view/event` and `view/closed` name."""
+        return self.request("view/open", {"content": content})["view"]
+
+    def update_view(self, view, content, select=None):
+        """What the view shows now. cold-lava keeps the selection, folds, sort and filter by
+        row id, or selects the row `select`."""
+        params = {"view": view, "content": content}
+        if select is not None:
+            params["select"] = select
+        self.request("view/update", params)
+
+    def close_view(self, view):
+        self.notify("view/close", {"view": view})
+
+    def open_note(self, note, line=None):
+        """Open a note in cold-lava (an item's `note`, or a path inside the workspace), at a
+        line. Back returns to where the user was."""
+        params = {"note": note}
+        if line is not None:
+            params["line"] = line
+        self.notify("workspace/open", params)
 
     # The wire.
 

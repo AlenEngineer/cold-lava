@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use super::installed::Installed;
 use super::rpc::{self, Message};
 use super::transport::{self, Connector, Launch, Received, Transport};
+use super::view::ViewNews;
 use super::{CommandRequest, EditorRequest, Extension, Host, Manifest, PaneNews};
 use crate::gateway::{News, SubId};
 
@@ -233,6 +234,10 @@ impl Extension for Process {
     }
 
     fn items(&mut self, news: News, host: &mut Host<'_>) {
+        self.tell(rpc::notification(news), host);
+    }
+
+    fn view(&mut self, news: ViewNews, host: &mut Host<'_>) {
         self.tell(rpc::notification(news), host);
     }
 
@@ -566,8 +571,8 @@ mod tests {
     }
 
     /// Poll, handing the core's item news to the extension as the menu does, until an effect
-    /// passes `done`.
-    fn until(r: &mut Registry, core: &mut Core, done: impl Fn(&Effect) -> bool) {
+    /// passes `done`, which it returns.
+    fn until(r: &mut Registry, core: &mut Core, done: impl Fn(&Effect) -> bool) -> Effect {
         let (mut effects, deadline) = (Vec::new(), Instant::now() + Duration::from_secs(20));
         while Instant::now() < deadline {
             core.poll();
@@ -575,8 +580,8 @@ mod tests {
                 effects.extend(r.call(ExtId(0), Some(core), |e, h| e.items(news, h)));
             }
             effects.extend(r.call(ExtId(0), Some(core), |e, h| e.poll(h)));
-            if effects.iter().any(&done) {
-                return;
+            if let Some(found) = effects.iter().find(|e| done(e)) {
+                return found.clone();
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -587,17 +592,23 @@ mod tests {
         move |e| matches!(e, Effect::Status { text: Some(t) } if *t == text)
     }
 
-    #[test]
-    fn the_python_example_counts_moves_and_follows_tasks() {
+    fn has_python() -> bool {
         let python = std::process::Command::new("python3")
             .arg("--version")
             .output();
-        if !python.is_ok_and(|o| o.status.success()) {
+        let found = python.is_ok_and(|o| o.status.success());
+        if !found {
             eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
-            return;
         }
+        found
+    }
+
+    /// The example extension, loaded from a copy beside a copy of the example workspace with
+    /// an overdue task in Inbox/Seismograph.md: its registry, the core, the workspace and the
+    /// folder that holds both.
+    fn python_example(name: &str) -> (Registry, Core, PathBuf, PathBuf) {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let dir = std::env::temp_dir().join(format!("cold-lava-python-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cold-lava-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (root, extensions) = (dir.join("workspace"), dir.join("extensions"));
         copy_dir(&repo.join("example-workspace"), &root);
@@ -609,8 +620,17 @@ mod tests {
         assert_eq!(mistakes, Vec::<String>::new());
         let mut example = found.into_iter().next().unwrap();
         example.launch.log = Some(dir.join("open-tasks.log"));
-        let mut r = Registry::new(vec![Box::new(Process::new(example).unwrap())]);
-        let mut core = Core::open(&root).unwrap();
+        let r = Registry::new(vec![Box::new(Process::new(example).unwrap())]);
+        let core = Core::open(&root).unwrap();
+        (r, core, root, dir)
+    }
+
+    #[test]
+    fn the_python_example_counts_moves_and_follows_tasks() {
+        if !has_python() {
+            return;
+        }
+        let (mut r, mut core, root, dir) = python_example("python");
         let open = Query {
             select: tasks(&["todo", "in_progress"]),
             ..Default::default()
@@ -639,6 +659,78 @@ mod tests {
 
         r.shutdown();
         assert!(!r.running(ExtId(0)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_python_example_opens_a_list_and_hears_what_the_user_did_in_it() {
+        use crate::ext::view::{Content, Event, Happened, ViewNews};
+        if !has_python() {
+            return;
+        }
+        let (mut r, mut core, root, dir) = python_example("python-view");
+        r.call(ExtId(0), Some(&mut core), |e, h| {
+            e.workspace(Some(&root), h)
+        });
+        until(&mut r, &mut core, |e| matches!(e, Effect::Status { .. }));
+        r.call(ExtId(0), Some(&mut core), |e, h| {
+            e.command(run("open-tasks.list"), h)
+        });
+        let opened = until(&mut r, &mut core, |e| matches!(e, Effect::OpenView { .. }));
+        let Effect::OpenView {
+            view,
+            content: Content::List(list),
+        } = opened
+        else {
+            panic!("{opened:?}")
+        };
+        let inbox = &list.groups[0];
+        assert_eq!(inbox.title, "Inbox/Seismograph");
+        let late = inbox.rows[0].clone();
+        assert_eq!(late.text[0].text, "Check the seismograph");
+        assert_eq!(late.right[0].text, "2000-01-01");
+        assert_eq!(list.keys[0].command, "today");
+
+        let happened = |event| ViewNews::Event(Happened { view, event });
+        let tick = happened(Event::Toggled {
+            row: late.id.clone(),
+        });
+        r.call(ExtId(0), Some(&mut core), |e, h| e.view(tick, h));
+        let updated = until(&mut r, &mut core, |e| {
+            matches!(e, Effect::UpdateView { .. })
+        });
+        let text = std::fs::read_to_string(root.join("Inbox/Seismograph.md")).unwrap();
+        assert!(text.starts_with("- [x] Check the seismograph"), "{text}");
+        let Effect::UpdateView {
+            content: Content::List(list),
+            ..
+        } = updated
+        else {
+            panic!("{updated:?}")
+        };
+        assert!(
+            list.groups.iter().all(|g| g.title != "Inbox/Seismograph"),
+            "a ticked task isn't open"
+        );
+
+        let first = list.groups[0].rows[0].id.clone();
+        let open = happened(Event::Activated { row: first });
+        r.call(ExtId(0), Some(&mut core), |e, h| e.view(open, h));
+        let note = until(&mut r, &mut core, |e| matches!(e, Effect::OpenNote { .. }));
+        let Effect::OpenNote { note, line } = note else {
+            unreachable!()
+        };
+        assert_eq!(note, Path::new("Journal/2026-11-05.md"));
+        assert!(line.is_some());
+
+        let closed = ViewNews::Closed { view };
+        r.call(ExtId(0), Some(&mut core), |e, h| e.view(closed, h));
+        until(&mut r, &mut core, |e| {
+            notes(std::slice::from_ref(e)) == ["closed the list of open tasks"]
+        });
+        r.shutdown();
+        let log = std::fs::read_to_string(dir.join("open-tasks.log")).unwrap();
+        assert_eq!(log, "", "nothing on stderr");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -32,10 +32,12 @@ pub enum Place {
         ty: String,
         spot: crate::table::Spot,
     },
-    /// The agenda, folded, filtered and selected as it was.
-    Agenda {
-        spot: crate::list::Spot,
-        show_done: bool,
+    /// A view an extension opened (`ext::view`), which keeps how it was while it is open;
+    /// `label` is the extension's name.
+    View {
+        owner: crate::ext::ExtId,
+        view: crate::ext::view::ViewId,
+        label: String,
     },
 }
 
@@ -52,7 +54,7 @@ impl Place {
             Place::Search { query, .. } => format!("search “{query}”"),
             Place::Graph { .. } => "graph".to_string(),
             Place::Table { ty, .. } => format!("{ty} table"),
-            Place::Agenda { .. } => "agenda".to_string(),
+            Place::View { label, .. } => label.clone(),
         }
     }
 }
@@ -114,6 +116,12 @@ impl History {
                 };
             }
         }
+    }
+
+    /// Drop the places `keep` doesn't keep (views that closed).
+    pub fn retain(&mut self, keep: impl Fn(&Place) -> bool) {
+        self.back.retain(&keep);
+        self.forward.retain(&keep);
     }
 
     pub fn clear(&mut self) {

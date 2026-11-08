@@ -330,10 +330,6 @@ fn date(v: &Json) -> Option<NaiveDate> {
 }
 
 impl Select {
-    fn matches(&self, note: &Note, item: &Item) -> bool {
-        item.data.answers_to(&self.kind) && self.filter.matches(note, item)
-    }
-
     /// Refused unless its kind is a native kind or a loaded type.
     fn check(&self, workspace: &Workspace) -> Result<(), Error> {
         let kind = self.kind.as_str();
@@ -391,7 +387,10 @@ fn answer<'a>(workspace: &Workspace, note: &Note, item: &'a Item) -> Cow<'a, Ite
 /// `answer`, for an item of the note at `rel` (workspace-relative, with `.md`).
 fn answered(workspace: &Workspace, rel: &str, item: Item) -> Item {
     let rel = rel.strip_suffix(".md").unwrap_or(rel);
-    match workspace.notes.binary_search_by(|n| n.rel.as_str().cmp(rel)) {
+    match workspace
+        .notes
+        .binary_search_by(|n| n.rel.as_str().cmp(rel))
+    {
         Ok(i) => answer(workspace, &workspace.notes[i], &item).into_owned(),
         Err(_) => item,
     }
@@ -884,13 +883,22 @@ fields.text = { rest = true }
         assert_eq!(field(&chore, "status_type"), "in_progress");
         let sub = core.subscribe_items("t", select("task", Filter::default()));
         let edited = core.edit_item("t", &tick(&chore)).unwrap();
-        assert_eq!(field(&edited.item, "status_type"), "done", "an edit's answer");
+        assert_eq!(
+            field(&edited.item, "status_type"),
+            "done",
+            "an edit's answer"
+        );
         let news = core.take_item_news();
-        let [(_, News::Changed {
-            subscription,
-            added,
-            ..
-        })] = &news[..]
+        let [
+            (
+                _,
+                News::Changed {
+                    subscription,
+                    added,
+                    ..
+                },
+            ),
+        ] = &news[..]
         else {
             panic!("{news:?}")
         };

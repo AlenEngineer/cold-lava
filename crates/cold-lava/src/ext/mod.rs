@@ -16,6 +16,7 @@ pub mod nvim;
 pub mod process;
 pub mod rpc;
 pub mod transport;
+pub mod view;
 
 use crate::commands::{self, Entry, MenuCommand};
 use crate::core::{Core, Jump};
@@ -24,10 +25,11 @@ use crate::types::{Definitions, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use view::{Content, ViewId, ViewNews};
 
 /// A loaded extension. Only the host uses it: on the wire, the connection says who is talking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ExtId(usize);
+pub struct ExtId(pub(crate) usize);
 
 /// A pane, named by the extension that opened it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +182,27 @@ pub enum Effect {
     OpenPane { pane: PaneId, spec: PaneSpec },
     #[serde(rename = "pane/input")]
     PaneInput { pane: PaneId, text: String },
+    /// Show a view; the host named it `view`.
+    #[serde(rename = "view/open")]
+    OpenView { view: ViewId, content: Content },
+    /// What one of its views shows now; `select` is a row to select, now or when it shows up.
+    #[serde(rename = "view/update")]
+    UpdateView {
+        view: ViewId,
+        content: Content,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        select: Option<String>,
+    },
+    #[serde(rename = "view/close")]
+    CloseView { view: ViewId },
+    /// Open a note, at a line: a path inside the workspace, absolute or relative to its root
+    /// as items name their notes.
+    #[serde(rename = "workspace/open")]
+    OpenNote {
+        note: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line: Option<usize>,
+    },
 }
 
 /// An extension: built into cold-lava, or a `process::Process` speaking for one in its own
@@ -196,6 +219,8 @@ pub trait Extension {
     fn command(&mut self, _request: CommandRequest, _host: &mut Host<'_>) {}
     /// `items/changed`, `items/reset`: news for a subscription it made.
     fn items(&mut self, _news: News, _host: &mut Host<'_>) {}
+    /// `view/event`, `view/closed`: what the user did in a view it opened.
+    fn view(&mut self, _news: ViewNews, _host: &mut Host<'_>) {}
     /// The menu opened a workspace (`None`: it has none open). An extension in a process starts
     /// here, with `initialize`, and stops when the workspace closes.
     fn workspace(&mut self, _root: Option<&Path>, _host: &mut Host<'_>) {}
@@ -218,6 +243,7 @@ pub trait Extension {
 pub struct Host<'a> {
     effects: Vec<Effect>,
     next_pane: &'a mut u32,
+    next_view: &'a mut u32,
     /// Who is asking: the name in its manifest, which edits are attributed to.
     name: &'a str,
     permissions: &'a [Permission],
@@ -265,6 +291,48 @@ impl Host<'_> {
     pub fn pane_input(&mut self, pane: PaneId, text: impl Into<String>) {
         let text = text.into();
         self.effects.push(Effect::PaneInput { pane, text });
+    }
+
+    /// `view/open`: the view shows once the call returns, in place of what showed, which Back
+    /// returns to. Refused when it is over the limits (`view::MAX_ROWS`, …).
+    pub fn open_view(&mut self, content: Content) -> Result<ViewId, gateway::Error> {
+        content
+            .check()
+            .map_err(|why| gateway::Error::new(Reason::Refused, why))?;
+        *self.next_view += 1;
+        let view = ViewId(*self.next_view);
+        self.effects.push(Effect::OpenView { view, content });
+        Ok(view)
+    }
+
+    /// `view/update`: one of its views shows `content` now, keeping the selection (or
+    /// selecting `select`), the folds, the sort and the filter by id. Updates in one frame
+    /// draw once, the last.
+    pub fn update_view(
+        &mut self,
+        view: ViewId,
+        content: Content,
+        select: Option<String>,
+    ) -> Result<(), gateway::Error> {
+        content
+            .check()
+            .map_err(|why| gateway::Error::new(Reason::Refused, why))?;
+        (self.effects).push(Effect::UpdateView {
+            view,
+            content,
+            select,
+        });
+        Ok(())
+    }
+
+    /// `view/close`
+    pub fn close_view(&mut self, view: ViewId) {
+        self.effects.push(Effect::CloseView { view });
+    }
+
+    /// `workspace/open`: show a note, at a line.
+    pub fn open_note(&mut self, note: PathBuf, line: Option<usize>) {
+        self.effects.push(Effect::OpenNote { note, line });
     }
 
     /// The core, when the caller's manifest asks for `needs`.
@@ -320,6 +388,7 @@ pub struct Registry {
     /// The one in the editor role, until its program fails to start.
     editor: Option<ExtId>,
     next_pane: u32,
+    next_view: u32,
     /// The menu's commands: the core's, then the extensions'.
     commands: Vec<Entry<MenuCommand>>,
     /// Why commands or keys the extensions registered were left out.
@@ -337,6 +406,7 @@ impl Registry {
         if let Some(nvim) = nvim::Nvim::detect() {
             found.push(Box::new(nvim));
         }
+        found.push(Box::new(crate::agenda::Agenda::default()));
         let dir = installed::user_dir();
         let (on_disk, mistakes) = dir.as_deref().map(installed::load).unwrap_or_default();
         let processes = !on_disk.is_empty();
@@ -354,7 +424,7 @@ impl Registry {
         Registry::new(Vec::new())
     }
 
-    fn new(extensions: Vec<Box<dyn Extension>>) -> Registry {
+    pub(crate) fn new(extensions: Vec<Box<dyn Extension>>) -> Registry {
         let loaded: Vec<_> = extensions
             .into_iter()
             .map(|mut e| {
@@ -372,6 +442,7 @@ impl Registry {
             loaded,
             editor,
             next_pane: 0,
+            next_view: 0,
             commands,
             refused,
             mistakes: Vec::new(),
@@ -449,6 +520,7 @@ impl Registry {
         let mut host = Host {
             effects: Vec::new(),
             next_pane: &mut self.next_pane,
+            next_view: &mut self.next_view,
             name: &manifest.name,
             permissions: &manifest.permissions,
             core,
@@ -463,6 +535,7 @@ impl Registry {
         Host {
             effects: Vec::new(),
             next_pane: &mut self.next_pane,
+            next_view: &mut self.next_view,
             name,
             permissions: SCREEN_PERMISSIONS,
             core: Some(core),
@@ -530,6 +603,42 @@ mod tests {
                 text: ":w\r".into(),
             },
             json!({"method": "pane/input", "params": {"pane": 3, "text": ":w\r"}}),
+        );
+        let view = ViewId(4);
+        let content = || {
+            Content::List(crate::list::List {
+                title: "Open".into(),
+                groups: Vec::new(),
+                keys: Vec::new(),
+                empty: None,
+            })
+        };
+        let list = json!({"kind": "list", "title": "Open", "groups": []});
+        wire(
+            Effect::OpenView {
+                view,
+                content: content(),
+            },
+            json!({"method": "view/open", "params": {"view": 4, "content": list}}),
+        );
+        wire(
+            Effect::UpdateView {
+                view,
+                content: content(),
+                select: Some("r1".into()),
+            },
+            json!({"method": "view/update", "params": {"view": 4, "content": list, "select": "r1"}}),
+        );
+        wire(
+            Effect::CloseView { view },
+            json!({"method": "view/close", "params": {"view": 4}}),
+        );
+        wire(
+            Effect::OpenNote {
+                note: "Plan.md".into(),
+                line: Some(3),
+            },
+            json!({"method": "workspace/open", "params": {"note": "Plan.md", "line": 3}}),
         );
     }
 
