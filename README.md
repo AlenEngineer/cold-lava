@@ -661,6 +661,29 @@ in (`note = "date"`), take an enum's values from a setting (`values = "${tasks.s
 name fields a block must have to be of that type (`required = ["text"]`; without one the next
 type may take it).
 
+### Extensions
+
+An extension is a program, in any language, that cold-lava starts when you open a workspace. It
+reads the workspace's notes as data (tasks, list items, headings, your types), hears when they
+change, changes one item at a time through the same safe edits the table and the agenda use,
+adds commands to the palette and shows text in the status line. It never draws and never sees
+your keys. Install one by putting its folder in `~/.config/cold-lava/extensions/`:
+
+```bash
+cp -r examples/extensions/open-tasks ~/.config/cold-lava/extensions/
+cold-lava ext list            # what is installed, what each may do, and why any didn't load
+```
+
+`open-tasks`, the example in Python, keeps `☐ 4 open tasks` in the status line and adds *move
+every overdue open task to today* to the palette (`:`). Its `extension.toml` names the program
+to run, its commands and its permissions: `items.read` (the default) to read items,
+`items.edit` to change them. An extension runs as you, like an Obsidian or Neovim plugin, so
+install only ones you trust; permissions limit what cold-lava does for it, not what the program
+can do on its own. Extensions inside a workspace (`.cold-lava/extensions/`) are never run. A
+crashed extension is reported once on the status line, with the last line of its log
+(`~/.cache/cold-lava/extensions/NAME.log`); *restart extensions* in the palette starts it again.
+How to write one: [docs/extensions-guide.md](docs/extensions-guide.md).
+
 ## What it understands
 
 - `[[wikilinks]]` (with aliases, headings and embeds), and `[text](note.md)` links

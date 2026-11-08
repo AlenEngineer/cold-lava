@@ -188,8 +188,10 @@ then a query and a view, not a parser of its own.
   the core's cache: `tasks::Task::of` needs the workspace's Tasks settings to give a status
   symbol its type, and a task's line for a subtype that reads no `status`, neither of which an
   item carries. That waits for the agenda's move to an extension.
-- **Not yet:** the transport (the next step, which dispatches `gateway::Request` and carries
-  `News`), `workspace/*` and `files/*`, and the ops `set-status`, `set-date`, `set-property`,
+- **Over the wire.** An extension in its own process sends these as JSON-RPC requests, and
+  `rpc::serve` reads each as a `gateway::Request` and answers it through the same `Host`, so
+  the permission gate is the same; news goes out as notifications ("Transport, as built").
+- **Not yet:** `workspace/*` and `files/*`, and the ops `set-status`, `set-date`, `set-property`,
   `set-cell`, `replace` and `insert-after`. `set-field` already sets a status, a date, a
   property or a cell of a typed item; the others wait until an extension needs one.
 
@@ -798,20 +800,20 @@ hidden behind one interface, so new kinds of connection can be added without tou
 protocol, the host or any extension:
 
 ```rust
-/// A bidirectional, message-framed connection to one extension.
+/// A message-framed connection to one extension. None of these wait for the extension.
 pub trait Transport: Send {
-    /// Send one complete message (a serialized JSON-RPC object).
-    fn send(&mut self, message: &[u8]) -> io::Result<()>;
-    /// The next complete message, or None when the other side closed the connection.
-    fn recv(&mut self) -> io::Result<Option<Vec<u8>>>;
-    fn close(&mut self) -> io::Result<()>;
+    /// Queue one whole message (a serialized JSON-RPC object).
+    fn send(&mut self, message: Vec<u8>) -> io::Result<()>;
+    /// The next message that came in: a message, nothing yet, or closed and why.
+    fn try_recv(&mut self) -> Received;
+    /// End the connection; a process still running after `grace` is killed.
+    fn close(&mut self, grace: Duration);
 }
 
-/// Knows how to open a transport to an extension described by its manifest.
-pub trait Connector {
-    /// The `transport` value in a manifest this connector handles, e.g. "stdio".
+/// Knows how to open one kind of transport, by the `transport` value in a manifest.
+pub trait Connector: Sync {
     fn kind(&self) -> &'static str;
-    fn connect(&self, manifest: &Manifest) -> io::Result<Box<dyn Transport>>;
+    fn connect(&self, launch: &Launch) -> io::Result<Box<dyn Transport>>;
 }
 ```
 
@@ -825,6 +827,44 @@ pub trait Connector {
   cold-lava, which lets built-in and external extensions use exactly the same code path.
 - The manifest picks the transport; connectors are registered by kind, so adding one is a new
   `Connector` and nothing else.
+
+### Transport, as built
+
+- **Where it lives.** `crates/cold-lava/src/ext/`: `frame.rs` (the framing), `transport.rs`
+  (`Transport`, `Connector`, `CONNECTORS` and the stdio connector), `rpc.rs` (JSON-RPC
+  messages, and `serve`, which answers an extension's request through `Host`), `process.rs`
+  (`Process`, the `Extension` that speaks for one in another process) and `installed.rs`
+  (manifests on disk). A guide for extension authors is [extensions-guide.md](extensions-guide.md),
+  with an example in Python in `examples/extensions/open-tasks`.
+- **Framing: LSP's.** `Content-Length: N\r\n\r\n` then N bytes of UTF-8 JSON; other header
+  lines are ignored, a bare `\n` is read too, and a message over 64 MiB is refused. Chosen over
+  newline-delimited JSON because a message is read whole without scanning its bytes, a stray
+  newline or a pretty-printed message can't split one, and every language has LSP code to copy.
+  Bad framing on stdout ends the connection, as the stream can't be trusted after it.
+- **Never waiting.** The trait differs from the sketch above: `try_recv` instead of a blocking
+  `recv`, since the menu polls. The stdio transport runs a reader thread and a writer thread
+  per extension, each behind a channel of 256 messages: an extension that floods cold-lava waits
+  on its own pipe, and one that stops reading its input is stopped once the 256 fill up, instead
+  of making the menu wait. The menu calls `Extension::poll` each frame (every 50 ms when an
+  extension runs in a process), which reads at most 64 messages and answers them.
+- **Starting and stopping.** A process starts when the menu opens a workspace
+  (`Extension::workspace`) in the extension's folder, its stderr written to
+  `~/.cache/cold-lava/extensions/NAME.log`, new each start. Opening another workspace stops it
+  and starts a new one, since its subscriptions belong to the old workspace. At quit, and before
+  that new start, it gets `shutdown`, then `exit`, then the end of its input, and is killed if it
+  is still running 500 ms later. The CLI's commands (`agenda`, `items`, `keys`, …) never start
+  one.
+- **Time limits.** An extension that doesn't answer `initialize` in 10 s is stopped. A
+  `command/run` it doesn't answer in 10 s is reported (`open-tasks didn't answer
+  open-tasks.count in 10 s`), and it keeps running.
+- **A crash** (its output ends, or it can't be written to) is said once on the status line with
+  the last line of its log, its `ui/status` text is cleared, its subscriptions are stopped, and
+  its commands are left out of the palette and their keys do nothing. `extensions.restart`
+  ("restart extensions" in the palette) starts the stopped ones again.
+- **Security.** An extension runs as you, as Obsidian's and Neovim's plugins do. Its
+  `permissions` limit what the workspace gateway does for it; they don't sandbox the process,
+  which can read and write files like any program you run. That is why only extensions in your
+  config folder are loaded (see "Manifest").
 
 ## Protocol
 
@@ -863,10 +903,35 @@ Paths are absolute and inside the workspace. A message's tag is its method name,
 Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
 (with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
 `editor/deleted`, `pane/message`, `pane/exited`, `items/changed` and `items/reset` from the
-host, and `ui/notify`, `command/run`, `editor/opened`, `workspace/saved`, `pane/open`,
-`pane/input`, `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit` and
-`types/list` from the extension. The `items/*` and `types/list` requests are answered during
+host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`, `workspace/saved`,
+`pane/open`, `pane/input`, `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit`
+and `types/list` from the extension. The `items/*` and `types/list` requests are answered during
 the call; the rest are queued.
+
+### Over the wire, as built
+
+- **Host → extension.** `initialize` is a request, with `apiVersion` (1), the extension's
+  `name`, `workspace` (`root`, absolute, and `name`), its `permissions`, and
+  `capabilities.methods`, the methods it may call; its answer is not read, but an error stops
+  it. `command/run` (`id`, `args`) is a request, so a refusal (the error's message) and a
+  missing answer show on the status line. `shutdown` is a request, then `exit` a notification,
+  as LSP does. `items/changed`, `items/reset`, `pane/message`, `pane/exited` and the `editor/*`
+  messages are notifications, the same `{"method", "params"}` the in-process types pin.
+  Commands come from the manifest, not from `initialize`, so the menu's command table and
+  `config.toml`'s keys are checked before any extension starts.
+- **Extension → host.** Requests, answered with a result or an error: the workspace gateway's
+  (`items/query` with `{items, next}`, `items/subscribe` with `{subscription}`,
+  `items/unsubscribe` and `types/list`, and `items/edit` with `{item, changed, next,
+  warning}`), and `ui/notify` (`message`), `ui/status` (`text`, `null` to clear: the
+  extension's own part of the first status line, kept until it sends another), `command/run`
+  (`id`, `args`), `workspace/saved` and `editor/opened` (`note`), `pane/open` (`program`,
+  `args`, answered with `{pane}`) and `pane/input` (`pane`, `text`), each answered `null` once
+  queued. The same methods sent as notifications do the same and get no answer.
+- **Errors.** A refusal of the workspace gateway is code `-32000` with the refusal as `data`:
+  `{"code": -32000, "message": "...", "data": {"reason": "forbidden", "message": "..."}}`. Bad
+  params are `-32602` (an unknown op or filter key, named in the message), an unknown method
+  `-32601`, a message that isn't JSON `-32700` and one that isn't JSON-RPC 2.0 `-32600`, all
+  with `data.reason` `refused`.
 
 - **Saves are not acknowledged yet.** `editor/save` gets no answer, so before it reads the files
   (to rename a note, to show the reader, to quit) the core waits 300 ms. A later version answers
@@ -887,13 +952,14 @@ shows one pane at a time and answers a second `pane/open` with `pane/exited`.
 ## Manifest
 
 ```toml
-# .cold-lava/extensions/word-count/extension.toml (per workspace)
-# or ~/.config/cold-lava/extensions/word-count/extension.toml (for every workspace)
-name = "word-count"
+# ~/.config/cold-lava/extensions/word-count/extension.toml
+name = "word-count"              # lowercase letters, digits and dashes; the folder's name
+title = "Word count"             # optional, for people
 version = "0.1.0"
-api = "1"
-transport = "stdio"
-command = ["python3", "main.py"]
+description = "Counts the words in each note"
+api = 1                          # the default
+transport = "stdio"              # the default
+run = ["python3", "main.py"]     # run in the extension's folder
 permissions = ["items.read"]    # the default; add "items.edit" to change items
 
 [types.doc]                      # loaded as word-count.doc
@@ -905,6 +971,26 @@ id = "word-count.show"           # must start with the extension's name
 title = "Word count of this note"
 keys = ["W"]                     # default keys; config.toml can change them
 ```
+
+### Loading, as built
+
+- **Where from.** One folder per extension in `~/.config/cold-lava/extensions/` (the config
+  folder `paths::config_dir` gives), by folder name, after the built-in ones. The folder must
+  be named as the extension. `run` is what the sketch called `command`: a word apart from
+  `[[commands]]`.
+- **Mistakes** are collected like config.toml's: an unknown field, a bad name, a name
+  cold-lava keeps (`nvim`, `table`, `agenda`, `reader`), a folder named otherwise, a second
+  extension of the same name, an `api` other than 1, a transport cold-lava doesn't have, an empty
+  `run` or a permission it doesn't know leave that extension out with one line each. The menu
+  says so at start, and `cold-lava ext list [WORKSPACE]` prints every extension (where it runs
+  from, its permissions, commands, types and log) and then the mistakes, exiting 1 when there
+  are any.
+- **Not from a workspace.** A workspace's `.cold-lava/extensions/` would travel with it, so a
+  cloned repository could carry a program that runs as you the moment the folder is opened.
+  Loading those after a one-time trust prompt (remembered per workspace) is future work; it
+  also needs the menu's command table and `config.toml`'s keys to change with the open
+  workspace, which today are checked once at start. Until then they are never run, and `ext
+  list WORKSPACE` names them as not loaded.
 
 ### Permissions
 
@@ -1036,6 +1122,10 @@ after its call returns, so it never holds the menu's state.
       extension. Then the whiteboard.
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
+   *(in progress: the stdio transport, JSON-RPC, manifests in `~/.config/cold-lava/extensions`,
+   `cold-lava ext list`, `ui/status` and the `open-tasks` example in Python, checked by a drive
+   script, are done ("Transport, as built"); next is `view/open`, so an extension can send the
+   list and table views, then workspace-local extensions behind a trust prompt)*
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
 
 ## Compatibility with Obsidian plugins

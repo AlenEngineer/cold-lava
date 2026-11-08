@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+/// Its name in messages and commands.
+pub const NAME: &str = "nvim";
+
 pub struct Nvim {
     program: String,
     /// Its pane, while it runs.
@@ -105,8 +108,10 @@ impl Extension for Nvim {
     fn initialize(&mut self) -> Manifest {
         let hint = |key: &str, does: &str| (key.to_string(), does.to_string());
         Manifest {
-            name: "nvim".to_string(),
+            name: NAME.to_string(),
             title: self.title().to_string(),
+            version: String::new(),
+            description: String::new(),
             roles: vec![Role::Editor],
             hints: vec![
                 hint("⏎ on a [[link]]", "follows it"),

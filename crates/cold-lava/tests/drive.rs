@@ -776,3 +776,103 @@ fn deleting_the_note_open_in_neovim_doesnt_bring_it_back() {
     assert!(system_trash(&home).join("Lava.md").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+fn has_python() -> bool {
+    let python = Command::new("python3").arg("--version").output();
+    python.is_ok_and(|o| o.status.success())
+}
+
+/// The example extension installed in `home`, and an overdue task in the workspace for it.
+fn install_open_tasks(dir: &Path, home: &Path) {
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions/open-tasks"),
+        &home.join(".config/cold-lava/extensions/open-tasks"),
+    );
+    let late = "- [ ] Check the seismograph 📅 2026-11-01\n";
+    std::fs::write(dir.join("example-workspace/Inbox/Seismograph.md"), late).unwrap();
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn the_python_example_extension_counts_and_moves_tasks() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("open-tasks");
+    let home = dir.join("home");
+    install_open_tasks(&dir, &home);
+    let out = drive_with(
+        "open-tasks.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let moved = std::fs::read_to_string(dir.join("example-workspace/Inbox/Seismograph.md"));
+    assert_eq!(
+        moved.unwrap(),
+        "- [ ] Check the seismograph 📅 2026-11-07\n"
+    );
+    let log = home.join(".cache/cold-lava/extensions/open-tasks.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ext_list_prints_what_each_extension_may_do() {
+    let dir = sandbox("ext-list");
+    let home = dir.join("home");
+    install_open_tasks(&dir, &home);
+    let broken = home.join(".config/cold-lava/extensions/broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("extension.toml"), "name = \"broken\"\n").unwrap();
+    let carried = dir.join("example-workspace/.cold-lava/extensions/carried");
+    std::fs::create_dir_all(&carried).unwrap();
+    let manifest = "name = \"carried\"\nversion = \"1\"\nrun = [\"sh\"]\n";
+    std::fs::write(carried.join("extension.toml"), manifest).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .args(["ext", "list"])
+        .arg(dir.join("example-workspace"))
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("COLD_LAVA_EDITOR", "none")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let installed = home.join(".config/cold-lava/extensions/open-tasks");
+    let log = home.join(".cache/cold-lava/extensions/open-tasks.log");
+    let expected = format!(
+        "open-tasks 0.1.0  {}\n\
+         \x20 Counts the workspace's open tasks in the status line, and moves overdue ones to today\n\
+         \x20 runs: python3 main.py (stdio)\n\
+         \x20 permissions: items.read, items.edit\n\
+         \x20 command: open-tasks.count  say how many tasks are open, and how many are overdue\n\
+         \x20 command: open-tasks.reschedule  move every overdue open task to today\n\
+         \x20 log: {}\n\
+         carried  {}\n\
+         \x20 not loaded: extensions inside a workspace aren't loaded yet; copy it to the \
+         extensions folder in ~/.config/cold-lava to use it\n",
+        installed.display(),
+        log.display(),
+        carried.display(),
+    );
+    assert_eq!(stdout, expected);
+    assert!(stderr.starts_with("didn't load:\n"), "{stderr}");
+    assert!(
+        stderr.contains("broken/extension.toml: missing field `version`"),
+        "{stderr}"
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let _ = std::fs::remove_dir_all(dir);
+}

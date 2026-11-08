@@ -1,0 +1,23 @@
+# The example extension (examples/extensions/open-tasks), installed in the empty home by
+# tests/drive.rs, which also adds an overdue task to Inbox/Seismograph.md. Its count of open
+# tasks is in the status line, kept current by its subscription when x ticks a task in the
+# reader, and its command runs from the palette and moves the overdue task to today.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 4 open tasks
+keys p
+type 2026-11-05
+wait-for 1 note
+keys enter
+wait-for Journal/2026-11-05  reading
+keys x
+wait-for ☐ 3 open tasks
+keys esc :
+type overdue
+wait-for move every overdue open task to today
+keys enter
+wait-for moved 1 overdue task to today
+screen
+keys q
+exits 0

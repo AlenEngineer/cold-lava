@@ -13,3 +13,10 @@ pub fn config_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|h| h.join(".config")))
 }
+
+/// Where files that can be thrown away live: logs, caches.
+pub fn cache_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".cache")))
+}

@@ -55,6 +55,8 @@ Usage:
   cold-lava tidy WORKSPACE            orphan notes, unused attachments, empty folders and
                                       unresolved links (read-only)
   cold-lava keys                      every command and its keys; checks config.toml
+  cold-lava ext list [WORKSPACE]      installed extensions, what each may do, and why any
+                                      didn't load
   cold-lava types [WORKSPACE]         every type: where it comes from, what it found, its
                                       shapes and fields;
                                       checks [types] in config.toml and .cold-lava/types.toml
@@ -173,7 +175,7 @@ fn run() -> Result<()> {
         app::Render::Auto
     };
     let json = args.has("json");
-    let registry = ext::Registry::builtin();
+    let registry = ext::Registry::load();
     config::load(registry.commands());
     let mut layers: Vec<types::Layer> = registry
         .manifests()
@@ -207,6 +209,16 @@ fn run() -> Result<()> {
                 }
             }
             if !errors.is_empty() || !registry.refused().is_empty() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some("ext") => {
+            if args.word(1) != Some("list") {
+                anyhow::bail!("usage: cold-lava ext list [WORKSPACE]");
+            }
+            print_extensions(&registry, args.word(2).map(Path::new));
+            if !registry.mistakes().is_empty() {
                 std::process::exit(1);
             }
             Ok(())
@@ -680,6 +692,80 @@ fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
         println!("  {:id_width$}  {label:key_width$}  {}", c.id, c.title);
     }
     println!();
+}
+
+/// `cold-lava ext list`: every extension, built in or installed, with what it may do; then the
+/// ones that didn't load and why, and those a workspace carries, which aren't loaded.
+fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
+    let installed = ext::installed::user_dir()
+        .map(|d| ext::installed::load(&d).0)
+        .unwrap_or_default();
+    for m in registry.manifests() {
+        let on_disk = installed.iter().find(|i| i.manifest.name == m.name);
+        let version = match m.version.as_str() {
+            "" => String::new(),
+            v => format!(" {v}"),
+        };
+        let from = match on_disk {
+            Some(i) => i.launch.dir.display().to_string(),
+            None => "built in".to_string(),
+        };
+        println!("{}{version}  {from}", m.name);
+        if !m.description.is_empty() {
+            println!("  {}", m.description);
+        }
+        if let Some(i) = on_disk {
+            println!(
+                "  runs: {} ({})",
+                i.launch.run.join(" "),
+                i.launch.transport
+            );
+        }
+        let permissions: Vec<String> = (m.permissions.iter())
+            .map(|p| {
+                serde_json::to_value(p)
+                    .ok()
+                    .and_then(|v| v.as_str().map(String::from))
+            })
+            .map(Option::unwrap_or_default)
+            .collect();
+        match permissions.is_empty() {
+            true => println!("  permissions: none"),
+            false => println!("  permissions: {}", permissions.join(", ")),
+        }
+        for c in &m.commands {
+            println!("  command: {}  {}", c.id, c.title);
+        }
+        if !m.types.is_empty() {
+            let names: Vec<String> = m.types.keys().map(|t| format!("{}.{t}", m.name)).collect();
+            println!("  types: {}", names.join(", "));
+        }
+        if let Some(log) = on_disk.and_then(|i| i.launch.log.as_ref()) {
+            println!("  log: {}", log.display());
+        }
+    }
+    if let Some(dir) = ext::installed::user_dir()
+        && installed.is_empty()
+    {
+        println!("no extensions installed in {}", dir.display());
+    }
+    if let Some(root) = workspace {
+        let (local, _) = ext::installed::load(&root.join(".cold-lava/extensions"));
+        for i in local {
+            println!(
+                "{}  {}\n  not loaded: extensions inside a workspace aren't loaded yet; \
+                 copy it to the extensions folder in ~/.config/cold-lava to use it",
+                i.manifest.name,
+                i.launch.dir.display()
+            );
+        }
+    }
+    if !registry.mistakes().is_empty() {
+        eprintln!("didn't load:");
+        for e in registry.mistakes() {
+            eprintln!("  {e}");
+        }
+    }
 }
 
 /// `cold-lava types`: each type with where it comes from, then each shape with the fields it
