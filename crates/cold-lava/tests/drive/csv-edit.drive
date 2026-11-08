@@ -1,0 +1,55 @@
+# Edits and renames reach a file another owner reads through its owner (docs/extensions.md,
+# "Owners and types, as built"). csv-table, installed in the empty home by tests/drive.rs, puts
+# each piece back in its cells; tests/drive.rs then reads Volcanoes/Eruptions.csv.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for example-workspace
+keys /
+type krakatoa
+wait-for Krakatoa
+keys enter
+# csv-table has read the CSV once Krakatoa's backlinks list it.
+wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+# The agenda ticks the CSV's task as it ticks a note's.
+keys left A
+wait-for Read the Royal Society report on Krakatoa
+keys G x
+wait-for 12s done: Read the Royal Society report on Krakatoa
+expect ☑ Read the Royal Society report on Krakatoa
+keys esc
+# The table sets the VEI of the CSV's Krakatoa row.
+keys i
+wait-for eruption        8
+keys j j enter
+wait-for 8 rows
+keys /
+type krakatoa
+keys enter
+wait-for 2 of 8 rows · /krakatoa
+keys j e
+wait-for vei: 6▏
+keys ctrl+u
+type 7
+keys enter
+wait-for 12s Volcanoes/Eruptions.csv: vei set to 7
+expect   7   ·
+screen
+keys esc esc right
+# Renaming Krakatoa lists the CSV with what will change in it, and csv-table rewrites it.
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Krakatau
+keys enter
+wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Krakatau.md
+expect ▤ Volcanoes/Eruptions.csv  2 links
+expect | [[Krakatau]] | 1883 | 7 |  |
+screen
+keys enter
+wait-for renamed to Volcanoes/Krakatau.md · 6 links updated in 5 files
+wait-for 12s ← Eruptions.csv  | Krakatau | 1883 | 7 |
+expect ← Eruptions.csv  ☑ Read the Royal Society report on Krakatau
+screen
+keys q
+exits 0

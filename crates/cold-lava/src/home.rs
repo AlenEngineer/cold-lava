@@ -16,7 +16,7 @@ use crate::ext::{
     PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
-use crate::gateway::{Edit, Op, Reason};
+use crate::gateway::{Answer, Edit, Op, Reason};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
 use crate::index::Backlink;
@@ -1564,6 +1564,7 @@ impl Home {
             CoreEvent::NoteChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
+            | CoreEvent::RelinkFailed { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -1599,6 +1600,7 @@ impl Home {
             | CoreEvent::FileChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
+            | CoreEvent::RelinkFailed { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -1619,11 +1621,34 @@ impl Home {
                     path,
                     message,
                 } => self.flash(format!("{owner} couldn't read {path}: {message}")),
+                CoreEvent::RelinkFailed {
+                    owner,
+                    path,
+                    message,
+                } => self.flash(format!(
+                    "links in {path} weren't updated by {owner}: {message}"
+                )),
                 _ => {}
             }
         }
         self.tell_owners(&root, events);
         self.ask_owners();
+        self.deliver_edited();
+    }
+
+    /// Hand the answers to `items/edit` that came later (edits of files other owners read) to
+    /// whoever asked: an extension, or one of the menu's screens, whose status line says it.
+    fn deliver_edited(&mut self) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        for (by, ticket, answer) in core.take_edited() {
+            match (self.registry.by_name(&by), answer) {
+                (Some(ext), answer) => self.call(ext, |e, host| e.edited(ticket, answer, host)),
+                (None, Ok(_)) => {}
+                (None, Err(e)) => self.flash(format!("not saved: {e}")),
+            }
+        }
     }
 
     /// The tree of the workspace at `root`, with the files extensions open.
@@ -1678,15 +1703,26 @@ impl Home {
         self.ask_owners();
     }
 
-    /// Hand each owner the `file/read` requests the core has for it.
+    /// Hand each owner the `file/read` and `file/edit` requests the core has for it.
     fn ask_owners(&mut self) {
         let Some(core) = self.core.as_mut() else {
             return;
         };
-        for (owner, read) in core.take_reads() {
+        let (reads, edits) = (core.take_reads(), core.take_file_edits());
+        for (owner, read) in reads {
             match self.registry.by_name(&owner) {
                 Some(ext) => self.call(ext, |e, host| e.read_file(read, host)),
                 None => drop(read),
+            }
+        }
+        for (owner, edit) in edits {
+            match (self.registry.by_name(&owner), self.core.as_mut()) {
+                (Some(ext), _) => self.call(ext, |e, host| e.edit_file(edit, host)),
+                (None, Some(core)) => {
+                    let why = Err(format!("{owner} isn't loaded"));
+                    core.file_edited(&owner, &edit.path, &edit.rev, why);
+                }
+                (None, None) => {}
             }
         }
     }
@@ -2155,7 +2191,8 @@ impl Home {
             op: Op::Toggle,
         };
         let (msg, at) = match self.registry.screen(by, core).edit_item(&edit) {
-            Ok(e) => {
+            Ok(Answer::Later(_)) => (format!("ticking: {}", agenda::links_as_text(text)), None),
+            Ok(Answer::Now(e)) => {
                 let settings = &core.index.workspace.item_settings().tasks;
                 let status = match &e.item.data {
                     items::Data::Typed(t) => (t.fields.get("status"))
@@ -3640,6 +3677,10 @@ impl Home {
                 .collect();
         }
         self.reload_tree();
+        if let Some(core) = self.core.as_mut() {
+            core.relink_owned(&plan);
+            self.ask_owners();
+        }
         if let Some(first) = plan.moves.first() {
             self.select_path(&first.to_path);
         }
@@ -6328,8 +6369,12 @@ fn link_changes(e: &crate::rename::FileEdit, width: u16) -> Vec<Line<'static>> {
         if c.after.trim().chars().count() > t.chars().count() {
             t.push('…');
         }
+        let line = match c.line {
+            0 => String::new(),
+            n => n.to_string(),
+        };
         out.push(Line::from(vec![
-            Span::styled(format!("   {:>4}  ", c.line), Style::new().fg(DIM)),
+            Span::styled(format!("   {line:>4}  "), Style::new().fg(DIM)),
             Span::styled(t, Style::new().fg(NOTE)),
         ]));
     }

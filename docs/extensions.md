@@ -175,7 +175,9 @@ then a query and a view, not a parser of its own.
   `exists` (`workspace/create` at a path where a file is).
 - **Edits are made during the call, not queued.** An extension's reads and edits both need an
   answer (the new `rev`, or why it was refused), and a later edit in the same call must see the
-  first one, so the core edits and reads the note again before `edit_item` returns. The
+  first one, so the core edits and reads the note again before `edit_item` returns. An item of
+  a file another owner reads is the exception: its owner writes it, so the answer comes later
+  ("Owners and types, as built"). The
   frontend's state is never touched during the call: the edit's events wait in the core and
   the next `poll` returns them, which the menu reads before it draws. The rule that effects
   are queued still holds for everything that changes the menu.
@@ -754,8 +756,8 @@ style.minutes = { badge = true, icon = "⏱" }
 ## File types
 
 *(design; owners in manifests, `file/open`, `file/changed` and the file messages exist: "File
-types, as built" below. Items and links contributed by owners, previews and the whiteboard as
-an owner are design.)*
+types, as built" below; so do items and links from owners and edits through them: "Owners and
+types, as built". Previews and the whiteboard as an owner are design.)*
 
 Markdown is the engine's own format. Any other kind of file (`.canvas`, `.kanban`,
 `.excalidraw`, `.csv`) can have an **owner**: an extension that says so in its manifest.
@@ -790,9 +792,9 @@ new = "kanban.new"         # the command that makes one
 
 ### Owners and types
 
-*(design: the next slice of file types; Markdown is behind the owner interface, and owners in
-other processes give items and links: "Owners and types, as built" below; edits and renames
-through owners are design)*
+*(design; Markdown is behind the owner interface, and owners in other processes give items and
+links, and edit and relink their files: "Owners and types, as built" below. Owners on top of
+Markdown are design)*
 
 **Separated by file type, united by type data.** Types are what the user works with; a file type
 only decides how data is written down. A task is a `task` whether it is a line in a note, a card
@@ -973,10 +975,62 @@ graph all see the new date. None of them knew what a canvas is.
   table-row shape of that type in the example workspace's `types.toml`, five backlinks on
   Krakatoa and a task in the agenda. `csv-items.drive` checks it through the menu, and
   `ext/process.rs` through the real transport.
-- **Not yet:** `items/edit` on an item in an owned file is refused as `refused` (`file/edit`),
-  a rename doesn't rewrite links in owned files, the CLI's commands (`agenda`, `items`, `table`)
-  don't read owned files (they start no extension; the cache could serve them), owner-shipped
-  types need a shape like any type, and an owned file has no backlinks pane of its own.
+- **Edits through the owner** (`owner/edits.rs`, `Core::edit_item`, `file_edited`).
+  `items/edit` on an item of an owned file makes the change to what the owner gave: on a
+  Markdown piece, the Markdown owner's `edit` on the piece's text (kept on `Owned::given`, so
+  `toggle` and `set-field` behave exactly as in a note); on a typed item, `{field, value}`
+  (`toggle` is refused there: a typed item has no checkbox to tick). It is refused at once when
+  the item isn't the version `rev`, the file on disk isn't the version the owner read, or
+  another edit of the file is waiting for its owner. Then the owner is asked:
+
+  | Request (host → owner) | Answer |
+  | --- | --- |
+  | `file/edit {path, rev, text, changes}` | `{text}`, the file's new text |
+
+  A change is `{place, text}` (a piece's new text), `{place, field, value}` (a typed item's
+  field) or `{place, link, to}` (a link the owner reported, for a rename), at one of the owner's
+  places (`given::Change`).
+- **Read back before writing.** The owner's new text is handed back to it as `file/read` with
+  its own `rev`, and the answer must read as what the owner gave before with the changes made
+  (`given::apply`): the same items, compared by kind and fields, and the same link targets,
+  ignoring ids and places, since a place can be part of what changed (a CSV row's first cell).
+  Only then is the text written, with `write::replace` against the text the edit began from, so
+  a change made meanwhile refuses it as `changed`. Notes are read back before they are written
+  too; here it costs the owner one more read, and a mismatch writes nothing. What the owner
+  gave for the new text is kept for its `rev`, so the watcher's `FileChanged` asks nothing
+  again. Then `OwnedChanged` and `ItemEdited`, with `note` the file's path and `by` whoever
+  asked, as for a note. A refusal (`refused`), an answer that isn't text or is the old text, a
+  read-back that differs (`read-back`, "nothing was written"), no answer in 10 s or an owner
+  that stopped all fail the edit with the owner's name and why, and the file is as it was.
+- **Answered later.** `Core::edit_item` answers `Answer::Now` for a note and `Answer::Later
+  (ticket)` for an owned file; `Core::take_edited` has the answers by who asked, which the menu
+  hands out after the frame's item news. Over the wire nothing changes: `rpc::serve` keeps the
+  request's id and `Process` sends the same JSON-RPC response once the answer is in, so a caller
+  can tell a note from an owned file only by how long it took. A built-in extension gets it as
+  `Extension::edited(ticket, answer)`: the agenda and the table keep what they asked by ticket
+  and say how it went then. The menu never waits: requests go out with the frame's `file/read`
+  requests (`Core::take_file_edits`), `Process` times them out after 10 s like reads, and the
+  core holds at most one edit per file.
+- **Renames.** `rename::plan` also lists the owned files whose links change, with their owner
+  (`FileEdit::owned`): each Markdown piece relinked by the Markdown owner's `relink` as a note
+  is, and each link the owner reported on its own, through the same `Rewriter`. A file whose
+  owner hasn't read it as it is now is left out with a warning. `apply` checks those files
+  didn't change, makes the moves and writes the notes; then `Core::relink_owned` asks each owner
+  `file/edit` with the plan's changes, read back and written as an item edit. An owner that
+  refuses, differs or doesn't answer leaves its file as it was, reported as
+  `Event::RelinkFailed` ("links in Volcanoes/Eruptions.csv weren't updated by csv-table: …");
+  the notes are renamed by then, and the file's links stay unresolved until it is fixed.
+- **The example** puts each piece back where it came from: a row's one-row table into the row's
+  cells (keeping its Markdown cells, which the row showed empty), a Markdown cell into its cell,
+  and refuses a row without its first cell, which names it. `csv-edit.drive` ticks the CSV's
+  task in the agenda, sets a row's VEI in the table and renames Krakatoa, and `tests/drive.rs`
+  reads the CSV after; `csv-edit-refused.drive` runs a copy that refuses every edit and doesn't
+  answer one, and the CSV is unchanged. `ext/process.rs` checks the late JSON-RPC answer and
+  the timeout through the transport.
+- **Not yet:** a merge (`merge.rs`) doesn't rewrite links in owned files, the CLI's
+  `rename` and `merge` don't either and its `agenda`, `items` and `table` don't read owned files
+  (they start no extension; the cache could serve them), owner-shipped types need a shape like
+  any type, and an owned file has no backlinks pane of its own.
 
 ## Commands
 
@@ -1415,8 +1469,8 @@ after its call returns, so it never holds the menu's state.
       `workspace/create` and `workspace/files`, with the `csv-table` example, are done ("File
       types, as built"), and so are Markdown as the first owner behind the owner interface and
       items and links from owners in other processes, cached by `rev` ("Owners and types, as
-      built"); next are edits and renames through owners (`file/edit`, "Owners and types"),
-      then the whiteboard)*
+      built"), and so are edits and renames through owners (`file/edit`); next is the
+      whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.

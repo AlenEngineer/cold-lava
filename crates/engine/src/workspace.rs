@@ -67,6 +67,9 @@ pub struct Owned {
     pub places: HashMap<String, String>,
     /// Its links, each with the owner's place for it.
     pub links: Vec<(Ref, String)>,
+    /// What the owner gave for `rev`: its Markdown pieces' texts, typed items' fields and links,
+    /// which an edit or a rename changes and asks the owner to write (`file/edit`).
+    pub given: crate::owner::given::Given,
 }
 
 pub struct Workspace {

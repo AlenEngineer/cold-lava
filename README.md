@@ -708,8 +708,14 @@ over each row as a table row and a cell like `- [ ] Read the report 📅 2026-11
 agenda, its `[[Krakatoa]]` shows in Krakatoa's backlinks (Enter opens the CSV at that row) and
 in the graph, and a link to the CSV leads somewhere. What an owner said is kept by file version
 under `~/.cache/cold-lava/owners/`, so a workspace opens without waiting for it; it is asked
-again only when a file changes. Editing those items, and renames rewriting links in them, come
-next.
+again only when a file changes.
+
+Those items are edited the way a note's are, through their owner: `x` in the agenda ticks the
+CSV's task, `e` in the table sets a row's VEI, and renaming Krakatoa rewrites the CSV's links
+(the rename's preview lists the CSV with the rest). cold-lava makes the change, asks csv-table
+for the file's new text, has it read that text back, and writes it only when it says what was
+asked and the file hasn't changed meanwhile. An owner that refuses, writes something else or
+doesn't answer in 10 s leaves the file as it was, and the status line says why.
 
 ## What it understands
 

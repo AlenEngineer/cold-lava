@@ -41,6 +41,19 @@ change commands, keys and file formats; patch versions only fix things.
   each row as a one-row Markdown table and each Markdown cell as Markdown, and the example
   workspace's `Volcanoes/Eruptions.csv` now has `Volcano, Year, VEI, Notes` with links and a
   task, which the `eruption` type matches with a second table-row shape.
+- Edits and renames through owners. `items/edit` (`set-field`, `toggle`) on an item of a file
+  another owner reads works as on a note's: the engine makes the change (a Markdown piece's new
+  text, or `{field, value}` for a typed item) and asks the owner `file/edit` (`path`, `rev`,
+  `text`, `changes`) for the file's new text, has the owner read that text (`file/read`), and
+  writes it only when it reads as asked, refused if the file changed since. The edit is
+  attributed like any other. Its answer comes once the owner has answered: over the wire as
+  the same JSON-RPC response, later; for built-in extensions through `Extension::edited`. An
+  owner that refuses, writes something else or doesn't answer in 10 s gets a clear refusal,
+  and nothing is written; one edit of a file waits for its owner at a time. Renaming or
+  moving a note also rewrites links in owned files (`file/edit` with the pieces' new text, or
+  `{place, link, to}` for a link the owner reported), and the preview lists those files.
+  csv-table puts pieces back in their cells, so the agenda ticks its task, the table sets a
+  row's VEI and renaming Krakatoa rewrites `Eruptions.csv`.
 
 - Extensions in their own process. A folder in `~/.config/cold-lava/extensions/` with an
   `extension.toml` (`name`, `version`, `description`, `run`, `permissions`, `[[commands]]`,

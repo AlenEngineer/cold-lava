@@ -138,6 +138,7 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
             new_text,
             links,
             changes,
+            owned: None,
         },
         target: target_rel,
         source_path: s.path.clone(),

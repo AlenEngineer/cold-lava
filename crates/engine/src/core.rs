@@ -4,10 +4,16 @@
 
 use crate::bookmarks::Bookmarks;
 use crate::files;
-use crate::gateway::{self, Edit, Edited, Found, News, Query, Select, SubId, Subscriptions};
+use crate::gateway::{
+    self, Answer, Edit, Edited, Found, News, Op, Query, Reason, Select, SubId, Subscriptions,
+    Ticket,
+};
 use crate::index::Index;
+use crate::items::Item;
 use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
-use crate::owner::given::{self, Given};
+use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Stage};
+use crate::owner::given::{self, Change, Given};
+use crate::owner::markdown::{self, After};
 use crate::workspace::{self, NoteChange, Owned};
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -45,8 +51,16 @@ pub enum Event {
     GraphSettingsChanged,
     /// `.obsidian/bookmarks.json` changed; `Core::bookmarks` has been read again.
     BookmarksChanged,
+    /// A rename couldn't update the links in a file another owner reads: its owner refused,
+    /// didn't answer, or wrote something else. The file is as it was.
+    RelinkFailed {
+        owner: String,
+        path: String,
+        message: String,
+    },
     /// An item was changed through the workspace gateway by the extension named `by`, after the
-    /// note's own `NoteChanged`. `what` says what, for the status line: "set due", "ticked".
+    /// note's own `NoteChanged` (or the owned file's `OwnedChanged`; `note` is then its path with
+    /// its extension). `what` says what, for the status line: "set due", "ticked".
     ItemEdited {
         note: String,
         item: String,
@@ -98,6 +112,8 @@ pub struct Core {
     news: Vec<(String, News)>,
     /// The extensions that own kinds of file, and what they gave.
     owners: Owners,
+    /// Edits of their files waiting for them.
+    edits: Edits,
 }
 
 impl Core {
@@ -121,6 +137,7 @@ impl Core {
             items: Subscriptions::default(),
             news: Vec::new(),
             owners: Owners::default(),
+            edits: Edits::default(),
         })
     }
 
@@ -229,7 +246,21 @@ impl Core {
     /// `file/read` requests for the owners, each with its owner's name: files whose version
     /// they gave nothing for. Their answers come back through `file_given`.
     pub fn take_reads(&mut self) -> Vec<(String, FileRead)> {
-        self.owners.take_wanted()
+        let mut reads = self.owners.take_wanted();
+        reads.append(&mut self.edits.reads);
+        reads
+    }
+
+    /// `file/edit` requests for the owners, each with its owner's name. Their answers come back
+    /// through `file_edited`.
+    pub fn take_file_edits(&mut self) -> Vec<(String, FileEdit)> {
+        std::mem::take(&mut self.edits.asks)
+    }
+
+    /// Answers to `items/edit` that `edit_item` answered `Later`: who asked, under which ticket,
+    /// and the answer.
+    pub fn take_edited(&mut self) -> Vec<(String, Ticket, Result<Edited, gateway::Error>)> {
+        std::mem::take(&mut self.edits.done)
     }
 
     /// `owner` answered `file/read` for `path` at `rev`: its items and links join the workspace
@@ -238,6 +269,10 @@ impl Core {
     pub fn file_given(&mut self, owner: &str, path: &str, rev: &str, given: Result<Given, String>) {
         if self.owners.owner_of(path) != Some(owner) {
             return;
+        }
+        let reading = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
+        if self.edits.pending.get(path).is_some_and(reading) {
+            return self.edit_read_back(path, given);
         }
         self.owners.answered(owner, path, rev, given.as_ref().ok());
         let events = match given {
@@ -297,6 +332,7 @@ impl Core {
                         items: Vec::new(),
                         places: HashMap::new(),
                         links: Vec::new(),
+                        given: Given::default(),
                     };
                     owned.insert(i, file);
                     changed.push(rel.clone());
@@ -322,7 +358,8 @@ impl Core {
                 }
                 continue;
             };
-            let read = given::read(rel, given, settings);
+            let given = given.clone();
+            let read = given::read(rel, &given, settings);
             if !read.problems.is_empty() {
                 events.push(Event::OwnerTrouble {
                     owner,
@@ -335,6 +372,7 @@ impl Core {
             file.items = read.items;
             file.places = read.places;
             file.links = read.links;
+            file.given = given;
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
             }
@@ -373,10 +411,16 @@ impl Core {
         std::mem::take(&mut self.news)
     }
 
-    /// `items/edit` on behalf of the extension named `by`. The edit goes through the safe path
-    /// its op has, then the note is read again at once, so the next query sees it; its events,
-    /// ending with `ItemEdited`, come from the next `poll`.
-    pub fn edit_item(&mut self, by: &str, edit: &Edit) -> Result<Edited, gateway::Error> {
+    /// `items/edit` on behalf of the extension named `by`. In a note, the edit goes through the
+    /// safe path its op has, then the note is read again at once, so the next query sees it, and
+    /// the answer is `Now`; its events, ending with `ItemEdited`, come from the next `poll`. In a
+    /// file another owner reads, the owner is asked for the file's new text, and the answer comes
+    /// `Later`, from `take_edited` (`edit_owned`).
+    pub fn edit_item(&mut self, by: &str, edit: &Edit) -> Result<Answer, gateway::Error> {
+        let owned = &self.index.workspace.owned;
+        if let Some(i) = owned.iter().position(|f| f.places.contains_key(&edit.id)) {
+            return self.edit_owned(by, i, edit);
+        }
         let written = gateway::write(self.root(), &self.index.workspace, edit)?;
         if written.changed {
             let mut events = self.refresh(&[self.root().join(&written.note)]);
@@ -389,7 +433,329 @@ impl Core {
             self.broadcast(&events);
             self.unseen.extend(events);
         }
-        gateway::read_back(&self.index.workspace, written)
+        let edited = gateway::read_back(&self.index.workspace, written)?;
+        Ok(Answer::Now(Box::new(edited)))
+    }
+
+    /// `items/edit` on the item `edit.id` of the owned file `owned[i]`: the change is made to
+    /// what its owner gave (a Markdown piece's text through the Markdown owner, a typed item's
+    /// field as asked), and the owner is asked for the file's new text (`file/edit`). Refused at
+    /// once when the item isn't the version `rev`, the file changed since its owner read it, or
+    /// another edit of it is waiting for its owner.
+    fn edit_owned(&mut self, by: &str, i: usize, edit: &Edit) -> Result<Answer, gateway::Error> {
+        let settings = self.index.workspace.item_settings();
+        let file = &self.index.workspace.owned[i];
+        let error = gateway::Error::new;
+        let gone = || {
+            let message = format!("{} changed since it was read: read it again", edit.id);
+            error(Reason::Changed, message)
+        };
+        let item = (file.items.iter()).find(|it| it.id == edit.id);
+        let item = item.filter(|it| it.rev == edit.rev).ok_or_else(gone)?;
+        if let Some(p) = self.edits.pending.get(&file.rel) {
+            let message = format!(
+                "{} has an edit waiting for {}: try again",
+                file.rel, p.owner
+            );
+            return Err(error(Reason::Changed, message));
+        }
+        let place = file.places[&edit.id].clone();
+        let piece = file.given.items.iter().find_map(|g| match g {
+            given::GivenItem::Markdown { place: p, text } if *p == place => Some(text),
+            _ => None,
+        });
+        let unchanged = || {
+            Answer::Now(Box::new(Edited {
+                item: item.clone(),
+                changed: false,
+                next: None,
+                warning: None,
+            }))
+        };
+        let (change, what, warning, after) = match (piece, &edit.op) {
+            (Some(text), _) => {
+                let key = format!("{}\0{place}", file.rel);
+                let made = markdown::edit(&key, text, settings, item, edit, crate::tasks::today())?;
+                if !made.changed {
+                    return Ok(unchanged());
+                }
+                let text = made.text;
+                let change = Change::Text { place, text };
+                (change, made.what, made.warning, Some(made.after))
+            }
+            (None, Op::SetField { field, value }) => {
+                let removed =
+                    value.is_null() || value.as_str().is_some_and(|v| v.trim().is_empty());
+                let what = match removed {
+                    true => format!("removed {field}"),
+                    false => format!("set {field}"),
+                };
+                let (field, value) = (field.clone(), value.clone());
+                (
+                    Change::Field {
+                        place,
+                        field,
+                        value,
+                    },
+                    what,
+                    None,
+                    None,
+                )
+            }
+            (None, Op::Toggle) => {
+                let message = format!(
+                    "{} in {} is a typed item {} gave, not a task written as Markdown: set its \
+                     status with set-field",
+                    edit.id, file.rel, file.owner
+                );
+                return Err(error(Reason::Refused, message));
+            }
+        };
+        let expect = given::apply(&file.given, std::slice::from_ref(&change));
+        let read = given::read(&file.rel, &expect, settings);
+        if !read.problems.is_empty() {
+            return Err(error(Reason::Refused, read.problems.join("; ")));
+        }
+        let at = |id: Option<&str>, line: usize| {
+            let found = (read.items.iter()).find(|it| match id {
+                Some(id) => it.id == id,
+                None => read.places.get(&it.id) == file.places.get(&edit.id) && it.line == line,
+            });
+            found.cloned().map(Box::new)
+        };
+        let (want, next) = match &after {
+            Some(After::Set(set)) => (at(Some(&set.id), 0), None),
+            Some(After::Toggled { line, next }) => {
+                (at(None, *line), next.and_then(|n| at(None, n)))
+            }
+            None => (at(Some(&edit.id), 0), None),
+        };
+        let want = want.ok_or_else(|| {
+            let message = format!("{} wouldn't read back after the edit", edit.id);
+            error(Reason::ReadBack, message)
+        })?;
+        if after.is_none() && given::same_data(&want, item) {
+            return Ok(unchanged());
+        }
+        let text = std::fs::read(&file.path)
+            .map_err(|e| error(Reason::Io, format!("{}: {e}", file.rel)))?;
+        if file.rev.as_deref() != Some(files::rev(&text).as_str()) {
+            let message = format!("{} changed since it was read: read it again", file.rel);
+            return Err(error(Reason::Changed, message));
+        }
+        let text = String::from_utf8(text)
+            .map_err(|_| error(Reason::Refused, format!("{} isn't UTF-8 text", file.rel)))?;
+        let (rel, owner) = (file.rel.clone(), file.owner.clone());
+        let ticket = self.edits.ticket();
+        let goal = Goal::Item {
+            by: by.to_string(),
+            ticket,
+            item: want,
+            next,
+            what,
+            warning,
+        };
+        let pending = Pending {
+            owner,
+            rev: files::rev(text.as_bytes()),
+            text,
+            expect,
+            goal,
+            stage: Stage::Editing,
+        };
+        self.ask_edit(rel, vec![change], pending);
+        Ok(Answer::Later(ticket))
+    }
+
+    /// Ask the owner of the file at `rel` for its new text with `changes` made (`file/edit`),
+    /// and keep `edit` until it has answered.
+    fn ask_edit(&mut self, rel: String, changes: Vec<Change>, edit: Pending) {
+        let ask = FileEdit {
+            path: rel.clone(),
+            rev: edit.rev.clone(),
+            text: edit.text.clone(),
+            changes,
+        };
+        self.edits.asks.push((edit.owner.clone(), ask));
+        self.edits.pending.insert(rel, edit);
+    }
+
+    /// `owner` answered `file/edit` for the file at `path` at version `rev`: the file's new
+    /// text, or why not. The new text is read through the owner before it is written.
+    pub fn file_edited(
+        &mut self,
+        owner: &str,
+        path: &str,
+        rev: &str,
+        text: Result<String, String>,
+    ) {
+        let asked = |p: &Pending| p.owner == owner && p.rev == rev;
+        let Some(p) = self.edits.pending.get_mut(path).filter(|p| asked(p)) else {
+            return;
+        };
+        if !matches!(p.stage, Stage::Editing) {
+            return;
+        }
+        let error = gateway::Error::new;
+        match text {
+            Err(why) => {
+                let message = format!("{owner} didn't edit {path}: {why}");
+                self.edit_failed(path, error(Reason::Refused, message));
+            }
+            Ok(text) if text == p.text => {
+                let message = format!("{owner}'s new text for {path} is the same as before");
+                self.edit_failed(path, error(Reason::ReadBack, message));
+            }
+            Ok(text) => {
+                let rev = files::rev(text.as_bytes());
+                let read = FileRead {
+                    path: path.to_string(),
+                    rev: rev.clone(),
+                    text: text.clone(),
+                };
+                p.stage = Stage::Reading { rev, text };
+                self.edits.reads.push((owner.to_string(), read));
+            }
+        }
+    }
+
+    /// The owner read the new text of the file at `path` (`given`): when it reads as asked,
+    /// write it, refused if the file changed since the edit began, and take what it gave as the
+    /// file's items and links. Else nothing is written.
+    fn edit_read_back(&mut self, path: &str, given: Result<Given, String>) {
+        let Some(p) = self.edits.pending.get(path) else {
+            return;
+        };
+        let Stage::Reading { rev, text } = &p.stage else {
+            return;
+        };
+        let error = gateway::Error::new;
+        let owner = p.owner.clone();
+        let given = match given {
+            Ok(g) => g,
+            Err(why) => {
+                let message = format!("{owner} couldn't read its new text for {path}: {why}");
+                return self.edit_failed(path, error(Reason::ReadBack, message));
+            }
+        };
+        let settings = self.index.workspace.item_settings();
+        let asked = given::read(path, &p.expect, settings);
+        let gave = given::read(path, &given, settings);
+        if let Err(diff) = given::same(&asked, &gave) {
+            let message = format!(
+                "{owner}'s new text for {path} doesn't read back as asked ({diff}); nothing was \
+                 written"
+            );
+            return self.edit_failed(path, error(Reason::ReadBack, message));
+        }
+        let written =
+            crate::write::replace(&self.root().join(path), p.text.as_bytes(), text.as_bytes());
+        if let Err(e) = written {
+            let reason = match e {
+                crate::write::WriteError::Changed(_) => Reason::Changed,
+                _ => Reason::Io,
+            };
+            return self.edit_failed(path, error(reason, format!("{path}: {e}")));
+        }
+        let rev = rev.clone();
+        let Some(p) = self.edits.pending.remove(path) else {
+            return;
+        };
+        self.owners.answered(&owner, path, &rev, Some(&given));
+        let mut events = self.owned_changed(&[path.to_string()]);
+        if let Goal::Item {
+            by,
+            ticket,
+            item,
+            next,
+            what,
+            warning,
+        } = p.goal
+        {
+            let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
+            let find = |want: &Item| {
+                let items = file.map(|f| f.items.as_slice()).unwrap_or_default();
+                (items.iter().find(|i| i.id == want.id))
+                    .or_else(|| items.iter().find(|i| given::same_data(i, want)))
+                    .cloned()
+            };
+            let answer = find(&item).map(|found| Edited {
+                item: found,
+                changed: true,
+                next: next.as_deref().and_then(find),
+                warning,
+            });
+            let answer = answer.ok_or_else(|| {
+                let message = format!("{path} was written, but {} isn't in it now", item.id);
+                error(Reason::ReadBack, message)
+            });
+            events.push(Event::ItemEdited {
+                note: path.to_string(),
+                item: item.id.clone(),
+                by: by.clone(),
+                what,
+            });
+            self.edits.done.push((by, ticket, answer));
+        }
+        self.broadcast(&events);
+        self.unseen.extend(events);
+    }
+
+    /// The edit of the file at `path` waiting for its owner failed: tell whoever asked.
+    fn edit_failed(&mut self, path: &str, e: gateway::Error) {
+        let Some(p) = self.edits.pending.remove(path) else {
+            return;
+        };
+        match p.goal {
+            Goal::Item { by, ticket, .. } => self.edits.done.push((by, ticket, Err(e))),
+            Goal::Relink => {
+                let event = Event::RelinkFailed {
+                    owner: p.owner,
+                    path: path.to_string(),
+                    message: e.message,
+                };
+                self.broadcast(std::slice::from_ref(&event));
+                self.unseen.push(event);
+            }
+        }
+    }
+
+    /// After `rename::apply`: ask the owners of the files the plan relinks through them for
+    /// their new text (`file/edit`), written as an item edit is. A file that changed since the
+    /// plan, or has an edit waiting, is left as it is and reported (`RelinkFailed`).
+    pub fn relink_owned(&mut self, plan: &crate::rename::Plan) {
+        for e in &plan.edits {
+            let Some(o) = &e.owned else { continue };
+            let path = plan.moved(&e.path);
+            let rel = path.strip_prefix(self.root()).unwrap_or(&path);
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let failed = |message: String| Event::RelinkFailed {
+                owner: o.owner.clone(),
+                path: rel.clone(),
+                message,
+            };
+            let event = match std::fs::read_to_string(&path) {
+                _ if self.edits.pending.contains_key(&rel) => {
+                    Some(failed(format!("an edit of it is waiting for {}", o.owner)))
+                }
+                Ok(text) if text == e.old_text => None,
+                _ => Some(failed("it changed since the rename was planned".into())),
+            };
+            if let Some(event) = event {
+                self.broadcast(std::slice::from_ref(&event));
+                self.unseen.push(event);
+                continue;
+            }
+            let pending = Pending {
+                owner: o.owner.clone(),
+                rev: files::rev(e.old_text.as_bytes()),
+                text: e.old_text.clone(),
+                expect: given::apply(&o.given, &o.changes),
+                goal: Goal::Relink,
+                stage: Stage::Editing,
+            };
+            self.ask_edit(rel, o.changes.clone(), pending);
+        }
     }
 
     /// `workspace/read`
@@ -431,9 +797,10 @@ impl Core {
         }
     }
 
-    /// Whether `poll` has events waiting that no file change caused: an edit's.
+    /// Whether `poll` has events waiting that no file change caused (an edit's), or owners have
+    /// something to be asked, or an edit an answer to hand out.
     pub fn has_unseen(&self) -> bool {
-        !self.unseen.is_empty()
+        !self.unseen.is_empty() || self.owners.has_wanted() || self.edits.has_news()
     }
 
     /// Read the whole workspace again on the next `poll`.
@@ -836,6 +1203,287 @@ mod tests {
         let events = changed(&mut again);
         assert!(events.contains(&Event::OwnedChanged("Eruptions.csv".into())));
         assert!(query(&again, "task").is_empty(), "gone with its file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn items_in_owned_files_are_edited_through_their_owner() {
+        use crate::gateway::{Page, Query, Reason, Select};
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("cold-lava-owned-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
+        std::fs::write(
+            dir.join(".cold-lava/types.toml"),
+            "version = 1\n[types.eruption]\non = \"table-row\"\nwhere.header = [\"VEI\"]\n\
+             fields.vei = { column = \"VEI\", type = \"number\" }\n",
+        )
+        .unwrap();
+        // The owner's format: `vei;task`, one row, its place `1`.
+        let csv = |vei: &str, task: &str| format!("{vei};{task}\n");
+        let given = |vei: &str, task: &str| -> Given {
+            serde_json::from_value(json!({"items": [
+                {"place": "1", "text": format!("| VEI |\n| --- |\n| {vei} |")},
+                {"place": "1#task", "text": task},
+            ]}))
+            .unwrap()
+        };
+        let open = "- [ ] Read the report 📅 2026-11-20";
+        std::fs::write(dir.join("Eruptions.csv"), csv("6", open)).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let kind = OwnedKind {
+            extension: "csv".into(),
+            owner: "csv-table".into(),
+            version: "1".into(),
+        };
+        core.set_owners(vec![kind], None);
+        let (_, read) = core.take_reads().pop().unwrap();
+        core.file_given(
+            "csv-table",
+            "Eruptions.csv",
+            &read.rev,
+            Ok(given("6", open)),
+        );
+        core.poll();
+        let first = |core: &Core, kind: &str| {
+            let select = Select {
+                kind: kind.into(),
+                ..Select::default()
+            };
+            let q = Query {
+                select,
+                page: Page::default(),
+            };
+            core.query_items(&q).unwrap().items.remove(0)
+        };
+        let csv_now = |core: &Core| std::fs::read_to_string(core.root().join("Eruptions.csv"));
+        let tick = |item: &Item| Edit {
+            id: item.id.clone(),
+            rev: item.rev.clone(),
+            op: Op::Toggle,
+        };
+        let task = first(&core, "task");
+
+        // Ticked: the engine ticks the piece, the owner puts it back and reads it.
+        let Ok(Answer::Later(ticket)) = core.edit_item("agenda", &tick(&task)) else {
+            panic!("an owned file's item is answered later");
+        };
+        let busy = core.edit_item("agenda", &tick(&task)).unwrap_err();
+        assert_eq!(busy.reason, Reason::Changed, "one edit of a file at a time");
+        let (owner, ask) = core.take_file_edits().pop().unwrap();
+        assert_eq!(
+            (owner.as_str(), ask.text.as_str()),
+            ("csv-table", csv("6", open).as_str())
+        );
+        let Change::Text {
+            place,
+            text: ticked,
+        } = &ask.changes[0]
+        else {
+            panic!("{ask:?}");
+        };
+        assert_eq!(place, "1#task");
+        assert!(ticked.starts_with("- [x] Read the report"), "{ticked}");
+        core.file_edited("csv-table", "Eruptions.csv", &ask.rev, Ok(csv("6", ticked)));
+        assert_eq!(
+            csv_now(&core).unwrap(),
+            csv("6", open),
+            "not written before it reads back"
+        );
+        let (_, back) = core.take_reads().pop().unwrap();
+        assert_eq!(back.text, csv("6", ticked));
+        core.file_given(
+            "csv-table",
+            "Eruptions.csv",
+            &back.rev,
+            Ok(given("6", ticked)),
+        );
+        assert_eq!(csv_now(&core).unwrap(), csv("6", ticked));
+        let done = core.take_edited();
+        let [(by, t, Ok(edited))] = &done[..] else {
+            panic!("{done:?}");
+        };
+        assert_eq!((by.as_str(), *t, edited.changed), ("agenda", ticket, true));
+        assert_eq!(
+            serde_json::to_value(&edited.item).unwrap()["status_type"],
+            "done"
+        );
+        let events = core.poll();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ItemEdited { note, by, what, .. }
+                if note == "Eruptions.csv" && by == "agenda" && what == "ticked")),
+            "{events:?}"
+        );
+        assert!(
+            core.take_reads().is_empty(),
+            "what it read back is what it gave"
+        );
+
+        // An owner that writes something else: refused, and nothing is written.
+        let row = first(&core, "eruption");
+        let set = |item: &Item, value: serde_json::Value| Edit {
+            id: item.id.clone(),
+            rev: item.rev.clone(),
+            op: Op::SetField {
+                field: "vei".into(),
+                value,
+            },
+        };
+        let unchanged = core.edit_item("table", &set(&row, json!(6))).unwrap();
+        assert!(matches!(unchanged, Answer::Now(e) if !e.changed));
+        let refused = |core: &mut Core, answer: Result<&str, &str>, gives: Option<Given>| {
+            let Ok(Answer::Later(_)) = core.edit_item("table", &set(&row, json!(7))) else {
+                panic!("answered later");
+            };
+            let (_, ask) = core.take_file_edits().pop().unwrap();
+            let answer = answer.map(String::from).map_err(String::from);
+            core.file_edited("csv-table", "Eruptions.csv", &ask.rev, answer);
+            if let (Some(g), Some((_, back))) = (gives, core.take_reads().pop()) {
+                core.file_given("csv-table", "Eruptions.csv", &back.rev, Ok(g));
+            }
+            let mut done = core.take_edited();
+            assert_eq!(csv_now(core).unwrap(), csv("6", ticked), "nothing written");
+            done.pop().unwrap().2.unwrap_err()
+        };
+        let wrong = refused(&mut core, Ok("7;\n"), Some(given("7", "")));
+        assert_eq!(wrong.reason, Reason::ReadBack, "{wrong}");
+        assert!(wrong.message.contains("nothing was written"), "{wrong}");
+        let no = refused(&mut core, Err("it is read-only"), None);
+        assert_eq!(no.reason, Reason::Refused);
+        assert!(no.message.contains("it is read-only"), "{no}");
+
+        // Set as asked.
+        let Ok(Answer::Later(_)) = core.edit_item("table", &set(&row, json!(7))) else {
+            panic!("answered later");
+        };
+        let (_, ask) = core.take_file_edits().pop().unwrap();
+        core.file_edited("csv-table", "Eruptions.csv", &ask.rev, Ok(csv("7", ticked)));
+        let (_, back) = core.take_reads().pop().unwrap();
+        core.file_given(
+            "csv-table",
+            "Eruptions.csv",
+            &back.rev,
+            Ok(given("7", ticked)),
+        );
+        let (_, _, answer) = core.take_edited().pop().unwrap();
+        assert_eq!(
+            serde_json::to_value(answer.unwrap().item).unwrap()["vei"],
+            7
+        );
+        assert_eq!(csv_now(&core).unwrap(), csv("7", ticked));
+
+        // Stale: an old version is refused at once.
+        let stale = core.edit_item("table", &set(&row, json!(5))).unwrap_err();
+        assert_eq!(stale.reason, Reason::Changed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_updates_links_in_owned_files_through_their_owner() {
+        use crate::rename;
+        let dir = std::env::temp_dir().join(format!("cold-lava-owned-mv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
+        std::fs::write(dir.join("Tambora.md"), "# Tambora\n").unwrap();
+        let piece = |to: &str| format!("Read about [[{to}]]");
+        let given = |to: &str, link: &str| -> Given {
+            serde_json::from_value(serde_json::json!({
+                "items": [{"place": "1", "text": piece(to)}],
+                "links": [{"target": link, "place": "2"}],
+            }))
+            .unwrap()
+        };
+        let csv = |to: &str, link: &str| format!("{};{link}\n", piece(to));
+        let rename = |core: &mut Core, from: &str, to: &str| {
+            let note = core.index.by_rel(from).unwrap();
+            let plan = rename::plan(&core.index, note, to).unwrap();
+            rename::apply(&plan).unwrap();
+            core.rescan_now();
+            core.relink_owned(&plan);
+            plan
+        };
+        std::fs::write(dir.join("Eruptions.csv"), csv("Krakatoa", "Tambora")).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let kind = OwnedKind {
+            extension: "csv".into(),
+            owner: "csv-table".into(),
+            version: "1".into(),
+        };
+        core.set_owners(vec![kind], None);
+        let (_, read) = core.take_reads().pop().unwrap();
+        let rev = read.rev;
+        core.file_given(
+            "csv-table",
+            "Eruptions.csv",
+            &rev,
+            Ok(given("Krakatoa", "Tambora")),
+        );
+
+        let plan = rename(&mut core, "Krakatoa", "Krakatau");
+        let owned = plan
+            .edits
+            .iter()
+            .find(|e| e.file == "Eruptions.csv")
+            .unwrap();
+        assert_eq!(owned.links, 1, "listed in the plan");
+        let (_, ask) = core.take_file_edits().pop().unwrap();
+        let text = piece("Krakatau");
+        assert_eq!(
+            ask.changes,
+            [Change::Text {
+                place: "1".into(),
+                text
+            }]
+        );
+        let csv_now = || std::fs::read_to_string(dir.join("Eruptions.csv")).unwrap();
+        assert_eq!(csv_now(), csv("Krakatoa", "Tambora"), "the owner writes it");
+        core.file_edited(
+            "csv-table",
+            "Eruptions.csv",
+            &ask.rev,
+            Ok(csv("Krakatau", "Tambora")),
+        );
+        let (_, back) = core.take_reads().pop().unwrap();
+        let gave = Ok(given("Krakatau", "Tambora"));
+        core.file_given("csv-table", "Eruptions.csv", &back.rev, gave);
+        assert_eq!(csv_now(), csv("Krakatau", "Tambora"));
+        let krakatau = core.index.by_rel("Krakatau").unwrap();
+        assert_eq!(
+            core.index.backlinks(krakatau).len(),
+            1,
+            "its link leads there now"
+        );
+
+        // A link the owner reported, and an owner that doesn't write what was asked.
+        rename(&mut core, "Tambora", "Tambora volcano");
+        let (_, ask) = core.take_file_edits().pop().unwrap();
+        assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
+            if link == "Tambora" && to == "Tambora volcano"));
+        core.file_edited(
+            "csv-table",
+            "Eruptions.csv",
+            &ask.rev,
+            Ok(csv("Krakatau", "x")),
+        );
+        let (_, back) = core.take_reads().pop().unwrap();
+        core.file_given(
+            "csv-table",
+            "Eruptions.csv",
+            &back.rev,
+            Ok(given("Krakatau", "x")),
+        );
+        let events = core.poll();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::RelinkFailed { path, message, .. }
+                if path == "Eruptions.csv" && message.contains("links to x"))),
+            "{events:?}"
+        );
+        assert_eq!(csv_now(), csv("Krakatau", "Tambora"), "nothing written");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

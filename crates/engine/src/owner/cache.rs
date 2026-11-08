@@ -117,6 +117,11 @@ impl Owners {
         self.wanted.push((owner.to_string(), read));
     }
 
+    /// Whether there is something to ask.
+    pub fn has_wanted(&self) -> bool {
+        !self.wanted.is_empty()
+    }
+
     /// What to ask now, each with its owner.
     pub fn take_wanted(&mut self) -> Vec<(String, FileRead)> {
         std::mem::take(&mut self.wanted)
