@@ -84,15 +84,18 @@ that item changed meanwhile.
 with notes and show them: aggregate, edit, draw a board. They register commands; they never see
 keystrokes or draw pixels, so a broken one can't trap you.
 
-**Other file types** *(designed in extensions.md, "File types")*. Markdown is the engine's own
-format; a `.canvas`, `.kanban` or `.csv` file can have an owner, an extension that opens it,
-saves it safely, and contributes its items and links to the workspace, so a card's `[[Lava]]` shows
-in `Lava`'s backlinks and the graph.
+**Other file types** *(owners open, save and create files: extensions.md, "File types, as
+built"; items and links from owners are designed in "Owners and types")*. Separated by file
+type, united by type data: Markdown is the engine's own format and its first owner; a `.canvas`,
+`.kanban` or `.csv` file can have an owner, an extension that opens it, saves it safely, and
+translates it to the workspace's types and links, so a task on a whiteboard card is a `task` to
+the agenda and to any extension, and a card's `[[Lava]]` shows in `Lava`'s backlinks and the graph.
 
 ## Two gateways
 
 **The workspace gateway** *(the item messages are built: `gateway.rs` in the engine, `Host` in
-`ext/mod.rs`, over the stdio transport too; `workspace/read`, `write` and friends are next)* is the engine's
+`ext/mod.rs`, over the stdio transport too, and so are `workspace/read`, `write`, `create` and
+`files`)* is the engine's
 protocol: files, items, types, queries, edits and events. It knows nothing about screens. An
 extension that only aggregates and ticks tasks, a script, or a language server needs nothing
 else. An extension changes notes only through it, within the permissions its manifest asks
