@@ -9,6 +9,16 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- The item messages of the workspace gateway, in-process (`crates/engine/src/gateway.rs`,
+  through `Host`): `items/query` (a kind or type, a filter on folder, tag, status, a date range,
+  text or a property, and pages), `items/subscribe` with `items/changed` and `items/reset`,
+  `items/unsubscribe`, `items/edit` (`set-field` and `toggle`, checked by `rev` and read back,
+  refused with a reason: `changed`, `refused`, `read-back`, `io`, `forbidden`) and `types/list`.
+  A manifest's `permissions` say what an extension may do (`items.read` by default,
+  `items.edit` to change items), and every edit names the extension that made it on the status
+  line. The table view reads and edits its type through them, and ticking in the agenda and
+  the reader goes through `items/edit`; neither looks or behaves differently.
+
 - The agenda screen. `A` (`agenda.open`) lists the workspace's tasks (anything that answers to
   `task`, subtypes too) by day: Overdue, Today, each of the next seven days, Later, and Undated
   (folded) last, filed by the date `cold-lava agenda` uses (due, scheduled, start, else the
