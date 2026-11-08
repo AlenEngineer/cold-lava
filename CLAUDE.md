@@ -158,6 +158,9 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   empty home (so they don't read your config or add workspaces to your list; `--real-home` to
   use yours), and `env COLD_LAVA_EDITOR=none` for the reader instead of Neovim. The embedded editor needs `nvim`
   (or `vim`) installed.
+- To try a pushed branch without compiling it here (this laptop is short on memory), CI uploads
+  its Linux release binary for 3 days: `gh run download RUN_ID -n cold-lava-linux -D DIR`, then
+  `chmod +x DIR/cold-lava` (`gh pr checks PR` links the run).
 - Pixel mode only shows in terminals with the Kitty graphics protocol (Ghostty, Kitty, WezTerm),
   not in a pseudo-terminal or tmux; check it in the real terminal.
 
