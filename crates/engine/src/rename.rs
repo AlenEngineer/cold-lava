@@ -12,6 +12,7 @@
 
 use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
+use crate::owner::markdown::{self, link_targets};
 use crate::workspace::{attachment_kind, decode_target, encode_target_like};
 use anyhow::{Context, Result, bail};
 use regex::Regex;
@@ -337,23 +338,10 @@ impl Files {
     }
 }
 
-struct Patterns {
-    wikilink: Regex,
-    mdlink: Regex,
-    inline_code: Regex,
-    canvas_field: Regex,
-}
-
-fn patterns() -> &'static Patterns {
-    static P: OnceLock<Patterns> = OnceLock::new();
-    P.get_or_init(|| Patterns {
-        // [[target#heading|alias]] — target is group 1.
-        wikilink: Regex::new(r"\[\[([^\]\|#\^]*)((?:[#\^][^\]\|]*)?)((?:\|[^\]]*)?)\]\]").unwrap(),
-        // [text](path#heading) — path is group 1; kept if it names a note or an attachment.
-        mdlink: Regex::new(r"\]\(([^)\s#]+)((?:#[^)]*)?)\)").unwrap(),
-        inline_code: Regex::new(r"`[^`\n]*`").unwrap(),
-        canvas_field: Regex::new(r#""(file|text)"(\s*:\s*)("(?:[^"\\]|\\.)*")"#).unwrap(),
-    })
+/// A canvas card's `file` or `text` field: its name, the colon, its JSON string.
+fn canvas_field() -> &'static Regex {
+    static P: OnceLock<Regex> = OnceLock::new();
+    P.get_or_init(|| Regex::new(r#""(file|text)"(\s*:\s*)("(?:[^"\\]|\\.)*")"#).unwrap())
 }
 
 /// The workspace before and after the move: same files (same indices), new paths for some.
@@ -405,100 +393,18 @@ impl Rewriter {
         (out != raw).then_some(out)
     }
 
-    /// Rewrite the links in a note's text. Returns the new text, changed lines and link count.
+    /// Rewrite the links in a note's text (through its owner, `markdown::relink`). Returns the
+    /// new text, changed lines and link count.
     fn note_text(&self, text: &str, dir_then: &str, dir_now: &str) -> (String, Vec<Change>, usize) {
-        let p = patterns();
-        let mut out = String::with_capacity(text.len());
-        let mut changes = Vec::new();
-        let mut count = 0;
-        let mut in_fence = false;
-        for (i, line) in text.split_inclusive('\n').enumerate() {
-            let body = line.trim_end_matches(['\n', '\r']);
-            let ending = &line[body.len()..];
-            let t = body.trim_start();
-            if t.starts_with("```") || t.starts_with("~~~") {
-                in_fence = !in_fence;
-            }
-            if in_fence || t.starts_with("```") || t.starts_with("~~~") {
-                out.push_str(line);
-                continue;
-            }
-            let (new_body, n) = self.line(body, dir_then, dir_now, p);
-            if n > 0 {
-                count += n;
-                changes.push(Change {
-                    line: i + 1,
-                    before: body.to_string(),
-                    after: new_body.clone(),
-                });
-            }
-            out.push_str(&new_body);
-            out.push_str(ending);
-        }
-        (out, changes, count)
+        markdown::relink(text, |raw, md| self.link(raw, md, dir_then, dir_now))
     }
-
-    fn line(&self, body: &str, dir_then: &str, dir_now: &str, p: &Patterns) -> (String, usize) {
-        // Collect replacements (byte range of the target, new text), then apply from the end.
-        let mut reps: Vec<(usize, usize, String)> = Vec::new();
-        for (r, md) in line_targets(body, p) {
-            if let Some(new) = self.link(&body[r.clone()], md, dir_then, dir_now) {
-                reps.push((r.start, r.end, new));
-            }
-        }
-        reps.sort_by_key(|r| std::cmp::Reverse(r.0));
-        let mut s = body.to_string();
-        for (a, b, new) in &reps {
-            s.replace_range(*a..*b, new);
-        }
-        (s, reps.len())
-    }
-}
-
-/// The links on one line outside inline code, as (byte range of the target, Markdown link?):
-/// wikilinks, then Markdown links naming a note or an attachment.
-fn line_targets(body: &str, p: &Patterns) -> Vec<(std::ops::Range<usize>, bool)> {
-    let code: Vec<(usize, usize)> = p
-        .inline_code
-        .find_iter(body)
-        .map(|m| (m.start(), m.end()))
-        .collect();
-    let in_code = |s: usize| code.iter().any(|&(a, b)| s >= a && s < b);
-    let wiki = (p.wikilink.captures_iter(body))
-        .map(|c| c.get(1).unwrap())
-        .filter(|m| !m.as_str().trim().is_empty())
-        .map(|m| (m.range(), false));
-    let md = (p.mdlink.captures_iter(body))
-        .map(|c| c.get(1).unwrap())
-        .filter(|m| {
-            let t = m.as_str();
-            (t.ends_with(".md") || attachment_kind(t).is_some()) && !t.contains("://")
-        })
-        .map(|m| (m.range(), true));
-    wiki.chain(md).filter(|(r, _)| !in_code(r.start)).collect()
-}
-
-/// Every link target in a note's (or a canvas text card's) text outside code, as written.
-pub(crate) fn link_targets(text: &str) -> Vec<&str> {
-    let p = patterns();
-    let mut in_fence = false;
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-        } else if !in_fence {
-            out.extend(line_targets(line, p).into_iter().map(|(r, _)| &line[r]));
-        }
-    }
-    out
 }
 
 /// What an Obsidian Canvas file links to: its file cards' workspace paths, and the links written in
 /// its text cards.
 pub(crate) fn canvas_targets(text: &str) -> (Vec<String>, Vec<String>) {
     let (mut files, mut links) = (Vec::new(), Vec::new());
-    for c in patterns().canvas_field.captures_iter(text) {
+    for c in canvas_field().captures_iter(text) {
         let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
             continue;
         };
@@ -755,7 +661,7 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
     let mut changes = Vec::new();
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    for c in patterns().canvas_field.captures_iter(&text) {
+    for c in canvas_field().captures_iter(&text) {
         let whole = c.get(0).unwrap();
         let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
             continue;

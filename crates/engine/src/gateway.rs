@@ -14,8 +14,9 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::edit::{self, EditError};
-use crate::items::{Data, Item, KINDS};
+use crate::edit::EditError;
+use crate::items::{Data, Item, KINDS, Settings};
+use crate::owner::markdown::{self, After};
 use crate::workspace::{Note, NoteChange, Workspace, search_key};
 use crate::{tasks, write};
 
@@ -126,10 +127,10 @@ pub struct Edit {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Op {
-    /// One field of a typed item, through `edit::set_field`: the value in the form items carry
+    /// One field of a typed item, through `edit::plan`: the value in the form items carry
     /// it, or as text the field's type reads; `null` or `""` removes it.
     SetField { field: String, value: Json },
-    /// Tick a task the way the Tasks plugin does, through `tasks::toggle`: done dates,
+    /// Tick a task the way the Tasks plugin does, through `tasks::toggle_text`: done dates,
     /// recurrence, custom statuses.
     Toggle,
 }
@@ -571,14 +572,8 @@ pub(crate) struct Written {
     warning: Option<String>,
 }
 
-enum After {
-    /// The item as `set_field` read it back.
-    Set(Item),
-    /// The task's line now, and its next occurrence's.
-    Toggled { line: usize, next: Option<usize> },
-}
-
-/// Make the edit on disk, through the one safe path each op has.
+/// Make the edit on disk: the note's owner makes its new text, which is written with
+/// `write::replace`, refused if the note changed since it was read.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
     let item = (workspace.notes.iter())
         .flat_map(|n| workspace.items(n))
@@ -591,59 +586,33 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
             Error::new(Reason::Changed, message)
         })?;
     let note = item.note.clone();
-    match &req.op {
-        Op::SetField { field, value } => {
-            let set = edit::SetField {
-                id: &req.id,
-                rev: Some(&req.rev),
-                field,
-                value: value.clone(),
+    let path = root.join(&note);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| Error::new(Reason::Io, format!("{}: {e}", path.display())))?;
+    let made = markdown::edit(
+        &note,
+        &text,
+        &Settings::load(root),
+        item,
+        req,
+        tasks::today(),
+    )?;
+    if made.changed {
+        write::replace(&path, text.as_bytes(), made.text.as_bytes()).map_err(|e| {
+            let reason = match e {
+                write::WriteError::Changed(_) => Reason::Changed,
+                _ => Reason::Io,
             };
-            let set = edit::set_field(root, &note, &set, false)?;
-            let removed = value.is_null() || value.as_str().is_some_and(|v| v.trim().is_empty());
-            let what = match removed {
-                true => format!("removed {field}"),
-                false => format!("set {field}"),
-            };
-            Ok(Written {
-                note,
-                changed: set.changed,
-                what,
-                after: After::Set(set.item),
-                warning: None,
-            })
-        }
-        Op::Toggle => {
-            if !item.data.answers_to("task") {
-                let message = format!("{} is a {}, not a task", req.id, item.data.kind());
-                return Err(Error::new(Reason::Refused, message));
-            }
-            let path = root.join(&note);
-            let t =
-                tasks::toggle(&path, item.line, Some(&req.rev), tasks::today()).map_err(|e| {
-                    let reason = if e.downcast_ref::<tasks::Changed>().is_some() {
-                        Reason::Changed
-                    } else if e.downcast_ref::<std::io::Error>().is_some()
-                        || e.downcast_ref::<write::WriteError>().is_some()
-                    {
-                        Reason::Io
-                    } else {
-                        Reason::Refused
-                    };
-                    Error::new(reason, format!("{e:#}"))
-                })?;
-            Ok(Written {
-                note,
-                changed: true,
-                what: "ticked".into(),
-                after: After::Toggled {
-                    line: t.line,
-                    next: t.next.map(|n| n.line),
-                },
-                warning: t.warning,
-            })
-        }
+            Error::new(reason, e.to_string())
+        })?;
     }
+    Ok(Written {
+        note,
+        changed: made.changed,
+        what: made.what,
+        after: made.after,
+        warning: made.warning,
+    })
 }
 
 /// The answer to an edit, from the note as the core has read it since.

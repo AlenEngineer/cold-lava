@@ -54,7 +54,7 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back.
 - `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
-  frontmatter aliases, full text. `search_key()` folds text for matching (lowercase, no
+  frontmatter aliases, full text, each read by its owner. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
 - `index.rs`: `Index` = workspace + the single link `Resolver` (Obsidian's rules: path, then name,
   shallowest wins) + backlinks. Don't write another link resolver.
@@ -64,6 +64,11 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
+- `owner/`: owners translate a kind of file to items and links and back: read (text → links,
+  items), write (an item edit → the file's new text, which the engine writes safely) and
+  relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:
+  the link parser, `items::extract`, `edit::plan`, `tasks::toggle_text` and rename's link
+  rewriting, each reached through it. Read and change notes through the owner.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one pulldown-cmark pass in the workspace's flavour; `Workspace::items()` caches them per note on
   first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`

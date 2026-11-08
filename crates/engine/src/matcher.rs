@@ -17,10 +17,10 @@ use indexmap::IndexMap;
 use regex::Regex;
 use serde_json::Value as Json;
 
+use crate::daily;
 use crate::frontmatter::{self, Frontmatter};
 use crate::markdown::{self, Flavour, Syntax};
 use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
-use crate::{daily, workspace};
 
 /// The primitives this matcher reads; shapes on the others (code, quote) wait.
 const READ: &[On] = &[
@@ -659,7 +659,7 @@ impl<'a> Note<'a> {
         }
         if links {
             for line in text.lines().take(end_line) {
-                note.links.extend(workspace::line_links(line));
+                note.links.extend(crate::owner::markdown::line_links(line));
             }
         }
         note
@@ -943,7 +943,7 @@ fn read_source<'a>(
             .filter(|(_, r)| !b.in_code(r))
             .map(|(t, r)| Piece::text(t, Some(at(r))))
             .collect(),
-        Src::Inlines(InlineKind::Links) => workspace::line_links(text)
+        Src::Inlines(InlineKind::Links) => crate::owner::markdown::line_links(text)
             .into_iter()
             .map(|l| Piece {
                 value: Some(Json::String(l.clone())),
@@ -1085,7 +1085,7 @@ pub fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option
             _ => return None,
         },
         Value::Link => Json::String(
-            workspace::line_links(text)
+            crate::owner::markdown::line_links(text)
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| text.to_string()),

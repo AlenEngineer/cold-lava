@@ -790,7 +790,8 @@ new = "kanban.new"         # the command that makes one
 
 ### Owners and types
 
-*(design: the next slice of file types)*
+*(design: the next slice of file types; Markdown is behind the owner interface:
+`crates/engine/src/owner/`)*
 
 **Separated by file type, united by type data.** Types are what the user works with; a file type
 only decides how data is written down. A task is a `task` whether it is a line in a note, a card
@@ -1347,8 +1348,8 @@ after its call returns, so it never holds the menu's state.
       links contributed by owners; the whiteboard as the first owner. *(in progress: owners in
       manifests, `file/open`, `file/changed`, `workspace/read`, `workspace/write`,
       `workspace/create` and `workspace/files`, with the `csv-table` example, are done ("File
-      types, as built"); next is Markdown as the first owner behind the owner interface, then
-      items and links contributed by other owners ("Owners and types"), then the whiteboard)*
+      types, as built"), and so is Markdown as the first owner behind the owner interface
+      (`owner/markdown.rs`); next are items and links contributed by other owners ("Owners and types"), then the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.

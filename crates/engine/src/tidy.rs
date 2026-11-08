@@ -6,7 +6,8 @@
 //! Markdown links included), from notes, canvas cards and canvas text.
 
 use crate::index::Index;
-use crate::rename::{Files, canvas_targets, dir_of, link_targets};
+use crate::owner::markdown::link_targets;
+use crate::rename::{Files, canvas_targets, dir_of};
 use crate::workspace::{attachment_kind, decode_target};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
