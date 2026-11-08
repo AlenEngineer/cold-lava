@@ -723,7 +723,9 @@ style.minutes = { badge = true, icon = "⏱" }
   it recurs, the priority's glyph with the type's look (the built-in task's chip), the whole-row
   look of its status (done and cancelled fade and strike through), and on the right the date
   (in Overdue, red while open, and in Later) and the note's name. Today is `tasks::today()`,
-  which `COLD_LAVA_TODAY` pins for scripted runs.
+  which `COLD_LAVA_TODAY` pins for scripted runs. The agenda checks the day once a frame
+  (`Extension::poll`) and, when it has changed since the list was sent, sends the list again
+  filed by the new day.
 - **Ticking** is `view/event toggled` to the agenda, which sends `items/edit toggle` with the
   row's id and `rev`; `x` in the reader is the same edit as the screen `reader`. Both reach `tasks::toggle`, as `task
   toggle --id` does: done dates, recurrence, custom statuses' next symbols, the cancelled
@@ -740,8 +742,7 @@ style.minutes = { badge = true, icon = "⏱" }
   the help and which-key, and the menu hands it to the agenda as `command/run`. The drive script
   (`agenda.drive`) is the one the screen had, unchanged.
 - **Not yet:** nesting subtasks under their parent (`depth` is there; the agenda sends every
-  task at depth 0), and a range other than the next seven days. The agenda's list follows the
-  day only when a task changes: left open past midnight, it files by yesterday until then.
+  task at depth 0), and a range other than the next seven days.
 
 ## File types
 

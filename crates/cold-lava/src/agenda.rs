@@ -240,13 +240,22 @@ fn style(item: &Item, defs: &HashMap<&str, &Definition>, field: &str) -> Option<
 }
 
 /// The agenda extension, and while its view is open, what it shows.
-#[derive(Default)]
 pub struct Agenda {
+    /// What day it is: `tasks::today`, or a fixed day in tests.
+    today: Box<dyn Fn() -> NaiveDate>,
     shown: Option<Shown>,
+}
+
+impl Default for Agenda {
+    fn default() -> Agenda {
+        Agenda::on(crate::tasks::today)
+    }
 }
 
 struct Shown {
     view: ViewId,
+    /// The day the list was filed by.
+    day: NaiveDate,
     feed: Feed,
     types: Vec<Type>,
     at: HashMap<String, At>,
@@ -256,8 +265,8 @@ struct Shown {
 }
 
 impl Shown {
-    fn send(&mut self, host: &mut Host<'_>) {
-        let today = crate::tasks::today();
+    fn send(&mut self, today: NaiveDate, host: &mut Host<'_>) {
+        self.day = today;
         let built = build(&self.types, self.feed.items(), today, self.show_done);
         self.at = built.at;
         let select = self.select.take();
@@ -311,6 +320,14 @@ impl Shown {
 }
 
 impl Agenda {
+    /// The agenda with its own clock.
+    pub fn on(today: impl Fn() -> NaiveDate + 'static) -> Agenda {
+        Agenda {
+            today: Box::new(today),
+            shown: None,
+        }
+    }
+
     /// A new view of the tasks, in place of the one it had open.
     fn open(&mut self, host: &mut Host<'_>) -> Result<(), String> {
         if let Some(old) = self.shown.take() {
@@ -323,11 +340,13 @@ impl Agenda {
             Ok(None) => return Err("the workspace has no task type".into()),
             Err(e) => return Err(e.to_string()),
         };
-        let built = build(&types, feed.items(), crate::tasks::today(), false);
+        let day = (self.today)();
+        let built = build(&types, feed.items(), day, false);
         match host.open_view(Content::List(built.list)) {
             Ok(view) => {
                 self.shown = Some(Shown {
                     view,
+                    day,
                     feed,
                     types,
                     at: built.at,
@@ -381,7 +400,7 @@ impl Extension for Agenda {
             return;
         }
         match shown.feed.heard(host, news) {
-            Ok(()) => shown.send(host),
+            Ok(()) => shown.send((self.today)(), host),
             Err(e) => host.notify(format!("the agenda couldn't be read again: {e}")),
         }
     }
@@ -405,11 +424,22 @@ impl Extension for Agenda {
                 view::Event::Toggled { row } => shown.tick(&row, host),
                 view::Event::Command { command, .. } if command == SHOW_DONE => {
                     shown.show_done = !shown.show_done;
-                    shown.send(host);
+                    shown.send((self.today)(), host);
                 }
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    /// Past midnight the tasks are filed by the new day.
+    fn poll(&mut self, host: &mut Host<'_>) {
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+        let today = (self.today)();
+        if today != shown.day {
+            shown.send(today, host);
         }
     }
 
@@ -681,6 +711,48 @@ mod tests {
         std::fs::write(dir.join("Plan.md"), "- [ ] Water the fern\n").unwrap();
         core.note_changed_now(&dir.join("Plan.md"));
         assert_eq!(core.take_item_news(), [], "it stopped following the tasks");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn past_midnight_the_open_agenda_files_by_the_new_day() {
+        use crate::ext::{Effect, ExtId, Registry};
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let (dir, _) = workspace("midnight", &[("Plan.md", "- [ ] Pay rent 📅 2026-11-08\n")]);
+        let mut core = crate::core::Core::open(&dir).unwrap();
+        let clock = Rc::new(Cell::new(d("2026-11-07")));
+        let today = Rc::clone(&clock);
+        let agenda = Agenda::on(move || today.get());
+        let mut r = Registry::new(vec![Box::new(agenda)]);
+        let ext = ExtId(0);
+        let run = CommandRequest::Run {
+            id: OPEN.into(),
+            args: Json::Null,
+        };
+        let effects = r.call(ext, Some(&mut core), |e, h| e.command(run, h));
+        let [Effect::OpenView { content, .. }] = &effects[..] else {
+            panic!("{effects:?}")
+        };
+        let Content::List(list) = content else {
+            panic!()
+        };
+        assert_eq!(list.groups[0].title, "Tomorrow · Sun 8 Nov");
+
+        let effects = r.call(ext, Some(&mut core), |e, h| e.poll(h));
+        assert_eq!(effects, [], "the same day sends nothing");
+
+        clock.set(d("2026-11-08"));
+        let effects = r.call(ext, Some(&mut core), |e, h| e.poll(h));
+        let [Effect::UpdateView { content, .. }] = &effects[..] else {
+            panic!("{effects:?}")
+        };
+        let Content::List(list) = content else {
+            panic!()
+        };
+        assert_eq!(list.groups[0].title, "Today · Sun 8 Nov");
+        let effects = r.call(ext, Some(&mut core), |e, h| e.poll(h));
+        assert_eq!(effects, [], "once a day");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
