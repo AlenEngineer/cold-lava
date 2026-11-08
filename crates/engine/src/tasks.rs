@@ -259,9 +259,16 @@ fn re() -> &'static Re {
 
 /// FNV-1a of some bytes: stable across runs and machines, unlike `std`'s hasher.
 pub fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
-        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
-    })
+    fnv_from(FNV_START, bytes)
+}
+
+pub const FNV_START: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// `fnv` of what was hashed into `h`, then `bytes`.
+pub fn fnv_from(h: u64, bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// Fingerprint of a line, as 12 hex digits.
@@ -387,7 +394,7 @@ pub fn agenda(workspace: &Workspace, from: NaiveDate, to: NaiveDate) -> Agenda {
             });
         }
         let lines: Vec<&str> = note.text.lines().collect();
-        for item in workspace.items(note) {
+        for item in workspace.items_once(note).iter() {
             let raw = lines.get(item.line - 1).copied().unwrap_or_default();
             if let Some(t) = Task::of(item, raw, &settings.tasks)
                 && t.agenda_date().is_some_and(|(d, _)| in_range(d))

@@ -4,6 +4,7 @@
 use crate::items::{self, Item};
 use anyhow::{Context, Result};
 use regex::Regex;
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -189,13 +190,22 @@ impl Workspace {
 
     /// The note's items, read the first time they're asked for.
     pub fn items<'a>(&self, note: &'a Note) -> &'a [Item] {
-        note.items.get_or_init(|| {
-            items::extract(
-                &format!("{}.md", note.rel),
-                &note.text,
-                self.item_settings(),
-            )
-        })
+        note.items.get_or_init(|| self.read_items(note))
+    }
+
+    /// The note's items for one look: kept ones if they were read, else read and not kept, for
+    /// a pass over every note that won't ask again (a large workspace's items are most of its
+    /// memory).
+    pub fn items_once<'a>(&self, note: &'a Note) -> Cow<'a, [Item]> {
+        match note.items.get() {
+            Some(items) => Cow::Borrowed(items),
+            None => Cow::Owned(self.read_items(note)),
+        }
+    }
+
+    fn read_items(&self, note: &Note) -> Vec<Item> {
+        let rel = format!("{}.md", note.rel);
+        items::extract(&rel, &note.text, self.item_settings())
     }
 
     /// `path` spelled from the canonical root, as the notes' paths are. The root was
@@ -397,6 +407,10 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
 
 /// The link targets on one line outside inline code: wikilinks, then Markdown links.
 pub fn line_links(line: &str) -> Vec<String> {
+    // Without code to take out, a link needs `[[` or `](`; most lines have neither.
+    if !line.contains('`') && !line.contains("[[") && !line.contains("](") {
+        return Vec::new();
+    }
     let p = parsers();
     let line = p.inline_code.replace_all(line, "");
     let wiki = p.wikilink.captures_iter(&line);

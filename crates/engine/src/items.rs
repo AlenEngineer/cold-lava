@@ -10,7 +10,7 @@
 use crate::daily;
 use crate::markdown::{self, Flavour, Syntax};
 use crate::matcher::{self, Matcher, Typed};
-use crate::tasks::{self, TasksSettings, fnv};
+use crate::tasks::{self, FNV_START, TasksSettings, fnv, fnv_from};
 use crate::templates;
 use crate::types::{self, On, Types};
 use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
@@ -179,7 +179,7 @@ impl<'de> Deserialize<'de> for Typed {
                         "is" => t.is = map.next_value()?,
                         _ => {
                             let value = map.next_value()?;
-                            t.fields.insert(key.into(), value);
+                            t.fields.insert(&key, value);
                         }
                     }
                 }
@@ -673,46 +673,59 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
     let lines: Vec<&str> = text.lines().collect();
     let mut keys: Vec<String> = Vec::with_capacity(raws.len());
     let mut seen: HashMap<(String, String), usize> = HashMap::new();
-    let mut ids: Vec<String> = Vec::with_capacity(raws.len());
-    let mut items = Vec::with_capacity(raws.len());
+    let mut items: Vec<Item> = Vec::with_capacity(raws.len());
+    // An item's own lines, joined, reused from item to item.
+    let mut own = String::new();
     for raw in raws {
-        let kind = raw.data.kind().to_string();
+        let kind = raw.data.kind();
         let parent_key = raw.parent.map_or("", |p| keys[p].as_str());
         let anchor = match (&raw.block_id, &raw.data) {
             (Some(id), _) => format!("^{id}"),
             (None, Data::Heading { text, .. }) => {
-                let mut path = raw.section.clone();
-                path.push(text.clone());
-                path.join("#")
+                let mut path = raw.section.join("#");
+                if !raw.section.is_empty() {
+                    path.push('#');
+                }
+                path.push_str(text);
+                path
             }
             (None, Data::List { text }) => format!("{parent_key}/{:016x}", fnv(text.as_bytes())),
             (None, Data::Typed(_)) if raw.key.is_empty() => parent_key.to_string(),
             (None, Data::Typed(_)) => format!("{parent_key}/{:016x}", fnv(raw.key.as_bytes())),
             (None, Data::Block) => String::new(),
         };
-        let n = seen.entry((kind.clone(), anchor.clone())).or_default();
+        let n = seen.entry((kind.to_string(), anchor.clone())).or_default();
         let key = match *n {
             0 => anchor,
             n => format!("{anchor}.{n}"),
         };
         *n += 1;
-        let id = format!("{:016x}", fnv(format!("{note}\0{kind}\0{key}").as_bytes()));
-        let own = lines
-            .get(raw.line - 1..raw.end_line.min(lines.len()))
-            .unwrap_or_default();
+        let id = [note, "\0", kind, "\0", &key]
+            .iter()
+            .fold(FNV_START, |h, part| fnv_from(h, part.as_bytes()));
+        own.clear();
+        for (i, line) in (lines.get(raw.line - 1..raw.end_line.min(lines.len())))
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
+            if i > 0 {
+                own.push('\n');
+            }
+            own.push_str(line);
+        }
         items.push(Item {
-            id: id.clone(),
+            id: format!("{id:016x}"),
             note: note.to_string(),
             line: raw.line,
             end_line: raw.end_line,
             section: raw.section,
-            parent: raw.parent.map(|p| ids[p].clone()),
+            parent: raw.parent.map(|p| items[p].id.clone()),
             block_id: raw.block_id,
-            rev: tasks::line_id(&own.join("\n")),
+            rev: tasks::line_id(&own),
             data: raw.data,
         });
         keys.push(key);
-        ids.push(id);
     }
     items.sort_by_key(|i| i.line);
     items
@@ -792,7 +805,9 @@ fn list_text(first: &str) -> String {
         .strip_prefix(['-', '*', '+'])
         .unwrap_or_else(|| t.trim_start_matches(|c: char| c.is_ascii_digit()))
         .trim_start_matches(['.', ')']);
-    t.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut text = String::with_capacity(t.len());
+    matcher::push_words(&mut text, t);
+    text
 }
 
 #[cfg(test)]

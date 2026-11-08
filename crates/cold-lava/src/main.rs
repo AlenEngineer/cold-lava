@@ -317,11 +317,8 @@ fn run() -> Result<()> {
             }
             let mut out = std::io::stdout().lock();
             for note in &workspace.notes {
-                for item in workspace
-                    .items(note)
-                    .iter()
-                    .filter(|i| i.data.answers_to(kind))
-                {
+                let items = workspace.items_once(note);
+                for item in items.iter().filter(|i| i.data.answers_to(kind)) {
                     let written = if json {
                         writeln!(out, "{}", serde_json::to_string(item)?)
                     } else {

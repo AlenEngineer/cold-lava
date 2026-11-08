@@ -375,9 +375,8 @@ fn answer<'a>(workspace: &Workspace, note: &Note, item: &'a Item) -> Cow<'a, Ite
             ("status", task.status.to_string()),
             ("status_type", task.status_type.name().to_string()),
         ] {
-            let slot = t.fields.entry(field.into()).or_insert(Json::Null);
-            if slot.is_null() {
-                *slot = Json::String(value);
+            if t.fields.get(field).is_none_or(Json::is_null) {
+                t.fields.insert(field, Json::String(value));
             }
         }
     }

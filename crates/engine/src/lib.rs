@@ -5,6 +5,7 @@ pub mod bookmarks;
 pub mod core;
 pub mod daily;
 pub mod edit;
+pub mod fields;
 pub mod frontmatter;
 pub mod gateway;
 pub mod index;
