@@ -216,7 +216,7 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
             0 => name.to_string(),
             n => format!("{name} {n}"),
         };
-        let path = index.new_file_path(&candidate, extension, None);
+        let path = crate::resolver::new_file_path(index, &candidate, extension, None);
         if !path.exists() {
             return relative(path);
         }
@@ -227,7 +227,7 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
 /// `workspace/files`: the workspace's files that end in `.<extension>`, outside hidden folders.
 pub fn list(index: &Index, extension: &str) -> Listed {
     let want = extension.trim_start_matches('.').to_ascii_lowercase();
-    let all = crate::rename::Files::of_workspace(index).rels;
+    let all = crate::resolver::Files::of_workspace(index).rels;
     let mut files: Vec<String> = (all.into_iter())
         .filter(|f| extension_of(f).as_deref() == Some(want.as_str()))
         .collect();

@@ -87,7 +87,7 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
         i
     };
 
-    let resolver = crate::index::Resolver::new(v);
+    let resolver = crate::resolver::Resolver::new(v);
     let note_node: Vec<usize> = v
         .notes
         .iter()

@@ -1,72 +1,10 @@
-//! The workspace index: the start of cold-lava's core. It resolves links the way Obsidian does
-//! and knows every note's backlinks, so features don't each re-derive them.
+//! The workspace index: the start of cold-lava's core. It knows every note's backlinks, from
+//! links the workspace's resolver (`resolver.rs`) resolved, so features don't each re-derive them.
 
+use crate::resolver::Resolver;
 use crate::workspace::Workspace;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-
-/// Resolves link targets (`Note`, `folder/Note`, `Note.md`) to notes, like Obsidian:
-/// by workspace-relative path first, then by file name, preferring the shallowest match. Files
-/// other owners read are found the same way, by their name with its extension.
-pub struct Resolver {
-    by_rel: HashMap<String, usize>,
-    by_name: HashMap<String, usize>,
-    owned_by_rel: HashMap<String, usize>,
-    owned_by_name: HashMap<String, usize>,
-}
-
-impl Resolver {
-    pub fn new(v: &Workspace) -> Resolver {
-        let mut by_rel = HashMap::new();
-        let mut by_name: HashMap<String, usize> = HashMap::new();
-        for (i, n) in v.notes.iter().enumerate() {
-            by_rel.insert(n.rel.to_lowercase(), i);
-            let e = by_name.entry(n.name.to_lowercase()).or_insert(i);
-            if n.rel.matches('/').count() < v.notes[*e].rel.matches('/').count() {
-                *e = i;
-            }
-        }
-        let mut owned_by_rel = HashMap::new();
-        let mut owned_by_name: HashMap<String, usize> = HashMap::new();
-        for (i, f) in v.owned.iter().enumerate() {
-            let rel = f.rel.to_lowercase();
-            let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
-            let e = owned_by_name.entry(name).or_insert(i);
-            if f.rel.matches('/').count() < v.owned[*e].rel.matches('/').count() {
-                *e = i;
-            }
-            owned_by_rel.insert(rel, i);
-        }
-        Resolver {
-            by_rel,
-            by_name,
-            owned_by_rel,
-            owned_by_name,
-        }
-    }
-
-    /// `target` without `#heading` / `|alias` (as stored in `Note::links`).
-    pub fn resolve(&self, target: &str) -> Option<usize> {
-        let t = target.trim().to_lowercase();
-        let t = t.strip_suffix(".md").unwrap_or(&t);
-        let t = t.trim_start_matches("./").trim_start_matches('/');
-        self.by_rel
-            .get(t)
-            .or_else(|| self.by_name.get(t.rsplit('/').next().unwrap_or(t)))
-            .copied()
-    }
-
-    /// `resolve`, for a file another owner reads (`Workspace::owned`): `Eruptions.csv`.
-    pub fn resolve_owned(&self, target: &str) -> Option<usize> {
-        let t = target.trim().to_lowercase();
-        let t = t.trim_start_matches("./").trim_start_matches('/');
-        self.owned_by_rel
-            .get(t)
-            .or_else(|| self.owned_by_name.get(t.rsplit('/').next().unwrap_or(t)))
-            .copied()
-    }
-}
 
 /// Where a link was written: a note, or a file another owner reads (`Workspace::owned`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,38 +36,6 @@ pub struct Folded {
     pub name: String,
     pub whole: String,
     pub lines: Vec<String>,
-}
-
-/// A link as written in a note: target, optional heading or block (`#Heading`, `#^block`).
-pub struct LinkTarget {
-    pub note: String,
-    pub heading: Option<String>,
-    pub block: Option<String>,
-}
-
-/// Split `Note#Heading|alias` / `Note#^block` into its parts.
-pub fn split_link(raw: &str) -> LinkTarget {
-    let raw = raw.split('|').next().unwrap_or(raw).trim();
-    let decode = |s: &str| crate::workspace::decode_target(s.trim());
-    match raw.split_once('#') {
-        Some((note, rest)) => match rest.strip_prefix('^') {
-            Some(block) => LinkTarget {
-                note: decode(note),
-                heading: None,
-                block: Some(decode(block)),
-            },
-            None => LinkTarget {
-                note: decode(note),
-                heading: Some(decode(rest)),
-                block: None,
-            },
-        },
-        None => LinkTarget {
-            note: decode(raw),
-            heading: None,
-            block: None,
-        },
-    }
 }
 
 impl Index {
@@ -272,57 +178,6 @@ impl Index {
     pub fn counts(&self, i: usize) -> (usize, usize) {
         (self.backlinks[i].len(), self.outgoing[i])
     }
-
-    /// The file an attachment link (`[[map.pdf]]`, `[map](../Maps/map.pdf)`, already decoded)
-    /// leads to: by workspace path, then next to the note `from`, then by file name anywhere,
-    /// shallowest first. `None` when it isn't in the workspace, or when `target` names a note.
-    pub fn attachment(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
-        crate::workspace::attachment_kind(target)?;
-        self.file(target, from)
-    }
-
-    /// The file a link written in note `from` leads to, of any kind, found the way
-    /// `attachment` finds one.
-    pub fn file(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
-        let files = crate::rename::Files::of_workspace(self);
-        let dir = from.map_or("", |i| crate::rename::dir_of(&self.workspace.notes[i].rel));
-        let i = files.resolve(dir, target)?;
-        Some(self.workspace.root.join(&files.rels[i]))
-    }
-
-    /// Where a new note for an unresolved link goes, following Obsidian's
-    /// "Default location for new notes" setting (`.obsidian/app.json`).
-    pub fn new_note_path(&self, name: &str, from: Option<usize>) -> PathBuf {
-        self.new_file_path(name.trim().trim_end_matches(".md"), "md", from)
-    }
-
-    /// Where a new `name.extension` goes: in the folder `name` names, else where Obsidian puts
-    /// new files, as for notes.
-    pub fn new_file_path(&self, name: &str, extension: &str, from: Option<usize>) -> PathBuf {
-        // A link with a folder (`[[Ideas/New]]`) says where it goes.
-        if name.contains('/') {
-            return self.workspace.root.join(format!("{name}.{extension}"));
-        }
-        let app: serde_json::Value =
-            std::fs::read_to_string(self.workspace.root.join(".obsidian/app.json"))
-                .ok()
-                .and_then(|t| serde_json::from_str(&t).ok())
-                .unwrap_or_default();
-        let dir = match app.get("newFileLocation").and_then(|v| v.as_str()) {
-            Some("current") => from
-                .and_then(|i| self.workspace.notes[i].path.parent().map(Path::to_path_buf))
-                .unwrap_or_else(|| self.workspace.root.clone()),
-            Some("folder") => {
-                let f = app
-                    .get("newFileFolderPath")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                self.workspace.root.join(f.trim_matches('/'))
-            }
-            _ => self.workspace.root.clone(),
-        };
-        dir.join(format!("{name}.{extension}"))
-    }
 }
 
 #[cfg(test)]
@@ -336,67 +191,6 @@ mod tests {
             )
             .unwrap(),
         )
-    }
-
-    #[test]
-    fn finds_attachments_by_path_beside_the_note_and_by_name() {
-        let dir = std::env::temp_dir().join(format!("cl-attach-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let files = [
-            "workspace/Maps/deep/map.pdf",
-            "workspace/Notes/Trip.md",
-            "workspace/Notes/ticket.pdf",
-            "workspace/Mount St. Helens.md",
-            "outside.pdf",
-        ];
-        for f in files {
-            let p = dir.join(f);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, "").unwrap();
-        }
-        let ix = Index::build(crate::workspace::scan(&dir.join("workspace")).unwrap());
-        let root = ix.workspace.root.clone();
-        let trip = ix.by_rel("Notes/Trip");
-        let found = |t: &str| {
-            ix.attachment(t, trip)
-                .map(|p| p.strip_prefix(&root).unwrap().to_owned())
-        };
-        assert_eq!(found("Maps/deep/map.pdf"), Some("Maps/deep/map.pdf".into()));
-        assert_eq!(found("MAP.PDF"), Some("Maps/deep/map.pdf".into()));
-        assert_eq!(found("ticket.pdf"), Some("Notes/ticket.pdf".into()));
-        assert_eq!(
-            found("../Maps/deep/map.pdf"),
-            Some("Maps/deep/map.pdf".into())
-        );
-        assert_eq!(found("missing.pdf"), None);
-        assert_eq!(found("../../outside.pdf"), None, "outside the workspace");
-        assert_eq!(
-            found("Mount St. Helens"),
-            None,
-            "a dotted note name is a note"
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn resolves_like_obsidian() {
-        let ix = example();
-        let name = |i: Option<usize>| i.map(|i| ix.workspace.notes[i].rel.clone());
-        assert_eq!(
-            name(ix.resolver.resolve("kīlauea")),
-            Some("Volcanoes/Kīlauea".into())
-        );
-        assert_eq!(
-            name(ix.resolver.resolve("Volcanoes/Vesuvius.md")),
-            Some("Volcanoes/Vesuvius".into())
-        );
-        assert_eq!(ix.resolver.resolve("Lahar"), None);
-        let link = split_link("Volcanoes/K%C4%ABlauea.md#Lava%20lake");
-        assert_eq!(
-            name(ix.resolver.resolve(&link.note)),
-            Some("Volcanoes/Kīlauea".into())
-        );
-        assert_eq!(link.heading.as_deref(), Some("Lava lake"));
     }
 
     #[test]
@@ -462,20 +256,5 @@ mod tests {
         assert!(ix.backlinks(b(&ix)).is_empty());
         assert_eq!(ix.workspace.notes.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn splits_links() {
-        let l = split_link("Lava#Temperature|lava temps");
-        assert_eq!(
-            (l.note.as_str(), l.heading.as_deref(), l.block.as_deref()),
-            ("Lava", Some("Temperature"), None)
-        );
-        let l = split_link("Note#^abc123");
-        assert_eq!(
-            (l.note.as_str(), l.block.as_deref()),
-            ("Note", Some("abc123"))
-        );
-        assert_eq!(split_link("Other%20Note").note, "Other Note");
     }
 }

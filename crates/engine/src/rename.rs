@@ -14,14 +14,12 @@ use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
 use crate::owner::given::{Change as Ask, Given, GivenItem};
 use crate::owner::markdown::{self, link_targets};
-use crate::workspace::{attachment_kind, decode_target, encode_target_like};
+use crate::resolver::{Files, Rewriter, dir_of, join, link_key};
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use walkdir::WalkDir;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Change {
@@ -201,211 +199,13 @@ pub fn check_path(rel: &str) -> Result<()> {
     Ok(())
 }
 
-fn join(dir: &str, name: &str) -> String {
-    if dir.is_empty() {
-        name.to_string()
-    } else {
-        format!("{dir}/{name}")
-    }
-}
-
-pub(crate) fn dir_of(rel: &str) -> &str {
-    rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
-}
-
-/// Resolve `a/b/../c` style paths (workspace-relative, no leading slash).
-fn normalize(path: &str) -> Option<String> {
-    let mut out: Vec<&str> = Vec::new();
-    for c in path.split('/') {
-        match c {
-            "" | "." => {}
-            ".." => {
-                out.pop()?;
-            }
-            c => out.push(c),
-        }
-    }
-    Some(out.join("/"))
-}
-
-/// Path from folder `from_dir` to workspace-relative `to`, e.g. ("A/B", "C/D") → "../../C/D".
-fn relative(from_dir: &str, to: &str) -> String {
-    let f: Vec<&str> = from_dir.split('/').filter(|s| !s.is_empty()).collect();
-    let t: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
-    let common = f.iter().zip(&t).take_while(|(a, b)| a == b).count();
-    let mut parts: Vec<&str> = vec![".."; f.len() - common];
-    parts.extend(&t[common..]);
-    parts.join("/")
-}
-
-/// How a link names a file: notes without `.md`, other files with their extension.
-fn link_key(rel: &str) -> &str {
-    rel.strip_suffix(".md").unwrap_or(rel)
-}
-
-/// How a link found its file.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Via {
-    Path,
-    Name,
-}
-
-/// Every file a link can lead to, and how links find them: notes by path or by name (the
-/// shallowest wins), `./` and `../` paths, other files (images, PDFs, canvases) by path, next
-/// to the linking note, or by name.
-pub struct Files {
-    /// Workspace-relative, with extension; the index's notes first, in its order.
-    pub rels: Vec<String>,
-    by_path: HashMap<String, usize>,
-    by_name: HashMap<String, usize>,
-    /// How many files have each name.
-    names: HashMap<String, usize>,
-}
-
-impl Files {
-    /// The workspace's notes, and its other files read from disk.
-    pub fn of_workspace(ix: &Index) -> Files {
-        let mut rels: Vec<String> = ix
-            .workspace
-            .notes
-            .iter()
-            .map(|n| format!("{}.md", n.rel))
-            .collect();
-        let root = &ix.workspace.root;
-        let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-            let n = e.file_name().to_string_lossy();
-            e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
-        });
-        for e in walker.filter_map(|e| e.ok()) {
-            if e.file_type().is_file() && e.path().extension().is_none_or(|x| x != "md") {
-                let rel = e.path().strip_prefix(root).unwrap_or(e.path());
-                rels.push(rel.to_string_lossy().replace('\\', "/"));
-            }
-        }
-        Files::new(rels)
-    }
-
-    fn new(rels: Vec<String>) -> Files {
-        Files::without(rels, None)
-    }
-
-    /// The files at `rels`, but links can't find the one at `gone` (it still has an index and a
-    /// path, so a link that led to it is written as that path).
-    pub(crate) fn without(rels: Vec<String>, gone: Option<usize>) -> Files {
-        let mut order: Vec<usize> = (0..rels.len()).filter(|&i| Some(i) != gone).collect();
-        order.sort_by(|&a, &b| link_key(&rels[a]).cmp(link_key(&rels[b])));
-        let (mut by_path, mut by_name, mut names) = (
-            HashMap::new(),
-            HashMap::<String, usize>::new(),
-            HashMap::new(),
-        );
-        for i in order {
-            let key = link_key(&rels[i]).to_lowercase();
-            let name = key.rsplit('/').next().unwrap_or(&key).to_string();
-            let depth = key.matches('/').count();
-            *names.entry(name.clone()).or_insert(0) += 1;
-            let e = by_name.entry(name).or_insert(i);
-            if depth < link_key(&rels[*e]).matches('/').count() {
-                *e = i;
-            }
-            by_path.insert(key, i);
-        }
-        Files {
-            rels,
-            by_path,
-            by_name,
-            names,
-        }
-    }
-
-    /// The file a link written in a file in `dir` leads to (`target` already decoded:
-    /// `workspace::decode_target`).
-    pub fn resolve(&self, dir: &str, target: &str) -> Option<usize> {
-        self.find(dir, target).map(|(i, _)| i)
-    }
-
-    /// The file at a workspace path (notes with or without `.md`).
-    pub(crate) fn path(&self, key: &str) -> Option<usize> {
-        self.by_path.get(&key.to_lowercase()).copied()
-    }
-
-    fn find(&self, dir: &str, target: &str) -> Option<(usize, Via)> {
-        let target = target.trim();
-        let other = attachment_kind(target).is_some();
-        let key = if other { target } else { link_key(target) };
-        let by_path = |p: Option<String>| p.and_then(|p| self.path(&p)).map(|i| (i, Via::Path));
-        if key.starts_with("./") || key.starts_with("../") {
-            return by_path(normalize(&join(dir, key)));
-        }
-        let beside = other || key.contains('/');
-        by_path(Some(key.trim_start_matches('/').to_string()))
-            .or_else(|| by_path(normalize(&join(dir, key)).filter(|_| beside)))
-            .or_else(|| {
-                let name = key.rsplit('/').next().unwrap_or(key).to_lowercase();
-                self.by_name.get(&name).map(|&i| (i, Via::Name))
-            })
-    }
-
-    fn unique(&self, name: &str) -> bool {
-        self.names.get(&name.to_lowercase()).copied().unwrap_or(0) <= 1
-    }
-}
-
 /// A canvas card's `file` or `text` field: its name, the colon, its JSON string.
 fn canvas_field() -> &'static Regex {
     static P: OnceLock<Regex> = OnceLock::new();
     P.get_or_init(|| Regex::new(r#""(file|text)"(\s*:\s*)("(?:[^"\\]|\\.)*")"#).unwrap())
 }
 
-/// The workspace before and after the move: same files (same indices), new paths for some.
-pub(crate) struct Rewriter {
-    pub(crate) before: Files,
-    pub(crate) after: Files,
-}
-
 impl Rewriter {
-    /// What the link `raw` should become, or `None` if it still leads where it did. `dir_then`
-    /// is the linking file's folder before the move, `dir_now` after.
-    fn link(&self, raw: &str, md: bool, dir_then: &str, dir_now: &str) -> Option<String> {
-        let decoded = decode_target(raw.trim());
-        let (target, via) = self.before.find(dir_then, &decoded)?;
-        let still = self.after.find(dir_now, &decoded);
-        if still.is_some_and(|(t, v)| t == target && !(via == Via::Path && v == Via::Name)) {
-            return None;
-        }
-        let new_rel = &self.after.rels[target];
-        let relative_style = decoded.starts_with("./") || decoded.starts_with("../");
-        let out = if md {
-            // Workspace-absolute ("Folder/Note.md", "/Folder/Note.md") or relative to the note?
-            let absolute = decoded.starts_with('/')
-                || (!decoded.starts_with('.')
-                    && self.before.path(link_key(&decoded)) == Some(target)
-                    && !dir_then.is_empty());
-            let path = if absolute {
-                let slash = if decoded.starts_with('/') { "/" } else { "" };
-                format!("{slash}{new_rel}")
-            } else {
-                relative(dir_now, new_rel)
-            };
-            encode_target_like(&path, raw)
-        } else {
-            let shown = if decoded.ends_with(".md") {
-                new_rel.as_str()
-            } else {
-                link_key(new_rel)
-            };
-            let name = shown.rsplit('/').next().unwrap_or(shown);
-            if relative_style {
-                relative(dir_now, shown)
-            } else if decoded.contains('/') || !self.after.unique(link_key(name)) {
-                shown.to_string()
-            } else {
-                name.to_string()
-            }
-        };
-        (out != raw).then_some(out)
-    }
-
     /// Rewrite the links in a note's text (through its owner, `markdown::relink`). Returns the
     /// new text, changed lines and link count.
     fn note_text(&self, text: &str, dir_then: &str, dir_now: &str) -> (String, Vec<Change>, usize) {
@@ -888,9 +688,6 @@ mod tests {
         assert!(target_rel("Lava.md", "../outside").is_err());
         assert!(target_rel("Lava.md", "bad|name").is_err());
         assert!(target_rel("Lava.md", "  ").is_err());
-        assert_eq!(relative("A/B", "C/D"), "../../C/D");
-        assert_eq!(relative("A", "A/x"), "x");
-        assert_eq!(normalize("A/B/../C"), Some("A/C".into()));
     }
 
     #[test]
@@ -953,7 +750,7 @@ mod tests {
         let ix = Index::build(crate::workspace::scan(&dir).unwrap());
         let png = ix
             .by_rel("Notes")
-            .and_then(|n| ix.attachment("Lava/flow map.png", Some(n)));
+            .and_then(|n| crate::resolver::attachment(&ix, "Lava/flow map.png", Some(n)));
         assert!(png.is_some_and(|p| p.ends_with("Lava/flow map.png")));
         let p = plan_folder(&ix, "Lava", "Rock flows").unwrap();
         apply(&p).unwrap();

@@ -1197,7 +1197,7 @@ impl Home {
 
     /// Where a link written in `from` leads, resolved the way Obsidian resolves it.
     fn destination(&self, from: &Path, raw: &str) -> Option<Destination> {
-        let link = crate::index::split_link(raw);
+        let link = crate::resolver::split_link(raw);
         let ix = &self.core.as_ref()?.index;
         let jump = link
             .heading
@@ -1211,7 +1211,7 @@ impl Home {
         }
         let owned = self.registry.owner_of(&link.note).is_some();
         if owned || workspace::attachment_kind(&link.note).is_some() {
-            let path = ix.file(&link.note, ix.by_path(from));
+            let path = crate::resolver::file(ix, &link.note, ix.by_path(from));
             return Some(Destination::Attachment {
                 name: link.note,
                 path,
@@ -1242,7 +1242,7 @@ impl Home {
                 let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
                     return;
                 };
-                let path = ix.new_note_path(&name, ix.by_path(from));
+                let path = crate::resolver::new_note_path(ix, &name, ix.by_path(from));
                 if let Err(e) = crate::write::create_if_missing(&path, b"") {
                     return self.flash(format!("couldn't create the note: {e}"));
                 }
@@ -2782,7 +2782,7 @@ impl Home {
                     // Same place a new note from a link goes (Obsidian's new-note location setting).
                     let path = self.core.as_ref().map(|c| &c.index).map(|ix| {
                         let from = self.shown.as_ref().and_then(|p| ix.by_path(p));
-                        ix.new_note_path(q.trim(), from)
+                        crate::resolver::new_note_path(ix, q.trim(), from)
                     });
                     if let Some(path) = path
                         && crate::write::create_if_missing(&path, b"").is_ok()
@@ -4179,7 +4179,7 @@ impl Home {
                 let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
                     return;
                 };
-                let path = ix.new_note_path(&target, ix.by_rel(&from));
+                let path = crate::resolver::new_note_path(ix, &target, ix.by_rel(&from));
                 let created = crate::write::create_if_missing(&path, b"");
                 self.reload_tree();
                 self.show_tidy(view);
@@ -6276,7 +6276,7 @@ impl Home {
 /// Whether a wiki or Markdown link written in a note leads to a note (a heading in the same
 /// note always does).
 fn resolves(ix: Option<&crate::index::Index>, raw: &str) -> bool {
-    let link = crate::index::split_link(raw);
+    let link = crate::resolver::split_link(raw);
     link.note.is_empty() || ix.is_some_and(|ix| ix.resolver.resolve(&link.note).is_some())
 }
 

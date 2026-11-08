@@ -56,8 +56,12 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
 - `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text, each read by its owner. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
-- `index.rs`: `Index` = workspace + the single link `Resolver` (Obsidian's rules: path, then name,
-  shallowest wins) + backlinks. Don't write another link resolver.
+- `index.rs`: `Index` = workspace + the workspace's link `Resolver` + backlinks built from it.
+- `resolver.rs`: the link resolver, both directions, with Obsidian's rules (path, then name,
+  shallowest wins; attachments beside the note; `./` and `../`). Resolve: `Resolver` (the
+  index's), `Files::resolve`, `split_link`, `attachment`, `file`. Write: `Files::write` in a
+  `Style`, `Rewriter` (renames and merges), `new_note_path`/`new_file_path`. Don't write another
+  link resolver: ask this one (docs/extensions.md, "Link resolver").
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs` (in the `rename-core` PR until it's merged): rename/move with every link updated;
   `plan()` then `apply()`.

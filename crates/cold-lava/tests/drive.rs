@@ -103,7 +103,7 @@ fn deletes_a_note_to_the_system_trash_and_undoes_it() {
 
 /// Links in notes that lead nowhere, as `note name: target` (names survive folder moves).
 fn unresolved(workspace: &Path) -> Vec<String> {
-    use cold_lava_engine::{index::Index, rename::Files, workspace};
+    use cold_lava_engine::{index::Index, resolver::Files, workspace};
     let ix = Index::build(workspace::scan(workspace).unwrap());
     let files = Files::of_workspace(&ix);
     let mut out = Vec::new();

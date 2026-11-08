@@ -17,6 +17,7 @@ pub mod merge;
 pub mod owner;
 pub mod paths;
 pub mod rename;
+pub mod resolver;
 pub mod search;
 pub mod tasks;
 pub mod templates;
