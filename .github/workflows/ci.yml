@@ -30,6 +30,16 @@ jobs:
         run: cargo test --workspace
       - name: Release build
         run: cargo build --release -p cold-lava
+      # The Linux binary, to try a PR without compiling it:
+      # gh run download RUN_ID -n cold-lava-linux -D DIR (gh pr checks shows the run).
+      - name: Upload the binary
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cold-lava-linux
+          path: target/release/cold-lava
+          retention-days: 3
+          if-no-files-found: error
 
   release-check:
     # A PR that bumps the version must also add its CHANGELOG.md section (see RELEASING in README).
