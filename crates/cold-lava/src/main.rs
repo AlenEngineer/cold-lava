@@ -192,10 +192,11 @@ fn run() -> Result<()> {
             print_keys("reader", &commands::entries(commands::READER));
             print_keys("pane", &commands::entries(commands::PANE));
             let errors = &config::get().errors;
-            if !errors.is_empty() {
+            let warnings = &config::get().warnings;
+            if !errors.is_empty() || !warnings.is_empty() {
                 let path = config::path().unwrap_or_default();
                 eprintln!("{}:", path.display());
-                for e in errors {
+                for e in errors.iter().chain(warnings) {
                     eprintln!("  {}", e.replace('\n', "\n  "));
                 }
             }

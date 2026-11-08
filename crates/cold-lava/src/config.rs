@@ -21,6 +21,8 @@ pub struct Config {
     pub types: toml::Table,
     /// One human-readable line per problem in the file.
     pub errors: Vec<String>,
+    /// One line per setting that works but should be rewritten, such as an old command name.
+    pub warnings: Vec<String>,
 }
 
 /// The file as written. Other top-level sections are ignored, for later use.
@@ -101,7 +103,7 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let mut config = Config::default();
     for (mut id, value) in file.keys {
         if let Some(&(old, new)) = RENAMED.iter().find(|(old, _)| *old == id) {
-            config.errors.push(format!(
+            config.warnings.push(format!(
                 "[keys] {old:?} is now called {new:?}; the keys still apply"
             ));
             id = new.to_string();
@@ -282,10 +284,13 @@ mod tests {
     }
 
     #[test]
-    fn an_old_command_name_still_binds_with_a_note() {
-        let (keys, errors) = menu("[keys]\n\"vault.add\" = \"V\"\n\"vault.tidy\" = []\n");
-        assert_eq!(errors.len(), 2, "{errors:?}");
-        assert!(errors[0].contains("\"vault.add\" is now called \"workspace.add\""));
+    fn an_old_command_name_still_binds_with_a_warning() {
+        let text = "[keys]\n\"vault.add\" = \"V\"\n\"vault.tidy\" = []\n";
+        let c = parse(text);
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.warnings.len(), 2, "{:?}", c.warnings);
+        assert!(c.warnings[0].contains("\"vault.add\" is now called \"workspace.add\""));
+        let (keys, _) = menu(text);
         assert_eq!(keys.label("workspace.add"), "V");
         assert_eq!(keys.label("workspace.tidy"), "");
     }

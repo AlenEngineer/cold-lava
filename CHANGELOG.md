@@ -93,7 +93,7 @@ change commands, keys and file formats; patch versions only fix things.
   line, `--help` (`cold-lava items WORKSPACE KIND`) and the docs. "Vault" is left for Obsidian's
   own. The commands `vault.add`, `vault.rescan` and `vault.tidy` are now `workspace.add`,
   `workspace.rescan` and `workspace.tidy`; keys set under the old names in `config.toml` still
-  apply, with a note to rename them. `cold-lava agenda --json` names the folder `"workspace"`
+  apply, with a warning to rename them (not an error: `cold-lava keys` still exits 0). `cold-lava agenda --json` names the folder `"workspace"`
   instead of `"vault"`, `cold-lava types --json` gives a type from `.cold-lava/types.toml` the
   origin `{"kind": "workspace"}` instead of `"vault"`, and the extension message
   `vault/saved` is now `workspace/saved`. The list of opened workspaces moves from `vaults.json` to

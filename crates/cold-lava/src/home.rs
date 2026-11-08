@@ -686,7 +686,11 @@ impl Home {
                 h.focus = Focus::Notes;
             }
         }
-        match (crate::config::get().errors.len(), h.registry.refused()) {
+        let config = crate::config::get();
+        match (config.errors.len(), h.registry.refused()) {
+            (0, []) if !config.warnings.is_empty() => {
+                h.flash("config.toml uses an old command name: run cold-lava keys to see it")
+            }
             (0, []) => {}
             (0, [why]) => h.flash(why.clone()),
             (0, refused) => h.flash(format!(
