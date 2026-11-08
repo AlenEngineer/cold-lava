@@ -1,4 +1,5 @@
-# The table view: i picks a type, its items are the rows. Sorting by elevation, filtering by
+# The table view: i sends the types as a table to pick from, Enter on one sends its items as
+# the rows. Sorting by elevation, filtering by
 # country, Enter opening the selected volcano's note and Ctrl-o coming back to the table as it
 # was; then the eruption table's VEI chips and the task table (tests/drive.rs adds
 # Inbox/Today.md, with a priority).
@@ -7,10 +8,11 @@ env COLD_LAVA_EDITOR=none
 wait-for example-workspace
 keys i
 wait-for Table of…
-expect ▦ volcano
-expect 9 items
+expect volcano         9
+keys /
 type volc
-wait-for 1 type
+keys enter
+wait-for 1 of 4 rows · /volc
 keys enter
 wait-for 9 rows
 expect Eyjafjallajökull  Iceland
@@ -27,7 +29,7 @@ keys enter
 wait-for 4 of 9 rows · /united · by elevation descending
 keys g enter
 wait-for Volcanoes/Mauna Loa  reading
-wait-for Ctrl-o ⟵ volcano table
+wait-for Ctrl-o ⟵ table
 keys ctrl+o
 wait-for 4 of 9 rows · /united · by elevation descending
 keys esc
@@ -35,16 +37,22 @@ wait-for 9 rows · by elevation descending
 keys esc
 wait-gone by elevation
 keys i
+wait-for Table of…
+keys /
 type erup
-wait-for 1 type
+keys enter
+wait-for 1 of 4 rows · /erup
 keys enter
 wait-for 4 rows
 expect vei  example
 expect  6   [[Krakatoa]] 1883
 screen
 keys q i
+wait-for Table of…
+keys /
 type task
-wait-for 1 type
+keys enter
+wait-for 1 of 4 rows · /task
 keys enter
 wait-for 6 rows
 expect Ring the observatory

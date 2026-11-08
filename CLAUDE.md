@@ -95,8 +95,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
     returns, so extensions never hold `&mut Home`. The gateway's `items/*` and `types/list` are
     answered during the call by the core, after `Host` checks the manifest's `permissions`
-    (`items.read` by default, `items.edit`). The table and the reader's `x` use the same
-    `Host`, as `Registry::screen`; the agenda is a built-in `Extension`.
+    (`items.read` by default, `items.edit`). The reader's `x` uses the same `Host`, as
+    `Registry::screen`; the agenda and the table are built-in `Extension`s.
 - `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
   commands it types into its pane.
 - `ext/process.rs`, `transport.rs`, `rpc.rs`, `frame.rs`, `installed.rs`: extensions in their own
@@ -121,8 +121,11 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   or Kitty-graphics pixels drawn under the text with `z=-1`; colour groups).
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
-  cross the view gateway). `type_table.rs` builds a type's table from the core's items; edits
-  go through `edit::set_field`.
+  cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
+  `i` (`table.open`, a core command the menu hands to it) sends the types as a table to pick
+  from, then the picked type's table with `view/open`, kept by `items/query` and
+  `items/subscribe` (`Feed`, which the agenda uses too); a cell's edit is
+  `items/edit set-field`. `build` is also what `cold-lava table` prints.
 - `list.rs`: the declarative list / tree view (groups of rows by id with a checkbox, pieces of
   text with looks, a right side; selection, folding, filtering; events back; serde like the
   table). `agenda.rs` is the agenda as a built-in extension: it follows tasks with
@@ -182,7 +185,7 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
-  it, and so does the agenda (over the view gateway); the table, graph, canvas and the menu
-  should become extensions of the core too. Then
+  it, and so do the agenda and the table (over the view gateway); the graph, canvas and the
+  menu should become extensions of the core too. Then
   performance for large workspaces (Barnes–Hut layout), a config file, light-terminal colours.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).

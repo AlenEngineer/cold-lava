@@ -23,10 +23,9 @@ use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
 use crate::reader::{Reader, Spot};
-use crate::table::{self, TableView};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
-use crate::type_table::{self, At};
+use crate::type_table;
 use crate::views::{self, Views};
 use crate::{agenda, board, items, templates, term, whichkey, workspace};
 use anyhow::{Result, anyhow};
@@ -436,28 +435,11 @@ enum Mode {
     },
     /// What nothing uses: orphan notes, unused attachments, empty folders, unresolved links.
     Tidy(Box<TidyView>),
-    /// Choosing a type for its table; `sel` is a row of `table_types`.
-    TablePick {
-        query: String,
-        sel: usize,
-        /// Every type and how many items it has, through the gateway when the picker opened.
-        types: Vec<(String, usize)>,
-    },
-    /// A type's items as a table.
-    Table(Box<Tabled>),
     /// A view an extension opened, kept in `Home::views`.
     View {
         owner: ExtId,
         view: ViewId,
     },
-}
-
-/// The table of a type's items, the gateway's subscription it is kept by, and where each row's
-/// item is.
-struct Tabled {
-    feed: type_table::Feed,
-    view: TableView,
-    at: HashMap<String, At>,
 }
 
 /// A note, board or folder about to go to the trash, as the user was shown it.
@@ -1272,12 +1254,6 @@ impl Home {
                 sel: *sel,
             });
         }
-        if let Mode::Table(t) = &self.mode {
-            return Some(Place::Table {
-                ty: t.feed.name().to_string(),
-                spot: t.view.spot(),
-            });
-        }
         if let Mode::View { owner, view } = self.mode {
             let label = self.registry.manifest(owner).name.clone();
             return Some(Place::View { owner, view, label });
@@ -1335,10 +1311,6 @@ impl Home {
                 }
                 Place::Graph { selected } => self.run_graph(terminal, selected)?,
                 Place::Board { path } => self.run_board(terminal, path)?,
-                Place::Table { ty, spot } => {
-                    self.open_table(&ty, Some(spot));
-                    None
-                }
                 Place::View { owner, view, .. } => {
                     if self.views.has(owner, view) {
                         if self.focus == Focus::Pane {
@@ -1528,8 +1500,8 @@ impl Home {
         }
     }
 
-    /// Hand the item subscriptions' news to whoever holds them: the table's feed, or an
-    /// extension. A subscription nobody holds any more (a table since closed) is stopped.
+    /// Hand the item subscriptions' news to the extensions that hold them. A subscription
+    /// nobody holds any more is stopped.
     fn deliver_item_news(&mut self) {
         let Some(core) = self.core.as_mut() else {
             return;
@@ -1539,19 +1511,6 @@ impl Home {
                 return;
             };
             let sub = news.subscription();
-            if let Mode::Table(t) = &mut self.mode
-                && t.feed.subscription() == sub
-            {
-                match t.feed.heard(&mut self.registry.screen(TABLE, core), news) {
-                    Ok(()) => {
-                        let built = t.feed.table();
-                        t.view.update(built.table);
-                        t.at = built.at;
-                    }
-                    Err(e) => self.flash(format!("the table couldn't be read again: {e}")),
-                }
-                continue;
-            }
             match self.registry.by_name(&owner) {
                 Some(ext) => self.call(ext, |e, host| e.items(news, host)),
                 None => drop(core.unsubscribe_items(&owner, sub)),
@@ -1716,13 +1675,6 @@ impl Home {
         if matches!(self.mode, Mode::Tidy(_)) {
             self.tidy_key(k);
             return Ok(());
-        }
-        if matches!(self.mode, Mode::TablePick { .. }) {
-            self.table_pick_key(k);
-            return Ok(());
-        }
-        if matches!(self.mode, Mode::Table(_)) {
-            return self.table_key(k, terminal);
         }
         if matches!(self.mode, Mode::View { .. }) {
             return self.view_key(k, terminal);
@@ -1893,8 +1845,6 @@ impl Home {
             | Mode::Outline { .. }
             | Mode::Bookmarks { .. }
             | Mode::Tidy(_)
-            | Mode::TablePick { .. }
-            | Mode::Table(_)
             | Mode::View { .. }
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
@@ -2327,16 +2277,8 @@ impl Home {
             MenuAction::Switcher => self.open_switcher(),
             MenuAction::Bookmarks => self.open_bookmarks(),
             MenuAction::Tidy => self.open_tidy(),
-            MenuAction::Table => self.open_table_pick(),
-            MenuAction::Agenda => {
-                if let Some(ext) = self.registry.by_name(AGENDA) {
-                    let request = CommandRequest::Run {
-                        id: agenda::OPEN.into(),
-                        args: Value::Null,
-                    };
-                    self.call(ext, |e, host| e.command(request, host));
-                }
-            }
+            MenuAction::Table => self.hand_to(TABLE, type_table::OPEN),
+            MenuAction::Agenda => self.hand_to(AGENDA, agenda::OPEN),
             MenuAction::Bookmark => match self.bookmark_target() {
                 Some(target) => self.toggle_bookmark(target),
                 None => self.flash("select a note or folder to bookmark"),
@@ -4058,217 +4000,18 @@ impl Home {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    // ---------- table ----------
-
-    fn open_table_pick(&mut self) {
-        let Some(core) = self.core.as_mut() else {
-            return;
-        };
-        let types = match type_table::types(&mut self.registry.screen(TABLE, core)) {
-            Ok(types) => types,
-            Err(e) => return self.flash(format!("no types: {e}")),
-        };
-        if self.focus == Focus::Pane {
-            self.focus = Focus::Notes;
-        }
-        self.mode = Mode::TablePick {
-            query: String::new(),
-            sel: 0,
-            types,
-        };
-    }
-
-    /// The types to pick from, with how many items each has: those matching the query.
-    fn table_types(&self, query: &str) -> Vec<(String, usize)> {
-        let Mode::TablePick { types, .. } = &self.mode else {
-            return Vec::new();
-        };
-        if query.trim().is_empty() {
-            return types.clone();
-        }
-        let mut hits: Vec<_> = (types.iter().cloned())
-            .filter_map(|t| Some((crate::search::fuzzy(query, &t.0)?.score, t)))
-            .collect();
-        hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-        hits.into_iter().map(|(_, t)| t).collect()
-    }
-
-    fn table_pick_key(&mut self, k: KeyEvent) {
-        let Mode::TablePick { query, sel, .. } = &self.mode else {
-            return;
-        };
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let (mut q, mut s) = (query.clone(), *sel);
-        let rows = self.table_types(&q);
-        let last = rows.len().saturating_sub(1);
-        match k.code {
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
-                return;
-            }
-            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(last),
-            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => s = (s + 1).min(last),
-            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
-            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
-            KeyCode::Backspace => {
-                q.pop();
-                s = 0;
-            }
-            KeyCode::Char('u') if ctrl => {
-                q.clear();
-                s = 0;
-            }
-            KeyCode::Enter => {
-                let Some((ty, _)) = rows.get(s.min(last)) else {
-                    return;
-                };
-                let ty = ty.clone();
-                self.mode = Mode::Normal;
-                if let Some(here) = self.here() {
-                    self.history.visit(here);
-                }
-                return self.open_table(&ty, None);
-            }
-            KeyCode::Char(c) if !ctrl => {
-                q.push(c);
-                s = 0;
-            }
-            _ => {}
-        }
-        if let Mode::TablePick { query, sel, .. } = &mut self.mode {
-            (*query, *sel) = (q, s);
-        }
-    }
-
-    fn draw_table_pick(&self, f: &mut Frame, area: Rect) {
-        let Mode::TablePick { query, sel, .. } = &self.mode else {
-            return;
-        };
-        let inner = picker_frame(f, area, " Table of… ", " ↑↓ choose · ⏎ open · Esc close ");
-        let rows = self.table_types(query);
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(
-                    format!("  {} · type to filter", plural(rows.len(), "type")),
-                    Style::new().fg(MUTED),
-                ),
-            ]),
-            Line::raw(""),
-        ];
-        let height = inner.height.saturating_sub(2) as usize;
-        let sel = (*sel).min(rows.len().saturating_sub(1));
-        let start = sel.saturating_sub(height.saturating_sub(1));
-        let width = inner.width as usize;
-        for (i, (ty, n)) in rows.iter().enumerate().skip(start).take(height) {
-            let style = match (i == sel, *n) {
-                (true, _) => Style::new().fg(Color::Black).bg(ACCENT),
-                (false, 0) => Style::new().fg(DIM),
-                (false, _) => Style::new().fg(NOTE),
-            };
-            let right = format!("{} ", plural(*n, "item"));
-            let left = format!(" ▦ {ty}");
-            let pad = width.saturating_sub(left.chars().count() + right.chars().count());
-            lines.push(Line::styled(
-                format!("{left}{}{right}", " ".repeat(pad)),
-                style,
-            ));
-        }
-        f.render_widget(Paragraph::new(lines), inner);
-    }
-
-    /// Show the table of type `ty`, as it was at `spot`.
-    fn open_table(&mut self, ty: &str, spot: Option<table::Spot>) {
-        let Some(core) = self.core.as_mut() else {
-            return;
-        };
-        let feed = match type_table::Feed::open(&mut self.registry.screen(TABLE, core), ty) {
-            Ok(Some(feed)) => feed,
-            Ok(None) => return self.flash(format!("no type called {ty}")),
-            Err(e) => return self.flash(format!("no table of {ty}: {e}")),
-        };
-        let built = feed.table();
-        let mut view = TableView::new(built.table);
-        if let Some(spot) = spot {
-            view.restore(spot);
-        }
-        if self.focus == Focus::Pane {
-            self.focus = Focus::Notes;
-        }
-        self.mode = Mode::Table(Box::new(Tabled {
-            feed,
-            view,
-            at: built.at,
-        }));
-    }
-
-    fn table_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Mode::Table(mut t) = std::mem::replace(&mut self.mode, Mode::Normal) else {
-            return Ok(());
-        };
-        if !t.view.typing()
-            && let Some(MenuCommand::Core(MenuAction::History(a))) = self.keys.get(k)
-        {
-            let here = Place::Table {
-                ty: t.feed.name().to_string(),
-                spot: t.view.spot(),
-            };
-            self.mode = Mode::Table(t);
-            let to = match a {
-                HistoryAction::Back => self.history.back(Some(here)),
-                HistoryAction::Forward => self.history.forward(Some(here)),
-            };
-            if let Some(place) = to {
-                self.mode = Mode::Normal;
-                self.go(place, terminal)?;
-            }
-            return Ok(());
-        }
-        let action = t.view.key(k);
-        let Some(root) = self.root.clone() else {
-            return Ok(());
-        };
-        match action {
-            table::Action::Stay => self.mode = Mode::Table(t),
-            table::Action::Close => {
-                if let Some(core) = self.core.as_mut() {
-                    t.feed.close(&mut self.registry.screen(TABLE, core));
-                }
-            }
-            table::Action::Say(s) => {
-                self.mode = Mode::Table(t);
-                self.flash(s);
-            }
-            table::Action::Send(table::Event::Activated { row }) => {
-                let Some(at) = t.at.get(&row).cloned() else {
-                    self.mode = Mode::Table(t);
-                    return Ok(());
-                };
-                let here = Place::Table {
-                    ty: t.feed.name().to_string(),
-                    spot: t.view.spot(),
-                };
-                self.open_found(Some(here), &root.join(&at.note), Some(Jump::Line(at.line)));
-            }
-            table::Action::Send(table::Event::Edit { row, column, value }) => {
-                let Some(core) = self.core.as_mut() else {
-                    self.mode = Mode::Table(t);
-                    return Ok(());
-                };
-                let host = &mut self.registry.screen(TABLE, core);
-                let (msg, note) = edit_cell(host, &mut t, &row, &column, value);
-                self.mode = Mode::Table(t);
-                if let Some(note) = note {
-                    self.catch_up(&root.join(note));
-                }
-                self.flash(msg);
-            }
-        }
-        Ok(())
-    }
-
     // ---------- extensions' views ----------
+
+    /// A core command that a built-in extension carries out, handed to it as `command/run`.
+    fn hand_to(&mut self, name: &str, command: &str) {
+        if let Some(ext) = self.registry.by_name(name) {
+            let request = CommandRequest::Run {
+                id: command.into(),
+                args: Value::Null,
+            };
+            self.call(ext, |e, host| e.command(request, host));
+        }
+    }
 
     /// A key in an extension's view: the view's own, else Back and Forward, else nothing.
     /// What the user did goes to the extension as `view/event`, and Esc or `q` close it.
@@ -5233,12 +4976,6 @@ impl Home {
         }
         if let Mode::Tidy(view) = &self.mode {
             self.draw_tidy(f, main, view);
-        }
-        if matches!(self.mode, Mode::TablePick { .. }) {
-            self.draw_table_pick(f, main);
-        }
-        if let Mode::Table(t) = &mut self.mode {
-            draw_table(f, main, t);
         }
         if let Mode::View { owner, view } = self.mode
             && let Some(open) = self.views.get_mut(owner, view)
@@ -6630,64 +6367,6 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) -> R
         r,
     );
     r
-}
-
-/// Set one value of a row's item through the workspace gateway: what to say about it, and the
-/// note to read again.
-fn edit_cell(
-    host: &mut Host<'_>,
-    t: &mut Tabled,
-    row: &str,
-    column: &str,
-    value: String,
-) -> (String, Option<String>) {
-    let Some(at) = t.at.get(row).cloned() else {
-        return (format!("{row} is gone"), None);
-    };
-    let edit = Edit {
-        id: row.to_string(),
-        rev: at.rev.clone(),
-        op: Op::SetField {
-            field: column.to_string(),
-            value: Value::String(value.clone()),
-        },
-    };
-    let name = at.note.trim_end_matches(".md");
-    let msg = match host.edit_item(&edit) {
-        Ok(set) if !set.changed => format!("{column} is already {value}"),
-        Ok(set) => {
-            t.view.select(&set.item.id);
-            match value.trim() {
-                "" => format!("{name}: {column} removed"),
-                v => format!("{name}: {column} set to {v}"),
-            }
-        }
-        Err(e) if e.reason == Reason::Changed => {
-            format!("not saved, {} · the table is read again", e.message)
-        }
-        Err(e) => format!("not saved: {e}"),
-    };
-    (msg, Some(at.note))
-}
-
-/// A type's table over the whole main area, its filter or edit on the bottom line.
-fn draw_table(f: &mut Frame, area: Rect, t: &mut Tabled) {
-    f.render_widget(Clear, area);
-    let hint = " ←→↑↓ move · s/S sort · / filter · e edit · ⏎ open · Esc close ";
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(ACCENT))
-        .title(Line::styled(
-            format!(" {} ", t.view.title()),
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-    let lines = t.view.lines(body.width as usize, body.height as usize);
-    f.render_widget(Paragraph::new(lines), body);
-    f.render_widget(Paragraph::new(t.view.status()), status);
 }
 
 /// An extension's view over the whole main area, its filter on the bottom line.

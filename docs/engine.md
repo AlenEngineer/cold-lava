@@ -108,7 +108,8 @@ frontend. Neovim's UI protocol works this way, and so, at the extreme, does HTML
 *(Built for lists and tables: an extension sends `view/open` with one and hears `view/event`
 when you press Enter, tick a row, use a key it bound or edit a cell; `crates/cold-lava/src/ext/view.rs`
 and `views.rs`, ["The view gateway, as built"](extensions.md#the-view-gateway-as-built). The
-agenda is a built-in extension on it, the same path an extension in Python takes.)*
+agenda and the table are built-in extensions on it, the same path an extension in Python
+takes.)*
 
 The vocabulary stays small, and grows only when a real extension needs a new word:
 
@@ -116,7 +117,7 @@ The vocabulary stays small, and grows only when a real extension needs a new wor
 | --- | --- | --- |
 | **markdown** | text with the reader's styling | built (the reader) |
 | **list / tree** | the agenda, a todo aggregator, outlines | built (`crates/cold-lava/src/list.rs`; over `view/open`; the agenda, `A`, `agenda.open`, is an extension) |
-| **table** | a type's items as rows: books, people, projects | built (`crates/cold-lava/src/table.rs`; over `view/open`; the menu's own table, `i`, `table.open`, is still a screen) |
+| **table** | a type's items as rows: books, people, projects | built (`crates/cold-lava/src/table.rs`; over `view/open`; the menu's table, `i`, `table.open`, is a built-in extension on it) |
 | **scene** | nodes and edges: the graph, the whiteboard, mind maps | designed |
 | **pane** | the escape hatch: any terminal program (a GUI's could be a web view) | built |
 | **image** | pictures, with Kitty pixels where the terminal has them | to design |

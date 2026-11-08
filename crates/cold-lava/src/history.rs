@@ -27,11 +27,6 @@ pub enum Place {
     Board {
         path: PathBuf,
     },
-    /// The table of a type's items, sorted, filtered and scrolled as it was.
-    Table {
-        ty: String,
-        spot: crate::table::Spot,
-    },
     /// A view an extension opened (`ext::view`), which keeps how it was while it is open;
     /// `label` is the extension's name.
     View {
@@ -53,7 +48,6 @@ impl Place {
             Place::Note { path, .. } | Place::Board { path } => stem(path),
             Place::Search { query, .. } => format!("search “{query}”"),
             Place::Graph { .. } => "graph".to_string(),
-            Place::Table { ty, .. } => format!("{ty} table"),
             Place::View { label, .. } => label.clone(),
         }
     }
