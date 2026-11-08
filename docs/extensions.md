@@ -776,8 +776,8 @@ new = "kanban.new"         # the command that makes one
   since it was read, so the owner re-reads, merges and tries again. `workspace/create` places a new
   file where Obsidian would put it and never overwrites. Outside changes arrive as
   `file/changed`, from the core's one watcher.
-- **Joining the workspace.** An owner can contribute its file's **items and links**. A kanban card
-  becomes an item of the owner's type (`kanban.card`), queried and listed with Markdown tasks,
+- **Joining the workspace.** An owner contributes its file's **items and links** ("Owners and
+  types" below). A task on a kanban card is a `task`, queried and listed with Markdown tasks,
   and edited through its owner. A card's `[[Lava]]` is reported as a link that the core
   resolves by Obsidian's rules, so `Lava`'s backlinks list the board, the graph draws the
   edge, and renaming `Lava` updates the board through its owner. Other file types are then part
@@ -787,6 +787,68 @@ new = "kanban.new"         # the command that makes one
 - **The whiteboard is the first owner:** `.canvas`, drawn as a scene, merged three ways on save,
   contributing its cards and their links. Images get a view kind of their own (`image`, drawn
   with Kitty pixels where the terminal has them), since every frontend can show a picture.
+
+### Owners and types
+
+*(design: the next slice of file types)*
+
+**Separated by file type, united by type data.** Types are what the user works with; a file type
+only decides how data is written down. A task is a `task` whether it is a line in a note, a card
+on a whiteboard or a row in a CSV, and whatever reads tasks (the agenda, the table, an extension
+that copies them to a calendar) gets all of them without knowing any format. cold-lava enables
+the user's data; it doesn't lock it into the file it was typed in.
+
+An owner translates between its format and the workspace's types. It has three jobs; the engine
+keeps everything that has to be shared and trusted:
+
+| Job | The owner | The engine |
+| --- | --- | --- |
+| read | the file's text → items and links | the one watcher, a cache by `rev`, the index, the link resolver, types and their matching |
+| write | an item edit → the file's new text | permissions, refused if the file changed, the read-back check, attribution, the safe write |
+| show | a view of the file (`file/open`) | views, history, keys |
+
+**Markdown is the first owner**: the engine's own, in-process, and it stays the main one, since
+people write notes. The next slice puts today's Markdown reading and writing (`items.rs`, the
+link parser, `edit.rs`, `rename.rs`) behind the owner interface with no change in behaviour,
+the way the agenda proved the view gateway, before any other owner contributes items.
+
+- **Two ways to give items.** A format with Markdown inside (a whiteboard's text cards, a kanban
+  card) hands each piece's text to the engine's Markdown reader with its place (`{text,
+  place}`), so the built-in `task` type and the user's types match there exactly as in a note,
+  and the owner knows nothing about tasks. A format without Markdown (`.csv`, `.ics`, `.bib`)
+  gives typed items directly, fields by name, for a type the user defined or one the owner
+  ships (`[[types]]` in its manifest, origin `extension`), the way table rows in notes are
+  matched by column name today.
+- **Where an item lives.** An item says its file and a place in it the owner keeps stable: a
+  canvas node id, a CSV row's key column, lines in Markdown. `workspace/open` takes the same
+  place, so opening an item opens its file's owner at it.
+- **Edits go back through the owner.** `items/edit` on an item in an owned file asks the owner
+  for the file's new text (`file/edit {path, rev, id, change}` → `{text}`; for a Markdown
+  piece the engine edits the piece's text and the owner puts it back in place). The engine
+  then writes it with the usual checks, reads the file back through the owner and checks the
+  item now says what was asked, so an owner can't quietly write something else. The extension
+  that asked is named, as for any edit. Extensions that work on data never learn about formats.
+- **Links.** An owner reports its links (`{target, place, text}`); the core resolves them by
+  Obsidian's rules, so backlinks, the graph and tidy see them, and a rename asks each owner
+  whose file links to the renamed note for that file's new text.
+- **Cost.** Markdown stays in-process. An owner in its own process reads a file only when its
+  `rev` changes; the core caches what it gave, by `rev`, under `~/.cache/cold-lava`, so a
+  workspace opens without waking every owner. A broken or slow owner leaves its files' items
+  out, and says so, instead of stalling the scan.
+- **Owners on top of Markdown.** Who shows a file needn't be who reads it. A claim to *show*
+  can match notes the way a type's `where` does (frontmatter, tag, folder): Obsidian's Kanban
+  plugin keeps a board as a `.md` file with `kanban-plugin` in its frontmatter, so a kanban
+  owner shows those as a board while Markdown still reads their tasks and links, and Obsidian
+  still opens them. A `#flashcards` note can open in a review mode; a type can have a view of
+  its own. The most specific claim shows; reading and writing stay with the format's owner.
+  A new format of one's own is the user's choice, never a default, since Obsidian can't open it.
+
+An example end to end: `- [ ] Call the lab 📅 2026-11-12` typed on a whiteboard card. The canvas
+owner hands the card's text to the Markdown reader and it is a `task`. An extension that syncs
+tasks to a calendar finds it with `items/query {type: "task"}` beside every task in the notes;
+moving the event sends `items/edit set-field due`, the canvas owner rewrites that card's text,
+the engine saves it safely and reads it back, and the agenda, the table, backlinks and the
+graph all see the new date. None of them knew what a canvas is.
 
 ### File types, as built
 
@@ -1285,7 +1347,8 @@ after its call returns, so it never holds the menu's state.
       links contributed by owners; the whiteboard as the first owner. *(in progress: owners in
       manifests, `file/open`, `file/changed`, `workspace/read`, `workspace/write`,
       `workspace/create` and `workspace/files`, with the `csv-table` example, are done ("File
-      types, as built"); next are items and links contributed by owners, then the whiteboard)*
+      types, as built"); next is Markdown as the first owner behind the owner interface, then
+      items and links contributed by other owners ("Owners and types"), then the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.
