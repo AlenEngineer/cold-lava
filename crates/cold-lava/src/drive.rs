@@ -371,10 +371,25 @@ impl Session {
             }
         }
         self.send(b"\x1b");
+        let sent = Instant::now();
         if let Ok(bytes) = self.output.recv_timeout(ESC_SETTLE) {
             self.feed(&bytes);
-            while let Ok(bytes) = self.output.try_recv() {
-                self.feed(&bytes);
+            // On a slow machine the first output can still be a late frame from an earlier key,
+            // drawn before the Esc was read. Once the output has paused, and a little time has
+            // passed since the Esc, the program is back waiting for input and has read it.
+            let floor = sent + Duration::from_millis(100);
+            let deadline = sent + ESC_SETTLE;
+            loop {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let wait = Duration::from_millis(50).max(floor.saturating_duration_since(now));
+                match self.output.recv_timeout(wait.min(deadline - now)) {
+                    Ok(bytes) => self.feed(&bytes),
+                    Err(_) if Instant::now() >= floor => break,
+                    Err(_) => {}
+                }
             }
         }
     }
