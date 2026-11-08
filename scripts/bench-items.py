@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Time the item paths on a large synthetic workspace: wall time and peak RSS per command.
+"""Time the item and link paths on a large synthetic workspace: wall time, CPU time (user + sys)
+and peak RSS per command.
 
     scripts/bench-items.py [--runs N] [--notes N] BINARY [BINARY ...]
 
 Each BINARY is a cold-lava build (`target/release/cold-lava`, or a copy of another commit's).
 The workspace is generated once, the same every time (fixed seed), under
 ~/.cache/cold-lava-bench/ (not /tmp, which is in RAM). Runs alternate between the binaries so
-drift and caches favour none; the table shows the median and range of each.
+drift and caches favour none; the table shows the median and range of each. CPU time is steadier
+than wall time when the machine is busy.
 """
 
 import argparse
@@ -158,6 +160,8 @@ def commands(ws):
         "items heading": ["items", w, "heading"],
         "agenda --json": ["agenda", w, "--from", FROM, "--to", TO, "--json"],
         "table task --json": ["table", w, "task", "--json"],
+        "tidy --json": ["tidy", w, "--json"],
+        "rename --dry-run --json": ["rename", w, "Note 0", "Note zero", "--dry-run", "--json"],
     }
 
 
@@ -169,7 +173,7 @@ def run(binary, args):
     wall = time.perf_counter() - start
     if status != 0:
         return None
-    return wall, usage.ru_maxrss / 1024, len(out)
+    return wall, usage.ru_utime + usage.ru_stime, usage.ru_maxrss / 1024, len(out)
 
 
 def main():
@@ -191,18 +195,21 @@ def main():
         for _ in range(a.runs):
             for b in a.binaries:
                 if r := run(b, args):
-                    results[b].append(r[:2])
-                    sizes.setdefault(b, set()).add(r[2])
+                    results[b].append(r[:3])
+                    sizes.setdefault(b, set()).add(r[3])
         print(f"\n{name}")
         for b in a.binaries:
             if not results[b]:
                 print(f"  {b:<50} failed")
                 continue
-            walls = [w for w, _ in results[b]]
-            rsses = [m for _, m in results[b]]
+            walls = [w for w, _, _ in results[b]]
+            cpus = [c for _, c, _ in results[b]]
+            rsses = [m for _, _, m in results[b]]
             print(
                 f"  {b:<50} {statistics.median(walls) * 1000:7.0f} ms "
                 f"({min(walls) * 1000:.0f}-{max(walls) * 1000:.0f})  "
+                f"cpu {statistics.median(cpus) * 1000:6.0f} ms "
+                f"({min(cpus) * 1000:.0f}-{max(cpus) * 1000:.0f})  "
                 f"{statistics.median(rsses):6.1f} MB peak  {sorted(sizes[b])[0]} bytes out"
             )
 
