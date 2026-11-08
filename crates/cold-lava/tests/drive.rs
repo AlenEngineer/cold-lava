@@ -425,6 +425,52 @@ fn opens_a_note_follows_a_link_and_quits() {
 }
 
 #[test]
+fn tables_a_types_items_sorted_and_filtered() {
+    let dir = sandbox("table");
+    std::fs::write(
+        dir.join("example-vault/Inbox/Today.md"),
+        "- [ ] Ring the observatory ⏫\n- [x] Read about [[Lava]] ✅ 2026-11-05\n",
+    )
+    .unwrap();
+    let out = drive("table.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn edits_table_cells_in_their_notes() {
+    let dir = sandbox("table-edit");
+    let vault = dir.join("example-vault");
+    let out = drive("table-edit.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let vei =
+        std::fs::read_to_string(vault.join("Concepts/Volcanic Explosivity Index.md")).unwrap();
+    assert!(
+        vei.contains("\n| 7 | [[Krakatoa]] 1883, Sunda Strait |\n"),
+        "{vei}"
+    );
+    assert!(vei.contains("\n| 8 | [[Yellowstone]] (see [[Supervolcano]]) |\n"));
+    let journal = std::fs::read_to_string(vault.join("Journal/2026-11-05.md")).unwrap();
+    assert!(
+        journal.contains(
+            "\n- [x] Write a note on lahars ([[Lahar]] is still unresolved) 📅 2026-12-01\n"
+        ),
+        "the vault writes emoji, so the new date is one: {journal}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn draws_typed_values_with_their_looks() {
     let dir = sandbox("looks");
     std::fs::write(

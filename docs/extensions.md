@@ -136,9 +136,11 @@ types match in their text: `crates/engine/src/matcher.rs`; one field of a typed 
 with the read-back check: `crates/engine/src/edit.rs`, `cold-lava item set`; the task is a
 built-in definition, the only way tasks are read: `crates/engine/types/task.toml`, with
 `agenda` and `task toggle` on its items (`crates/engine/src/tasks.rs`); the reader draws
-values with their looks: `crates/cold-lava/src/looks.rs`. "Loading, as built", "Matching, as
-built", "Writing, as built", "The task as a definition, as built" and "Looks, as built" below
-say where the code settled what this design left open.)*
+values with their looks: `crates/cold-lava/src/looks.rs`; every type has a table:
+`crates/cold-lava/src/table.rs`, `type_table.rs`, `cold-lava table`. "Loading, as built",
+"Matching, as built", "Writing, as built", "The task as a definition, as built", "Looks, as
+built" and "The table view, as built" below say where the code settled what this design left
+open.)*
 
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
 row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
@@ -436,9 +438,12 @@ style.minutes = { badge = true, icon = "⏱" }
   priority and the rest through their markers or Dataview fields. A field read from the same
   text as the one set (the type of a status, from its checkbox) may change with it in the
   read-back check. `item set` changes only the field; ticking with dates and recurrence is
-  `task toggle`. Not yet: a date the task doesn't have is added through the field's first
-  writable source, which is the Dataview field (`[due:: …]`), even in a vault that writes
-  emoji; adding should follow `${tasks.format}`.
+  `task toggle`. A date the task doesn't have is added through a writable source of a kind the
+  line already writes its other fields with (a marker beside `⏳ …`, a Dataview field beside
+  `[scheduled:: …]`), else a Dataview field when the vault's Tasks plugin writes Dataview or the
+  line has a `::`, as `task toggle` decides, else a marker (`📅 …`). This is the rule for any
+  type's missing field, so it holds for subtypes of the task and for a type of one's own with
+  both kinds of source.
 - **Cost,** on a generated 3,000-note vault with 30,000 tasks in both formats (release, median
   of runs interleaved with the old binary, on a loaded laptop): `cold-lava items VAULT task`
   613 → 872 ms (+42%), `--json` 683 → 856 ms (+25%), `agenda --json` 766 → 1,029 ms (+34%),
@@ -462,9 +467,11 @@ style.minutes = { badge = true, icon = "⏱" }
   `Changed` (exit code 3, like a stale `task toggle`). Only typed items, which tasks now are.
 - **Which source.** Each typed item carries, off the wire, its shape, which source gave each
   field its value, its block's text and a row's cells (`matcher::Place`). The value is written
-  through the source that gave it; when that one is read-only, through the first writable
-  source before it (so `title = { property = "title", note = "name" }` adds the property), and
-  for a field with no value, through its first writable source.
+  through the source that gave it; when that one is read-only, through a writable source before
+  it (so `title = { property = "title", note = "name" }` adds the property), and for a field
+  with no value, through a writable source: one of a kind the item reads another field from,
+  else a marker or a Dataview field as the vault's tasks are written (see "The task as a
+  definition, as built"), else the first.
 - **The value** comes in the form items carry it (an ISO date, minutes, an enum's name, a
   link's target) or as a string the field's type reads (`1h30m`, `[[Lava]]`, an enum's written
   form); `null` or `""` removes. It is written by its value type: a date in the field's
@@ -554,8 +561,51 @@ style.minutes = { badge = true, icon = "⏱" }
   core's cache (`Vault::items`) when the core's text is the text on disk, else are read once,
   and the marks are placed in the same pulldown-cmark pass that builds the `Doc`. The reader
   lays the marks out with the page, again only when the width or the note changes.
-- **Not yet:** other views (the table view, the agenda) drawing the same looks, a light
+- **Not yet:** the agenda drawing the same looks (the table view does, below), a light
   terminal's table, and looks in the GUI.
+
+### The table view, as built
+
+- **The view is declarative and knows nothing of types.** `crates/cold-lava/src/table.rs`:
+  a `Table` is a title, `Column`s (a name, a value type: `text`, `number`, `date`, `datetime`,
+  `duration`, `bool`, `link`, `tag`, or `enum` with its names in order; an optional `look`, the
+  type's `Look` as is; an optional `read_only` reason) and `Row`s (an `id` and one JSON value per
+  column, `null` for none, a list for several). Back come `Event`s: `activated {row}` on Enter
+  and `edit {row, column, value}` with the text typed. Everything derives serde and a test pins
+  the JSON, so a table can cross the view gateway unchanged. It lives in the binary for now and
+  moves to `crates/views` when a second frontend draws one.
+- **The frontend owns** selection by row and column, sorting (`s` / `S` on the selected column:
+  numbers and durations as numbers, dates and datetimes as their ISO text, enums by their
+  declared order, bools, the rest by `search_key`; empty cells last either way; stable, so the
+  sender's order breaks ties), filtering (`/`: every folded word must be in some cell's text),
+  column widths (the widest cell or the name, capped at 32 columns, cut with `…`), horizontal
+  scrolling that keeps the selected column on screen, the edit prompt (prefilled with the value
+  as shown; a list's cell and a `read_only` column say so instead of prompting), and keeping the
+  selected row by id when a new table arrives. Looks are drawn by `looks::apply` as in the
+  reader: a chip only as wide as its text, an icon before it; `whole` looks (a done task) style
+  the whole row; `hide` is ignored, as a table always shows the value.
+- **The sender** is `type_table.rs`, what the built-in table extension will send: columns are
+  the type's schema in order, then `note` (read-only); rows are every item that answers to the
+  type (subtypes too) from the core's cached items (`Vault::items`), with the note, line and
+  `rev` of each kept beside the table. A column is read-only when no shape of the type reads the
+  field through a writable source; the reason says where it is read from. The menu runs it in
+  process for now (`i`, `table.open`, a picker of types with their item counts), not through
+  the `Extension` trait: `items/query` and `view/open` don't exist yet, and moving it is the
+  step that adds them.
+- **Editing** is `edit::set_field` with the row's `rev`, the value as typed (so `1h30m`, an
+  enum's written form or `""` to remove all work). The status line says what happened: set,
+  removed, already that value, or the refusal (`Refused` and `ReadBack` with their reason,
+  `Changed` when the item changed since the table was read). After any edit the menu has the
+  core read that note at once (`Core::note_changed_now`), so the table shows the new value, or
+  what refused it, before the next frame; an edit that changed the row's id (its key field)
+  keeps the row selected under the new one.
+- **Live.** The table is built again from the core's index on every change the core reports,
+  keeping sort, filter and selection. Back (`Ctrl-o`) from a note opened with Enter returns to
+  the table as it was (`Place::Table`: its type, row, column, sort and filter).
+- **CLI.** `cold-lava table VAULT TYPE` prints the rows as the view lays them out, every value
+  whole; `--sort FIELD` (or `-FIELD`) sorts as `s` (`S`) does, `--json` prints the `Table`.
+- **Not yet:** editing several values at once, a column picker, the extension and its
+  `view/open`, and the agenda as a table or list.
 
 ## File types
 
@@ -734,9 +784,10 @@ keys = ["W"]                     # default keys; config.toml can change them
 
 Extensions can't draw into cold-lava's terminal directly. A view is one of:
 
-- **Declarative:** a list, a tree or Markdown, described as JSON and drawn by cold-lava (fits most
-  panels: outlines, task lists, search results). Rows carry item ids, so a command run on the
-  selected row knows what it is about.
+- **Declarative:** a list, a tree, a table or Markdown, described as JSON and drawn by cold-lava
+  (fits most panels: outlines, task lists, search results, a type's items). Rows carry item
+  ids, so a command run on the selected row knows what it is about. The table is built: "The
+  table view, as built" above.
 - **A terminal program in a pane:** the extension names a command and cold-lava runs it in a pane,
   the same way the main menu embeds Neovim. Full freedom, any TUI library, but no pixel graphics:
   the pane goes through a terminal emulator.
@@ -821,7 +872,8 @@ after its call returns, so it never holds the menu's state.
       over *(done: `types/task.toml` is how tasks are read; `agenda` and `task toggle` read
       typed tasks)*;
       looks in the reader *(done: `looks.rs`, `markdown::parse_marked`; the task's done and
-      cancelled lines and priorities, the example vault's elevation and VEI)*; the table view.
+      cancelled lines and priorities, the example vault's elevation and VEI)*; the table view
+      *(done: `table.rs`, `type_table.rs`, `i`, `cold-lava table`)*. Types are done.
    6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and
       links contributed by owners; the whiteboard as the first owner.
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The

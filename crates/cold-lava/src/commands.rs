@@ -50,6 +50,7 @@ pub enum MenuAction {
     Bookmark,
     BookmarkSearch,
     Tidy,
+    Table,
     History(HistoryAction),
 }
 
@@ -195,6 +196,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "tidy",
         "tidy the vault: orphan notes, unused attachments, empty folders, unresolved links",
         &["T"],
+    ),
+    cmd(
+        MenuAction::Table,
+        "table.open",
+        Group::Go,
+        "table",
+        "a type's items as a table: pick a type, then sort, filter and edit its values",
+        &["i"],
     ),
     cmd(
         MenuAction::BookmarkSearch,

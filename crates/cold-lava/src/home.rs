@@ -21,8 +21,10 @@ use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
 use crate::reader::{Reader, Spot};
+use crate::table::{self, TableView};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
+use crate::type_table::{self, At};
 use crate::{board, items, templates, term, vault, whichkey};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
@@ -424,6 +426,20 @@ enum Mode {
     },
     /// What nothing uses: orphan notes, unused attachments, empty folders, unresolved links.
     Tidy(Box<TidyView>),
+    /// Choosing a type for its table; `sel` is a row of `table_types`.
+    TablePick {
+        query: String,
+        sel: usize,
+    },
+    /// A type's items as a table.
+    Table(Box<Tabled>),
+}
+
+/// The table of a type's items, and where each row's item is.
+struct Tabled {
+    ty: String,
+    view: TableView,
+    at: HashMap<String, At>,
 }
 
 /// A note, board or folder about to go to the trash, as the user was shown it.
@@ -1095,6 +1111,12 @@ impl Home {
                 sel: *sel,
             });
         }
+        if let Mode::Table(t) = &self.mode {
+            return Some(Place::Table {
+                ty: t.ty.clone(),
+                spot: t.view.spot(),
+            });
+        }
         Some(Place::Note {
             path: self.shown.clone()?,
             spot: self.reader.as_ref().map(Reader::spot),
@@ -1148,6 +1170,10 @@ impl Home {
                 }
                 Place::Graph { selected } => self.run_graph(terminal, selected)?,
                 Place::Board { path } => self.run_board(terminal, path)?,
+                Place::Table { ty, spot } => {
+                    self.open_table(&ty, Some(spot));
+                    None
+                }
             };
         }
         Ok(())
@@ -1341,6 +1367,7 @@ impl Home {
         if let (Mode::Tidy(view), Some(core)) = (&mut self.mode, &self.core) {
             view.update(crate::tidy::report(&core.index));
         }
+        self.refresh_table();
         let shown_rel = self
             .shown
             .as_ref()
@@ -1462,6 +1489,13 @@ impl Home {
         if matches!(self.mode, Mode::Tidy(_)) {
             self.tidy_key(k);
             return Ok(());
+        }
+        if matches!(self.mode, Mode::TablePick { .. }) {
+            self.table_pick_key(k);
+            return Ok(());
+        }
+        if matches!(self.mode, Mode::Table(_)) {
+            return self.table_key(k, terminal);
         }
         if matches!(self.mode, Mode::Palette { .. }) {
             return self.palette_key(k, terminal);
@@ -1629,6 +1663,8 @@ impl Home {
             | Mode::Outline { .. }
             | Mode::Bookmarks { .. }
             | Mode::Tidy(_)
+            | Mode::TablePick { .. }
+            | Mode::Table(_)
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
         }
@@ -1686,9 +1722,9 @@ impl Home {
                 self.focus == Focus::Notes && self.current().is_some()
             }
             MenuCommand::Core(MenuAction::UndoDelete) => !self.undo.is_empty(),
-            MenuCommand::Core(MenuAction::Bookmarks | MenuAction::Bookmark | MenuAction::Tidy) => {
-                self.core.is_some()
-            }
+            MenuCommand::Core(
+                MenuAction::Bookmarks | MenuAction::Bookmark | MenuAction::Tidy | MenuAction::Table,
+            ) => self.core.is_some(),
             MenuCommand::Core(MenuAction::BookmarkSearch) => {
                 matches!(self.mode, Mode::Search { .. })
             }
@@ -1965,6 +2001,7 @@ impl Home {
             MenuAction::Switcher => self.open_switcher(),
             MenuAction::Bookmarks => self.open_bookmarks(),
             MenuAction::Tidy => self.open_tidy(),
+            MenuAction::Table => self.open_table_pick(),
             MenuAction::Bookmark => match self.bookmark_target() {
                 Some(target) => self.toggle_bookmark(target),
                 None => self.flash("select a note or folder to bookmark"),
@@ -3685,6 +3722,213 @@ impl Home {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
+    // ---------- table ----------
+
+    fn open_table_pick(&mut self) {
+        if self.core.is_none() {
+            return;
+        }
+        if self.focus == Focus::Pane {
+            self.focus = Focus::Notes;
+        }
+        self.mode = Mode::TablePick {
+            query: String::new(),
+            sel: 0,
+        };
+    }
+
+    /// The types to pick from, with how many items each has: those matching the query.
+    fn table_types(&self, query: &str) -> Vec<(String, usize)> {
+        let Some(core) = self.core.as_ref() else {
+            return Vec::new();
+        };
+        let all = type_table::types(&core.index.vault);
+        if query.trim().is_empty() {
+            return all;
+        }
+        let mut hits: Vec<_> = (all.into_iter())
+            .filter_map(|t| Some((crate::search::fuzzy(query, &t.0)?.score, t)))
+            .collect();
+        hits.sort_by_key(|h| std::cmp::Reverse(h.0));
+        hits.into_iter().map(|(_, t)| t).collect()
+    }
+
+    fn table_pick_key(&mut self, k: KeyEvent) {
+        let Mode::TablePick { query, sel } = &self.mode else {
+            return;
+        };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let (mut q, mut s) = (query.clone(), *sel);
+        let rows = self.table_types(&q);
+        let last = rows.len().saturating_sub(1);
+        match k.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(last),
+            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => s = (s + 1).min(last),
+            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
+            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
+            KeyCode::Backspace => {
+                q.pop();
+                s = 0;
+            }
+            KeyCode::Char('u') if ctrl => {
+                q.clear();
+                s = 0;
+            }
+            KeyCode::Enter => {
+                let Some((ty, _)) = rows.get(s.min(last)) else {
+                    return;
+                };
+                let ty = ty.clone();
+                self.mode = Mode::Normal;
+                if let Some(here) = self.here() {
+                    self.history.visit(here);
+                }
+                return self.open_table(&ty, None);
+            }
+            KeyCode::Char(c) if !ctrl => {
+                q.push(c);
+                s = 0;
+            }
+            _ => {}
+        }
+        self.mode = Mode::TablePick { query: q, sel: s };
+    }
+
+    fn draw_table_pick(&self, f: &mut Frame, area: Rect) {
+        let Mode::TablePick { query, sel } = &self.mode else {
+            return;
+        };
+        let inner = picker_frame(f, area, " Table of… ", " ↑↓ choose · ⏎ open · Esc close ");
+        let rows = self.table_types(query);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::new().fg(HIT)),
+                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+                Span::styled(
+                    format!("  {} · type to filter", plural(rows.len(), "type")),
+                    Style::new().fg(MUTED),
+                ),
+            ]),
+            Line::raw(""),
+        ];
+        let height = inner.height.saturating_sub(2) as usize;
+        let sel = (*sel).min(rows.len().saturating_sub(1));
+        let start = sel.saturating_sub(height.saturating_sub(1));
+        let width = inner.width as usize;
+        for (i, (ty, n)) in rows.iter().enumerate().skip(start).take(height) {
+            let style = match (i == sel, *n) {
+                (true, _) => Style::new().fg(Color::Black).bg(ACCENT),
+                (false, 0) => Style::new().fg(DIM),
+                (false, _) => Style::new().fg(NOTE),
+            };
+            let right = format!("{} ", plural(*n, "item"));
+            let left = format!(" ▦ {ty}");
+            let pad = width.saturating_sub(left.chars().count() + right.chars().count());
+            lines.push(Line::styled(
+                format!("{left}{}{right}", " ".repeat(pad)),
+                style,
+            ));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// Show the table of type `ty`, as it was at `spot`.
+    fn open_table(&mut self, ty: &str, spot: Option<table::Spot>) {
+        let Some(core) = self.core.as_ref() else {
+            return;
+        };
+        let Some(built) = type_table::build(&core.index.vault, ty) else {
+            return self.flash(format!("no type called {ty}"));
+        };
+        let mut view = TableView::new(built.table);
+        if let Some(spot) = spot {
+            view.restore(spot);
+        }
+        if self.focus == Focus::Pane {
+            self.focus = Focus::Notes;
+        }
+        self.mode = Mode::Table(Box::new(Tabled {
+            ty: ty.to_string(),
+            view,
+            at: built.at,
+        }));
+    }
+
+    /// The table again from the core's items, after the vault changed.
+    fn refresh_table(&mut self) {
+        let (Mode::Table(t), Some(core)) = (&mut self.mode, &self.core) else {
+            return;
+        };
+        if let Some(built) = type_table::build(&core.index.vault, &t.ty) {
+            t.view.update(built.table);
+            t.at = built.at;
+        }
+    }
+
+    fn table_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Mode::Table(mut t) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        if !t.view.typing()
+            && let Some(MenuCommand::Core(MenuAction::History(a))) = self.keys.get(k)
+        {
+            let here = Place::Table {
+                ty: t.ty.clone(),
+                spot: t.view.spot(),
+            };
+            self.mode = Mode::Table(t);
+            let to = match a {
+                HistoryAction::Back => self.history.back(Some(here)),
+                HistoryAction::Forward => self.history.forward(Some(here)),
+            };
+            if let Some(place) = to {
+                self.mode = Mode::Normal;
+                self.go(place, terminal)?;
+            }
+            return Ok(());
+        }
+        let action = t.view.key(k);
+        let Some(root) = self.root.clone() else {
+            return Ok(());
+        };
+        match action {
+            table::Action::Stay => self.mode = Mode::Table(t),
+            table::Action::Close => {}
+            table::Action::Say(s) => {
+                self.mode = Mode::Table(t);
+                self.flash(s);
+            }
+            table::Action::Send(table::Event::Activated { row }) => {
+                let Some(at) = t.at.get(&row).cloned() else {
+                    self.mode = Mode::Table(t);
+                    return Ok(());
+                };
+                let here = Place::Table {
+                    ty: t.ty.clone(),
+                    spot: t.view.spot(),
+                };
+                self.open_found(Some(here), &root.join(&at.note), Some(Jump::Line(at.line)));
+            }
+            table::Action::Send(table::Event::Edit { row, column, value }) => {
+                let (msg, note) = edit_cell(&root, &mut t, &row, &column, value);
+                self.mode = Mode::Table(t);
+                // Read the note now, so the table shows the edit (or what refused it) at once.
+                if let (Some(note), Some(core)) = (note, self.core.as_mut()) {
+                    let events = core.note_changed_now(&root.join(note));
+                    if !events.is_empty() {
+                        self.sync_with_core(&events);
+                    }
+                }
+                self.flash(msg);
+            }
+        }
+        Ok(())
+    }
+
     // ---------- delete & undo ----------
 
     /// The note, board or folder to delete: the tree's selection, else the note in the pane.
@@ -4605,6 +4849,12 @@ impl Home {
         }
         if let Mode::Tidy(view) = &self.mode {
             self.draw_tidy(f, main, view);
+        }
+        if matches!(self.mode, Mode::TablePick { .. }) {
+            self.draw_table_pick(f, main);
+        }
+        if let Mode::Table(t) = &mut self.mode {
+            draw_table(f, main, t);
         }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
@@ -5985,6 +6235,62 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) -> R
         r,
     );
     r
+}
+
+/// Set one value of a row's item in its note: what to say about it, and the note to read
+/// again.
+fn edit_cell(
+    root: &Path,
+    t: &mut Tabled,
+    row: &str,
+    column: &str,
+    value: String,
+) -> (String, Option<String>) {
+    let Some(at) = t.at.get(row).cloned() else {
+        return (format!("{row} is gone"), None);
+    };
+    let req = crate::edit::SetField {
+        id: row,
+        rev: Some(&at.rev),
+        field: column,
+        value: Value::String(value.clone()),
+    };
+    let name = at.note.trim_end_matches(".md");
+    let msg = match crate::edit::set_field(root, &at.note, &req, false) {
+        Ok(set) if !set.changed => format!("{column} is already {value}"),
+        Ok(set) => {
+            t.view.select(&set.item.id);
+            match value.trim() {
+                "" => format!("{name}: {column} removed"),
+                v => format!("{name}: {column} set to {v}"),
+            }
+        }
+        Err(crate::edit::EditError::Changed(m)) => {
+            format!("not saved, {m} · the table is read again")
+        }
+        Err(e) => format!("not saved: {e}"),
+    };
+    (msg, Some(at.note))
+}
+
+/// A type's table over the whole main area, its filter or edit on the bottom line.
+fn draw_table(f: &mut Frame, area: Rect, t: &mut Tabled) {
+    f.render_widget(Clear, area);
+    let hint = " ←→↑↓ move · s/S sort · / filter · e edit · ⏎ open · Esc close ";
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Line::styled(
+            format!(" {} ", t.view.title()),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let lines = t.view.lines(body.width as usize, body.height as usize);
+    f.render_widget(Paragraph::new(lines), body);
+    f.render_widget(Paragraph::new(t.view.status()), status);
 }
 
 /// The centred popup shared by the quick switcher and the command palette; returns its inside.

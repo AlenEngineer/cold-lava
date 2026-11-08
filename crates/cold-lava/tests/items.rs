@@ -255,3 +255,30 @@ fn item_set_writes_one_cell_and_refuses_a_stale_rev() {
     );
     let _ = std::fs::remove_dir_all(vault.parent().unwrap());
 }
+
+#[test]
+fn table_prints_a_types_rows_sorted() {
+    let vault = sandbox("table");
+    let v = vault.to_str().unwrap();
+    let text = run(&vault, &["table", v, "volcano", "--sort", "-elevation"]);
+    let names: Vec<&str> = (text.lines().skip(1))
+        .map(|l| l.split("  ").next().unwrap())
+        .collect();
+    assert_eq!(
+        names[..3],
+        ["Mauna Loa", "Mount Fuji", "Parícutin"],
+        "{text}"
+    );
+    assert_eq!(
+        names[7..],
+        ["Krakatoa", "Yellowstone"],
+        "no elevation: last"
+    );
+    assert!(text.starts_with("name  "), "{text}");
+    let json: serde_json::Value =
+        serde_json::from_str(&run(&vault, &["table", v, "eruption", "--json"])).unwrap();
+    assert_eq!(json["columns"][0]["name"], "vei");
+    assert_eq!(json["rows"].as_array().unwrap().len(), 4);
+    assert_eq!(json["rows"][2]["cells"][0], 6);
+    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+}

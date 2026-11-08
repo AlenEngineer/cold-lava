@@ -1,0 +1,54 @@
+# The table view: i picks a type, its items are the rows. Sorting by elevation, filtering by
+# country, Enter opening the selected volcano's note and Ctrl-o coming back to the table as it
+# was; then the eruption table's VEI chips and the task table (tests/drive.rs adds
+# Inbox/Today.md, with a priority).
+size 160x30
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys i
+wait-for Table of…
+expect ▦ volcano
+expect 9 items
+type volc
+wait-for 1 type
+keys enter
+wait-for 9 rows
+expect Eyjafjallajökull  Iceland
+expect elevation  tags
+keys l l S
+wait-for by elevation descending
+expect elevation ▼
+screen
+keys /
+type united
+wait-for / united▏
+expect-not Iceland
+keys enter
+wait-for 4 of 9 rows · /united · by elevation descending
+keys g enter
+wait-for Volcanoes/Mauna Loa  reading
+wait-for Ctrl-o ⟵ volcano table
+keys ctrl+o
+wait-for 4 of 9 rows · /united · by elevation descending
+keys esc
+wait-for 9 rows · by elevation descending
+keys esc
+wait-gone by elevation
+keys i
+type erup
+wait-for 1 type
+keys enter
+wait-for 4 rows
+expect vei  example
+expect  6   [[Krakatoa]] 1883
+screen
+keys q i
+type task
+wait-for 1 type
+keys enter
+wait-for 6 rows
+expect Ring the observatory
+expect  high
+screen
+keys q q
+exits 0

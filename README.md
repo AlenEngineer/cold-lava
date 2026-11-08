@@ -59,6 +59,7 @@ cold-lava rename ~/vault NOTE NEW       # rename or move a note or folder, updat
 cold-lava task toggle FILE:LINE         # tick / untick a task
 cold-lava item set FILE ID FIELD VALUE  # set one field of a typed item, checked by reading back
 cold-lava types ~/vault                 # the vault's types, and what's wrong with them
+cold-lava table ~/vault volcano         # a type's items as a table (--sort FIELD, --json)
 ```
 
 Flags: `--pixels` / `--braille` to force a renderer. Pixel mode is on automatically in Ghostty,
@@ -128,6 +129,7 @@ link, or press `b` to hide it. Edits are saved when you move to another note or 
 | `space` | mark the selected note or folder, to move, delete or tag several at once (`Esc` clears the marks) |
 | `#` | add a tag to the marked notes (or the selected one); `-tag` removes it |
 | `T` | tidy: orphan notes, unused attachments, empty folders and unresolved links, to open, delete or create |
+| `i` | [table](#tables) of a type's items (volcanoes, eruptions, tasks): sort, filter, edit a value, open its note |
 | `/` | filter notes (accents ignored: `kil` finds Kīlauea) |
 | `g` / `w` | graph / whiteboards for this vault (`q` comes back) |
 | `n` / `a` | new note in the selected folder (`Tab` picks a template) / add a vault |
@@ -560,8 +562,10 @@ item in the note unchanged, nothing is written and it says why. A stale `--rev`,
 changed since it was read, exits with code **3**. When the field is part of the item's key (a
 row's `key`, a list item's text), the item gets a new id, which `item set` prints. Tasks are
 typed items too: `item set FILE ID status " "` unticks through the checkbox, `status_type done`
-writes the vault's done symbol, and dates go through their `📅` or `[due:: …]`; only `task
-toggle` adds done dates and recurrences.
+writes the vault's done symbol, and dates go through their `📅` or `[due:: …]`. A date the task
+doesn't have yet is added the way its line writes its other fields, else in the vault's Tasks
+plugin format (emoji unless it is set to Dataview). Only `task toggle` adds done dates and
+recurrences.
 
 **Looks.** A type says how its values look, with `style.FIELD`, and the reader draws them:
 
@@ -583,6 +587,29 @@ priority glyph on a chip coloured by urgency. A look is drawn only where the val
 in the rendered text exactly; one that would cut through a tag, an `&amp;` or a `%%comment%%` is
 left out rather than drawn in the wrong place. With `NO_COLOR` set, chips are drawn in reverse
 video and colours are left out.
+
+#### Tables
+
+`i` (`table.open`, also in the palette) lists the types with how many items each has; pick one
+and its items across the vault are a table: one column per field in the type's order, then the
+note, values drawn with the type's looks (a VEI on its orange chip, a done task faded and struck
+through). In the table:
+
+| Key | Does |
+|---|---|
+| `↑↓` / `jk`, `←→` / `hl` | move between rows and columns (`g` / `G` first / last row, `0` / `$` first / last column); wide tables scroll sideways, `‹›` say there's more |
+| `s` / `S` | sort by the selected column, ascending / descending: numbers and durations as numbers, dates by date, enums in the order the type lists them, text with accents and case ignored; empty values last |
+| `/` | filter rows by their text (every word must be in some cell; `Enter` keeps it, `Esc` clears it) |
+| `e` | edit the selected value: `Enter` writes it to the note like `cold-lava item set` (only that value changes, and only if the note reads back right), an empty value removes it |
+| `Enter` | open the item's note at its line; `Ctrl-o` comes back to the table as it was |
+| `Esc` / `q` | close |
+
+An edit that doesn't fit is refused with the reason on the status line (`vei: "big" is not a
+number`), and so are read-only fields (tags and links in the text, the note's name). An item
+changed elsewhere since the table read it isn't overwritten: the edit is refused and the table
+read again. The table follows the vault: an edit in Neovim or Obsidian shows up in it, keeping
+the selected row. `cold-lava table ~/vault TYPE` prints the same rows (`--sort FIELD`,
+`--sort -FIELD` for descending, `--json` for the table as the view receives it).
 
 `cold-lava types ~/vault` lists every type: where it comes from, how many items it found (and
 how many values didn't parse), the shapes it is read from, each field with its value type, where

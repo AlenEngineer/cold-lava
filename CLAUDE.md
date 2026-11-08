@@ -97,6 +97,9 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 - `app.rs`, `graph.rs`, `scene.rs`, `kitty.rs`, `groups.rs`: graph view (force layout; braille
   or Kitty-graphics pixels drawn under the text with `z=-1`; colour groups).
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
+- `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
+  cross the view gateway). `type_table.rs` builds a type's table from the core's items; edits
+  go through `edit::set_field`.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
   with vt100, cursor-position queries answered.

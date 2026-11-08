@@ -9,6 +9,17 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- The table view. `i` (`table.open`) picks a type, listed with how many items each has, and
+  shows its items across the vault as a table: a column per field in the type's order, then the
+  note, values drawn with the type's looks. `s` / `S` sort by the selected column (numbers,
+  dates, enums in their declared order, text with accents ignored; empty values last), `/`
+  filters rows, `Enter` opens the item's note at its line (`Ctrl-o` comes back to the table as
+  it was), and `e` edits a value through `edit::set_field`: refused with the reason on the
+  status line when it doesn't fit, the field is read-only or the item changed elsewhere (the
+  table is read again then). The table follows changes on disk, keeping the selected row; wide
+  tables scroll sideways. The table itself is a declarative view (`crates/cold-lava/src/table.rs`:
+  columns with a value type and a look, rows by id, events back), shaped to cross the view
+  gateway. `cold-lava table VAULT TYPE [--sort FIELD] [--json]` prints the same rows.
 - The reader draws typed values with their types' looks: `badge` as a chip, `icon`, a colour by
   name (one table in the frontend, so a light terminal can swap it), `dim`, `strike`, `bold`,
   `hide`, `link` (the value becomes a link `Tab` and `Enter` follow), `whole` (the whole item)
@@ -57,6 +68,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- `item set` (and editing in a table) adds a date a task doesn't have the way its line writes its
+  other fields, else in the vault's Tasks plugin format: `📅 2026-12-01` in an emoji vault, where
+  it used to add `[due:: 2026-12-01]` everywhere.
 - Tasks in `cold-lava items --json` list their tags without `#` (`"tags": ["home"]`), as every
   type's tags are; the other keys, their order and the ids stay.
 - Tasks are read as the Tasks plugin and the vault read them where the old reading differed:

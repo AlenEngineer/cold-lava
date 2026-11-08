@@ -100,7 +100,7 @@ pub fn read(text: &str, flavour: &Flavour, items: &[Item], types: &Types) -> (Do
 
 /// The look for one value: the field's, with its `by-value` look for this value over it. A
 /// look given only by value is no look for the other values.
-fn for_value(look: &Look, value: &Json) -> Option<Look> {
+pub fn for_value(look: &Look, value: &Json) -> Option<Look> {
     if look.by_value.is_empty() {
         return Some(look.clone());
     }
