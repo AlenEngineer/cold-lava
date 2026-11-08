@@ -24,8 +24,8 @@ mod views;
 mod whichkey;
 
 use cold_lava_engine::{
-    bookmarks, core, daily, edit, frontmatter, gateway, index, items, markdown, merge, paths,
-    rename, search, tasks, templates, tidy, trash, types, workspace, write,
+    bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, merge,
+    paths, rename, search, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -698,7 +698,8 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
     let installed = ext::installed::user_dir()
         .map(|d| ext::installed::load(&d).0)
         .unwrap_or_default();
-    for m in registry.manifests() {
+    for ext in registry.ids() {
+        let m = registry.manifest(ext);
         let on_disk = installed.iter().find(|i| i.manifest.name == m.name);
         let version = match m.version.as_str() {
             "" => String::new(),
@@ -737,6 +738,20 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
         if !m.types.is_empty() {
             let names: Vec<String> = m.types.keys().map(|t| format!("{}.{t}", m.name)).collect();
             println!("  types: {}", names.join(", "));
+        }
+        for t in &m.file_types {
+            let new = t.new.as_ref().map(|n| format!(", new: {n}"));
+            let left_out = match registry.owner(&t.extension) {
+                Some(o) if o == ext => String::new(),
+                Some(o) => format!(" (left out: {} opens them)", registry.manifest(o).name),
+                None => " (left out: cold-lava opens them)".into(),
+            };
+            println!(
+                "  opens: .{}  {}{}{left_out}",
+                t.extension,
+                t.title,
+                new.unwrap_or_default()
+            );
         }
         if let Some(log) = on_disk.and_then(|i| i.launch.log.as_ref()) {
             println!("  log: {}", log.display());

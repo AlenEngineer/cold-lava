@@ -12,8 +12,8 @@ use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
-    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId,
-    PaneNews, PaneSpec, READER, Registry, TABLE,
+    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, FileNews, Host, Manifest,
+    PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Edit, Op, Reason};
@@ -27,7 +27,7 @@ use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::type_table;
 use crate::views::{self, Views};
-use crate::{agenda, board, items, templates, term, whichkey, workspace};
+use crate::{agenda, board, files, items, templates, term, whichkey, workspace};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -234,6 +234,8 @@ pub enum ItemKind {
     Folder,
     Note,
     Board,
+    /// A file of a kind an extension owns, which opens it.
+    File,
 }
 
 #[derive(Clone, Debug)]
@@ -244,9 +246,10 @@ pub struct Item {
     pub kind: ItemKind,
 }
 
-/// All folders, notes and boards in a workspace, as a depth-first sorted list
-/// (folders before files, case-insensitive).
-pub fn scan_tree(root: &Path) -> Vec<Item> {
+/// All folders, notes and boards in a workspace, and the files of the kinds `owned` says an
+/// extension opens (by extension), as a depth-first sorted list (folders before files,
+/// case-insensitive).
+pub fn scan_tree(root: &Path, owned: impl Fn(&str) -> bool) -> Vec<Item> {
     let mut entries: Vec<(String, ItemKind)> = WalkDir::new(root)
         .min_depth(1)
         .into_iter()
@@ -265,6 +268,7 @@ pub fn scan_tree(root: &Path) -> Vec<Item> {
                 match e.path().extension()?.to_str()? {
                     "md" => ItemKind::Note,
                     "canvas" => ItemKind::Board,
+                    x if owned(&x.to_ascii_lowercase()) => ItemKind::File,
                     _ => return None,
                 }
             };
@@ -293,7 +297,7 @@ pub fn scan_tree(root: &Path) -> Vec<Item> {
             let name = match kind {
                 ItemKind::Note => file.trim_end_matches(".md"),
                 ItemKind::Board => file.trim_end_matches(".canvas"),
-                ItemKind::Folder => file,
+                ItemKind::Folder | ItemKind::File => file,
             }
             .to_string();
             Item {
@@ -695,7 +699,7 @@ impl Home {
             (0, []) => {}
             (0, [why]) => h.flash(why.clone()),
             (0, refused) => h.flash(format!(
-                "{} extension commands or keys were left out: run cold-lava keys to see why",
+                "{} extension commands, keys or file types were left out: run cold-lava keys to see why",
                 refused.len()
             )),
             (1, _) => h.flash("config.toml has a problem: run cold-lava keys to see it"),
@@ -1130,7 +1134,7 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
-        self.set_items(scan_tree(&root));
+        self.set_items(self.scan_tree(&root));
         self.links.clear();
         match self.core.as_mut() {
             Some(core) => core.rescan_now(),
@@ -1179,8 +1183,9 @@ impl Home {
         if let Some(i) = ix.resolver.resolve(&link.note) {
             return Some(Destination::Note(ix.path(i), jump));
         }
-        if workspace::attachment_kind(&link.note).is_some() {
-            let path = ix.attachment(&link.note, ix.by_path(from));
+        let owned = self.registry.owner_of(&link.note).is_some();
+        if owned || workspace::attachment_kind(&link.note).is_some() {
+            let path = ix.file(&link.note, ix.by_path(from));
             return Some(Destination::Attachment {
                 name: link.note,
                 path,
@@ -1227,6 +1232,11 @@ impl Home {
             }
             Destination::Attachment { name, path: None } => {
                 self.flash(format!("{name} isn't in the workspace"))
+            }
+            Destination::Attachment {
+                path: Some(path), ..
+            } if self.registry.owner_of(&path.to_string_lossy()).is_some() => {
+                self.open_file(&path);
             }
             Destination::Attachment {
                 path: Some(path), ..
@@ -1523,18 +1533,16 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let tree_changed = events.iter().any(|e| {
-            !matches!(
-                e,
-                CoreEvent::NoteChanged(_)
-                    | CoreEvent::FileChanged(_)
-                    | CoreEvent::GraphSettingsChanged
-                    | CoreEvent::BookmarksChanged
-                    | CoreEvent::ItemEdited { .. }
-            )
+        let tree_changed = events.iter().any(|e| match e {
+            CoreEvent::FileChanged(rel) => self.registry.owner_of(rel).is_some(),
+            CoreEvent::NoteChanged(_)
+            | CoreEvent::GraphSettingsChanged
+            | CoreEvent::BookmarksChanged
+            | CoreEvent::ItemEdited { .. } => false,
+            _ => true,
         });
         if tree_changed {
-            self.set_items(scan_tree(&root));
+            self.set_items(self.scan_tree(&root));
         }
         self.links.clear();
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
@@ -1575,6 +1583,42 @@ impl Home {
                 let name = note.rsplit('/').next().unwrap_or(note);
                 self.flash(format!("{by}: {what} on {name}"));
             }
+        }
+        self.tell_owners(&root, events);
+    }
+
+    /// The tree of the workspace at `root`, with the files extensions open.
+    fn scan_tree(&self, root: &Path) -> Vec<Item> {
+        scan_tree(root, |x| self.registry.owner(x).is_some())
+    }
+
+    /// `file/changed` to the owner of each file that changed on disk.
+    fn tell_owners(&mut self, root: &Path, events: &[CoreEvent]) {
+        for e in events {
+            let CoreEvent::FileChanged(rel) = e else {
+                continue;
+            };
+            let Some((owner, _)) = self.registry.owner_of(rel) else {
+                continue;
+            };
+            let news = FileNews::Changed {
+                path: rel.clone(),
+                rev: files::rev_at(root, rel),
+            };
+            self.call(owner, |e, host| e.file(news, host));
+        }
+    }
+
+    /// Hand the file at `path` to the extension that opens its kind (`file/open`), which shows
+    /// it in a view.
+    fn open_file(&mut self, path: &Path) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let rel = path.strip_prefix(&root).unwrap_or(path);
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if let Some((owner, _)) = self.registry.owner_of(&rel) {
+            self.call(owner, |e, host| e.file(FileNews::Open { path: rel }, host));
         }
     }
 
@@ -2135,7 +2179,9 @@ impl Home {
                 Destination::Note(path, jump) => self.peek_note(path, jump),
                 Destination::NewNote(name) => Peek::Missing(name),
                 Destination::Attachment { name, path } => Peek::Attachment {
-                    kind: attachment_label(&name).unwrap_or_default(),
+                    kind: (self.registry.owner_of(&name).map(|(_, t)| t.title.clone()))
+                        .or_else(|| attachment_label(&name))
+                        .unwrap_or_default(),
                     found: path.is_some(),
                     name,
                 },
@@ -2414,6 +2460,11 @@ impl Home {
                         let p = self.current_path();
                         self.open_boards(terminal, p)?;
                     }
+                    ItemKind::File => {
+                        if let Some(p) = self.current_path() {
+                            self.open_file(&p);
+                        }
+                    }
                     ItemKind::Note => {
                         if let Some(p) = self.current_path() {
                             self.pending = None;
@@ -2520,10 +2571,37 @@ impl Home {
         hits
     }
 
+    /// Files of the kinds extensions open, which the switcher lists after the notes: (tree
+    /// item, match), best first, by name, else by path.
+    fn switcher_files(&self, query: &str) -> Vec<(usize, crate::search::Fuzzy)> {
+        let mut hits: Vec<_> = (self.items.iter().enumerate())
+            .filter(|(_, it)| it.kind == ItemKind::File)
+            .filter_map(|(i, it)| {
+                let by_path = || {
+                    let f = crate::search::fuzzy(query, &it.rel)?;
+                    Some(crate::search::Fuzzy {
+                        score: f.score - 10,
+                        positions: Vec::new(),
+                    })
+                };
+                Some((i, crate::search::fuzzy(query, &it.name).or_else(by_path)?))
+            })
+            .collect();
+        hits.sort_by_key(|(i, f)| {
+            (
+                std::cmp::Reverse(f.score),
+                self.items[*i].rel.to_lowercase(),
+            )
+        });
+        hits
+    }
+
     /// Whether the switcher offers "create note" (a query that isn't exactly an existing name).
     fn offers_create(&self, query: &str) -> bool {
         let q = workspace::search_key(query.trim());
+        let file = |it: &Item| it.kind == ItemKind::File && workspace::search_key(&it.name) == q;
         !q.is_empty()
+            && !self.items.iter().any(file)
             && self.core.as_ref().map(|c| &c.index).is_some_and(|ix| {
                 !ix.workspace.notes.iter().any(|n| {
                     workspace::search_key(&n.name) == q
@@ -2556,7 +2634,11 @@ impl Home {
             };
         }
         let create = merging.is_none() && self.offers_create(&q);
-        let total = self.switcher_targets(&q, merging.as_deref()).len() + create as usize;
+        let files = match merging {
+            None => self.switcher_files(&q).len(),
+            Some(_) => 0,
+        };
+        let total = self.switcher_targets(&q, merging.as_deref()).len() + files + create as usize;
         match k.code {
             KeyCode::Esc => return self.close_overlay(),
             KeyCode::Down | KeyCode::Tab => s = (s + 1).min(total.saturating_sub(1)),
@@ -2571,9 +2653,15 @@ impl Home {
             }
             KeyCode::Enter => {
                 let hits = self.switcher_hits(&q);
+                let file = s.checked_sub(hits.len()).and_then(|f| {
+                    let (item, _) = self.switcher_files(&q).get(f).cloned()?;
+                    self.root.as_ref().map(|r| r.join(&self.items[item].rel))
+                });
                 self.mode = Mode::Normal;
                 let from = self.here();
-                if let Some(h) = hits.get(s) {
+                if let Some(path) = file {
+                    self.open_file(&path);
+                } else if let Some(h) = hits.get(s) {
                     let path = self
                         .core
                         .as_ref()
@@ -2820,6 +2908,9 @@ impl Home {
             return self.flash(format!("{} is missing", b.label()));
         }
         match b.target {
+            Target::File { path, .. } if self.registry.owner_of(&path).is_some() => {
+                self.open_file(&root.join(&path));
+            }
             Target::File { path, subpath } => {
                 let p = root.join(&path);
                 match workspace::attachment_kind(&path) {
@@ -2862,7 +2953,7 @@ impl Home {
             let it = self.current()?;
             return Some(match it.kind {
                 ItemKind::Folder => Target::Folder(it.rel.clone()),
-                ItemKind::Note | ItemKind::Board => Target::File {
+                ItemKind::Note | ItemKind::Board | ItemKind::File => Target::File {
                     path: it.rel.clone(),
                     subpath: None,
                 },
@@ -5170,6 +5261,10 @@ impl Home {
             None => picker_frame(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close "),
         };
         let hits = self.switcher_targets(query, merging.as_deref());
+        let files = match merging {
+            None => self.switcher_files(query),
+            Some(_) => Vec::new(),
+        };
         let create = merging.is_none() && self.offers_create(query);
         let mut lines = vec![
             Line::from(vec![
@@ -5179,7 +5274,7 @@ impl Home {
                     if query.is_empty() {
                         "  type a name (letters in order are enough)".to_string()
                     } else {
-                        format!("  {} notes", hits.len())
+                        format!("  {} notes", hits.len() + files.len())
                     },
                     Style::new().fg(MUTED),
                 ),
@@ -5187,7 +5282,7 @@ impl Home {
             Line::raw(""),
         ];
         let rows = inner.height.saturating_sub(2) as usize;
-        let total = hits.len() + create as usize;
+        let total = hits.len() + files.len() + create as usize;
         let start = sel.saturating_sub(rows.saturating_sub(1));
         let width = inner.width as usize;
         for i in start..(start + rows).min(total) {
@@ -5202,34 +5297,45 @@ impl Home {
             } else {
                 Style::new().fg(HIT).add_modifier(Modifier::BOLD)
             };
-            if i == hits.len() {
+            if i == hits.len() + files.len() {
                 lines.push(Line::styled(
                     format!(" + Create note \"{}\"", query.trim()),
                     if selected { base } else { Style::new().fg(HIT) },
                 ));
                 continue;
             }
-            let hit = &hits[i];
-            let note = &ix.workspace.notes[hit.note];
-            let label = hit.alias.clone().unwrap_or_else(|| note.name.clone());
+            let (label, positions, extra, right) = match hits.get(i) {
+                Some(hit) => {
+                    let note = &ix.workspace.notes[hit.note];
+                    let label = hit.alias.clone().unwrap_or_else(|| note.name.clone());
+                    let extra = match hit.alias {
+                        Some(_) => format!("  → {}", note.name),
+                        None => String::new(),
+                    };
+                    let folder = note.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                    let (inc, _) = ix.counts(hit.note);
+                    let right = format!("{folder}  ←{inc} ");
+                    (label, &hit.positions, extra, right)
+                }
+                None => {
+                    let (item, fuzzy) = &files[i - hits.len()];
+                    let it = &self.items[*item];
+                    let folder = it.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                    let kind = self
+                        .registry
+                        .owner_of(&it.rel)
+                        .map(|(_, t)| t.title.as_str());
+                    let right = format!("{folder}  {} ", kind.unwrap_or_default());
+                    (it.name.clone(), &fuzzy.positions, String::new(), right)
+                }
+            };
             let mut spans = vec![Span::styled(" ", base)];
             for (ci, ch) in label.chars().enumerate() {
                 spans.push(Span::styled(
                     ch.to_string(),
-                    if hit.positions.contains(&ci) {
-                        hl
-                    } else {
-                        base
-                    },
+                    if positions.contains(&ci) { hl } else { base },
                 ));
             }
-            let mut extra = String::new();
-            if hit.alias.is_some() {
-                extra.push_str(&format!("  → {}", note.name));
-            }
-            let folder = note.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-            let (inc, _) = ix.counts(hit.note);
-            let right = format!("{folder}  ←{inc} ");
             let used = 1 + label.chars().count() + extra.chars().count();
             let pad = width.saturating_sub(used + right.chars().count());
             let dim = if selected {
@@ -5702,6 +5808,7 @@ impl Home {
                 ItemKind::Folder if self.expanded.contains(&it.rel) => ("▾ ", MUTED),
                 ItemKind::Folder => ("▸ ", MUTED),
                 ItemKind::Board => ("▦ ", Color::Rgb(83, 223, 221)),
+                ItemKind::File => ("▤ ", Color::Rgb(83, 223, 221)),
                 ItemKind::Note => ("• ", DIM),
             };
             let label = if flat {
@@ -5842,10 +5949,17 @@ impl Home {
             }
             return;
         }
-        let hint = match self.current().map(|it| it.kind) {
-            Some(ItemKind::Folder) => "a folder · → to open it",
-            Some(ItemKind::Board) => "a whiteboard · ⏎ to open it",
-            _ => "select a note to see it here",
+        let owned = (self.current())
+            .filter(|it| it.kind == ItemKind::File)
+            .and_then(|it| self.registry.owner_of(&it.rel));
+        let hint = match (self.current().map(|it| it.kind), owned) {
+            (Some(ItemKind::Folder), _) => "a folder · → to open it".to_string(),
+            (Some(ItemKind::Board), _) => "a whiteboard · ⏎ to open it".to_string(),
+            (_, Some((owner, kind))) => {
+                let name = &self.registry.manifest(owner).name;
+                format!("{} · ⏎ to open it in {name}", kind.title)
+            }
+            _ => "select a note to see it here".to_string(),
         };
         f.render_widget(
             Paragraph::new(Line::styled(hint, Style::new().fg(MUTED))),
@@ -6555,8 +6669,10 @@ mod tests {
 
     #[test]
     fn tree_sorting_and_folding() {
-        let items =
-            scan_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"));
+        let items = scan_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+            |_| false,
+        );
         let rels: Vec<&str> = items.iter().map(|i| i.rel.as_str()).collect();
         // Folders first, then top-level files; boards are included.
         assert_eq!(rels[0], "Concepts");

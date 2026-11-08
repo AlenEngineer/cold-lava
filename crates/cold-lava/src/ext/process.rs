@@ -13,7 +13,7 @@ use super::installed::Installed;
 use super::rpc::{self, Message};
 use super::transport::{self, Connector, Launch, Received, Transport};
 use super::view::ViewNews;
-use super::{CommandRequest, EditorRequest, Extension, Host, Manifest, PaneNews};
+use super::{CommandRequest, EditorRequest, Extension, FileNews, Host, Manifest, PaneNews};
 use crate::gateway::{News, SubId};
 
 /// At most this many messages are read from one extension per frame; the rest wait for the next.
@@ -241,6 +241,16 @@ impl Extension for Process {
         self.tell(rpc::notification(news), host);
     }
 
+    fn file(&mut self, news: FileNews, host: &mut Host<'_>) {
+        if let FileNews::Open { path } = &news
+            && !self.running()
+        {
+            let name = &self.manifest.name;
+            return host.notify(format!("{name} isn't running, so it can't open {path}"));
+        }
+        self.tell(rpc::notification(news), host);
+    }
+
     fn workspace(&mut self, root: Option<&Path>, host: &mut Host<'_>) {
         self.shutdown();
         if let Some(root) = root {
@@ -386,6 +396,7 @@ mod tests {
             commands: Vec::new(),
             types: Default::default(),
             permissions: crate::ext::read_only(),
+            file_types: Vec::new(),
         };
         let launch = Launch {
             dir,

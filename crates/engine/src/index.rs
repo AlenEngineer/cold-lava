@@ -208,6 +208,12 @@ impl Index {
     /// shallowest first. `None` when it isn't in the workspace, or when `target` names a note.
     pub fn attachment(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
         crate::workspace::attachment_kind(target)?;
+        self.file(target, from)
+    }
+
+    /// The file a link written in note `from` leads to, of any kind, found the way
+    /// `attachment` finds one.
+    pub fn file(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
         let files = crate::rename::Files::of_workspace(self);
         let dir = from.map_or("", |i| crate::rename::dir_of(&self.workspace.notes[i].rel));
         let i = files.resolve(dir, target)?;
