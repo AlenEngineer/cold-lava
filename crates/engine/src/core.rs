@@ -121,6 +121,17 @@ impl Core {
         self.schedule(Duration::from_millis(100));
     }
 
+    /// Read one note again right away (cold-lava itself just wrote it), so what shows it is up
+    /// to date before the next frame. Subscribers get its events too.
+    pub fn note_changed_now(&mut self, path: &Path) -> Vec<Event> {
+        let events: Vec<Event> = (self.index.refresh(&[path.to_path_buf()]).into_iter())
+            .map(Event::from)
+            .collect();
+        self.subscribers
+            .retain(|s| events.iter().all(|e| s.send(e.clone()).is_ok()));
+        events
+    }
+
     /// Read the whole vault again on the next `poll`.
     pub fn rescan(&mut self) {
         self.rescan = true;

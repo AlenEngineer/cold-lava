@@ -14,8 +14,10 @@ mod kitty;
 mod looks;
 mod reader;
 mod scene;
+mod table;
 mod term;
 mod tidy_view;
+mod type_table;
 mod whichkey;
 
 use cold_lava_engine::{
@@ -47,6 +49,7 @@ Usage:
                                       set one field of a typed item (ID from items --json),
                                       refused unless the note reads back as asked
   cold-lava rename VAULT_DIR NOTE NEW rename or move a note or folder, updating every link
+  cold-lava table VAULT_DIR TYPE      a type's items as the table view shows them
   cold-lava tidy VAULT_DIR            orphan notes, unused attachments, empty folders and
                                       unresolved links (read-only)
   cold-lava keys                      every command and its keys; checks config.toml
@@ -63,13 +66,14 @@ Options:
   --pixels             force pixel rendering (Kitty graphics protocol)
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
   --json               machine-readable output (agenda, items, types, task toggle, item set,
-                       tidy)
+                       tidy, table: the view's own JSON)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --rev REV            item set: only if the item is still this version (its rev)
   --remove             item set: take the field's value out instead of setting one
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
   --dry-run            rename, item set: show what would change, change nothing
+  --sort FIELD         table: sort by FIELD (-FIELD: descending), as s and S do
   --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
   -V, --version        print the version
   -h, --help           this help
@@ -87,7 +91,7 @@ struct Args {
 
 impl Args {
     fn parse() -> Result<Args> {
-        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit", "rev"];
+        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit", "rev", "sort"];
         let mut a = Args {
             words: Vec::new(),
             values: Default::default(),
@@ -311,6 +315,42 @@ fn run() -> Result<()> {
                 }
             }
             Ok(())
+        }
+        Some("table") => {
+            let (Some(root), Some(ty)) = (args.word(1), args.word(2)) else {
+                anyhow::bail!("usage: cold-lava table VAULT_DIR TYPE [--sort FIELD] [--json]");
+            };
+            let vault = vault::scan(Path::new(root))?;
+            let Some(built) = type_table::build(&vault, ty) else {
+                let names: Vec<String> = type_table::types(&vault)
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect();
+                anyhow::bail!("no type called {ty}; there are: {}", names.join(", "));
+            };
+            let mut view = table::TableView::new(built.table);
+            if let Some(field) = args.values.get("sort") {
+                let (name, desc) = match field.strip_prefix('-') {
+                    Some(name) => (name, true),
+                    None => (field.as_str(), false),
+                };
+                let Some(c) = view.columns().iter().position(|c| c.name == name) else {
+                    anyhow::bail!("{ty} has no field {name}");
+                };
+                view.sort_by(c, desc);
+            }
+            let mut out = std::io::stdout().lock();
+            let written = match json {
+                true => writeln!(out, "{}", serde_json::to_string_pretty(&view.sorted())?),
+                false => view
+                    .text()
+                    .iter()
+                    .try_for_each(|l| writeln!(out, "{}", l.trim_end())),
+            };
+            match written {
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                r => Ok(r?),
+            }
         }
         Some("tidy") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));

@@ -1,0 +1,53 @@
+# Editing cells of the table view: each edit is one set-field on the vault copy, which
+# tests/drive.rs then reads. A value that doesn't fit and a read-only column are refused with
+# their reason; an edit to the row's key (the VEI) keeps the row selected under its new id.
+size 160x30
+env COLD_LAVA_EDITOR=none
+wait-for example-vault
+keys i
+type erup
+wait-for 1 type
+keys enter
+wait-for 4 rows
+keys j j l e
+wait-for example: [[Krakatoa]] 1883▏
+keys ctrl+u
+type [[Krakatoa]] 1883, Sunda Strait
+keys enter
+wait-for Volcanic Explosivity Index: example set to [[Krakatoa]] 1883, Sunda Strait
+wait-for [[Krakatoa]] 1883, Sunda Strait
+keys h e ctrl+u
+type big
+keys enter
+wait-for not saved: vei: "big" is not a number
+keys l l e
+wait-for volcanoes is read-only
+keys h h e ctrl+u
+type 7
+keys enter
+wait-for vei set to 7
+wait-for  7   [[Krakatoa]] 1883, Sunda Strait
+keys enter
+wait-for Volcanic Explosivity Index (VEI)  reading
+keys i
+type task
+wait-for 1 type
+keys enter
+wait-for rows
+keys /
+type lahars
+keys enter
+wait-for 1 of 4 rows · /lahars
+keys l l l e
+wait-for due: ▏
+type 2026-12-01
+keys enter
+wait-for due set to 2026-12-01
+keys h h e ctrl+u
+type done
+keys enter
+wait-for status_type set to done
+wait-for 2026-12-01
+screen
+keys q q
+exits 0

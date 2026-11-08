@@ -27,6 +27,11 @@ pub enum Place {
     Board {
         path: PathBuf,
     },
+    /// The table of a type's items, sorted, filtered and scrolled as it was.
+    Table {
+        ty: String,
+        spot: crate::table::Spot,
+    },
 }
 
 impl Place {
@@ -41,6 +46,7 @@ impl Place {
             Place::Note { path, .. } | Place::Board { path } => stem(path),
             Place::Search { query, .. } => format!("search “{query}”"),
             Place::Graph { .. } => "graph".to_string(),
+            Place::Table { ty, .. } => format!("{ty} table"),
         }
     }
 }

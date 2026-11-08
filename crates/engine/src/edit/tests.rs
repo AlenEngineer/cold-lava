@@ -315,6 +315,59 @@ fn a_task_is_set_through_its_checkbox_and_markers() {
 }
 
 #[test]
+fn a_missing_task_date_is_written_as_the_line_and_the_vault_write_them() {
+    let s = settings("");
+    assert_eq!(
+        after(
+            &s,
+            "- [ ] Pay rent\n",
+            1,
+            "task",
+            "due",
+            json!("2026-12-01")
+        ),
+        "- [ ] Pay rent 📅 2026-12-01\n",
+        "the Tasks plugin's default format is emoji"
+    );
+    assert_eq!(
+        after(
+            &s,
+            "- [ ] Pay rent [scheduled:: 2026-11-30]\n",
+            1,
+            "task",
+            "due",
+            json!("2026-12-01")
+        ),
+        "- [ ] Pay rent [scheduled:: 2026-11-30] [due:: 2026-12-01]\n",
+        "a line that writes Dataview fields gets one"
+    );
+    assert_eq!(
+        after(
+            &s,
+            "- [ ] Pay rent ⏫\n",
+            1,
+            "task",
+            "due",
+            json!("2026-12-01")
+        ),
+        "- [ ] Pay rent ⏫ 📅 2026-12-01\n"
+    );
+    let mut dataview = settings("");
+    dataview.tasks.dataview = true;
+    assert_eq!(
+        after(
+            &dataview,
+            "- [ ] Pay rent\n",
+            1,
+            "task",
+            "due",
+            json!("2026-12-01")
+        ),
+        "- [ ] Pay rent [due:: 2026-12-01]\n"
+    );
+}
+
+#[test]
 fn a_stale_rev_or_a_gone_item_is_changed() {
     let s = settings(CHORES);
     let text = "- Sweep 📅 2026-11-12\n";

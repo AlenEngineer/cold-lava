@@ -106,7 +106,7 @@ The vocabulary stays small, and grows only when a real extension needs a new wor
 | --- | --- | --- |
 | **markdown** | text with the reader's styling | built (the reader) |
 | **list / tree** | the agenda, a todo aggregator, outlines | designed |
-| **table** | a type's items as rows: books, people, projects | to design |
+| **table** | a type's items as rows: books, people, projects | built (`crates/cold-lava/src/table.rs`; `i`, `table.open`) |
 | **scene** | nodes and edges: the graph, the whiteboard, mind maps | designed |
 | **pane** | the escape hatch: any terminal program (a GUI's could be a web view) | built |
 | **image** | pictures, with Kitty pixels where the terminal has them | to design |
