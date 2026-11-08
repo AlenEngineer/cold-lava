@@ -208,6 +208,12 @@ impl Index {
     /// shallowest first. `None` when it isn't in the workspace, or when `target` names a note.
     pub fn attachment(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
         crate::workspace::attachment_kind(target)?;
+        self.file(target, from)
+    }
+
+    /// The file a link written in note `from` leads to, of any kind, found the way
+    /// `attachment` finds one.
+    pub fn file(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
         let files = crate::rename::Files::of_workspace(self);
         let dir = from.map_or("", |i| crate::rename::dir_of(&self.workspace.notes[i].rel));
         let i = files.resolve(dir, target)?;
@@ -217,10 +223,15 @@ impl Index {
     /// Where a new note for an unresolved link goes, following Obsidian's
     /// "Default location for new notes" setting (`.obsidian/app.json`).
     pub fn new_note_path(&self, name: &str, from: Option<usize>) -> PathBuf {
-        let name = name.trim().trim_end_matches(".md");
+        self.new_file_path(name.trim().trim_end_matches(".md"), "md", from)
+    }
+
+    /// Where a new `name.extension` goes: in the folder `name` names, else where Obsidian puts
+    /// new files, as for notes.
+    pub fn new_file_path(&self, name: &str, extension: &str, from: Option<usize>) -> PathBuf {
         // A link with a folder (`[[Ideas/New]]`) says where it goes.
         if name.contains('/') {
-            return self.workspace.root.join(format!("{name}.md"));
+            return self.workspace.root.join(format!("{name}.{extension}"));
         }
         let app: serde_json::Value =
             std::fs::read_to_string(self.workspace.root.join(".obsidian/app.json"))
@@ -240,7 +251,7 @@ impl Index {
             }
             _ => self.workspace.root.clone(),
         };
-        dir.join(format!("{name}.md"))
+        dir.join(format!("{name}.{extension}"))
     }
 }
 

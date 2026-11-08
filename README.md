@@ -688,6 +688,20 @@ crashed extension is reported once on the status line, with the last line of its
 (`~/.cache/cold-lava/extensions/NAME.log`); *restart extensions* in the palette starts it again.
 How to write one: [docs/extensions-guide.md](docs/extensions-guide.md).
 
+An extension can also own a kind of file. `csv-table`, the second example, opens `.csv` files:
+
+```bash
+cp -r examples/extensions/csv-table ~/.config/cold-lava/extensions/
+```
+
+`.csv` files then show in the note tree and the quick switcher, and Enter on one, or on a link
+to one (`[[Eruptions.csv]]` in *Start Here*), opens it as a table. `e` edits a cell, which is
+saved to the file unless the file changed since it was read (then the extension reads it again
+and sets the cell in what is there now); a change made in another program shows up in the
+table. *new CSV table* in the palette makes `Untitled.csv` where Obsidian puts new files. One
+extension owns each kind, the first to claim it; notes (`.md`) and whiteboards (`.canvas`) stay
+cold-lava's. A kind of file nobody owns behaves as before.
+
 ## What it understands
 
 - `[[wikilinks]]` (with aliases, headings and embeds), and `[text](note.md)` links

@@ -9,6 +9,26 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- File types. An extension's manifest can claim a kind of file (`[[file-types]]` with
+  `extension`, `title` and `new`, the command that makes one). Files of that kind show in the
+  note tree and the quick switcher, and Enter on one, or following a link to it
+  (`[[Eruptions.csv]]`), sends its owner `file/open`; the owner shows it in a view. The owner
+  reads and writes it through the workspace gateway: `workspace/read` (`{text, rev}`),
+  `workspace/write` (refused as `changed` unless the file is still the version it read),
+  `workspace/create` (where Obsidian puts a new file, numbered when the name is taken, never
+  overwriting) and `workspace/files`, and hears `file/changed` from cold-lava's file watcher,
+  whoever changed the file. An owner may read and write its own kinds without asking; any
+  other file needs the new permissions `files.read` and `files.write`. Paths stay inside the
+  workspace and out of hidden folders. The first extension to claim a kind gets it; a second
+  claim, or one on `.md` or `.canvas`, is left out and reported, and `cold-lava ext list` says
+  who opens what. Files nobody owns behave as before.
+- `examples/extensions/csv-table`, a second example extension in Python, which owns `.csv`:
+  each file opens as a table, an edited cell is saved (read again and set again when the file
+  changed meanwhile), changes made elsewhere show up, and *new CSV table* makes one. The example
+  workspace has `Volcanoes/Eruptions.csv`, linked from *Start Here*.
+- `cold-lava drive` scripts can `write FILE TEXT`, changing a file in the workspace the way
+  another program would.
+
 - Extensions in their own process. A folder in `~/.config/cold-lava/extensions/` with an
   `extension.toml` (`name`, `version`, `description`, `run`, `permissions`, `[[commands]]`,
   `[types.*]`) is started when a workspace opens, and spoken to in JSON-RPC 2.0 over its stdin
@@ -175,6 +195,8 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- Tidy no longer lists a link to a file that exists but isn't a note or a known attachment
+  (`[[Eruptions.csv]]`) under unresolved links.
 - A custom status whose next status is cancelled (`nextStatusSymbol`) now gets the cancelled date
   (`❌ 2026-11-07`, or `[cancelled:: …]` in the Dataview format) and loses its done date, as the
   Tasks plugin does; `setCancelledDate: false` leaves it out.

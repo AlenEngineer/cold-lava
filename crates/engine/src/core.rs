@@ -3,6 +3,7 @@
 //! (cold-lava, Obsidian, Neovim, git…).
 
 use crate::bookmarks::Bookmarks;
+use crate::files;
 use crate::gateway::{self, Edit, Edited, Found, News, Query, Select, SubId, Subscriptions};
 use crate::index::Index;
 use crate::workspace::{self, NoteChange};
@@ -24,6 +25,9 @@ pub enum Event {
     Rescanned,
     /// A whiteboard (`.canvas`) file changed. Workspace-relative path.
     BoardChanged(String),
+    /// Another file that isn't a note was created, changed or removed: workspace-relative,
+    /// with its extension. Its owner hears `file/changed`.
+    FileChanged(String),
     /// Obsidian's graph settings (colour groups) changed.
     GraphSettingsChanged,
     /// `.obsidian/bookmarks.json` changed; `Core::bookmarks` has been read again.
@@ -68,6 +72,7 @@ pub struct Core {
     _watcher: Option<RecommendedWatcher>,
     changed: Vec<PathBuf>,
     boards: Vec<String>,
+    files: Vec<String>,
     rescan: bool,
     graph_settings: bool,
     bookmarks_changed: bool,
@@ -91,6 +96,7 @@ impl Core {
             _watcher: watcher,
             changed: Vec::new(),
             boards: Vec::new(),
+            files: Vec::new(),
             rescan: false,
             graph_settings: false,
             bookmarks_changed: false,
@@ -213,6 +219,45 @@ impl Core {
         gateway::read_back(&self.index.workspace, written)
     }
 
+    /// `workspace/read`
+    pub fn read_file(&self, rel: &str) -> Result<files::Text, gateway::Error> {
+        files::read(self.root(), rel)
+    }
+
+    /// `workspace/write`: refused unless the file is still the version `expect`. A note is read
+    /// again at once, and its events come from the next `poll`; other files are the watcher's.
+    pub fn write_file(
+        &mut self,
+        rel: &str,
+        text: &str,
+        expect: &str,
+    ) -> Result<files::Written, gateway::Error> {
+        let written = files::replace(self.root(), rel, text, expect)?;
+        self.reread_note(rel);
+        Ok(written)
+    }
+
+    /// `workspace/create`
+    pub fn create_file(&mut self, c: &files::Create) -> Result<files::Created, gateway::Error> {
+        let created = files::create(&self.index, c)?;
+        self.reread_note(&created.path);
+        Ok(created)
+    }
+
+    /// `workspace/files`
+    pub fn files(&self, extension: &str) -> files::Listed {
+        files::list(&self.index, extension)
+    }
+
+    /// After cold-lava wrote `rel`: when it is a note, read it now, so the next query sees it.
+    fn reread_note(&mut self, rel: &str) {
+        if workspace::is_note_path(Path::new(rel)) {
+            let events = self.refresh(&[self.root().join(rel)]);
+            self.broadcast(&events);
+            self.unseen.extend(events);
+        }
+    }
+
     /// Whether `poll` has events waiting that no file change caused: an edit's.
     pub fn has_unseen(&self) -> bool {
         !self.unseen.is_empty()
@@ -264,6 +309,11 @@ impl Core {
                 .into_iter()
                 .map(Event::BoardChanged),
         );
+        events.extend(
+            std::mem::take(&mut self.files)
+                .into_iter()
+                .map(Event::FileChanged),
+        );
         if std::mem::take(&mut self.graph_settings) {
             events.push(Event::GraphSettingsChanged);
         }
@@ -288,6 +338,11 @@ impl Core {
                             self.boards.push(rel);
                         }
                     }
+                    Kind::File(rel) => {
+                        if !self.files.contains(&rel) {
+                            self.files.push(rel);
+                        }
+                    }
                     Kind::GraphSettings => self.graph_settings = true,
                     Kind::Bookmarks => self.bookmarks_changed = true,
                     Kind::Folder => self.rescan = true,
@@ -305,6 +360,7 @@ impl Core {
 enum Kind {
     Note,
     Board(String),
+    File(String),
     GraphSettings,
     Bookmarks,
     /// Something without an extension: most likely a folder that was moved or deleted, which
@@ -335,6 +391,7 @@ fn classify(root: &Path, path: &Path) -> Kind {
     }
     match rel.extension() {
         Some(e) if e == "canvas" => Kind::Board(rel_s),
+        Some(_) if !path.is_dir() => Kind::File(rel_s),
         // A path without an extension that isn't a file we know: a folder.
         None if !path.is_file() => Kind::Folder,
         _ => Kind::Ignored,

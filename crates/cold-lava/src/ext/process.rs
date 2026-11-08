@@ -13,7 +13,7 @@ use super::installed::Installed;
 use super::rpc::{self, Message};
 use super::transport::{self, Connector, Launch, Received, Transport};
 use super::view::ViewNews;
-use super::{CommandRequest, EditorRequest, Extension, Host, Manifest, PaneNews};
+use super::{CommandRequest, EditorRequest, Extension, FileNews, Host, Manifest, PaneNews};
 use crate::gateway::{News, SubId};
 
 /// At most this many messages are read from one extension per frame; the rest wait for the next.
@@ -241,6 +241,16 @@ impl Extension for Process {
         self.tell(rpc::notification(news), host);
     }
 
+    fn file(&mut self, news: FileNews, host: &mut Host<'_>) {
+        if let FileNews::Open { path } = &news
+            && !self.running()
+        {
+            let name = &self.manifest.name;
+            return host.notify(format!("{name} isn't running, so it can't open {path}"));
+        }
+        self.tell(rpc::notification(news), host);
+    }
+
     fn workspace(&mut self, root: Option<&Path>, host: &mut Host<'_>) {
         self.shutdown();
         if let Some(root) = root {
@@ -386,6 +396,7 @@ mod tests {
             commands: Vec::new(),
             types: Default::default(),
             permissions: crate::ext::read_only(),
+            file_types: Vec::new(),
         };
         let launch = Launch {
             dir,
@@ -603,10 +614,10 @@ mod tests {
         found
     }
 
-    /// The example extension, loaded from a copy beside a copy of the example workspace with
-    /// an overdue task in Inbox/Seismograph.md: its registry, the core, the workspace and the
-    /// folder that holds both.
-    fn python_example(name: &str) -> (Registry, Core, PathBuf, PathBuf) {
+    /// An example extension (`examples/extensions/<example>`), loaded from a copy beside a copy
+    /// of the example workspace with an overdue task in Inbox/Seismograph.md: its registry, the
+    /// core, the workspace and the folder that holds both. Its log is `<example>.log` there.
+    fn python_example(example: &str, name: &str) -> (Registry, Core, PathBuf, PathBuf) {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dir = std::env::temp_dir().join(format!("cold-lava-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -614,15 +625,69 @@ mod tests {
         copy_dir(&repo.join("example-workspace"), &root);
         let late = "- [ ] Check the seismograph 📅 2000-01-01\n";
         std::fs::write(root.join("Inbox/Seismograph.md"), late).unwrap();
-        let example = repo.join("examples/extensions/open-tasks");
-        copy_dir(&example, &extensions.join("open-tasks"));
+        let from = repo.join("examples/extensions").join(example);
+        copy_dir(&from, &extensions.join(example));
         let (found, mistakes) = crate::ext::installed::load(&extensions);
         assert_eq!(mistakes, Vec::<String>::new());
-        let mut example = found.into_iter().next().unwrap();
-        example.launch.log = Some(dir.join("open-tasks.log"));
-        let r = Registry::new(vec![Box::new(Process::new(example).unwrap())]);
+        let mut installed = found.into_iter().next().unwrap();
+        installed.launch.log = Some(dir.join(format!("{example}.log")));
+        let r = Registry::new(vec![Box::new(Process::new(installed).unwrap())]);
         let core = Core::open(&root).unwrap();
         (r, core, root, dir)
+    }
+
+    #[test]
+    fn the_examples_share_one_helper() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions");
+        let helper =
+            |example: &str| std::fs::read_to_string(examples.join(example).join("cold_lava.py"));
+        assert_eq!(
+            helper("csv-table").unwrap(),
+            helper("open-tasks").unwrap(),
+            "each example carries a copy of cold_lava.py, so it can be copied alone: keep them alike"
+        );
+    }
+
+    #[test]
+    fn the_csv_example_saves_on_top_of_a_change_it_hadnt_heard_of() {
+        use crate::ext::FileNews;
+        use crate::ext::view::{Event, Happened, ViewNews};
+        if !has_python() {
+            return;
+        }
+        let (mut r, mut core, root, dir) = python_example("csv-table", "python-csv");
+        r.call(ExtId(0), Some(&mut core), |e, h| {
+            e.workspace(Some(&root), h)
+        });
+        let path = "Volcanoes/Eruptions.csv";
+        let open = FileNews::Open { path: path.into() };
+        r.call(ExtId(0), Some(&mut core), |e, h| e.file(open, h));
+        let opened = until(&mut r, &mut core, |e| matches!(e, Effect::OpenView { .. }));
+        let Effect::OpenView { view, .. } = opened else {
+            unreachable!()
+        };
+        let elsewhere = "volcano,year,vei\nTambora,1815,7\nKrakatoa,1883,6\n";
+        std::fs::write(root.join(path), elsewhere).unwrap();
+        let event = Event::Edit {
+            row: "2".into(),
+            column: "vei".into(),
+            value: "6.5".into(),
+        };
+        let edit = ViewNews::Event(Happened { view, event });
+        r.call(ExtId(0), Some(&mut core), |e, h| e.view(edit, h));
+        let saved = format!("saved {path}");
+        until(&mut r, &mut core, |e| {
+            notes(std::slice::from_ref(e)) == [saved.as_str()]
+        });
+        let text = std::fs::read_to_string(root.join(path)).unwrap();
+        assert_eq!(
+            text, "volcano,year,vei\nTambora,1815,7\nKrakatoa,1883,6.5\n",
+            "refused as changed, read again, and the cell set in what was there"
+        );
+        r.shutdown();
+        let log = std::fs::read_to_string(dir.join("csv-table.log")).unwrap();
+        assert_eq!(log, "", "nothing on stderr");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -630,7 +695,7 @@ mod tests {
         if !has_python() {
             return;
         }
-        let (mut r, mut core, root, dir) = python_example("python");
+        let (mut r, mut core, root, dir) = python_example("open-tasks", "python");
         let open = Query {
             select: tasks(&["todo", "in_progress"]),
             ..Default::default()
@@ -668,7 +733,7 @@ mod tests {
         if !has_python() {
             return;
         }
-        let (mut r, mut core, root, dir) = python_example("python-view");
+        let (mut r, mut core, root, dir) = python_example("open-tasks", "python-view");
         r.call(ExtId(0), Some(&mut core), |e, h| {
             e.workspace(Some(&root), h)
         });

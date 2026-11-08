@@ -58,6 +58,11 @@ pub enum Action {
         row: u16,
         col: u16,
     },
+    /// Replace a file in the workspace, as another program (Obsidian, git) would.
+    Write {
+        file: PathBuf,
+        text: String,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -84,6 +89,8 @@ expect TEXT             the screen shows TEXT now
 expect-not TEXT         the screen doesn't show TEXT now
 screen                  print the screen
 click ROW COL           left click (1-based)
+write FILE TEXT         replace FILE in the workspace (the last argument) with TEXT, as another
+                        program would; \\n in TEXT is a line break
 exits [10s] CODE        the program exits with CODE
 # comment             a line starting with # is skipped";
 
@@ -175,6 +182,17 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
                     _ => return Err(err(format!("click wants ROW COL (from 1): {rest}"))),
                 }
             }
+            "write" => match rest.split_once(' ') {
+                Some((file, text)) if Path::new(file).is_relative() => Some(Action::Write {
+                    file: file.into(),
+                    text: text.replace("\\n", "\n"),
+                }),
+                _ => {
+                    return Err(err(format!(
+                        "write wants FILE TEXT, FILE in the workspace: {rest}"
+                    )));
+                }
+            },
             _ => return Err(err(format!("unknown step {word:?}; steps are:\n{SYNTAX}"))),
         };
         if let Some(action) = action {
@@ -576,6 +594,13 @@ pub fn run(
                     Some(_) => None,
                 }
             }
+            Action::Write { file, text } => {
+                let workspace = args.last().map(Path::new).unwrap_or(Path::new("."));
+                let path = workspace.join(file);
+                std::fs::write(&path, text)
+                    .err()
+                    .map(|e| format!("couldn't write {}: {e}", path.display()))
+            }
             Action::Click { row, col } => {
                 if s.parser.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None {
                     Some("click: the program isn't listening to the mouse".to_string())
@@ -618,6 +643,19 @@ mod tests {
 
     fn step(src: &str) -> Action {
         parse(src).unwrap().steps.remove(0).action
+    }
+
+    #[test]
+    fn write_replaces_a_file_in_the_workspace() {
+        assert_eq!(
+            step("write Data/a.csv x,y\\n1,2\\n"),
+            Action::Write {
+                file: "Data/a.csv".into(),
+                text: "x,y\n1,2\n".into()
+            }
+        );
+        assert!(parse("write /etc/a x").is_err());
+        assert!(parse("write a.csv").is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::transport::{self, Launch};
-use super::{CommandSpec, Manifest, Permission, read_only, rpc};
+use super::{CommandSpec, FileType, Manifest, Permission, read_only, rpc};
 use crate::types::Definitions;
 
 /// Names an installed extension can't take: the built-in ones and the menu's screens, which edits
@@ -45,6 +45,8 @@ struct File {
     commands: Vec<CommandSpec>,
     #[serde(default)]
     types: Definitions,
+    #[serde(default, rename = "file-types")]
+    file_types: Vec<FileType>,
 }
 
 fn api() -> u32 {
@@ -130,6 +132,24 @@ fn read(folder: &Path, path: &Path) -> Result<Installed, String> {
     if file.run.is_empty() {
         return Err("run must name a program".into());
     }
+    let mut file_types = file.file_types;
+    for t in &mut file_types {
+        t.extension = t.extension.trim_start_matches('.').to_ascii_lowercase();
+        let x = &t.extension;
+        let fits = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        if x.is_empty() || !x.chars().all(fits) {
+            return Err(format!(
+                "file type {x:?} must be an extension of letters, digits, - and _, like \"csv\""
+            ));
+        }
+        if let Some(new) = &t.new
+            && !file.commands.iter().any(|c| c.id == *new)
+        {
+            return Err(format!(
+                "file type .{x} makes new files with {new}, which isn't one of its [[commands]]"
+            ));
+        }
+    }
     let manifest = Manifest {
         title: file.title.unwrap_or_else(|| name.clone()),
         version: file.version,
@@ -139,6 +159,7 @@ fn read(folder: &Path, path: &Path) -> Result<Installed, String> {
         commands: file.commands,
         types: file.types,
         permissions: file.permissions,
+        file_types,
         name,
     };
     let launch = Launch {
@@ -184,6 +205,11 @@ keys = ["W"]
 [[commands]]
 id = "wc.quiet"
 title = "No keys"
+
+[[file-types]]
+extension = ".WC"
+title = "Word counts"
+new = "wc.show"
 "#;
 
     #[test]
@@ -207,6 +233,12 @@ title = "No keys"
         assert_eq!(m.commands.len(), 2);
         assert!(m.commands[1].keys.is_empty());
         assert!(m.types.contains_key("doc"));
+        let counts = FileType {
+            extension: "wc".into(),
+            title: "Word counts".into(),
+            new: Some("wc.show".into()),
+        };
+        assert_eq!(m.file_types, [counts], "lowercase, without the dot");
         assert_eq!(wc.launch.dir, d.join("wc"));
         assert_eq!(wc.launch.run, ["python3", "main.py"]);
         assert_eq!(wc.launch.transport, "stdio");
@@ -230,7 +262,7 @@ title = "No keys"
                 ),
                 (
                     "f",
-                    &with("\"items.edit\"", "\"files.write\"").replace("wc", "f"),
+                    &with("\"items.edit\"", "\"files.create\"").replace("wc", "f"),
                 ),
                 ("g", &with("name = \"wc\"", "name = \"g\"\ncolour = 1")),
                 (
@@ -238,6 +270,18 @@ title = "No keys"
                     &with("[\"python3\", \"main.py\"]", "[]").replace("wc", "h"),
                 ),
                 ("i", "name = "),
+                (
+                    "j",
+                    &(with("name = \"wc\"", "name = \"j\"") + "icon = \"x\"\n"),
+                ),
+                (
+                    "k",
+                    &with("extension = \".WC\"", "extension = \"tar.gz\"").replace("wc", "k"),
+                ),
+                (
+                    "l",
+                    &with("new = \"wc.show\"", "new = \"wc.make\"").replace("wc", "l"),
+                ),
             ],
         );
         std::fs::create_dir_all(d.join("no-manifest")).unwrap();
@@ -247,16 +291,19 @@ title = "No keys"
         let says = |i: usize, what: &str| {
             assert!(mistakes[i].contains(what), "{i}: {}", mistakes[i]);
         };
-        assert_eq!(mistakes.len(), 9, "{mistakes:#?}");
+        assert_eq!(mistakes.len(), 12, "{mistakes:#?}");
         says(0, "lowercase letters");
         says(1, "folder must be called other");
         says(2, "API 2");
         says(3, "\"tcp\" isn't one cold-lava has (stdio)");
-        says(4, "files.write");
+        says(4, "files.create");
         says(5, "colour");
         says(6, "run must name a program");
         says(7, "/i/extension.toml");
-        says(8, "keeps for itself");
+        says(8, "unknown field `icon`");
+        says(9, "\"tar.gz\" must be an extension");
+        says(10, "l.make, which isn't one of its [[commands]]");
+        says(11, "keeps for itself");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use super::view::{Content, ViewId};
 use super::{Host, PaneId, PaneSpec};
+use crate::files;
 use crate::gateway::{self, Reason, Request, Subscribed};
 
 /// The API version cold-lava speaks, sent in `initialize` and checked against a manifest's `api`.
@@ -190,6 +191,10 @@ pub const HOST_METHODS: &[&str] = &[
     "items/unsubscribe",
     "items/edit",
     "types/list",
+    "workspace/read",
+    "workspace/write",
+    "workspace/create",
+    "workspace/files",
     "ui/notify",
     "ui/status",
     "command/run",
@@ -211,8 +216,15 @@ const GATEWAY: &[&str] = &[
     "types/list",
 ];
 
+const FILES: &[&str] = &[
+    "workspace/read",
+    "workspace/write",
+    "workspace/create",
+    "workspace/files",
+];
+
 /// Answer one request from an extension. The gateway's are answered now, within its manifest's
-/// permissions; the rest queue effects and answer `null`.
+/// permissions and the kinds of file it owns; the rest queue effects and answer `null`.
 pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Result<Value, RpcError> {
     let mut message = json!({ "method": method });
     match params {
@@ -237,6 +249,16 @@ pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Result
             Request::Unsubscribe { subscription } => answer(host.unsubscribe_items(subscription)),
             Request::Edit(edit) => answer(host.edit_item(&edit)),
             Request::TypesList => answer(host.types()),
+        };
+    }
+    if FILES.contains(&method) {
+        return match serde_json::from_value(message).map_err(invalid)? {
+            files::Request::Read { path } => answer(host.read_file(&path)),
+            files::Request::Write { path, text, expect } => {
+                answer(host.write_file(&path, &text, &expect))
+            }
+            files::Request::Create(create) => answer(host.create_file(&create)),
+            files::Request::Files { extension } => answer(host.list_files(&extension)),
         };
     }
     if !HOST_METHODS.contains(&method) {
@@ -356,6 +378,8 @@ mod tests {
             next_view: &mut next_view,
             name: "wc",
             permissions,
+            me: None,
+            owners: &[],
             core: Some(core),
         };
         let answer = serve(method, Some(params), &mut host);
@@ -398,6 +422,41 @@ mod tests {
         assert!(sub.unwrap()["subscription"].is_u64());
         let (types, _) = served(&mut core, &[ItemsRead], "types/list", json!({}));
         assert!(types.unwrap().as_array().is_some_and(|t| !t.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_are_read_written_created_and_listed_over_the_wire() {
+        use Permission::{FilesRead, FilesWrite};
+        let dir = workspace("files");
+        let mut core = Core::open(&dir).unwrap();
+        let both = [FilesRead, FilesWrite];
+        let plan = json!({"path": "Plan.md"});
+        let (read, _) = served(&mut core, &both, "workspace/read", plan);
+        let read = read.unwrap();
+        assert_eq!(read["text"], "- [ ] Pay rent\n");
+        let write = json!({"path": "Plan.md", "text": "- [ ] Pay rent\n- [ ] Call\n",
+                           "expect": read["rev"]});
+        let (written, _) = served(&mut core, &both, "workspace/write", write.clone());
+        assert!(written.unwrap()["rev"].is_string());
+        let (stale, _) = served(&mut core, &both, "workspace/write", write);
+        let stale = stale.unwrap_err();
+        assert_eq!((stale.code, reason(&stale)), (REFUSED, "changed"));
+        let new = json!({"name": "Untitled", "extension": "csv", "text": "a\n"});
+        let (created, _) = served(&mut core, &both, "workspace/create", new);
+        assert_eq!(created.unwrap()["path"], "Untitled.csv");
+        let (listed, _) = served(
+            &mut core,
+            &both,
+            "workspace/files",
+            json!({"extension": "csv"}),
+        );
+        assert_eq!(listed.unwrap(), json!({"files": ["Untitled.csv"]}));
+        let outside = json!({"path": "../x.csv", "text": ""});
+        let (refused, _) = served(&mut core, &both, "workspace/create", outside);
+        assert_eq!(reason(&refused.unwrap_err()), "refused");
+        let (bad, _) = served(&mut core, &both, "workspace/create", json!({"text": ""}));
+        assert_eq!(bad.unwrap_err().code, INVALID_PARAMS);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

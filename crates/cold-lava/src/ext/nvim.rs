@@ -128,6 +128,7 @@ impl Extension for Nvim {
             types: Default::default(),
             // It edits notes as text, in its pane: nothing from the workspace gateway.
             permissions: Vec::new(),
+            file_types: Vec::new(),
         }
     }
 

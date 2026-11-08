@@ -169,6 +169,8 @@ pub enum Reason {
     Forbidden,
     /// No workspace is open.
     NoWorkspace,
+    /// `workspace/create` at a path where a file is already.
+    Exists,
 }
 
 impl Error {

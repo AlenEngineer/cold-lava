@@ -73,6 +73,11 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an
   edit goes through `edit::set_field` or `tasks::toggle`, is read again at once and emits
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
+- `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`,
+  `workspace/write` refused unless the file is still that version, `workspace/create` where
+  Obsidian puts a new file, `workspace/files`) and their pinned JSON; `resolve` keeps a path
+  inside the workspace and out of hidden folders. `Core` answers them, and its watcher reports
+  other files as `Event::FileChanged`.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
   `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
   notes settings, moment.js date formats.
@@ -104,7 +109,13 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   `Extension` for one, starting it on `Extension::workspace` and answering it in
   `Extension::poll` (once a frame) through `rpc::serve` and `Host`, so the permission gate holds;
   `Transport`/`Connector` (stdio, threads behind channels, so the UI never waits) carry
-  LSP-framed JSON-RPC (`frame`). The example is `examples/extensions/open-tasks` (Python).
+  LSP-framed JSON-RPC (`frame`). The examples are `examples/extensions/open-tasks` and
+  `csv-table` (Python), each with its own copy of `cold_lava.py` (a test keeps them alike).
+- File types: a manifest's `[[file-types]]` (`FileType`) claims a kind of file; `Registry` gives
+  each kind to the first claimant (`owner_of`; never `md` or `canvas`). The tree, the switcher,
+  links and bookmarks hand an owned file to its owner as `file/open`, and the core's
+  `FileChanged` reaches it as `file/changed`. `Host` lets an owner read and write its own kinds;
+  other files need `files.read`/`files.write`. The example is `examples/extensions/csv-table`.
 - `ext/view.rs`: the view gateway's messages (`Content` is a list or a table with a `kind`,
   `Event`, `ViewNews`) and its bounds. `views.rs` in the binary keeps the views extensions
   opened: drawn with `ListView`/`TableView`, updated once a frame, places in history while open.
@@ -169,7 +180,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 - `example-workspace/` is the showcase workspace and is used by tests (they count its notes and groups).
   Copy it to a temp folder before trying anything that writes.
 - Drive the TUI headless with `cold-lava drive SCRIPT -- WORKSPACE` (`cold-lava --help` lists the
-  steps; `crates/cold-lava/tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`. Runs get an
+  steps; `crates/cold-lava/tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`;
+  `write FILE TEXT` changes a workspace file as another program would. Runs get an
   empty home (so they don't read your config or add workspaces to your list; `--real-home` to
   use yours), and `env COLD_LAVA_EDITOR=none` for the reader instead of Neovim. The embedded editor needs `nvim`
   (or `vim`) installed.

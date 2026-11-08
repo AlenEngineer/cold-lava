@@ -5,8 +5,11 @@
 //! type that crosses derives serde, so extensions in other processes will share this code path.
 //! Extensions never see keystrokes and never draw: the core owns the panes they open. What an
 //! extension asks for is queued as `Effect`s, which the menu applies after the call returns.
-//! Notes as data are the exception: `items/*` and `types/list` are answered during the call by
-//! the core (`crate::gateway`), within the permissions the extension's manifest asks for.
+//! Notes as data are the exception: `items/*`, `types/list` and the file messages
+//! (`workspace/read`, …) are answered during the call by the core (`crate::gateway`,
+//! `crate::files`), within the permissions the extension's manifest asks for. An extension can
+//! own a kind of file (`FileType`): the menu hands it those files (`file/open`) and their outside
+//! changes (`file/changed`).
 //! Extensions installed on disk (`installed`) run in processes of their own (`process`), over a
 //! `transport` that frames JSON-RPC messages (`frame`, `rpc`); they reach the same `Host`.
 
@@ -20,6 +23,7 @@ pub mod view;
 
 use crate::commands::{self, Entry, MenuCommand};
 use crate::core::{Core, Jump};
+use crate::files::{self, Create, Created, Listed, Text, Written};
 use crate::gateway::{self, Edit, Edited, Found, News, Query, Reason, Select, SubId};
 use crate::types::{Definitions, Type};
 use serde::{Deserialize, Serialize};
@@ -58,7 +62,28 @@ pub struct Manifest {
     /// What it may ask of the workspace gateway. Without the field, read only.
     #[serde(default = "read_only")]
     pub permissions: Vec<Permission>,
+    /// Kinds of file it opens, by extension.
+    #[serde(default, rename = "file-types", skip_serializing_if = "Vec::is_empty")]
+    pub file_types: Vec<FileType>,
 }
+
+/// A kind of file an extension owns: the menu hands it every file whose name ends in
+/// `.<extension>` (`file/open`) and tells it when one changes (`file/changed`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileType {
+    /// Lowercase, without the dot: "csv".
+    pub extension: String,
+    /// For people: "CSV table".
+    pub title: String,
+    /// One of its commands, which makes a new file of this kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new: Option<String>,
+}
+
+/// Extensions nobody can own: notes are the engine's own, and whiteboards the core's until the
+/// whiteboard is an extension.
+pub const UNOWNED: &[&str] = &["md", "canvas"];
 
 /// A part of the workspace gateway an extension may use, named in its manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +94,12 @@ pub enum Permission {
     /// `items/edit`.
     #[serde(rename = "items.edit")]
     ItemsEdit,
+    /// `workspace/read` and `workspace/files` for kinds of file it doesn't own.
+    #[serde(rename = "files.read")]
+    FilesRead,
+    /// `workspace/write` and `workspace/create` for kinds of file it doesn't own.
+    #[serde(rename = "files.write")]
+    FilesWrite,
 }
 
 impl Permission {
@@ -76,6 +107,8 @@ impl Permission {
         match self {
             Permission::ItemsRead => "items.read",
             Permission::ItemsEdit => "items.edit",
+            Permission::FilesRead => "files.read",
+            Permission::FilesWrite => "files.write",
         }
     }
 }
@@ -152,6 +185,19 @@ pub enum EditorRequest {
     Deleted { note: PathBuf },
 }
 
+/// News about a file of a kind it owns (host → extension). Paths are workspace-relative.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", content = "params")]
+pub enum FileNews {
+    /// Show it: the user chose it in the tree or the quick switcher, or followed a link to it.
+    #[serde(rename = "file/open")]
+    Open { path: String },
+    /// It changed on disk, whoever changed it (its owner too): its version now, `None` when it
+    /// is gone.
+    #[serde(rename = "file/changed")]
+    Changed { path: String, rev: Option<String> },
+}
+
 /// `command/run` (host → extension): run one of the commands it registered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -223,6 +269,8 @@ pub trait Extension {
     fn items(&mut self, _news: News, _host: &mut Host<'_>) {}
     /// `view/event`, `view/closed`: what the user did in a view it opened.
     fn view(&mut self, _news: ViewNews, _host: &mut Host<'_>) {}
+    /// `file/open`, `file/changed`: a file of a kind it owns.
+    fn file(&mut self, _news: FileNews, _host: &mut Host<'_>) {}
     /// The menu opened a workspace (`None`: it has none open). An extension in a process starts
     /// here, with `initialize`, and stops when the workspace closes.
     fn workspace(&mut self, _root: Option<&Path>, _host: &mut Host<'_>) {}
@@ -249,6 +297,10 @@ pub struct Host<'a> {
     /// Who is asking: the name in its manifest, which edits are attributed to.
     name: &'a str,
     permissions: &'a [Permission],
+    /// Which loaded extension is asking (`None`: a screen of the menu), and who owns which
+    /// kind of file, for the file messages.
+    me: Option<ExtId>,
+    owners: &'a [(String, ExtId)],
     core: Option<&'a mut Core>,
 }
 
@@ -383,6 +435,55 @@ impl Host<'_> {
         let core = self.core(Permission::ItemsRead)?;
         Ok(core.index.workspace.item_settings().types.types.clone())
     }
+
+    /// The core, for a file message about files of `extension`: the owner of that kind may
+    /// read and write them; any other file needs `files.read`, and `files.write` to change it.
+    fn files_core(
+        &mut self,
+        extension: Option<String>,
+        writes: bool,
+    ) -> Result<&mut Core, gateway::Error> {
+        let me = self.me;
+        let owns = (self.owners.iter())
+            .any(|(x, owner)| Some(x) == extension.as_ref() && Some(*owner) == me);
+        match (owns, writes) {
+            (true, _) => self
+                .core
+                .as_deref_mut()
+                .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open")),
+            (false, false) => self.core(Permission::FilesRead),
+            (false, true) => self.core(Permission::FilesWrite),
+        }
+    }
+
+    /// `workspace/read`
+    pub fn read_file(&mut self, path: &str) -> Result<Text, gateway::Error> {
+        self.files_core(files::extension_of(path), false)?
+            .read_file(path)
+    }
+
+    /// `workspace/write`: refused unless the file is still the version `expect`.
+    pub fn write_file(
+        &mut self,
+        path: &str,
+        text: &str,
+        expect: &str,
+    ) -> Result<Written, gateway::Error> {
+        self.files_core(files::extension_of(path), true)?
+            .write_file(path, text, expect)
+    }
+
+    /// `workspace/create`
+    pub fn create_file(&mut self, create: &Create) -> Result<Created, gateway::Error> {
+        self.files_core(create.extension(), true)?
+            .create_file(create)
+    }
+
+    /// `workspace/files`
+    pub fn list_files(&mut self, extension: &str) -> Result<Listed, gateway::Error> {
+        let kind = extension.trim_start_matches('.').to_ascii_lowercase();
+        Ok(self.files_core(Some(kind), false)?.files(extension))
+    }
 }
 
 pub struct Registry {
@@ -399,6 +500,8 @@ pub struct Registry {
     mistakes: Vec<String>,
     /// Whether any extension runs in a process, so the menu polls more often.
     processes: bool,
+    /// Who opens each kind of file, by extension: the first to claim it.
+    owners: Vec<(String, ExtId)>,
 }
 
 impl Registry {
@@ -440,7 +543,23 @@ impl Registry {
             .position(|(_, m)| m.roles.contains(&Role::Editor))
             .map(ExtId);
         let manifests = loaded.iter().enumerate().map(|(i, (_, m))| (ExtId(i), m));
-        let (commands, refused) = commands::menu(manifests);
+        let (commands, mut refused) = commands::menu(manifests);
+        let mut owners: Vec<(String, ExtId)> = Vec::new();
+        for (i, (_, m)) in loaded.iter().enumerate() {
+            for t in &m.file_types {
+                let x = &t.extension;
+                if UNOWNED.contains(&x.as_str()) {
+                    let why = format!("{} can't open .{x} files: cold-lava does", m.name);
+                    refused.push(why);
+                } else if let Some((_, first)) = owners.iter().find(|(o, _)| o == x) {
+                    let first = &loaded[first.0].1.name;
+                    let why = format!("{} and {first} both open .{x} files: {first} does", m.name);
+                    refused.push(why);
+                } else {
+                    owners.push((x.clone(), ExtId(i)));
+                }
+            }
+        }
         Registry {
             loaded,
             editor,
@@ -450,7 +569,23 @@ impl Registry {
             refused,
             mistakes: Vec::new(),
             processes: false,
+            owners,
         }
+    }
+
+    /// The extension that opens files that end in `.<extension>` (lowercase).
+    pub fn owner(&self, extension: &str) -> Option<ExtId> {
+        (self.owners.iter())
+            .find(|(x, _)| x == extension)
+            .map(|(_, e)| *e)
+    }
+
+    /// The extension that opens the file at `path` (a path or a file name), and its kind.
+    pub fn owner_of(&self, path: &str) -> Option<(ExtId, &FileType)> {
+        let x = files::extension_of(path)?;
+        let ext = self.owner(&x)?;
+        let t = (self.manifest(ext).file_types.iter()).find(|t| t.extension == x)?;
+        Some((ext, t))
     }
 
     pub fn commands(&self) -> &[Entry<MenuCommand>] {
@@ -526,6 +661,8 @@ impl Registry {
             next_view: &mut self.next_view,
             name: &manifest.name,
             permissions: &manifest.permissions,
+            me: Some(ext),
+            owners: &self.owners,
             core,
         };
         f(extension.as_mut(), &mut host);
@@ -541,6 +678,8 @@ impl Registry {
             next_view: &mut self.next_view,
             name,
             permissions: SCREEN_PERMISSIONS,
+            me: None,
+            owners: &self.owners,
             core: Some(core),
         }
     }
@@ -731,6 +870,7 @@ mod tests {
                 commands: vec![command("nvim.restart", &["ctrl+r"])],
                 types: Definitions::new(),
                 permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
+                file_types: Vec::new(),
             },
             json!({
                 "name": "nvim",
@@ -769,6 +909,7 @@ mod tests {
                 commands: self.commands.clone(),
                 types: Definitions::new(),
                 permissions: Vec::new(),
+                file_types: Vec::new(),
             }
         }
         fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
@@ -904,6 +1045,176 @@ mod tests {
         assert!(no_workspace.is_empty());
         assert_eq!(log(1).subscribed, Some(Err(Reason::NoWorkspace)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An extension that opens files of some kinds and does nothing itself: its host is used
+    /// directly, through `Registry::call`.
+    struct Owner {
+        name: &'static str,
+        opens: &'static [&'static str],
+        permissions: Vec<Permission>,
+    }
+
+    impl Extension for Owner {
+        fn initialize(&mut self) -> Manifest {
+            let mut manifest = (Commands {
+                name: self.name,
+                commands: Vec::new(),
+            })
+            .initialize();
+            manifest.permissions = self.permissions.clone();
+            manifest.file_types = (self.opens.iter())
+                .map(|x| FileType {
+                    extension: x.to_string(),
+                    title: format!("{x} file"),
+                    new: None,
+                })
+                .collect();
+            manifest
+        }
+        fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
+        fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+    }
+
+    fn owners(extensions: Vec<Owner>) -> Registry {
+        Registry::new(
+            (extensions.into_iter())
+                .map(|o| Box::new(o) as Box<dyn Extension>)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn each_kind_of_file_has_one_owner_and_notes_have_none() {
+        let owner = |name, opens| Owner {
+            name,
+            opens,
+            permissions: Vec::new(),
+        };
+        let r = owners(vec![
+            owner("sheets", &["csv", "tsv"]),
+            owner("other", &["csv", "md", "kanban"]),
+        ]);
+        let ext = |path: &str| r.owner_of(path).map(|(e, t)| (e, t.title.clone()));
+        assert_eq!(
+            ext("Data/Eruptions.CSV"),
+            Some((ExtId(0), "csv file".into()))
+        );
+        assert_eq!(ext("Board.kanban"), Some((ExtId(1), "kanban file".into())));
+        assert_eq!(ext("Plan.md"), None);
+        assert_eq!(ext("csv"), None, "a name without an extension");
+        assert_eq!((r.owner("tsv"), r.owner("md")), (Some(ExtId(0)), None));
+        assert_eq!(
+            r.refused(),
+            [
+                "other and sheets both open .csv files: sheets does",
+                "other can't open .md files: cold-lava does",
+            ]
+        );
+    }
+
+    #[test]
+    fn owners_read_and_write_their_own_kinds_and_others_need_files_permissions() {
+        use Permission::{FilesRead, FilesWrite};
+        let dir = std::env::temp_dir().join(format!("cold-lava-ext-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        std::fs::write(dir.join("Plan.md"), "- [ ] Pay rent\n").unwrap();
+        std::fs::write(dir.join("Eruptions.csv"), "name\nKrakatoa\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let owner = |name, opens, permissions| Owner {
+            name,
+            opens,
+            permissions,
+        };
+        let mut r = owners(vec![
+            owner("sheets", &["csv"], Vec::new()),
+            owner("blind", &[], Vec::new()),
+            owner("look", &[], vec![FilesRead]),
+            owner("write", &[], vec![FilesRead, FilesWrite]),
+        ]);
+        let mut asked = |ext: usize, f: &dyn Fn(&mut Host<'_>) -> Result<(), gateway::Error>| {
+            let mut answer = None;
+            r.call(ExtId(ext), Some(&mut core), |_, host| {
+                answer = Some(f(host))
+            });
+            answer.unwrap().map_err(|e| e.reason)
+        };
+        let read = |path: &'static str| move |h: &mut Host<'_>| h.read_file(path).map(drop);
+        let write = |path: &'static str| {
+            move |h: &mut Host<'_>| {
+                let now = h.read_file(path)?;
+                h.write_file(path, &format!("{}x\n", now.text), &now.rev)
+                    .map(drop)
+            }
+        };
+        let list = |x: &'static str| move |h: &mut Host<'_>| h.list_files(x).map(drop);
+        let create = |path: &'static str| {
+            move |h: &mut Host<'_>| {
+                let at = files::NewFile::At { path: path.into() };
+                let text = String::new();
+                h.create_file(&Create { at, text }).map(drop)
+            }
+        };
+        let forbidden = Err(Reason::Forbidden);
+        assert_eq!(asked(0, &read("Eruptions.csv")), Ok(()), "its own kind");
+        assert_eq!(asked(0, &write("Eruptions.csv")), Ok(()));
+        assert_eq!(asked(0, &list("csv")), Ok(()));
+        assert_eq!(asked(0, &create("New.csv")), Ok(()));
+        assert_eq!(
+            asked(0, &read("Plan.md")),
+            forbidden,
+            "a note isn't its kind"
+        );
+        assert_eq!(asked(0, &list("md")), forbidden);
+        assert_eq!(
+            asked(1, &read("Eruptions.csv")),
+            forbidden,
+            "another's kind"
+        );
+        assert_eq!(asked(2, &read("Eruptions.csv")), Ok(()));
+        assert_eq!(asked(2, &list("csv")), Ok(()));
+        assert_eq!(asked(2, &write("Plan.md")), forbidden);
+        assert_eq!(asked(2, &create("Other.md")), forbidden);
+        assert_eq!(asked(3, &write("Plan.md")), Ok(()));
+        assert_eq!(asked(3, &create("Other.md")), Ok(()));
+        assert_eq!(asked(3, &create("Other.md")), Err(Reason::Exists));
+        let text = std::fs::read_to_string(dir.join("Eruptions.csv")).unwrap();
+        assert_eq!(text, "name\nKrakatoa\nx\n");
+        assert!(dir.join("New.csv").exists() && dir.join("Other.md").exists());
+        let mut screen = r.screen(READER, &mut core);
+        let screens = screen.read_file("Eruptions.csv").map_err(|e| e.reason);
+        assert_eq!(
+            screens.map(drop),
+            forbidden,
+            "screens read notes as items only"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_news_and_file_types_are_json() {
+        wire(
+            FileNews::Open {
+                path: "Data/Eruptions.csv".into(),
+            },
+            json!({"method": "file/open", "params": {"path": "Data/Eruptions.csv"}}),
+        );
+        wire(
+            FileNews::Changed {
+                path: "Data/Eruptions.csv".into(),
+                rev: None,
+            },
+            json!({"method": "file/changed", "params": {"path": "Data/Eruptions.csv", "rev": null}}),
+        );
+        wire(
+            FileType {
+                extension: "csv".into(),
+                title: "CSV table".into(),
+                new: Some("csv-table.new".into()),
+            },
+            json!({"extension": "csv", "title": "CSV table", "new": "csv-table.new"}),
+        );
     }
 
     fn registry(extensions: &[(&'static str, Vec<CommandSpec>)]) -> Registry {

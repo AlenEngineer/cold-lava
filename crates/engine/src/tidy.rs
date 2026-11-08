@@ -169,11 +169,12 @@ pub fn report(ix: &Index) -> Report {
         if settings.templates.is_template(&files.rels[i]) {
             continue;
         }
-        for r in n
-            .refs
-            .iter()
-            .filter(|r| ix.resolver.resolve(&r.target).is_none())
-        {
+        let dir = crate::rename::dir_of(&n.rel);
+        // A link to a file that isn't a note (`[[Eruptions.csv]]`) leads somewhere too.
+        let nowhere = |r: &&crate::workspace::Ref| {
+            ix.resolver.resolve(&r.target).is_none() && files.resolve(dir, &r.target).is_none()
+        };
+        for r in n.refs.iter().filter(nowhere) {
             let g = groups
                 .entry(r.target.to_lowercase())
                 .or_insert_with(|| Unresolved {

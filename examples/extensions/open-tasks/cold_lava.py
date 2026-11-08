@@ -15,7 +15,7 @@ import traceback
 
 class Refused(Exception):
     """cold-lava refused a request. `reason` is one of changed, refused, read-back, io,
-    forbidden or no-workspace (docs/extensions.md, "The workspace gateway, as built")."""
+    forbidden, no-workspace or exists (docs/extensions.md, "The workspace gateway, as built")."""
 
     def __init__(self, error):
         data = error.get("data") or {}
@@ -38,8 +38,8 @@ class Extension:
 
     def on(self, method):
         """Handle a request or notification from cold-lava: `initialize`, `items/changed`,
-        `items/reset`, `view/event`, `view/closed`, `shutdown`. The handler gets the params; a request is answered with what
-        it returns."""
+        `items/reset`, `view/event`, `view/closed`, `file/open`, `file/changed`, `shutdown`.
+        The handler gets the params; a request is answered with what it returns."""
 
         def register(handler):
             self._handlers[method] = handler
@@ -121,6 +121,30 @@ class Extension:
         """Change one item, refused as `changed` if it isn't the version you read."""
         params = {"id": item["id"], "rev": item["rev"], "op": op, **fields}
         return self.request("items/edit", params)
+
+    def read(self, path):
+        """A file's text and its version, {"text", "rev"}. Paths are relative to the workspace."""
+        return self.request("workspace/read", {"path": path})
+
+    def write(self, path, text, expect):
+        """Replace a file's text, refused as `changed` unless it is still the version `expect`
+        (the `rev` you read). Returns {"rev"}, the version now on disk."""
+        return self.request("workspace/write", {"path": path, "text": text, "expect": expect})
+
+    def create(self, text="", path=None, name=None, extension=None):
+        """Make a file at `path`, or named `name` with `extension` where Obsidian puts new files
+        (`Untitled 1.csv` when `Untitled.csv` is taken). Never overwrites: a `path` that is
+        taken is refused as `exists`. Returns {"path", "rev"}."""
+        params = {"text": text}
+        if path is not None:
+            params["path"] = path
+        else:
+            params.update(name=name, extension=extension)
+        return self.request("workspace/create", params)
+
+    def files(self, extension):
+        """Every file in the workspace whose name ends in `.extension`."""
+        return self.request("workspace/files", {"extension": extension})["files"]
 
     def open_view(self, content):
         """Show a list or a table ({"kind": "list", ...}) in cold-lava, which draws it and owns
