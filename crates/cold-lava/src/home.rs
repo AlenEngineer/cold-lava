@@ -1527,6 +1527,7 @@ impl Home {
             !matches!(
                 e,
                 CoreEvent::NoteChanged(_)
+                    | CoreEvent::FileChanged(_)
                     | CoreEvent::GraphSettingsChanged
                     | CoreEvent::BookmarksChanged
                     | CoreEvent::ItemEdited { .. }
@@ -1559,6 +1560,7 @@ impl Home {
             | CoreEvent::NoteRemoved(rel) => Some(rel.as_str()) == shown_rel,
             CoreEvent::Rescanned => true,
             CoreEvent::BoardChanged(_)
+            | CoreEvent::FileChanged(_)
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
