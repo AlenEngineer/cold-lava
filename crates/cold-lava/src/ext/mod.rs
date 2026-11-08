@@ -5,12 +5,15 @@
 //! type that crosses derives serde, so extensions in other processes will share this code path.
 //! Extensions never see keystrokes and never draw: the core owns the panes they open. What an
 //! extension asks for is queued as `Effect`s, which the menu applies after the call returns.
+//! Notes as data are the exception: `items/*` and `types/list` are answered during the call by
+//! the core (`crate::gateway`), within the permissions the extension's manifest asks for.
 
 pub mod nvim;
 
 use crate::commands::{self, Entry, MenuCommand};
-use crate::core::Jump;
-use crate::types::Definitions;
+use crate::core::{Core, Jump};
+use crate::gateway::{self, Edit, Edited, Found, News, Query, Reason, Select, SubId};
+use crate::types::{Definitions, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -38,7 +41,41 @@ pub struct Manifest {
     /// Types it defines, named `<extension name>.<type>` once loaded.
     #[serde(default, skip_serializing_if = "Definitions::is_empty")]
     pub types: Definitions,
+    /// What it may ask of the workspace gateway. Without the field, read only.
+    #[serde(default = "read_only")]
+    pub permissions: Vec<Permission>,
 }
+
+/// A part of the workspace gateway an extension may use, named in its manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Permission {
+    /// `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`.
+    #[serde(rename = "items.read")]
+    ItemsRead,
+    /// `items/edit`.
+    #[serde(rename = "items.edit")]
+    ItemsEdit,
+}
+
+impl Permission {
+    fn name(self) -> &'static str {
+        match self {
+            Permission::ItemsRead => "items.read",
+            Permission::ItemsEdit => "items.edit",
+        }
+    }
+}
+
+fn read_only() -> Vec<Permission> {
+    vec![Permission::ItemsRead]
+}
+
+/// The menu's screens built the way their extensions will be: they reach notes as data only
+/// through `Host`, under these names (`Registry::screen`), which edits are attributed to.
+pub const TABLE: &str = "table";
+pub const AGENDA: &str = "agenda";
+pub const READER: &str = "reader";
+const SCREEN_PERMISSIONS: &[Permission] = &[Permission::ItemsRead, Permission::ItemsEdit];
 
 /// A command an extension registers. Its id is `<extension name>.<something>`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -140,12 +177,19 @@ pub trait Extension {
     fn editor(&mut self, request: EditorRequest, host: &mut Host<'_>);
     /// `command/run`: one of its commands, from a key, the palette or an extension.
     fn command(&mut self, _request: CommandRequest, _host: &mut Host<'_>) {}
+    /// `items/changed`, `items/reset`: news for a subscription it made.
+    fn items(&mut self, _news: News, _host: &mut Host<'_>) {}
 }
 
-/// What an extension can ask of the core during a call. Nothing happens until the call returns.
+/// What an extension can ask of the core during a call. Effects happen once the call returns;
+/// the workspace gateway's `items/*` and `types/list` are answered at once.
 pub struct Host<'a> {
     effects: Vec<Effect>,
     next_pane: &'a mut u32,
+    /// Who is asking: the name in its manifest, which edits are attributed to.
+    name: &'a str,
+    permissions: &'a [Permission],
+    core: Option<&'a mut Core>,
 }
 
 impl Host<'_> {
@@ -185,6 +229,53 @@ impl Host<'_> {
         let text = text.into();
         self.effects.push(Effect::PaneInput { pane, text });
     }
+
+    /// The core, when the caller's manifest asks for `needs`.
+    fn core(&mut self, needs: Permission) -> Result<&mut Core, gateway::Error> {
+        if !self.permissions.contains(&needs) {
+            let message = format!(
+                "{} may not do this: its manifest's permissions don't include {}",
+                self.name,
+                needs.name()
+            );
+            return Err(gateway::Error::new(Reason::Forbidden, message));
+        }
+        (self.core.as_deref_mut())
+            .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open"))
+    }
+
+    /// `items/query`
+    pub fn query_items(&mut self, query: &Query) -> Result<Found, gateway::Error> {
+        self.core(Permission::ItemsRead)?.query_items(query)
+    }
+
+    /// `items/subscribe`: the extension's `items` hears `items/changed` and `items/reset` for it
+    /// from now on.
+    pub fn subscribe_items(&mut self, select: Select) -> Result<SubId, gateway::Error> {
+        let name = self.name;
+        self.core(Permission::ItemsRead)?
+            .subscribe_items(name, select)
+    }
+
+    /// `items/unsubscribe`, for one of its own subscriptions.
+    pub fn unsubscribe_items(&mut self, sub: SubId) -> Result<(), gateway::Error> {
+        let name = self.name;
+        self.core(Permission::ItemsRead)?
+            .unsubscribe_items(name, sub);
+        Ok(())
+    }
+
+    /// `items/edit`, made at once through the core's safe edits and attributed to the caller.
+    pub fn edit_item(&mut self, edit: &Edit) -> Result<Edited, gateway::Error> {
+        let name = self.name;
+        self.core(Permission::ItemsEdit)?.edit_item(name, edit)
+    }
+
+    /// `types/list`
+    pub fn types(&mut self) -> Result<Vec<Type>, gateway::Error> {
+        let core = self.core(Permission::ItemsRead)?;
+        Ok(core.index.workspace.item_settings().types.types.clone())
+    }
 }
 
 pub struct Registry {
@@ -206,6 +297,11 @@ impl Registry {
             found.push(Box::new(nvim));
         }
         Registry::new(found)
+    }
+
+    #[cfg(test)]
+    pub fn empty() -> Registry {
+        Registry::new(Vec::new())
     }
 
     fn new(extensions: Vec<Box<dyn Extension>>) -> Registry {
@@ -256,18 +352,42 @@ impl Registry {
         self.loaded.iter().map(|(_, m)| m)
     }
 
+    /// The loaded extension with this name.
+    pub fn by_name(&self, name: &str) -> Option<ExtId> {
+        (self.loaded.iter())
+            .position(|(_, m)| m.name == name)
+            .map(ExtId)
+    }
+
     /// Call one extension and return what it asked for, for the caller to apply.
     pub fn call(
         &mut self,
         ext: ExtId,
+        core: Option<&mut Core>,
         f: impl FnOnce(&mut dyn Extension, &mut Host<'_>),
     ) -> Vec<Effect> {
+        let (extension, manifest) = &mut self.loaded[ext.0];
         let mut host = Host {
             effects: Vec::new(),
             next_pane: &mut self.next_pane,
+            name: &manifest.name,
+            permissions: &manifest.permissions,
+            core,
         };
-        f(self.loaded[ext.0].0.as_mut(), &mut host);
+        f(extension.as_mut(), &mut host);
         host.effects
+    }
+
+    /// The workspace gateway for one of the menu's screens (`TABLE`, `AGENDA`, `READER`), which
+    /// may read and edit items. Screens ask for no effects.
+    pub fn screen<'a>(&'a mut self, name: &'static str, core: &'a mut Core) -> Host<'a> {
+        Host {
+            effects: Vec::new(),
+            next_pane: &mut self.next_pane,
+            name,
+            permissions: SCREEN_PERMISSIONS,
+            core: Some(core),
+        }
     }
 }
 
@@ -417,6 +537,7 @@ mod tests {
                 hints: vec![("Ctrl-o".into(), "back".into())],
                 commands: vec![command("nvim.restart", &["ctrl+r"])],
                 types: Definitions::new(),
+                permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
             },
             json!({
                 "name": "nvim",
@@ -424,7 +545,16 @@ mod tests {
                 "roles": ["editor"],
                 "hints": [["Ctrl-o", "back"]],
                 "commands": [{"id": "nvim.restart", "title": "does nvim.restart", "keys": ["ctrl+r"]}],
+                "permissions": ["items.read", "items.edit"],
             }),
+        );
+        let without =
+            json!({"name": "wc", "title": "wc", "roles": [], "hints": [], "commands": []});
+        let read = serde_json::from_value::<Manifest>(without).unwrap();
+        assert_eq!(
+            read.permissions,
+            [Permission::ItemsRead],
+            "read only by default"
         );
     }
 
@@ -443,10 +573,142 @@ mod tests {
                 hints: Vec::new(),
                 commands: self.commands.clone(),
                 types: Definitions::new(),
+                permissions: Vec::new(),
             }
         }
         fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
         fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+    }
+
+    /// What a `Ticker` did and heard.
+    #[derive(Default)]
+    struct Log {
+        subscribed: Option<Result<SubId, Reason>>,
+        ticked: Option<Result<bool, Reason>>,
+        heard: Vec<News>,
+    }
+
+    /// An extension that, on its command, follows the workspace's tasks and ticks the first.
+    struct Ticker {
+        name: &'static str,
+        permissions: Vec<Permission>,
+        log: std::rc::Rc<std::cell::RefCell<Log>>,
+    }
+
+    impl Extension for Ticker {
+        fn initialize(&mut self) -> Manifest {
+            let mut manifest = (Commands {
+                name: self.name,
+                commands: Vec::new(),
+            })
+            .initialize();
+            manifest.permissions = self.permissions.clone();
+            manifest
+        }
+        fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
+        fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+        fn command(&mut self, _: CommandRequest, host: &mut Host<'_>) {
+            let mut log = self.log.borrow_mut();
+            let tasks = Select {
+                kind: "task".into(),
+                ..Select::default()
+            };
+            log.subscribed = Some(host.subscribe_items(tasks.clone()).map_err(|e| e.reason));
+            let query = Query {
+                select: tasks,
+                ..Query::default()
+            };
+            let Ok(found) = host.query_items(&query) else {
+                return;
+            };
+            let first = &found.items[0];
+            let tick = Edit {
+                id: first.id.clone(),
+                rev: first.rev.clone(),
+                op: gateway::Op::Toggle,
+            };
+            log.ticked = Some(
+                host.edit_item(&tick)
+                    .map(|e| e.changed)
+                    .map_err(|e| e.reason),
+            );
+        }
+        fn items(&mut self, news: News, _: &mut Host<'_>) {
+            self.log.borrow_mut().heard.push(news);
+        }
+    }
+
+    #[test]
+    fn the_gateway_answers_within_the_manifests_permissions() {
+        use Permission::{ItemsEdit, ItemsRead};
+        let dir = std::env::temp_dir().join(format!("cold-lava-ext-items-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        std::fs::write(
+            dir.join("Plan.md"),
+            "- [ ] Pay rent\n- [ ] Call the plumber\n",
+        )
+        .unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let tickers = [
+            ("blind", vec![]),
+            ("look", vec![ItemsRead]),
+            ("tick", vec![ItemsRead, ItemsEdit]),
+        ];
+        let logs: Vec<_> = tickers.iter().map(|_| Default::default()).collect();
+        let loaded = (tickers.iter().zip(&logs)).map(|((name, permissions), log)| {
+            let (name, permissions, log) = (*name, permissions.clone(), std::rc::Rc::clone(log));
+            Box::new(Ticker {
+                name,
+                permissions,
+                log,
+            }) as Box<dyn Extension>
+        });
+        let mut r = Registry::new(loaded.collect());
+        let run = |e: &mut dyn Extension, host: &mut Host<'_>| {
+            e.command(
+                CommandRequest::Run {
+                    id: String::new(),
+                    args: Value::Null,
+                },
+                host,
+            )
+        };
+        for i in 0..3 {
+            r.call(ExtId(i), Some(&mut core), run);
+        }
+        let log = |i: usize| logs[i].borrow();
+        assert_eq!(log(0).subscribed, Some(Err(Reason::Forbidden)));
+        assert_eq!(log(0).ticked, None, "it couldn't query either");
+        assert!(matches!(log(1).subscribed, Some(Ok(_))));
+        assert_eq!(log(1).ticked, Some(Err(Reason::Forbidden)));
+        assert_eq!(log(2).ticked, Some(Ok(true)));
+        let text = std::fs::read_to_string(dir.join("Plan.md")).unwrap();
+        assert!(text.starts_with("- [x] Pay rent ✅ "), "{text}");
+        let edited = core.poll().into_iter().find_map(|e| match e {
+            crate::core::Event::ItemEdited { by, what, .. } => Some((by, what)),
+            _ => None,
+        });
+        assert_eq!(edited, Some(("tick".into(), "ticked".into())), "attributed");
+
+        // The menu hands each subscription's news to the extension that made it.
+        for (owner, news) in core.take_item_news() {
+            let ext = r.by_name(&owner).unwrap();
+            r.call(ext, Some(&mut core), |e, host| e.items(news, host));
+        }
+        for i in [1, 2] {
+            let heard = &log(i).heard;
+            assert!(
+                matches!(&heard[..], [News::Changed { updated, .. }] if updated.len() == 1),
+                "{heard:?}"
+            );
+        }
+        assert!(log(0).heard.is_empty());
+
+        let no_workspace = r.call(ExtId(1), None, run);
+        assert!(no_workspace.is_empty());
+        assert_eq!(log(1).subscribed, Some(Err(Reason::NoWorkspace)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn registry(extensions: &[(&'static str, Vec<CommandSpec>)]) -> Registry {

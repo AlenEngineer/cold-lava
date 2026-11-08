@@ -121,6 +121,8 @@ impl Extension for Nvim {
                 keys: Vec::new(),
             }],
             types: Default::default(),
+            // It edits notes as text, in its pane: nothing from the workspace gateway.
+            permissions: Vec::new(),
         }
     }
 
@@ -353,7 +355,7 @@ mod tests {
     }
 
     fn ask(r: &mut Registry, ed: ExtId, request: EditorRequest) -> Vec<Effect> {
-        r.call(ed, |e, host| e.editor(request, host))
+        r.call(ed, None, |e, host| e.editor(request, host))
     }
 
     fn open(r: &mut Registry, ed: ExtId, note: &str, jump: Option<Jump>) -> Vec<Effect> {
@@ -362,7 +364,7 @@ mod tests {
     }
 
     fn news(r: &mut Registry, ed: ExtId, news: PaneNews) -> Vec<Effect> {
-        r.call(ed, |e, host| e.pane(news, host))
+        r.call(ed, None, |e, host| e.pane(news, host))
     }
 
     /// Opens a note so Neovim has a pane, and returns the pane.
@@ -503,7 +505,7 @@ mod tests {
             id: "nvim.restart".into(),
             args: Value::Null,
         };
-        r.call(ed, |e, host| e.command(request, host))
+        r.call(ed, None, |e, host| e.command(request, host))
     }
 
     #[test]

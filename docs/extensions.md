@@ -84,7 +84,8 @@ flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals 
 ## Notes as data
 
 *(design; items for tasks, lists, headings, blocks and typed notes and blocks exist:
-`crates/engine/src/items.rs`)*
+`crates/engine/src/items.rs`; `items/query`, `items/subscribe`, `items/edit` and `types/list`
+exist in-process: `crates/engine/src/gateway.rs`, "The workspace gateway, as built" below)*
 
 You write notes, not data. But Markdown already has types, and Obsidian's community has settled
 how to read them: a checkbox is a task, with dates written the Tasks plugin's way
@@ -127,6 +128,70 @@ then a query and a view, not a parser of its own.
 - **The agenda becomes an extension** on top: a list view grouped by day, kept live by a
   subscription, ticking through `items/edit`. `cold-lava agenda --json` and `task toggle` keep
   their output, as thin clients of the same query and edit.
+
+### The workspace gateway, as built
+
+- **Where it lives.** The messages and their meaning are the engine's
+  (`crates/engine/src/gateway.rs`), since the workspace gateway knows nothing of screens. The
+  core answers them: `Core::query_items`, `Core::subscribe_items`, `Core::unsubscribe_items`,
+  `Core::take_item_news` and `Core::edit_item`. An extension reaches them through `Host`
+  (`query_items`, `subscribe_items`, `unsubscribe_items`, `edit_item`, `types`), which checks
+  its manifest's permissions first. `gateway::Request` and `gateway::News` are the messages as a
+  transport will carry them, pinned by tests.
+- **`items/query`** takes `kind` (a native kind or a type; a subtype answers to its base),
+  `filter` and `page`. The filter's conditions all hold: `folder` (the note is in it or under
+  it), `tag` (the note has it, `#` or not; a nested tag counts), `status` (the item's
+  `status_type` is one of these), `date` (`field` is `due`, `scheduled`, `start`, `done` or
+  `agenda`, with `from` and `to`, both included, either open), `text` (every folded word is in
+  one of the item's text values) and `property` (the item has a value for that field). An
+  unknown filter key is refused when the message is read. Items come by note, then line, the
+  order `cold-lava items` prints. A page is `after` (the last id of the previous page) and
+  `limit`; the answer is `{items, next}`, with `next` the `after` of the next page or `null`.
+  When the `after` item no longer matches, the query is refused as `changed`. An unknown kind
+  is `refused`.
+- **`items/subscribe`** takes `kind` and `filter` and answers `{subscription}`. The core keeps,
+  per subscription, the id and `rev` of every matching item by note. Each time it reads notes
+  again (one `poll`, one `note_changed_now`, one edit) it sends each subscription it touched one
+  `items/changed {subscription, added, updated, removed}`: added and updated items whole,
+  removed ones by id. An item that stops matching the filter (a task ticked out of `status:
+  ["todo"]`) is removed. After a full rescan every subscription gets `items/reset
+  {subscription}`, and the subscriber queries again. `items/unsubscribe {subscription}` stops
+  one, only the caller's own. The menu hands news to the extension whose name made the
+  subscription (`Extension::items`), or to its own screen; news for a subscription nobody holds
+  any more stops it.
+- **`items/edit`** takes `id`, `rev` and an `op` with its fields:
+  `{"op": "set-field", "field", "value"}` through `edit::set_field`, or `{"op": "toggle"}`
+  through `tasks::toggle` (only on an item that answers to `task`). An unknown op is refused
+  when the message is read, naming the ops there are. The core finds the item by id (ids hash
+  the note, so they are unique in the workspace), makes the edit through that op's safe path,
+  reads the note again at once, and answers `{item, changed, next, warning}`: the item as it
+  reads now (a new id when the edit changed its key), whether anything was written, a
+  recurring task's next occurrence, and a warning that didn't stop the edit.
+- **Refusals** are `{reason, message}`, the JSON-RPC error's `data` once a transport carries
+  them: `changed` (the item is gone or not the version `rev` names, or the file changed while
+  writing), `refused` (an unknown kind or field, a read-only source, a value that doesn't fit,
+  a toggle on no task), `read-back` (the note wouldn't read back as asked; nothing was
+  written), `io`, `forbidden` (the manifest doesn't ask for the permission) and `no-workspace`.
+- **Edits are made during the call, not queued.** An extension's reads and edits both need an
+  answer (the new `rev`, or why it was refused), and a later edit in the same call must see the
+  first one, so the core edits and reads the note again before `edit_item` returns. The
+  frontend's state is never touched during the call: the edit's events wait in the core and
+  the next `poll` returns them, which the menu reads before it draws. The rule that effects
+  are queued still holds for everything that changes the menu.
+- **Attribution.** Every edit through the gateway makes the core emit `ItemEdited {note, item,
+  by, what}` after the note's `NoteChanged`, with `by` the extension's name and `what` "set
+  due", "removed due" or "ticked". The status line says `<extension>: set due on <note>`. A
+  screen of the menu says more right after, so its own message wins.
+- **The menu's screens are clients too.** The table, the agenda's ticks and the reader's `x`
+  go through `Registry::screen`, a `Host` named `table`, `agenda` or `reader` that may read and
+  edit, so they use exactly the path an extension does. The agenda still reads its tasks from
+  the core's cache: `tasks::Task::of` needs the workspace's Tasks settings to give a status
+  symbol its type, and a task's line for a subtype that reads no `status`, neither of which an
+  item carries. That waits for the agenda's move to an extension.
+- **Not yet:** the transport (the next step, which dispatches `gateway::Request` and carries
+  `News`), `workspace/*` and `files/*`, and the ops `set-status`, `set-date`, `set-property`,
+  `set-cell`, `replace` and `insert-after`. `set-field` already sets a status, a date, a
+  property or a cell of a typed item; the others wait until an extension needs one.
 
 ## Types
 
@@ -463,7 +528,7 @@ style.minutes = { badge = true, icon = "⏱" }
   the note, `edit::plan` makes the edit in memory, and `write::replace` writes it, refused if the
   file changed since it was read. The CLI is `cold-lava item set FILE ID FIELD VALUE` (or
   `--remove`), with `--rev`, `--dry-run` and `--json`, beside `task toggle FILE:LINE`: both
-  name one item in one note, and `items` stays a read. `items/edit set-field` will call the same
+  name one item in one note, and `items` stays a read. `items/edit set-field` calls the same
   function. `Set` carries the new text, the item as it reads back, and `changed` (false when the
   note already said this; nothing is written then).
 - **Finding the item.** By id in the note as it is now; gone, or a `rev` that differs, is
@@ -589,20 +654,23 @@ style.minutes = { badge = true, icon = "⏱" }
   the whole row; `hide` is ignored, as a table always shows the value.
 - **The sender** is `type_table.rs`, what the built-in table extension will send: columns are
   the type's schema in order, then `note` (read-only); rows are every item that answers to the
-  type (subtypes too) from the core's cached items (`Workspace::items`), with the note, line and
-  `rev` of each kept beside the table. A column is read-only when no shape of the type reads the
-  field through a writable source; the reason says where it is read from. The menu runs it in
-  process for now (`i`, `table.open`, a picker of types with their item counts), not through
-  the `Extension` trait: `items/query` and `view/open` don't exist yet, and moving it is the
-  step that adds them.
-- **Editing** is `edit::set_field` with the row's `rev`, the value as typed (so `1h30m`, an
-  enum's written form or `""` to remove all work). The status line says what happened: set,
-  removed, already that value, or the refusal (`Refused` and `ReadBack` with their reason,
-  `Changed` when the item changed since the table was read). After any edit the menu has the
+  type (subtypes too), with the note, line and `rev` of each kept beside the table. A column is
+  read-only when no shape of the type reads the field through a writable source; the reason
+  says where it is read from. It reads through the workspace gateway, as the screen `table`
+  (`Registry::screen`): the type's definition from `types/list`, its items from `items/query`
+  a page of 500 at a time, kept by an `items/subscribe` (`type_table::Feed`). The picker's
+  counts are queries too, made when it opens. The menu runs it in process (`i`, `table.open`),
+  not through the `Extension` trait, since `view/open` doesn't exist yet. `cold-lava table`
+  calls `gateway::query` directly.
+- **Editing** is `items/edit set-field` with the row's `rev`, the value as typed (so `1h30m`,
+  an enum's written form or `""` to remove all work). The status line says what happened: set,
+  removed, already that value, or the refusal (`refused` and `read-back` with their reason,
+  `changed` when the item changed since the table was read). After any edit the menu has the
   core read that note at once (`Core::note_changed_now`), so the table shows the new value, or
   what refused it, before the next frame; an edit that changed the row's id (its key field)
   keeps the row selected under the new one.
-- **Live.** The table is built again from the core's index on every change the core reports,
+- **Live.** The table applies its subscription's `items/changed` to its items (an updated item
+  keeps its place, added ones are put in by note and line) and `items/reset` queries again,
   keeping sort, filter and selection. Back (`Ctrl-o`) from a note opened with Enter returns to
   the table as it was (`Place::Table`: its type, row, column, sort and filter).
 - **CLI.** `cold-lava table WORKSPACE TYPE` prints the rows as the view lays them out, every value
@@ -644,8 +712,9 @@ style.minutes = { badge = true, icon = "⏱" }
   look of its status (done and cancelled fade and strike through), and on the right the date
   (in Overdue, red while open, and in Later) and the note's name. Today is `tasks::today()`,
   which `COLD_LAVA_TODAY` pins for scripted runs.
-- **Ticking** is `tasks::toggle` with the row's `rev`, the same path as `x` in the reader and
-  `task toggle --id`: done dates, recurrence, custom statuses' next symbols, the cancelled
+- **Ticking** is `items/edit toggle` with the row's id and `rev`, as the screen `agenda`; `x`
+  in the reader is the same as the screen `reader`. Both reach `tasks::toggle`, as `task
+  toggle --id` does: done dates, recurrence, custom statuses' next symbols, the cancelled
   date. A task changed since the agenda was read is refused with the reason on the status line.
   After a tick the menu has the core read the note at once, the agenda is built again, and the
   ticked row stays selected under its new line (a recurring task's next occurrence goes above
@@ -656,8 +725,9 @@ style.minutes = { badge = true, icon = "⏱" }
   whether done tasks show). The menu runs it in process (`A`, `agenda.open`), not through the
   `Extension` trait, for the same reason as the table.
 - **Not yet:** nesting subtasks under their parent (`depth` is there; the agenda sends every
-  task at depth 0), a range other than the next seven days, and the agenda as an extension
-  through `items/query`, `items/subscribe` and `view/open`.
+  task at depth 0), a range other than the next seven days, and reading the tasks through
+  `items/query` and `items/subscribe` (it reads the core's cache, for the reason "The workspace
+  gateway, as built" gives), then `view/open`.
 
 ## File types
 
@@ -771,7 +841,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
     when the program never started).
 - The extension calls the host: `workspace/notes`, `workspace/read`, `workspace/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
-  `items/query`, `items/subscribe` and `items/edit` (see "Notes as data"), `ui/notify`, `ui/openNote`, `events/subscribe`, and:
+  `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit` and `types/list` (see
+  "The workspace gateway, as built"), `ui/notify`, `ui/openNote`, `events/subscribe`, and:
   - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
     core command or another extension's. Core commands ignore `args`, except
     `note.follow-link` (`from`, `link`), which only extensions can run, and `search.open`
@@ -782,7 +853,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
     watcher notices.
   - `pane/open` (a `pane` id the extension picks, and the program with its arguments),
     `pane/input` (text to type into the pane) and `pane/close`.
-- The host notifies subscribers: `event/noteChanged` and friends.
+- The host notifies subscribers: `items/changed` and `items/reset` for item subscriptions,
+  `event/noteChanged` and friends.
 
 The method set is versioned (`apiVersion` in `initialize`), so old extensions keep working.
 Paths are absolute and inside the workspace. A message's tag is its method name, for example
@@ -790,9 +862,11 @@ Paths are absolute and inside the workspace. A message's tag is its method name,
 
 Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
 (with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
-`editor/deleted`, `pane/message`
-and `pane/exited` from the host, and `ui/notify`, `command/run`, `editor/opened`, `workspace/saved`,
-`pane/open` and `pane/input` from the extension.
+`editor/deleted`, `pane/message`, `pane/exited`, `items/changed` and `items/reset` from the
+host, and `ui/notify`, `command/run`, `editor/opened`, `workspace/saved`, `pane/open`,
+`pane/input`, `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit` and
+`types/list` from the extension. The `items/*` and `types/list` requests are answered during
+the call; the rest are queued.
 
 - **Saves are not acknowledged yet.** `editor/save` gets no answer, so before it reads the files
   (to rename a note, to show the reader, to quit) the core waits 300 ms. A later version answers
@@ -820,7 +894,7 @@ version = "0.1.0"
 api = "1"
 transport = "stdio"
 command = ["python3", "main.py"]
-permissions = ["read"]          # "read", "write", "network"…
+permissions = ["items.read"]    # the default; add "items.edit" to change items
 
 [types.doc]                      # loaded as word-count.doc
 on = "note"
@@ -831,6 +905,26 @@ id = "word-count.show"           # must start with the extension's name
 title = "Word count of this note"
 keys = ["W"]                     # default keys; config.toml can change them
 ```
+
+### Permissions
+
+`permissions` names the parts of the workspace gateway an extension may use. Without the
+field, an extension may read. *(Exists: `ext::Permission`, checked by `Host`.)*
+
+| Permission | Allows |
+| --- | --- |
+| `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` |
+| `items.edit` | `items/edit` |
+
+A request without its permission is refused as `forbidden`, with the permission it needs in
+the message. `files.read`, `files.write` and `files.create` are reserved for `workspace/read`,
+`workspace/write` and `workspace/create`; until those exist, a manifest that names one doesn't
+load.
+An extension changes notes only through the gateway: `items/edit` now, `workspace/write`
+later, never by writing files itself. The built-in Neovim declares `permissions = []`: it edits
+notes as text in its pane, which the core watches like any other editor. The menu's own
+screens (the table, the agenda, the reader's `x`) read and edit as `table`, `agenda` and
+`reader`.
 
 ## Views
 
@@ -913,7 +1007,11 @@ after its call returns, so it never holds the menu's state.
       `task toggle --id` and `edit::set_field` refuse a stale `rev`; `x` ticks the task the
       selected link is in, else the highlighted line's, else the first on screen below it, with
       the `rev` the core read, through `tasks::toggle`)*
-   3. The protocol for items, and reads through `Host`.
+   3. The protocol for items, and reads through `Host`. *(done, in-process: `gateway.rs`,
+      `items/query`, `items/subscribe` with `items/changed` and `items/reset`, `items/edit`
+      `set-field` and `toggle`, `types/list`; permissions in the manifest; every edit
+      attributed; the table reads and edits through it, the agenda and the reader tick through
+      it)*
    4. The declarative list view, and the agenda as an extension. *(the view and the agenda as a
       screen of the menu are done: `list.rs`, `agenda.rs`, `A`; it becomes an extension with
       `items/query` and `view/open`)*

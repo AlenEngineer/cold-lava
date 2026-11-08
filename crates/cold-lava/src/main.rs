@@ -23,8 +23,8 @@ mod type_table;
 mod whichkey;
 
 use cold_lava_engine::{
-    bookmarks, core, daily, edit, frontmatter, index, items, markdown, merge, paths, rename,
-    search, tasks, templates, tidy, trash, types, workspace, write,
+    bookmarks, core, daily, edit, frontmatter, gateway, index, items, markdown, merge, paths,
+    rename, search, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -328,13 +328,17 @@ fn run() -> Result<()> {
                 anyhow::bail!("usage: cold-lava table WORKSPACE TYPE [--sort FIELD] [--json]");
             };
             let workspace = workspace::scan(Path::new(root))?;
-            let Some(built) = type_table::build(&workspace, ty) else {
-                let names: Vec<String> = type_table::types(&workspace)
-                    .into_iter()
-                    .map(|(n, _)| n)
-                    .collect();
+            let types = &workspace.item_settings().types.types;
+            let Some(def) = types.iter().find(|t| t.name == ty) else {
+                let names: Vec<&str> = types.iter().map(|t| t.name.as_str()).collect();
                 anyhow::bail!("no type called {ty}; there are: {}", names.join(", "));
             };
+            let query = gateway::Query {
+                select: type_table::select(ty),
+                page: gateway::Page::default(),
+            };
+            let found = gateway::query(&workspace, &query)?;
+            let built = type_table::build(def, &found.items);
             let mut view = table::TableView::new(built.table);
             if let Some(field) = args.values.get("sort") {
                 let (name, desc) = match field.strip_prefix('-') {

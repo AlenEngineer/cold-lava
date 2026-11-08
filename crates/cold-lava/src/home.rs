@@ -11,10 +11,11 @@ use crate::commands::{
 use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::ext::{
-    CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId, PaneNews,
-    PaneSpec, Registry,
+    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId,
+    PaneNews, PaneSpec, READER, Registry, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
+use crate::gateway::{Edit, Op, Reason};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
 use crate::list::{self, ListView};
@@ -438,6 +439,8 @@ enum Mode {
     TablePick {
         query: String,
         sel: usize,
+        /// Every type and how many items it has, through the gateway when the picker opened.
+        types: Vec<(String, usize)>,
     },
     /// A type's items as a table.
     Table(Box<Tabled>),
@@ -452,9 +455,10 @@ struct Agendaed {
     show_done: bool,
 }
 
-/// The table of a type's items, and where each row's item is.
+/// The table of a type's items, the gateway's subscription it is kept by, and where each row's
+/// item is.
 struct Tabled {
-    ty: String,
+    feed: type_table::Feed,
     view: TableView,
     at: HashMap<String, At>,
 }
@@ -818,7 +822,7 @@ impl Home {
 
     /// Call an extension, then do what it asked for.
     fn call(&mut self, ext: ExtId, f: impl FnOnce(&mut dyn Extension, &mut Host<'_>)) {
-        for effect in self.registry.call(ext, f) {
+        for effect in self.registry.call(ext, self.core.as_mut(), f) {
             if self.effects_left == 0 {
                 let name = &self.registry.manifest(ext).name;
                 let msg = format!("{name} asked for too much at once; the rest was skipped");
@@ -1136,7 +1140,7 @@ impl Home {
         }
         if let Mode::Table(t) = &self.mode {
             return Some(Place::Table {
-                ty: t.ty.clone(),
+                ty: t.feed.name().to_string(),
                 spot: t.view.spot(),
             });
         }
@@ -1373,6 +1377,51 @@ impl Home {
         self.sync_with_core(&events);
     }
 
+    /// After an edit through the gateway: read `note` again (the edit may have found the core
+    /// behind the disk), then everything the core has to say, so every view shows the edit, or
+    /// what refused it, before the next frame.
+    fn catch_up(&mut self, note: &Path) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        let mut events = core.note_changed_now(note);
+        events.extend(core.poll());
+        if !events.is_empty() {
+            self.sync_with_core(&events);
+        }
+    }
+
+    /// Hand the item subscriptions' news to whoever holds them: the table's feed, or an
+    /// extension. A subscription nobody holds any more (a table since closed) is stopped.
+    fn deliver_item_news(&mut self) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        for (owner, news) in core.take_item_news() {
+            let Some(core) = self.core.as_mut() else {
+                return;
+            };
+            let sub = news.subscription();
+            if let Mode::Table(t) = &mut self.mode
+                && t.feed.subscription() == sub
+            {
+                match t.feed.heard(&mut self.registry.screen(TABLE, core), news) {
+                    Ok(()) => {
+                        let built = t.feed.table();
+                        t.view.update(built.table);
+                        t.at = built.at;
+                    }
+                    Err(e) => self.flash(format!("the table couldn't be read again: {e}")),
+                }
+                continue;
+            }
+            match self.registry.by_name(&owner) {
+                Some(ext) => self.call(ext, |e, host| e.items(news, host)),
+                None => drop(core.unsubscribe_items(&owner, sub)),
+            }
+        }
+    }
+
     /// Bring the tree, link counts, backlinks and reader up to date with the core's index.
     fn sync_with_core(&mut self, events: &[CoreEvent]) {
         let Some(root) = self.root.clone() else {
@@ -1384,6 +1433,7 @@ impl Home {
                 CoreEvent::NoteChanged(_)
                     | CoreEvent::GraphSettingsChanged
                     | CoreEvent::BookmarksChanged
+                    | CoreEvent::ItemEdited { .. }
             )
         });
         if tree_changed {
@@ -1400,7 +1450,7 @@ impl Home {
         if let (Mode::Tidy(view), Some(core)) = (&mut self.mode, &self.core) {
             view.update(crate::tidy::report(&core.index));
         }
-        self.refresh_table();
+        self.deliver_item_news();
         self.refresh_agenda();
         let shown_rel = self
             .shown
@@ -1415,12 +1465,19 @@ impl Home {
             CoreEvent::Rescanned => true,
             CoreEvent::BoardChanged(_)
             | CoreEvent::GraphSettingsChanged
-            | CoreEvent::BookmarksChanged => false,
+            | CoreEvent::BookmarksChanged
+            | CoreEvent::ItemEdited { .. } => false,
         });
         if reread {
             self.reload_reader();
         } else if let Some(r) = self.reader.as_mut() {
             r.invalidate();
+        }
+        for e in events {
+            if let CoreEvent::ItemEdited { note, by, what, .. } = e {
+                let name = note.rsplit('/').next().unwrap_or(note);
+                self.flash(format!("{by}: {what} on {name}"));
+            }
         }
     }
 
@@ -1855,52 +1912,71 @@ impl Home {
             let settings = &core.index.workspace.item_settings().tasks;
             (core.index.workspace.items(note).iter())
                 .filter(|i| i.line == line)
-                .find_map(|i| Some((i.rev.clone(), crate::tasks::Task::of(i, raw, settings)?)))
+                .find_map(|i| {
+                    let task = crate::tasks::Task::of(i, raw, settings)?;
+                    Some((i.id.clone(), i.rev.clone(), task))
+                })
         });
-        let Some((rev, task)) = task else {
+        let Some((id, rev, task)) = task else {
             return self.flash(format!("line {line} is no task"));
         };
         let rel = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy();
-        self.tick(&rel.replace('\\', "/"), line, &rev, &task.text);
+        self.tick(READER, &id, &rev, &rel.replace('\\', "/"), &task.text);
     }
 
-    /// Tick the task on `line` of `note` (workspace-relative, with `.md`) the way the Tasks plugin
-    /// does, refused if it is no longer the version `rev`. The core reads the note at once, so
-    /// every view shows the change, or what refused it, on the next frame. Returns the line the
-    /// ticked task is on now. `text` is its words, for the status line.
-    fn tick(&mut self, note: &str, line: usize, rev: &str, text: &str) -> Option<usize> {
+    /// Tick the task `id` in `note` (workspace-relative, with `.md`) through the workspace
+    /// gateway, on behalf of the screen `by`: the way the Tasks plugin does, refused if it is no
+    /// longer the version `rev`. Every view shows the change, or what refused it, on the next
+    /// frame. Returns the line the ticked task is on now. `text` is its words, for the status
+    /// line.
+    fn tick(
+        &mut self,
+        by: &'static str,
+        id: &str,
+        rev: &str,
+        note: &str,
+        text: &str,
+    ) -> Option<usize> {
         let path = self.root.as_ref()?.join(note);
         let name = note.trim_end_matches(".md");
-        let (msg, at) = match crate::tasks::toggle(&path, line, Some(rev), crate::tasks::today()) {
-            Ok(t) => {
-                let what = match t.status {
-                    "done" => "done",
-                    "cancelled" => "cancelled",
-                    "in_progress" => "in progress",
-                    "todo" => "open again",
+        let core = self.core.as_mut()?;
+        let edit = Edit {
+            id: id.to_string(),
+            rev: rev.to_string(),
+            op: Op::Toggle,
+        };
+        let (msg, at) = match self.registry.screen(by, core).edit_item(&edit) {
+            Ok(e) => {
+                let settings = &core.index.workspace.item_settings().tasks;
+                let status = match &e.item.data {
+                    items::Data::Typed(t) => (t.fields.get("status"))
+                        .and_then(|s| s.as_str()?.chars().next())
+                        .map(|c| settings.status_type(c).agenda_name()),
+                    _ => None,
+                };
+                let what = match status {
+                    Some("done") => "done",
+                    Some("cancelled") => "cancelled",
+                    Some("in_progress") => "in progress",
+                    Some("todo") => "open again",
                     _ => "ticked",
                 };
                 let mut msg = format!("{what}: {}", agenda::links_as_text(text));
-                if t.next.is_some() {
+                if e.next.is_some() {
                     msg.push_str(" · next occurrence added");
                 }
-                if let Some(w) = &t.warning {
+                if let Some(w) = &e.warning {
                     msg = format!("{msg} · {w}");
                 }
-                (msg, Some(t.line))
+                (msg, Some(e.item.line))
             }
-            Err(e) if e.downcast_ref::<crate::tasks::Changed>().is_some() => (
+            Err(e) if e.reason == Reason::Changed => (
                 format!("not ticked: {name} changed since it was read · read again"),
                 None,
             ),
-            Err(e) => (format!("not ticked: {e:#}"), None),
+            Err(e) => (format!("not ticked: {e}"), None),
         };
-        if let Some(core) = self.core.as_mut() {
-            let events = core.note_changed_now(&path);
-            if !events.is_empty() {
-                self.sync_with_core(&events);
-            }
-        }
+        self.catch_up(&path);
         self.flash(msg);
         at
     }
@@ -3837,28 +3913,32 @@ impl Home {
     // ---------- table ----------
 
     fn open_table_pick(&mut self) {
-        if self.core.is_none() {
+        let Some(core) = self.core.as_mut() else {
             return;
-        }
+        };
+        let types = match type_table::types(&mut self.registry.screen(TABLE, core)) {
+            Ok(types) => types,
+            Err(e) => return self.flash(format!("no types: {e}")),
+        };
         if self.focus == Focus::Pane {
             self.focus = Focus::Notes;
         }
         self.mode = Mode::TablePick {
             query: String::new(),
             sel: 0,
+            types,
         };
     }
 
     /// The types to pick from, with how many items each has: those matching the query.
     fn table_types(&self, query: &str) -> Vec<(String, usize)> {
-        let Some(core) = self.core.as_ref() else {
+        let Mode::TablePick { types, .. } = &self.mode else {
             return Vec::new();
         };
-        let all = type_table::types(&core.index.workspace);
         if query.trim().is_empty() {
-            return all;
+            return types.clone();
         }
-        let mut hits: Vec<_> = (all.into_iter())
+        let mut hits: Vec<_> = (types.iter().cloned())
             .filter_map(|t| Some((crate::search::fuzzy(query, &t.0)?.score, t)))
             .collect();
         hits.sort_by_key(|h| std::cmp::Reverse(h.0));
@@ -3866,7 +3946,7 @@ impl Home {
     }
 
     fn table_pick_key(&mut self, k: KeyEvent) {
-        let Mode::TablePick { query, sel } = &self.mode else {
+        let Mode::TablePick { query, sel, .. } = &self.mode else {
             return;
         };
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -3907,11 +3987,13 @@ impl Home {
             }
             _ => {}
         }
-        self.mode = Mode::TablePick { query: q, sel: s };
+        if let Mode::TablePick { query, sel, .. } = &mut self.mode {
+            (*query, *sel) = (q, s);
+        }
     }
 
     fn draw_table_pick(&self, f: &mut Frame, area: Rect) {
-        let Mode::TablePick { query, sel } = &self.mode else {
+        let Mode::TablePick { query, sel, .. } = &self.mode else {
             return;
         };
         let inner = picker_frame(f, area, " Table of… ", " ↑↓ choose · ⏎ open · Esc close ");
@@ -3950,12 +4032,15 @@ impl Home {
 
     /// Show the table of type `ty`, as it was at `spot`.
     fn open_table(&mut self, ty: &str, spot: Option<table::Spot>) {
-        let Some(core) = self.core.as_ref() else {
+        let Some(core) = self.core.as_mut() else {
             return;
         };
-        let Some(built) = type_table::build(&core.index.workspace, ty) else {
-            return self.flash(format!("no type called {ty}"));
+        let feed = match type_table::Feed::open(&mut self.registry.screen(TABLE, core), ty) {
+            Ok(Some(feed)) => feed,
+            Ok(None) => return self.flash(format!("no type called {ty}")),
+            Err(e) => return self.flash(format!("no table of {ty}: {e}")),
         };
+        let built = feed.table();
         let mut view = TableView::new(built.table);
         if let Some(spot) = spot {
             view.restore(spot);
@@ -3964,21 +4049,10 @@ impl Home {
             self.focus = Focus::Notes;
         }
         self.mode = Mode::Table(Box::new(Tabled {
-            ty: ty.to_string(),
+            feed,
             view,
             at: built.at,
         }));
-    }
-
-    /// The table again from the core's items, after the workspace changed.
-    fn refresh_table(&mut self) {
-        let (Mode::Table(t), Some(core)) = (&mut self.mode, &self.core) else {
-            return;
-        };
-        if let Some(built) = type_table::build(&core.index.workspace, &t.ty) {
-            t.view.update(built.table);
-            t.at = built.at;
-        }
     }
 
     fn table_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -3989,7 +4063,7 @@ impl Home {
             && let Some(MenuCommand::Core(MenuAction::History(a))) = self.keys.get(k)
         {
             let here = Place::Table {
-                ty: t.ty.clone(),
+                ty: t.feed.name().to_string(),
                 spot: t.view.spot(),
             };
             self.mode = Mode::Table(t);
@@ -4009,7 +4083,11 @@ impl Home {
         };
         match action {
             table::Action::Stay => self.mode = Mode::Table(t),
-            table::Action::Close => {}
+            table::Action::Close => {
+                if let Some(core) = self.core.as_mut() {
+                    t.feed.close(&mut self.registry.screen(TABLE, core));
+                }
+            }
             table::Action::Say(s) => {
                 self.mode = Mode::Table(t);
                 self.flash(s);
@@ -4020,20 +4098,21 @@ impl Home {
                     return Ok(());
                 };
                 let here = Place::Table {
-                    ty: t.ty.clone(),
+                    ty: t.feed.name().to_string(),
                     spot: t.view.spot(),
                 };
                 self.open_found(Some(here), &root.join(&at.note), Some(Jump::Line(at.line)));
             }
             table::Action::Send(table::Event::Edit { row, column, value }) => {
-                let (msg, note) = edit_cell(&root, &mut t, &row, &column, value);
+                let Some(core) = self.core.as_mut() else {
+                    self.mode = Mode::Table(t);
+                    return Ok(());
+                };
+                let host = &mut self.registry.screen(TABLE, core);
+                let (msg, note) = edit_cell(host, &mut t, &row, &column, value);
                 self.mode = Mode::Table(t);
-                // Read the note now, so the table shows the edit (or what refused it) at once.
-                if let (Some(note), Some(core)) = (note, self.core.as_mut()) {
-                    let events = core.note_changed_now(&root.join(note));
-                    if !events.is_empty() {
-                        self.sync_with_core(&events);
-                    }
+                if let Some(note) = note {
+                    self.catch_up(&root.join(note));
                 }
                 self.flash(msg);
             }
@@ -4119,7 +4198,7 @@ impl Home {
                 let Some(at) = at else { return Ok(()) };
                 // The tick reads the note again, which rebuilds the agenda; the ticked row stays
                 // selected (a recurring one moves down a line, under its next occurrence).
-                if let Some(line) = self.tick(&at.note, at.line, &at.rev, &text)
+                if let Some(line) = self.tick(AGENDA, &row, &at.rev, &at.note, &text)
                     && let Mode::Agenda(a) = &mut self.mode
                     && let Some(id) = (a.at.iter())
                         .find(|(_, t)| t.note == at.note && t.line == line)
@@ -6453,10 +6532,10 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) -> R
     r
 }
 
-/// Set one value of a row's item in its note: what to say about it, and the note to read
-/// again.
+/// Set one value of a row's item through the workspace gateway: what to say about it, and the
+/// note to read again.
 fn edit_cell(
-    root: &Path,
+    host: &mut Host<'_>,
     t: &mut Tabled,
     row: &str,
     column: &str,
@@ -6465,14 +6544,16 @@ fn edit_cell(
     let Some(at) = t.at.get(row).cloned() else {
         return (format!("{row} is gone"), None);
     };
-    let req = crate::edit::SetField {
-        id: row,
-        rev: Some(&at.rev),
-        field: column,
-        value: Value::String(value.clone()),
+    let edit = Edit {
+        id: row.to_string(),
+        rev: at.rev.clone(),
+        op: Op::SetField {
+            field: column.to_string(),
+            value: Value::String(value.clone()),
+        },
     };
     let name = at.note.trim_end_matches(".md");
-    let msg = match crate::edit::set_field(root, &at.note, &req, false) {
+    let msg = match host.edit_item(&edit) {
         Ok(set) if !set.changed => format!("{column} is already {value}"),
         Ok(set) => {
             t.view.select(&set.item.id);
@@ -6481,8 +6562,8 @@ fn edit_cell(
                 v => format!("{name}: {column} set to {v}"),
             }
         }
-        Err(crate::edit::EditError::Changed(m)) => {
-            format!("not saved, {m} · the table is read again")
+        Err(e) if e.reason == Reason::Changed => {
+            format!("not saved, {} · the table is read again", e.message)
         }
         Err(e) => format!("not saved: {e}"),
     };

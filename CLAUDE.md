@@ -67,6 +67,11 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   in one pulldown-cmark pass in the workspace's flavour; `Workspace::items()` caches them per note on
   first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`
   hashes the item's lines. Read tasks through items, not by scanning lines.
+- `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
+  `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
+  their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an
+  edit goes through `edit::set_field` or `tasks::toggle`, is read again at once and emits
+  `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
   `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
   notes settings, moment.js date formats.
@@ -86,7 +91,10 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
     into panes.
   - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
-    returns, so extensions never hold `&mut Home`.
+    returns, so extensions never hold `&mut Home`. The gateway's `items/*` and `types/list` are
+    answered during the call by the core, after `Host` checks the manifest's `permissions`
+    (`items.read` by default, `items.edit`). The table, the agenda's ticks and the reader's `x`
+    use the same `Host`, as `Registry::screen`.
 - `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
   commands it types into its pane.
 

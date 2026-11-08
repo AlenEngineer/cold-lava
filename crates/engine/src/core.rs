@@ -3,6 +3,7 @@
 //! (cold-lava, Obsidian, Neovim, git…).
 
 use crate::bookmarks::Bookmarks;
+use crate::gateway::{self, Edit, Edited, Found, News, Query, Select, SubId, Subscriptions};
 use crate::index::Index;
 use crate::workspace::{self, NoteChange};
 use anyhow::Result;
@@ -27,6 +28,14 @@ pub enum Event {
     GraphSettingsChanged,
     /// `.obsidian/bookmarks.json` changed; `Core::bookmarks` has been read again.
     BookmarksChanged,
+    /// An item was changed through the workspace gateway by the extension named `by`, after the
+    /// note's own `NoteChanged`. `what` says what, for the status line: "set due", "ticked".
+    ItemEdited {
+        note: String,
+        item: String,
+        by: String,
+        what: String,
+    },
 }
 
 impl From<NoteChange> for Event {
@@ -64,6 +73,11 @@ pub struct Core {
     bookmarks_changed: bool,
     due: Option<Instant>,
     subscribers: Vec<Sender<Event>>,
+    /// Events of the core's own edits, which the next `poll` returns.
+    unseen: Vec<Event>,
+    items: Subscriptions,
+    /// What item subscribers are to hear, with the owner of each subscription.
+    news: Vec<(String, News)>,
 }
 
 impl Core {
@@ -82,6 +96,9 @@ impl Core {
             bookmarks_changed: false,
             due: None,
             subscribers: Vec::new(),
+            unseen: Vec::new(),
+            items: Subscriptions::default(),
+            news: Vec::new(),
         })
     }
 
@@ -124,12 +141,76 @@ impl Core {
     /// Read one note again right away (cold-lava itself just wrote it), so what shows it is up
     /// to date before the next frame. Subscribers get its events too.
     pub fn note_changed_now(&mut self, path: &Path) -> Vec<Event> {
-        let events: Vec<Event> = (self.index.refresh(&[path.to_path_buf()]).into_iter())
-            .map(Event::from)
-            .collect();
+        let events = self.refresh(&[path.to_path_buf()]);
+        self.broadcast(&events);
+        events
+    }
+
+    /// Read these notes again, and queue what item subscribers are to hear about them.
+    fn refresh(&mut self, paths: &[PathBuf]) -> Vec<Event> {
+        let changes = self.index.refresh(paths);
+        let news = self.items.changed(&self.index.workspace, &changes);
+        self.news.extend(news);
+        changes.into_iter().map(Event::from).collect()
+    }
+
+    /// After the workspace was read from scratch.
+    fn rescanned(&mut self, index: Index) {
+        self.index = index;
+        self.reload_bookmarks();
+        self.changed.clear();
+        let news = self.items.reset(&self.index.workspace);
+        self.news.extend(news);
+    }
+
+    fn broadcast(&mut self, events: &[Event]) {
         self.subscribers
             .retain(|s| events.iter().all(|e| s.send(e.clone()).is_ok()));
-        events
+    }
+
+    /// `items/query`
+    pub fn query_items(&self, q: &Query) -> Result<Found, gateway::Error> {
+        gateway::query(&self.index.workspace, q)
+    }
+
+    /// `items/subscribe` for the extension named `owner`: from now on, `take_item_news` has
+    /// what it is to hear.
+    pub fn subscribe_items(
+        &mut self,
+        owner: &str,
+        select: Select,
+    ) -> Result<SubId, gateway::Error> {
+        self.items.add(&self.index.workspace, owner, select)
+    }
+
+    /// `items/unsubscribe`, of a subscription `owner` made. Whether there was one.
+    pub fn unsubscribe_items(&mut self, owner: &str, sub: SubId) -> bool {
+        self.items.remove(owner, sub)
+    }
+
+    /// `items/changed` and `items/reset` since the last call, each with its subscription's
+    /// owner, in order.
+    pub fn take_item_news(&mut self) -> Vec<(String, News)> {
+        std::mem::take(&mut self.news)
+    }
+
+    /// `items/edit` on behalf of the extension named `by`. The edit goes through the safe path
+    /// its op has, then the note is read again at once, so the next query sees it; its events,
+    /// ending with `ItemEdited`, come from the next `poll`.
+    pub fn edit_item(&mut self, by: &str, edit: &Edit) -> Result<Edited, gateway::Error> {
+        let written = gateway::write(self.root(), &self.index.workspace, edit)?;
+        if written.changed {
+            let mut events = self.refresh(&[self.root().join(&written.note)]);
+            events.push(Event::ItemEdited {
+                note: written.note.trim_end_matches(".md").to_string(),
+                item: edit.id.clone(),
+                by: by.to_string(),
+                what: written.what.clone(),
+            });
+            self.broadcast(&events);
+            self.unseen.extend(events);
+        }
+        gateway::read_back(&self.index.workspace, written)
     }
 
     /// Read the whole workspace again on the next `poll`.
@@ -142,11 +223,8 @@ impl Core {
     /// Subscribers get `Rescanned`.
     pub fn rescan_now(&mut self) {
         if let Ok(v) = workspace::scan(&self.index.workspace.root) {
-            self.index = Index::build(v);
-            self.reload_bookmarks();
-            self.changed.clear();
-            self.subscribers
-                .retain(|s| s.send(Event::Rescanned).is_ok());
+            self.rescanned(Index::build(v));
+            self.broadcast(&[Event::Rescanned]);
         }
     }
 
@@ -158,25 +236,23 @@ impl Core {
     /// Collect file-system events, and once things settle, update the index and emit events.
     /// Call it regularly (every frame is fine: it's cheap when nothing changed).
     pub fn poll(&mut self) -> Vec<Event> {
+        let unseen = std::mem::take(&mut self.unseen);
         self.collect_fs_events();
         if self.due.is_none_or(|t| Instant::now() < t) {
-            return Vec::new();
+            return unseen;
         }
         self.due = None;
         let mut events: Vec<Event> = Vec::new();
         if std::mem::take(&mut self.rescan) {
             self.changed.clear();
             match workspace::scan(self.root()) {
-                Ok(v) => {
-                    self.index = Index::build(v);
-                    self.reload_bookmarks();
-                }
-                Err(_) => return Vec::new(), // the folder vanished; keep what we had
+                Ok(v) => self.rescanned(Index::build(v)),
+                Err(_) => return unseen, // the folder vanished; keep what we had
             }
             events.push(Event::Rescanned);
         } else {
             let paths = std::mem::take(&mut self.changed);
-            events.extend(self.index.refresh(&paths).into_iter().map(Event::from));
+            events.extend(self.refresh(&paths));
         }
         events.extend(
             std::mem::take(&mut self.boards)
@@ -190,9 +266,8 @@ impl Core {
             self.reload_bookmarks();
             events.push(Event::BookmarksChanged);
         }
-        self.subscribers
-            .retain(|s| events.iter().all(|e| s.send(e.clone()).is_ok()));
-        events
+        self.broadcast(&events);
+        unseen.into_iter().chain(events).collect()
     }
 
     fn collect_fs_events(&mut self) {

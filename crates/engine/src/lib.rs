@@ -6,6 +6,7 @@ pub mod core;
 pub mod daily;
 pub mod edit;
 pub mod frontmatter;
+pub mod gateway;
 pub mod index;
 pub mod items;
 pub mod markdown;

@@ -73,8 +73,9 @@ declarative (patterns, fields, value types, how to show them), so matching stays
 one can't break anything.
 
 **4. Items** *(tasks, list items, headings, block ids and typed notes and blocks are built:
-`items.rs`, `cold-lava items`; queries, events and edits are designed in extensions.md, "Notes as data")*. What the
-types find: typed values with an `id` that survives ticking, re-dating and lines added above,
+`items.rs`, `cold-lava items`; queries, subscriptions and edits are built in-process:
+`gateway.rs`, extensions.md, "The workspace gateway, as built")*. What the types find: typed
+values with an `id` that survives ticking, re-dating and lines added above,
 and a `rev` for the item's own lines. Extensions query them, subscribe to changes, and edit one
 item; the engine changes only that item's lines, through the safe write path, and refuses if
 that item changed meanwhile.
@@ -90,9 +91,12 @@ in `Lava`'s backlinks and the graph.
 
 ## Two gateways
 
-**The workspace gateway** *(in-process half built: `ext/mod.rs`)* is the engine's protocol: files,
-items, types, queries, edits and events. It knows nothing about screens. An extension that only
-aggregates and ticks tasks, a script, or a language server needs nothing else.
+**The workspace gateway** *(the item messages are built, in-process: `gateway.rs` in the
+engine, `Host` in `ext/mod.rs`; the transport and `workspace/*` are next)* is the engine's
+protocol: files, items, types, queries, edits and events. It knows nothing about screens. An
+extension that only aggregates and ticks tasks, a script, or a language server needs nothing
+else. An extension changes notes only through it, within the permissions its manifest asks
+for, and every edit names the extension that made it.
 
 **The view gateway** is the frontend's: what an extension wants shown, and what you did to it.
 It knows nothing about workspaces; it speaks in rows, cells, nodes, edges, text and selection. Views

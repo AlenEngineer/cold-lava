@@ -198,10 +198,28 @@ impl Workspace {
         })
     }
 
+    /// `path` spelled from the canonical root, as the notes' paths are. The root was
+    /// canonicalized when scanned, so a path through a symlink (macOS's `/var` is
+    /// `/private/var`) would otherwise match no note and be outside the workspace. A deleted
+    /// file can't be canonicalized, so its folder is.
+    fn under_root(&self, path: &Path) -> PathBuf {
+        if path.starts_with(&self.root) {
+            return path.to_path_buf();
+        }
+        if let Ok(p) = path.canonicalize() {
+            return p;
+        }
+        match (path.parent().map(Path::canonicalize), path.file_name()) {
+            (Some(Ok(dir)), Some(name)) => dir.join(name),
+            _ => path.to_path_buf(),
+        }
+    }
+
     /// Bring one path up to date with the disk: read it again, add it, or drop it.
     /// Returns what changed, if anything did (rel paths without `.md`).
     pub fn refresh_path(&mut self, path: &Path) -> Option<NoteChange> {
-        let pos = self.notes.iter().position(|n| n.path == path);
+        let path = &self.under_root(path);
+        let pos = self.notes.iter().position(|n| n.path == *path);
         match (read_note(&self.root, path), pos) {
             (Some(note), Some(i)) => {
                 if self.notes[i].text == note.text {
@@ -568,6 +586,38 @@ mod tests {
         v.refresh_path(&path);
         assert_eq!(v.items(&v.notes[0]).len(), 2);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The root is canonical, so a path through a symlink to it (as macOS's temp folder is)
+    /// still names the note: changed, created and deleted.
+    #[cfg(unix)]
+    #[test]
+    fn refreshes_a_path_given_through_a_symlink() {
+        let base = std::env::temp_dir().join(format!("cold-lava-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real = base.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("A.md"), "one").unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut v = scan(&link).unwrap();
+        fs::write(link.join("A.md"), "two").unwrap();
+        assert_eq!(
+            v.refresh_path(&link.join("A.md")),
+            Some(NoteChange::Changed("A".into()))
+        );
+        assert_eq!(v.notes[0].text, "two");
+        fs::write(link.join("B.md"), "new").unwrap();
+        assert_eq!(
+            v.refresh_path(&link.join("B.md")),
+            Some(NoteChange::Created("B".into()))
+        );
+        fs::remove_file(link.join("B.md")).unwrap();
+        assert_eq!(
+            v.refresh_path(&link.join("B.md")),
+            Some(NoteChange::Removed("B".into()))
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
