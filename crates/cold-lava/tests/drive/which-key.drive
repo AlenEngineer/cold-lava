@@ -30,7 +30,7 @@ keys esc
 wait-gone 3 of 3 headings
 keys ,
 wait-for keys · type one to run it
-keys x
+keys y
 wait-gone keys · type one to run it
 expect Concepts/Lava  reading
 # The graph and the whiteboard have their own.

@@ -406,7 +406,10 @@ style.minutes = { badge = true, icon = "⏱" }
   (`tasks.toggle`): the status goes to its next symbol (the plugin's `nextStatusSymbol`, else
   done for an open task and todo for a closed one); to a done status it adds the done date
   (`✅` or `[completion:: …]`, as the line writes its fields) and, for a recurring task, the next
-  occurrence with its dates moved; otherwise it takes the done and cancelled dates out.
+  occurrence with its dates moved; to a cancelled status it adds the cancelled date (`❌` or
+  `[cancelled:: …]`, unless the plugin's `setCancelledDate` is off) and takes the done date
+  out; otherwise it takes the done and cancelled dates out. `tasks::today()` is the local date,
+  or `COLD_LAVA_TODAY` when set (scripted runs and their tests).
 - **Results.** The shadow comparison's corpus (`crates/engine/tests/tasks/corpus.md`: every
   format, priority, recurrence, variation selectors, custom statuses, the global filter and the
   Dataview setting, nesting, quotes, callouts, continuation lines, block ids, fences, comments)
@@ -561,8 +564,8 @@ style.minutes = { badge = true, icon = "⏱" }
   core's cache (`Vault::items`) when the core's text is the text on disk, else are read once,
   and the marks are placed in the same pulldown-cmark pass that builds the `Doc`. The reader
   lays the marks out with the page, again only when the width or the note changes.
-- **Not yet:** the agenda drawing the same looks (the table view does, below), a light
-  terminal's table, and looks in the GUI.
+- **Not yet:** a light terminal's table, and looks in the GUI. The table view and the agenda
+  draw the same looks (below).
 
 ### The table view, as built
 
@@ -604,8 +607,57 @@ style.minutes = { badge = true, icon = "⏱" }
   the table as it was (`Place::Table`: its type, row, column, sort and filter).
 - **CLI.** `cold-lava table VAULT TYPE` prints the rows as the view lays them out, every value
   whole; `--sort FIELD` (or `-FIELD`) sorts as `s` (`S`) does, `--json` prints the `Table`.
-- **Not yet:** editing several values at once, a column picker, the extension and its
-  `view/open`, and the agenda as a table or list.
+- **Not yet:** editing several values at once, a column picker, and the extension and its
+  `view/open`.
+
+### The list view and the agenda, as built
+
+- **The view is declarative and knows nothing of tasks.** `crates/cold-lava/src/list.rs`: a
+  `List` is a title, `Group`s (an `id`, a title, `collapsed` to start folded) of `Row`s (an
+  `id`; `text`, a list of `Piece`s, each a string with an optional `Look`; an optional `check`,
+  `unchecked`, `partial`, `checked` or `crossed`; `right`, pieces drawn at the right edge; a
+  `depth` to nest under the row before; a `look` over the whole row), the sender's `keys` (one
+  character, a command name and a title for the hint line) and what an empty list says. Back
+  come `Event`s: `activated {row}` on Enter, `toggled {row}` on `x` over a row with a checkbox,
+  and `command {command, row}` for the sender's keys. Everything derives serde and a test pins
+  the JSON. It lives in the binary for now, beside the table, and moves to `crates/views` with
+  it.
+- **The frontend owns** the selection (a group's header or a row, kept by id when a new list
+  arrives; a row folded away selects its group's header, and `select` follows a row that shows
+  up later), folding (`h`/`←` folds the selection's group, `l`/`→` opens it, `Tab` and Enter
+  on a header switch it; a fold by hand wins over `collapsed` across updates), filtering (`/`:
+  every folded word must be in the row's text or right side; folded groups show their matches,
+  empty groups hide), and drawing: the checkbox, the pieces with `looks::apply` as the table
+  does (a chip only as wide as its text, an icon before it), the text cut with `…` to leave room
+  for the right side, a whole-row look (a done task) under the pieces'. The view's own keys win
+  over the sender's.
+- **The agenda** is `agenda.rs`, what the built-in agenda extension will send: every item that
+  answers to `task` (subtypes too) from the core's cached items, filed by the date `cold-lava
+  agenda` files it under (`Task::agenda_date`: due, else scheduled, else start, else its daily
+  note's). Groups, in order: Overdue (before today), Today, each of the next seven days that has
+  tasks, Later, and Undated last, folded. A task with a non-task status is left out. Open tasks
+  (todo, in progress) always show; a task done or cancelled today shows too, where it was, so a
+  tick doesn't make it vanish; `d` (`show-done`, the agenda's own key) shows every closed task,
+  and the first group is then "Earlier". Rows within a group go by date, then note, then line.
+  Each row: the checkbox from the status type, the words with links as their text, `🔁` when
+  it recurs, the priority's glyph with the type's look (the built-in task's chip), the whole-row
+  look of its status (done and cancelled fade and strike through), and on the right the date
+  (in Overdue, red while open, and in Later) and the note's name. Today is `tasks::today()`,
+  which `COLD_LAVA_TODAY` pins for scripted runs.
+- **Ticking** is `tasks::toggle` with the row's `rev`, the same path as `x` in the reader and
+  `task toggle --id`: done dates, recurrence, custom statuses' next symbols, the cancelled
+  date. A task changed since the agenda was read is refused with the reason on the status line.
+  After a tick the menu has the core read the note at once, the agenda is built again, and the
+  ticked row stays selected under its new line (a recurring task's next occurrence goes above
+  it).
+- **Live and back.** The agenda is built again on every change the core reports, keeping the
+  selection, the folds and the filter. Enter opens the note at the task's line, where `x` ticks
+  that same task; Back (`Ctrl-o`) returns to the agenda as it was (`Place::Agenda`: its spot and
+  whether done tasks show). The menu runs it in process (`A`, `agenda.open`), not through the
+  `Extension` trait, for the same reason as the table.
+- **Not yet:** nesting subtasks under their parent (`depth` is there; the agenda sends every
+  task at depth 0), a range other than the next seven days, and the agenda as an extension
+  through `items/query`, `items/subscribe` and `view/open`.
 
 ## File types
 
@@ -786,8 +838,8 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
 
 - **Declarative:** a list, a tree, a table or Markdown, described as JSON and drawn by cold-lava
   (fits most panels: outlines, task lists, search results, a type's items). Rows carry item
-  ids, so a command run on the selected row knows what it is about. The table is built: "The
-  table view, as built" above.
+  ids, so a command run on the selected row knows what it is about. The table and the list are
+  built: "The table view, as built" and "The list view and the agenda, as built" above.
 - **A terminal program in a pane:** the extension names a command and cold-lava runs it in a pane,
   the same way the main menu embeds Neovim. Full freedom, any TUI library, but no pixel graphics:
   the pane goes through a terminal emulator.
@@ -857,9 +909,14 @@ after its call returns, so it never holds the menu's state.
       rebuilt on them and `cold-lava items VAULT KIND`. *(done: `items::extract` reads a
       note in one pass, `Vault::items` caches it per note, ids and revs are pinned by tests,
       and the item JSON is pinned for `items/query`)*
-   2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor.
+   2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor. *(done:
+      `task toggle --id` and `edit::set_field` refuse a stale `rev`; `x` ticks the task the
+      selected link is in, else the highlighted line's, else the first on screen below it, with
+      the `rev` the core read, through `tasks::toggle`)*
    3. The protocol for items, and reads through `Host`.
-   4. The declarative list view, and the agenda as an extension.
+   4. The declarative list view, and the agenda as an extension. *(the view and the agenda as a
+      screen of the menu are done: `list.rs`, `agenda.rs`, `A`; it becomes an extension with
+      `items/query` and `view/open`)*
    5. Types, in small steps: the loader and `cold-lava types` (with
       `example-vault/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows)
       *(done: `types::load`, definitions' JSON pinned for `types/list`)*;

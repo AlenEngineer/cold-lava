@@ -1,0 +1,25 @@
+# x in the reader ticks a task the way the Tasks plugin does (tests/drive.rs reads the note
+# back). Nothing read yet: the first task on screen. The note is shorter than the pane, so j
+# moves the highlighted line down to the recurring task, whose next occurrence is added above.
+# COLD_LAVA_TODAY pins the done date.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for example-vault
+keys p
+type 2026-11-05
+wait-for 1 note
+keys enter
+wait-for Journal/2026-11-05  reading
+keys x
+wait-for done: Write a note on lahars (Lahar is still unresolved)
+wait-for ☑ Write a note on lahars
+keys x
+wait-for open again: Write a note on lahars
+wait-for ☐ Write a note on lahars
+keys j j j j j j j j j j x
+wait-for done: Review the eruption timeline board · next occurrence added
+wait-for ☑ Review the eruption timeline board
+screen
+keys esc q
+exits 0

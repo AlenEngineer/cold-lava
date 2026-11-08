@@ -51,6 +51,7 @@ pub enum MenuAction {
     BookmarkSearch,
     Tidy,
     Table,
+    Agenda,
     History(HistoryAction),
 }
 
@@ -204,6 +205,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "table",
         "a type's items as a table: pick a type, then sort, filter and edit its values",
         &["i"],
+    ),
+    cmd(
+        MenuAction::Agenda,
+        "agenda.open",
+        Group::Go,
+        "agenda",
+        "the vault's tasks by day: overdue, today, the next seven days, later, undated; x ticks one",
+        &["A"],
     ),
     cmd(
         MenuAction::BookmarkSearch,
@@ -968,6 +977,7 @@ pub enum ReaderAction {
     NextHeading,
     PreviousHeading,
     Follow,
+    Tick,
     Edit,
     Back,
 }
@@ -1061,6 +1071,14 @@ pub const READER: &[Command<ReaderAction>] = &[
         "follow",
         "follow the selected link (creates missing notes)",
         &["enter"],
+    ),
+    cmd(
+        ReaderAction::Tick,
+        "reader.tick",
+        Group::Note,
+        "tick task",
+        "tick or untick a task like Obsidian Tasks: the one the selected link or the highlighted line is in, else the first on screen below",
+        &["x"],
     ),
     cmd(
         ReaderAction::Edit,

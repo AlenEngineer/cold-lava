@@ -32,6 +32,11 @@ pub enum Place {
         ty: String,
         spot: crate::table::Spot,
     },
+    /// The agenda, folded, filtered and selected as it was.
+    Agenda {
+        spot: crate::list::Spot,
+        show_done: bool,
+    },
 }
 
 impl Place {
@@ -47,6 +52,7 @@ impl Place {
             Place::Search { query, .. } => format!("search “{query}”"),
             Place::Graph { .. } => "graph".to_string(),
             Place::Table { ty, .. } => format!("{ty} table"),
+            Place::Agenda { .. } => "agenda".to_string(),
         }
     }
 }

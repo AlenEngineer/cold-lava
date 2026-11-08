@@ -17,6 +17,7 @@ use crate::ext::{
 use crate::frontmatter::{self, TagEdit};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
+use crate::list::{self, ListView};
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
@@ -25,7 +26,7 @@ use crate::table::{self, TableView};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::type_table::{self, At};
-use crate::{board, items, templates, term, vault, whichkey};
+use crate::{agenda, board, items, templates, term, vault, whichkey};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -433,6 +434,15 @@ enum Mode {
     },
     /// A type's items as a table.
     Table(Box<Tabled>),
+    /// The vault's tasks by day.
+    Agenda(Box<Agendaed>),
+}
+
+/// The agenda's list, where each row's task is, and whether done tasks show.
+struct Agendaed {
+    view: ListView,
+    at: HashMap<String, At>,
+    show_done: bool,
 }
 
 /// The table of a type's items, and where each row's item is.
@@ -1117,6 +1127,12 @@ impl Home {
                 spot: t.view.spot(),
             });
         }
+        if let Mode::Agenda(a) = &self.mode {
+            return Some(Place::Agenda {
+                spot: a.view.spot(),
+                show_done: a.show_done,
+            });
+        }
         Some(Place::Note {
             path: self.shown.clone()?,
             spot: self.reader.as_ref().map(Reader::spot),
@@ -1172,6 +1188,10 @@ impl Home {
                 Place::Board { path } => self.run_board(terminal, path)?,
                 Place::Table { ty, spot } => {
                     self.open_table(&ty, Some(spot));
+                    None
+                }
+                Place::Agenda { spot, show_done } => {
+                    self.open_agenda(Some(spot), show_done);
                     None
                 }
             };
@@ -1368,6 +1388,7 @@ impl Home {
             view.update(crate::tidy::report(&core.index));
         }
         self.refresh_table();
+        self.refresh_agenda();
         let shown_rel = self
             .shown
             .as_ref()
@@ -1496,6 +1517,9 @@ impl Home {
         }
         if matches!(self.mode, Mode::Table(_)) {
             return self.table_key(k, terminal);
+        }
+        if matches!(self.mode, Mode::Agenda(_)) {
+            return self.agenda_key(k, terminal);
         }
         if matches!(self.mode, Mode::Palette { .. }) {
             return self.palette_key(k, terminal);
@@ -1665,6 +1689,7 @@ impl Home {
             | Mode::Tidy(_)
             | Mode::TablePick { .. }
             | Mode::Table(_)
+            | Mode::Agenda(_)
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
         }
@@ -1723,7 +1748,11 @@ impl Home {
             }
             MenuCommand::Core(MenuAction::UndoDelete) => !self.undo.is_empty(),
             MenuCommand::Core(
-                MenuAction::Bookmarks | MenuAction::Bookmark | MenuAction::Tidy | MenuAction::Table,
+                MenuAction::Bookmarks
+                | MenuAction::Bookmark
+                | MenuAction::Tidy
+                | MenuAction::Table
+                | MenuAction::Agenda,
             ) => self.core.is_some(),
             MenuCommand::Core(MenuAction::BookmarkSearch) => {
                 matches!(self.mode, Mode::Search { .. })
@@ -1767,6 +1796,7 @@ impl Home {
             ReaderAction::NextHeading => r.next_heading(),
             ReaderAction::PreviousHeading => r.previous_heading(),
             ReaderAction::Follow => self.follow_selected(),
+            ReaderAction::Tick => self.tick_in_reader(),
             ReaderAction::Edit => {
                 let (Some(p), Some(root)) = (self.shown.clone(), self.root.clone()) else {
                     return Ok(());
@@ -1797,6 +1827,69 @@ impl Home {
             return;
         }
         self.follow(&from, &target);
+    }
+
+    /// Tick the reader's task (`Reader::task_line`) as the core last read it.
+    fn tick_in_reader(&mut self) {
+        let line = self.reader.as_ref().and_then(Reader::task_line);
+        let (Some(line), Some(path), Some(root)) = (line, self.shown.clone(), self.root.clone())
+        else {
+            return self.flash("no task on screen");
+        };
+        let task = self.core.as_ref().and_then(|core| {
+            let note = &core.index.vault.notes[core.index.by_path(&path)?];
+            let raw = note.text.lines().nth(line - 1)?;
+            let settings = &core.index.vault.item_settings().tasks;
+            (core.index.vault.items(note).iter())
+                .filter(|i| i.line == line)
+                .find_map(|i| Some((i.rev.clone(), crate::tasks::Task::of(i, raw, settings)?)))
+        });
+        let Some((rev, task)) = task else {
+            return self.flash(format!("line {line} is no task"));
+        };
+        let rel = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy();
+        self.tick(&rel.replace('\\', "/"), line, &rev, &task.text);
+    }
+
+    /// Tick the task on `line` of `note` (vault-relative, with `.md`) the way the Tasks plugin
+    /// does, refused if it is no longer the version `rev`. The core reads the note at once, so
+    /// every view shows the change, or what refused it, on the next frame. Returns the line the
+    /// ticked task is on now. `text` is its words, for the status line.
+    fn tick(&mut self, note: &str, line: usize, rev: &str, text: &str) -> Option<usize> {
+        let path = self.root.as_ref()?.join(note);
+        let name = note.trim_end_matches(".md");
+        let (msg, at) = match crate::tasks::toggle(&path, line, Some(rev), crate::tasks::today()) {
+            Ok(t) => {
+                let what = match t.status {
+                    "done" => "done",
+                    "cancelled" => "cancelled",
+                    "in_progress" => "in progress",
+                    "todo" => "open again",
+                    _ => "ticked",
+                };
+                let mut msg = format!("{what}: {}", agenda::links_as_text(text));
+                if t.next.is_some() {
+                    msg.push_str(" · next occurrence added");
+                }
+                if let Some(w) = &t.warning {
+                    msg = format!("{msg} · {w}");
+                }
+                (msg, Some(t.line))
+            }
+            Err(e) if e.downcast_ref::<crate::tasks::Changed>().is_some() => (
+                format!("not ticked: {name} changed since it was read · read again"),
+                None,
+            ),
+            Err(e) => (format!("not ticked: {e:#}"), None),
+        };
+        if let Some(core) = self.core.as_mut() {
+            let events = core.note_changed_now(&path);
+            if !events.is_empty() {
+                self.sync_with_core(&events);
+            }
+        }
+        self.flash(msg);
+        at
     }
 
     /// Label the reader's links and the backlinks on screen, for `f` then a label to follow one.
@@ -2002,6 +2095,12 @@ impl Home {
             MenuAction::Bookmarks => self.open_bookmarks(),
             MenuAction::Tidy => self.open_tidy(),
             MenuAction::Table => self.open_table_pick(),
+            MenuAction::Agenda => {
+                if let Some(here) = self.here() {
+                    self.history.visit(here);
+                }
+                self.open_agenda(None, false);
+            }
             MenuAction::Bookmark => match self.bookmark_target() {
                 Some(target) => self.toggle_bookmark(target),
                 None => self.flash("select a note or folder to bookmark"),
@@ -3929,6 +4028,105 @@ impl Home {
         Ok(())
     }
 
+    // ---------- agenda ----------
+
+    /// Show the agenda, as it was at `spot`.
+    fn open_agenda(&mut self, spot: Option<list::Spot>, show_done: bool) {
+        let Some(core) = self.core.as_ref() else {
+            return;
+        };
+        let built = agenda::build(&core.index.vault, crate::tasks::today(), show_done);
+        let mut view = ListView::new(built.list);
+        if let Some(spot) = spot {
+            view.restore(spot);
+        }
+        if self.focus == Focus::Pane {
+            self.focus = Focus::Notes;
+        }
+        self.mode = Mode::Agenda(Box::new(Agendaed {
+            view,
+            at: built.at,
+            show_done,
+        }));
+    }
+
+    /// The agenda again from the core's items, after the vault changed (or the day did).
+    fn refresh_agenda(&mut self) {
+        let (Mode::Agenda(a), Some(core)) = (&mut self.mode, &self.core) else {
+            return;
+        };
+        let built = agenda::build(&core.index.vault, crate::tasks::today(), a.show_done);
+        a.view.update(built.list);
+        a.at = built.at;
+    }
+
+    fn agenda_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Mode::Agenda(mut a) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        let here = |a: &Agendaed| Place::Agenda {
+            spot: a.view.spot(),
+            show_done: a.show_done,
+        };
+        if !a.view.typing()
+            && let Some(MenuCommand::Core(MenuAction::History(h))) = self.keys.get(k)
+        {
+            let from = here(&a);
+            self.mode = Mode::Agenda(a);
+            let to = match h {
+                HistoryAction::Back => self.history.back(Some(from)),
+                HistoryAction::Forward => self.history.forward(Some(from)),
+            };
+            if let Some(place) = to {
+                self.mode = Mode::Normal;
+                self.go(place, terminal)?;
+            }
+            return Ok(());
+        }
+        let Some(root) = self.root.clone() else {
+            return Ok(());
+        };
+        match a.view.key(k) {
+            list::Action::Stay => self.mode = Mode::Agenda(a),
+            list::Action::Close => {}
+            list::Action::Send(list::Event::Activated { row }) => {
+                let Some(at) = a.at.get(&row).cloned() else {
+                    self.mode = Mode::Agenda(a);
+                    return Ok(());
+                };
+                let from = here(&a);
+                self.open_found(Some(from), &root.join(&at.note), Some(Jump::Line(at.line)));
+            }
+            list::Action::Send(list::Event::Toggled { row }) => {
+                let at = a.at.get(&row).cloned();
+                let text = (a.view.selected().and_then(|r| r.text.first()))
+                    .map(|p| p.text.clone())
+                    .unwrap_or_default();
+                self.mode = Mode::Agenda(a);
+                let Some(at) = at else { return Ok(()) };
+                // The tick reads the note again, which rebuilds the agenda; the ticked row stays
+                // selected (a recurring one moves down a line, under its next occurrence).
+                if let Some(line) = self.tick(&at.note, at.line, &at.rev, &text)
+                    && let Mode::Agenda(a) = &mut self.mode
+                    && let Some(id) = (a.at.iter())
+                        .find(|(_, t)| t.note == at.note && t.line == line)
+                        .map(|(id, _)| id.clone())
+                {
+                    a.view.select(&id);
+                }
+            }
+            list::Action::Send(list::Event::Command { command, .. }) => {
+                if command == agenda::SHOW_DONE {
+                    let spot = a.view.spot();
+                    self.open_agenda(Some(spot), !a.show_done);
+                } else {
+                    self.mode = Mode::Agenda(a);
+                }
+            }
+        }
+        Ok(())
+    }
+
     // ---------- delete & undo ----------
 
     /// The note, board or folder to delete: the tree's selection, else the note in the pane.
@@ -4855,6 +5053,9 @@ impl Home {
         }
         if let Mode::Table(t) = &mut self.mode {
             draw_table(f, main, t);
+        }
+        if let Mode::Agenda(a) = &self.mode {
+            draw_agenda(f, main, a);
         }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
@@ -6291,6 +6492,29 @@ fn draw_table(f: &mut Frame, area: Rect, t: &mut Tabled) {
     let lines = t.view.lines(body.width as usize, body.height as usize);
     f.render_widget(Paragraph::new(lines), body);
     f.render_widget(Paragraph::new(t.view.status()), status);
+}
+
+/// The agenda over the whole main area, its filter on the bottom line.
+fn draw_agenda(f: &mut Frame, area: Rect, a: &Agendaed) {
+    f.render_widget(Clear, area);
+    let keys: String = (a.view.keys().iter())
+        .map(|k| format!(" · {} {}", k.key, k.title))
+        .collect();
+    let hint = format!(" ↑↓ move · x tick · ⏎ open · h/l fold · / filter{keys} · Esc close ");
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Line::styled(
+            format!(" {} ", a.view.title()),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let lines = a.view.lines(body.width as usize, body.height as usize);
+    f.render_widget(Paragraph::new(lines), body);
+    f.render_widget(Paragraph::new(a.view.status()), status);
 }
 
 /// The centred popup shared by the quick switcher and the command palette; returns its inside.
