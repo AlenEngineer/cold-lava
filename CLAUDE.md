@@ -97,6 +97,12 @@ what it needs (`markdown::set_configured` for the chosen flavour).
     use the same `Host`, as `Registry::screen`.
 - `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
   commands it types into its pane.
+- `ext/process.rs`, `transport.rs`, `rpc.rs`, `frame.rs`, `installed.rs`: extensions in their own
+  process. `installed` reads `~/.config/cold-lava/extensions/*/extension.toml`; `Process` is the
+  `Extension` for one, starting it on `Extension::workspace` and answering it in
+  `Extension::poll` (once a frame) through `rpc::serve` and `Host`, so the permission gate holds;
+  `Transport`/`Connector` (stdio, threads behind channels, so the UI never waits) carry
+  LSP-framed JSON-RPC (`frame`). The example is `examples/extensions/open-tasks` (Python).
 
 **Features / UI** (`crates/cold-lava/src`):
 

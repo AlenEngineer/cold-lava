@@ -9,6 +9,22 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Extensions in their own process. A folder in `~/.config/cold-lava/extensions/` with an
+  `extension.toml` (`name`, `version`, `description`, `run`, `permissions`, `[[commands]]`,
+  `[types.*]`) is started when a workspace opens, and spoken to in JSON-RPC 2.0 over its stdin
+  and stdout, framed as LSP frames it. It can call the workspace gateway (`items/query`,
+  `items/subscribe`, `items/edit`, `types/list`, within its permissions), `ui/notify`,
+  `ui/status` (its own text in the status line) and `command/run`, and its commands join the
+  palette, keys and `config.toml` like the core's. Nothing waits for it: a crash is reported
+  once with the last line of its log (`~/.cache/cold-lava/extensions/NAME.log`) and its
+  commands stop, and "restart extensions" (`extensions.restart`) starts it again.
+  `cold-lava ext list [WORKSPACE]` prints every extension, its permissions and commands, and
+  why any didn't load. Extensions inside a workspace aren't run.
+- `examples/extensions/open-tasks`, an example extension in Python with no dependencies: a
+  count of open tasks in the status line, kept current as notes change, and a command that moves
+  overdue tasks to today. [docs/extensions-guide.md](docs/extensions-guide.md) explains how to
+  write one.
+
 - The item messages of the workspace gateway, in-process (`crates/engine/src/gateway.rs`,
   through `Host`): `items/query` (a kind or type, a filter on folder, tag, status, a date range,
   text or a property, and pages), `items/subscribe` with `items/changed` and `items/reset`,
