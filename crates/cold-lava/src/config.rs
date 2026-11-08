@@ -79,6 +79,13 @@ pub fn get() -> &'static Config {
     CONFIG.get_or_init(Config::default)
 }
 
+/// Commands renamed after a release, old id first. Keys set under the old id still apply.
+const RENAMED: &[(&str, &str)] = &[
+    ("vault.add", "workspace.add"),
+    ("vault.rescan", "workspace.rescan"),
+    ("vault.tidy", "workspace.tidy"),
+];
+
 pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let file: File = match toml::from_str(text) {
         Ok(f) => f,
@@ -92,7 +99,13 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let mut ids: HashSet<&str> = commands::ids().collect();
     ids.extend(menu.iter().map(|c| c.id.as_str()));
     let mut config = Config::default();
-    for (id, value) in file.keys {
+    for (mut id, value) in file.keys {
+        if let Some(&(old, new)) = RENAMED.iter().find(|(old, _)| *old == id) {
+            config.errors.push(format!(
+                "[keys] {old:?} is now called {new:?}; the keys still apply"
+            ));
+            id = new.to_string();
+        }
         if !ids.contains(id.as_str()) {
             config
                 .errors
@@ -266,6 +279,21 @@ mod tests {
         assert!(errors[0].contains("graph.opne"));
         assert_eq!(keys.label("graph.open"), "g");
         assert_eq!(keys.label("workspace.add"), "V");
+    }
+
+    #[test]
+    fn an_old_command_name_still_binds_with_a_note() {
+        let (keys, errors) = menu("[keys]\n\"vault.add\" = \"V\"\n\"vault.tidy\" = []\n");
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].contains("\"vault.add\" is now called \"workspace.add\""));
+        assert_eq!(keys.label("workspace.add"), "V");
+        assert_eq!(keys.label("workspace.tidy"), "");
+    }
+
+    #[test]
+    fn the_new_command_name_wins_over_the_old_one() {
+        let (keys, _) = menu("[keys]\n\"workspace.add\" = \"W\"\n\"vault.add\" = \"V\"\n");
+        assert_eq!(keys.label("workspace.add"), "W");
     }
 
     #[test]

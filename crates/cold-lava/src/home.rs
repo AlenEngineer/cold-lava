@@ -91,18 +91,28 @@ pub fn parse_obsidian_vaults(json: &str) -> Vec<(PathBuf, u64)> {
         .collect()
 }
 
-fn recent_file() -> Option<PathBuf> {
-    config_dir().map(|c| c.join("cold-lava/vaults.json"))
+fn recent_dir() -> Option<PathBuf> {
+    config_dir().map(|c| c.join("cold-lava"))
 }
 
-fn load_recent() -> Vec<(PathBuf, u64)> {
-    let Some(text) = recent_file().and_then(|p| std::fs::read_to_string(p).ok()) else {
+/// The list of opened workspaces, `{"workspaces": [{"path", "opened"}]}`.
+const RECENT_FILE: &str = "workspaces.json";
+/// Where 0.3.0 and earlier kept that list, as `{"vaults": [...]}`: read while `RECENT_FILE`
+/// doesn't exist, and left in place.
+const OLD_RECENT_FILE: &str = "vaults.json";
+
+fn load_recent(dir: &Path) -> Vec<(PathBuf, u64)> {
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).ok();
+    let Some((text, key)) = read(RECENT_FILE)
+        .map(|t| (t, "workspaces"))
+        .or_else(|| read(OLD_RECENT_FILE).map(|t| (t, "vaults")))
+    else {
         return Vec::new();
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Vec::new();
     };
-    v.get("vaults")
+    v.get(key)
         .and_then(|x| x.as_array())
         .into_iter()
         .flatten()
@@ -115,20 +125,17 @@ fn load_recent() -> Vec<(PathBuf, u64)> {
         .collect()
 }
 
-fn remember(path: &Path) {
-    let Some(file) = recent_file() else { return };
-    let mut list = load_recent();
+fn remember(dir: &Path, path: &Path) {
+    let mut list = load_recent(dir);
     list.retain(|(p, _)| p != path);
     list.insert(0, (path.to_path_buf(), now_ms()));
     list.truncate(50);
     let json = serde_json::json!({
-        "vaults": list.iter().map(|(p, t)| serde_json::json!({"path": p, "opened": t})).collect::<Vec<_>>()
+        "workspaces": list.iter().map(|(p, t)| serde_json::json!({"path": p, "opened": t})).collect::<Vec<_>>()
     });
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
+    let _ = std::fs::create_dir_all(dir);
     let _ = std::fs::write(
-        file,
+        dir.join(RECENT_FILE),
         serde_json::to_string_pretty(&json).unwrap_or_default(),
     );
 }
@@ -156,7 +163,7 @@ pub fn discover(extra: &[PathBuf]) -> Vec<WorkspaceEntry> {
     for p in extra {
         found.push((p.clone(), u64::MAX, "here"));
     }
-    for (p, t) in load_recent() {
+    for (p, t) in recent_dir().map(|d| load_recent(&d)).unwrap_or_default() {
         found.push((p, t, "recent"));
     }
     for cfg in obsidian_configs() {
@@ -989,7 +996,9 @@ impl Home {
         if self.core.as_ref().is_some_and(|c| !c.is_live()) {
             self.flash("can't watch this folder for changes; press r to refresh");
         }
-        remember(&v.path);
+        if let Some(dir) = recent_dir() {
+            remember(&dir, &v.path);
+        }
         self.select_row(0);
     }
 
@@ -4963,7 +4972,9 @@ impl Home {
                 if !looks_like_workspace(&c) {
                     self.flash("added (no notes in that folder yet)");
                 }
-                remember(&c);
+                if let Some(dir) = recent_dir() {
+                    remember(&dir, &c);
+                }
                 self.workspaces = discover(&[]);
                 if let Some(i) = self.workspaces.iter().position(|v| v.path == c) {
                     self.open_workspace(i);
@@ -6647,6 +6658,37 @@ mod tests {
             ]
         );
         assert!(parse_obsidian_vaults("not json").is_empty());
+    }
+
+    #[test]
+    fn the_list_of_workspaces_carries_over_from_vaults_json() {
+        let dir = std::env::temp_dir().join(format!("cold-lava-recent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = r#"{"vaults": [{"path": "/home/me/Notes", "opened": 5}]}"#;
+        std::fs::write(dir.join("vaults.json"), old).unwrap();
+        assert_eq!(load_recent(&dir), [(PathBuf::from("/home/me/Notes"), 5)]);
+
+        remember(&dir, Path::new("/home/me/Work"));
+        let paths: Vec<PathBuf> = load_recent(&dir).into_iter().map(|(p, _)| p).collect();
+        assert_eq!(
+            paths,
+            ["/home/me/Work", "/home/me/Notes"].map(PathBuf::from)
+        );
+        let new = std::fs::read_to_string(dir.join("workspaces.json")).unwrap();
+        assert!(new.contains("\"workspaces\""), "{new}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("vaults.json")).unwrap(),
+            old
+        );
+
+        std::fs::write(dir.join("vaults.json"), r#"{"vaults": []}"#).unwrap();
+        assert_eq!(
+            load_recent(&dir).len(),
+            2,
+            "the new file wins once it exists"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

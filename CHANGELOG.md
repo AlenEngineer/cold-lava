@@ -89,6 +89,16 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- cold-lava calls a folder of notes a **workspace** now, not a vault: in the menu, the status
+  line, `--help` (`cold-lava items WORKSPACE KIND`) and the docs. "Vault" is left for Obsidian's
+  own. The commands `vault.add`, `vault.rescan` and `vault.tidy` are now `workspace.add`,
+  `workspace.rescan` and `workspace.tidy`; keys set under the old names in `config.toml` still
+  apply, with a note to rename them. `cold-lava agenda --json` names the folder `"workspace"`
+  instead of `"vault"`, `cold-lava types --json` gives a type from `.cold-lava/types.toml` the
+  origin `{"kind": "workspace"}` instead of `"vault"`, and the extension message
+  `vault/saved` is now `workspace/saved`. The list of opened workspaces moves from `vaults.json` to
+  `workspaces.json` in the config folder; the old file is read once and left in place. The
+  example is now `example-workspace`.
 - `item set` (and editing in a table) adds a date a task doesn't have the way its line writes its
   other fields, else in the workspace's Tasks plugin format: `📅 2026-12-01` in an emoji workspace, where
   it used to add `[due:: 2026-12-01]` everywhere.
