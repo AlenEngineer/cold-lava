@@ -5,8 +5,11 @@ size 160x30
 env COLD_LAVA_EDITOR=none
 wait-for example-workspace
 keys i
+wait-for Table of…
+keys /
 type erup
-wait-for 1 type
+keys enter
+wait-for 1 of 4 rows · /erup
 keys enter
 wait-for 4 rows
 keys j j l e
@@ -30,8 +33,11 @@ wait-for  7   [[Krakatoa]] 1883, Sunda Strait
 keys enter
 wait-for Volcanic Explosivity Index (VEI)  reading
 keys i
+wait-for Table of…
+keys /
 type task
-wait-for 1 type
+keys enter
+wait-for 1 of 4 rows · /task
 keys enter
 wait-for rows
 keys /

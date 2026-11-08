@@ -620,10 +620,10 @@ video and colours are left out.
 
 #### Tables
 
-`i` (`table.open`, also in the palette) lists the types with how many items each has; pick one
-and its items across the workspace are a table: one column per field in the type's order, then the
-note, values drawn with the type's looks (a VEI on its orange chip, a done task faded and struck
-through). In the table:
+`i` (`table.open`, also in the palette) lists the types with how many items each has (`/` to
+filter them, `Enter` to pick one). The type you pick shows its items across the workspace as a
+table: one column per field in the type's order, then the note, values drawn with the type's
+looks (a VEI on its orange chip, a done task faded and struck through). In the table:
 
 | Key | Does |
 |---|---|

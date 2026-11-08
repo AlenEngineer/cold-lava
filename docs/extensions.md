@@ -192,9 +192,9 @@ then a query and a view, not a parser of its own.
   from the workspace's Tasks settings, as `tasks::Task` reads them (`gateway::answer`). The
   `status` filter sees them too, so such a subtype is an open task. A client never needs the
   settings or the note's lines.
-- **The menu's screens are clients too.** The table and the reader's `x` go through
-  `Registry::screen`, a `Host` named `table` or `reader` that may read and edit, so they use
-  exactly the path an extension does. The agenda is an extension (below).
+- **The menu's screens are clients too.** The reader's `x` goes through `Registry::screen`, a
+  `Host` named `reader` that may read and edit, so it uses exactly the path an extension does.
+  The agenda and the table are extensions (below).
 - **Over the wire.** An extension in its own process sends these as JSON-RPC requests, and
   `rpc::serve` reads each as a `gateway::Request` and answers it through the same `Host`, so
   the permission gate is the same; news goes out as notifications ("Transport, as built").
@@ -661,32 +661,36 @@ style.minutes = { badge = true, icon = "⏱" }
   selected row by id when a new table arrives. Looks are drawn by `looks::apply` as in the
   reader: a chip only as wide as its text, an icon before it; `whole` looks (a done task) style
   the whole row; `hide` is ignored, as a table always shows the value.
-- **The sender** is `type_table.rs`, what the built-in table extension will send: columns are
+- **The sender** is `type_table.rs`, the built-in table extension (`Tables`, named `table`,
+  reading and editing items), on the path one in a process takes: columns are
   the type's schema in order, then `note` (read-only); rows are every item that answers to the
   type (subtypes too), with the note, line and `rev` of each kept beside the table. A column is
   read-only when no shape of the type reads the field through a writable source; the reason
-  says where it is read from. It reads through the workspace gateway, as the screen `table`
-  (`Registry::screen`): the type's definition from `types/list`, its items from `items/query`
-  a page of 500 at a time, kept by an `items/subscribe` (`type_table::Feed`). The picker's
-  counts are queries too, made when it opens. The menu still runs it as a screen of its own
-  (`i`, `table.open`), not as an extension over `view/open` as the agenda now is: the picker is
-  a popup of the menu's, and Back keeps the table's sort and filter in `Place::Table`. Moving it
-  means sending the picker as a list, the table with `view/open`, and edits as `view/event
-  edit`. `cold-lava table` calls `gateway::query` directly.
-- **Editing** is `items/edit set-field` with the row's `rev`, the value as typed (so `1h30m`,
-  an enum's written form or `""` to remove all work). The status line says what happened: set,
-  removed, already that value, or the refusal (`refused` and `read-back` with their reason,
-  `changed` when the item changed since the table was read). After any edit the menu has the
-  core read that note at once (`Core::note_changed_now`), so the table shows the new value, or
-  what refused it, before the next frame; an edit that changed the row's id (its key field)
-  keeps the row selected under the new one.
+  says where it is read from. It reads through the workspace gateway: the type's definition
+  from `types/list`, its items from `items/query` a page of 500 at a time, kept by an
+  `items/subscribe` (`type_table::Feed`). `i` (`table.open`) stays a core command, with its
+  place in the help and which-key, and the menu hands it to the extension as `command/run`. The
+  extension sends the picker with `view/open`: a table titled "Table of…" with a row per type
+  (`type`, and `items`, how many items answer to it, counted with queries when it opens), so
+  `/` filters it and `s` sorts it like any table. Enter on a type is `view/event activated`;
+  the extension closes the picker and opens that type's table in its place. Each table it has
+  open keeps its own subscription until `view/closed`, so Back can return to any of them.
+  `cold-lava table` calls `gateway::query` directly and prints `type_table::build`.
+- **Editing** is `view/event edit` to the extension, which sends `items/edit set-field` with
+  the row's `rev` and the value as typed (so `1h30m`, an enum's written form or `""` to remove
+  all work). The status line says what happened (`ui/notify`): set, removed, already that
+  value, or the refusal (`refused` and `read-back` with their reason, `changed` when the item
+  changed since the table was read). The core reads the edited note at once, and the extension
+  hears it through its subscription and sends the table again with `select` naming the row as
+  it reads now, so an edit that changed the row's id (its key field) keeps the row selected.
 - **Live.** The table applies its subscription's `items/changed` to its items (an updated item
   keeps its place, added ones are put in by note and line) and `items/reset` queries again,
-  keeping sort, filter and selection. Back (`Ctrl-o`) from a note opened with Enter returns to
-  the table as it was (`Place::Table`: its type, row, column, sort and filter).
+  sending the table with `view/update`; the view keeps sort, filter and selection. Enter is
+  `view/event activated`, and the extension asks for `workspace/open` at the item's line. Back
+  (`Ctrl-o`) returns to the table as it was, since a view is a place while it is open.
 - **CLI.** `cold-lava table WORKSPACE TYPE` prints the rows as the view lays them out, every value
   whole; `--sort FIELD` (or `-FIELD`) sorts as `s` (`S`) does, `--json` prints the `Table`.
-- **Not yet:** editing several values at once, a column picker, and running it as an extension.
+- **Not yet:** editing several values at once, and a column picker.
 
 ### The list view and the agenda, as built
 
@@ -1206,8 +1210,8 @@ after its call returns, so it never holds the menu's state.
    *(in progress: the stdio transport, JSON-RPC, manifests in `~/.config/cold-lava/extensions`,
    `cold-lava ext list`, `ui/status` and the `open-tasks` example in Python, checked by a drive
    script, are done ("Transport, as built"), and so is the view gateway, so an extension can
-   send the list and table views (`view/open`, "The view gateway, as built"); next are the
-   menu's table as an extension, then workspace-local extensions behind a trust prompt)*
+   send the list and table views (`view/open`, "The view gateway, as built"), and the menu's
+   table is an extension on it; next are workspace-local extensions behind a trust prompt)*
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
 
 ## Compatibility with Obsidian plugins

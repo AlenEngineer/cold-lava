@@ -87,16 +87,6 @@ pub enum Action {
     Say(String),
 }
 
-/// Where the view is, for Back to come back to: the selected row and column, the sort and
-/// the filter.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Spot {
-    row: Option<String>,
-    col: usize,
-    sort: Option<(usize, bool)>,
-    filter: String,
-}
-
 /// What the bottom line is typing into.
 #[derive(Clone, Debug, PartialEq)]
 enum Input {
@@ -159,23 +149,6 @@ impl TableView {
         self.table = table;
         self.col = self.col.min(self.table.columns.len().saturating_sub(1));
         self.reorder(keep.as_deref());
-    }
-
-    pub fn spot(&self) -> Spot {
-        Spot {
-            row: self.selected().map(|r| r.id.clone()),
-            col: self.col,
-            sort: self.sort,
-            filter: self.filter.clone(),
-        }
-    }
-
-    pub fn restore(&mut self, s: Spot) {
-        let cols = self.table.columns.len();
-        self.col = s.col.min(cols.saturating_sub(1));
-        self.sort = s.sort.filter(|&(c, _)| c < cols);
-        self.filter = s.filter;
-        self.reorder(s.row.as_deref());
     }
 
     pub fn columns(&self) -> &[Column] {
