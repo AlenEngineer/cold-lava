@@ -19,7 +19,7 @@ use serde_json::Value as Json;
 use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
-use crate::types::{On, Source, Value};
+use crate::types::{On, Shape, Source, Value};
 use crate::{daily, vault, write};
 
 /// Why an edit wasn't made. Nothing was written.
@@ -133,7 +133,8 @@ pub fn plan(note: &str, text: &str, s: &Settings, req: &SetField) -> Result<Set,
             shape.on.name()
         )));
     }
-    let (src, existing) = target(typed, field, sources)?;
+    let dataview = s.tasks.dataview || text[typed.place.text.clone()].contains("::");
+    let (src, existing) = target(typed, shape, field, sources, dataview)?;
     let value = input(src, value_type, &req.value, &s.daily.format)
         .map_err(|e| Refused(format!("{field}: {e}")))?;
     let unchanged = || Set {
@@ -172,12 +173,16 @@ pub fn plan(note: &str, text: &str, s: &Settings, req: &SetField) -> Result<Set,
 }
 
 /// The source a value is written through, and the span of the value it replaces. The source
-/// that gave the field its value, when it can be written; else the first writable one before it
-/// (it is empty, or it would have given the value), or the first writable one at all.
+/// that gave the field its value, when it can be written. For a field with no value, a writable
+/// source before that one (it is empty, or it would have given the value): of a kind the item
+/// already writes its other fields with, else a marker or a Dataview field as the vault's tasks
+/// are written (`dataview`), else the first.
 fn target<'a>(
     typed: &Typed,
+    shape: &Shape,
     field: &str,
     sources: &'a [Source],
+    dataview: bool,
 ) -> Result<(&'a Source, Option<Range<usize>>), EditError> {
     let read_from = typed.place.sources.get(field).copied();
     let spans = typed.spans.get(field).map_or(&[][..], Vec::as_slice);
@@ -193,7 +198,17 @@ fn target<'a>(
         return Ok((&sources[j], spans.first().cloned()));
     }
     let before = read_from.unwrap_or(sources.len());
-    match sources[..before].iter().find(|s| writable(s)) {
+    let candidates: Vec<&Source> = sources[..before].iter().filter(|s| writable(s)).collect();
+    let used: Vec<&str> = (typed.place.sources.iter())
+        .filter(|(f, _)| &***f != field && !typed.fields[&***f].is_null())
+        .filter_map(|(f, &j)| shape.fields.get(&**f)?.0.get(j))
+        .map(Source::kind)
+        .collect();
+    let preferred = if dataview { "inline" } else { "marker" };
+    let pick = (candidates.iter().find(|s| used.contains(&s.kind())))
+        .or_else(|| candidates.iter().find(|s| s.kind() == preferred))
+        .or(candidates.first());
+    match pick {
         Some(s) => Ok((s, None)),
         None => {
             let s = &sources[read_from.unwrap_or(0)];
