@@ -7,8 +7,15 @@
 //! extension asks for is queued as `Effect`s, which the menu applies after the call returns.
 //! Notes as data are the exception: `items/*` and `types/list` are answered during the call by
 //! the core (`crate::gateway`), within the permissions the extension's manifest asks for.
+//! Extensions installed on disk (`installed`) run in processes of their own (`process`), over a
+//! `transport` that frames JSON-RPC messages (`frame`, `rpc`); they reach the same `Host`.
 
+pub mod frame;
+pub mod installed;
 pub mod nvim;
+pub mod process;
+pub mod rpc;
+pub mod transport;
 
 use crate::commands::{self, Entry, MenuCommand};
 use crate::core::{Core, Jump};
@@ -16,7 +23,7 @@ use crate::gateway::{self, Edit, Edited, Found, News, Query, Reason, Select, Sub
 use crate::types::{Definitions, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A loaded extension. Only the host uses it: on the wire, the connection says who is talking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -33,6 +40,11 @@ pub struct Manifest {
     pub name: String,
     /// Its name for people: "Neovim".
     pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// One line on what it does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     pub roles: Vec<Role>,
     /// Keys its program understands, as (key, what it does), for the status line and the help.
     pub hints: Vec<(String, String)>,
@@ -66,7 +78,7 @@ impl Permission {
     }
 }
 
-fn read_only() -> Vec<Permission> {
+pub(crate) fn read_only() -> Vec<Permission> {
     vec![Permission::ItemsRead]
 }
 
@@ -83,6 +95,7 @@ pub struct CommandSpec {
     pub id: String,
     pub title: String,
     /// Its default keys, written as in config.toml: "g", "ctrl+o".
+    #[serde(default)]
     pub keys: Vec<String>,
 }
 
@@ -150,6 +163,9 @@ pub enum Effect {
     /// Show `message` in the status line.
     #[serde(rename = "ui/notify")]
     Notify { message: String },
+    /// The extension's own part of the status line, kept until it sends another; `None` clears.
+    #[serde(rename = "ui/status")]
+    Status { text: Option<String> },
     /// The editor shows `note` now, whoever asked for it.
     #[serde(rename = "editor/opened")]
     EditorOpened { note: PathBuf },
@@ -166,8 +182,9 @@ pub enum Effect {
     PaneInput { pane: PaneId, text: String },
 }
 
-/// An extension built into cold-lava. Its methods run on the UI thread: they must return at once
-/// and never wait for a pane.
+/// An extension: built into cold-lava, or a `process::Process` speaking for one in its own
+/// process. Its methods run on the UI thread: they must return at once and never wait for a pane
+/// or a process.
 pub trait Extension {
     /// `initialize`: who it is.
     fn initialize(&mut self) -> Manifest;
@@ -179,6 +196,21 @@ pub trait Extension {
     fn command(&mut self, _request: CommandRequest, _host: &mut Host<'_>) {}
     /// `items/changed`, `items/reset`: news for a subscription it made.
     fn items(&mut self, _news: News, _host: &mut Host<'_>) {}
+    /// The menu opened a workspace (`None`: it has none open). An extension in a process starts
+    /// here, with `initialize`, and stops when the workspace closes.
+    fn workspace(&mut self, _root: Option<&Path>, _host: &mut Host<'_>) {}
+    /// Once a frame: answer what it asked since the last one.
+    fn poll(&mut self, _host: &mut Host<'_>) {}
+    /// Whether its commands can run now.
+    fn running(&self) -> bool {
+        true
+    }
+    /// Why it stopped, when it did.
+    fn stopped(&self) -> Option<&str> {
+        None
+    }
+    /// cold-lava is quitting.
+    fn shutdown(&mut self) {}
 }
 
 /// What an extension can ask of the core during a call. Effects happen once the call returns;
@@ -197,6 +229,11 @@ impl Host<'_> {
     pub fn notify(&mut self, message: impl Into<String>) {
         let message = message.into();
         self.effects.push(Effect::Notify { message });
+    }
+
+    /// `ui/status`
+    pub fn status(&mut self, text: Option<String>) {
+        self.effects.push(Effect::Status { text });
     }
 
     /// `editor/opened`
@@ -287,16 +324,29 @@ pub struct Registry {
     commands: Vec<Entry<MenuCommand>>,
     /// Why commands or keys the extensions registered were left out.
     refused: Vec<String>,
+    /// Extensions on disk that didn't load, and why.
+    mistakes: Vec<String>,
+    /// Whether any extension runs in a process, so the menu polls more often.
+    processes: bool,
 }
 
 impl Registry {
-    /// The built-in extensions that can run here.
-    pub fn builtin() -> Registry {
+    /// The built-in extensions that can run here, then the user's (`installed::user_dir`).
+    pub fn load() -> Registry {
         let mut found: Vec<Box<dyn Extension>> = Vec::new();
         if let Some(nvim) = nvim::Nvim::detect() {
             found.push(Box::new(nvim));
         }
-        Registry::new(found)
+        let dir = installed::user_dir();
+        let (on_disk, mistakes) = dir.as_deref().map(installed::load).unwrap_or_default();
+        let processes = !on_disk.is_empty();
+        for ext in on_disk {
+            found.extend(process::Process::new(ext).map(|p| Box::new(p) as Box<dyn Extension>));
+        }
+        let mut r = Registry::new(found);
+        r.mistakes = mistakes;
+        r.processes = processes;
+        r
     }
 
     #[cfg(test)]
@@ -324,6 +374,8 @@ impl Registry {
             next_pane: 0,
             commands,
             refused,
+            mistakes: Vec::new(),
+            processes: false,
         }
     }
 
@@ -333,6 +385,33 @@ impl Registry {
 
     pub fn refused(&self) -> &[String] {
         &self.refused
+    }
+
+    pub fn has_processes(&self) -> bool {
+        self.processes
+    }
+
+    pub fn mistakes(&self) -> &[String] {
+        &self.mistakes
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = ExtId> + use<> {
+        (0..self.loaded.len()).map(ExtId)
+    }
+
+    pub fn running(&self, ext: ExtId) -> bool {
+        self.loaded[ext.0].0.running()
+    }
+
+    pub fn stopped(&self, ext: ExtId) -> Option<&str> {
+        self.loaded[ext.0].0.stopped()
+    }
+
+    /// cold-lava is quitting: let every extension go.
+    pub fn shutdown(&mut self) {
+        for (e, _) in &mut self.loaded {
+            e.shutdown();
+        }
     }
 
     pub fn editor(&self) -> Option<ExtId> {
@@ -533,6 +612,8 @@ mod tests {
             Manifest {
                 name: "nvim".into(),
                 title: "Neovim".into(),
+                version: String::new(),
+                description: String::new(),
                 roles: vec![Role::Editor],
                 hints: vec![("Ctrl-o".into(), "back".into())],
                 commands: vec![command("nvim.restart", &["ctrl+r"])],
@@ -569,6 +650,8 @@ mod tests {
             Manifest {
                 name: self.name.into(),
                 title: self.name.into(),
+                version: String::new(),
+                description: String::new(),
                 roles: Vec::new(),
                 hints: Vec::new(),
                 commands: self.commands.clone(),

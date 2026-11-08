@@ -40,6 +40,7 @@ pub enum MenuAction {
     Today,
     AddWorkspace,
     Rescan,
+    RestartExtensions,
     OpenInObsidian,
     EditFullscreen,
     Read,
@@ -437,6 +438,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "rescan",
         "rescan the workspace",
         &["r"],
+    ),
+    cmd(
+        MenuAction::RestartExtensions,
+        "extensions.restart",
+        Group::App,
+        "restart extensions",
+        "start the extensions that stopped again",
+        &[],
     ),
     cmd(
         MenuAction::Keys,

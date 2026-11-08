@@ -594,6 +594,8 @@ pub struct Home {
     requested: Vec<(ExtId, String, Value)>,
     /// What extensions may still ask for this frame (see `call`).
     effects_left: usize,
+    /// Each extension's own part of the status line (`ui/status`).
+    statuses: Vec<(ExtId, String)>,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
     /// What was deleted or merged this session, most recent last.
@@ -669,6 +671,7 @@ impl Home {
             pane: None,
             requested: Vec::new(),
             effects_left: EFFECTS_PER_FRAME,
+            statuses: Vec::new(),
             shown: None,
             pending: None,
             undo: Vec::new(),
@@ -691,6 +694,14 @@ impl Home {
             }
         }
         let config = crate::config::get();
+        match h.registry.mistakes() {
+            [] => {}
+            [why] => h.flash(why.clone()),
+            many => h.flash(format!(
+                "{} extensions didn't load: run cold-lava ext list to see why",
+                many.len()
+            )),
+        }
         match (config.errors.len(), h.registry.refused()) {
             (0, []) if !config.warnings.is_empty() => {
                 h.flash("config.toml uses an old command name: run cold-lava keys to see it")
@@ -757,6 +768,7 @@ impl Home {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
             self.effects_left = EFFECTS_PER_FRAME;
+            self.poll_extensions();
             self.pump_pane();
             self.run_requested(terminal)?;
             if let Some(place) = self.go_to.take() {
@@ -767,6 +779,8 @@ impl Home {
             terminal.draw(|f| self.draw(f))?;
             let ms = if self.pane.is_some() || self.pending.is_some() {
                 15
+            } else if self.registry.has_processes() {
+                50
             } else {
                 250
             };
@@ -786,7 +800,28 @@ impl Home {
             }
         }
         self.save_editor();
+        self.registry.shutdown();
         Ok(())
+    }
+
+    /// Answer what extensions in processes asked since the last frame.
+    fn poll_extensions(&mut self) {
+        for ext in self.registry.ids() {
+            self.call(ext, |e, host| e.poll(host));
+        }
+    }
+
+    /// Tell every extension which workspace is open, or only the ones that `stopped`, to start
+    /// them again.
+    fn tell_workspace(&mut self, stopped: bool) {
+        let root = self.root.clone();
+        for ext in self.registry.ids() {
+            if stopped && self.registry.stopped(ext).is_none() {
+                continue;
+            }
+            self.statuses.retain(|(e, _)| *e != ext);
+            self.call(ext, |e, host| e.workspace(root.as_deref(), host));
+        }
     }
 
     /// Bring the pane's screen up to date, and tell its extension what the program said and
@@ -836,6 +871,17 @@ impl Home {
     fn apply(&mut self, ext: ExtId, effect: Effect) {
         match effect {
             Effect::Notify { message } => self.flash(message),
+            Effect::Status { text } => {
+                let at = self.statuses.iter().position(|(e, _)| *e == ext);
+                match (at, text) {
+                    (Some(i), Some(text)) => self.statuses[i].1 = text,
+                    (None, Some(text)) => self.statuses.push((ext, text)),
+                    (Some(i), None) => {
+                        self.statuses.remove(i);
+                    }
+                    (None, None) => {}
+                }
+            }
             Effect::EditorOpened { note } => {
                 if self.shown.as_deref() != Some(note.as_path()) {
                     self.remember_recent(&note);
@@ -1007,6 +1053,7 @@ impl Home {
         if let Some(dir) = recent_dir() {
             remember(&dir, &v.path);
         }
+        self.tell_workspace(false);
         self.select_row(0);
     }
 
@@ -1817,6 +1864,14 @@ impl Home {
                 self.focus == Focus::Notes && self.current().is_some()
             }
             MenuCommand::Core(MenuAction::UndoDelete) => !self.undo.is_empty(),
+            MenuCommand::Core(MenuAction::RestartExtensions) => {
+                self.root.is_some()
+                    && self
+                        .registry
+                        .ids()
+                        .any(|e| self.registry.stopped(e).is_some())
+            }
+            MenuCommand::Ext(ext, _) => self.registry.running(ext),
             MenuCommand::Core(
                 MenuAction::Bookmarks
                 | MenuAction::Bookmark
@@ -2246,6 +2301,7 @@ impl Home {
             MenuAction::Today => self.open_today(),
             MenuAction::AddWorkspace => self.mode = Mode::AddWorkspace(String::new()),
             MenuAction::NewFolder => self.mode = Mode::NewFolder(String::new()),
+            MenuAction::RestartExtensions => self.tell_workspace(true),
             MenuAction::Rescan => {
                 if let Some(core) = self.core.as_mut() {
                     core.rescan(); // applied on the next poll, as a Rescanned event
@@ -6110,6 +6166,12 @@ impl Home {
                 None => Line::raw(""),
             },
         };
+        for (_, text) in &self.statuses {
+            info.spans.push(Span::styled(
+                format!("   {text}"),
+                Style::new().fg(ACCENT_SOFT),
+            ));
+        }
         let first = |id| self.keys.keys(id).first();
         let nav = Nav::of(&self.history).hint(first("history.back"), first("history.forward"));
         if !nav.is_empty() {
