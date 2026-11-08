@@ -1,4 +1,4 @@
-//! Tidying a vault: what nothing uses. Notes with no links in or out (Obsidian's graph
+//! Tidying a workspace: what nothing uses. Notes with no links in or out (Obsidian's graph
 //! "orphans"), attachments no note or canvas links to, folders with no files, and links to
 //! notes that don't exist. Read-only: deleting is the caller's, through `trash`.
 //!
@@ -7,7 +7,7 @@
 
 use crate::index::Index;
 use crate::rename::{Files, canvas_targets, dir_of, link_targets};
-use crate::vault::{attachment_kind, decode_target};
+use crate::workspace::{attachment_kind, decode_target};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -16,7 +16,7 @@ use std::path::Path;
 pub struct Report {
     /// Notes nothing links to, sorted by path, daily notes last.
     pub orphans: Vec<Orphan>,
-    /// Images, audio, video and PDFs nothing links to (vault-relative, with extension).
+    /// Images, audio, video and PDFs nothing links to (workspace-relative, with extension).
     pub unused_attachments: Vec<String>,
     /// Folders with no files at any depth, the outermost only.
     pub empty_folders: Vec<String>,
@@ -26,7 +26,7 @@ pub struct Report {
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Orphan {
-    /// Vault-relative, with `.md`.
+    /// Workspace-relative, with `.md`.
     pub note: String,
     /// Files it links to: 0 makes it an orphan both ways, more only "no backlinks".
     pub links_out: usize,
@@ -44,7 +44,7 @@ pub struct Unresolved {
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LinkAt {
-    /// The linking note, vault-relative with `.md`.
+    /// The linking note, workspace-relative with `.md`.
     pub note: String,
     /// 1-based.
     pub line: usize,
@@ -57,7 +57,7 @@ impl Orphan {
     }
 }
 
-/// Folders a vault's settings name: templates, daily notes, attachments, new notes. They are
+/// Folders a workspace's settings name: templates, daily notes, attachments, new notes. They are
 /// never "empty folders to remove", and their notes are not orphans (templates) or are grouped
 /// (daily notes).
 struct Settings {
@@ -101,10 +101,10 @@ impl Settings {
 }
 
 pub fn report(ix: &Index) -> Report {
-    let root = &ix.vault.root;
+    let root = &ix.workspace.root;
     let settings = Settings::load(root);
-    let files = Files::of_vault(ix);
-    let notes = ix.vault.notes.len();
+    let files = Files::of_workspace(ix);
+    let notes = ix.workspace.notes.len();
     // used[f]: something other than f links to it; out[n]: what note n links to.
     let mut used = vec![false; files.rels.len()];
     let mut out = vec![0; notes];
@@ -117,7 +117,7 @@ pub fn report(ix: &Index) -> Report {
             }
         }
     };
-    for (i, n) in ix.vault.notes.iter().enumerate() {
+    for (i, n) in ix.workspace.notes.iter().enumerate() {
         for raw in link_targets(&n.text) {
             found(i, dir_of(&files.rels[i]), raw, &mut used);
         }
@@ -165,7 +165,7 @@ pub fn report(ix: &Index) -> Report {
     unused_attachments.sort();
 
     let mut groups: BTreeMap<String, Unresolved> = BTreeMap::new();
-    for (i, n) in ix.vault.notes.iter().enumerate() {
+    for (i, n) in ix.workspace.notes.iter().enumerate() {
         if settings.templates.is_template(&files.rels[i]) {
             continue;
         }
@@ -237,7 +237,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn vault(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    fn workspace(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("cold-lava-tidy-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -251,7 +251,7 @@ mod tests {
 
     fn fixture(name: &str) -> (std::path::PathBuf, Index) {
         let canvas = r#"{"nodes":[{"id":"a","type":"file","file":"Boards/On a board.md"},{"id":"b","type":"text","text":"![[board.png]]"},{"id":"c","type":"file","file":"img/card.jpg"}],"edges":[]}"#;
-        let dir = vault(
+        let dir = workspace(
             name,
             &[
                 (".obsidian/daily-notes.json", r#"{"folder":"Journal"}"#),
@@ -294,7 +294,7 @@ mod tests {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
         fs::write(dir.join("Kept/note.md"), "[[Hub]]").unwrap();
-        let ix = Index::build(crate::vault::scan(&dir).unwrap());
+        let ix = Index::build(crate::workspace::scan(&dir).unwrap());
         (dir, ix)
     }
 
@@ -370,10 +370,12 @@ mod tests {
     }
 
     #[test]
-    fn the_example_vault() {
+    fn the_example_workspace() {
         let ix = Index::build(
-            crate::vault::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"))
-                .unwrap(),
+            crate::workspace::scan(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+            )
+            .unwrap(),
         );
         let r = report(&ix);
         assert!(

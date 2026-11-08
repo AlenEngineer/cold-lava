@@ -1,4 +1,4 @@
-VAULT · 2026-11-01 to 2026-11-30
+WORKSPACE · 2026-11-01 to 2026-11-30
 
 2026-11-05  (daily note)
   [ ] Write a note on lahars ([[Lahar]] is still unresolved)   Journal/2026-11-05.md:7

@@ -175,8 +175,8 @@ enum Drag {
 
 struct Board {
     path: PathBuf,
-    vault_root: PathBuf,
-    vault_name: String,
+    workspace_root: PathBuf,
+    workspace_name: String,
     doc: Doc,
     cam: (f64, f64),
     zoom: f64,
@@ -210,21 +210,21 @@ struct Board {
 
 // ---------- entry points ----------
 
-/// Open a board. With no file, show a picker of the vault's `.canvas` files.
+/// Open a board. With no file, show a picker of the workspace's `.canvas` files.
 pub fn launch(
     terminal: &mut DefaultTerminal,
-    vault_root: &Path,
+    workspace_root: &Path,
     file: Option<PathBuf>,
     _pixels: bool,
 ) -> Result<()> {
     let path = match file {
         Some(p) => p,
-        None => match pick_board(terminal, vault_root)? {
+        None => match pick_board(terminal, workspace_root)? {
             Some(p) => p,
             None => return Ok(()),
         },
     };
-    open(terminal, vault_root, path, None)?;
+    open(terminal, workspace_root, path, None)?;
     Ok(())
 }
 
@@ -232,12 +232,12 @@ pub fn launch(
 /// menu, the history keys leave it too.
 pub fn open(
     terminal: &mut DefaultTerminal,
-    vault_root: &Path,
+    workspace_root: &Path,
     path: PathBuf,
     nav: Option<Nav>,
 ) -> Result<Exit> {
     crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
-    let mut b = Board::open(path, vault_root)?;
+    let mut b = Board::open(path, workspace_root)?;
     b.nav = nav.map(|nav| (nav, commands::history_keys(&b.keys)));
     b.run(terminal)?;
     Ok(b.exit)
@@ -260,10 +260,10 @@ pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<
     let mut query = String::new();
     let mut pos = 0usize;
     loop {
-        let q = crate::vault::search_key(&query);
+        let q = crate::workspace::search_key(&query);
         let hits: Vec<&String> = boards
             .iter()
-            .filter(|b| crate::vault::search_key(b).contains(&q))
+            .filter(|b| crate::workspace::search_key(b).contains(&q))
             .collect();
         let new_name = if query.trim().is_empty() {
             "Untitled".to_string()
@@ -344,7 +344,7 @@ pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<
 }
 
 impl Board {
-    fn open(path: PathBuf, vault_root: &Path) -> Result<Board> {
+    fn open(path: PathBuf, workspace_root: &Path) -> Result<Board> {
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let doc = parse(&disk, &path)?;
         let base = doc.clone();
@@ -361,17 +361,17 @@ impl Board {
         {
             watcher = None;
         }
-        let vault_root = vault_root
+        let workspace_root = workspace_root
             .canonicalize()
-            .unwrap_or_else(|_| vault_root.to_path_buf());
-        let vault_name = vault_root
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let workspace_name = workspace_root
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let mut b = Board {
             path,
-            vault_root,
-            vault_name,
+            workspace_root,
+            workspace_name,
             doc,
             cam: (0.0, 0.0),
             zoom: 1.0,
@@ -1009,8 +1009,8 @@ impl Board {
             }
             "file" => {
                 let rel = n.file.clone().unwrap_or_default();
-                let path = self.vault_root.join(&rel);
-                if let Some(err) = term::edit_file(terminal, &path, &self.vault_root)? {
+                let path = self.workspace_root.join(&rel);
+                if let Some(err) = term::edit_file(terminal, &path, &self.workspace_root)? {
                     self.flash(err);
                 }
                 self.previews.remove(&rel);
@@ -1033,7 +1033,7 @@ impl Board {
         }
         let tmp = std::env::temp_dir().join(format!("cold-lava-card-{id}.md"));
         std::fs::write(&tmp, n.text.clone().unwrap_or_default())?;
-        if let Some(err) = term::edit_file(terminal, &tmp, &self.vault_root)? {
+        if let Some(err) = term::edit_file(terminal, &tmp, &self.workspace_root)? {
             self.flash(err);
         } else if let Ok(text) = std::fs::read_to_string(&tmp) {
             let text = text.trim_end_matches('\n').to_string();
@@ -1076,9 +1076,9 @@ impl Board {
         self.commit();
     }
 
-    fn vault_notes(&mut self) -> &Vec<String> {
+    fn workspace_notes(&mut self) -> &Vec<String> {
         if self.notes.is_none() {
-            let root = self.vault_root.clone();
+            let root = self.workspace_root.clone();
             let mut v: Vec<String> = WalkDir::new(&root)
                 .into_iter()
                 .filter_entry(|e| {
@@ -1111,10 +1111,10 @@ impl Board {
     }
 
     fn file_hits(&mut self, query: &str) -> Vec<String> {
-        let q = crate::vault::search_key(query);
-        self.vault_notes()
+        let q = crate::workspace::search_key(query);
+        self.workspace_notes()
             .iter()
-            .filter(|p| crate::vault::search_key(p).contains(&q))
+            .filter(|p| crate::workspace::search_key(p).contains(&q))
             .take(200)
             .cloned()
             .collect()
@@ -1134,7 +1134,7 @@ impl Board {
         if let Some(p) = self.previews.get(rel) {
             return p.clone();
         }
-        let path = self.vault_root.join(rel);
+        let path = self.workspace_root.join(rel);
         let lines = match std::fs::read_to_string(&path) {
             Ok(t) => {
                 let mut lines: Vec<&str> = t.lines().collect();
@@ -1332,7 +1332,7 @@ impl Board {
                     .and_then(|n| n.file.clone());
                 match file {
                     Some(rel) => {
-                        let ok = term::open_in_obsidian(&self.vault_name, &rel);
+                        let ok = term::open_in_obsidian(&self.workspace_name, &rel);
                         self.flash(if ok {
                             "opened in Obsidian"
                         } else {
@@ -1342,11 +1342,11 @@ impl Board {
                     None => {
                         let rel = self
                             .path
-                            .strip_prefix(&self.vault_root)
+                            .strip_prefix(&self.workspace_root)
                             .unwrap_or(&self.path)
                             .to_string_lossy()
                             .into_owned();
-                        let ok = term::open_in_obsidian(&self.vault_name, &rel);
+                        let ok = term::open_in_obsidian(&self.workspace_name, &rel);
                         self.flash(if ok {
                             "opened board in Obsidian"
                         } else {
@@ -1925,7 +1925,7 @@ impl Board {
                 format!(
                     " {}",
                     self.path
-                        .strip_prefix(&self.vault_root)
+                        .strip_prefix(&self.workspace_root)
                         .unwrap_or(&self.path)
                         .display()
                 ),

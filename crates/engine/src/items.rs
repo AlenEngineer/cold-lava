@@ -2,7 +2,7 @@
 //! blocks with an id), so features ask for them instead of parsing notes themselves. See
 //! "Notes as data" in docs/extensions.md.
 //!
-//! One pass of pulldown-cmark per note, in the vault's flavour, over the same text the reader
+//! One pass of pulldown-cmark per note, in the workspace's flavour, over the same text the reader
 //! parses. Types match in the same pass: the pass collects the blocks some type reads, and
 //! `matcher` says which type each one is and which inline types sit in its text. A task is a
 //! list item the built-in `task` type (`types/task.toml`) matches.
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 
-/// Everything about a vault that changes how its notes read as items.
+/// Everything about a workspace that changes how its notes read as items.
 pub struct Settings {
     pub flavour: Flavour,
     pub tasks: TasksSettings,
@@ -35,10 +35,10 @@ pub struct Settings {
 
 impl Settings {
     pub fn load(root: &Path) -> Settings {
-        Settings::load_with(root, types::for_vault(root))
+        Settings::load_with(root, types::for_workspace(root))
     }
 
-    /// The vault's settings, with these types.
+    /// The workspace's settings, with these types.
     pub fn load_with(root: &Path, types: Types) -> Settings {
         Settings::new(
             markdown::flavour_for(root),
@@ -89,7 +89,7 @@ impl Settings {
 pub struct Item {
     /// Stable across edits that keep the item's anchor, restarts and processes.
     pub id: String,
-    /// Vault-relative path, with `.md`.
+    /// Workspace-relative path, with `.md`.
     pub note: String,
     /// The item's own lines (1-based, inclusive); a list item's children are items of their own.
     pub line: usize,
@@ -240,7 +240,7 @@ struct Candidate {
     cells: Vec<Range<usize>>,
 }
 
-/// The items of the note at vault-relative `note` (with `.md`) whose text is `text`.
+/// The items of the note at workspace-relative `note` (with `.md`) whose text is `text`.
 pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     if s.templates.is_template(note) {
         return Vec::new();
@@ -377,7 +377,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                                 .is_some_and(|d| d.ends_with(".md"));
                         if local {
                             let target = dest_url.split('#').next().unwrap_or_default();
-                            links.extend(crate::vault::clean_target(target));
+                            links.extend(crate::workspace::clean_target(target));
                         }
                     }
                     Tag::Table(_) if collect_rows => tables.push(Vec::new()),
@@ -801,7 +801,7 @@ mod tests {
     use serde_json::json;
 
     fn settings(flavour: &str) -> Settings {
-        let nowhere = Path::new("/nonexistent-cold-lava-vault");
+        let nowhere = Path::new("/nonexistent-cold-lava-workspace");
         Settings::new(
             Flavour::built_in(flavour).unwrap(),
             TasksSettings::load(nowhere),

@@ -1,10 +1,10 @@
-//! The core: one live vault. It owns the index, is the only thing watching the vault folder,
+//! The core: one live workspace. It owns the index, is the only thing watching the workspace folder,
 //! re-reads just the notes that change, and tells subscribers what changed, whatever caused it
 //! (cold-lava, Obsidian, Neovim, git…).
 
 use crate::bookmarks::Bookmarks;
 use crate::index::Index;
-use crate::vault::{self, NoteChange};
+use crate::workspace::{self, NoteChange};
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -12,16 +12,16 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-/// Something changed in the vault. Note paths are vault-relative, without `.md`.
+/// Something changed in the workspace. Note paths are workspace-relative, without `.md`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     NoteCreated(String),
     NoteChanged(String),
     NoteRemoved(String),
-    /// The vault was read again from scratch (a folder moved, or a full rescan was asked for):
+    /// The workspace was read again from scratch (a folder moved, or a full rescan was asked for):
     /// anything could have changed.
     Rescanned,
-    /// A whiteboard (`.canvas`) file changed. Vault-relative path.
+    /// A whiteboard (`.canvas`) file changed. Workspace-relative path.
     BoardChanged(String),
     /// Obsidian's graph settings (colour groups) changed.
     GraphSettingsChanged,
@@ -68,10 +68,10 @@ pub struct Core {
 
 impl Core {
     pub fn open(root: &Path) -> Result<Core> {
-        let index = Index::build(vault::scan(root)?);
-        let (fs_events, watcher) = watch(&index.vault.root);
+        let index = Index::build(workspace::scan(root)?);
+        let (fs_events, watcher) = watch(&index.workspace.root);
         Ok(Core {
-            bookmarks: read_bookmarks(&index.vault.root),
+            bookmarks: read_bookmarks(&index.workspace.root),
             index,
             fs_events,
             _watcher: watcher,
@@ -86,10 +86,10 @@ impl Core {
     }
 
     pub fn root(&self) -> &Path {
-        &self.index.vault.root
+        &self.index.workspace.root
     }
 
-    /// The vault's bookmarks (Obsidian's), or why they can't be read.
+    /// The workspace's bookmarks (Obsidian's), or why they can't be read.
     pub fn bookmarks(&self) -> Result<&Bookmarks, &str> {
         self.bookmarks.as_ref().map_err(String::as_str)
     }
@@ -99,13 +99,13 @@ impl Core {
         self.bookmarks = read_bookmarks(self.root());
     }
 
-    /// Whether the vault folder is being watched (if not, call `note_changed` / `rescan`).
+    /// Whether the workspace folder is being watched (if not, call `note_changed` / `rescan`).
     pub fn is_live(&self) -> bool {
         self.fs_events.is_some()
     }
 
     /// Get every event from now on. Subscribers that go away are dropped.
-    /// This is how extensions will follow the vault (see docs/extensions.md); nothing in
+    /// This is how extensions will follow the workspace (see docs/extensions.md); nothing in
     /// cold-lava itself needs a separate channel yet, since its screens call `poll`.
     #[allow(dead_code)]
     pub fn subscribe(&mut self) -> Receiver<Event> {
@@ -132,16 +132,16 @@ impl Core {
         events
     }
 
-    /// Read the whole vault again on the next `poll`.
+    /// Read the whole workspace again on the next `poll`.
     pub fn rescan(&mut self) {
         self.rescan = true;
         self.schedule(Duration::ZERO);
     }
 
-    /// Read the whole vault again right away (after cold-lava itself moved files around).
+    /// Read the whole workspace again right away (after cold-lava itself moved files around).
     /// Subscribers get `Rescanned`.
     pub fn rescan_now(&mut self) {
-        if let Ok(v) = vault::scan(&self.index.vault.root) {
+        if let Ok(v) = workspace::scan(&self.index.workspace.root) {
             self.index = Index::build(v);
             self.reload_bookmarks();
             self.changed.clear();
@@ -166,7 +166,7 @@ impl Core {
         let mut events: Vec<Event> = Vec::new();
         if std::mem::take(&mut self.rescan) {
             self.changed.clear();
-            match vault::scan(self.root()) {
+            match workspace::scan(self.root()) {
                 Ok(v) => {
                     self.index = Index::build(v);
                     self.reload_bookmarks();
@@ -197,7 +197,7 @@ impl Core {
 
     fn collect_fs_events(&mut self) {
         let Some(rx) = &self.fs_events else { return };
-        let root = self.index.vault.root.clone();
+        let root = self.index.workspace.root.clone();
         let mut any = false;
         for ev in rx.try_iter() {
             for p in &ev.paths {
@@ -250,7 +250,7 @@ fn classify(root: &Path, path: &Path) -> Kind {
     {
         return Kind::Ignored; // .obsidian, .trash, .git, our own temporary files…
     }
-    if vault::is_note_path(rel) {
+    if workspace::is_note_path(rel) {
         return Kind::Note;
     }
     match rel.extension() {

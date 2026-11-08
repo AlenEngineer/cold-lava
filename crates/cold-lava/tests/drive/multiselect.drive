@@ -2,7 +2,7 @@
 # preview, every link kept), tag two of them, then delete those two and undo it.
 # tests/drive.rs adds links between the moved notes and checks files, tags and links.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault 35 notes
+wait-for example-workspace 35 notes
 keys p pliny
 wait-for Pliny the Younger
 keys enter
@@ -68,9 +68,9 @@ expect They go to the system trash.
 screen
 keys y
 wait-for deleted 2 items · u undo
-wait-for example-vault 33 notes
+wait-for example-workspace 33 notes
 keys u
 wait-for restored 2 items
-wait-for example-vault 35 notes
+wait-for example-workspace 35 notes
 keys q
 exits 0

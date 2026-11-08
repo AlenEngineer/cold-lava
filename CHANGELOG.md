@@ -9,7 +9,7 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
-- The agenda screen. `A` (`agenda.open`) lists the vault's tasks (anything that answers to
+- The agenda screen. `A` (`agenda.open`) lists the workspace's tasks (anything that answers to
   `task`, subtypes too) by day: Overdue, Today, each of the next seven days, Later, and Undated
   (folded) last, filed by the date `cold-lava agenda` uses (due, scheduled, start, else the
   daily note's). Rows show the checkbox, the words with links as text, `🔁`, the priority chip
@@ -31,7 +31,7 @@ change commands, keys and file formats; patch versions only fix things.
   scripted runs and tests.
 
 - The table view. `i` (`table.open`) picks a type, listed with how many items each has, and
-  shows its items across the vault as a table: a column per field in the type's order, then the
+  shows its items across the workspace as a table: a column per field in the type's order, then the
   note, values drawn with the type's looks. `s` / `S` sort by the selected column (numbers,
   dates, enums in their declared order, text with accents ignored; empty values last), `/`
   filters rows, `Enter` opens the item's note at its line (`Ctrl-o` comes back to the table as
@@ -40,14 +40,14 @@ change commands, keys and file formats; patch versions only fix things.
   table is read again then). The table follows changes on disk, keeping the selected row; wide
   tables scroll sideways. The table itself is a declarative view (`crates/cold-lava/src/table.rs`:
   columns with a value type and a look, rows by id, events back), shaped to cross the view
-  gateway. `cold-lava table VAULT TYPE [--sort FIELD] [--json]` prints the same rows.
+  gateway. `cold-lava table WORKSPACE TYPE [--sort FIELD] [--json]` prints the same rows.
 - The reader draws typed values with their types' looks: `badge` as a chip, `icon`, a colour by
   name (one table in the frontend, so a light terminal can swap it), `dim`, `strike`, `bold`,
   `hide`, `link` (the value becomes a link `Tab` and `Enter` follow), `whole` (the whole item)
   and `by-value`. The note's typed frontmatter fields with a look go on a line above it. A look
   is skipped rather than drawn in the wrong place when its value can't be found exactly in the
   rendered text. The built-in task fades and strikes through done and cancelled tasks and puts
-  its priority on a chip coloured by urgency; the example vault's `vei` chip covers the whole
+  its priority on a chip coloured by urgency; the example workspace's `vei` chip covers the whole
   `VEI 6`. With `NO_COLOR`, chips are reverse video and colours are left out. `by-value` on a
   `${tasks.statuses}` field takes the status types (`done`, `cancelled`, …).
 - Inline types: a type with `on = "inline"` is found by its `match` anywhere in the text of
@@ -55,8 +55,8 @@ change commands, keys and file formats; patch versions only fix things.
   and never in code spans, code blocks, math or frontmatter. Each match is an item of that type
   with its `parent` the block it sits in, its fields read from the pattern's groups, the
   section's heading or the note; `where` takes the note's folder, properties and tags, the
-  section, and `inside` (the block's primitive or kind, such as `task`). `cold-lava items VAULT
-  TYPE` lists them and `cold-lava types` counts them. The example vault's `vei` type finds a VEI
+  section, and `inside` (the block's primitive or kind, such as `task`). `cold-lava items WORKSPACE
+  TYPE` lists them and `cold-lava types` counts them. The example workspace's `vei` type finds a VEI
   written in prose (`its 1883 eruption (VEI 6, …)`).
 - `cold-lava item set FILE ID FIELD VALUE` (`--remove`, `--rev REV`, `--dry-run`, `--json`)
   sets one field of a typed item through the source it is read from: a marker, a Dataview field
@@ -67,7 +67,7 @@ change commands, keys and file formats; patch versions only fix things.
   the note changed. A stale rev exits with code 3. The engine's `edit::set_field` does it, for
   the coming `items/edit set-field`.
 - The task is a type: `crates/engine/types/task.toml` defines `task` in the same TOML as
-  anyone's types, with the vault's Tasks plugin statuses and global filter filled in, and every
+  anyone's types, with the workspace's Tasks plugin statuses and global filter filled in, and every
   task is read through it; `cold-lava types` lists it. `cold-lava items`, `agenda` and `task
   toggle` read the same tasks with the same ids, and `agenda --json` and `task toggle` print the
   same as before. A type that `extends = "task"` (an `idea` with `where.tag = ["idea"]`) takes
@@ -76,7 +76,7 @@ change commands, keys and file formats; patch versions only fix things.
 - `task toggle` follows the Tasks plugin's custom statuses: the status goes to its
   `nextStatusSymbol` (` ` → `/` → `x`, say), with the done date when the next one is done.
 - `cold-lava item set` works on tasks: `status " "` unticks through the checkbox (a space is a
-  status), `status_type done` writes the vault's done symbol, and dates, priority and recurrence
+  status), `status_type done` writes the workspace's done symbol, and dates, priority and recurrence
   go through their markers or Dataview fields. A field read from the same text (a status's type)
   may change with the one set.
 - Types can read a task's checkbox (`checkbox = true`, a space included), leave strings out of
@@ -84,17 +84,17 @@ change commands, keys and file formats; patch versions only fix things.
   are in (`note = "date"`), take an enum's values from `${tasks.statuses}`, and name fields a
   block must have (`required = ["text"]`; without one, the next type that matches takes it).
   `${tasks.global-filter}`, `${tasks.statuses}`, `${tasks.format}` and `${daily.format}` in a
-  pattern now stand for the vault's settings. A marker reads past an emoji's variation selector
+  pattern now stand for the workspace's settings. A marker reads past an emoji's variation selector
   (`⏳️ 2026-11-05`), and a `flags` source leaves every one of its glyphs out of the rest.
 
 ### Changed
 
 - `item set` (and editing in a table) adds a date a task doesn't have the way its line writes its
-  other fields, else in the vault's Tasks plugin format: `📅 2026-12-01` in an emoji vault, where
+  other fields, else in the workspace's Tasks plugin format: `📅 2026-12-01` in an emoji workspace, where
   it used to add `[due:: 2026-12-01]` everywhere.
 - Tasks in `cold-lava items --json` list their tags without `#` (`"tags": ["home"]`), as every
   type's tags are; the other keys, their order and the ids stay.
-- Tasks are read as the Tasks plugin and the vault read them where the old reading differed:
+- Tasks are read as the Tasks plugin and the workspace read them where the old reading differed:
   nothing in a code span is a date or a tag; of a field written twice (`📅 a 📅 b`) the first
   counts and both leave the words; an unbracketed `due:: x` in the middle of a task's line is
   words (Dataview reads it only at a line's start); `#2026` is no tag and `(#paren)` is.

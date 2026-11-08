@@ -3,9 +3,9 @@ tags: [guide]
 ---
 # Whiteboard
 
-Press `w` in the graph, or run `cold-lava board example-vault`.
+Press `w` in the graph, or run `cold-lava board example-workspace`.
 
-Boards are Obsidian Canvas files (`.canvas`), so they open in Obsidian too. This vault has two:
+Boards are Obsidian Canvas files (`.canvas`), so they open in Obsidian too. This workspace has two:
 
 - **Welcome**: a guided tour with a checklist of things to try.
 - **Eruptions Timeline**: note cards for [[Vesuvius]], [[Krakatoa]], [[Mount St. Helens]] and

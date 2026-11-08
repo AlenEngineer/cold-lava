@@ -1,7 +1,7 @@
 # The task, as the Obsidian Tasks plugin writes it: a checkbox list item with its dates,
 # recurrence and priority in the plugin's emoji format (`📅 2026-11-12`) or its Dataview format
 # (`[due:: 2026-11-12]`). Built into cold-lava and written in the same language as anyone's types
-# (docs/extensions.md, "Types"). `${tasks.…}` is the vault's Tasks plugin setting of that name.
+# (docs/extensions.md, "Types"). `${tasks.…}` is the workspace's Tasks plugin setting of that name.
 version = 1
 
 [types.task]
@@ -13,7 +13,7 @@ actions = ["tasks.toggle"]
 priority = 1
 
 [types.task.fields]
-# The character between the brackets, and what the vault's statuses say it means.
+# The character between the brackets, and what the workspace's statuses say it means.
 status = "text"
 status_type = { type = "enum", values = "${tasks.statuses}" }
 # The words: the text without the checkbox, dates, recurrence, priority and global filter.

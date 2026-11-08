@@ -15,7 +15,7 @@ pub struct Config {
     /// Keys by command id, only for ids that exist (the extensions' included) and keys that
     /// parse.
     pub keys: BTreeMap<String, Vec<Key>>,
-    /// `[markdown] flavour`, resolved. `None` lets the vault decide (`markdown::flavour_for`).
+    /// `[markdown] flavour`, resolved. `None` lets the workspace decide (`markdown::flavour_for`).
     pub flavour: Option<Flavour>,
     /// `[types]` as written, for the engine to check (`types::Layer::config`).
     pub types: toml::Table,
@@ -250,22 +250,22 @@ mod tests {
     #[test]
     fn list_and_empty_list() {
         let (keys, errors) =
-            menu("[keys]\n\"note.switch\" = [\"p\", \"ctrl+p\"]\n\"vault.add\" = []\n");
+            menu("[keys]\n\"note.switch\" = [\"p\", \"ctrl+p\"]\n\"workspace.add\" = []\n");
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(keys.label("note.switch"), "p / Ctrl-p");
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
         assert_eq!(keys.get(ctrl_p), core(MenuAction::Switcher));
-        assert_eq!(keys.label("vault.add"), "");
+        assert_eq!(keys.label("workspace.add"), "");
         assert_eq!(keys.get(press('a')), None);
     }
 
     #[test]
     fn unknown_command_is_reported_and_the_rest_applies() {
-        let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"vault.add\" = \"V\"\n");
+        let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"workspace.add\" = \"V\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("graph.opne"));
         assert_eq!(keys.label("graph.open"), "g");
-        assert_eq!(keys.label("vault.add"), "V");
+        assert_eq!(keys.label("workspace.add"), "V");
     }
 
     #[test]

@@ -57,7 +57,7 @@ pub enum Role {
     Editor,
 }
 
-/// A program to run in a pane, in the vault's folder.
+/// A program to run in a pane, in the workspace's folder.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PaneSpec {
     pub program: String,
@@ -80,7 +80,7 @@ pub enum PaneNews {
     Exited { pane: PaneId, error: Option<String> },
 }
 
-/// What the core asks of the editor (host → extension). Paths are absolute, inside the vault.
+/// What the core asks of the editor (host → extension). Paths are absolute, inside the workspace.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum EditorRequest {
@@ -121,7 +121,7 @@ pub enum Effect {
     #[serde(rename = "command/run")]
     RunCommand { id: String, args: Value },
     /// `note` was just written: read it now instead of when the watcher notices.
-    #[serde(rename = "vault/saved")]
+    #[serde(rename = "workspace/saved")]
     Saved { note: PathBuf },
     #[serde(rename = "pane/open")]
     OpenPane { pane: PaneId, spec: PaneSpec },
@@ -166,7 +166,7 @@ impl Host<'_> {
         self.effects.push(Effect::RunCommand { id, args });
     }
 
-    /// `vault/saved`
+    /// `workspace/saved`
     pub fn saved(&mut self, note: PathBuf) {
         self.effects.push(Effect::Saved { note });
     }
@@ -310,7 +310,7 @@ mod tests {
             Effect::Saved {
                 note: "/v/Lava.md".into(),
             },
-            json!({"method": "vault/saved", "params": {"note": "/v/Lava.md"}}),
+            json!({"method": "workspace/saved", "params": {"note": "/v/Lava.md"}}),
         );
         wire(
             Effect::OpenPane {

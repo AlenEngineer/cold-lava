@@ -24,7 +24,7 @@ mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, edit, frontmatter, index, items, markdown, merge, paths, rename,
-    search, tasks, templates, tidy, trash, types, vault, write,
+    search, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -37,25 +37,25 @@ use std::path::{Path, PathBuf};
 const USAGE: &str = "cold-lava — Obsidian's graph view and canvas, in the terminal
 
 Usage:
-  cold-lava                           main menu: your vaults, their notes, and Neovim
-  cold-lava VAULT_DIR                 main menu with that vault open
-  cold-lava graph [VAULT_DIR]         go straight to the graph view
+  cold-lava                           main menu: your workspaces, their notes, and Neovim
+  cold-lava WORKSPACE                 main menu with that workspace open
+  cold-lava graph [WORKSPACE]         go straight to the graph view
   cold-lava board [FILE.canvas|DIR]   whiteboard (Obsidian Canvas); no file = picker
-  cold-lava daily VAULT_DIR [DATE]    open a day's daily note (created from your template)
-  cold-lava agenda VAULT_DIR          dated tasks and daily notes, for other programs
-  cold-lava items VAULT_DIR KIND      the vault's tasks, lists, headings, blocks or a type's
+  cold-lava daily WORKSPACE [DATE]    open a day's daily note (created from your template)
+  cold-lava agenda WORKSPACE          dated tasks and daily notes, for other programs
+  cold-lava items WORKSPACE KIND      the workspace's tasks, lists, headings, blocks or a type's
                                       items, one per line
-  cold-lava search VAULT_DIR WORDS…   full-text search (words, \"quoted phrases\")
+  cold-lava search WORKSPACE WORDS…   full-text search (words, \"quoted phrases\")
   cold-lava task toggle FILE:LINE     tick / untick a task, like Obsidian Tasks
   cold-lava item set FILE ID FIELD VALUE
                                       set one field of a typed item (ID from items --json),
                                       refused unless the note reads back as asked
-  cold-lava rename VAULT_DIR NOTE NEW rename or move a note or folder, updating every link
-  cold-lava table VAULT_DIR TYPE      a type's items as the table view shows them
-  cold-lava tidy VAULT_DIR            orphan notes, unused attachments, empty folders and
+  cold-lava rename WORKSPACE NOTE NEW rename or move a note or folder, updating every link
+  cold-lava table WORKSPACE TYPE      a type's items as the table view shows them
+  cold-lava tidy WORKSPACE            orphan notes, unused attachments, empty folders and
                                       unresolved links (read-only)
   cold-lava keys                      every command and its keys; checks config.toml
-  cold-lava types [VAULT_DIR]         every type: where it comes from, what it found, its
+  cold-lava types [WORKSPACE]         every type: where it comes from, what it found, its
                                       shapes and fields;
                                       checks [types] in config.toml and .cold-lava/types.toml
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
@@ -213,13 +213,13 @@ fn run() -> Result<()> {
         Some("types") => {
             let root = match args.word(1) {
                 Some(dir) => PathBuf::from(dir),
-                None => vault::find_vault_root(Path::new(".")),
+                None => workspace::find_workspace_root(Path::new(".")),
             };
-            let found = types::for_vault(&root);
+            let found = types::for_workspace(&root);
             if json {
                 println!("{}", serde_json::to_string_pretty(&found)?);
             } else {
-                let counts = vault::scan(&root).ok().map(|v| type_counts(&v));
+                let counts = workspace::scan(&root).ok().map(|v| type_counts(&v));
                 print_types(&found, counts.as_ref());
                 if !found.errors.is_empty() {
                     eprintln!("errors:");
@@ -235,14 +235,14 @@ fn run() -> Result<()> {
         }
         Some("board") => {
             let target = PathBuf::from(args.word(1).unwrap_or("."));
-            let root = vault::find_vault_root(&target);
+            let root = workspace::find_workspace_root(&target);
             let file = (target.extension().is_some_and(|e| e == "canvas")).then_some(target);
             with_terminal(|t| board::launch(t, &root, file, false))
         }
         Some("graph") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
             let core = core::Core::open(&root)?;
-            if core.index.vault.notes.is_empty() {
+            if core.index.workspace.notes.is_empty() {
                 anyhow::bail!("no .md notes found under {}", core.root().display());
             }
             let mut app = app::App::new(core, render);
@@ -262,7 +262,7 @@ fn run() -> Result<()> {
             if to < from {
                 anyhow::bail!("--to is before --from");
             }
-            let agenda = tasks::agenda(&vault::scan(&root)?, from, to);
+            let agenda = tasks::agenda(&workspace::scan(&root)?, from, to);
             if json {
                 println!("{}", serde_json::to_string_pretty(&agenda)?);
             } else {
@@ -273,7 +273,7 @@ fn run() -> Result<()> {
         Some("items") => {
             let (Some(root), Some(kind)) = (args.word(1), args.word(2)) else {
                 anyhow::bail!(
-                    "usage: cold-lava items VAULT_DIR KIND [--json]\nKIND is one of: {} or a type",
+                    "usage: cold-lava items WORKSPACE KIND [--json]\nKIND is one of: {} or a type",
                     types::BUILT_IN
                         .iter()
                         .chain(items::KINDS)
@@ -282,8 +282,8 @@ fn run() -> Result<()> {
                         .join(", ")
                 );
             };
-            let vault = vault::scan(Path::new(root))?;
-            let settings = vault.item_settings();
+            let workspace = workspace::scan(Path::new(root))?;
+            let settings = workspace.item_settings();
             if !items::KINDS.contains(&kind) && !settings.matcher.names().any(|n| n == kind) {
                 let kinds: Vec<&str> = types::BUILT_IN
                     .iter()
@@ -302,8 +302,12 @@ fn run() -> Result<()> {
                 );
             }
             let mut out = std::io::stdout().lock();
-            for note in &vault.notes {
-                for item in vault.items(note).iter().filter(|i| i.data.answers_to(kind)) {
+            for note in &workspace.notes {
+                for item in workspace
+                    .items(note)
+                    .iter()
+                    .filter(|i| i.data.answers_to(kind))
+                {
                     let written = if json {
                         writeln!(out, "{}", serde_json::to_string(item)?)
                     } else {
@@ -320,11 +324,11 @@ fn run() -> Result<()> {
         }
         Some("table") => {
             let (Some(root), Some(ty)) = (args.word(1), args.word(2)) else {
-                anyhow::bail!("usage: cold-lava table VAULT_DIR TYPE [--sort FIELD] [--json]");
+                anyhow::bail!("usage: cold-lava table WORKSPACE TYPE [--sort FIELD] [--json]");
             };
-            let vault = vault::scan(Path::new(root))?;
-            let Some(built) = type_table::build(&vault, ty) else {
-                let names: Vec<String> = type_table::types(&vault)
+            let workspace = workspace::scan(Path::new(root))?;
+            let Some(built) = type_table::build(&workspace, ty) else {
+                let names: Vec<String> = type_table::types(&workspace)
                     .into_iter()
                     .map(|(n, _)| n)
                     .collect();
@@ -356,7 +360,7 @@ fn run() -> Result<()> {
         }
         Some("tidy") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
-            let ix = index::Index::build(vault::scan(&root)?);
+            let ix = index::Index::build(workspace::scan(&root)?);
             let report = tidy::report(&ix);
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -369,7 +373,7 @@ fn run() -> Result<()> {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
             let query = args.words.get(2..).map(|w| w.join(" ")).unwrap_or_default();
             if query.trim().is_empty() {
-                anyhow::bail!("usage: cold-lava search VAULT_DIR WORDS… [--json]");
+                anyhow::bail!("usage: cold-lava search WORKSPACE WORDS… [--json]");
             }
             let limit = match args.values.get("limit") {
                 Some(n) => n
@@ -377,7 +381,7 @@ fn run() -> Result<()> {
                     .map_err(|_| anyhow::anyhow!("--limit needs a number"))?,
                 None => 5,
             };
-            let ix = index::Index::build(vault::scan(&root)?);
+            let ix = index::Index::build(workspace::scan(&root)?);
             let hits = search::search(&ix, &query, limit);
             if json {
                 println!(
@@ -386,7 +390,7 @@ fn run() -> Result<()> {
                 );
             } else {
                 for h in &hits {
-                    let n = &ix.vault.notes[h.note];
+                    let n = &ix.workspace.notes[h.note];
                     for l in &h.lines {
                         println!("{}.md:{}: {}", n.rel, l.line, l.text.trim());
                     }
@@ -405,21 +409,21 @@ fn run() -> Result<()> {
             let (Some(root), Some(note), Some(new)) = (args.word(1), args.word(2), args.word(3))
             else {
                 anyhow::bail!(
-                    "usage: cold-lava rename VAULT_DIR NOTE NEW [--dry-run] [--json]\n\
+                    "usage: cold-lava rename WORKSPACE NOTE NEW [--dry-run] [--json]\n\
                      NOTE is a note's name or path, or a folder; NEW is a new name (same \
                      folder), a folder ending in / (keeps the name), or a full path"
                 );
             };
-            let ix = index::Index::build(vault::scan(Path::new(root))?);
+            let ix = index::Index::build(workspace::scan(Path::new(root))?);
             let folder = note.trim_matches('/');
-            let plan = if !folder.is_empty() && ix.vault.root.join(folder).is_dir() {
+            let plan = if !folder.is_empty() && ix.workspace.root.join(folder).is_dir() {
                 rename::plan_folder(&ix, folder, &rename::folder_target(folder, new)?)?
             } else {
                 let i = ix
                     .by_rel(note)
                     .or_else(|| ix.resolver.resolve(note))
                     .ok_or_else(|| anyhow::anyhow!("no note or folder called {note}"))?;
-                let to = rename::target_rel(&format!("{}.md", ix.vault.notes[i].rel), new)?;
+                let to = rename::target_rel(&format!("{}.md", ix.workspace.notes[i].rel), new)?;
                 rename::plan(&ix, i, &to)?
             };
             let dry = args.has("dry-run");
@@ -450,7 +454,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("daily") => {
-            let root = vault::find_vault_root(&PathBuf::from(args.word(1).unwrap_or(".")));
+            let root = workspace::find_workspace_root(&PathBuf::from(args.word(1).unwrap_or(".")));
             let date = daily::parse_cli_date(args.word(2).unwrap_or("today"))?;
             let path = daily::ensure(&root, date)?;
             if args.has("path") {
@@ -514,7 +518,7 @@ fn run() -> Result<()> {
             let path = Path::new(file)
                 .canonicalize()
                 .map_err(|e| anyhow::anyhow!("{file}: {e}"))?;
-            let root = vault::find_vault_root(&path);
+            let root = workspace::find_workspace_root(&path);
             let note = path
                 .strip_prefix(&root)
                 .unwrap_or(&path)
@@ -774,10 +778,10 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
 }
 
 /// Items found and values that didn't parse, by type: an item counts for its own type only.
-fn type_counts(vault: &vault::Vault) -> HashMap<String, (usize, usize)> {
+fn type_counts(workspace: &workspace::Workspace) -> HashMap<String, (usize, usize)> {
     let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
-    for note in &vault.notes {
-        for item in vault.items(note) {
+    for note in &workspace.notes {
+        for item in workspace.items(note) {
             if let items::Data::Typed(t) = &item.data {
                 let c = counts.entry(t.kind.clone()).or_default();
                 c.0 += 1;
@@ -938,7 +942,7 @@ fn item_line(item: &items::Item) -> String {
 }
 
 fn print_agenda(a: &tasks::Agenda) {
-    println!("{} · {} to {}", a.vault, a.from, a.to);
+    println!("{} · {} to {}", a.workspace, a.from, a.to);
     if a.days.is_empty() {
         println!("nothing dated in this range");
     }

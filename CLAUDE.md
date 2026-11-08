@@ -1,9 +1,13 @@
 # cold-lava — notes for Claude
 
-cold-lava is a terminal workspace for Obsidian vaults, written in Rust (ratatui). It works on a
-vault **without the Obsidian app, and safely alongside it**. That is the project's core value:
+cold-lava is a terminal app for Obsidian vaults, written in Rust (ratatui). It works on a
+workspace **without the Obsidian app, and safely alongside it**. That is the project's core value:
 everything else (graph, whiteboards, agenda) is a feature on top, and is meant to become an
 extension once there is an extension API.
+
+cold-lava's word for a folder of notes is **workspace**, in the UI, the CLI, the docs and the
+code. "Vault" is only for Obsidian's own concept (an Obsidian vault, Obsidian's vault list,
+`obsidian://open?vault=`).
 
 ## Commands
 
@@ -11,7 +15,7 @@ extension once there is an extension API.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings   # CI runs the latest stable clippy, which can be stricter than yours
 cargo test --workspace
-cargo run --release -- example-vault                    # main menu on the example vault
+cargo run --release -- example-workspace                # main menu on the example workspace
 scripts/release-check.sh                                # is this commit a release, and is it ready?
 ```
 
@@ -21,46 +25,46 @@ required checks on `main`.
 ## Architecture
 
 A Cargo workspace of four crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
-`[workspace.package]`; `example-vault/`, `docs/` and `scripts/` stay at the root.
+`[workspace.package]`; `example-workspace/`, `docs/` and `scripts/` stay at the root.
 
 - `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
   depend on ratatui, crossterm, portable-pty or vt100 (`cargo tree -p cold-lava-engine`).
 - `crates/cold-lava`: the `cold-lava` binary (extensions and UI below, `tests/` with the drive
-  scripts and goldens). `main.rs` imports the engine's modules by name, so `crate::vault` etc.
+  scripts and goldens). `main.rs` imports the engine's modules by name, so `crate::workspace` etc.
   work in the binary.
 - `crates/views`: `cold-lava-views`, the frontend framework, empty on purpose: pieces move into it
   from `crates/cold-lava` once a second frontend needs them (`docs/engine.md`, "The frontend").
 - `crates/editor`: `cold-lava-editor`, the small text editor, headless (text, cursors, edits,
   undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
   in place. Saves go through the engine's safe writes.
-- `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the
+- `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
   workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
   a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
   webkit2gtk-4.1). The terminal UI stays the main frontend.
 
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
-- `core.rs`: `Core` = one live vault. Owns the `Index`, is the only file watcher, re-reads only
+- `core.rs`: `Core` = one live workspace. Owns the `Index`, is the only file watcher, re-reads only
   changed notes and emits `Event`s (`poll()`, `subscribe()`). Screens share it: the menu lends
   its core to the graph view and gets it back. Don't add another watcher or full rescan loop.
-- `write.rs`: the only way to write to a vault: `write_atomic`, `replace` (refused if the file
-  changed since it was read), `create`, `move_file`. Never call `std::fs::write` on vault files.
-- `trash.rs`: the only way to delete: `delete` moves a file to the trash the vault's
+- `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
+  changed since it was read), `create`, `move_file`. Never call `std::fs::write` on workspace files.
+- `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back.
-- `vault.rs`: scans a vault: notes with links (`refs` keep line and context), tags,
+- `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
-- `index.rs`: `Index` = vault + the single link `Resolver` (Obsidian's rules: path, then name,
+- `index.rs`: `Index` = workspace + the single link `Resolver` (Obsidian's rules: path, then name,
   shallowest wins) + backlinks. Don't write another link resolver.
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs` (in the `rename-core` PR until it's merged): rename/move with every link updated;
   `plan()` then `apply()`.
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
-  are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `vault.rs`.
+  are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
-  in one pulldown-cmark pass in the vault's flavour; `Vault::items()` caches them per note on
+  in one pulldown-cmark pass in the workspace's flavour; `Workspace::items()` caches them per note on
   first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`
   hashes the item's lines. Read tasks through items, not by scanning lines.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
@@ -88,7 +92,7 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 
 **Features / UI** (`crates/cold-lava/src`):
 
-- `home.rs`: the main menu (vaults, note tree, the right pane with the reader or an extension's
+- `home.rs`: the main menu (workspaces, note tree, the right pane with the reader or an extension's
   program, backlinks, switcher, search). It applies the extensions' `Effect`s.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a
   private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (Neovim's come from `VIM_SCRIPT` in
@@ -114,7 +118,7 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   and task toggles check the file didn't change since it was read.
 - Keep fields and formatting you don't understand (canvas `extra` maps; rename edits canvas files
   as text instead of re-serialising them).
-- Follow the vault's own settings where Obsidian has one: `.obsidian/app.json` (new-note
+- Follow the workspace's own settings where Obsidian has one: `.obsidian/app.json` (new-note
   location), `daily-notes.json`, `graph.json` colour groups, Tasks plugin `data.json`.
 - Links keep the style they were written in (`[[Name]]` short, paths stay paths, relative
   Markdown links stay relative). Code blocks and inline code are never treated as links.
@@ -139,11 +143,11 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 
 ## Testing the UI
 
-- `example-vault/` is the showcase vault and is used by tests (they count its notes and groups).
+- `example-workspace/` is the showcase workspace and is used by tests (they count its notes and groups).
   Copy it to a temp folder before trying anything that writes.
-- Drive the TUI headless with `cold-lava drive SCRIPT -- VAULT` (`cold-lava --help` lists the
+- Drive the TUI headless with `cold-lava drive SCRIPT -- WORKSPACE` (`cold-lava --help` lists the
   steps; `crates/cold-lava/tests/drive/*.drive` are examples). Wait with `wait-for TEXT`, not `wait`. Runs get an
-  empty home (so they don't read your config or add vaults to your list; `--real-home` to
+  empty home (so they don't read your config or add workspaces to your list; `--real-home` to
   use yours), and `env COLD_LAVA_EDITOR=none` for the reader instead of Neovim. The embedded editor needs `nvim`
   (or `vim`) installed.
 - Pixel mode only shows in terminals with the Kitty graphics protocol (Ghostty, Kitty, WezTerm),
@@ -156,5 +160,5 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
   it; the graph, canvas, agenda and the menu should become extensions of the core too. Then
-  performance for large vaults (Barnes–Hut layout), a config file, light-terminal colours.
+  performance for large workspaces (Barnes–Hut layout), a config file, light-terminal colours.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).

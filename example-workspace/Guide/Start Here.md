@@ -3,7 +3,7 @@ tags: [guide]
 ---
 # Start here
 
-Welcome to the **cold-lava example vault**: a tiny knowledge base about volcanoes, made to show off
+Welcome to the **cold-lava example workspace**: a tiny knowledge base about volcanoes, made to show off
 what cold-lava can do. Every note is an ordinary Markdown file, so you can open this folder in
 Obsidian too.
 

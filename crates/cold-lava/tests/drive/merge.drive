@@ -2,7 +2,7 @@
 # lists the frontmatter and the links that will change, y merges, u undoes the whole merge, and
 # the second merge stays. tests/drive.rs checks the files and the trash.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault 34 notes
+wait-for example-workspace 34 notes
 keys p
 type kilauea
 wait-for 1 notes
@@ -10,7 +10,7 @@ keys enter
 wait-for Volcanoes/Kīlauea  reading
 keys D
 wait-for duplicated as Kīlauea 1 · R rename
-wait-for example-vault 35 notes
+wait-for example-workspace 35 notes
 expect Volcanoes/Kīlauea 1 › Kīlauea  reading
 keys esc p
 type pahoehoe
@@ -44,12 +44,12 @@ keys enter
 wait-for Concepts/Pāhoehoe  into  Concepts/Lava
 keys y
 wait-for merged Pāhoehoe into Lava · 4 links now lead there · u undo
-wait-for example-vault 34 notes
+wait-for example-workspace 34 notes
 expect Concepts/Lava  reading
 expect-not • Pāhoehoe
 keys u
 wait-for merge undone: Concepts/Pāhoehoe.md is back and Concepts/Lava.md is as it was
-wait-for example-vault 35 notes
+wait-for example-workspace 35 notes
 expect Concepts/Pāhoehoe  reading
 keys M
 wait-for Merge Pāhoehoe into…
@@ -59,7 +59,7 @@ keys enter
 wait-for Concepts/Pāhoehoe  into  Concepts/Lava
 keys enter
 wait-for merged Pāhoehoe into Lava · 4 links now lead there · u undo
-wait-for example-vault 34 notes
+wait-for example-workspace 34 notes
 keys esc
 wait-for ? help  q quit
 keys q

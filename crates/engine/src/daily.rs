@@ -1,4 +1,4 @@
-//! Daily notes, following the vault's Obsidian "Daily notes" settings
+//! Daily notes, following the workspace's Obsidian "Daily notes" settings
 //! (`.obsidian/daily-notes.json`: folder, moment.js date format, template).
 
 use anyhow::{Context, Result};
@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone, Default)]
 pub struct Settings {
-    /// Folder relative to the vault root ("" = root).
+    /// Folder relative to the workspace root ("" = root).
     pub folder: String,
     /// moment.js format; may contain `/` for sub-folders, e.g. `YYYY/MM/YYYY-MM-DD`.
     pub format: String,
-    /// Template note, relative to the vault root (without `.md` is fine).
+    /// Template note, relative to the workspace root (without `.md` is fine).
     pub template: Option<String>,
 }
 
@@ -38,7 +38,7 @@ impl Settings {
         }
     }
 
-    /// Vault-relative path of the daily note for `date`.
+    /// Workspace-relative path of the daily note for `date`.
     pub fn rel_path(&self, date: NaiveDate) -> String {
         let name = format_date(date, &self.format);
         if self.folder.is_empty() {
@@ -48,7 +48,7 @@ impl Settings {
         }
     }
 
-    /// The date of a note, if its vault-relative path is a daily note.
+    /// The date of a note, if its workspace-relative path is a daily note.
     pub fn date_of(&self, rel: &str) -> Option<NaiveDate> {
         let rel = rel.strip_suffix(".md")?;
         let inside = if self.folder.is_empty() {

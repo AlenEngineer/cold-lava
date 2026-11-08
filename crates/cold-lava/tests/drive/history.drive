@@ -1,6 +1,6 @@
 # Back and forward through followed links, then back to a search with its query.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p kilau
 wait-for Kīlauea
 keys enter

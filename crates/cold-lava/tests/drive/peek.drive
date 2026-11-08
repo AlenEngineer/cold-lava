@@ -1,7 +1,7 @@
 # Peek: K shows where the selected link leads without going there; Enter goes, Esc closes.
 size 120x18
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p
 type kilau
 wait-for 1 notes

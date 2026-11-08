@@ -1,4 +1,4 @@
-//! Markdown as a vault's app reads it. A `Flavour` is a named set of syntax features, and
+//! Markdown as a workspace's app reads it. A `Flavour` is a named set of syntax features, and
 //! `parse` turns a note into a `Doc` for the reader to draw. Syntax the flavour lacks stays
 //! plain text, so `==x==` is a highlight under `obsidian` and four equals signs under `github`.
 //!
@@ -223,9 +223,9 @@ pub fn set_configured(flavour: Option<Flavour>) {
 
 /// The flavour set in `config.toml`, else `obsidian` for a folder Obsidian has opened (it has
 /// `.obsidian/`), else `github`.
-pub fn flavour_for(vault_root: &Path) -> Flavour {
+pub fn flavour_for(workspace_root: &Path) -> Flavour {
     CONFIGURED.get().cloned().flatten().unwrap_or_else(|| {
-        let name = if vault_root.join(".obsidian").is_dir() {
+        let name = if workspace_root.join(".obsidian").is_dir() {
             "obsidian"
         } else {
             "github"
@@ -300,9 +300,9 @@ pub struct Item {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkKind {
-    /// `[[target|text]]`: resolve `target` (minus `#…`) with the vault's resolver.
+    /// `[[target|text]]`: resolve `target` (minus `#…`) with the workspace's resolver.
     Wiki,
-    /// `[text](target)` to a file in the vault.
+    /// `[text](target)` to a file in the workspace.
     Markdown,
     /// A URL with a scheme, to open outside.
     Url,
@@ -816,7 +816,7 @@ fn is_blank(inline: &Inline) -> bool {
 // Extras: the syntax pulldown-cmark doesn't parse. They work on `Inline`s, where code is its
 // own variant, so none of them reaches inside code.
 
-/// `#tag`: after the start of the text, a space, `(` or `,`; at least one non-digit. The vault
+/// `#tag`: after the start of the text, a space, `(` or `,`; at least one non-digit. The workspace
 /// index finds tags with the same pattern.
 pub const TAG: &str = r"(?:^|[\s(,])#([\p{L}\p{N}_/\-]+)";
 
@@ -1541,7 +1541,7 @@ mod tests {
     }
 
     #[test]
-    fn flavour_is_detected_from_the_vault() {
+    fn flavour_is_detected_from_the_workspace() {
         let dir = std::env::temp_dir().join(format!("cold-lava-flavour-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(flavour_for(&dir).name, "github");
@@ -1551,7 +1551,7 @@ mod tests {
     }
 
     #[test]
-    fn example_vault_notes_parse() {
+    fn example_workspace_notes_parse() {
         fn links(blocks: &[Block]) -> usize {
             fn inl(i: &[Inline]) -> usize {
                 i.iter()
@@ -1578,7 +1578,7 @@ mod tests {
                 .sum()
         }
         let flavour = Flavour::built_in("obsidian").unwrap();
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
         let mut notes = 0;
         let mut found = 0;
         for entry in walkdir::WalkDir::new(&root) {

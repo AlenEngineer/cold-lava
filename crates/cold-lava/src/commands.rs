@@ -38,7 +38,7 @@ pub enum MenuAction {
     NewNote,
     NewFolder,
     Today,
-    AddVault,
+    AddWorkspace,
     Rescan,
     OpenInObsidian,
     EditFullscreen,
@@ -131,7 +131,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "focus.next",
         Group::Go,
         "next pane",
-        "switch between vaults, notes, editor and backlinks",
+        "switch between workspaces, notes, editor and backlinks",
         &["tab"],
     ),
     cmd(
@@ -139,7 +139,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "focus.previous",
         Group::Go,
         "previous pane",
-        "back to the notes, or from the notes to the vaults",
+        "back to the notes, or from the notes to the workspaces",
         &["shift+tab"],
     ),
     cmd(
@@ -192,10 +192,10 @@ pub const MENU: &[Command<MenuAction>] = &[
     ),
     cmd(
         MenuAction::Tidy,
-        "vault.tidy",
+        "workspace.tidy",
         Group::Go,
         "tidy",
-        "tidy the vault: orphan notes, unused attachments, empty folders, unresolved links",
+        "tidy the workspace: orphan notes, unused attachments, empty folders, unresolved links",
         &["T"],
     ),
     cmd(
@@ -211,7 +211,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "agenda.open",
         Group::Go,
         "agenda",
-        "the vault's tasks by day: overdue, today, the next seven days, later, undated; x ticks one",
+        "the workspace's tasks by day: overdue, today, the next seven days, later, undated; x ticks one",
         &["A"],
     ),
     cmd(
@@ -371,7 +371,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "graph.open",
         Group::Go,
         "graph",
-        "graph view of this vault",
+        "graph view of this workspace",
         &["g"],
     ),
     cmd(
@@ -379,7 +379,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "boards.open",
         Group::Go,
         "whiteboards",
-        "whiteboards of this vault",
+        "whiteboards of this workspace",
         &["w"],
     ),
     cmd(
@@ -407,11 +407,11 @@ pub const MENU: &[Command<MenuAction>] = &[
         &["t"],
     ),
     cmd(
-        MenuAction::AddVault,
-        "vault.add",
+        MenuAction::AddWorkspace,
+        "workspace.add",
         Group::App,
-        "add vault",
-        "add a vault (any folder of Markdown files)",
+        "add workspace",
+        "add a workspace (any folder of Markdown files)",
         &["a"],
     ),
     cmd(
@@ -432,10 +432,10 @@ pub const MENU: &[Command<MenuAction>] = &[
     ),
     cmd(
         MenuAction::Rescan,
-        "vault.rescan",
+        "workspace.rescan",
         Group::App,
         "rescan",
-        "rescan the vault",
+        "rescan the workspace",
         &["r"],
     ),
     cmd(
@@ -688,7 +688,7 @@ pub const GRAPH: &[Command<GraphAction>] = &[
         "graph.rescan",
         Group::App,
         "rescan",
-        "rescan the vault",
+        "rescan the workspace",
         &["r"],
     ),
     cmd(
@@ -775,7 +775,7 @@ pub const BOARD: &[Command<BoardAction>] = &[
         "board.add-note",
         Group::Cards,
         "add note",
-        "add a note from the vault as a card",
+        "add a note from the workspace as a card",
         &["f"],
     ),
     cmd(

@@ -1,4 +1,4 @@
-//! The one way cold-lava writes to a vault.
+//! The one way cold-lava writes to a workspace.
 //!
 //! Every write is atomic (a hidden temporary file in the same folder, then a rename), so Obsidian,
 //! Neovim or a sync tool never sees a half-written note. Writes that replace existing content

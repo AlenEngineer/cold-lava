@@ -22,7 +22,7 @@ task  built in
     status_type  done: dim, strike, whole, cancelled: dim, strike, whole
     priority     badge, highest: red, high: orange, medium: yellow, low: cyan, lowest: muted
 
-volcano  vault example-vault/.cold-lava/types.toml
+volcano  workspace example-workspace/.cold-lava/types.toml
   found 9 items
   on note · where tag volcano
     name       text    note name             read-only
@@ -32,7 +32,7 @@ volcano  vault example-vault/.cold-lava/types.toml
   looks
     elevation  icon ▲, badge
 
-eruption  vault example-vault/.cold-lava/types.toml
+eruption  workspace example-workspace/.cold-lava/types.toml
   found 4 items
   on table-row · where header VEI, Example · key vei
     vei        number  column VEI      writable
@@ -41,7 +41,7 @@ eruption  vault example-vault/.cold-lava/types.toml
   looks
     vei        orange, badge
 
-vei  vault example-vault/.cold-lava/types.toml
+vei  workspace example-workspace/.cold-lava/types.toml
   found 3 items
   on inline · match '\bVEI (?<n>\d)\b'
     vei  number  capture n  writable

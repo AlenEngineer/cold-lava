@@ -66,7 +66,7 @@ jobs:
           name="cold-lava-v${{ needs.plan.outputs.version }}-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/cold-lava" README.md LICENSE CHANGELOG.md "$name/"
-          cp -r example-vault "$name/"
+          cp -r example-workspace "$name/"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: actions/upload-artifact@v4

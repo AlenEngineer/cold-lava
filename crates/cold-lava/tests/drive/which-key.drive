@@ -1,7 +1,7 @@
 # Which key: , lists the screen's commands by group; typing one's key runs it, Esc closes.
 size 160x44
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 wait-for , keys  ? help  q quit
 keys ,
 wait-for keys · type one to run it · Esc closes

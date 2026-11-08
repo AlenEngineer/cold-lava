@@ -1,6 +1,6 @@
-//! Builds the link graph from a vault and runs a force-directed layout on it.
+//! Builds the link graph from a workspace and runs a force-directed layout on it.
 
-use crate::vault::Vault;
+use crate::workspace::Workspace;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -56,7 +56,7 @@ const MAX_SPEED: f64 = 25.0;
 const ALPHA_DECAY: f64 = 0.0228;
 pub const ALPHA_MIN: f64 = 0.002;
 
-pub fn build(v: &Vault, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Graph {
+pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Graph {
     let mut nodes: Vec<Node> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut add = |nodes: &mut Vec<Node>, key: String, label: String, kind, path, rel| -> usize {
@@ -292,7 +292,7 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::Note;
+    use crate::workspace::Note;
 
     fn note(rel: &str, links: &[&str], tags: &[&str]) -> Note {
         Note {
@@ -308,8 +308,8 @@ mod tests {
         }
     }
 
-    fn vault(notes: Vec<Note>) -> Vault {
-        Vault {
+    fn workspace(notes: Vec<Note>) -> Workspace {
+        Workspace {
             root: PathBuf::from("/v"),
             name: "v".into(),
             notes,
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn resolves_by_name_and_path_case_insensitively() {
-        let v = vault(vec![
+        let v = workspace(vec![
             note("A", &["b", "deep/C", "Missing"], &[]),
             note("B", &["A"], &[]),
             note("deep/C", &[], &[]),
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn unresolved_tags_and_orphans() {
-        let v = vault(vec![
+        let v = workspace(vec![
             note("A", &["Ghost", "A"], &["topic"]),
             note("Lonely", &[], &[]),
         ]);
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn shortest_path_wins_on_name_collision() {
-        let v = vault(vec![
+        let v = workspace(vec![
             note("x/y/Dup", &[], &[]),
             note("Dup", &[], &[]),
             note("A", &["Dup"], &[]),
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn layout_settles_and_keeps_positions() {
-        let v = vault(
+        let v = workspace(
             (0..20)
                 .map(|i| note(&format!("N{i}"), &[&format!("N{}", (i + 1) % 20)], &[]))
                 .collect(),

@@ -5,14 +5,14 @@
 //! them into one folder) work out every change without touching anything; `apply` checks nothing
 //! changed since, then makes the moves and rewrites the other files atomically, one by one.
 //!
-//! The rule for links: every link in the vault is resolved as the vault is now and as it will
+//! The rule for links: every link in the workspace is resolved as the workspace is now and as it will
 //! be after the move. A link that still leads to the same file, the same way, is left alone;
 //! any other is rewritten in the style it was written in. So `[[Lava]]` survives a folder move,
 //! but becomes a path when the move makes another `Lava` the shallowest one.
 
 use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
-use crate::vault::{attachment_kind, decode_target, encode_target_like};
+use crate::workspace::{attachment_kind, decode_target, encode_target_like};
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
@@ -31,7 +31,7 @@ pub struct Change {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct FileEdit {
-    /// Vault-relative path of the file as it is now.
+    /// Workspace-relative path of the file as it is now.
     pub file: String,
     #[serde(skip)]
     pub path: PathBuf,
@@ -47,7 +47,7 @@ pub struct FileEdit {
 /// One note, other file or folder that moves.
 #[derive(Serialize, Clone, Debug)]
 pub struct Move {
-    /// Vault-relative: a file with its extension, or a folder.
+    /// Workspace-relative: a file with its extension, or a folder.
     pub from: String,
     pub to: String,
     pub folder: bool,
@@ -58,7 +58,7 @@ pub struct Move {
 }
 
 impl Move {
-    /// Where the file at vault-relative `rel` is after this move, if it moves with it.
+    /// Where the file at workspace-relative `rel` is after this move, if it moves with it.
     fn moved_rel(&self, rel: &str) -> Option<String> {
         if !self.folder {
             return (rel == self.from).then(|| self.to.clone());
@@ -78,12 +78,12 @@ impl Move {
 }
 
 /// Everything moving some notes and folders at once changes. Every link is resolved once
-/// against the vault before all the moves and after all of them, so a link between two moving
+/// against the workspace before all the moves and after all of them, so a link between two moving
 /// notes is right, and each changed file is listed once.
 #[derive(Serialize, Clone, Debug)]
 pub struct Plan {
     pub moves: Vec<Move>,
-    /// The files that move (vault-relative, as they are now): the notes, and what the folders hold.
+    /// The files that move (workspace-relative, as they are now): the notes, and what the folders hold.
     pub moving: Vec<String>,
     /// Files whose links change, moving ones included (under their path as it is now).
     pub edits: Vec<FileEdit>,
@@ -135,9 +135,9 @@ impl Plan {
     }
 }
 
-/// Where `new` puts the note at `old_rel` (both vault-relative, `.md` included in the result):
+/// Where `new` puts the note at `old_rel` (both workspace-relative, `.md` included in the result):
 /// a bare name renames it in its folder, `folder/` moves it keeping its name, anything else is
-/// a full vault path.
+/// a full workspace path.
 pub fn target_rel(old_rel: &str, new: &str) -> Result<String> {
     let new = new.trim();
     let new = new.strip_suffix(".md").unwrap_or(new);
@@ -148,7 +148,7 @@ pub fn target_rel(old_rel: &str, new: &str) -> Result<String> {
 }
 
 /// The same for the folder at `old_rel`: a bare name renames it, `folder/` moves it into that
-/// folder, anything else is a full vault path.
+/// folder, anything else is a full workspace path.
 pub fn folder_target(old_rel: &str, new: &str) -> Result<String> {
     target_path(old_rel.trim_matches('/'), new.trim())
 }
@@ -170,13 +170,13 @@ fn target_path(old_rel: &str, new: &str) -> Result<String> {
     Ok(rel)
 }
 
-/// A path a note or folder can have: inside the vault, not hidden, and one links can name.
+/// A path a note or folder can have: inside the workspace, not hidden, and one links can name.
 pub fn check_path(rel: &str) -> Result<()> {
     if rel
         .split('/')
         .any(|c| c.is_empty() || c == "." || c == ".." || c.starts_with('.'))
     {
-        bail!("not a valid path inside the vault: {rel}");
+        bail!("not a valid path inside the workspace: {rel}");
     }
     if rel
         .chars()
@@ -199,7 +199,7 @@ pub(crate) fn dir_of(rel: &str) -> &str {
     rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
 
-/// Resolve `a/b/../c` style paths (vault-relative, no leading slash).
+/// Resolve `a/b/../c` style paths (workspace-relative, no leading slash).
 fn normalize(path: &str) -> Option<String> {
     let mut out: Vec<&str> = Vec::new();
     for c in path.split('/') {
@@ -214,7 +214,7 @@ fn normalize(path: &str) -> Option<String> {
     Some(out.join("/"))
 }
 
-/// Path from folder `from_dir` to vault-relative `to`, e.g. ("A/B", "C/D") → "../../C/D".
+/// Path from folder `from_dir` to workspace-relative `to`, e.g. ("A/B", "C/D") → "../../C/D".
 fn relative(from_dir: &str, to: &str) -> String {
     let f: Vec<&str> = from_dir.split('/').filter(|s| !s.is_empty()).collect();
     let t: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
@@ -240,7 +240,7 @@ enum Via {
 /// shallowest wins), `./` and `../` paths, other files (images, PDFs, canvases) by path, next
 /// to the linking note, or by name.
 pub struct Files {
-    /// Vault-relative, with extension; the index's notes first, in its order.
+    /// Workspace-relative, with extension; the index's notes first, in its order.
     pub rels: Vec<String>,
     by_path: HashMap<String, usize>,
     by_name: HashMap<String, usize>,
@@ -249,15 +249,15 @@ pub struct Files {
 }
 
 impl Files {
-    /// The vault's notes, and its other files read from disk.
-    pub fn of_vault(ix: &Index) -> Files {
+    /// The workspace's notes, and its other files read from disk.
+    pub fn of_workspace(ix: &Index) -> Files {
         let mut rels: Vec<String> = ix
-            .vault
+            .workspace
             .notes
             .iter()
             .map(|n| format!("{}.md", n.rel))
             .collect();
-        let root = &ix.vault.root;
+        let root = &ix.workspace.root;
         let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
             e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
@@ -305,12 +305,12 @@ impl Files {
     }
 
     /// The file a link written in a file in `dir` leads to (`target` already decoded:
-    /// `vault::decode_target`).
+    /// `workspace::decode_target`).
     pub fn resolve(&self, dir: &str, target: &str) -> Option<usize> {
         self.find(dir, target).map(|(i, _)| i)
     }
 
-    /// The file at a vault path (notes with or without `.md`).
+    /// The file at a workspace path (notes with or without `.md`).
     pub(crate) fn path(&self, key: &str) -> Option<usize> {
         self.by_path.get(&key.to_lowercase()).copied()
     }
@@ -356,7 +356,7 @@ fn patterns() -> &'static Patterns {
     })
 }
 
-/// The vault before and after the move: same files (same indices), new paths for some.
+/// The workspace before and after the move: same files (same indices), new paths for some.
 pub(crate) struct Rewriter {
     pub(crate) before: Files,
     pub(crate) after: Files,
@@ -375,7 +375,7 @@ impl Rewriter {
         let new_rel = &self.after.rels[target];
         let relative_style = decoded.starts_with("./") || decoded.starts_with("../");
         let out = if md {
-            // Vault-absolute ("Folder/Note.md", "/Folder/Note.md") or relative to the note?
+            // Workspace-absolute ("Folder/Note.md", "/Folder/Note.md") or relative to the note?
             let absolute = decoded.starts_with('/')
                 || (!decoded.starts_with('.')
                     && self.before.path(link_key(&decoded)) == Some(target)
@@ -494,7 +494,7 @@ pub(crate) fn link_targets(text: &str) -> Vec<&str> {
     out
 }
 
-/// What an Obsidian Canvas file links to: its file cards' vault paths, and the links written in
+/// What an Obsidian Canvas file links to: its file cards' workspace paths, and the links written in
 /// its text cards.
 pub(crate) fn canvas_targets(text: &str) -> (Vec<String>, Vec<String>) {
     let (mut files, mut links) = (Vec::new(), Vec::new());
@@ -510,10 +510,10 @@ pub(crate) fn canvas_targets(text: &str) -> (Vec<String>, Vec<String>) {
     (files, links)
 }
 
-/// Work out everything renaming/moving note `note` to vault-relative `new_rel` (with `.md`)
+/// Work out everything renaming/moving note `note` to workspace-relative `new_rel` (with `.md`)
 /// would change. Nothing is written.
 pub fn plan(ix: &Index, note: usize, new_rel: &str) -> Result<Plan> {
-    let n = &ix.vault.notes[note];
+    let n = &ix.workspace.notes[note];
     let from_rel = format!("{}.md", n.rel);
     let new_rel = if new_rel.ends_with(".md") {
         new_rel.to_string()
@@ -523,7 +523,7 @@ pub fn plan(ix: &Index, note: usize, new_rel: &str) -> Result<Plan> {
     if new_rel == from_rel {
         bail!("that's already its name");
     }
-    let to_path = ix.vault.root.join(&new_rel);
+    let to_path = ix.workspace.root.join(&new_rel);
     resolve(
         ix,
         vec![Move {
@@ -536,7 +536,7 @@ pub fn plan(ix: &Index, note: usize, new_rel: &str) -> Result<Plan> {
     )
 }
 
-/// Work out everything moving the folder `from` (vault-relative) to `to` would change: every
+/// Work out everything moving the folder `from` (workspace-relative) to `to` would change: every
 /// file in it moves, and every link that would lead elsewhere afterwards is rewritten.
 /// Nothing is written.
 pub fn plan_folder(ix: &Index, from: &str, to: &str) -> Result<Plan> {
@@ -546,7 +546,7 @@ pub fn plan_folder(ix: &Index, from: &str, to: &str) -> Result<Plan> {
     if to == from {
         bail!("that's already its name");
     }
-    let root = &ix.vault.root;
+    let root = &ix.workspace.root;
     resolve(
         ix,
         vec![Move {
@@ -559,15 +559,15 @@ pub fn plan_folder(ix: &Index, from: &str, to: &str) -> Result<Plan> {
     )
 }
 
-/// Work out everything moving several notes, other files and folders (vault-relative: files with
-/// their extension) into `folder` (`""` is the vault's root) would change, as one plan. Items
+/// Work out everything moving several notes, other files and folders (workspace-relative: files with
+/// their extension) into `folder` (`""` is the workspace's root) would change, as one plan. Items
 /// already in it stay. Nothing is written.
 pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
     let folder = folder.trim_matches('/');
     if !folder.is_empty() {
         check_path(folder)?;
     }
-    let root = &ix.vault.root;
+    let root = &ix.workspace.root;
     let mut moves = Vec::new();
     for rel in items {
         let rel = rel.trim_matches('/');
@@ -595,7 +595,7 @@ pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
         bail!(
             "they're already in {}",
             if folder.is_empty() {
-                "the vault's root"
+                "the workspace's root"
             } else {
                 folder
             }
@@ -607,12 +607,12 @@ pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
 /// A folder cold-lava may move.
 fn check_folder(ix: &Index, from: &str) -> Result<()> {
     if from.is_empty() {
-        bail!("that's the vault itself");
+        bail!("that's the workspace itself");
     }
     if from.split('/').any(|c| c.starts_with('.')) {
         bail!("{from} is a hidden folder; cold-lava leaves it alone");
     }
-    if !ix.vault.root.join(from).is_dir() {
+    if !ix.workspace.root.join(from).is_dir() {
         bail!("there's no folder {from}");
     }
     Ok(())
@@ -643,7 +643,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
             bail!("{} already exists", m.to);
         }
     }
-    let before = Files::of_vault(ix);
+    let before = Files::of_workspace(ix);
     let mut moving = Vec::new();
     let rels = (before.rels.iter())
         .map(|r| match moves.iter().find_map(|m| m.moved_rel(r)) {
@@ -665,12 +665,12 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
         if !rw.after.unique(name) {
             warnings.push(format!(
                 "another note is also called \"{name}\": links to this one are written as full paths, \
-                 and existing [[{name}]] links may now point to whichever is closer to the vault root"
+                 and existing [[{name}]] links may now point to whichever is closer to the workspace root"
             ));
         }
     }
     let edits = edits(ix, &rw)?;
-    let bookmarks = match bookmarks_edit(&ix.vault.root, &moves) {
+    let bookmarks = match bookmarks_edit(&ix.workspace.root, &moves) {
         Ok(b) => b,
         Err(e) => {
             warnings.push(format!("bookmarks aren't updated: {e}"));
@@ -720,7 +720,7 @@ pub(crate) fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileE
 /// Every note and canvas whose links change.
 pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
     let mut edits = Vec::new();
-    for (i, n) in ix.vault.notes.iter().enumerate() {
+    for (i, n) in ix.workspace.notes.iter().enumerate() {
         let (dir_then, dir_now) = (dir_of(&rw.before.rels[i]), dir_of(&rw.after.rels[i]));
         let (new_text, changes, links) = rw.note_text(&n.text, dir_then, dir_now);
         if links > 0 {
@@ -746,7 +746,7 @@ pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
 /// Edited as text, so the rest of the file stays exactly as Obsidian wrote it.
 fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> {
     let rel = &rw.before.rels[i];
-    let path = ix.vault.root.join(rel);
+    let path = ix.workspace.root.join(rel);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(None);
     };
@@ -856,10 +856,10 @@ pub fn apply(plan: &Plan) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault;
+    use crate::workspace;
     use std::path::Path;
 
-    fn vault_with(name: &str, files: &[(&str, &str)]) -> (PathBuf, Index) {
+    fn workspace_with(name: &str, files: &[(&str, &str)]) -> (PathBuf, Index) {
         let dir =
             std::env::temp_dir().join(format!("cold-lava-rename-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -868,7 +868,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        let ix = Index::build(vault::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir).unwrap());
         (dir, ix)
     }
 
@@ -900,7 +900,7 @@ mod tests {
 
     #[test]
     fn rewrites_every_kind_of_link() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "kinds",
             &[
                 ("Concepts/Lava.md", "# Lava\n## Textures\n"),
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn percent_encoded_links_are_followed_and_keep_their_encoding() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "percent",
             &[
                 ("Lava/Pāhoehoe.md", "x"),
@@ -955,7 +955,7 @@ mod tests {
             "[a](Lava/%CA%BBA%CA%BB%C4%81%20flow.md) [b](Lava/%CA%BBA%CA%BB%C4%81%20flow.md#Top) \
              [[ʻAʻā flow]]\n![m](Lava/flow%20map.png)\n"
         );
-        let ix = Index::build(crate::vault::scan(&dir).unwrap());
+        let ix = Index::build(crate::workspace::scan(&dir).unwrap());
         let png = ix
             .by_rel("Notes")
             .and_then(|n| ix.attachment("Lava/flow map.png", Some(n)));
@@ -973,7 +973,7 @@ mod tests {
 
     #[test]
     fn links_that_only_escaped_spaces_stay_that_way() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "spaces",
             &[("Hot Rock.md", "x"), ("Notes.md", "[a](Hot%20Rock.md)\n")],
         );
@@ -985,7 +985,7 @@ mod tests {
 
     #[test]
     fn moved_note_keeps_its_own_relative_links() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "own",
             &[
                 (
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     fn name_collisions_use_paths_and_warn() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "collide",
             &[
                 ("Old.md", "x"),
@@ -1030,7 +1030,7 @@ mod tests {
     #[test]
     fn canvas_cards_are_updated_in_place() {
         let canvas = "{\n\t\"nodes\":[\n\t\t{\"id\":\"a\",\"type\":\"file\",\"file\":\"Lava.md\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"b\",\"type\":\"text\",\"text\":\"About [[Lava]] \\\"hot\\\"\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}";
-        let (dir, ix) = vault_with("canvas", &[("Lava.md", "x"), ("Board.canvas", canvas)]);
+        let (dir, ix) = workspace_with("canvas", &[("Lava.md", "x"), ("Board.canvas", canvas)]);
         let p = plan(&ix, ix.by_rel("Lava").unwrap(), "Magma.md").unwrap();
         apply(&p).unwrap();
         let out = read(&dir, "Board.canvas");
@@ -1045,7 +1045,7 @@ mod tests {
 
     #[test]
     fn apply_refuses_if_a_file_changed() {
-        let (dir, ix) = vault_with("guard", &[("A.md", "x"), ("B.md", "[[A]]\n")]);
+        let (dir, ix) = workspace_with("guard", &[("A.md", "x"), ("B.md", "[[A]]\n")]);
         let p = plan(&ix, ix.by_rel("A").unwrap(), "Z.md").unwrap();
         std::fs::write(dir.join("B.md"), "[[A]] edited elsewhere\n").unwrap();
         assert!(apply(&p).is_err());
@@ -1058,7 +1058,7 @@ mod tests {
     #[test]
     fn folder_move_rewrites_links_in_and_out() {
         let canvas = "{\"nodes\":[\n{\"id\":\"a\",\"type\":\"file\",\"file\":\"People/Krafft.md\"},\n{\"id\":\"b\",\"type\":\"file\",\"file\":\"People/photo.png\"},\n{\"id\":\"c\",\"type\":\"text\",\"text\":\"[[People/Johnston]]\"},\n{\"id\":\"d\",\"type\":\"file\",\"file\":\"Volcanoes/Helens.md\"}\n],\"edges\":[]}";
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "folder",
             &[
                 (
@@ -1111,12 +1111,12 @@ mod tests {
             ("B/C/Lava.md", "deeper"),
             ("Notes.md", "[[Lava]] [[B/C/Lava]]\n"),
         ];
-        let (dir, ix) = vault_with("shallow-same", &files);
+        let (dir, ix) = workspace_with("shallow-same", &files);
         let p = plan_folder(&ix, "A", "D").unwrap();
         assert_eq!(p.links(), 0, "A/Lava is still the shallowest Lava");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let (dir, ix) = vault_with("shallow", &files);
+        let (dir, ix) = workspace_with("shallow", &files);
         let p = plan_folder(&ix, "A", "X/Y/A").unwrap();
         apply(&p).unwrap();
         assert_eq!(
@@ -1129,7 +1129,7 @@ mod tests {
 
     #[test]
     fn folder_moves_that_are_refused() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "refuse",
             &[
                 ("A/x.md", ""),
@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn folder_apply_refuses_if_a_file_changed() {
-        let (dir, ix) = vault_with("folder-guard", &[("A/a.md", "x"), ("B.md", "[[A/a]]\n")]);
+        let (dir, ix) = workspace_with("folder-guard", &[("A/a.md", "x"), ("B.md", "[[A/a]]\n")]);
         let p = plan_folder(&ix, "A", "Z").unwrap();
         std::fs::write(dir.join("B.md"), "[[A/a]] edited elsewhere\n").unwrap();
         assert!(apply(&p).is_err());
@@ -1169,7 +1169,7 @@ mod tests {
 
     #[test]
     fn several_moves_are_one_plan_with_links_between_them_right() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "many",
             &[
                 ("A/One.md", "[[Two]] [two](../B/Two.md) [[B/Two]]\n"),
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[test]
     fn several_moves_that_are_refused() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "many-refuse",
             &[
                 ("A/Same.md", ""),
@@ -1258,7 +1258,7 @@ mod tests {
 
     #[test]
     fn several_moves_change_nothing_if_a_file_changed() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "many-guard",
             &[
                 ("A/a.md", "x"),
@@ -1315,7 +1315,7 @@ mod tests {
 
     #[test]
     fn bookmarks_follow_a_renamed_note_keeping_the_heading() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "bookmarks-note",
             &[
                 ("Rock/Lava.md", "# Textures\n"),
@@ -1337,7 +1337,7 @@ mod tests {
 
     #[test]
     fn bookmarks_follow_a_moved_folder_and_what_is_in_it() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "bookmarks-folder",
             &[
                 ("Rock/Lava.md", "x"),
@@ -1363,7 +1363,7 @@ mod tests {
 
     #[test]
     fn bookmarks_changed_since_the_plan_stop_the_rename() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "bookmarks-changed",
             &[("Rock/Lava.md", "x"), (".obsidian/bookmarks.json", MARKS)],
         );

@@ -10,7 +10,7 @@ Every note is a dot and every link is a line. Notes with more links are bigger.
 - Scroll to zoom at the cursor, drag to pan, and drag a dot to pull it around.
 - `/` searches: try `/kil` then `Enter` to jump to [[Kīlauea]].
 
-## Things this vault shows off
+## Things this workspace shows off
 - **Local graph:** select [[Mount St. Helens]] and press `f`. Use `]` to see two steps out.
 - **Tags as nodes:** press `t`. Volcano notes use nested tags like `#volcano/shield`.
 - **Unresolved links:** press `u` to see notes that are linked but don't exist yet, like

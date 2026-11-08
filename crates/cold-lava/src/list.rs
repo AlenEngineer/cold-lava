@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::{ACCENT, DIM, HIT, MUTED, NOTE};
 use crate::looks;
 use crate::types::Look;
-use crate::vault::search_key;
+use crate::workspace::search_key;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct List {

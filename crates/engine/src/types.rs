@@ -1,5 +1,5 @@
 //! Type definitions: `[types.NAME]` tables that give blocks a meaning, declared in TOML by you, a
-//! vault or an extension (docs/extensions.md, "Types"). This module reads, checks and lists
+//! workspace or an extension (docs/extensions.md, "Types"). This module reads, checks and lists
 //! them; `matcher.rs` matches them against notes.
 //!
 //! A `Definition` is one type, normalised: its schema (`fields` and their value types) and its
@@ -24,8 +24,8 @@ use crate::markdown::Syntax;
 /// The only `version` a types file can have today.
 pub const VERSION: i64 = 1;
 
-/// Where a vault keeps its own types.
-pub const VAULT_FILE: &str = ".cold-lava/types.toml";
+/// Where a workspace keeps its own types.
+pub const WORKSPACE_FILE: &str = ".cold-lava/types.toml";
 
 /// Kinds the engine reads natively (`items.rs`). They can be extended but not redefined, until
 /// they are written as definitions themselves.
@@ -40,7 +40,7 @@ pub const RESERVED_FIELDS: &[&str] = &[
     "id", "note", "line", "end_line", "section", "parent", "block_id", "rev", "kind", "is",
 ];
 
-/// `${…}` settings a definition can follow, read from the vault's own settings.
+/// `${…}` settings a definition can follow, read from the workspace's own settings.
 pub const PROVIDERS: &[&str] = &[
     "tasks.statuses",
     "tasks.global-filter",
@@ -81,7 +81,7 @@ pub struct Definition {
     /// its base's, and any other type 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
-    /// Syntax the vault's flavour must have for the type to match.
+    /// Syntax the workspace's flavour must have for the type to match.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
     /// How each field looks, by field name.
@@ -236,15 +236,15 @@ pub enum Value {
     Duration,
 }
 
-/// An enum's written forms and names, or the setting that gives them for each vault.
+/// An enum's written forms and names, or the setting that gives them for each workspace.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EnumValues {
     Written(IndexMap<String, String>),
-    /// `"${tasks.statuses}"`: filled in from the vault when its notes are read
+    /// `"${tasks.statuses}"`: filled in from the workspace when its notes are read
     /// (`Types::fill`).
     Setting(String),
-    /// The vault's status symbols, filled in; a symbol its settings don't name is `non_task`, as
+    /// The workspace's status symbols, filled in; a symbol its settings don't name is `non_task`, as
     /// the Tasks plugin wouldn't act on it.
     Statuses(IndexMap<String, String>),
 }
@@ -269,7 +269,7 @@ impl EnumValues {
 /// The settings that give an enum its values.
 pub const ENUM_PROVIDERS: &[&str] = &["tasks.statuses"];
 
-/// The names `${tasks.statuses}` gives its symbols, whichever symbols a vault has, so a look
+/// The names `${tasks.statuses}` gives its symbols, whichever symbols a workspace has, so a look
 /// can be given by status type.
 pub const STATUS_TYPES: &[&str] = &["todo", "in_progress", "done", "cancelled", "non_task"];
 
@@ -461,7 +461,7 @@ pub enum NotePart {
     Name,
     Path,
     Folder,
-    /// The date of the daily note it is in, by the vault's Daily notes folder and format.
+    /// The date of the daily note it is in, by the workspace's Daily notes folder and format.
     Date,
 }
 
@@ -809,8 +809,8 @@ pub enum Origin {
     Extension { name: String },
     /// `[types.*]` in config.toml.
     Config { path: PathBuf },
-    /// The vault's `.cold-lava/types.toml`.
-    Vault { path: PathBuf },
+    /// The workspace's `.cold-lava/types.toml`.
+    Workspace { path: PathBuf },
 }
 
 impl Origin {
@@ -819,7 +819,7 @@ impl Origin {
         match self {
             Origin::BuiltIn => "built in".into(),
             Origin::Extension { name } => format!("extension {name}"),
-            Origin::Config { path } | Origin::Vault { path } => path.display().to_string(),
+            Origin::Config { path } | Origin::Workspace { path } => path.display().to_string(),
         }
     }
 }
@@ -830,7 +830,7 @@ impl fmt::Display for Origin {
             Origin::BuiltIn => f.write_str("built in"),
             Origin::Extension { name } => write!(f, "extension {name}"),
             Origin::Config { path } => write!(f, "config {}", path.display()),
-            Origin::Vault { path } => write!(f, "vault {}", path.display()),
+            Origin::Workspace { path } => write!(f, "workspace {}", path.display()),
         }
     }
 }
@@ -877,14 +877,14 @@ impl Layer {
         )
     }
 
-    /// The vault's `.cold-lava/types.toml`; `None` when it has none.
-    pub fn vault(root: &Path) -> Option<Layer> {
-        let path = root.join(VAULT_FILE);
+    /// The workspace's `.cold-lava/types.toml`; `None` when it has none.
+    pub fn workspace(root: &Path) -> Option<Layer> {
+        let path = root.join(WORKSPACE_FILE);
         let text = match std::fs::read_to_string(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
             r => r.map_err(|e| e.to_string()),
         };
-        Some(Layer::from_file(Origin::Vault { path }, text))
+        Some(Layer::from_file(Origin::Workspace { path }, text))
     }
 
     /// The definitions built into the engine (`types/*.toml`): the task.
@@ -966,24 +966,24 @@ pub struct Types {
 
 static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
 
-/// The layers every vault gets before its own: extensions' types and config.toml's, which the
+/// The layers every workspace gets before its own: extensions' types and config.toml's, which the
 /// frontend reads and sets once at startup.
 pub fn set_configured(layers: Vec<Layer>) {
     let _ = CONFIGURED.set(layers);
 }
 
-/// The types a vault's notes are read with: the built-in ones, the configured layers, then the
-/// vault's own file.
-pub fn for_vault(root: &Path) -> Types {
+/// The types a workspace's notes are read with: the built-in ones, the configured layers, then the
+/// workspace's own file.
+pub fn for_workspace(root: &Path) -> Types {
     let configured = CONFIGURED.get().cloned().unwrap_or_default();
     load(
         std::iter::once(Layer::built_in())
             .chain(configured)
-            .chain(Layer::vault(root)),
+            .chain(Layer::workspace(root)),
     )
 }
 
-/// Loads layers in order: built in, extensions, config.toml, the vault. A later definition of a
+/// Loads layers in order: built in, extensions, config.toml, the workspace. A later definition of a
 /// name replaces an earlier one, and says so in a note. Broken definitions are dropped.
 pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
     let mut errors = Vec::new();
@@ -1064,7 +1064,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
     }
 }
 
-/// The vault's own settings that `${…}` in a definition stands for.
+/// The workspace's own settings that `${…}` in a definition stands for.
 #[derive(Clone, Debug, Default)]
 pub struct Provided {
     /// The Tasks plugin's status symbols and the names of their types (`x` = `done`).
@@ -1104,9 +1104,9 @@ impl Provided {
 }
 
 impl Types {
-    /// Fills in each `${…}` setting with the vault's value: in patterns as literal text (the
+    /// Fills in each `${…}` setting with the workspace's value: in patterns as literal text (the
     /// statuses as any one symbol), in `rest`'s `without`, and as an enum's values. A date
-    /// `format`'s `${daily.format}` stays, as values parse with the vault's format anyway.
+    /// `format`'s `${daily.format}` stays, as values parse with the workspace's format anyway.
     pub fn fill(&mut self, p: &Provided) {
         let pattern = |s: &mut String| *s = fill(s, true, |n| p.in_pattern(n));
         for t in &mut self.types {
@@ -1417,7 +1417,7 @@ fn is_name(s: &str, dots: bool) -> bool {
 }
 
 /// A `match` or `pattern` with its placeholders and settings filled in, compiled under the size
-/// limit. Settings stand for an empty group here: their values come from the vault.
+/// limit. Settings stand for an empty group here: their values come from the workspace.
 pub(crate) fn compile(pattern: &str) -> Result<Regex, String> {
     let expanded = expand(pattern)?;
     RegexBuilder::new(&expanded)
@@ -1863,11 +1863,11 @@ mod tests {
         );
     }
 
-    fn vault(name: &str, text: &str) -> PathBuf {
+    fn workspace(name: &str, text: &str) -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("cold-lava-types-{}-{name}", std::process::id()));
         std::fs::create_dir_all(root.join(".cold-lava")).unwrap();
-        std::fs::write(root.join(VAULT_FILE), text).unwrap();
+        std::fs::write(root.join(WORKSPACE_FILE), text).unwrap();
         root
     }
 
@@ -1878,7 +1878,7 @@ mod tests {
             definition("on = \"note\"\nfields.words = \"number\""),
         )]
         .into();
-        let root = vault(
+        let root = workspace(
             "order",
             "version = 1\n[types.book]\non = \"table-row\"\n\
              [types.tally]\nextends = \"word-count.count\"\non = \"note\"\n",
@@ -1890,7 +1890,7 @@ mod tests {
                 Some(config(
                     "[book]\non = \"note\"\n[idea]\nextends = \"task\"\non = \"list-item\"\n",
                 )),
-                Layer::vault(&root),
+                Layer::workspace(&root),
             ]
             .into_iter()
             .flatten(),
@@ -1900,7 +1900,7 @@ mod tests {
             names(&t),
             ["task", "word-count.count", "idea", "book", "tally"]
         );
-        let file = root.join(VAULT_FILE);
+        let file = root.join(WORKSPACE_FILE);
         assert_eq!(
             t.notes,
             [format!(
@@ -1908,13 +1908,13 @@ mod tests {
                 file.display()
             )]
         );
-        assert_eq!(t.types[3].origin, Origin::Vault { path: file });
+        assert_eq!(t.types[3].origin, Origin::Workspace { path: file });
         assert_eq!(t.types[3].definition.from[0].on, On::TableRow);
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn a_vault_file_needs_a_version_it_knows() {
+    fn a_workspace_file_needs_a_version_it_knows() {
         for (name, text, needle) in [
             (
                 "none",
@@ -1928,19 +1928,19 @@ mod tests {
             ),
             ("broken", "version = 1\n[types.a\n", "can't read it"),
         ] {
-            let root = vault(name, text);
-            let t = load(Layer::vault(&root));
+            let root = workspace(name, text);
+            let t = load(Layer::workspace(&root));
             assert!(t.types.is_empty(), "{name}");
             assert_eq!(t.errors.len(), 1, "{name}: {:?}", t.errors);
             assert!(t.errors[0].contains(needle), "{name}: {:?}", t.errors);
             assert!(!t.errors[0].contains('\n'), "{:?}", t.errors);
             let _ = std::fs::remove_dir_all(root);
         }
-        let root = vault(
+        let root = workspace(
             "extra",
             "version = 1\ncolour = 1\n[types.a]\non = \"note\"\n",
         );
-        let t = load(Layer::vault(&root));
+        let t = load(Layer::workspace(&root));
         assert_eq!(names(&t), ["a"]);
         assert_eq!(t.errors.len(), 1, "{:?}", t.errors);
         assert!(
@@ -1949,7 +1949,7 @@ mod tests {
             t.errors
         );
         let _ = std::fs::remove_dir_all(root);
-        assert!(Layer::vault(Path::new("/nonexistent/vault")).is_none());
+        assert!(Layer::workspace(Path::new("/nonexistent/workspace")).is_none());
     }
 
     /// The design's book: what `types/list` sends, and what an extension's manifest can say.

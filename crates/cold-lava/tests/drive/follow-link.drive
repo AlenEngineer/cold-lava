@@ -1,6 +1,6 @@
 # Open a note from the quick switcher in the reader, follow its first link, quit.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p kilau
 wait-for Kīlauea
 keys enter

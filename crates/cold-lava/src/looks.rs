@@ -248,7 +248,7 @@ mod tests {
     use std::path::Path;
 
     fn example() -> Settings {
-        Settings::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"))
+        Settings::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"))
     }
 
     fn read_note(note: &str, text: &str) -> (Doc, Looks) {

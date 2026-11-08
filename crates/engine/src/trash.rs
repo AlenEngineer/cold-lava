@@ -1,7 +1,7 @@
-//! Deleting a file or folder from a vault, the one way cold-lava does it: into a trash, never for good.
+//! Deleting a file or folder from a workspace, the one way cold-lava does it: into a trash, never for good.
 //!
-//! Where it goes follows the vault's Obsidian setting `trashOption` in `.obsidian/app.json`:
-//! `"system"` (the default) is the system trash, `"local"` the vault's `.trash` folder. Obsidian's
+//! Where it goes follows the workspace's Obsidian setting `trashOption` in `.obsidian/app.json`:
+//! `"system"` (the default) is the system trash, `"local"` the workspace's `.trash` folder. Obsidian's
 //! `"none"` deletes permanently; cold-lava still uses `.trash`. When the system trash can't take
 //! the file (none on this platform, or it is on another disk), it goes to `.trash` too.
 
@@ -10,7 +10,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// The vault's `trashOption`.
+/// The workspace's `trashOption`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrashOption {
     System,
@@ -20,7 +20,7 @@ pub enum TrashOption {
 }
 
 impl TrashOption {
-    pub fn of_vault(root: &Path) -> TrashOption {
+    pub fn of_workspace(root: &Path) -> TrashOption {
         let app: serde_json::Value = std::fs::read_to_string(root.join(".obsidian/app.json"))
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
@@ -39,7 +39,7 @@ pub enum Bin {
     /// A freedesktop.org trash (Linux, BSD): the file goes in `files/`, where it came from in
     /// `info/`, so the desktop's trash can put it back.
     Freedesktop(PathBuf),
-    /// A plain folder the file is moved into (macOS's `~/.Trash`, the vault's `.trash`).
+    /// A plain folder the file is moved into (macOS's `~/.Trash`, the workspace's `.trash`).
     Folder(PathBuf),
 }
 
@@ -62,7 +62,7 @@ pub fn system_bin() -> Option<Bin> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Went {
     System,
-    VaultTrash,
+    WorkspaceTrash,
 }
 
 /// A file cold-lava put in a trash: enough to put it back.
@@ -120,12 +120,12 @@ pub fn delete(
         return Err(WriteError::Changed(path.to_path_buf()));
     }
     let local = Bin::Folder(root.join(".trash"));
-    if let (TrashOption::System, Some(bin)) = (TrashOption::of_vault(root), system)
+    if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system)
         && let Ok(t) = put(path, bin, Went::System)
     {
         return Ok(t);
     }
-    put(path, &local, Went::VaultTrash)
+    put(path, &local, Went::WorkspaceTrash)
 }
 
 fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
@@ -241,26 +241,32 @@ mod tests {
     fn sandbox(name: &str, trash_option: Option<&str>) -> (PathBuf, PathBuf) {
         let d = std::env::temp_dir().join(format!("cold-lava-trash-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let vault = d.join("vault");
-        std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
-        std::fs::create_dir_all(vault.join("Concepts")).unwrap();
+        let workspace = d.join("workspace");
+        std::fs::create_dir_all(workspace.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(workspace.join("Concepts")).unwrap();
         if let Some(o) = trash_option {
             std::fs::write(
-                vault.join(".obsidian/app.json"),
+                workspace.join(".obsidian/app.json"),
                 format!(r#"{{"trashOption": "{o}"}}"#),
             )
             .unwrap();
         }
-        std::fs::write(vault.join("Concepts/Lava.md"), "hot").unwrap();
-        (d, vault)
+        std::fs::write(workspace.join("Concepts/Lava.md"), "hot").unwrap();
+        (d, workspace)
     }
 
     #[test]
     fn system_trash_by_default_with_trashinfo() {
-        let (d, vault) = sandbox("system", None);
+        let (d, workspace) = sandbox("system", None);
         let bin = Bin::Freedesktop(d.join("data/Trash"));
-        let lava = vault.join("Concepts/Lava.md");
-        let t = delete(&vault, &lava, &Contents::File(b"hot".to_vec()), Some(&bin)).unwrap();
+        let lava = workspace.join("Concepts/Lava.md");
+        let t = delete(
+            &workspace,
+            &lava,
+            &Contents::File(b"hot".to_vec()),
+            Some(&bin),
+        )
+        .unwrap();
         assert_eq!(t.went, Went::System);
         assert!(!lava.exists());
         assert_eq!(t.at, d.join("data/Trash/files/Lava.md"));
@@ -276,7 +282,7 @@ mod tests {
         // A second Lava.md doesn't replace the first.
         std::fs::write(&lava, "again").unwrap();
         let t2 = delete(
-            &vault,
+            &workspace,
             &lava,
             &Contents::File(b"again".to_vec()),
             Some(&bin),
@@ -293,19 +299,25 @@ mod tests {
     }
 
     #[test]
-    fn local_and_none_use_the_vaults_trash_folder() {
+    fn local_and_none_use_the_workspaces_trash_folder() {
         for option in ["local", "none"] {
-            let (d, vault) = sandbox(option, Some(option));
+            let (d, workspace) = sandbox(option, Some(option));
             let bin = Bin::Freedesktop(d.join("data/Trash"));
-            let lava = vault.join("Concepts/Lava.md");
-            std::fs::create_dir_all(vault.join(".trash")).unwrap();
-            std::fs::write(vault.join(".trash/Lava.md"), "older").unwrap();
-            let t = delete(&vault, &lava, &Contents::File(b"hot".to_vec()), Some(&bin)).unwrap();
-            assert_eq!(t.went, Went::VaultTrash);
-            assert_eq!(t.at, vault.join(".trash/Lava 1.md"), "{option}");
+            let lava = workspace.join("Concepts/Lava.md");
+            std::fs::create_dir_all(workspace.join(".trash")).unwrap();
+            std::fs::write(workspace.join(".trash/Lava.md"), "older").unwrap();
+            let t = delete(
+                &workspace,
+                &lava,
+                &Contents::File(b"hot".to_vec()),
+                Some(&bin),
+            )
+            .unwrap();
+            assert_eq!(t.went, Went::WorkspaceTrash);
+            assert_eq!(t.at, workspace.join(".trash/Lava 1.md"), "{option}");
             assert_eq!(std::fs::read(&t.at).unwrap(), b"hot");
             assert_eq!(
-                std::fs::read(vault.join(".trash/Lava.md")).unwrap(),
+                std::fs::read(workspace.join(".trash/Lava.md")).unwrap(),
                 b"older"
             );
             assert!(!d.join("data").exists(), "{option}: system trash untouched");
@@ -316,30 +328,30 @@ mod tests {
     }
 
     #[test]
-    fn no_system_trash_falls_back_to_the_vaults() {
-        let (d, vault) = sandbox("fallback", Some("system"));
+    fn no_system_trash_falls_back_to_the_workspaces() {
+        let (d, workspace) = sandbox("fallback", Some("system"));
         let t = delete(
-            &vault,
-            &vault.join("Concepts/Lava.md"),
+            &workspace,
+            &workspace.join("Concepts/Lava.md"),
             &Contents::File(b"hot".to_vec()),
             None,
         )
         .unwrap();
         assert_eq!(
             (t.went, t.at),
-            (Went::VaultTrash, vault.join(".trash/Lava.md"))
+            (Went::WorkspaceTrash, workspace.join(".trash/Lava.md"))
         );
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn refuses_a_file_that_changed_since_it_was_read() {
-        let (d, vault) = sandbox("changed", None);
+        let (d, workspace) = sandbox("changed", None);
         let bin = Bin::Freedesktop(d.join("data/Trash"));
-        let lava = vault.join("Concepts/Lava.md");
+        let lava = workspace.join("Concepts/Lava.md");
         assert!(matches!(
             delete(
-                &vault,
+                &workspace,
                 &lava,
                 &Contents::File(b"what the user saw".to_vec()),
                 Some(&bin)
@@ -352,13 +364,13 @@ mod tests {
 
     #[test]
     fn restore_refuses_to_overwrite_and_a_free_name_works() {
-        let (d, vault) = sandbox("restore", Some("local"));
-        let lava = vault.join("Concepts/Lava.md");
-        let t = delete(&vault, &lava, &Contents::File(b"hot".to_vec()), None).unwrap();
+        let (d, workspace) = sandbox("restore", Some("local"));
+        let lava = workspace.join("Concepts/Lava.md");
+        let t = delete(&workspace, &lava, &Contents::File(b"hot".to_vec()), None).unwrap();
         std::fs::write(&lava, "a new Lava").unwrap();
         assert!(matches!(restore(&t, &lava), Err(WriteError::Exists(_))));
         let free = free_path(&lava);
-        assert_eq!(free, vault.join("Concepts/Lava 1.md"));
+        assert_eq!(free, workspace.join("Concepts/Lava 1.md"));
         restore(&t, &free).unwrap();
         assert_eq!(std::fs::read(&free).unwrap(), b"hot");
         assert_eq!(std::fs::read(&lava).unwrap(), b"a new Lava");
@@ -367,18 +379,18 @@ mod tests {
 
     #[test]
     fn a_folder_goes_to_the_trash_whole_and_comes_back() {
-        let (d, vault) = sandbox("folder", None);
+        let (d, workspace) = sandbox("folder", None);
         let bin = Bin::Freedesktop(d.join("data/Trash"));
-        let concepts = vault.join("Concepts");
+        let concepts = workspace.join("Concepts");
         std::fs::create_dir_all(concepts.join("Empty")).unwrap();
         let seen = Contents::read(&concepts).unwrap();
         std::fs::write(concepts.join("New.md"), "added since").unwrap();
         assert!(matches!(
-            delete(&vault, &concepts, &seen, Some(&bin)),
+            delete(&workspace, &concepts, &seen, Some(&bin)),
             Err(WriteError::Changed(_))
         ));
         std::fs::remove_file(concepts.join("New.md")).unwrap();
-        let t = delete(&vault, &concepts, &seen, Some(&bin)).unwrap();
+        let t = delete(&workspace, &concepts, &seen, Some(&bin)).unwrap();
         assert!(!concepts.exists());
         assert_eq!(t.at, d.join("data/Trash/files/Concepts"));
         assert!(t.at.join("Empty").is_dir() && t.at.join("Lava.md").is_file());

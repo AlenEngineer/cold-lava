@@ -1,5 +1,5 @@
 //! `cold-lava items`, `agenda` and `task toggle` against the built binary, on a copy of the
-//! example vault. The agenda goldens in tests/golden were recorded before the agenda read
+//! example workspace. The agenda goldens in tests/golden were recorded before the agenda read
 //! items, so they pin that its output didn't change.
 
 use std::path::{Path, PathBuf};
@@ -22,24 +22,24 @@ fn sandbox(name: &str) -> PathBuf {
     let dir =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("items-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let vault = dir.join("example-vault");
+    let workspace = dir.join("example-workspace");
     copy_dir(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"),
-        &vault,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+        &workspace,
     );
-    vault.canonicalize().unwrap()
+    workspace.canonicalize().unwrap()
 }
 
-/// cold-lava without your own config.toml, so only the vault's types apply.
-fn cold_lava(vault: &Path) -> Command {
+/// cold-lava without your own config.toml, so only the workspace's types apply.
+fn cold_lava(workspace: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_cold-lava"));
-    c.env("XDG_CONFIG_HOME", vault.parent().unwrap());
+    c.env("XDG_CONFIG_HOME", workspace.parent().unwrap());
     c
 }
 
-/// Runs cold-lava; its stdout with the vault's path written as `VAULT`.
-fn run(vault: &Path, args: &[&str]) -> String {
-    let out = cold_lava(vault).args(args).output().unwrap();
+/// Runs cold-lava; its stdout with the workspace's path written as `WORKSPACE`.
+fn run(workspace: &Path, args: &[&str]) -> String {
+    let out = cold_lava(workspace).args(args).output().unwrap();
     assert!(
         out.status.success(),
         "{args:?}: {}",
@@ -47,7 +47,7 @@ fn run(vault: &Path, args: &[&str]) -> String {
     );
     String::from_utf8(out.stdout)
         .unwrap()
-        .replace(vault.to_str().unwrap(), "VAULT")
+        .replace(workspace.to_str().unwrap(), "WORKSPACE")
 }
 
 fn golden(name: &str) -> String {
@@ -61,8 +61,8 @@ fn golden(name: &str) -> String {
 
 #[test]
 fn agenda_output_is_unchanged() {
-    let vault = sandbox("agenda");
-    let v = vault.to_str().unwrap();
+    let workspace = sandbox("agenda");
+    let v = workspace.to_str().unwrap();
     let range = ["--from", "2026-11-01", "--to", "2026-11-30"];
     let args = |json: bool| {
         let mut a = vec!["agenda", v];
@@ -72,17 +72,17 @@ fn agenda_output_is_unchanged() {
         }
         a
     };
-    assert_eq!(run(&vault, &args(true)), golden("agenda.json"));
-    assert_eq!(run(&vault, &args(false)), golden("agenda.txt"));
-    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+    assert_eq!(run(&workspace, &args(true)), golden("agenda.json"));
+    assert_eq!(run(&workspace, &args(false)), golden("agenda.txt"));
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
 #[test]
 fn items_lists_each_kind() {
-    let vault = sandbox("kinds");
-    let v = vault.to_str().unwrap();
+    let workspace = sandbox("kinds");
+    let v = workspace.to_str().unwrap();
     assert_eq!(
-        run(&vault, &["items", v, "task"]),
+        run(&workspace, &["items", v, "task"]),
         "\
 Journal/2026-11-05.md:7  [ ] Write a note on lahars ([[Lahar]] is still unresolved)
 Journal/2026-11-05.md:8  [x] Add the [[Volcanic Explosivity Index]] table
@@ -91,16 +91,16 @@ Journal/2026-11-05.md:10  [ ] Review the eruption timeline board  scheduled 2026
 "
     );
     assert_eq!(
-        run(&vault, &["items", v, "task", "--json"]),
+        run(&workspace, &["items", v, "task", "--json"]),
         golden("items-task.json"),
         "the tasks' ids and JSON, as the native parser had them before the built-in definition"
     );
-    let headings = run(&vault, &["items", v, "heading"]);
+    let headings = run(&workspace, &["items", v, "heading"]);
     assert!(
         headings.contains("Concepts/Lava.md:8  ## Temperature\n"),
         "{headings}"
     );
-    let out = cold_lava(&vault)
+    let out = cold_lava(&workspace)
         .args(["items", v, "tasks"])
         .output()
         .unwrap();
@@ -108,46 +108,46 @@ Journal/2026-11-05.md:10  [ ] Review the eruption timeline board  scheduled 2026
     assert!(
         String::from_utf8_lossy(&out.stderr)
             .contains("task, list, heading, block, volcano, eruption, vei"),
-        "the vault's types are kinds too"
+        "the workspace's types are kinds too"
     );
-    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
 #[test]
 fn types_find_their_items() {
-    let vault = sandbox("types");
-    let v = vault.to_str().unwrap();
+    let workspace = sandbox("types");
+    let v = workspace.to_str().unwrap();
     assert_eq!(
-        run(&vault, &["items", v, "volcano"]),
+        run(&workspace, &["items", v, "volcano"]),
         golden("items-volcano.txt")
     );
     assert_eq!(
-        run(&vault, &["items", v, "eruption", "--json"]),
+        run(&workspace, &["items", v, "eruption", "--json"]),
         golden("items-eruption.json")
     );
     assert_eq!(
-        run(&vault, &["items", v, "vei", "--json"]),
+        run(&workspace, &["items", v, "vei", "--json"]),
         golden("items-vei.json"),
         "an inline type, found in the prose of three notes"
     );
-    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
 #[test]
 fn a_task_keeps_its_id_through_a_toggle_by_rev() {
-    let vault = sandbox("toggle");
-    let v = vault.to_str().unwrap();
-    let task_on_line_9 = |vault: &Path| -> serde_json::Value {
-        run(vault, &["items", v, "task", "--json"])
+    let workspace = sandbox("toggle");
+    let v = workspace.to_str().unwrap();
+    let task_on_line_9 = |workspace: &Path| -> serde_json::Value {
+        run(workspace, &["items", v, "task", "--json"])
             .lines()
             .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
             .find(|i| i["line"] == 9)
             .unwrap()
     };
-    let before = task_on_line_9(&vault);
+    let before = task_on_line_9(&workspace);
     assert_eq!(before["status_type"], "todo");
     let agenda: serde_json::Value = serde_json::from_str(&run(
-        &vault,
+        &workspace,
         &[
             "agenda",
             v,
@@ -173,54 +173,54 @@ fn a_task_keeps_its_id_through_a_toggle_by_rev() {
     let file = format!("{v}/Journal/2026-11-05.md:9");
     let rev = before["rev"].as_str().unwrap();
     let toggled: serde_json::Value = serde_json::from_str(&run(
-        &vault,
+        &workspace,
         &["task", "toggle", &file, "--id", rev, "--json"],
     ))
     .unwrap();
     assert_eq!(toggled["status"], "done");
 
-    let after = task_on_line_9(&vault);
+    let after = task_on_line_9(&workspace);
     assert_eq!(after["status_type"], "done");
     assert_eq!(after["id"], before["id"], "ticking keeps the id");
     assert_eq!(after["rev"], toggled["id"], "toggle reports the new rev");
     assert_ne!(after["rev"], before["rev"]);
 
-    let stale = cold_lava(&vault)
+    let stale = cold_lava(&workspace)
         .args(["task", "toggle", &file, "--id", rev])
         .output()
         .unwrap();
     assert_eq!(stale.status.code(), Some(3), "a stale rev is refused");
-    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
 #[test]
 fn item_set_writes_one_cell_and_refuses_a_stale_rev() {
-    let vault = sandbox("set");
-    let v = vault.to_str().unwrap();
+    let workspace = sandbox("set");
+    let v = workspace.to_str().unwrap();
     let note = "Concepts/Volcanic Explosivity Index.md";
     let file = format!("{v}/{note}");
     let original = std::fs::read_to_string(&file).unwrap();
-    let row = |vault: &Path, vei: i64| -> serde_json::Value {
-        run(vault, &["items", v, "eruption", "--json"])
+    let row = |workspace: &Path, vei: i64| -> serde_json::Value {
+        run(workspace, &["items", v, "eruption", "--json"])
             .lines()
             .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
             .find(|i| i["vei"] == vei)
             .unwrap()
     };
-    let before = row(&vault, 6);
+    let before = row(&workspace, 6);
     let id = before["id"].as_str().unwrap();
     let rev = before["rev"].as_str().unwrap();
     let value = "[[Krakatoa]] 1883, 416";
 
     let dry = run(
-        &vault,
+        &workspace,
         &["item", "set", &file, id, "example", value, "--dry-run"],
     );
     assert!(dry.starts_with(&format!("would set {note}:13")), "{dry}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
 
     let set: serde_json::Value = serde_json::from_str(&run(
-        &vault,
+        &workspace,
         &[
             "item", "set", &file, id, "example", value, "--rev", rev, "--json",
         ],
@@ -235,16 +235,16 @@ fn item_set_writes_one_cell_and_refuses_a_stale_rev() {
         ),
         "only the cell changed"
     );
-    let after = row(&vault, 6);
+    let after = row(&workspace, 6);
     assert_eq!(after["id"], before["id"], "example is not the row's key");
     assert_eq!(set["item"], after, "set reports the item as it reads now");
 
-    let stale = cold_lava(&vault)
+    let stale = cold_lava(&workspace)
         .args(["item", "set", &file, id, "example", "x", "--rev", rev])
         .output()
         .unwrap();
     assert_eq!(stale.status.code(), Some(3), "a stale rev is refused");
-    let read_only = cold_lava(&vault)
+    let read_only = cold_lava(&workspace)
         .args(["item", "set", &file, id, "volcanoes", "Etna"])
         .output()
         .unwrap();
@@ -253,14 +253,14 @@ fn item_set_writes_one_cell_and_refuses_a_stale_rev() {
         String::from_utf8_lossy(&read_only.stderr).contains("can't be written"),
         "links in text are read-only"
     );
-    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
 #[test]
 fn table_prints_a_types_rows_sorted() {
-    let vault = sandbox("table");
-    let v = vault.to_str().unwrap();
-    let text = run(&vault, &["table", v, "volcano", "--sort", "-elevation"]);
+    let workspace = sandbox("table");
+    let v = workspace.to_str().unwrap();
+    let text = run(&workspace, &["table", v, "volcano", "--sort", "-elevation"]);
     let names: Vec<&str> = (text.lines().skip(1))
         .map(|l| l.split("  ").next().unwrap())
         .collect();
@@ -276,9 +276,9 @@ fn table_prints_a_types_rows_sorted() {
     );
     assert!(text.starts_with("name  "), "{text}");
     let json: serde_json::Value =
-        serde_json::from_str(&run(&vault, &["table", v, "eruption", "--json"])).unwrap();
+        serde_json::from_str(&run(&workspace, &["table", v, "eruption", "--json"])).unwrap();
     assert_eq!(json["columns"][0]["name"], "vei");
     assert_eq!(json["rows"].as_array().unwrap().len(), 4);
     assert_eq!(json["rows"][2]["cells"][0], 6);
-    let _ = std::fs::remove_dir_all(vault.parent().unwrap());
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }

@@ -1,6 +1,6 @@
 # Back and forward between a note, the graph and a whiteboard; the graph keeps its selection.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p lava enter
 wait-for Concepts/Lava  reading
 wait-for reading · j

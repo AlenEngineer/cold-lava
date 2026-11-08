@@ -2,7 +2,7 @@
 # empty folder). Tidy lists them; the orphan and the image go to the trash together after one
 # prompt, u brings both back, then they go again for tests/drive.rs to find in the sandbox trash.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault 35 notes
+wait-for example-workspace 35 notes
 keys T
 wait-for Orphans: no links in or out · 2
 expect • Inbox/Loose thought.md

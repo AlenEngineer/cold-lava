@@ -5,7 +5,7 @@
 //! A note is gated once (folder, tags, frontmatter), and a block is only checked against the
 //! shapes for its primitive that passed. One type wins per note and per block: higher
 //! `priority`, then a subtype over its base, then the shape with more conditions, then origin
-//! (vault, config, extension), then name. Inline types don't compete: every match of each is an
+//! (workspace, config, extension), then name. Inline types don't compete: every match of each is an
 //! item.
 
 use std::cmp::Ordering;
@@ -19,7 +19,7 @@ use serde_json::Value as Json;
 use crate::frontmatter::{self, Frontmatter};
 use crate::markdown::{self, Flavour, Syntax};
 use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
-use crate::{daily, vault};
+use crate::{daily, workspace};
 
 /// The primitives this matcher reads; shapes on the others (code, quote) wait.
 const READ: &[On] = &[
@@ -219,7 +219,7 @@ impl Matcher {
                 is: bases(t, types),
                 priority: priority(t, types),
                 origin: match t.origin {
-                    Origin::Vault { .. } => 0,
+                    Origin::Workspace { .. } => 0,
                     Origin::Config { .. } => 1,
                     Origin::Extension { .. } => 2,
                     Origin::BuiltIn => 3,
@@ -603,7 +603,7 @@ fn compile_source(s: &Source) -> Src {
 
 /// What the matcher knows about the note a block is in.
 pub struct Note<'a> {
-    /// Vault-relative, with `.md`.
+    /// Workspace-relative, with `.md`.
     pub path: &'a str,
     /// The text pulldown-cmark read, and its map back to the file.
     pub src: &'a str,
@@ -662,7 +662,7 @@ impl<'a> Note<'a> {
         }
         if links {
             for line in text.lines().take(end_line) {
-                note.links.extend(vault::line_links(line));
+                note.links.extend(workspace::line_links(line));
             }
         }
         note
@@ -952,7 +952,7 @@ fn read_source(
             .filter(|(_, r)| !b.in_code(r))
             .map(|(t, r)| Piece::text(t.to_string(), Some(at(r))))
             .collect(),
-        Src::Inlines(InlineKind::Links) => vault::line_links(text)
+        Src::Inlines(InlineKind::Links) => workspace::line_links(text)
             .into_iter()
             .map(|l| Piece {
                 value: Some(Json::String(l.clone())),
@@ -1073,7 +1073,7 @@ pub fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option
             _ => return None,
         },
         Value::Link => Json::String(
-            vault::line_links(text)
+            workspace::line_links(text)
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| text.to_string()),
@@ -1139,7 +1139,7 @@ mod tests {
     fn settings_with(layers: Vec<Layer>) -> Settings {
         let found = load(layers);
         assert!(found.errors.is_empty(), "{:?}", found.errors);
-        let nowhere = Path::new("/nonexistent-cold-lava-vault");
+        let nowhere = Path::new("/nonexistent-cold-lava-workspace");
         Settings::new(
             Flavour::built_in("obsidian").unwrap(),
             TasksSettings::load(nowhere),
@@ -1800,7 +1800,7 @@ Survey the rim ~3h, not `~4h`, not~6h.
                 toml::from_str(toml).unwrap(),
             )])
         };
-        let nowhere = Path::new("/nonexistent-cold-lava-vault");
+        let nowhere = Path::new("/nonexistent-cold-lava-workspace");
         let s = Settings::new(
             Flavour::built_in("commonmark").unwrap(),
             TasksSettings::load(nowhere),

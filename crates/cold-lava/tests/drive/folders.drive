@@ -2,7 +2,7 @@
 # make a folder in it, then delete it to the trash and undo. tests/drive.rs adds Inbox/Links.md
 # and Inbox/People.canvas, which link into People by path, and checks every link still resolves.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault 35 notes
+wait-for example-workspace 35 notes
 keys p johnston
 wait-for David A. Johnston
 keys enter
@@ -39,7 +39,7 @@ wait-for new folder · ⏎ create · Esc cancel
 type Field Notes
 keys enter
 wait-for created Guide/Volcanologists/Field Notes/
-expect example-vault 35 notes
+expect example-workspace 35 notes
 keys h d
 wait-for Delete Guide/Volcanologists/?
 expect It holds 3 notes, and everything else in it.
@@ -48,11 +48,11 @@ expect y delete · n cancel
 screen
 keys y
 wait-for deleted Volcanologists · u undo
-wait-for example-vault 32 notes
+wait-for example-workspace 32 notes
 expect-not Guide/Volcanologists/David A. Johnston  reader
 keys u
 wait-for restored Guide/Volcanologists
-wait-for example-vault 35 notes
+wait-for example-workspace 35 notes
 expect ▾ Volcanologists
 expect Field Notes
 keys q
