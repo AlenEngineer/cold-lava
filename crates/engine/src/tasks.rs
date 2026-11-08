@@ -8,7 +8,7 @@
 
 use crate::daily;
 use crate::items::{self, Data, Item};
-use crate::vault::Vault;
+use crate::workspace::Workspace;
 use anyhow::{Context, Result, bail};
 use chrono::{Datelike, Days, Local, Months, NaiveDate, Weekday};
 use regex::Regex;
@@ -306,7 +306,7 @@ pub struct AgendaTask {
     pub recurrence: Option<String>,
     pub priority: Option<String>,
     pub tags: Vec<String>,
-    /// Vault-relative file, absolute path and 1-based line.
+    /// Workspace-relative file, absolute path and 1-based line.
     pub file: String,
     pub path: String,
     pub line: usize,
@@ -360,7 +360,7 @@ pub struct Day {
 
 #[derive(Serialize)]
 pub struct Agenda {
-    pub vault: String,
+    pub workspace: String,
     pub from: String,
     pub to: String,
     pub tasks: Vec<AgendaTask>,
@@ -369,13 +369,13 @@ pub struct Agenda {
     pub days: BTreeMap<String, Day>,
 }
 
-/// The vault's dated tasks and daily notes from `from` to `to`, read from its items.
-pub fn agenda(vault: &Vault, from: NaiveDate, to: NaiveDate) -> Agenda {
+/// The workspace's dated tasks and daily notes from `from` to `to`, read from its items.
+pub fn agenda(workspace: &Workspace, from: NaiveDate, to: NaiveDate) -> Agenda {
     let in_range = |d: NaiveDate| d >= from && d <= to;
-    let settings = vault.item_settings();
+    let settings = workspace.item_settings();
     let mut tasks = Vec::new();
     let mut notes = Vec::new();
-    for note in &vault.notes {
+    for note in &workspace.notes {
         let file = format!("{}.md", note.rel);
         if let Some(d) = settings.daily.date_of(&file)
             && in_range(d)
@@ -387,12 +387,12 @@ pub fn agenda(vault: &Vault, from: NaiveDate, to: NaiveDate) -> Agenda {
             });
         }
         let lines: Vec<&str> = note.text.lines().collect();
-        for item in vault.items(note) {
+        for item in workspace.items(note) {
             let raw = lines.get(item.line - 1).copied().unwrap_or_default();
             if let Some(t) = Task::of(item, raw, &settings.tasks)
                 && t.agenda_date().is_some_and(|(d, _)| in_range(d))
             {
-                tasks.push(AgendaTask::new(item, t, &vault.root, raw));
+                tasks.push(AgendaTask::new(item, t, &workspace.root, raw));
             }
         }
     }
@@ -410,7 +410,7 @@ pub fn agenda(vault: &Vault, from: NaiveDate, to: NaiveDate) -> Agenda {
         days.entry(n.date.clone()).or_default().daily_note = true;
     }
     Agenda {
-        vault: vault.root.to_string_lossy().into_owned(),
+        workspace: workspace.root.to_string_lossy().into_owned(),
         from: from.to_string(),
         to: to.to_string(),
         tasks,
@@ -461,7 +461,7 @@ pub fn toggle(
     let path = path
         .canonicalize()
         .with_context(|| format!("no such file: {}", path.display()))?;
-    let root = crate::vault::find_vault_root(&path);
+    let root = crate::workspace::find_workspace_root(&path);
     let item_settings = items::Settings::load(&root);
     let settings = &item_settings.tasks;
     let rel = path
@@ -875,7 +875,7 @@ mod tests {
         assert_eq!(advance(b, "every blue moon"), None);
     }
 
-    fn temp_vault(name: &str) -> PathBuf {
+    fn temp_workspace(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("cold-lava-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn toggle_done_undone_and_guard() {
-        let v = temp_vault("toggle");
+        let v = temp_workspace("toggle");
         let f = v.join("Todo.md");
         std::fs::write(&f, "# Todo\n- [ ] Pay rent 📅 2026-11-07\n").unwrap();
         let id = line_id("- [ ] Pay rent 📅 2026-11-07");
@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn toggle_in_a_callout_keeps_its_markers() {
-        let v = temp_vault("callout");
+        let v = temp_workspace("callout");
         let f = v.join("Plan.md");
         std::fs::write(&f, "> [!todo] This week\n> - [ ] Pack boots\n").unwrap();
         let r = toggle(&f, 2, Some(&line_id("> - [ ] Pack boots")), d("2026-11-05")).unwrap();
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn toggle_recurring_inserts_next_occurrence() {
-        let v = temp_vault("recur");
+        let v = temp_workspace("recur");
         let f = v.join("Bills.md");
         std::fs::write(
             &f,
@@ -944,7 +944,7 @@ mod tests {
 
     #[test]
     fn toggle_follows_the_statuses_next_symbols() {
-        let v = temp_vault("cycle");
+        let v = temp_workspace("cycle");
         std::fs::create_dir_all(v.join(".obsidian/plugins/obsidian-tasks-plugin")).unwrap();
         std::fs::write(
             v.join(".obsidian/plugins/obsidian-tasks-plugin/data.json"),
@@ -980,7 +980,7 @@ mod tests {
 
     #[test]
     fn a_status_cancelled_by_its_next_symbol_gets_the_cancelled_date() {
-        let v = temp_vault("cancel");
+        let v = temp_workspace("cancel");
         std::fs::create_dir_all(v.join(".obsidian/plugins/obsidian-tasks-plugin")).unwrap();
         let data = v.join(".obsidian/plugins/obsidian-tasks-plugin/data.json");
         let statuses = r#"{"statusSettings": {"coreStatuses": [
@@ -1012,7 +1012,7 @@ mod tests {
 
     #[test]
     fn agenda_finds_tasks_and_daily_notes() {
-        let v = temp_vault("agenda");
+        let v = temp_workspace("agenda");
         std::fs::write(
             v.join(".obsidian/daily-notes.json"),
             r#"{"folder":"Daily","format":"YYYY-MM-DD"}"#,
@@ -1026,7 +1026,7 @@ mod tests {
         .unwrap();
         std::fs::write(v.join("Projects.md"), "- [ ] Ship it 📅 2026-11-20\n- [ ] Someday\n```\n- [ ] in code 📅 2026-11-20\n```\n- [ ] Next month 📅 2026-12-02\n").unwrap();
         let a = agenda(
-            &crate::vault::scan(&v).unwrap(),
+            &crate::workspace::scan(&v).unwrap(),
             d("2026-11-01"),
             d("2026-11-30"),
         );
@@ -1070,7 +1070,7 @@ mod tests {
         let t = Task::of(&all[0], line, &s.tasks).expect("an idea is a task");
         assert_eq!((t.status, t.due), (' ', Some(d("2026-11-12"))));
 
-        let v = temp_vault("idea");
+        let v = temp_workspace("idea");
         std::fs::create_dir_all(v.join(".cold-lava")).unwrap();
         std::fs::write(
             v.join(".cold-lava/types.toml"),
@@ -1082,9 +1082,9 @@ mod tests {
         .unwrap();
         let f = v.join("Ideas.md");
         std::fs::write(&f, format!("{line}\n- [ ] Pay rent 📅 2026-11-12\n")).unwrap();
-        let vault = crate::vault::scan(&v).unwrap();
-        assert_eq!(vault.item_settings().types.errors, Vec::<String>::new());
-        let a = agenda(&vault, d("2026-11-01"), d("2026-11-30"));
+        let workspace = crate::workspace::scan(&v).unwrap();
+        assert_eq!(workspace.item_settings().types.errors, Vec::<String>::new());
+        let a = agenda(&workspace, d("2026-11-01"), d("2026-11-30"));
         let texts: Vec<&str> = a.tasks.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(texts.len(), 2, "{texts:?}");
         assert!(texts[0].starts_with("Glass from sand"), "{texts:?}");

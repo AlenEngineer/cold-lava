@@ -1,6 +1,6 @@
 //! A type's items as a table (docs/extensions.md, "Types"): what the built-in table extension
 //! will send. Columns come from the type's schema in its order, then the note; rows are the
-//! items of the type across the vault, from the core's cached items, by item id.
+//! items of the type across the workspace, from the core's cached items, by item id.
 
 use std::collections::HashMap;
 
@@ -9,7 +9,7 @@ use serde_json::Value as Json;
 use crate::items::Data;
 use crate::table::{Column, Kind, Row, Table};
 use crate::types::{Definition, Source, Value};
-use crate::vault::Vault;
+use crate::workspace::Workspace;
 
 /// The column after the schema's: the note an item is in.
 pub const NOTE: &str = "note";
@@ -17,7 +17,7 @@ pub const NOTE: &str = "note";
 /// Where a row's item is, and which version of it the table shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct At {
-    /// Vault-relative, with `.md`.
+    /// Workspace-relative, with `.md`.
     pub note: String,
     pub line: usize,
     pub rev: String,
@@ -29,13 +29,13 @@ pub struct TypeTable {
 }
 
 /// Every type, with how many items answer to it, in the order types load.
-pub fn types(vault: &Vault) -> Vec<(String, usize)> {
-    let names: Vec<String> = (vault.item_settings().types.types.iter())
+pub fn types(workspace: &Workspace) -> Vec<(String, usize)> {
+    let names: Vec<String> = (workspace.item_settings().types.types.iter())
         .map(|t| t.name.clone())
         .collect();
     let mut counts: HashMap<&str, usize> = HashMap::new();
-    for note in &vault.notes {
-        for item in vault.items(note) {
+    for note in &workspace.notes {
+        for item in workspace.items(note) {
             for n in &names {
                 if item.data.answers_to(n) {
                     *counts.entry(n).or_default() += 1;
@@ -49,8 +49,8 @@ pub fn types(vault: &Vault) -> Vec<(String, usize)> {
 }
 
 /// The table of type `ty`, or `None` when there is no such type.
-pub fn build(vault: &Vault, ty: &str) -> Option<TypeTable> {
-    let def = &(vault.item_settings().types.types.iter())
+pub fn build(workspace: &Workspace, ty: &str) -> Option<TypeTable> {
+    let def = &(workspace.item_settings().types.types.iter())
         .find(|t| t.name == ty)?
         .definition;
     let mut columns: Vec<Column> = (def.fields.iter())
@@ -69,8 +69,8 @@ pub fn build(vault: &Vault, ty: &str) -> Option<TypeTable> {
     });
     let mut rows = Vec::new();
     let mut at = HashMap::new();
-    for note in &vault.notes {
-        for item in vault.items(note) {
+    for note in &workspace.notes {
+        for item in workspace.items(note) {
             let Data::Typed(t) = &item.data else { continue };
             if !item.data.answers_to(ty) {
                 continue;
@@ -150,9 +150,11 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn example() -> Vault {
-        crate::vault::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"))
-            .unwrap()
+    fn example() -> Workspace {
+        crate::workspace::scan(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+        )
+        .unwrap()
     }
 
     #[test]

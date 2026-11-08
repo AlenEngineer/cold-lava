@@ -1,11 +1,11 @@
-# The agenda: A shows the vault's tasks by day around a pinned today (tests/drive.rs adds
+# The agenda: A shows the workspace's tasks by day around a pinned today (tests/drive.rs adds
 # Inbox/Errands.md and reads the journal back). x ticks a task and it stays, done, where it
 # was; ticking the recurring one adds its next occurrence, a week on, under Later. Enter opens
 # a task's note at its line, x there unticks it, and Ctrl-o comes back to the agenda as it was.
 size 140x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
-wait-for example-vault
+wait-for example-workspace
 keys A
 wait-for ↑↓ move · x tick · ⏎ open
 expect ▾ Overdue  1

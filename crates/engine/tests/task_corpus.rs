@@ -28,7 +28,7 @@ fn settings(tasks: Value) -> Settings {
     )
 }
 
-/// The notes' tasks, as `cold-lava items VAULT task --json` writes them, against `expected`.
+/// The notes' tasks, as `cold-lava items WORKSPACE task --json` writes them, against `expected`.
 fn reads(s: &Settings, notes: &[(&str, &str)], expected: &str) {
     let expected: Vec<Value> = expected
         .lines()
@@ -97,7 +97,7 @@ fn the_dataview_setting_reads_the_same() {
 }
 
 /// Where the definition reads a line differently from the native parser it replaced, each as
-/// the Tasks plugin reads it, or as the vault reads tags.
+/// the Tasks plugin reads it, or as the workspace reads tags.
 #[test]
 fn known_differences_follow_the_tasks_plugin() {
     let s = settings(json!({}));

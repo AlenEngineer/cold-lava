@@ -20,7 +20,7 @@ use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
 use crate::types::{On, Shape, Source, Value};
-use crate::{daily, vault, write};
+use crate::{daily, workspace, write};
 
 /// Why an edit wasn't made. Nothing was written.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,7 +70,7 @@ pub struct Set {
     pub changed: bool,
 }
 
-/// `set_field` on the note at vault-relative `note` in `root`, written with `write::replace`
+/// `set_field` on the note at workspace-relative `note` in `root`, written with `write::replace`
 /// unless `dry_run`.
 pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Result<Set, EditError> {
     let path = root.join(note);
@@ -86,7 +86,7 @@ pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Resu
     Ok(set)
 }
 
-/// The edit `set_field` would make to `text`, the note at vault-relative `note`, checked by
+/// The edit `set_field` would make to `text`, the note at workspace-relative `note`, checked by
 /// reading it back.
 pub fn plan(note: &str, text: &str, s: &Settings, req: &SetField) -> Result<Set, EditError> {
     let before = items::extract(note, text, s);
@@ -175,7 +175,7 @@ pub fn plan(note: &str, text: &str, s: &Settings, req: &SetField) -> Result<Set,
 /// The source a value is written through, and the span of the value it replaces. The source
 /// that gave the field its value, when it can be written. For a field with no value, a writable
 /// source before that one (it is empty, or it would have given the value): of a kind the item
-/// already writes its other fields with, else a marker or a Dataview field as the vault's tasks
+/// already writes its other fields with, else a marker or a Dataview field as the workspace's tasks
 /// are written (`dataview`), else the first.
 fn target<'a>(
     typed: &Typed,
@@ -505,7 +505,7 @@ impl Writer<'_> {
             Value::Link => match old {
                 Some(o) if !o.starts_with("[[") && o.starts_with('[') && o.contains("](") => {
                     let original = o.split_once("](").map_or("", |(_, t)| t);
-                    format!("[{s}]({}.md)", vault::encode_target_like(s, original))
+                    format!("[{s}]({}.md)", workspace::encode_target_like(s, original))
                 }
                 Some(o) if !o.starts_with('[') => s.to_string(),
                 _ => format!("[[{s}]]"),

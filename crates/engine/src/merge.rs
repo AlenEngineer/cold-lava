@@ -41,7 +41,7 @@ pub enum Property {
 #[derive(Clone, Debug)]
 pub struct Merge {
     root: PathBuf,
-    /// Vault-relative, with `.md`.
+    /// Workspace-relative, with `.md`.
     pub source: String,
     pub target: String,
     pub source_path: PathBuf,
@@ -90,9 +90,9 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
     if source == target {
         bail!("a note can't be merged into itself");
     }
-    let (s, t) = (&ix.vault.notes[source], &ix.vault.notes[target]);
+    let (s, t) = (&ix.workspace.notes[source], &ix.workspace.notes[target]);
     let (source_rel, target_rel) = (format!("{}.md", s.rel), format!("{}.md", t.rel));
-    let before = Files::of_vault(ix);
+    let before = Files::of_workspace(ix);
     let mut rels = before.rels.clone();
     rels[source] = target_rel.clone();
     let rw = Rewriter {
@@ -124,12 +124,12 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
         from_path: s.path.clone(),
         to_path: t.path.clone(),
     }];
-    let bookmarks = rename::bookmarks_edit(&ix.vault.root, &moves).unwrap_or_else(|e| {
+    let bookmarks = rename::bookmarks_edit(&ix.workspace.root, &moves).unwrap_or_else(|e| {
         warnings.push(format!("bookmarks aren't updated: {e}"));
         None
     });
     Ok(Merge {
-        root: ix.vault.root.clone(),
+        root: ix.workspace.root.clone(),
         source: source_rel,
         target_edit: FileEdit {
             file: target_rel.clone(),
@@ -402,23 +402,23 @@ pub fn undo(m: &Merged) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault;
+    use crate::workspace;
 
-    fn vault_with(name: &str, files: &[(&str, &str)]) -> (PathBuf, Index) {
+    fn workspace_with(name: &str, files: &[(&str, &str)]) -> (PathBuf, Index) {
         let dir =
             std::env::temp_dir().join(format!("cold-lava-merge-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         for (rel, text) in files {
-            let p = dir.join("vault").join(rel);
+            let p = dir.join("workspace").join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        let ix = Index::build(vault::scan(&dir.join("vault")).unwrap());
+        let ix = Index::build(workspace::scan(&dir.join("workspace")).unwrap());
         (dir, ix)
     }
 
     fn read(dir: &Path, rel: &str) -> String {
-        std::fs::read_to_string(dir.join("vault").join(rel)).unwrap()
+        std::fs::read_to_string(dir.join("workspace").join(rel)).unwrap()
     }
 
     fn merge(ix: &Index, source: &str, target: &str) -> Merge {
@@ -427,19 +427,22 @@ mod tests {
 
     #[test]
     fn duplicates_take_the_next_free_number() {
-        let (dir, _) = vault_with("dup", &[("A/Lava.md", "hot"), ("Board.canvas", "{}")]);
-        let lava = dir.join("vault/A/Lava.md");
-        assert_eq!(duplicate(&lava).unwrap(), dir.join("vault/A/Lava 1.md"));
-        assert_eq!(duplicate(&lava).unwrap(), dir.join("vault/A/Lava 2.md"));
+        let (dir, _) = workspace_with("dup", &[("A/Lava.md", "hot"), ("Board.canvas", "{}")]);
+        let lava = dir.join("workspace/A/Lava.md");
+        assert_eq!(duplicate(&lava).unwrap(), dir.join("workspace/A/Lava 1.md"));
+        assert_eq!(duplicate(&lava).unwrap(), dir.join("workspace/A/Lava 2.md"));
         assert_eq!(read(&dir, "A/Lava 2.md"), "hot");
-        let board = dir.join("vault/Board.canvas");
-        assert_eq!(duplicate(&board).unwrap(), dir.join("vault/Board 1.canvas"));
+        let board = dir.join("workspace/Board.canvas");
+        assert_eq!(
+            duplicate(&board).unwrap(),
+            dir.join("workspace/Board 1.canvas")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn appends_the_text_and_merges_the_frontmatter_line_by_line() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "content",
             &[
                 (
@@ -479,14 +482,14 @@ mod tests {
             "---\ntags: [concept, lava]\nstatus: draft # mine\ncolour: red\naliases: [Ropy lava, Pāhoehoe]\n\
              source:\n  - Book: p. 3\n---\n# Lava\nHot.\n\n# Pāhoehoe\nSmooth.\n"
         );
-        assert!(!dir.join("vault/Pāhoehoe.md").exists());
+        assert!(!dir.join("workspace/Pāhoehoe.md").exists());
         assert_eq!(done.trashed.at, dir.join("system-trash/Pāhoehoe.md"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_target_without_frontmatter_gets_one() {
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "no-fm",
             &[
                 ("Lava.md", "Hot."),
@@ -506,7 +509,7 @@ mod tests {
         let canvas = "{\"nodes\":[\n{\"id\":\"a\",\"type\":\"file\",\"file\":\"A/Pāhoehoe.md\"},\n\
                       {\"id\":\"b\",\"type\":\"text\",\"text\":\"[[Pāhoehoe#Flow]]\"}\n],\"edges\":[]}";
         let marks = "{\n  \"items\": [\n    {\n      \"type\": \"file\",\n      \"path\": \"A/Pāhoehoe.md\",\n      \"subpath\": \"#Flow\"\n    }\n  ]\n}";
-        let (dir, ix) = vault_with(
+        let (dir, ix) = workspace_with(
             "links",
             &[
                 (
@@ -549,7 +552,7 @@ mod tests {
             read(&dir, ".obsidian/bookmarks.json"),
             marks.replace("A/Pāhoehoe.md", "B/Lava.md")
         );
-        assert!(dir.join("vault/.trash/Pāhoehoe.md").exists());
+        assert!(dir.join("workspace/.trash/Pāhoehoe.md").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -560,27 +563,30 @@ mod tests {
             ("Pāhoehoe.md", "Smooth.\n"),
             ("Kīlauea.md", "[[Pāhoehoe]]\n"),
         ];
-        let (dir, ix) = vault_with("guard", &files);
+        let (dir, ix) = workspace_with("guard", &files);
         let m = merge(&ix, "Pāhoehoe", "Lava");
-        std::fs::write(dir.join("vault/Kīlauea.md"), "[[Pāhoehoe]] edited\n").unwrap();
+        std::fs::write(dir.join("workspace/Kīlauea.md"), "[[Pāhoehoe]] edited\n").unwrap();
         assert!(apply(&m, None).is_err());
         assert_eq!(read(&dir, "Lava.md"), "# Lava\n");
         assert_eq!(read(&dir, "Pāhoehoe.md"), "Smooth.\n");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let (dir, ix) = vault_with("undo", &files);
+        let (dir, ix) = workspace_with("undo", &files);
         let m = merge(&ix, "Pāhoehoe", "Lava");
         let done = apply(&m, None).unwrap();
         assert_eq!(read(&dir, "Kīlauea.md"), "[[Lava]]\n");
-        std::fs::write(dir.join("vault/Kīlauea.md"), "edited\n").unwrap();
+        std::fs::write(dir.join("workspace/Kīlauea.md"), "edited\n").unwrap();
         assert!(undo(&done).is_err(), "Kīlauea changed since");
-        assert!(!dir.join("vault/Pāhoehoe.md").exists(), "nothing undone");
-        std::fs::write(dir.join("vault/Kīlauea.md"), "[[Lava]]\n").unwrap();
+        assert!(
+            !dir.join("workspace/Pāhoehoe.md").exists(),
+            "nothing undone"
+        );
+        std::fs::write(dir.join("workspace/Kīlauea.md"), "[[Lava]]\n").unwrap();
         undo(&done).unwrap();
         for (rel, text) in files {
             assert_eq!(read(&dir, rel), text);
         }
-        assert!(!dir.join("vault/.trash/Pāhoehoe.md").exists());
+        assert!(!dir.join("workspace/.trash/Pāhoehoe.md").exists());
         assert!(plan(&ix, 0, 0).is_err(), "not into itself");
         let _ = std::fs::remove_dir_all(&dir);
     }

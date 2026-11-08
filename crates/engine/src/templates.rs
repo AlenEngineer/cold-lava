@@ -1,4 +1,4 @@
-//! Note templates, following the vault's Obsidian "Templates" settings
+//! Note templates, following the workspace's Obsidian "Templates" settings
 //! (`.obsidian/templates.json`: folder, date and time formats) and Templater's folder.
 
 use crate::daily::format_datetime;
@@ -9,8 +9,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 pub struct Settings {
-    /// Vault-relative folders holding templates, without slashes at either end. Empty when the
-    /// vault has no templates set up.
+    /// Workspace-relative folders holding templates, without slashes at either end. Empty when the
+    /// workspace has no templates set up.
     pub folders: Vec<String>,
     /// moment.js formats for `{{date}}` and `{{time}}`.
     pub date_format: String,
@@ -60,7 +60,7 @@ impl Settings {
         }
     }
 
-    /// Is the note at vault-relative `rel` (with or without `.md`) a template?
+    /// Is the note at workspace-relative `rel` (with or without `.md`) a template?
     pub fn is_template(&self, rel: &str) -> bool {
         self.folders.iter().any(|f| {
             rel.strip_prefix(f.as_str())
@@ -82,7 +82,7 @@ impl Settings {
     }
 }
 
-/// The text of a new note called `title`, from the template at vault-relative `template`
+/// The text of a new note called `title`, from the template at workspace-relative `template`
 /// (without `.md`), filled now.
 pub fn new_note(root: &Path, template: &str, title: &str) -> Result<String> {
     let rel = format!("{template}.md");
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vaults_formats_change_only_the_bare_variables() {
+    fn the_workspaces_formats_change_only_the_bare_variables() {
         let s = Settings {
             folders: vec![],
             date_format: "DD.MM.YYYY".into(),

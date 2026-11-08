@@ -15,12 +15,14 @@ pub struct Config {
     /// Keys by command id, only for ids that exist (the extensions' included) and keys that
     /// parse.
     pub keys: BTreeMap<String, Vec<Key>>,
-    /// `[markdown] flavour`, resolved. `None` lets the vault decide (`markdown::flavour_for`).
+    /// `[markdown] flavour`, resolved. `None` lets the workspace decide (`markdown::flavour_for`).
     pub flavour: Option<Flavour>,
     /// `[types]` as written, for the engine to check (`types::Layer::config`).
     pub types: toml::Table,
     /// One human-readable line per problem in the file.
     pub errors: Vec<String>,
+    /// One line per setting that works but should be rewritten, such as an old command name.
+    pub warnings: Vec<String>,
 }
 
 /// The file as written. Other top-level sections are ignored, for later use.
@@ -79,6 +81,13 @@ pub fn get() -> &'static Config {
     CONFIG.get_or_init(Config::default)
 }
 
+/// Commands renamed after a release, old id first. Keys set under the old id still apply.
+const RENAMED: &[(&str, &str)] = &[
+    ("vault.add", "workspace.add"),
+    ("vault.rescan", "workspace.rescan"),
+    ("vault.tidy", "workspace.tidy"),
+];
+
 pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let file: File = match toml::from_str(text) {
         Ok(f) => f,
@@ -92,7 +101,13 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let mut ids: HashSet<&str> = commands::ids().collect();
     ids.extend(menu.iter().map(|c| c.id.as_str()));
     let mut config = Config::default();
-    for (id, value) in file.keys {
+    for (mut id, value) in file.keys {
+        if let Some(&(old, new)) = RENAMED.iter().find(|(old, _)| *old == id) {
+            config.warnings.push(format!(
+                "[keys] {old:?} is now called {new:?}; the keys still apply"
+            ));
+            id = new.to_string();
+        }
         if !ids.contains(id.as_str()) {
             config
                 .errors
@@ -250,22 +265,40 @@ mod tests {
     #[test]
     fn list_and_empty_list() {
         let (keys, errors) =
-            menu("[keys]\n\"note.switch\" = [\"p\", \"ctrl+p\"]\n\"vault.add\" = []\n");
+            menu("[keys]\n\"note.switch\" = [\"p\", \"ctrl+p\"]\n\"workspace.add\" = []\n");
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(keys.label("note.switch"), "p / Ctrl-p");
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
         assert_eq!(keys.get(ctrl_p), core(MenuAction::Switcher));
-        assert_eq!(keys.label("vault.add"), "");
+        assert_eq!(keys.label("workspace.add"), "");
         assert_eq!(keys.get(press('a')), None);
     }
 
     #[test]
     fn unknown_command_is_reported_and_the_rest_applies() {
-        let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"vault.add\" = \"V\"\n");
+        let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"workspace.add\" = \"V\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("graph.opne"));
         assert_eq!(keys.label("graph.open"), "g");
-        assert_eq!(keys.label("vault.add"), "V");
+        assert_eq!(keys.label("workspace.add"), "V");
+    }
+
+    #[test]
+    fn an_old_command_name_still_binds_with_a_warning() {
+        let text = "[keys]\n\"vault.add\" = \"V\"\n\"vault.tidy\" = []\n";
+        let c = parse(text);
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.warnings.len(), 2, "{:?}", c.warnings);
+        assert!(c.warnings[0].contains("\"vault.add\" is now called \"workspace.add\""));
+        let (keys, _) = menu(text);
+        assert_eq!(keys.label("workspace.add"), "V");
+        assert_eq!(keys.label("workspace.tidy"), "");
+    }
+
+    #[test]
+    fn the_new_command_name_wins_over_the_old_one() {
+        let (keys, _) = menu("[keys]\n\"workspace.add\" = \"W\"\n\"vault.add\" = \"V\"\n");
+        assert_eq!(keys.label("workspace.add"), "W");
     }
 
     #[test]

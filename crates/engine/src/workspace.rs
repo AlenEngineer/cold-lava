@@ -1,4 +1,5 @@
-//! Scans an Obsidian vault: finds notes and extracts their links and tags.
+//! Scans a workspace (an Obsidian vault or any folder of notes): finds notes and extracts their
+//! links and tags.
 
 use crate::items::{self, Item};
 use anyhow::{Context, Result};
@@ -21,7 +22,7 @@ pub fn search_key(s: &str) -> String {
 }
 
 pub struct Note {
-    /// Path relative to the vault root, without `.md`, using `/` separators.
+    /// Path relative to the workspace root, without `.md`, using `/` separators.
     pub rel: String,
     /// File stem, shown as the node label.
     pub name: String,
@@ -35,7 +36,7 @@ pub struct Note {
     pub aliases: Vec<String>,
     /// The note's full text, for full-text search.
     pub text: String,
-    /// Its items, read on first use (`Vault::items`). A refreshed note is a new `Note`.
+    /// Its items, read on first use (`Workspace::items`). A refreshed note is a new `Note`.
     pub items: OnceLock<Vec<Item>>,
 }
 
@@ -49,7 +50,7 @@ pub struct Ref {
     pub context: String,
 }
 
-pub struct Vault {
+pub struct Workspace {
     pub root: PathBuf,
     pub name: String,
     pub notes: Vec<Note>,
@@ -106,7 +107,7 @@ fn parsers() -> &'static Parsers {
     P.get_or_init(Parsers::new)
 }
 
-/// Is this vault-relative path a note cold-lava reads (a `.md` file outside hidden folders)?
+/// Is this workspace-relative path a note cold-lava reads (a `.md` file outside hidden folders)?
 pub fn is_note_path(rel: &Path) -> bool {
     rel.extension().is_some_and(|e| e == "md")
         && !rel.components().any(|c| {
@@ -115,7 +116,7 @@ pub fn is_note_path(rel: &Path) -> bool {
         })
 }
 
-/// Read and parse one note. `None` if it isn't a note, is outside the vault, or can't be read.
+/// Read and parse one note. `None` if it isn't a note, is outside the workspace, or can't be read.
 pub fn read_note(root: &Path, path: &Path) -> Option<Note> {
     let rel_path = path.strip_prefix(root).ok()?;
     if !is_note_path(rel_path) {
@@ -145,14 +146,14 @@ pub fn read_note(root: &Path, path: &Path) -> Option<Note> {
     })
 }
 
-pub fn scan(root: &Path) -> Result<Vault> {
+pub fn scan(root: &Path) -> Result<Workspace> {
     let root = root
         .canonicalize()
-        .with_context(|| format!("vault path not found: {}", root.display()))?;
+        .with_context(|| format!("workspace path not found: {}", root.display()))?;
     let name = root
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "vault".into());
+        .unwrap_or_else(|| "workspace".into());
     let walker = WalkDir::new(&root).into_iter().filter_entry(|e| {
         let n = e.file_name().to_string_lossy();
         // Skip .obsidian, .trash, .git and friends.
@@ -164,7 +165,7 @@ pub fn scan(root: &Path) -> Result<Vault> {
         .filter_map(|e| read_note(&root, e.path()))
         .collect();
     notes.sort_by(|a, b| a.rel.cmp(&b.rel));
-    Ok(Vault {
+    Ok(Workspace {
         root,
         name,
         notes,
@@ -172,7 +173,7 @@ pub fn scan(root: &Path) -> Result<Vault> {
     })
 }
 
-/// What happened to a note when the vault was told a path changed.
+/// What happened to a note when the workspace was told a path changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoteChange {
     Created(String),
@@ -180,7 +181,7 @@ pub enum NoteChange {
     Removed(String),
 }
 
-impl Vault {
+impl Workspace {
     pub fn item_settings(&self) -> &items::Settings {
         self.item_settings
             .get_or_init(|| items::Settings::load(&self.root))
@@ -404,8 +405,8 @@ fn push_tag(tags: &mut Vec<String>, raw: &str) {
     }
 }
 
-/// Find the vault for a path: the nearest ancestor containing `.obsidian`, else the folder itself.
-pub fn find_vault_root(p: &Path) -> PathBuf {
+/// Find the workspace for a path: the nearest ancestor containing `.obsidian`, else the folder itself.
+pub fn find_workspace_root(p: &Path) -> PathBuf {
     let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     let start = if abs.is_dir() {
         abs.clone()
@@ -570,9 +571,10 @@ mod tests {
     }
 
     #[test]
-    fn scans_example_vault() {
-        let v = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault")).unwrap();
-        assert_eq!(v.name, "example-vault");
+    fn scans_example_workspace() {
+        let v =
+            scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace")).unwrap();
+        assert_eq!(v.name, "example-workspace");
         assert_eq!(v.notes.len(), 34);
         // Hidden folders (.obsidian) are skipped; subfolders and non-ASCII names are included.
         assert!(v.notes.iter().all(|n| !n.rel.starts_with('.')));

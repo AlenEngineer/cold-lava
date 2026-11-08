@@ -4,7 +4,7 @@
 # icons can.
 size 160x30
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p
 type st. helens
 wait-for 1 notes

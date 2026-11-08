@@ -2,7 +2,7 @@
 # whiteboard; a dotted note name is still a note. drive.rs adds Inbox/Field trip.md first.
 size 120x24
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p
 type field trip
 wait-for 1 notes
@@ -12,14 +12,14 @@ wait-for reading · j
 keys tab
 keys K
 wait-for PDF document
-wait-for trail map.pdf isn't in the vault
+wait-for trail map.pdf isn't in the workspace
 screen
 keys esc
 keys enter
-wait-for trail map.pdf isn't in the vault
+wait-for trail map.pdf isn't in the workspace
 expect Inbox/Field trip  reading
 keys tab enter
-wait-for tickets/ticket.pdf isn't in the vault
+wait-for tickets/ticket.pdf isn't in the workspace
 expect Inbox/Field trip  reading
 keys tab enter
 wait-for whiteboard Welcome

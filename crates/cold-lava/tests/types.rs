@@ -1,4 +1,4 @@
-//! `cold-lava types` against the built binary: the example vault's listing, and a broken
+//! `cold-lava types` against the built binary: the example workspace's listing, and a broken
 //! types.toml. Neither reads your own config.toml.
 
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// `cold-lava types ARGS` from the workspace root, with an empty config folder.
+/// `cold-lava types ARGS` from the Cargo workspace root, with an empty config folder.
 fn types(config: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cold-lava"))
         .arg("types")
@@ -24,9 +24,9 @@ fn types(config: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn example_vault_listing() {
+fn example_workspace_listing() {
     let dir = scratch("example");
-    let out = types(&dir, &["example-vault"]);
+    let out = types(&dir, &["example-workspace"]);
     assert!(
         out.status.success(),
         "{}",
@@ -38,7 +38,7 @@ fn example_vault_listing() {
     .unwrap();
     assert_eq!(String::from_utf8(out.stdout).unwrap(), golden);
 
-    let out = types(&dir, &["example-vault", "--json"]);
+    let out = types(&dir, &["example-workspace", "--json"]);
     assert!(out.status.success());
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
@@ -55,10 +55,10 @@ fn example_vault_listing() {
 #[test]
 fn a_broken_types_file_exits_1_and_keeps_the_good_types() {
     let dir = scratch("broken");
-    let vault = dir.join("vault");
-    std::fs::create_dir_all(vault.join(".cold-lava")).unwrap();
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(workspace.join(".cold-lava")).unwrap();
     std::fs::write(
-        vault.join(".cold-lava/types.toml"),
+        workspace.join(".cold-lava/types.toml"),
         "version = 1\n\
          [types.estimate]\non = \"inline\"\nmatch = '~(?<v>{duration})'\n\
          fields.minutes = { capture = \"m\", type = \"duration\" }\n\
@@ -73,9 +73,9 @@ fn a_broken_types_file_exits_1_and_keeps_the_good_types() {
         "[types.person]\non = \"note\"\n[types.task]\non = \"list-item\"\n",
     )
     .unwrap();
-    let out = types(&config, &[vault.to_str().unwrap()]);
+    let out = types(&config, &[workspace.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
-    let file = vault.join(".cold-lava/types.toml");
+    let file = workspace.join(".cold-lava/types.toml");
     let config_file = config.join("cold-lava/config.toml");
     let (file, config_file) = (file.display(), config_file.display());
     assert_eq!(
@@ -88,7 +88,7 @@ fn a_broken_types_file_exits_1_and_keeps_the_good_types() {
         )
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("\nperson  vault "), "{stdout}");
+    assert!(stdout.contains("\nperson  workspace "), "{stdout}");
     assert!(
         stdout.contains(&format!(
             "{file}: [types.person] replaces the one from config {config_file}"

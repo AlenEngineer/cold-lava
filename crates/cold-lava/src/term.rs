@@ -47,10 +47,10 @@ pub fn edit_file(
 }
 
 /// Open a note in the Obsidian app via its URI scheme.
-pub fn open_in_obsidian(vault_name: &str, rel_path: &str) -> bool {
+pub fn open_in_obsidian(workspace_name: &str, rel_path: &str) -> bool {
     open_url(&format!(
         "obsidian://open?vault={}&file={}",
-        url_encode(vault_name),
+        url_encode(workspace_name),
         url_encode(rel_path)
     ))
 }

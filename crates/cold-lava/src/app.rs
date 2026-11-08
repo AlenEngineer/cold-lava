@@ -7,7 +7,7 @@ use crate::groups::{self, Assignment};
 use crate::history::{Exit, Nav};
 use crate::kitty::{self, Kitty};
 use crate::scene::{Disc, Edge, Label, Layer, Scene};
-use crate::vault;
+use crate::workspace;
 use crate::{board, term};
 use anyhow::Result;
 use ratatui::crossterm::event::{
@@ -56,7 +56,7 @@ enum Drag {
 }
 
 pub struct App {
-    /// The live vault (shared with the main menu, which hands it over and gets it back).
+    /// The live workspace (shared with the main menu, which hands it over and gets it back).
     core: Core,
     graph: Graph,
     opts: BuildOpts,
@@ -108,15 +108,15 @@ pub enum Render {
 
 impl App {
     pub fn new(core: Core, render: Render) -> App {
-        let vault = &core.index.vault;
+        let workspace = &core.index.workspace;
         let opts = BuildOpts {
             unresolved: false,
             tags: false,
             orphans: true,
         };
-        let graph = graph::build(vault, opts, &HashMap::new());
+        let graph = graph::build(workspace, opts, &HashMap::new());
         let n = graph.nodes.len();
-        let obsidian_groups = groups::load_obsidian(&vault.root);
+        let obsidian_groups = groups::load_obsidian(&workspace.root);
         let group_mode = if obsidian_groups.is_empty() {
             groups::Mode::Off
         } else {
@@ -236,17 +236,17 @@ impl App {
             .iter()
             .any(|e| matches!(e, CoreEvent::GraphSettingsChanged | CoreEvent::Rescanned))
         {
-            self.obsidian_groups = groups::load_obsidian(&self.core.index.vault.root);
+            self.obsidian_groups = groups::load_obsidian(&self.core.index.workspace.root);
         }
         let count = |pred: fn(&CoreEvent) -> bool| events.iter().filter(|e| pred(e)).count();
         let added = count(|e| matches!(e, CoreEvent::NoteCreated(_)));
         let removed = count(|e| matches!(e, CoreEvent::NoteRemoved(_)));
         self.rebuild();
         self.flash(match (added, removed) {
-            (0, 0) => "vault changed: graph updated".to_string(),
-            (a, 0) => format!("vault changed: +{a} notes"),
-            (0, r) => format!("vault changed: −{r} notes"),
-            (a, r) => format!("vault changed: +{a} −{r} notes"),
+            (0, 0) => "workspace changed: graph updated".to_string(),
+            (a, 0) => format!("workspace changed: +{a} notes"),
+            (0, r) => format!("workspace changed: −{r} notes"),
+            (a, r) => format!("workspace changed: +{a} −{r} notes"),
         });
         self.dirty = true;
     }
@@ -269,7 +269,7 @@ impl App {
         self.exit.clone()
     }
 
-    /// Give the live vault back (to the main menu).
+    /// Give the live workspace back (to the main menu).
     pub fn into_core(self) -> Core {
         self.core
     }
@@ -281,7 +281,7 @@ impl App {
         let prev = self.graph.positions();
         let prev_aspect = self.graph.aspect;
         let sel_key = self.sel.map(|i| self.graph.nodes[i].key.clone());
-        self.graph = graph::build(&self.core.index.vault, self.opts, &prev);
+        self.graph = graph::build(&self.core.index.workspace, self.opts, &prev);
         self.graph.alpha = 0.6;
         self.graph.aspect = prev_aspect;
         self.sel = sel_key.and_then(|k| self.graph.find(&k));
@@ -674,7 +674,7 @@ impl App {
             GraphAction::OpenInObsidian => self.open_in_obsidian(),
             GraphAction::Boards if self.nav.is_some() => {
                 self.hide_image();
-                if let Some(path) = board::pick_board(terminal, &self.core.index.vault.root)? {
+                if let Some(path) = board::pick_board(terminal, &self.core.index.workspace.root)? {
                     self.exit = Exit::Board(path);
                     self.quit = true;
                 }
@@ -684,7 +684,7 @@ impl App {
                 self.hide_image();
                 board::launch(
                     terminal,
-                    &self.core.index.vault.root,
+                    &self.core.index.workspace.root,
                     None,
                     self.kitty.is_some(),
                 )?;
@@ -828,7 +828,7 @@ impl App {
 
     fn update_hits(&mut self) {
         let Mode::Search(q) = &self.mode else { return };
-        let q = vault::search_key(q);
+        let q = workspace::search_key(q);
         self.hits.clear();
         if q.is_empty() {
             return;
@@ -839,11 +839,11 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                let l = vault::search_key(&n.label);
+                let l = workspace::search_key(&n.label);
                 let in_path = n
                     .rel
                     .as_ref()
-                    .is_some_and(|r| vault::search_key(r).contains(&q));
+                    .is_some_and(|r| workspace::search_key(r).contains(&q));
                 (l.contains(&q) || in_path).then_some((i, l.starts_with(&q)))
             })
             .collect();
@@ -922,7 +922,7 @@ impl App {
                 let p = self
                     .core
                     .index
-                    .vault
+                    .workspace
                     .root
                     .join(format!("{}.md", node.label));
                 crate::write::create_if_missing(&p, b"")?;
@@ -934,7 +934,7 @@ impl App {
             }
         };
         self.hide_image();
-        match term::edit_file(terminal, &path, &self.core.index.vault.root)? {
+        match term::edit_file(terminal, &path, &self.core.index.workspace.root)? {
             None => self.core.note_changed(&path), // its links may have changed
             Some(err) => self.flash(err),
         }
@@ -945,7 +945,7 @@ impl App {
         let Some(rel) = self.sel.and_then(|i| self.graph.nodes[i].rel.clone()) else {
             return self.flash("select a note first");
         };
-        let ok = term::open_in_obsidian(&self.core.index.vault.name, &rel);
+        let ok = term::open_in_obsidian(&self.core.index.workspace.name, &rel);
         self.flash(if ok {
             "opened in Obsidian"
         } else {
@@ -1150,7 +1150,7 @@ impl App {
             Span::styled(
                 format!(
                     "{} · {} nodes · {} links ",
-                    self.core.index.vault.name, shown, shown_links
+                    self.core.index.workspace.name, shown, shown_links
                 ),
                 Style::new().fg(MUTED),
             ),

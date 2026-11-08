@@ -6,7 +6,7 @@ tags: [guide]
 Press `g` to cycle the colouring:
 
 1. **Obsidian groups.** cold-lava reads `.obsidian/graph.json`, the same settings Obsidian's
-   graph uses. This vault colours each folder: Guide, Volcanoes, Concepts and People.
+   graph uses. This workspace colours each folder: Guide, Volcanoes, Concepts and People.
 2. **By folder:** automatic, the most common top-level folders.
 3. **By tag:** automatic, using each note's first tag.
 4. **Off.**

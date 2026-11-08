@@ -5,7 +5,7 @@ what exists already. For the whole picture (the engine's layers, and how it is s
 the terminal UI) start with [engine.md](engine.md).
 
 cold-lava aims to be as extensible as Obsidian, and open-source. The product at the centre is
-the notes app itself: open a vault, find a note, read and edit it, move between notes through
+the notes app itself: open a workspace, find a note, read and edit it, move between notes through
 links. Everything else (the graph, whiteboards, the agenda, even the main menu) should be an
 extension of that core.
 
@@ -20,7 +20,7 @@ extension of that core.
                    ─────────────────────────────────────────────────────────
  transport         stdio · Unix socket · TCP · in-process … (pluggable)
                    ─────────────────────────────────────────────────────────
- core              live vault · index (links, backlinks, tags, aliases) ·
+ core              live workspace · index (links, backlinks, tags, aliases) ·
                    search · safe writes · events
 ```
 
@@ -28,7 +28,7 @@ Each layer only talks to the one below it, so any one of them can be replaced on
 
 ## Core
 
-- **Live vault.** One `Core` owns the vault. It is the only thing watching the folder; when a
+- **Live workspace.** One `Core` owns the workspace. It is the only thing watching the folder; when a
   note changes it re-reads only that note and updates the index. Nothing else scans the disk.
 - **Index.** Link resolution with Obsidian's rules, backlinks with line and context, tags,
   aliases, full text. (Exists: `index.rs`, `search.rs`.)
@@ -40,7 +40,7 @@ Each layer only talks to the one below it, so any one of them can be replaced on
 
 ## Reading is core, editing is an extension
 
-Reading a vault and moving through it by links is the product, so it works with nothing else
+Reading a workspace and moving through it by links is the product, so it works with nothing else
 installed. Editing is left to the editor each person already uses: a text editor good enough to
 live in is a project of its own, and it would be worse than the one they have.
 
@@ -73,7 +73,7 @@ flavour doesn't have stays plain text. Under `github`, `==x==` shows its equals 
 
 - **Built in.** `commonmark` (only frontmatter is hidden), `github` (tables, task lists,
   strikethrough, footnotes, `> [!NOTE]` alerts) and `obsidian` (GitHub's, plus wikilinks,
-  embeds, callouts, highlights, `%%comments%%`, tags, block ids and math). A vault with an
+  embeds, callouts, highlights, `%%comments%%`, tags, block ids and math). A workspace with an
   `.obsidian` folder reads as `obsidian`, any other folder as `github`.
 - **Your own.** `config.toml` defines more, as a built-in flavour with features added or
   removed, and picks the one to use.
@@ -91,10 +91,10 @@ how to read them: a checkbox is a task, with dates written the Tasks plugin's wa
 (`📅 2026-11-12`) or Dataview's (`[due:: 2026-11-12]`); frontmatter is typed properties; a table
 is rows of records; `key:: value` is a field; a heading starts a section. The core reads every
 note this way, keeps it current as files change, and lets extensions ask for it and change it.
-An extension that lists every open todo in the vault, or a reading list built from a table, is
+An extension that lists every open todo in the workspace, or a reading list built from a table, is
 then a query and a view, not a parser of its own.
 
-- **Items.** One pass per changed note, in the core, gated by the vault's flavour (no
+- **Items.** One pass per changed note, in the core, gated by the workspace's flavour (no
   `task-lists`, no tasks). Each item has a kind (`task`, `list`, `heading`, `property`, `row`,
   `field`, `link`, `tag`, `block`), a note, a line range, the heading path it sits under
   (`section`), and its own fields: a task's status symbol and type, its dates, recurrence,
@@ -145,7 +145,7 @@ open.)*
 Markdown gives the primitives: blocks (paragraph, heading, list item, quote, code fence, table
 row, a note's frontmatter), inlines (text, link, tag), and value types (text, number, date,
 datetime, duration, bool, link, tag, enum). A **type** gives them meaning, declared in TOML with
-no code, by you, by a vault, or by an extension. The built-in task is written in the same
+no code, by you, by a workspace, or by an extension. The built-in task is written in the same
 language anyone else uses.
 
 A type is a **schema** (its fields, their value types, how they look, and native actions by
@@ -194,7 +194,7 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Values** parse by type: dates in moment.js formats (as daily notes use), durations like
   `1h30m`, links resolved by Obsidian's rules when queried or drawn, enums mapping written forms
   to names. A few **settings providers** (`${tasks.statuses}`, `${tasks.global-filter}`,
-  `${daily.format}`) let a definition follow the vault's own settings.
+  `${daily.format}`) let a definition follow the workspace's own settings.
 - **Deliberately not there:** formulas, joins, conditions on other items, matching across
   blocks, look-around in patterns (Rust's regex has none, so no pattern can hang), and new
   grammar Obsidian would show raw. Behaviour is native code named in `actions`: the task's
@@ -203,7 +203,7 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Conflicts.** One type per note, one per block, any number inline. A typed block replaces its
   structural kind, as a task replaces a list item today. Within a level the winner is: higher
   `priority`, then a subtype (`extends`) over its base, then the more specific shape, then
-  origin (vault, user, extension, built-in). A subtype still answers to its base, so
+  origin (workspace, user, extension, built-in). A subtype still answers to its base, so
   `[types.idea] extends = "task"` with `where.tag = ["idea"]` stays in the agenda. Inside a
   code fence only types that name it with `where.inside` match, so tasks are never read from
   code. `cold-lava types --check` lists blocks two types wanted, and which won.
@@ -213,9 +213,9 @@ style.minutes = { badge = true, icon = "⏱" }
   change.
 - **Where definitions live,** in load order: built in (`types/*.toml` in the binary), extension
   manifests (named `<extension>.<name>`), `[types.*]` in `config.toml`, and
-  `<vault>/.cold-lava/types.toml`, which travels with the vault. Built-in names can be extended
+  `<workspace>/.cold-lava/types.toml`, which travels with the workspace. Built-in names can be extended
   but not redefined. Mistakes are collected like `config.toml`'s: one line each, the broken type
-  is dropped and the rest load. `cold-lava types VAULT` lists every type, its fields and where
+  is dropped and the rest load. `cold-lava types WORKSPACE` lists every type, its fields and where
   they're read, how many items it found and how long matching took. A file starts with
   `version = 1`.
 - **Looks.** A small, closed set: a colour by name (Obsidian's six canvas colours, plus accent and
@@ -228,7 +228,7 @@ style.minutes = { badge = true, icon = "⏱" }
   refused and refreshed if the item changed elsewhere.
 - **Performance.** A note is gated once (folder, tags, frontmatter keys), blocks are checked only
   against types for their primitive, and one `RegexSet` per primitive tells which types could
-  match before any pattern runs. Targets on 10,000 notes with 30 types: the whole vault matched
+  match before any pattern runs. Targets on 10,000 notes with 30 types: the whole workspace matched
   in under 1.5 s on first use, one changed note in under 2 ms.
 
 ### Loading, as built
@@ -250,7 +250,7 @@ style.minutes = { badge = true, icon = "⏱" }
   `children` names a kind or type; `rest = true`, or `rest = { without = ["#task"] }` to leave
   every occurrence of those strings out too; `checkbox = true` is the character between a list
   item's brackets (`[x]`), kept as written so a space is a value, and `note = "date"` the date
-  of the daily note the block is in (the vault's Daily notes folder and format). `capture`,
+  of the daily note the block is in (the workspace's Daily notes folder and format). `capture`,
   `pattern`, `marker`, `inline`, `flag`, `flags`, `checkbox`, `column`, `property` and `info`
   are writable (a checkbox is replaced only, like a capture); the rest are read-only. Each
   source can only be read on some primitives (`column` on `table-row`, `property` on `note`,
@@ -263,11 +263,11 @@ style.minutes = { badge = true, icon = "⏱" }
   followed as a link), `whole` (the look covers the whole item), and `by-value` (looks by enum
   value name, not nested). A field whose values are `${tasks.statuses}` takes the status types
   by name in `by-value` (`todo`, `in_progress`, `done`, `cancelled`, `non_task`), whatever
-  symbols the vault gives them.
+  symbols the workspace gives them.
 - **`required`** in a shape names fields a block must have a value for (not `null`, not `[]`)
   to be of that shape: the task requires its words. A block that matches a shape but lacks one
   goes to the next shape that matches, as if the first hadn't.
-- **An enum's values** are a table, or the setting `"${tasks.statuses}"`: the vault's status
+- **An enum's values** are a table, or the setting `"${tasks.statuses}"`: the workspace's status
   symbols, each to the name of its type (`todo`, `in_progress`, `done`, `cancelled`,
   `non_task`), the plugin's core symbols first (` `, `x`, `/`, `-`), so a status set by its type
   is written with the symbol the plugin would. A symbol the settings don't name is `non_task`
@@ -278,19 +278,19 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Placeholders** in a `match` are `{date}` (ISO), `{number}` and `{duration}`; `\p{…}` and
   `\x{…}` escapes are kept whole. Settings (`${tasks.statuses}`, `${tasks.global-filter}`,
   `${tasks.format}`, `${daily.format}`) are checked by name at load, and filled in for each
-  vault when its notes are read (`Types::fill`, from `items::Settings::new`): in a `match` or
+  workspace when its notes are read (`Types::fill`, from `items::Settings::new`): in a `match` or
   `pattern` as the setting's text, escaped (`${tasks.statuses}` as any one of the symbols), in
   `rest`'s `without` as plain text, and as an enum's values. `cold-lava types` lists
   definitions as written, settings unfilled. A date `format`
   takes the moment.js tokens daily notes read, and any other token is refused rather than kept
   as literal text. Patterns compile to at most 256 KiB.
 - **Origins.** One built-in definition exists, `task` (`crates/engine/types/task.toml`, compiled
-  into the engine, origin `built in`, last in a conflict), loaded first for every vault
-  (`types::for_vault`). `list`, `heading` and `block` are native kinds (`types::NATIVE`), and
+  into the engine, origin `built in`, last in a conflict), loaded first for every workspace
+  (`types::for_workspace`). `list`, `heading` and `block` are native kinds (`types::NATIVE`), and
   `task` is a built-in type (`types::BUILT_IN`): all four can be extended and not redefined, and
   only the built-in origin may define one of those names. An extension's manifest carries
   `types` (named `<extension>.<name>`); `config.toml`'s `[types.NAME]` is handed to the engine
-  by the frontend, since the engine never reads config.toml; the vault's
+  by the frontend, since the engine never reads config.toml; the workspace's
   `.cold-lava/types.toml` must start with `version = 1`, and a missing or unknown version skips
   the file. A later origin replacing an earlier type is a note, not an error. `actions` must be
   native actions the engine has (`tasks.toggle`).
@@ -368,21 +368,21 @@ style.minutes = { badge = true, icon = "⏱" }
   change and when its own non-key cells do. A note item's lines are its frontmatter (line 1 when
   it has none), so its `rev` changes with the frontmatter and not with the body. Items inside a
   typed note keep `parent: null`; the note item is not their parent.
-- **Conflicts** go as designed, with "origin" as vault, then `config.toml`, then an extension,
+- **Conflicts** go as designed, with "origin" as workspace, then `config.toml`, then an extension,
   and the type's name as the last tie-break. The more specific shape is the one with more
   conditions: each header column and property counts, as do `tag`, `folder`, `section`,
   `language`, `inside` and a `match`.
 - **Settings.** `items::Settings` carries the loaded types and the compiled matcher, cached per
-  vault. The frontend hands over extensions' and `config.toml`'s types once at startup
-  (`types::set_configured`), and `types::for_vault` adds the vault's own file.
+  workspace. The frontend hands over extensions' and `config.toml`'s types once at startup
+  (`types::set_configured`), and `types::for_workspace` adds the workspace's own file.
 - **Cost of inline types:** no second parse. When a type is `inline`, the pass collects every
   paragraph, list item, heading and table row (otherwise only those some type reads) and the
   code ranges, and each block's text runs each inline pattern that passed the note's gate.
-  Measured on a generated 3,000-note vault with two inline types finding 7 items per note
+  Measured on a generated 3,000-note workspace with two inline types finding 7 items per note
   (21,000 in all): `cold-lava items` took 430 ms instead of 293 ms (release, median of 9).
   The same two types with patterns that never match cost nothing measurable, so the time goes
   to the items made, not to collecting blocks or running patterns.
-- **Cost,** measured on a generated 3,000-note vault (tags, a table, tasks and list items in
+- **Cost,** measured on a generated 3,000-note workspace (tags, a table, tasks and list items in
   every note) with four types (note, table-row, list-item, heading) finding 31,000 items:
   matching adds about 0.1 ms per note to `cold-lava items` on a loaded laptop. The perf step
   owns the `RegexSet` and fewer per-item allocations.
@@ -398,7 +398,7 @@ style.minutes = { badge = true, icon = "⏱" }
   `cancelled` `❌`), `recurrence` from `[repeat:: …]` or a pattern after `🔁`, `priority` from
   the five glyphs (lowest first, so the lowest present wins, as natively) then `[priority:: …]`,
   `tags` and `links` from the text, `daily_note` from `note = "date"`. `actions = ["tasks.toggle"]`.
-- **The switch-over** (done). `types::for_vault` loads the built-in layer first, so every vault
+- **The switch-over** (done). `types::for_workspace` loads the built-in layer first, so every workspace
   reads its tasks with the definition; `tasks::parse_line`, `Data::Task` and the shadow
   comparison are gone. `tasks::Task` is now a view of an item that answers to `task` (a subtype
   too: a field it doesn't read is empty, and the status comes from the line when it has no
@@ -414,17 +414,17 @@ style.minutes = { badge = true, icon = "⏱" }
   format, priority, recurrence, variation selectors, custom statuses, the global filter and the
   Dataview setting, nesting, quotes, callouts, continuation lines, block ids, fences, comments)
   is now a regression test against the native parser's reading, ids and revs included
-  (`tests/task_corpus.rs`), and the example vault's tasks are pinned as they were
+  (`tests/task_corpus.rs`), and the example workspace's tasks are pinned as they were
   (`tests/golden/items-task.json`). `agenda --json`, `agenda` and `task toggle` give the same
-  bytes as before on the example vault.
+  bytes as before on the example workspace.
 - **The known differences,** settled (`known_differences_follow_the_tasks_plugin`):
-  - Tags are read as the vault reads them (`markdown::TAG`): `#2026` is no tag, `(#paren)` is.
+  - Tags are read as the workspace reads them (`markdown::TAG`): `#2026` is no tag, `(#paren)` is.
   - A marker in a code span is words: no source reads in code.
   - The same field twice (`📅 a 📅 b`): the first, both out of the words, as the Tasks plugin,
     which reads fields from the end of the line, so the earlier one is read last and wins.
     Dataview's and an emoji both (`[due:: a] 📅 b`): Dataview's, both out of the words. The
     plugin reads only the format its settings name, and would leave the other in the
-    description; cold-lava reads both formats, so a vault that switched keeps its dates, and
+    description; cold-lava reads both formats, so a workspace that switched keeps its dates, and
     keeps the native reading here.
   - An unbracketed `due:: x` in a task's line is words: Dataview reads an unbracketed field only
     at the start of a line, and the Tasks plugin only in brackets.
@@ -437,18 +437,18 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Item JSON.** The same keys in the same order; tags lose their `#` (`"tags": ["home"]`).
   `status_type` keeps its names (`non_task`).
 - **Writing a task.** `item set` works on tasks: `status` through the checkbox (a space is a
-  status: `" "` unticks), `status_type` by name (`done` writes the vault's done symbol), dates,
+  status: `" "` unticks), `status_type` by name (`done` writes the workspace's done symbol), dates,
   priority and the rest through their markers or Dataview fields. A field read from the same
   text as the one set (the type of a status, from its checkbox) may change with it in the
   read-back check. `item set` changes only the field; ticking with dates and recurrence is
   `task toggle`. A date the task doesn't have is added through a writable source of a kind the
   line already writes its other fields with (a marker beside `⏳ …`, a Dataview field beside
-  `[scheduled:: …]`), else a Dataview field when the vault's Tasks plugin writes Dataview or the
+  `[scheduled:: …]`), else a Dataview field when the workspace's Tasks plugin writes Dataview or the
   line has a `::`, as `task toggle` decides, else a marker (`📅 …`). This is the rule for any
   type's missing field, so it holds for subtypes of the task and for a type of one's own with
   both kinds of source.
-- **Cost,** on a generated 3,000-note vault with 30,000 tasks in both formats (release, median
-  of runs interleaved with the old binary, on a loaded laptop): `cold-lava items VAULT task`
+- **Cost,** on a generated 3,000-note workspace with 30,000 tasks in both formats (release, median
+  of runs interleaved with the old binary, on a loaded laptop): `cold-lava items WORKSPACE task`
   613 → 872 ms (+42%), `--json` 683 → 856 ms (+25%), `agenda --json` 766 → 1,029 ms (+34%),
   peak memory 45 → 119 MB. A typed task is a map of fourteen fields with their spans and
   sources, where the native task was a struct. Matching was +70% at first; field names shared by the type (`Arc<str>`), a
@@ -473,7 +473,7 @@ style.minutes = { badge = true, icon = "⏱" }
   through the source that gave it; when that one is read-only, through a writable source before
   it (so `title = { property = "title", note = "name" }` adds the property), and for a field
   with no value, through a writable source: one of a kind the item reads another field from,
-  else a marker or a Dataview field as the vault's tasks are written (see "The task as a
+  else a marker or a Dataview field as the workspace's tasks are written (see "The task as a
   definition, as built"), else the first.
 - **The value** comes in the form items carry it (an ISO date, minutes, an enum's name, a
   link's target) or as a string the field's type reads (`1h30m`, `[[Lava]]`, an enum's written
@@ -561,7 +561,7 @@ style.minutes = { badge = true, icon = "⏱" }
   value without an icon (`▲ 2549`). Reading starts below it, so the title's breadcrumb is the
   first heading's as before. A note type's `whole` is skipped: it would be the whole body.
 - **Cost.** Once per note load and per change on disk, not per frame: the items come from the
-  core's cache (`Vault::items`) when the core's text is the text on disk, else are read once,
+  core's cache (`Workspace::items`) when the core's text is the text on disk, else are read once,
   and the marks are placed in the same pulldown-cmark pass that builds the `Doc`. The reader
   lays the marks out with the page, again only when the width or the note changes.
 - **Not yet:** a light terminal's table, and looks in the GUI. The table view and the agenda
@@ -589,7 +589,7 @@ style.minutes = { badge = true, icon = "⏱" }
   the whole row; `hide` is ignored, as a table always shows the value.
 - **The sender** is `type_table.rs`, what the built-in table extension will send: columns are
   the type's schema in order, then `note` (read-only); rows are every item that answers to the
-  type (subtypes too) from the core's cached items (`Vault::items`), with the note, line and
+  type (subtypes too) from the core's cached items (`Workspace::items`), with the note, line and
   `rev` of each kept beside the table. A column is read-only when no shape of the type reads the
   field through a writable source; the reason says where it is read from. The menu runs it in
   process for now (`i`, `table.open`, a picker of types with their item counts), not through
@@ -605,7 +605,7 @@ style.minutes = { badge = true, icon = "⏱" }
 - **Live.** The table is built again from the core's index on every change the core reports,
   keeping sort, filter and selection. Back (`Ctrl-o`) from a note opened with Enter returns to
   the table as it was (`Place::Table`: its type, row, column, sort and filter).
-- **CLI.** `cold-lava table VAULT TYPE` prints the rows as the view lays them out, every value
+- **CLI.** `cold-lava table WORKSPACE TYPE` prints the rows as the view lays them out, every value
   whole; `--sort FIELD` (or `-FIELD`) sorts as `s` (`S`) does, `--json` prints the `Table`.
 - **Not yet:** editing several values at once, a column picker, and the extension and its
   `view/open`.
@@ -674,20 +674,20 @@ new = "kanban.new"         # the command that makes one
 ```
 
 - **Opening.** Selecting a `.kanban` file in the tree, clicking it on a canvas or following
-  `[[Projects.kanban]]` sends its owner `file/open {path}`. The owner reads it through the vault
-  gateway (`vault/read` gives `{text, rev}`), parses its own format, and describes a view
+  `[[Projects.kanban]]` sends its owner `file/open {path}`. The owner reads it through the workspace
+  gateway (`workspace/read` gives `{text, rev}`), parses its own format, and describes a view
   through the view gateway (a scene, a table, Markdown). A file with no owner shows its name, as
-  now; `vault/files {extension}` lists files of a kind, for pickers.
-- **Saving and creating.** `vault/write {path, text, expect: rev}` is refused if the file changed
-  since it was read, so the owner re-reads, merges and tries again. `vault/create` places a new
+  now; `workspace/files {extension}` lists files of a kind, for pickers.
+- **Saving and creating.** `workspace/write {path, text, expect: rev}` is refused if the file changed
+  since it was read, so the owner re-reads, merges and tries again. `workspace/create` places a new
   file where Obsidian would put it and never overwrites. Outside changes arrive as
   `file/changed`, from the core's one watcher.
-- **Joining the vault.** An owner can contribute its file's **items and links**. A kanban card
+- **Joining the workspace.** An owner can contribute its file's **items and links**. A kanban card
   becomes an item of the owner's type (`kanban.card`), queried and listed with Markdown tasks,
   and edited through its owner. A card's `[[Lava]]` is reported as a link that the core
   resolves by Obsidian's rules, so `Lava`'s backlinks list the board, the graph draws the
   edge, and renaming `Lava` updates the board through its owner. Other file types are then part
-  of the vault, not opaque files only one extension understands.
+  of the workspace, not opaque files only one extension understands.
 - **Previews.** `![[Projects.kanban]]` in a note, or a file card on a whiteboard, asks the owner
   for a small view of the file.
 - **The whiteboard is the first owner:** `.canvas`, drawn as a scene, merged three ways on save,
@@ -769,7 +769,7 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
   - An extension hears from a pane it opened through `pane/message` (`kind` and `payload`, what
     its program wrote as `ESC ] 5379 ; kind ; payload BEL`) and `pane/exited` (with an `error`
     when the program never started).
-- The extension calls the host: `vault/notes`, `vault/read`, `vault/write` (through the safe
+- The extension calls the host: `workspace/notes`, `workspace/read`, `workspace/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
   `items/query`, `items/subscribe` and `items/edit` (see "Notes as data"), `ui/notify`, `ui/openNote`, `events/subscribe`, and:
   - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
@@ -778,20 +778,20 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
     (`query`, optional). An unknown id is reported in the status line.
   - `editor/opened`: the editor shows this note now. It is a report, not a request, so the
     host never answers it with `editor/open`, which would echo.
-  - `vault/saved`: a note was just written, so the host reads it now instead of when the file
+  - `workspace/saved`: a note was just written, so the host reads it now instead of when the file
     watcher notices.
   - `pane/open` (a `pane` id the extension picks, and the program with its arguments),
     `pane/input` (text to type into the pane) and `pane/close`.
 - The host notifies subscribers: `event/noteChanged` and friends.
 
 The method set is versioned (`apiVersion` in `initialize`), so old extensions keep working.
-Paths are absolute and inside the vault. A message's tag is its method name, for example
+Paths are absolute and inside the workspace. A message's tag is its method name, for example
 `{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
 
 Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
 (with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
 `editor/deleted`, `pane/message`
-and `pane/exited` from the host, and `ui/notify`, `command/run`, `editor/opened`, `vault/saved`,
+and `pane/exited` from the host, and `ui/notify`, `command/run`, `editor/opened`, `workspace/saved`,
 `pane/open` and `pane/input` from the extension.
 
 - **Saves are not acknowledged yet.** `editor/save` gets no answer, so before it reads the files
@@ -813,8 +813,8 @@ shows one pane at a time and answers a second `pane/open` with `pane/exited`.
 ## Manifest
 
 ```toml
-# .cold-lava/extensions/word-count/extension.toml (per vault)
-# or ~/.config/cold-lava/extensions/word-count/extension.toml (for every vault)
+# .cold-lava/extensions/word-count/extension.toml (per workspace)
+# or ~/.config/cold-lava/extensions/word-count/extension.toml (for every workspace)
 name = "word-count"
 version = "0.1.0"
 api = "1"
@@ -876,10 +876,10 @@ zooming wait.
   next update is authoritative.
 - **Colour groups** move with the graph extension, which reads `graph.json` through the core.
   The **three-way merge** moves with the whiteboard extension, which reads with a revision and
-  writes with `vault/write` expecting it, merging and retrying when refused.
+  writes with `workspace/write` expecting it, merging and retrying when refused.
 
 The graph moves first: it's read-only, already draws through a backend-neutral `Scene`, and is
-where the performance risk is (a 5k-note vault is about 1.3 MB of `view/open`, sent once). The
+where the performance risk is (a 5k-note workspace is about 1.3 MB of `view/open`, sent once). The
 whiteboard follows once the graph has carried the protocol; if input and picking make the scene
 protocol grow into a UI toolkit, keeping the whiteboard in the core is a fair outcome. Scenes
 start full screen; one beside the tree waits for a way to keep Kitty images under overlays.
@@ -899,15 +899,15 @@ after its call returns, so it never holds the menu's state.
 
 ## Order of work
 
-1. Core: safe writes, live vault, events. *(done)*
+1. Core: safe writes, live workspace, events. *(done)*
 2. Commands, command palette, configurable keys. The Markdown reader can land alongside, since
    it's core.
 3. The `Extension` interface; move built-in features onto it, starting with the Neovim editor.
    *(in progress: the interface, extension commands and the Neovim editor exist)* Then, in
    small PRs each checked with `cold-lava drive`:
    1. Notes as data: tasks, lists, headings and block ids, with `agenda` and `task toggle`
-      rebuilt on them and `cold-lava items VAULT KIND`. *(done: `items::extract` reads a
-      note in one pass, `Vault::items` caches it per note, ids and revs are pinned by tests,
+      rebuilt on them and `cold-lava items WORKSPACE KIND`. *(done: `items::extract` reads a
+      note in one pass, `Workspace::items` caches it per note, ids and revs are pinned by tests,
       and the item JSON is pinned for `items/query`)*
    2. Ids, revs and safe edits; in the reader, `x` ticks the task under the cursor. *(done:
       `task toggle --id` and `edit::set_field` refuse a stale `rev`; `x` ticks the task the
@@ -918,20 +918,20 @@ after its call returns, so it never holds the menu's state.
       screen of the menu are done: `list.rs`, `agenda.rs`, `A`; it becomes an extension with
       `items/query` and `view/open`)*
    5. Types, in small steps: the loader and `cold-lava types` (with
-      `example-vault/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows)
+      `example-workspace/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows)
       *(done: `types::load`, definitions' JSON pinned for `types/list`)*;
       primitives with spans; typed blocks *(done for notes, table rows, list items, headings and
-      paragraphs: `matcher.rs`, `cold-lava items VAULT TYPE`)*; inline types *(done: in
+      paragraphs: `matcher.rs`, `cold-lava items WORKSPACE TYPE`)*; inline types *(done: in
       paragraphs, list items and tasks, headings and table rows, with the block as parent;
-      `vei` in the example vault)*; `set-field` with the read-back check *(done:
+      `vei` in the example workspace)*; `set-field` with the read-back check *(done:
       `edit::set_field`, `cold-lava item set`)*;
       the task as a definition, first in shadow mode beside today's parser, then switched
       over *(done: `types/task.toml` is how tasks are read; `agenda` and `task toggle` read
       typed tasks)*;
       looks in the reader *(done: `looks.rs`, `markdown::parse_marked`; the task's done and
-      cancelled lines and priorities, the example vault's elevation and VEI)*; the table view
+      cancelled lines and priorities, the example workspace's elevation and VEI)*; the table view
       *(done: `table.rs`, `type_table.rs`, `i`, `cold-lava table`)*. Types are done.
-   6. File types: owners in manifests, `file/open`, `vault/files`, `vault/create`, items and
+   6. File types: owners in manifests, `file/open`, `workspace/files`, `workspace/create`, items and
       links contributed by owners; the whiteboard as the first owner.
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an

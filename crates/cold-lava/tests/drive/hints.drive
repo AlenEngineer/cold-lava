@@ -1,6 +1,6 @@
 # Link hints: f labels the links on screen, typing a label follows its link.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p kilau
 wait-for Kīlauea
 keys enter

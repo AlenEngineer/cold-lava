@@ -1,5 +1,5 @@
-# This vault's types: what its notes and tables mean, for cold-lava. Obsidian ignores this
-# folder. Run `cold-lava types example-vault` to see how cold-lava reads it.
+# This workspace's types: what its notes and tables mean, for cold-lava. Obsidian ignores this
+# folder. Run `cold-lava types example-workspace` to see how cold-lava reads it.
 version = 1
 
 # A note tagged #volcano, or a tag under it like #volcano/strato. One shape, written at the top.

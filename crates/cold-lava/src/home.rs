@@ -1,4 +1,4 @@
-//! The main menu: vaults on the left, the selected vault's notes in the middle, and the
+//! The main menu: workspaces on the left, the selected workspace's notes in the middle, and the
 //! selected note on the right, in the reader or in the editor extension's pane (a real,
 //! embedded Neovim when it's installed).
 
@@ -26,7 +26,7 @@ use crate::table::{self, TableView};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::type_table::{self, At};
-use crate::{agenda, board, items, templates, term, vault, whichkey};
+use crate::{agenda, board, items, templates, term, whichkey, workspace};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -44,10 +44,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
-// ---------- vault discovery ----------
+// ---------- workspace discovery ----------
 
 #[derive(Clone)]
-pub struct VaultEntry {
+pub struct WorkspaceEntry {
     pub name: String,
     pub path: PathBuf,
     /// Where we found it: "obsidian", "recent", "here".
@@ -91,18 +91,28 @@ pub fn parse_obsidian_vaults(json: &str) -> Vec<(PathBuf, u64)> {
         .collect()
 }
 
-fn recent_file() -> Option<PathBuf> {
-    config_dir().map(|c| c.join("cold-lava/vaults.json"))
+fn recent_dir() -> Option<PathBuf> {
+    config_dir().map(|c| c.join("cold-lava"))
 }
 
-fn load_recent() -> Vec<(PathBuf, u64)> {
-    let Some(text) = recent_file().and_then(|p| std::fs::read_to_string(p).ok()) else {
+/// The list of opened workspaces, `{"workspaces": [{"path", "opened"}]}`.
+const RECENT_FILE: &str = "workspaces.json";
+/// Where 0.3.0 and earlier kept that list, as `{"vaults": [...]}`: read while `RECENT_FILE`
+/// doesn't exist, and left in place.
+const OLD_RECENT_FILE: &str = "vaults.json";
+
+fn load_recent(dir: &Path) -> Vec<(PathBuf, u64)> {
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).ok();
+    let Some((text, key)) = read(RECENT_FILE)
+        .map(|t| (t, "workspaces"))
+        .or_else(|| read(OLD_RECENT_FILE).map(|t| (t, "vaults")))
+    else {
         return Vec::new();
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Vec::new();
     };
-    v.get("vaults")
+    v.get(key)
         .and_then(|x| x.as_array())
         .into_iter()
         .flatten()
@@ -115,20 +125,17 @@ fn load_recent() -> Vec<(PathBuf, u64)> {
         .collect()
 }
 
-fn remember(path: &Path) {
-    let Some(file) = recent_file() else { return };
-    let mut list = load_recent();
+fn remember(dir: &Path, path: &Path) {
+    let mut list = load_recent(dir);
     list.retain(|(p, _)| p != path);
     list.insert(0, (path.to_path_buf(), now_ms()));
     list.truncate(50);
     let json = serde_json::json!({
-        "vaults": list.iter().map(|(p, t)| serde_json::json!({"path": p, "opened": t})).collect::<Vec<_>>()
+        "workspaces": list.iter().map(|(p, t)| serde_json::json!({"path": p, "opened": t})).collect::<Vec<_>>()
     });
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
+    let _ = std::fs::create_dir_all(dir);
     let _ = std::fs::write(
-        file,
+        dir.join(RECENT_FILE),
         serde_json::to_string_pretty(&json).unwrap_or_default(),
     );
 }
@@ -140,7 +147,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn looks_like_vault(p: &Path) -> bool {
+fn looks_like_workspace(p: &Path) -> bool {
     p.join(".obsidian").is_dir()
         || std::fs::read_dir(p)
             .map(|rd| {
@@ -150,13 +157,13 @@ fn looks_like_vault(p: &Path) -> bool {
             .unwrap_or(false)
 }
 
-/// Every vault we know about, most recently used first, without duplicates.
-pub fn discover(extra: &[PathBuf]) -> Vec<VaultEntry> {
+/// Every workspace we know about, most recently used first, without duplicates.
+pub fn discover(extra: &[PathBuf]) -> Vec<WorkspaceEntry> {
     let mut found: Vec<(PathBuf, u64, &'static str)> = Vec::new();
     for p in extra {
         found.push((p.clone(), u64::MAX, "here"));
     }
-    for (p, t) in load_recent() {
+    for (p, t) in recent_dir().map(|d| load_recent(&d)).unwrap_or_default() {
         found.push((p, t, "recent"));
     }
     for cfg in obsidian_configs() {
@@ -166,7 +173,7 @@ pub fn discover(extra: &[PathBuf]) -> Vec<VaultEntry> {
             }
         }
     }
-    // The bundled example vault, when run from the repository.
+    // The bundled example workspace, when run from the repository.
     for base in [
         std::env::current_dir().ok(),
         Some(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))),
@@ -174,13 +181,13 @@ pub fn discover(extra: &[PathBuf]) -> Vec<VaultEntry> {
     .into_iter()
     .flatten()
     {
-        let ex = base.join("example-vault");
+        let ex = base.join("example-workspace");
         if ex.is_dir() {
             found.push((ex, 1, "example"));
         }
     }
     let mut seen = HashSet::new();
-    let mut out: Vec<VaultEntry> = Vec::new();
+    let mut out: Vec<WorkspaceEntry> = Vec::new();
     for (p, ts, source) in found {
         let Ok(canon) = p.canonicalize() else {
             continue;
@@ -188,8 +195,8 @@ pub fn discover(extra: &[PathBuf]) -> Vec<VaultEntry> {
         if !canon.is_dir() {
             continue;
         }
-        // The bundled example vault only if no vault of that name is listed already.
-        if source == "example" && out.iter().any(|e| e.name == "example-vault") {
+        // The bundled example workspace only if no workspace of that name is listed already.
+        if source == "example" && out.iter().any(|e| e.name == "example-workspace") {
             continue;
         }
         if let Some(e) = out.iter_mut().find(|e| e.path == canon) {
@@ -204,7 +211,7 @@ pub fn discover(extra: &[PathBuf]) -> Vec<VaultEntry> {
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            out.push(VaultEntry {
+            out.push(WorkspaceEntry {
                 name,
                 path: canon,
                 source,
@@ -236,7 +243,7 @@ pub struct Item {
     pub kind: ItemKind,
 }
 
-/// All folders, notes and boards in a vault, as a depth-first sorted list
+/// All folders, notes and boards in a workspace, as a depth-first sorted list
 /// (folders before files, case-insensitive).
 pub fn scan_tree(root: &Path) -> Vec<Item> {
     let mut entries: Vec<(String, ItemKind)> = WalkDir::new(root)
@@ -301,14 +308,14 @@ pub fn scan_tree(root: &Path) -> Vec<Item> {
 /// The rows to show: folders collapsed unless expanded; with a filter, a flat list of matches.
 pub fn visible(items: &[Item], expanded: &HashSet<String>, filter: &str) -> Vec<usize> {
     if !filter.is_empty() {
-        let q = vault::search_key(filter);
+        let q = workspace::search_key(filter);
         let mut hits: Vec<(usize, bool)> = items
             .iter()
             .enumerate()
             .filter(|(_, it)| {
-                it.kind != ItemKind::Folder && vault::search_key(&it.rel).contains(&q)
+                it.kind != ItemKind::Folder && workspace::search_key(&it.rel).contains(&q)
             })
-            .map(|(i, it)| (i, vault::search_key(&it.name).starts_with(&q)))
+            .map(|(i, it)| (i, workspace::search_key(&it.name).starts_with(&q)))
             .collect();
         hits.sort_by_key(|&(i, prefix)| (!prefix, items[i].name.to_lowercase()));
         return hits.into_iter().map(|(i, _)| i).collect();
@@ -329,7 +336,7 @@ pub fn visible(items: &[Item], expanded: &HashSet<String>, filter: &str) -> Vec<
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
-    Vaults,
+    Workspaces,
     Notes,
     /// The right pane: the reader, or the program an extension runs there.
     Pane,
@@ -347,14 +354,14 @@ struct BackRow {
 enum Mode {
     Normal,
     Filter,
-    /// Typing a new note's name; `templates` are the vault's (vault-relative without `.md`, and
+    /// Typing a new note's name; `templates` are the workspace's (workspace-relative without `.md`, and
     /// the name shown), and `template` is the chosen one's place in them, `None` for none.
     NewNote {
         name: String,
         templates: Vec<(String, String)>,
         template: Option<usize>,
     },
-    AddVault(String),
+    AddWorkspace(String),
     /// Typing a new folder's name.
     NewFolder(String),
     Help,
@@ -386,7 +393,7 @@ enum Mode {
     /// Typing the folder to move the marked notes and folders into.
     MoveMarked(String),
     /// Typing a tag to add to the marked notes (or the selected one); `-tag` removes it. `all`
-    /// is the vault's tags, and `sel` the one Tab completed to among those matching `typed`.
+    /// is the workspace's tags, and `sel` the one Tab completed to among those matching `typed`.
     Tag {
         typed: String,
         all: Vec<String>,
@@ -420,7 +427,7 @@ enum Mode {
         from: PeekFrom,
         view: Peek,
     },
-    /// The vault's bookmarks (Obsidian's); `sel` is a row of `bookmark_rows`.
+    /// The workspace's bookmarks (Obsidian's); `sel` is a row of `bookmark_rows`.
     Bookmarks {
         query: String,
         sel: usize,
@@ -434,7 +441,7 @@ enum Mode {
     },
     /// A type's items as a table.
     Table(Box<Tabled>),
-    /// The vault's tasks by day.
+    /// The workspace's tasks by day.
     Agenda(Box<Agendaed>),
 }
 
@@ -455,7 +462,7 @@ struct Tabled {
 /// A note, board or folder about to go to the trash, as the user was shown it.
 struct Doomed {
     path: PathBuf,
-    /// Vault-relative, without `.md`.
+    /// Workspace-relative, without `.md`.
     rel: String,
     contents: trash::Contents,
 }
@@ -507,7 +514,7 @@ enum Peek {
     Attachment {
         name: String,
         kind: String,
-        /// Whether it is in the vault, so following it opens it.
+        /// Whether it is in the workspace, so following it opens it.
         found: bool,
     },
 }
@@ -518,7 +525,7 @@ enum Destination {
     Note(PathBuf, Option<Jump>),
     /// No note by this name yet: following the link creates it.
     NewNote(String),
-    /// A file that isn't a note (`map.pdf`, a canvas), and where it is if it's in the vault.
+    /// A file that isn't a note (`map.pdf`, a canvas), and where it is if it's in the workspace.
     Attachment { name: String, path: Option<PathBuf> },
 }
 
@@ -548,9 +555,9 @@ enum SearchRow {
 
 pub struct Home {
     render: Render,
-    vaults: Vec<VaultEntry>,
+    workspaces: Vec<WorkspaceEntry>,
     vsel: usize,
-    // The open vault
+    // The open workspace
     root: Option<PathBuf>,
     items: Vec<Item>,
     expanded: HashSet<String>,
@@ -559,7 +566,7 @@ pub struct Home {
     nscroll: usize,
     filter: String,
     links: HashMap<String, (usize, usize)>,
-    /// The open vault: index, file watching and change events.
+    /// The open workspace: index, file watching and change events.
     core: Option<Core>,
     backs: Vec<BackRow>,
     bsel: usize,
@@ -569,7 +576,7 @@ pub struct Home {
     pane_keys: Keymap<PaneAction>,
     /// Recently shown notes, most recent first (the quick switcher's starting list).
     mru: Vec<PathBuf>,
-    /// Back and forward, within the open vault.
+    /// Back and forward, within the open workspace.
     history: History,
     results: Vec<crate::search::NoteHits>,
     result_rows: Vec<SearchRow>,
@@ -587,7 +594,7 @@ pub struct Home {
     pending: Option<(PathBuf, Instant)>,
     /// What was deleted or merged this session, most recent last.
     undo: Vec<Undo>,
-    /// Marked tree rows (vault-relative, as `Item::rel`), for moving, deleting and tagging
+    /// Marked tree rows (workspace-relative, as `Item::rel`), for moving, deleting and tagging
     /// several at once.
     marks: BTreeSet<String>,
     /// Bookmark groups folded in the bookmarks popup (as `Bookmark::at`).
@@ -597,7 +604,7 @@ pub struct Home {
     /// `Some` while the pane shows the reader: always without an editor, else after
     /// `note.read`.
     reader: Option<Reader>,
-    /// The open vault's Markdown flavour.
+    /// The open workspace's Markdown flavour.
     flavour: Flavour,
     zoom: bool,
     // UI
@@ -629,10 +636,10 @@ impl Home {
         {
             extra.push(cwd);
         }
-        let vaults = discover(&extra);
+        let workspaces = discover(&extra);
         let mut h = Home {
             render,
-            vaults,
+            workspaces,
             vsel: 0,
             root: None,
             items: Vec::new(),
@@ -667,19 +674,23 @@ impl Home {
             reader: None,
             flavour: markdown::flavour_for(Path::new("")),
             zoom: false,
-            focus: Focus::Vaults,
+            focus: Focus::Workspaces,
             mode: Mode::Normal,
             msg: None,
             areas: [Rect::default(); 4],
             quit: false,
         };
-        if !h.vaults.is_empty() {
-            h.open_vault(0);
+        if !h.workspaces.is_empty() {
+            h.open_workspace(0);
             if initial.is_some() {
                 h.focus = Focus::Notes;
             }
         }
-        match (crate::config::get().errors.len(), h.registry.refused()) {
+        let config = crate::config::get();
+        match (config.errors.len(), h.registry.refused()) {
+            (0, []) if !config.warnings.is_empty() => {
+                h.flash("config.toml uses an old command name: run cold-lava keys to see it")
+            }
             (0, []) => {}
             (0, [why]) => h.flash(why.clone()),
             (0, refused) => h.flash(format!(
@@ -959,10 +970,10 @@ impl Home {
         Ok(())
     }
 
-    // ---------- vaults & notes ----------
+    // ---------- workspaces & notes ----------
 
-    fn open_vault(&mut self, i: usize) {
-        let Some(v) = self.vaults.get(i).cloned() else {
+    fn open_workspace(&mut self, i: usize) {
+        let Some(v) = self.workspaces.get(i).cloned() else {
             return;
         };
         self.vsel = i;
@@ -974,10 +985,10 @@ impl Home {
         self.folded.clear();
         self.nsel = 0;
         self.nscroll = 0;
-        self.core = None; // a different vault: start a fresh core
+        self.core = None; // a different workspace: start a fresh core
         self.history.clear();
         self.reload_tree();
-        // Start with top-level folders open if the vault is small enough to take in at once.
+        // Start with top-level folders open if the workspace is small enough to take in at once.
         if self.items.len() <= 60 {
             for it in &self.items {
                 if it.kind == ItemKind::Folder && it.depth == 0 {
@@ -989,7 +1000,9 @@ impl Home {
         if self.core.as_ref().is_some_and(|c| !c.is_live()) {
             self.flash("can't watch this folder for changes; press r to refresh");
         }
-        remember(&v.path);
+        if let Some(dir) = recent_dir() {
+            remember(&dir, &v.path);
+        }
         self.select_row(0);
     }
 
@@ -1004,7 +1017,7 @@ impl Home {
             None => self.core = Core::open(&root).ok(),
         }
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
-            for (i, n) in ix.vault.notes.iter().enumerate() {
+            for (i, n) in ix.workspace.notes.iter().enumerate() {
                 self.links.insert(format!("{}.md", n.rel), ix.counts(i));
             }
         }
@@ -1023,7 +1036,7 @@ impl Home {
             .backlinks(i)
             .iter()
             .map(|b| BackRow {
-                name: ix.vault.notes[b.from].name.clone(),
+                name: ix.workspace.notes[b.from].name.clone(),
                 path: ix.path(b.from),
                 line: b.line,
                 context: b.context.clone(),
@@ -1046,7 +1059,7 @@ impl Home {
         if let Some(i) = ix.resolver.resolve(&link.note) {
             return Some(Destination::Note(ix.path(i), jump));
         }
-        if vault::attachment_kind(&link.note).is_some() {
+        if workspace::attachment_kind(&link.note).is_some() {
             let path = ix.attachment(&link.note, ix.by_path(from));
             return Some(Destination::Attachment {
                 name: link.note,
@@ -1093,11 +1106,11 @@ impl Home {
                 self.select_path(&path);
             }
             Destination::Attachment { name, path: None } => {
-                self.flash(format!("{name} isn't in the vault"))
+                self.flash(format!("{name} isn't in the workspace"))
             }
             Destination::Attachment {
                 path: Some(path), ..
-            } if vault::attachment_kind(&path.to_string_lossy()) == Some("whiteboard") => {
+            } if workspace::attachment_kind(&path.to_string_lossy()) == Some("whiteboard") => {
                 self.go_to = Some(Place::Board { path })
             }
             Destination::Attachment {
@@ -1378,7 +1391,7 @@ impl Home {
         }
         self.links.clear();
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
-            for (i, n) in ix.vault.notes.iter().enumerate() {
+            for (i, n) in ix.workspace.notes.iter().enumerate() {
                 self.links.insert(format!("{}.md", n.rel), ix.counts(i));
             }
         }
@@ -1431,13 +1444,13 @@ impl Home {
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return (markdown::parse(&text, &self.flavour), Looks::default());
         };
-        let vault = &ix.vault;
-        let settings = vault.item_settings();
+        let workspace = &ix.workspace;
+        let settings = workspace.item_settings();
         let read;
-        let items = match ix.by_path(path).map(|i| &vault.notes[i]) {
-            Some(note) if note.text == text => vault.items(note),
+        let items = match ix.by_path(path).map(|i| &workspace.notes[i]) {
+            Some(note) if note.text == text => workspace.items(note),
             _ => {
-                let rel = path.strip_prefix(&vault.root).unwrap_or(path);
+                let rel = path.strip_prefix(&workspace.root).unwrap_or(path);
                 read = items::extract(&rel.to_string_lossy().replace('\\', "/"), &text, settings);
                 &read
             }
@@ -1653,7 +1666,7 @@ impl Home {
                 }
                 return Ok(());
             }
-            Mode::AddVault(name) => {
+            Mode::AddWorkspace(name) => {
                 match k.code {
                     KeyCode::Esc => self.mode = Mode::Normal,
                     KeyCode::Backspace => {
@@ -1666,7 +1679,7 @@ impl Home {
                         let text = name.trim().to_string();
                         self.mode = Mode::Normal;
                         if !text.is_empty() {
-                            self.add_vault(&text);
+                            self.add_workspace(&text);
                         }
                     }
                     _ => {}
@@ -1704,7 +1717,7 @@ impl Home {
             return self.run_menu_command(c, Value::Null, terminal);
         }
         match self.focus {
-            Focus::Vaults => self.vault_key(k),
+            Focus::Workspaces => self.workspace_key(k),
             Focus::Notes => self.notes_key(k, terminal)?,
             Focus::Backlinks => self.backlinks_key(k),
             Focus::Pane => {}
@@ -1837,10 +1850,10 @@ impl Home {
             return self.flash("no task on screen");
         };
         let task = self.core.as_ref().and_then(|core| {
-            let note = &core.index.vault.notes[core.index.by_path(&path)?];
+            let note = &core.index.workspace.notes[core.index.by_path(&path)?];
             let raw = note.text.lines().nth(line - 1)?;
-            let settings = &core.index.vault.item_settings().tasks;
-            (core.index.vault.items(note).iter())
+            let settings = &core.index.workspace.item_settings().tasks;
+            (core.index.workspace.items(note).iter())
                 .filter(|i| i.line == line)
                 .find_map(|i| Some((i.rev.clone(), crate::tasks::Task::of(i, raw, settings)?)))
         });
@@ -1851,7 +1864,7 @@ impl Home {
         self.tick(&rel.replace('\\', "/"), line, &rev, &task.text);
     }
 
-    /// Tick the task on `line` of `note` (vault-relative, with `.md`) the way the Tasks plugin
+    /// Tick the task on `line` of `note` (workspace-relative, with `.md`) the way the Tasks plugin
     /// does, refused if it is no longer the version `rev`. The core reads the note at once, so
     /// every view shows the change, or what refused it, on the next frame. Returns the line the
     /// ticked task is on now. `text` is its words, for the status line.
@@ -2079,10 +2092,10 @@ impl Home {
             MenuAction::FocusNext => {
                 let has_backs = self.show_backlinks && !self.backs.is_empty();
                 self.focus = match self.focus {
-                    Focus::Vaults => Focus::Notes,
+                    Focus::Workspaces => Focus::Notes,
                     Focus::Notes if self.pane.is_some() || self.reader.is_some() => Focus::Pane,
                     Focus::Notes | Focus::Pane if has_backs => Focus::Backlinks,
-                    _ => Focus::Vaults,
+                    _ => Focus::Workspaces,
                 }
             }
             MenuAction::Palette => {
@@ -2124,7 +2137,7 @@ impl Home {
             }
             MenuAction::FocusPrevious => {
                 self.focus = if self.focus == Focus::Notes {
-                    Focus::Vaults
+                    Focus::Workspaces
                 } else {
                     Focus::Notes
                 }
@@ -2155,7 +2168,7 @@ impl Home {
                 }
             }
             MenuAction::Today => self.open_today(),
-            MenuAction::AddVault => self.mode = Mode::AddVault(String::new()),
+            MenuAction::AddWorkspace => self.mode = Mode::AddWorkspace(String::new()),
             MenuAction::NewFolder => self.mode = Mode::NewFolder(String::new()),
             MenuAction::Rescan => {
                 if let Some(core) = self.core.as_mut() {
@@ -2175,14 +2188,14 @@ impl Home {
         Ok(())
     }
 
-    fn vault_key(&mut self, k: KeyEvent) {
-        let n = self.vaults.len();
+    fn workspace_key(&mut self, k: KeyEvent) {
+        let n = self.workspaces.len();
         if n == 0 {
             return;
         }
         match k.code {
-            KeyCode::Down | KeyCode::Char('j') => self.open_vault((self.vsel + 1).min(n - 1)),
-            KeyCode::Up | KeyCode::Char('k') => self.open_vault(self.vsel.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => self.open_workspace((self.vsel + 1).min(n - 1)),
+            KeyCode::Up | KeyCode::Char('k') => self.open_workspace(self.vsel.saturating_sub(1)),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Notes,
             _ => {}
         }
@@ -2215,7 +2228,7 @@ impl Home {
                         self.select_row(r);
                     }
                 } else {
-                    self.focus = Focus::Vaults;
+                    self.focus = Focus::Workspaces;
                 }
             }
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
@@ -2311,15 +2324,15 @@ impl Home {
         let mut hits = crate::search::switcher(ix, query);
         if query.trim().is_empty() {
             let rank = |h: &crate::search::SwitchHit| {
-                let p = &ix.vault.notes[h.note].path;
+                let p = &ix.workspace.notes[h.note].path;
                 self.mru.iter().position(|m| m == p).unwrap_or(usize::MAX)
             };
             hits.sort_by(|a, b| {
                 rank(a).cmp(&rank(b)).then_with(|| {
-                    ix.vault.notes[a.note]
+                    ix.workspace.notes[a.note]
                         .rel
                         .to_lowercase()
-                        .cmp(&ix.vault.notes[b.note].rel.to_lowercase())
+                        .cmp(&ix.workspace.notes[b.note].rel.to_lowercase())
                 })
             });
         }
@@ -2334,19 +2347,19 @@ impl Home {
     ) -> Vec<crate::search::SwitchHit> {
         let mut hits = self.switcher_hits(query);
         if let (Some(source), Some(ix)) = (merging, self.core.as_ref().map(|c| &c.index)) {
-            hits.retain(|h| ix.vault.notes[h.note].path != source);
+            hits.retain(|h| ix.workspace.notes[h.note].path != source);
         }
         hits
     }
 
     /// Whether the switcher offers "create note" (a query that isn't exactly an existing name).
     fn offers_create(&self, query: &str) -> bool {
-        let q = vault::search_key(query.trim());
+        let q = workspace::search_key(query.trim());
         !q.is_empty()
             && self.core.as_ref().map(|c| &c.index).is_some_and(|ix| {
-                !ix.vault.notes.iter().any(|n| {
-                    vault::search_key(&n.name) == q
-                        || n.aliases.iter().any(|a| vault::search_key(a) == q)
+                !ix.workspace.notes.iter().any(|n| {
+                    workspace::search_key(&n.name) == q
+                        || n.aliases.iter().any(|a| workspace::search_key(a) == q)
                 })
             })
     }
@@ -2552,7 +2565,7 @@ impl Home {
             .collect()
     }
 
-    /// Whether what a bookmark points at is in the vault.
+    /// Whether what a bookmark points at is in the workspace.
     fn bookmark_found(&self, b: &Bookmark) -> bool {
         let Some(root) = self.root.as_ref() else {
             return false;
@@ -2641,7 +2654,7 @@ impl Home {
         match b.target {
             Target::File { path, subpath } => {
                 let p = root.join(&path);
-                match vault::attachment_kind(&path) {
+                match workspace::attachment_kind(&path) {
                     None => self.open_found(from, &p, subpath.as_deref().and_then(bookmarks::jump)),
                     Some("whiteboard") => self.go_to = Some(Place::Board { path: p }),
                     Some(_) if term::open_url(&p.to_string_lossy()) => {
@@ -3014,7 +3027,7 @@ impl Home {
             if moving && !input.ends_with('/') && !input.ends_with(".md") && !input.is_empty() {
                 format!("{input}/")
             } else if moving && input.is_empty() {
-                return self.flash("type a folder, e.g. Archive/ (or / for the vault root)");
+                return self.flash("type a folder, e.g. Archive/ (or / for the workspace root)");
             } else {
                 input.to_string()
             };
@@ -3025,7 +3038,7 @@ impl Home {
         };
         let plan = if path.is_dir() {
             let from = path
-                .strip_prefix(&ix.vault.root)
+                .strip_prefix(&ix.workspace.root)
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
             let name = from.rsplit('/').next().unwrap_or(&from).to_string();
@@ -3040,9 +3053,9 @@ impl Home {
             let Some(i) = ix.by_path(path) else {
                 return self.flash("that note is no longer there");
             };
-            let from = format!("{}.md", ix.vault.notes[i].rel);
+            let from = format!("{}.md", ix.workspace.notes[i].rel);
             let target = if input == "/" {
-                Ok(format!("{}.md", ix.vault.notes[i].name))
+                Ok(format!("{}.md", ix.workspace.notes[i].name))
             } else {
                 crate::rename::target_rel(&from, &input)
             };
@@ -3060,11 +3073,11 @@ impl Home {
         }
     }
 
-    /// Plan moving every marked note and folder into the folder typed (`/` is the vault's root).
+    /// Plan moving every marked note and folder into the folder typed (`/` is the workspace's root).
     fn plan_move_marked(&mut self, input: &str) {
         let folder = input.trim();
         if folder.is_empty() {
-            return self.flash("type a folder, e.g. Archive/ (or / for the vault root)");
+            return self.flash("type a folder, e.g. Archive/ (or / for the workspace root)");
         }
         self.save_editor();
         self.reload_tree();
@@ -3114,7 +3127,7 @@ impl Home {
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return;
         };
-        let all: BTreeSet<String> = (ix.vault.notes.iter())
+        let all: BTreeSet<String> = (ix.workspace.notes.iter())
             .flat_map(|n| n.tags.iter().cloned())
             .collect();
         self.mode = Mode::Tag {
@@ -3399,7 +3412,7 @@ impl Home {
             }
             ms => {
                 let into = match dir_of_rel(&ms[0].to) {
-                    "" => "the vault's root".to_string(),
+                    "" => "the workspace's root".to_string(),
                     d => format!("{d}/"),
                 };
                 let mut what = format!(" Move {} into {into}", plural(ms.len(), "item"));
@@ -3742,7 +3755,7 @@ impl Home {
         self.mode = Mode::Tidy(Box::new(view));
     }
 
-    /// Show the Tidy view again after the vault changed under it: read the vault now rather
+    /// Show the Tidy view again after the workspace changed under it: read the workspace now rather
     /// than when the watcher reports it, so what was just deleted or created is gone at once.
     fn show_tidy(&mut self, view: Box<TidyView>) {
         let Some(core) = self.core.as_mut() else {
@@ -3841,7 +3854,7 @@ impl Home {
         let Some(core) = self.core.as_ref() else {
             return Vec::new();
         };
-        let all = type_table::types(&core.index.vault);
+        let all = type_table::types(&core.index.workspace);
         if query.trim().is_empty() {
             return all;
         }
@@ -3940,7 +3953,7 @@ impl Home {
         let Some(core) = self.core.as_ref() else {
             return;
         };
-        let Some(built) = type_table::build(&core.index.vault, ty) else {
+        let Some(built) = type_table::build(&core.index.workspace, ty) else {
             return self.flash(format!("no type called {ty}"));
         };
         let mut view = TableView::new(built.table);
@@ -3957,12 +3970,12 @@ impl Home {
         }));
     }
 
-    /// The table again from the core's items, after the vault changed.
+    /// The table again from the core's items, after the workspace changed.
     fn refresh_table(&mut self) {
         let (Mode::Table(t), Some(core)) = (&mut self.mode, &self.core) else {
             return;
         };
-        if let Some(built) = type_table::build(&core.index.vault, &t.ty) {
+        if let Some(built) = type_table::build(&core.index.workspace, &t.ty) {
             t.view.update(built.table);
             t.at = built.at;
         }
@@ -4035,7 +4048,7 @@ impl Home {
         let Some(core) = self.core.as_ref() else {
             return;
         };
-        let built = agenda::build(&core.index.vault, crate::tasks::today(), show_done);
+        let built = agenda::build(&core.index.workspace, crate::tasks::today(), show_done);
         let mut view = ListView::new(built.list);
         if let Some(spot) = spot {
             view.restore(spot);
@@ -4050,12 +4063,12 @@ impl Home {
         }));
     }
 
-    /// The agenda again from the core's items, after the vault changed (or the day did).
+    /// The agenda again from the core's items, after the workspace changed (or the day did).
     fn refresh_agenda(&mut self) {
         let (Mode::Agenda(a), Some(core)) = (&mut self.mode, &self.core) else {
             return;
         };
-        let built = agenda::build(&core.index.vault, crate::tasks::today(), a.show_done);
+        let built = agenda::build(&core.index.workspace, crate::tasks::today(), a.show_done);
         a.view.update(built.list);
         a.at = built.at;
     }
@@ -4192,12 +4205,12 @@ impl Home {
         let mut backlinks = Vec::new();
         let mut notes = 0;
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
-            let inside = |i: usize| doomed_path(&ix.vault.notes[i].path);
-            for i in (0..ix.vault.notes.len()).filter(|&i| inside(i)) {
+            let inside = |i: usize| doomed_path(&ix.workspace.notes[i].path);
+            for i in (0..ix.workspace.notes.len()).filter(|&i| inside(i)) {
                 notes += 1;
                 backlinks.extend(ix.backlinks(i).iter().filter(|b| !inside(b.from)).map(|b| {
                     BackRow {
-                        name: ix.vault.notes[b.from].name.clone(),
+                        name: ix.workspace.notes[b.from].name.clone(),
                         path: ix.path(b.from),
                         line: b.line,
                         context: b.context.clone(),
@@ -4209,11 +4222,11 @@ impl Home {
         backlinks.sort_by_cached_key(|b| (b.name.to_lowercase(), b.path.clone(), b.line));
         backlinks.dedup_by(|a, b| a.path == b.path && a.line == b.line);
         let notes = (doomed.len() > 1 || paths[0].is_dir()).then_some(notes);
-        let goes = match TrashOption::of_vault(&root) {
+        let goes = match TrashOption::of_workspace(&root) {
             TrashOption::System if trash::system_bin().is_some() => "the system trash.",
-            TrashOption::System | TrashOption::Local => "the vault's .trash folder.",
+            TrashOption::System | TrashOption::Local => "the workspace's .trash folder.",
             TrashOption::Permanent => {
-                ".trash: this vault deletes permanently in Obsidian, cold-lava never does."
+                ".trash: this workspace deletes permanently in Obsidian, cold-lava never does."
             }
         };
         self.mode = Mode::ConfirmDelete(Box::new(PendingDelete {
@@ -4292,7 +4305,7 @@ impl Home {
         let was_shown = self.shown.as_deref().is_some_and(went);
         if let Some(editor) = self.running_editor() {
             let notes: Vec<PathBuf> = match self.core.as_ref() {
-                Some(core) => (core.index.vault.notes.iter())
+                Some(core) => (core.index.workspace.notes.iter())
                     .filter(|n| went(&n.path))
                     .map(|n| n.path.clone())
                     .collect(),
@@ -4332,10 +4345,10 @@ impl Home {
             [d] => d.rel.rsplit('/').next().unwrap_or(&d.rel).to_string(),
             ds => plural(ds.len(), "item"),
         };
-        let local = batch.iter().any(|t| t.went == Went::VaultTrash);
-        let msg = match (local, TrashOption::of_vault(&root)) {
+        let local = batch.iter().any(|t| t.went == Went::WorkspaceTrash);
+        let msg = match (local, TrashOption::of_workspace(&root)) {
             (true, TrashOption::Permanent) => format!(
-                "moved {name} to .trash: this vault deletes permanently in Obsidian, cold-lava never does · {undo} undo"
+                "moved {name} to .trash: this workspace deletes permanently in Obsidian, cold-lava never does · {undo} undo"
             ),
             (true, TrashOption::Local) => format!("deleted {name} (to .trash) · {undo} undo"),
             (true, TrashOption::System) => format!(
@@ -4726,10 +4739,10 @@ impl Home {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if !self.zoom && inside(va) {
-                    self.focus = Focus::Vaults;
+                    self.focus = Focus::Workspaces;
                     let i = (m.row - va.y - 1) as usize;
-                    if i < self.vaults.len() && i != self.vsel {
-                        self.open_vault(i);
+                    if i < self.workspaces.len() && i != self.vsel {
+                        self.open_workspace(i);
                     }
                 } else if !self.zoom && inside(na) {
                     self.focus = Focus::Notes;
@@ -4763,14 +4776,14 @@ impl Home {
         terminal: &mut DefaultTerminal,
         selected: Option<String>,
     ) -> Result<Option<Place>> {
-        // The graph borrows the menu's live vault and gives it back, so there's one watcher and
+        // The graph borrows the menu's live workspace and gives it back, so there's one watcher and
         // changes made while the graph is open show up here too.
         let Some(core) = self.core.take() else {
             return Ok(None);
         };
-        if core.index.vault.notes.is_empty() {
+        if core.index.workspace.notes.is_empty() {
             self.core = Some(core);
-            self.flash("this vault has no notes yet");
+            self.flash("this workspace has no notes yet");
             return Ok(None);
         }
         let mut graph = app::App::new(core, self.render);
@@ -4838,7 +4851,7 @@ impl Home {
     }
 
     fn open_in_obsidian(&mut self) {
-        let (Some(it), Some(v)) = (self.current().cloned(), self.vaults.get(self.vsel)) else {
+        let (Some(it), Some(v)) = (self.current().cloned(), self.workspaces.get(self.vsel)) else {
             return;
         };
         let ok = term::open_in_obsidian(&v.name, &it.rel);
@@ -4849,7 +4862,7 @@ impl Home {
         });
     }
 
-    /// The vault's templates, from the folders its Templates settings name.
+    /// The workspace's templates, from the folders its Templates settings name.
     fn templates(&self) -> Vec<(String, String)> {
         let (Some(root), Some(core)) = (&self.root, &self.core) else {
             return Vec::new();
@@ -4857,17 +4870,17 @@ impl Home {
         let settings = templates::Settings::load(root);
         let mut found: Vec<(String, String)> = core
             .index
-            .vault
+            .workspace
             .notes
             .iter()
             .filter(|n| settings.is_template(&n.rel))
             .map(|n| (n.rel.clone(), settings.name(&n.rel).to_string()))
             .collect();
-        found.sort_by_key(|(_, name)| vault::search_key(name));
+        found.sort_by_key(|(_, name)| workspace::search_key(name));
         found
     }
 
-    /// Create the note `name` in the selected folder, from `template` (vault-relative, without
+    /// Create the note `name` in the selected folder, from `template` (workspace-relative, without
     /// `.md`) if one is given, and open it.
     fn create_note(&mut self, name: &str, template: Option<&str>) -> Result<()> {
         let Some(root) = self.root.clone() else {
@@ -4951,7 +4964,7 @@ impl Home {
         self.select_path(&root.join(&rel));
     }
 
-    fn add_vault(&mut self, text: &str) {
+    fn add_workspace(&mut self, text: &str) {
         let p = match text.strip_prefix("~/") {
             Some(rest) => home_dir()
                 .map(|h| h.join(rest))
@@ -4960,13 +4973,15 @@ impl Home {
         };
         match p.canonicalize() {
             Ok(c) if c.is_dir() => {
-                if !looks_like_vault(&c) {
+                if !looks_like_workspace(&c) {
                     self.flash("added (no notes in that folder yet)");
                 }
-                remember(&c);
-                self.vaults = discover(&[]);
-                if let Some(i) = self.vaults.iter().position(|v| v.path == c) {
-                    self.open_vault(i);
+                if let Some(dir) = recent_dir() {
+                    remember(&dir, &c);
+                }
+                self.workspaces = discover(&[]);
+                if let Some(i) = self.workspaces.iter().position(|v| v.path == c) {
+                    self.open_workspace(i);
                     self.focus = Focus::Notes;
                 }
             }
@@ -5019,7 +5034,7 @@ impl Home {
         self.areas = [va, na, editor_inner, ba];
 
         if !self.zoom {
-            self.draw_vaults(f, va);
+            self.draw_workspaces(f, va);
             self.draw_notes(f, na);
         }
         self.draw_editor(f, ea, editor_inner);
@@ -5108,11 +5123,11 @@ impl Home {
                     name,
                 );
             }
-            Mode::AddVault(name) => {
+            Mode::AddWorkspace(name) => {
                 prompt(
                     f,
                     main,
-                    " add a vault · ⏎ add · Esc cancel ",
+                    " add a workspace · ⏎ add · Esc cancel ",
                     "folder: ",
                     name,
                 );
@@ -5184,7 +5199,7 @@ impl Home {
                     Line::styled(
                         match found {
                             true => format!("{enter} opens it"),
-                            false => format!("{name} isn't in the vault"),
+                            false => format!("{name} isn't in the workspace"),
                         },
                         Style::new().fg(MUTED),
                     ),
@@ -5237,7 +5252,7 @@ impl Home {
             Some(i) => picker_frame(
                 f,
                 area,
-                &format!(" Merge {} into… ", ix.vault.notes[i].name),
+                &format!(" Merge {} into… ", ix.workspace.notes[i].name),
                 " ↑↓ choose · ⏎ preview the merge · Esc cancel ",
             ),
             None => picker_frame(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close "),
@@ -5283,7 +5298,7 @@ impl Home {
                 continue;
             }
             let hit = &hits[i];
-            let note = &ix.vault.notes[hit.note];
+            let note = &ix.workspace.notes[hit.note];
             let label = hit.alias.clone().unwrap_or_else(|| note.name.clone());
             let mut spans = vec![Span::styled(" ", base)];
             for (ci, ch) in label.chars().enumerate() {
@@ -5606,7 +5621,7 @@ impl Home {
             match *row {
                 SearchRow::Note(ri) => {
                     let res = &self.results[ri];
-                    let note = &ix.vault.notes[res.note];
+                    let note = &ix.workspace.notes[res.note];
                     let st = if selected {
                         Style::new()
                             .fg(Color::Black)
@@ -5662,20 +5677,20 @@ impl Home {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn draw_vaults(&self, f: &mut Frame, area: Rect) {
+    fn draw_workspaces(&self, f: &mut Frame, area: Rect) {
         let title = Line::from(vec![
             Span::styled(
                 " cold-lava ",
                 Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("vaults ", Style::new().fg(MUTED)),
+            Span::styled("workspaces ", Style::new().fg(MUTED)),
         ]);
-        let block = self.block(title, Focus::Vaults);
+        let block = self.block(title, Focus::Workspaces);
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if self.vaults.is_empty() {
+        if self.workspaces.is_empty() {
             f.render_widget(
-                Paragraph::new("No vaults found.\n\nPress a to add a folder.")
+                Paragraph::new("No workspaces found.\n\nPress a to add a folder.")
                     .style(Style::new().fg(MUTED))
                     .wrap(Wrap { trim: false }),
                 inner,
@@ -5684,7 +5699,7 @@ impl Home {
         }
         let w = inner.width as usize;
         let lines: Vec<Line> = self
-            .vaults
+            .workspaces
             .iter()
             .enumerate()
             .take(inner.height as usize)
@@ -5701,7 +5716,7 @@ impl Home {
                     name.push('…');
                 }
                 let row = format!("{mark} {name:<width$}", width = w.saturating_sub(2));
-                let st = if sel && self.focus == Focus::Vaults {
+                let st = if sel && self.focus == Focus::Workspaces {
                     Style::new().fg(Color::Black).bg(ACCENT)
                 } else if sel {
                     Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -5716,7 +5731,7 @@ impl Home {
 
     fn draw_notes(&mut self, f: &mut Frame, area: Rect) {
         let vname = self
-            .vaults
+            .workspaces
             .get(self.vsel)
             .map(|v| v.name.clone())
             .unwrap_or_default();
@@ -5987,11 +6002,11 @@ impl Home {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect) {
-        let mut info = match (self.focus, self.vaults.get(self.vsel)) {
-            (Focus::Vaults, Some(v)) => {
+        let mut info = match (self.focus, self.workspaces.get(self.vsel)) {
+            (Focus::Workspaces, Some(v)) => {
                 let src = match v.source {
                     "obsidian" => "from Obsidian",
-                    "example" => "example vault",
+                    "example" => "example workspace",
                     "here" => "opened here",
                     _ => "recent",
                 };
@@ -6118,7 +6133,7 @@ fn resolves(ix: Option<&crate::index::Index>, raw: &str) -> bool {
 
 /// What kind of attachment a link names (`photo.jpg` → `JPG image`); `None` for a note.
 fn attachment_label(name: &str) -> Option<String> {
-    let kind = vault::attachment_kind(name)?;
+    let kind = workspace::attachment_kind(name)?;
     let ext = name.rsplit_once('.')?.1.to_uppercase();
     Some(format!("{ext} {kind}"))
 }
@@ -6156,12 +6171,12 @@ fn breadcrumb(r: &Reader, path: &Path) -> String {
 /// The headings the reader is under (as indices into its headings), less a first one that
 /// only repeats the note's name.
 fn crumbs(r: &Reader, path: &Path) -> Vec<usize> {
-    let name = vault::search_key(&path.file_stem().unwrap_or_default().to_string_lossy());
+    let name = workspace::search_key(&path.file_stem().unwrap_or_default().to_string_lossy());
     let headings = r.headings();
     let mut section = r.section();
     if section
         .first()
-        .is_some_and(|&i| vault::search_key(&headings[i].text) == name)
+        .is_some_and(|&i| workspace::search_key(&headings[i].text) == name)
     {
         section.remove(0);
     }
@@ -6227,7 +6242,7 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-/// The vault's tags that start with what was typed (after a `-` and a `#`).
+/// The workspace's tags that start with what was typed (after a `-` and a `#`).
 fn tag_matches<'a>(typed: &str, all: &'a [String]) -> Vec<&'a String> {
     let q = typed
         .trim_start_matches('-')
@@ -6245,7 +6260,7 @@ fn tag_shown(typed: &str, all: &[String], sel: Option<usize>) -> String {
     }
 }
 
-/// The tag prompt, with the vault's tags that match under it.
+/// The tag prompt, with the workspace's tags that match under it.
 fn draw_tag(
     f: &mut Frame,
     area: Rect,
@@ -6295,10 +6310,10 @@ fn draw_tag(
     );
 }
 
-/// The folder several moves go into, as the user typed it: `Archive`, or the vault's root.
+/// The folder several moves go into, as the user typed it: `Archive`, or the workspace's root.
 fn destination(moves: &[crate::rename::Move]) -> String {
     match moves.first().map(|m| dir_of_rel(&m.to)) {
-        Some("") | None => "the vault's root".to_string(),
+        Some("") | None => "the workspace's root".to_string(),
         Some(d) => d.to_string(),
     }
 }
@@ -6353,7 +6368,7 @@ fn highlight(
     spans
 }
 
-/// The new-note prompt, with the vault's templates under it when it has some.
+/// The new-note prompt, with the workspace's templates under it when it has some.
 fn draw_new_note(
     f: &mut Frame,
     area: Rect,
@@ -6554,10 +6569,10 @@ fn draw_help(
         None => "go to the note in the reader · open a board".to_string(),
     };
     let fixed = [
-        ("↑↓ / jk", "move through vaults or notes".to_string()),
+        ("↑↓ / jk", "move through workspaces or notes".to_string()),
         (
             "→ / ←",
-            "open / close a folder · vaults ↔ notes".to_string(),
+            "open / close a folder · workspaces ↔ notes".to_string(),
         ),
         ("Enter", enter),
     ];
@@ -6650,8 +6665,40 @@ mod tests {
     }
 
     #[test]
+    fn the_list_of_workspaces_carries_over_from_vaults_json() {
+        let dir = std::env::temp_dir().join(format!("cold-lava-recent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = r#"{"vaults": [{"path": "/home/me/Notes", "opened": 5}]}"#;
+        std::fs::write(dir.join("vaults.json"), old).unwrap();
+        assert_eq!(load_recent(&dir), [(PathBuf::from("/home/me/Notes"), 5)]);
+
+        remember(&dir, Path::new("/home/me/Work"));
+        let paths: Vec<PathBuf> = load_recent(&dir).into_iter().map(|(p, _)| p).collect();
+        assert_eq!(
+            paths,
+            ["/home/me/Work", "/home/me/Notes"].map(PathBuf::from)
+        );
+        let new = std::fs::read_to_string(dir.join("workspaces.json")).unwrap();
+        assert!(new.contains("\"workspaces\""), "{new}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("vaults.json")).unwrap(),
+            old
+        );
+
+        std::fs::write(dir.join("vaults.json"), r#"{"vaults": []}"#).unwrap();
+        assert_eq!(
+            load_recent(&dir).len(),
+            2,
+            "the new file wins once it exists"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn tree_sorting_and_folding() {
-        let items = scan_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"));
+        let items =
+            scan_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"));
         let rels: Vec<&str> = items.iter().map(|i| i.rel.as_str()).collect();
         // Folders first, then top-level files; boards are included.
         assert_eq!(rels[0], "Concepts");

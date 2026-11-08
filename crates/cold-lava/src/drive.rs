@@ -469,7 +469,7 @@ pub enum HomeChoice {
 }
 
 /// Runs the script. Unless the home is `Real`, the program gets a home folder of its own (and
-/// XDG folders inside it), so it neither reads your config nor adds to your list of vaults.
+/// XDG folders inside it), so it neither reads your config nor adds to your list of workspaces.
 pub fn run(
     name: &str,
     script: &Script,

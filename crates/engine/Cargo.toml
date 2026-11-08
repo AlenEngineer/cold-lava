@@ -1,6 +1,6 @@
 [package]
 name = "cold-lava-engine"
-description = "The vault engine behind cold-lava: notes, links, items and safe writes, with no user interface"
+description = "The workspace engine behind cold-lava: notes, links, items and safe writes, with no user interface"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

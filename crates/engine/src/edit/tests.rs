@@ -12,7 +12,7 @@ fn settings(toml: &str) -> Settings {
         Layer::config(Path::new("config.toml"), table),
     ]);
     assert!(found.errors.is_empty(), "{:?}", found.errors);
-    let nowhere = Path::new("/nonexistent-cold-lava-vault");
+    let nowhere = Path::new("/nonexistent-cold-lava-workspace");
     Settings::new(
         Flavour::built_in("obsidian").unwrap(),
         TasksSettings::load(nowhere),
@@ -315,7 +315,7 @@ fn a_task_is_set_through_its_checkbox_and_markers() {
 }
 
 #[test]
-fn a_missing_task_date_is_written_as_the_line_and_the_vault_write_them() {
+fn a_missing_task_date_is_written_as_the_line_and_the_workspace_write_them() {
     let s = settings("");
     assert_eq!(
         after(

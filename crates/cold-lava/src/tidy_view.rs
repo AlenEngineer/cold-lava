@@ -43,13 +43,13 @@ impl Row {
 pub enum Action {
     Stay,
     Close,
-    /// Open a note (vault-relative with `.md`), at a line.
+    /// Open a note (workspace-relative with `.md`), at a line.
     OpenNote(String, Option<usize>),
     /// Open an attachment in the system's app.
     OpenFile(String),
     /// Show a folder in the tree.
     OpenFolder(String),
-    /// Ask to delete these (vault-relative) to the trash.
+    /// Ask to delete these (workspace-relative) to the trash.
     Delete(Vec<String>),
     /// Create the missing note `target`, as linked from `from`.
     Create {
@@ -63,7 +63,7 @@ pub struct TidyView {
     /// Also list notes nothing links to that do link elsewhere.
     all_orphans: bool,
     sel: usize,
-    /// Marked items, vault-relative.
+    /// Marked items, workspace-relative.
     marks: BTreeSet<String>,
 }
 
@@ -79,7 +79,7 @@ impl TidyView {
         v
     }
 
-    /// The vault changed: show it as it is now, keeping the marks that still exist and the
+    /// The workspace changed: show it as it is now, keeping the marks that still exist and the
     /// selection on the same item if it is still there.
     pub fn update(&mut self, report: Report) {
         let at = self.rows().get(self.sel).map(|&r| self.id(r));
@@ -151,7 +151,7 @@ impl TidyView {
         rows
     }
 
-    /// What deleting this row deletes, vault-relative.
+    /// What deleting this row deletes, workspace-relative.
     fn path(&self, row: Row) -> Option<String> {
         let r = &self.report;
         match row {
@@ -305,7 +305,7 @@ impl TidyView {
                 }
                 Row::Attachment(a) => {
                     let rel = &r.unused_attachments[a];
-                    let kind = crate::vault::attachment_kind(rel).unwrap_or_default();
+                    let kind = crate::workspace::attachment_kind(rel).unwrap_or_default();
                     (
                         format!(" {mark}▫ {rel}"),
                         format!("{kind} "),

@@ -17,10 +17,10 @@
 </head>
 <body>
 <form id="open">
-  <input id="vault" placeholder="Path to a vault, e.g. /home/you/Notes" autofocus>
+  <input id="workspace" placeholder="Path to a workspace, e.g. /home/you/Notes" autofocus>
   <button>Open</button>
 </form>
-<p id="status">The same engine as the terminal UI. Open a vault to list its notes.</p>
+<p id="status">The same engine as the terminal UI. Open a workspace to list its notes.</p>
 <ul id="notes"></ul>
 <script>
   const { invoke } = window.__TAURI__.core;
@@ -29,7 +29,7 @@
     const status = document.getElementById("status"), list = document.getElementById("notes");
     list.replaceChildren();
     try {
-      const notes = await invoke("notes", { vault: document.getElementById("vault").value });
+      const notes = await invoke("notes", { workspace: document.getElementById("workspace").value });
       status.textContent = `${notes.length} notes`;
       for (const n of notes) { const li = document.createElement("li"); li.textContent = n; list.append(li); }
     } catch (err) { status.textContent = String(err); }

@@ -13,13 +13,13 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Where Obsidian keeps the bookmarks, relative to the vault.
+/// Where Obsidian keeps the bookmarks, relative to the workspace.
 pub const FILE: &str = ".obsidian/bookmarks.json";
 
 /// What a bookmark points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A note or other file (vault-relative, with its extension), maybe at a heading
+    /// A note or other file (workspace-relative, with its extension), maybe at a heading
     /// (`#Heading`) or block (`#^id`).
     File {
         path: String,
@@ -89,7 +89,7 @@ pub fn jump(subpath: &str) -> Option<Jump> {
     (!heading.is_empty()).then(|| Jump::Heading(heading.to_string()))
 }
 
-/// The vault's bookmarks file, as read.
+/// The workspace's bookmarks file, as read.
 #[derive(Clone, Debug, Default)]
 pub struct Bookmarks {
     /// The file's bytes when it was read; `None` if there was no file.
@@ -98,7 +98,7 @@ pub struct Bookmarks {
 }
 
 impl Bookmarks {
-    /// Read the vault's bookmarks; no file is no bookmarks. A file that isn't the JSON object
+    /// Read the workspace's bookmarks; no file is no bookmarks. A file that isn't the JSON object
     /// Obsidian writes is an error, and is never written over.
     pub fn read(root: &Path) -> Result<Bookmarks> {
         let path = root.join(FILE);
@@ -160,7 +160,7 @@ impl Bookmarks {
         out
     }
 
-    /// The files and folders (vault-relative) that have a bookmark, at any depth.
+    /// The files and folders (workspace-relative) that have a bookmark, at any depth.
     pub fn paths(&self) -> HashSet<String> {
         (self.entries().into_iter())
             .filter_map(|e| match e.target {
@@ -291,7 +291,7 @@ impl Bookmarks {
     }
 }
 
-/// Change the vault's bookmarks with `change` and write them. If Obsidian wrote the file in the
+/// Change the workspace's bookmarks with `change` and write them. If Obsidian wrote the file in the
 /// meantime, read it again and redo the change once on what it wrote.
 pub fn edit<R>(root: &Path, mut change: impl FnMut(&mut Bookmarks) -> R) -> Result<R> {
     let path: PathBuf = root.join(FILE);

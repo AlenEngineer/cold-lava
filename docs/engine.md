@@ -3,9 +3,9 @@
 Status: **overview**. Parts are built, parts are designed in [extensions.md](extensions.md), and
 parts are still to be designed; each layer says which.
 
-cold-lava is two things: an **engine** that understands a vault of Markdown notes, and
+cold-lava is two things: an **engine** that understands a workspace of Markdown notes, and
 **frontends** that show it (today one, the terminal UI). Extensions reach them through two
-gateways: the **vault gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
+gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
 plans in detail.
 
 ```
@@ -23,7 +23,8 @@ plans in detail.
 │ agenda · todo aggregator · kanban · graph · habit tracker …                    │
 │ an extension may use one gateway, the other, or both                           │
 └─────────────▲─────────────────────────────────────────────┬────────────────────┘
-VAULT GATEWAY │ items, events                               │ items/query · items/edit
+    WORKSPACE │ items, events                               │ items/query · items/edit
+      GATEWAY │                                             │
 ┌─────────────┴─────────────────────────────────────────────▼────────────────────┐
 │ ENGINE                                                                         │
 │ 4  ITEMS     typed, with ids and revs: task{status, due}, book{author} …       │
@@ -32,7 +33,7 @@ VAULT GATEWAY │ items, events                               │ items/query ·
 │ 2  BLOCKS    paragraph · heading · list item · table row · code · quote        │
 │              inlines: text · link · tag · code span (the primitives)           │
 │ 1  FLAVOUR   which syntax exists: commonmark · github · obsidian · yours       │
-│ 0  VAULT     files · one watcher · index (links, backlinks) · search ·         │
+│ 0  WORKSPACE files · one watcher · index (links, backlinks) · search ·         │
 │              safe writes (refused if the file changed since it was read)       │
 └────────────────────────────────────────────────────────────────────────────────┘
                                        ▲ ▼
@@ -45,8 +46,8 @@ and the frontend never parses a note.
 
 ## The layers
 
-**0. Vault** *(built: `core.rs`, `vault.rs`, `index.rs`, `search.rs`, `write.rs`, `rename.rs`)*.
-One live vault: one file watcher, re-reading only the notes that change, an index of links and
+**0. Workspace** *(built: `core.rs`, `workspace.rs`, `index.rs`, `search.rs`, `write.rs`, `rename.rs`)*.
+One live workspace: one file watcher, re-reading only the notes that change, an index of links and
 backlinks resolved by Obsidian's rules, full-text search, and the only write path, which writes
 atomically and refuses when the file changed since it was read. Events say what changed,
 whoever changed it.
@@ -84,17 +85,17 @@ keystrokes or draw pixels, so a broken one can't trap you.
 
 **Other file types** *(designed in extensions.md, "File types")*. Markdown is the engine's own
 format; a `.canvas`, `.kanban` or `.csv` file can have an owner, an extension that opens it,
-saves it safely, and contributes its items and links to the vault, so a card's `[[Lava]]` shows
+saves it safely, and contributes its items and links to the workspace, so a card's `[[Lava]]` shows
 in `Lava`'s backlinks and the graph.
 
 ## Two gateways
 
-**The vault gateway** *(in-process half built: `ext/mod.rs`)* is the engine's protocol: files,
+**The workspace gateway** *(in-process half built: `ext/mod.rs`)* is the engine's protocol: files,
 items, types, queries, edits and events. It knows nothing about screens. An extension that only
 aggregates and ticks tasks, a script, or a language server needs nothing else.
 
 **The view gateway** is the frontend's: what an extension wants shown, and what you did to it.
-It knows nothing about vaults; it speaks in rows, cells, nodes, edges, text and selection. Views
+It knows nothing about workspaces; it speaks in rows, cells, nodes, edges, text and selection. Views
 are **declarative**: an extension says *what* to show, never *how* to draw it. So an extension in
 any language can be graphical (a kanban board is a few dozen lines of Python sending JSON), every
 frontend draws the same view its own way, and drawing, keys and frame rate stay with the
@@ -125,7 +126,7 @@ You write, in any editor:
 ```
 
 0. The watcher sees `Home.md` change; the engine re-reads that note only.
-1. The vault reads as `obsidian`, so task lists exist.
+1. The workspace reads as `obsidian`, so task lists exist.
 2. The parser finds a list item on line 14.
 3. `task` matches: status todo, `due` 2026-11-12. A `person` type from an extension matches
    `@alice`.
@@ -150,7 +151,7 @@ terminal, so the compiler keeps UI code out of it. The terminal UI is the `cold-
 chosen Markdown flavour). Frontends sit beside the engine:
 
 ```
- cold-lava-engine   vault · flavours · blocks · types · items · safe writes · events
+ cold-lava-engine   workspace · flavours · blocks · types · items · safe writes · events
      ▲         ▲           ▲
      │         │           └─ an extension host: the protocol, transports, the registry
      │         └─ cold-lava lsp: links, backlinks, completion and renames in any editor
@@ -161,7 +162,7 @@ chosen Markdown flavour). Frontends sit beside the engine:
 
 A frontend asks the engine and draws; the engine never knows which frontend is asking. That's
 what lets a language server, a graphical app or a script use exactly the same understanding of
-the vault as the terminal UI. Which frontend gets the effort is the next section.
+the workspace as the terminal UI. Which frontend gets the effort is the next section.
 
 ## The frontend: one, opinionated
 
@@ -183,7 +184,7 @@ change what it shows, never how it works.
   owner. Each is still its own file (or fence), referenced from the note, so the note stays
   plain Markdown that Obsidian shows the same way.
 - **Making things where you are.** "Insert a whiteboard here" creates `….canvas` through
-  `vault/create`, puts `![[…]]` at the cursor, and opens it in place. Same for a diagram or any
+  `workspace/create`, puts `![[…]]` at the cursor, and opens it in place. Same for a diagram or any
   file type whose owner declares a `new` command. You write, drop in a board, keep writing.
 - **Text is still typed in your editor.** A text editor good enough to live in is a project of
   its own, so Neovim (or yours) keeps typing; cold-lava inserts references and edits items for
@@ -200,5 +201,5 @@ change what it shows, never how it works.
 - **A note stays a valid Markdown file** that Obsidian, GitHub and any editor read. New syntax
   is text patterns or fenced blocks, never grammar other tools would choke on.
 - **Obsidian compatibility is the floor:** its files, settings and conventions (Tasks,
-  Dataview, Properties, daily notes, Canvas). The same vault opens in both at once.
+  Dataview, Properties, daily notes, Canvas). The same workspace opens in both at once.
 - **One writer, safe:** nothing overwrites an edit made elsewhere.

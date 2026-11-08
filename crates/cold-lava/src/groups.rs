@@ -1,6 +1,6 @@
 //! Colour groups, like Obsidian's graph "Groups" setting.
 //!
-//! Sources: the vault's own `.obsidian/graph.json` colour groups (same queries Obsidian uses),
+//! Sources: the workspace's own `.obsidian/graph.json` colour groups (same queries Obsidian uses),
 //! or automatic grouping by top-level folder or by first tag.
 
 use crate::graph::{Graph, Kind, Node};
@@ -279,10 +279,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn node(rel: &str, tags: &[&str]) -> Node {
-        let v = crate::vault::Vault {
+        let v = crate::workspace::Workspace {
             root: PathBuf::from("/v"),
             name: "v".into(),
-            notes: vec![crate::vault::Note {
+            notes: vec![crate::workspace::Note {
                 rel: rel.into(),
                 name: rel.rsplit('/').next().unwrap().into(),
                 path: PathBuf::new(),
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn reads_obsidian_graph_json() {
         let g = load_obsidian(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"),
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
         );
         assert_eq!(g.len(), 4);
         assert_eq!(g[0].label, "path:Guide");

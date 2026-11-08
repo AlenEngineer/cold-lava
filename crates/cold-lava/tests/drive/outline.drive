@@ -1,6 +1,6 @@
 # The outline lists the reader's headings; Enter jumps to one, Back returns, ] and [ step through them.
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys p
 type lava
 wait-for 2 notes

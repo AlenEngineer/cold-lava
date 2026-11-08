@@ -1,20 +1,20 @@
-//! The vault index: the start of cold-lava's core. It resolves links the way Obsidian does
+//! The workspace index: the start of cold-lava's core. It resolves links the way Obsidian does
 //! and knows every note's backlinks, so features don't each re-derive them.
 
-use crate::vault::Vault;
+use crate::workspace::Workspace;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Resolves link targets (`Note`, `folder/Note`, `Note.md`) to notes, like Obsidian:
-/// by vault-relative path first, then by file name, preferring the shallowest match.
+/// by workspace-relative path first, then by file name, preferring the shallowest match.
 pub struct Resolver {
     by_rel: HashMap<String, usize>,
     by_name: HashMap<String, usize>,
 }
 
 impl Resolver {
-    pub fn new(v: &Vault) -> Resolver {
+    pub fn new(v: &Workspace) -> Resolver {
         let mut by_rel = HashMap::new();
         let mut by_name: HashMap<String, usize> = HashMap::new();
         for (i, n) in v.notes.iter().enumerate() {
@@ -48,7 +48,7 @@ pub struct Backlink {
 }
 
 pub struct Index {
-    pub vault: Vault,
+    pub workspace: Workspace,
     pub resolver: Resolver,
     backlinks: Vec<Vec<Backlink>>,
     outgoing: Vec<usize>,
@@ -72,7 +72,7 @@ pub struct LinkTarget {
 /// Split `Note#Heading|alias` / `Note#^block` into its parts.
 pub fn split_link(raw: &str) -> LinkTarget {
     let raw = raw.split('|').next().unwrap_or(raw).trim();
-    let decode = |s: &str| crate::vault::decode_target(s.trim());
+    let decode = |s: &str| crate::workspace::decode_target(s.trim());
     match raw.split_once('#') {
         Some((note, rest)) => match rest.strip_prefix('^') {
             Some(block) => LinkTarget {
@@ -95,10 +95,10 @@ pub fn split_link(raw: &str) -> LinkTarget {
 }
 
 impl Index {
-    pub fn build(vault: Vault) -> Index {
+    pub fn build(workspace: Workspace) -> Index {
         let mut ix = Index {
-            resolver: Resolver::new(&vault),
-            vault,
+            resolver: Resolver::new(&workspace),
+            workspace,
             backlinks: Vec::new(),
             outgoing: Vec::new(),
             folded: OnceLock::new(),
@@ -109,12 +109,12 @@ impl Index {
 
     /// Recompute link resolution and backlinks from the notes in memory (no disk access).
     fn relink(&mut self) {
-        let vault = &self.vault;
-        self.resolver = Resolver::new(vault);
-        let n = vault.notes.len();
+        let workspace = &self.workspace;
+        self.resolver = Resolver::new(workspace);
+        let n = workspace.notes.len();
         let mut backlinks = vec![Vec::new(); n];
         let mut outgoing = vec![0; n];
-        for (from, note) in vault.notes.iter().enumerate() {
+        for (from, note) in workspace.notes.iter().enumerate() {
             for r in &note.refs {
                 if let Some(to) = self.resolver.resolve(&r.target) {
                     outgoing[from] += 1;
@@ -130,7 +130,7 @@ impl Index {
         }
         for list in &mut backlinks {
             list.sort_by(|a, b| {
-                let (na, nb) = (&vault.notes[a.from].name, &vault.notes[b.from].name);
+                let (na, nb) = (&workspace.notes[a.from].name, &workspace.notes[b.from].name);
                 na.to_lowercase()
                     .cmp(&nb.to_lowercase())
                     .then(a.line.cmp(&b.line))
@@ -143,10 +143,10 @@ impl Index {
 
     /// Bring these paths up to date with the disk, then update links and backlinks once.
     /// Returns what changed.
-    pub fn refresh(&mut self, paths: &[PathBuf]) -> Vec<crate::vault::NoteChange> {
+    pub fn refresh(&mut self, paths: &[PathBuf]) -> Vec<crate::workspace::NoteChange> {
         let changes: Vec<_> = paths
             .iter()
-            .filter_map(|p| self.vault.refresh_path(p))
+            .filter_map(|p| self.workspace.refresh_path(p))
             .collect();
         if !changes.is_empty() {
             self.relink();
@@ -156,13 +156,14 @@ impl Index {
 
     pub fn folded(&self) -> &[Folded] {
         self.folded.get_or_init(|| {
-            self.vault
+            self.workspace
                 .notes
                 .iter()
                 .map(|n| {
-                    let lines: Vec<String> = n.text.lines().map(crate::vault::search_key).collect();
+                    let lines: Vec<String> =
+                        n.text.lines().map(crate::workspace::search_key).collect();
                     Folded {
-                        name: crate::vault::search_key(&n.name),
+                        name: crate::workspace::search_key(&n.name),
                         whole: lines.join("\n"),
                         lines,
                     }
@@ -171,10 +172,10 @@ impl Index {
         })
     }
 
-    /// A note by vault-relative path, with or without `.md`.
+    /// A note by workspace-relative path, with or without `.md`.
     pub fn by_rel(&self, rel: &str) -> Option<usize> {
         let rel = rel.strip_suffix(".md").unwrap_or(rel).to_lowercase();
-        self.vault
+        self.workspace
             .notes
             .iter()
             .position(|n| n.rel.to_lowercase() == rel)
@@ -182,7 +183,7 @@ impl Index {
 
     pub fn by_path(&self, path: &Path) -> Option<usize> {
         let rel = path
-            .strip_prefix(&self.vault.root)
+            .strip_prefix(&self.workspace.root)
             .ok()?
             .to_string_lossy()
             .replace('\\', "/");
@@ -190,7 +191,7 @@ impl Index {
     }
 
     pub fn path(&self, i: usize) -> PathBuf {
-        self.vault.notes[i].path.clone()
+        self.workspace.notes[i].path.clone()
     }
 
     pub fn backlinks(&self, i: usize) -> &[Backlink] {
@@ -203,14 +204,14 @@ impl Index {
     }
 
     /// The file an attachment link (`[[map.pdf]]`, `[map](../Maps/map.pdf)`, already decoded)
-    /// leads to: by vault path, then next to the note `from`, then by file name anywhere,
-    /// shallowest first. `None` when it isn't in the vault, or when `target` names a note.
+    /// leads to: by workspace path, then next to the note `from`, then by file name anywhere,
+    /// shallowest first. `None` when it isn't in the workspace, or when `target` names a note.
     pub fn attachment(&self, target: &str, from: Option<usize>) -> Option<PathBuf> {
-        crate::vault::attachment_kind(target)?;
-        let files = crate::rename::Files::of_vault(self);
-        let dir = from.map_or("", |i| crate::rename::dir_of(&self.vault.notes[i].rel));
+        crate::workspace::attachment_kind(target)?;
+        let files = crate::rename::Files::of_workspace(self);
+        let dir = from.map_or("", |i| crate::rename::dir_of(&self.workspace.notes[i].rel));
         let i = files.resolve(dir, target)?;
-        Some(self.vault.root.join(&files.rels[i]))
+        Some(self.workspace.root.join(&files.rels[i]))
     }
 
     /// Where a new note for an unresolved link goes, following Obsidian's
@@ -219,25 +220,25 @@ impl Index {
         let name = name.trim().trim_end_matches(".md");
         // A link with a folder (`[[Ideas/New]]`) says where it goes.
         if name.contains('/') {
-            return self.vault.root.join(format!("{name}.md"));
+            return self.workspace.root.join(format!("{name}.md"));
         }
         let app: serde_json::Value =
-            std::fs::read_to_string(self.vault.root.join(".obsidian/app.json"))
+            std::fs::read_to_string(self.workspace.root.join(".obsidian/app.json"))
                 .ok()
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or_default();
         let dir = match app.get("newFileLocation").and_then(|v| v.as_str()) {
             Some("current") => from
-                .and_then(|i| self.vault.notes[i].path.parent().map(Path::to_path_buf))
-                .unwrap_or_else(|| self.vault.root.clone()),
+                .and_then(|i| self.workspace.notes[i].path.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| self.workspace.root.clone()),
             Some("folder") => {
                 let f = app
                     .get("newFileFolderPath")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                self.vault.root.join(f.trim_matches('/'))
+                self.workspace.root.join(f.trim_matches('/'))
             }
-            _ => self.vault.root.clone(),
+            _ => self.workspace.root.clone(),
         };
         dir.join(format!("{name}.md"))
     }
@@ -249,8 +250,10 @@ mod tests {
 
     fn example() -> Index {
         Index::build(
-            crate::vault::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"))
-                .unwrap(),
+            crate::workspace::scan(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+            )
+            .unwrap(),
         )
     }
 
@@ -259,10 +262,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cl-attach-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let files = [
-            "vault/Maps/deep/map.pdf",
-            "vault/Notes/Trip.md",
-            "vault/Notes/ticket.pdf",
-            "vault/Mount St. Helens.md",
+            "workspace/Maps/deep/map.pdf",
+            "workspace/Notes/Trip.md",
+            "workspace/Notes/ticket.pdf",
+            "workspace/Mount St. Helens.md",
             "outside.pdf",
         ];
         for f in files {
@@ -270,8 +273,8 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "").unwrap();
         }
-        let ix = Index::build(crate::vault::scan(&dir.join("vault")).unwrap());
-        let root = ix.vault.root.clone();
+        let ix = Index::build(crate::workspace::scan(&dir.join("workspace")).unwrap());
+        let root = ix.workspace.root.clone();
         let trip = ix.by_rel("Notes/Trip");
         let found = |t: &str| {
             ix.attachment(t, trip)
@@ -285,7 +288,7 @@ mod tests {
             Some("Maps/deep/map.pdf".into())
         );
         assert_eq!(found("missing.pdf"), None);
-        assert_eq!(found("../../outside.pdf"), None, "outside the vault");
+        assert_eq!(found("../../outside.pdf"), None, "outside the workspace");
         assert_eq!(
             found("Mount St. Helens"),
             None,
@@ -297,7 +300,7 @@ mod tests {
     #[test]
     fn resolves_like_obsidian() {
         let ix = example();
-        let name = |i: Option<usize>| i.map(|i| ix.vault.notes[i].rel.clone());
+        let name = |i: Option<usize>| i.map(|i| ix.workspace.notes[i].rel.clone());
         assert_eq!(
             name(ix.resolver.resolve("kīlauea")),
             Some("Volcanoes/Kīlauea".into())
@@ -322,14 +325,14 @@ mod tests {
         let from: Vec<&str> = ix
             .backlinks(helens)
             .iter()
-            .map(|b| ix.vault.notes[b.from].name.as_str())
+            .map(|b| ix.workspace.notes[b.from].name.as_str())
             .collect();
         assert!(from.contains(&"David A. Johnston"));
         assert!(from.contains(&"Ring of Fire"));
         let johnston = ix
             .backlinks(helens)
             .iter()
-            .find(|b| ix.vault.notes[b.from].name == "David A. Johnston")
+            .find(|b| ix.workspace.notes[b.from].name == "David A. Johnston")
             .unwrap();
         assert!(johnston.context.contains("[[Mount St. Helens]]"));
         assert!(
@@ -340,14 +343,14 @@ mod tests {
 
     #[test]
     fn refreshes_one_note_at_a_time() {
-        use crate::vault::NoteChange;
+        use crate::workspace::NoteChange;
         let dir = std::env::temp_dir().join(format!("cold-lava-index-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("A.md"), "links to [[B]]").unwrap();
         std::fs::write(dir.join("B.md"), "nothing").unwrap();
-        let mut ix = Index::build(crate::vault::scan(&dir).unwrap());
-        let root = ix.vault.root.clone();
+        let mut ix = Index::build(crate::workspace::scan(&dir).unwrap());
+        let root = ix.workspace.root.clone();
         let b = |ix: &Index| ix.by_rel("B").unwrap();
         assert_eq!(ix.backlinks(b(&ix)).len(), 1);
 
@@ -376,7 +379,7 @@ mod tests {
         ]);
         assert_eq!(changed, [NoteChange::Removed("C".into())]);
         assert!(ix.backlinks(b(&ix)).is_empty());
-        assert_eq!(ix.vault.notes.len(), 2);
+        assert_eq!(ix.workspace.notes.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

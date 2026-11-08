@@ -2,7 +2,7 @@
 //! Both ignore case and accents ("kil" finds "Kīlauea").
 
 use crate::index::Index;
-use crate::vault::search_key;
+use crate::workspace::search_key;
 use serde::Serialize;
 
 // ---------- folding with a map back to the original text ----------
@@ -124,7 +124,7 @@ pub struct SwitchHit {
 /// Notes for the quick switcher, best first. Matches names, aliases and (weaker) paths.
 pub fn switcher(ix: &Index, query: &str) -> Vec<SwitchHit> {
     let mut hits: Vec<SwitchHit> = ix
-        .vault
+        .workspace
         .notes
         .iter()
         .enumerate()
@@ -164,7 +164,10 @@ pub fn switcher(ix: &Index, query: &str) -> Vec<SwitchHit> {
         .collect();
     hits.sort_by(|a, b| {
         b.score.cmp(&a.score).then_with(|| {
-            let (na, nb) = (&ix.vault.notes[a.note].name, &ix.vault.notes[b.note].name);
+            let (na, nb) = (
+                &ix.workspace.notes[a.note].name,
+                &ix.workspace.notes[b.note].name,
+            );
             na.len()
                 .cmp(&nb.len())
                 .then(na.to_lowercase().cmp(&nb.to_lowercase()))
@@ -253,7 +256,7 @@ pub fn search(ix: &Index, query: &str, max_lines: usize) -> Vec<NoteHits> {
     }
     let folded = ix.folded();
     let mut out: Vec<NoteHits> = Vec::new();
-    for (i, n) in ix.vault.notes.iter().enumerate() {
+    for (i, n) in ix.workspace.notes.iter().enumerate() {
         let f = &folded[i];
         if !terms
             .iter()
@@ -289,10 +292,10 @@ pub fn search(ix: &Index, query: &str, max_lines: usize) -> Vec<NoteHits> {
             .cmp(&a.in_title)
             .then(b.count.cmp(&a.count))
             .then_with(|| {
-                ix.vault.notes[a.note]
+                ix.workspace.notes[a.note]
                     .name
                     .to_lowercase()
-                    .cmp(&ix.vault.notes[b.note].name.to_lowercase())
+                    .cmp(&ix.workspace.notes[b.note].name.to_lowercase())
             })
     });
     out
@@ -311,7 +314,7 @@ pub struct JsonHit {
 pub fn to_json(ix: &Index, hits: &[NoteHits]) -> Vec<JsonHit> {
     hits.iter()
         .map(|h| {
-            let n = &ix.vault.notes[h.note];
+            let n = &ix.workspace.notes[h.note];
             JsonHit {
                 file: format!("{}.md", n.rel),
                 path: n.path.to_string_lossy().into_owned(),
@@ -330,8 +333,10 @@ mod tests {
 
     fn example() -> Index {
         Index::build(
-            crate::vault::scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-vault"))
-                .unwrap(),
+            crate::workspace::scan(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+            )
+            .unwrap(),
         )
     }
 
@@ -358,13 +363,13 @@ mod tests {
         let top = |q: &str| {
             switcher(&ix, q)
                 .first()
-                .map(|h| ix.vault.notes[h.note].name.clone())
+                .map(|h| ix.workspace.notes[h.note].name.clone())
         };
         assert_eq!(top("msh").as_deref(), Some("Mount St. Helens"));
         assert_eq!(top("kil").as_deref(), Some("Kīlauea"));
         assert_eq!(top("vei").as_deref(), Some("Volcanic Explosivity Index"));
         assert_eq!(top("people john").as_deref(), Some("David A. Johnston"));
-        assert!(switcher(&ix, "").len() == ix.vault.notes.len());
+        assert!(switcher(&ix, "").len() == ix.workspace.notes.len());
     }
 
     #[test]
@@ -372,7 +377,7 @@ mod tests {
         let ix = example();
         let hits = search(&ix, "pompeii", 5);
         assert_eq!(hits.len(), 1);
-        let n = &ix.vault.notes[hits[0].note];
+        let n = &ix.workspace.notes[hits[0].note];
         assert_eq!(n.name, "Vesuvius");
         let l = &hits[0].lines[0];
         let matched: String = l
@@ -389,7 +394,7 @@ mod tests {
         assert!(search(&ix, "\"Michoacán cornfield\"", 5).is_empty());
         // Title matches come first.
         let lava = search(&ix, "lava", 3);
-        assert_eq!(ix.vault.notes[lava[0].note].name, "Lava");
+        assert_eq!(ix.workspace.notes[lava[0].note].name, "Lava");
     }
 
     #[test]

@@ -421,8 +421,8 @@ impl Reader {
                 .find(|(line, _)| line <= n)
                 .map(|(_, at)| *at),
             Jump::Heading(h) => {
-                let h = crate::vault::search_key(h.trim());
-                let key = |x: &&Heading| crate::vault::search_key(&x.text);
+                let h = crate::workspace::search_key(h.trim());
+                let key = |x: &&Heading| crate::workspace::search_key(&x.text);
                 let headings = || page.headings.iter();
                 headings()
                     .find(|x| key(x) == h)

@@ -5,7 +5,7 @@
 size 140x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
-wait-for example-vault
+wait-for example-workspace
 keys p
 type 2026-11-05
 wait-for 1 note

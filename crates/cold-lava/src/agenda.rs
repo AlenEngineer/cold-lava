@@ -15,7 +15,7 @@ use crate::list::{Check, Group, KeyCommand, List, Piece, Row};
 use crate::tasks::{StatusType, Task};
 use crate::type_table::At;
 use crate::types::{Colour, Definition, Look};
-use crate::vault::Vault;
+use crate::workspace::Workspace;
 
 /// The command `d` sends: show or hide done and cancelled tasks.
 pub const SHOW_DONE: &str = "show-done";
@@ -85,16 +85,16 @@ fn day(d: NaiveDate, today: NaiveDate) -> String {
 
 /// The agenda on `today`: open tasks, tasks closed today (so a tick doesn't make one vanish),
 /// and with `show_done` every closed task.
-pub fn build(vault: &Vault, today: NaiveDate, show_done: bool) -> Agenda {
-    let settings = vault.item_settings();
+pub fn build(workspace: &Workspace, today: NaiveDate, show_done: bool) -> Agenda {
+    let settings = workspace.item_settings();
     let defs: HashMap<&str, &Definition> = (settings.types.types.iter())
         .map(|t| (t.name.as_str(), &t.definition))
         .collect();
     let mut found: Vec<(Bucket, Option<NaiveDate>, &str, usize, Row)> = Vec::new();
     let mut at = HashMap::new();
-    for note in &vault.notes {
+    for note in &workspace.notes {
         let lines: Vec<&str> = note.text.lines().collect();
-        for item in vault.items(note) {
+        for item in workspace.items(note) {
             let raw = lines.get(item.line - 1).copied().unwrap_or_default();
             let Some(task) = Task::of(item, raw, &settings.tasks) else {
                 continue;
@@ -247,7 +247,7 @@ mod tests {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
     }
 
-    fn vault(name: &str, notes: &[(&str, &str)]) -> (PathBuf, Vault) {
+    fn workspace(name: &str, notes: &[(&str, &str)]) -> (PathBuf, Workspace) {
         let dir =
             std::env::temp_dir().join(format!("cold-lava-agenda-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -262,7 +262,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        let v = crate::vault::scan(&dir).unwrap();
+        let v = crate::workspace::scan(&dir).unwrap();
         (dir, v)
     }
 
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn files_tasks_by_their_agenda_date_around_a_fixed_today() {
-        let (dir, v) = vault(
+        let (dir, v) = workspace(
             "group",
             &[
                 (
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn a_subtype_of_task_is_in_the_agenda() {
-        let (dir, v) = vault(
+        let (dir, v) = workspace(
             "subtype",
             &[
                 (

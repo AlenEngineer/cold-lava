@@ -1,9 +1,9 @@
-# Editing cells of the table view: each edit is one set-field on the vault copy, which
+# Editing cells of the table view: each edit is one set-field on the workspace copy, which
 # tests/drive.rs then reads. A value that doesn't fit and a read-only column are refused with
 # their reason; an edit to the row's key (the VEI) keeps the row selected under its new id.
 size 160x30
 env COLD_LAVA_EDITOR=none
-wait-for example-vault
+wait-for example-workspace
 keys i
 type erup
 wait-for 1 type
