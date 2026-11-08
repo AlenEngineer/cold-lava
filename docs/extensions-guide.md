@@ -248,6 +248,44 @@ def file_open(params):
   `files.write`. Paths are relative to the workspace and can't leave it: `..`, absolute paths,
   hidden folders (`.obsidian`) and symlinks that lead outside are refused.
 
+## Giving items and links
+
+An owner can also say what its files mean to the rest of the workspace, so a task in a CSV is a
+task in the agenda, a row is a row of a type's table, and `[[Krakatoa]]` in a cell shows in
+Krakatoa's backlinks and in the graph. cold-lava asks `file/read` with the file's `path`, its
+`text` and its `rev`, and you answer its items and links; you never parse Markdown or know about
+types:
+
+```python
+@ext.on("file/read")
+def file_read(params):
+    return given(params["text"])    # {"items": [...], "links": [...]}
+```
+
+- **Markdown pieces.** `{"place": "Krakatoa#Notes", "text": "- [ ] Read the report 📅 2026-11-20"}`
+  is read the way a note is, in the workspace's flavour: the built-in `task` type and the user's
+  types match in it, and its `[[links]]` are links. The example hands each row over as a one-row
+  Markdown table under the file's header, so a type whose table-row shape names those columns
+  (`where.header`) matches it as it would a table in a note, and a cell that is a task or a list
+  as Markdown of its own.
+- **Typed items.** `{"place": "4", "type": "eruption", "fields": {"vei": 6}}` is an item of a type
+  the workspace has loaded, for formats without Markdown (`.ics`, `.bib`): each value is read as
+  its field's type (`"6"` or `6` for a number, `"Krakatoa"` or `"[[Krakatoa]]"` for a link). A
+  type that isn't loaded, or a field it doesn't have, is reported and the item left out.
+- **Links.** `{"target": "Krakatoa", "place": "4", "text": "Krakatoa,1883,6"}` for a link outside
+  the Markdown pieces, with the text around it for backlinks. Links in pieces need no entry.
+- **Places.** A place is yours: a row's key, a card's id. Keep it stable when other rows change,
+  since an item's id comes from its file, its kind and its place. When the user opens one of the
+  file's items (in the agenda, a table) or a backlink from it, `file/open` comes with its
+  `place`, and you show the file there: `ext.open_view(content, select=row)`.
+- **When you're asked.** Only when a file's `rev` is one you haven't answered for: what you gave
+  is kept under `~/.cache/cold-lava/owners/`, by workspace, your name and your `version`, so a
+  workspace opens with your files' items before you have started. Change `version` when you
+  change what you give. Answer within 10 s; an error, a late answer or an answer that doesn't
+  read is said on the status line, and the file keeps what you gave before.
+- **Not yet.** Items in your files can't be edited through `items/edit`, and renaming a note
+  doesn't rewrite links in your files: both are refused or left alone for now.
+
 ## When something goes wrong
 
 - **Logs.** What the program writes to stderr goes to

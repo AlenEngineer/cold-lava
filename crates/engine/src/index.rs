@@ -7,10 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Resolves link targets (`Note`, `folder/Note`, `Note.md`) to notes, like Obsidian:
-/// by workspace-relative path first, then by file name, preferring the shallowest match.
+/// by workspace-relative path first, then by file name, preferring the shallowest match. Files
+/// other owners read are found the same way, by their name with its extension.
 pub struct Resolver {
     by_rel: HashMap<String, usize>,
     by_name: HashMap<String, usize>,
+    owned_by_rel: HashMap<String, usize>,
+    owned_by_name: HashMap<String, usize>,
 }
 
 impl Resolver {
@@ -24,7 +27,23 @@ impl Resolver {
                 *e = i;
             }
         }
-        Resolver { by_rel, by_name }
+        let mut owned_by_rel = HashMap::new();
+        let mut owned_by_name: HashMap<String, usize> = HashMap::new();
+        for (i, f) in v.owned.iter().enumerate() {
+            let rel = f.rel.to_lowercase();
+            let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+            let e = owned_by_name.entry(name).or_insert(i);
+            if f.rel.matches('/').count() < v.owned[*e].rel.matches('/').count() {
+                *e = i;
+            }
+            owned_by_rel.insert(rel, i);
+        }
+        Resolver {
+            by_rel,
+            by_name,
+            owned_by_rel,
+            owned_by_name,
+        }
     }
 
     /// `target` without `#heading` / `|alias` (as stored in `Note::links`).
@@ -37,13 +56,32 @@ impl Resolver {
             .or_else(|| self.by_name.get(t.rsplit('/').next().unwrap_or(t)))
             .copied()
     }
+
+    /// `resolve`, for a file another owner reads (`Workspace::owned`): `Eruptions.csv`.
+    pub fn resolve_owned(&self, target: &str) -> Option<usize> {
+        let t = target.trim().to_lowercase();
+        let t = t.trim_start_matches("./").trim_start_matches('/');
+        self.owned_by_rel
+            .get(t)
+            .or_else(|| self.owned_by_name.get(t.rsplit('/').next().unwrap_or(t)))
+            .copied()
+    }
+}
+
+/// Where a link was written: a note, or a file another owner reads (`Workspace::owned`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum From {
+    Note(usize),
+    Owned(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Backlink {
-    /// Index of the linking note.
-    pub from: usize,
+    pub from: From,
+    /// In the note, or in the owner's Markdown piece.
     pub line: usize,
+    /// In a file another owner reads: the owner's place for the link.
+    pub place: Option<String>,
     pub context: String,
 }
 
@@ -108,29 +146,41 @@ impl Index {
     }
 
     /// Recompute link resolution and backlinks from the notes in memory (no disk access).
-    fn relink(&mut self) {
+    pub(crate) fn relink(&mut self) {
         let workspace = &self.workspace;
         self.resolver = Resolver::new(workspace);
         let n = workspace.notes.len();
         let mut backlinks = vec![Vec::new(); n];
         let mut outgoing = vec![0; n];
-        for (from, note) in workspace.notes.iter().enumerate() {
-            for r in &note.refs {
-                if let Some(to) = self.resolver.resolve(&r.target) {
+        let notes = (workspace.notes.iter().enumerate())
+            .flat_map(|(i, n)| n.refs.iter().map(move |r| (From::Note(i), r, None)));
+        let owned = (workspace.owned.iter().enumerate()).flat_map(|(i, f)| {
+            (f.links.iter()).map(move |(r, place)| (From::Owned(i), r, Some(place)))
+        });
+        for (from, r, place) in notes.chain(owned) {
+            let Some(to) = self.resolver.resolve(&r.target) else {
+                if let From::Note(from) = from
+                    && self.resolver.resolve_owned(&r.target).is_some()
+                {
                     outgoing[from] += 1;
-                    if to != from {
-                        backlinks[to].push(Backlink {
-                            from,
-                            line: r.line,
-                            context: r.context.clone(),
-                        });
-                    }
                 }
+                continue;
+            };
+            if let From::Note(from) = from {
+                outgoing[from] += 1;
+            }
+            if from != From::Note(to) {
+                backlinks[to].push(Backlink {
+                    from,
+                    line: r.line,
+                    place: place.cloned(),
+                    context: r.context.clone(),
+                });
             }
         }
         for list in &mut backlinks {
             list.sort_by(|a, b| {
-                let (na, nb) = (&workspace.notes[a.from].name, &workspace.notes[b.from].name);
+                let (na, nb) = (self.name(a.from), self.name(b.from));
                 na.to_lowercase()
                     .cmp(&nb.to_lowercase())
                     .then(a.line.cmp(&b.line))
@@ -139,6 +189,26 @@ impl Index {
         self.backlinks = backlinks;
         self.outgoing = outgoing;
         self.folded = OnceLock::new();
+    }
+
+    /// The name of the file a link was written in: a note's, or an owned file's with its
+    /// extension.
+    pub fn name(&self, from: From) -> &str {
+        match from {
+            From::Note(i) => &self.workspace.notes[i].name,
+            From::Owned(i) => {
+                let rel = &self.workspace.owned[i].rel;
+                rel.rsplit('/').next().unwrap_or(rel)
+            }
+        }
+    }
+
+    /// The path of the file a link was written in.
+    pub fn path_of(&self, from: From) -> PathBuf {
+        match from {
+            From::Note(i) => self.path(i),
+            From::Owned(i) => self.workspace.owned[i].path.clone(),
+        }
     }
 
     /// Bring these paths up to date with the disk, then update links and backlinks once.
@@ -336,14 +406,14 @@ mod tests {
         let from: Vec<&str> = ix
             .backlinks(helens)
             .iter()
-            .map(|b| ix.workspace.notes[b.from].name.as_str())
+            .map(|b| ix.name(b.from))
             .collect();
         assert!(from.contains(&"David A. Johnston"));
         assert!(from.contains(&"Ring of Fire"));
         let johnston = ix
             .backlinks(helens)
             .iter()
-            .find(|b| ix.workspace.notes[b.from].name == "David A. Johnston")
+            .find(|b| ix.name(b.from) == "David A. Johnston")
             .unwrap();
         assert!(johnston.context.contains("[[Mount St. Helens]]"));
         assert!(

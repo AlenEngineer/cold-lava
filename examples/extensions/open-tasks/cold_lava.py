@@ -38,7 +38,8 @@ class Extension:
 
     def on(self, method):
         """Handle a request or notification from cold-lava: `initialize`, `items/changed`,
-        `items/reset`, `view/event`, `view/closed`, `file/open`, `file/changed`, `shutdown`.
+        `items/reset`, `view/event`, `view/closed`, `file/open`, `file/changed`, `file/read`,
+        `shutdown`.
         The handler gets the params; a request is answered with what it returns."""
 
         def register(handler):
@@ -146,10 +147,14 @@ class Extension:
         """Every file in the workspace whose name ends in `.extension`."""
         return self.request("workspace/files", {"extension": extension})["files"]
 
-    def open_view(self, content):
+    def open_view(self, content, select=None):
         """Show a list or a table ({"kind": "list", ...}) in cold-lava, which draws it and owns
-        its keys. Returns the view's id, which `view/event` and `view/closed` name."""
-        return self.request("view/open", {"content": content})["view"]
+        its keys, at the row `select`. Returns the view's id, which `view/event` and
+        `view/closed` name."""
+        params = {"content": content}
+        if select is not None:
+            params["select"] = select
+        return self.request("view/open", params)["view"]
 
     def update_view(self, view, content, select=None):
         """What the view shows now. cold-lava keeps the selection, folds, sort and filter by

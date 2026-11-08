@@ -438,6 +438,9 @@ pub struct Toggled {
     /// For recurring tasks: the next occurrence that was inserted.
     pub next: Option<NextTask>,
     pub warning: Option<String>,
+    /// The note's text after the toggle.
+    #[serde(skip)]
+    pub text: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -456,9 +459,8 @@ impl std::fmt::Display for Changed {
 }
 impl std::error::Error for Changed {}
 
-/// Toggle the task at `path:line` (1-based) like Obsidian Tasks does: to the status's next
-/// symbol, with a done date and the next occurrence of a recurring task when that is done, and
-/// without its done and cancelled dates when it isn't.
+/// Toggle the task at `path:line` (1-based) like Obsidian Tasks does, and write the file with
+/// `write::replace`: `toggle_text` on the file's text, in the workspace the file is in.
 pub fn toggle(
     path: &Path,
     line: usize,
@@ -470,26 +472,53 @@ pub fn toggle(
         .with_context(|| format!("no such file: {}", path.display()))?;
     let root = crate::workspace::find_workspace_root(&path);
     let item_settings = items::Settings::load(&root);
-    let settings = &item_settings.tasks;
     let rel = path
         .strip_prefix(&root)
         .unwrap_or(&path)
         .to_string_lossy()
         .replace('\\', "/");
     let text = std::fs::read_to_string(&path)?;
+    let shown = path.to_string_lossy();
+    let t = toggle_text(&shown, &rel, &text, &item_settings, line, expect_id, today)?;
+    match crate::write::replace(&path, text.as_bytes(), t.text.as_bytes()) {
+        Err(crate::write::WriteError::Changed(_)) => {
+            return Err(Changed(format!(
+                "{} changed while the task was being toggled; refresh and try again",
+                path.display()
+            ))
+            .into());
+        }
+        r => r?,
+    }
+    Ok(t)
+}
+
+/// Toggle the task at `line` (1-based) of `text`, the note at workspace-relative `rel` (named
+/// `shown` in messages), like Obsidian Tasks does: to the status's next symbol, with a done date
+/// and the next occurrence of a recurring task when that is done, and without its done and
+/// cancelled dates when it isn't. Nothing is written: `Toggled::text` is the note's new text.
+pub fn toggle_text(
+    shown: &str,
+    rel: &str,
+    text: &str,
+    item_settings: &items::Settings,
+    line: usize,
+    expect_id: Option<&str>,
+    today: NaiveDate,
+) -> Result<Toggled> {
+    let settings = &item_settings.tasks;
     let crlf = text.contains("\r\n");
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
     let ends_with_newline = text.ends_with('\n');
     if line == 0 || line > lines.len() {
         return Err(Changed(format!(
-            "{} has no line {line} (it has {})",
-            path.display(),
+            "{shown} has no line {line} (it has {})",
             lines.len()
         ))
         .into());
     }
     let old = lines[line - 1].clone();
-    let note_items = items::extract(&rel, &text, &item_settings);
+    let note_items = items::extract(rel, text, item_settings);
     let item = task_at(&note_items, line, &old, settings);
     let rev = item
         .as_ref()
@@ -501,14 +530,14 @@ pub fn toggle(
         .into());
     }
     let Some((_, task)) = item else {
-        bail!("line {line} of {} is not a task", path.display());
+        bail!("line {line} of {shown} is not a task");
     };
     let dataview = settings.dataview || old.contains("::");
     let (quote, rest) = split_quote(&old);
     let caps = re()
         .task
         .captures(rest)
-        .with_context(|| format!("line {line} of {} is not a task", path.display()))?;
+        .with_context(|| format!("line {line} of {shown} is not a task"))?;
     let (prefix, mid, body) = (
         format!("{quote}{}", &caps[1]),
         caps[3].to_string(),
@@ -575,23 +604,13 @@ pub fn toggle(
     if ends_with_newline {
         out.push_str(nl);
     }
-    match crate::write::replace(&path, text.as_bytes(), out.as_bytes()) {
-        Err(crate::write::WriteError::Changed(_)) => {
-            return Err(Changed(format!(
-                "{} changed while the task was being toggled; refresh and try again",
-                path.display()
-            ))
-            .into());
-        }
-        r => r?,
-    }
-    let new_items = items::extract(&rel, &out, &item_settings);
+    let new_items = items::extract(rel, &out, item_settings);
     let rev_at = |at: usize| {
         task_at(&new_items, at, &lines[at - 1], settings)
             .map_or_else(|| line_id(&lines[at - 1]), |(i, _)| i.rev.clone())
     };
     Ok(Toggled {
-        path: path.to_string_lossy().into_owned(),
+        path: shown.to_string(),
         line: toggled_line,
         status: settings.status_type(new_char).agenda_name(),
         id: rev_at(toggled_line),
@@ -602,6 +621,7 @@ pub fn toggle(
             id: rev_at(at),
         }),
         warning,
+        text: out,
     })
 }
 

@@ -17,10 +17,10 @@ use indexmap::IndexMap;
 use regex::Regex;
 use serde_json::Value as Json;
 
+use crate::daily;
 use crate::frontmatter::{self, Frontmatter};
 use crate::markdown::{self, Flavour, Syntax};
 use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
-use crate::{daily, workspace};
 
 /// The primitives this matcher reads; shapes on the others (code, quote) wait.
 const READ: &[On] = &[
@@ -254,6 +254,51 @@ impl Matcher {
     /// The names of the types that can match, for `items KIND`.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.types.iter().map(|t| t.name.as_str())
+    }
+
+    /// An item of the type `kind` with these fields, as an owner gave them: each value read as
+    /// its field's type (as it would be written, or as JSON), a list field from a list. A value
+    /// that doesn't read is counted in `unparsed`; a field the type doesn't have is an error.
+    pub fn given(
+        &self,
+        kind: &str,
+        given: &serde_json::Map<String, Json>,
+    ) -> Result<Typed, String> {
+        let ty = (self.types.iter())
+            .find(|t| t.name == kind)
+            .ok_or_else(|| format!("no type called {kind}"))?;
+        let mut typed = Typed {
+            kind: ty.name.clone(),
+            is: ty.is.clone(),
+            fields: Fields::new(ty.names.clone()),
+            spans: Spans::default(),
+            unparsed: 0,
+            place: Place::default(),
+        };
+        for (name, v) in given {
+            let i = (ty.schema.iter())
+                .position(|(n, ..)| **n == **name)
+                .ok_or_else(|| format!("{kind} has no field {name}"))?;
+            let (_, value, list) = &ty.schema[i];
+            let given: Vec<&Json> = match v {
+                Json::Array(vs) if *list => vs.iter().collect(),
+                Json::Null => Vec::new(),
+                v => vec![v],
+            };
+            let read: Vec<Json> = (given.iter())
+                .filter_map(|v| match v {
+                    Json::String(s) => parse(value, s, &self.daily.format),
+                    v => parse(value, &v.to_string(), &self.daily.format),
+                })
+                .collect();
+            typed.unparsed += given.len() - read.len();
+            match (*list, read.first()) {
+                (true, _) if !read.is_empty() => typed.fields.set(i, Json::Array(read)),
+                (false, Some(one)) => typed.fields.set(i, one.clone()),
+                _ => {}
+            }
+        }
+        Ok(typed)
     }
 
     /// Which shapes the note passes: folder, frontmatter properties and tags. Checked once per
@@ -659,7 +704,7 @@ impl<'a> Note<'a> {
         }
         if links {
             for line in text.lines().take(end_line) {
-                note.links.extend(workspace::line_links(line));
+                note.links.extend(crate::owner::markdown::line_links(line));
             }
         }
         note
@@ -943,7 +988,7 @@ fn read_source<'a>(
             .filter(|(_, r)| !b.in_code(r))
             .map(|(t, r)| Piece::text(t, Some(at(r))))
             .collect(),
-        Src::Inlines(InlineKind::Links) => workspace::line_links(text)
+        Src::Inlines(InlineKind::Links) => crate::owner::markdown::line_links(text)
             .into_iter()
             .map(|l| Piece {
                 value: Some(Json::String(l.clone())),
@@ -1085,7 +1130,7 @@ pub fn parse_as_written(value: &Value, text: &str, daily_format: &str) -> Option
             _ => return None,
         },
         Value::Link => Json::String(
-            workspace::line_links(text)
+            crate::owner::markdown::line_links(text)
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| text.to_string()),

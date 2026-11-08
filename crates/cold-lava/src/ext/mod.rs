@@ -9,7 +9,7 @@
 //! (`workspace/read`, …) are answered during the call by the core (`crate::gateway`,
 //! `crate::files`), within the permissions the extension's manifest asks for. An extension can
 //! own a kind of file (`FileType`): the menu hands it those files (`file/open`) and their outside
-//! changes (`file/changed`).
+//! changes (`file/changed`), and asks it what each says as items and links (`file/read`).
 //! Extensions installed on disk (`installed`) run in processes of their own (`process`), over a
 //! `transport` that frames JSON-RPC messages (`frame`, `rpc`); they reach the same `Host`.
 
@@ -25,6 +25,8 @@ use crate::commands::{self, Entry, MenuCommand};
 use crate::core::{Core, Jump};
 use crate::files::{self, Create, Created, Listed, Text, Written};
 use crate::gateway::{self, Edit, Edited, Found, News, Query, Reason, Select, SubId};
+use crate::owner::cache::{FileRead, Kind};
+use crate::owner::given::Given;
 use crate::types::{Definitions, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -189,9 +191,15 @@ pub enum EditorRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum FileNews {
-    /// Show it: the user chose it in the tree or the quick switcher, or followed a link to it.
+    /// Show it: the user chose it in the tree or the quick switcher, or followed a link to it;
+    /// at `place`, the owner's place for an item or a link in it (`file/read`), when one was
+    /// opened.
     #[serde(rename = "file/open")]
-    Open { path: String },
+    Open {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        place: Option<String>,
+    },
     /// It changed on disk, whoever changed it (its owner too): its version now, `None` when it
     /// is gone.
     #[serde(rename = "file/changed")]
@@ -230,9 +238,14 @@ pub enum Effect {
     OpenPane { pane: PaneId, spec: PaneSpec },
     #[serde(rename = "pane/input")]
     PaneInput { pane: PaneId, text: String },
-    /// Show a view; the host named it `view`.
+    /// Show a view, at the row `select` if it names one; the host named it `view`.
     #[serde(rename = "view/open")]
-    OpenView { view: ViewId, content: Content },
+    OpenView {
+        view: ViewId,
+        content: Content,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        select: Option<String>,
+    },
     /// What one of its views shows now; `select` is a row to select, now or when it shows up.
     #[serde(rename = "view/update")]
     UpdateView {
@@ -250,6 +263,9 @@ pub enum Effect {
         note: PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line: Option<usize>,
+        /// An item's id: a file another owner reads opens at the item's place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item: Option<String>,
     },
 }
 
@@ -271,6 +287,12 @@ pub trait Extension {
     fn view(&mut self, _news: ViewNews, _host: &mut Host<'_>) {}
     /// `file/open`, `file/changed`: a file of a kind it owns.
     fn file(&mut self, _news: FileNews, _host: &mut Host<'_>) {}
+    /// `file/read`: the items and links of a file of a kind it owns, answered now or later
+    /// with `Host::file_given`.
+    fn read_file(&mut self, read: FileRead, host: &mut Host<'_>) {
+        let why = "it doesn't read files".to_string();
+        host.file_given(&read.path, &read.rev, Err(why));
+    }
     /// The menu opened a workspace (`None`: it has none open). An extension in a process starts
     /// here, with `initialize`, and stops when the workspace closes.
     fn workspace(&mut self, _root: Option<&Path>, _host: &mut Host<'_>) {}
@@ -348,14 +370,23 @@ impl Host<'_> {
     }
 
     /// `view/open`: the view shows once the call returns, in place of what showed, which Back
-    /// returns to. Refused when it is over the limits (`view::MAX_ROWS`, …).
-    pub fn open_view(&mut self, content: Content) -> Result<ViewId, gateway::Error> {
+    /// returns to, at the row `select` names. Refused when it is over the limits
+    /// (`view::MAX_ROWS`, …).
+    pub fn open_view(
+        &mut self,
+        content: Content,
+        select: Option<String>,
+    ) -> Result<ViewId, gateway::Error> {
         content
             .check()
             .map_err(|why| gateway::Error::new(Reason::Refused, why))?;
         *self.next_view += 1;
         let view = ViewId(*self.next_view);
-        self.effects.push(Effect::OpenView { view, content });
+        self.effects.push(Effect::OpenView {
+            view,
+            content,
+            select,
+        });
         Ok(view)
     }
 
@@ -384,9 +415,21 @@ impl Host<'_> {
         self.effects.push(Effect::CloseView { view });
     }
 
-    /// `workspace/open`: show a note, at a line.
-    pub fn open_note(&mut self, note: PathBuf, line: Option<usize>) {
-        self.effects.push(Effect::OpenNote { note, line });
+    /// `workspace/open`: show a note, at a line; or the file of the item `item` at its place.
+    pub fn open_note(&mut self, note: PathBuf, line: Option<usize>, item: Option<String>) {
+        self.effects.push(Effect::OpenNote { note, line, item });
+    }
+
+    /// The answer to `file/read` for a file of a kind it owns: its items and links join the
+    /// workspace, or why it couldn't read it. Only the file's owner may answer.
+    pub fn file_given(&mut self, path: &str, rev: &str, given: Result<Given, String>) {
+        let me = self.me;
+        let owns = (self.owners.iter())
+            .any(|(x, owner)| Some(x) == files::extension_of(path).as_ref() && Some(*owner) == me);
+        let name = self.name;
+        if let (true, Some(core)) = (owns, self.core.as_deref_mut()) {
+            core.file_given(name, path, rev, given);
+        }
     }
 
     /// The core, when the caller's manifest asks for `needs`.
@@ -580,6 +623,20 @@ impl Registry {
             .map(|(_, e)| *e)
     }
 
+    /// Each kind of file an extension owns, with its owner's name and version, for the core.
+    pub fn owned_kinds(&self) -> Vec<Kind> {
+        (self.owners.iter())
+            .map(|(x, ext)| {
+                let m = self.manifest(*ext);
+                Kind {
+                    extension: x.clone(),
+                    owner: m.name.clone(),
+                    version: m.version.clone(),
+                }
+            })
+            .collect()
+    }
+
     /// The extension that opens the file at `path` (a path or a file name), and its kind.
     pub fn owner_of(&self, path: &str) -> Option<(ExtId, &FileType)> {
         let x = files::extension_of(path)?;
@@ -760,6 +817,7 @@ mod tests {
             Effect::OpenView {
                 view,
                 content: content(),
+                select: None,
             },
             json!({"method": "view/open", "params": {"view": 4, "content": list}}),
         );
@@ -779,8 +837,18 @@ mod tests {
             Effect::OpenNote {
                 note: "Plan.md".into(),
                 line: Some(3),
+                item: None,
             },
             json!({"method": "workspace/open", "params": {"note": "Plan.md", "line": 3}}),
+        );
+        wire(
+            Effect::OpenNote {
+                note: "Volcanoes/Eruptions.csv".into(),
+                line: None,
+                item: Some("6f3e".into()),
+            },
+            json!({"method": "workspace/open",
+                   "params": {"note": "Volcanoes/Eruptions.csv", "item": "6f3e"}}),
         );
     }
 
@@ -1197,8 +1265,17 @@ mod tests {
         wire(
             FileNews::Open {
                 path: "Data/Eruptions.csv".into(),
+                place: None,
             },
             json!({"method": "file/open", "params": {"path": "Data/Eruptions.csv"}}),
+        );
+        wire(
+            FileNews::Open {
+                path: "Data/Eruptions.csv".into(),
+                place: Some("Krakatoa".into()),
+            },
+            json!({"method": "file/open",
+                   "params": {"path": "Data/Eruptions.csv", "place": "Krakatoa"}}),
         );
         wire(
             FileNews::Changed {

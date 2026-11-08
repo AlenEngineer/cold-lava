@@ -1,0 +1,44 @@
+# What a file another owner reads says joins the workspace (docs/extensions.md, "Owners and
+# types"). csv-table, installed in the empty home by tests/drive.rs, answers file/read for
+# Volcanoes/Eruptions.csv: each row as a one-row Markdown table, so the workspace's eruption type
+# matches it and its [[links]] are links, and its Notes cell as Markdown, so its task is a task.
+size 140x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys /
+type krakatoa
+wait-for Krakatoa
+keys enter
+# Krakatoa's backlinks list the CSV twice: the link in the task, and the one in the row.
+wait-for ← Eruptions.csv  ☐ Read the Royal Society report on Krakatoa
+expect ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+expect ←5 in
+# Enter on one opens the table at the row the link is in.
+click 24 80
+wait-for backlinks · ↑↓ choose
+click 24 80
+wait-for Volcanoes/Eruptions.csv
+keys e
+wait-for Volcano: [[Krakatoa]]▏
+keys esc esc
+wait-for backlinks · ↑↓ choose
+# The agenda lists the CSV's task with the notes' tasks, and opens the table at its row.
+keys left A
+wait-for ╭ Agenda
+wait-for Read the Royal Society report on Krakatoa
+expect Fri 20 Nov  Eruptions
+screen
+keys G enter
+wait-for Volcanoes/Eruptions.csv
+keys e
+wait-for Volcano: [[Krakatoa]]▏
+keys esc esc esc
+# Its rows are eruptions in the type's table, beside the rows of the table in a note.
+keys i
+wait-for eruption        8
+keys j j enter
+wait-for 8 rows
+expect Krakatoa
+screen
+keys esc q
+exits 0

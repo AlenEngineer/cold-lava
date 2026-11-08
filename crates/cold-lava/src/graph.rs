@@ -106,6 +106,16 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
     for (ni, n) in v.notes.iter().enumerate() {
         nodes[note_node[ni]].tags = n.tags.clone();
     }
+    // Files other owners read are nodes too, with their links (docs/extensions.md, "Owners and
+    // types").
+    let owned_node: Vec<usize> = (v.owned.iter())
+        .map(|f| {
+            let name = f.rel.rsplit('/').next().unwrap_or(&f.rel).to_string();
+            let key = format!("f:{}", f.rel.to_lowercase());
+            let (path, rel) = (Some(f.path.clone()), Some(f.rel.clone()));
+            add(&mut nodes, key, name, Kind::Note, path, rel)
+        })
+        .collect();
 
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
     let mut edges = Vec::new();
@@ -114,9 +124,10 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
         for t in &n.links {
             let tl = t.to_lowercase();
             let tl = tl.trim_start_matches("./").trim_start_matches('/');
-            let to = match resolver.resolve(t) {
-                Some(target) => note_node[target],
-                None if o.unresolved => {
+            let to = match (resolver.resolve(t), resolver.resolve_owned(t)) {
+                (Some(target), _) => note_node[target],
+                (None, Some(file)) => owned_node[file],
+                (None, None) if o.unresolved => {
                     let label = t.rsplit('/').next().unwrap_or(t).to_string();
                     add(
                         &mut nodes,
@@ -127,7 +138,7 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
                         None,
                     )
                 }
-                None => continue,
+                (None, None) => continue,
             };
             if to != from && edge_set.insert((from, to)) {
                 edges.push((from, to));
@@ -146,6 +157,23 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
                 if edge_set.insert((from, to)) {
                     edges.push((from, to));
                 }
+            }
+        }
+    }
+
+    for (fi, f) in v.owned.iter().enumerate() {
+        let from = owned_node[fi];
+        for (r, _) in &f.links {
+            let to = match (
+                resolver.resolve(&r.target),
+                resolver.resolve_owned(&r.target),
+            ) {
+                (Some(target), _) => note_node[target],
+                (None, Some(file)) => owned_node[file],
+                (None, None) => continue,
+            };
+            if to != from && edge_set.insert((from, to)) {
+                edges.push((from, to));
             }
         }
     }
@@ -313,6 +341,7 @@ mod tests {
             root: PathBuf::from("/v"),
             name: "v".into(),
             notes,
+            owned: Vec::new(),
             item_settings: Default::default(),
         }
     }
@@ -347,6 +376,40 @@ mod tests {
         assert_eq!(g.edges.len(), 3); // A→B, A→C, B→A
         let a = g.find("n:a").unwrap();
         assert_eq!((g.links_out[a], g.links_in[a]), (2, 1));
+    }
+
+    #[test]
+    fn files_other_owners_read_are_nodes_with_their_links() {
+        let mut v = workspace(vec![
+            note("Lava", &["Eruptions.csv"], &[]),
+            note("Krakatoa", &[], &[]),
+        ]);
+        v.owned.push(crate::workspace::Owned {
+            rel: "Data/Eruptions.csv".into(),
+            path: PathBuf::from("/v/Data/Eruptions.csv"),
+            owner: "csv-table".into(),
+            rev: None,
+            items: Vec::new(),
+            places: HashMap::new(),
+            links: vec![(
+                crate::workspace::Ref {
+                    target: "Krakatoa".into(),
+                    line: 1,
+                    context: String::new(),
+                },
+                "2".into(),
+            )],
+        });
+        let g = build(&v, ALL, &HashMap::new());
+        let mut l = labels(&g);
+        l.sort();
+        assert_eq!(
+            l,
+            ["Eruptions.csv", "Krakatoa", "Lava"],
+            "no unresolved node"
+        );
+        let csv = g.find("f:data/eruptions.csv").unwrap();
+        assert_eq!((g.links_out[csv], g.links_in[csv]), (1, 1));
     }
 
     #[test]

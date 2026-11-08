@@ -293,6 +293,7 @@ mod tests {
                 tags: tags.iter().map(|s| s.to_string()).collect(),
                 items: Default::default(),
             }],
+            owned: Vec::new(),
             item_settings: Default::default(),
         };
         let opts = crate::graph::BuildOpts {

@@ -2,9 +2,10 @@
 //! links and tags.
 
 use crate::items::{self, Item};
+use crate::owner::markdown;
 use anyhow::{Context, Result};
-use regex::Regex;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -41,20 +42,39 @@ pub struct Note {
     pub items: OnceLock<Vec<Item>>,
 }
 
-/// One link in a note.
+/// One link in a note, or in a file another owner reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ref {
     pub target: String,
-    /// 1-based line number.
+    /// 1-based line number: in the note, or in an owner's Markdown piece.
     pub line: usize,
     /// The line it's on, trimmed (for showing backlinks in context).
     pub context: String,
+}
+
+/// A file of a kind an extension owns, with the items and links its owner gave
+/// (docs/extensions.md, "Owners and types").
+pub struct Owned {
+    /// Workspace-relative, with its extension.
+    pub rel: String,
+    pub path: PathBuf,
+    /// The extension that owns its kind.
+    pub owner: String,
+    /// The version its items and links were read from; `None` until the owner answers.
+    pub rev: Option<String>,
+    pub items: Vec<Item>,
+    /// The owner's place for each item (a row's key, a card's id), by id: `file/open` takes it.
+    pub places: HashMap<String, String>,
+    /// Its links, each with the owner's place for it.
+    pub links: Vec<(Ref, String)>,
 }
 
 pub struct Workspace {
     pub root: PathBuf,
     pub name: String,
     pub notes: Vec<Note>,
+    /// Files other owners read, by `rel`. The core keeps them (`Core::set_owners`).
+    pub owned: Vec<Owned>,
     /// What items depend on (flavour, Tasks and daily-note settings), read on first use.
     pub item_settings: OnceLock<items::Settings>,
 }
@@ -83,31 +103,6 @@ pub fn attachment_kind(target: &str) -> Option<&'static str> {
         .map(|(kind, _)| *kind)
 }
 
-struct Parsers {
-    wikilink: Regex,
-    mdlink: Regex,
-    tag: Regex,
-    inline_code: Regex,
-}
-
-impl Parsers {
-    fn new() -> Self {
-        Self {
-            // [[target]], [[target#heading]], [[target|alias]], ![[embed]]
-            wikilink: Regex::new(r"\[\[([^\]\|#\^]*)[^\]]*\]\]").unwrap(),
-            // [text](some/note.md) — local markdown links only
-            mdlink: Regex::new(r"\]\(([^)\s]+?\.md)(?:#[^)]*)?\)").unwrap(),
-            tag: Regex::new(crate::markdown::TAG).unwrap(),
-            inline_code: Regex::new(r"`[^`\n]*`").unwrap(),
-        }
-    }
-}
-
-fn parsers() -> &'static Parsers {
-    static P: OnceLock<Parsers> = OnceLock::new();
-    P.get_or_init(Parsers::new)
-}
-
 /// Is this workspace-relative path a note cold-lava reads (a `.md` file outside hidden folders)?
 pub fn is_note_path(rel: &Path) -> bool {
     rel.extension().is_some_and(|e| e == "md")
@@ -132,7 +127,11 @@ pub fn read_note(root: &Path, path: &Path) -> Option<Note> {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let (refs, tags, aliases) = parse(&text, parsers());
+    let markdown::Read {
+        refs,
+        tags,
+        aliases,
+    } = markdown::read(&text);
     let links = refs.iter().map(|r| r.target.clone()).collect();
     Some(Note {
         rel,
@@ -170,6 +169,7 @@ pub fn scan(root: &Path) -> Result<Workspace> {
         root,
         name,
         notes,
+        owned: Vec::new(),
         item_settings: OnceLock::new(),
     })
 }
@@ -205,7 +205,7 @@ impl Workspace {
 
     fn read_items(&self, note: &Note) -> Vec<Item> {
         let rel = format!("{}.md", note.rel);
-        items::extract(&rel, &note.text, self.item_settings())
+        markdown::items(&rel, &note.text, self.item_settings())
     }
 
     /// `path` spelled from the canonical root, as the notes' paths are. The root was
@@ -321,122 +321,6 @@ pub(crate) fn clean_target(t: &str) -> Option<String> {
     }
 }
 
-fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
-    let mut refs = Vec::new();
-    let mut tags = Vec::new();
-    let mut aliases: Vec<String> = Vec::new();
-    let lines: Vec<&str> = text.lines().collect();
-    let mut i = 0;
-    let add = |refs: &mut Vec<Ref>, target: Option<String>, i: usize, line: &str| {
-        if let Some(target) = target {
-            let mut context: String = line.trim().chars().take(240).collect();
-            if line.trim().chars().count() > 240 {
-                context.push('…');
-            }
-            refs.push(Ref {
-                target,
-                line: i + 1,
-                context,
-            });
-        }
-    };
-
-    // YAML frontmatter: only `tags:` matters here.
-    if lines.first().map(|l| l.trim_end()) == Some("---") {
-        i = 1;
-        let mut in_tags = false;
-        let mut in_aliases = false;
-        while i < lines.len() {
-            let line = lines[i];
-            let t = line.trim();
-            if t == "---" || t == "..." {
-                i += 1;
-                break;
-            }
-            if let Some(rest) = t
-                .strip_prefix("aliases:")
-                .or_else(|| t.strip_prefix("alias:"))
-            {
-                in_aliases = true;
-                in_tags = false;
-                let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
-                aliases.extend(rest.split(',').filter_map(clean_alias));
-            } else if in_aliases && t.starts_with("- ") {
-                aliases.extend(clean_alias(&t[2..]));
-            } else if let Some(rest) = t.strip_prefix("tags:").or_else(|| t.strip_prefix("tag:")) {
-                in_tags = true;
-                in_aliases = false;
-                let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
-                for tag in rest.split(',') {
-                    push_tag(&mut tags, tag);
-                }
-            } else if in_tags && t.starts_with("- ") {
-                push_tag(&mut tags, &t[2..]);
-            } else if !t.is_empty() {
-                in_tags = false;
-                in_aliases = false;
-            }
-            // Wikilinks inside frontmatter properties count too, like in Obsidian.
-            for c in p.wikilink.captures_iter(line) {
-                add(&mut refs, clean_target(&c[1]), i, line);
-            }
-            i += 1;
-        }
-    }
-
-    let mut in_fence = false;
-    for (n, raw) in lines.iter().enumerate().skip(i) {
-        let t = raw.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        for target in line_links(raw) {
-            add(&mut refs, Some(target), n, raw);
-        }
-        let line = p.inline_code.replace_all(raw, "");
-        for c in p.tag.captures_iter(&line) {
-            push_tag(&mut tags, &c[1]);
-        }
-    }
-    (refs, tags, aliases)
-}
-
-/// The link targets on one line outside inline code: wikilinks, then Markdown links.
-pub fn line_links(line: &str) -> Vec<String> {
-    // Without code to take out, a link needs `[[` or `](`; most lines have neither.
-    if !line.contains('`') && !line.contains("[[") && !line.contains("](") {
-        return Vec::new();
-    }
-    let p = parsers();
-    let line = p.inline_code.replace_all(line, "");
-    let wiki = p.wikilink.captures_iter(&line);
-    let md = p.mdlink.captures_iter(&line);
-    wiki.chain(md).filter_map(|c| clean_target(&c[1])).collect()
-}
-
-fn clean_alias(raw: &str) -> Option<String> {
-    let a = raw.trim().trim_matches(|c| c == '"' || c == '\'').trim();
-    (!a.is_empty()).then(|| a.to_string())
-}
-
-fn push_tag(tags: &mut Vec<String>, raw: &str) {
-    let t = raw
-        .trim()
-        .trim_matches(|c| c == '"' || c == '\'')
-        .trim_start_matches('#');
-    // A tag needs at least one non-digit character (`#123` is not a tag).
-    if !t.is_empty() && !t.chars().all(|c| c.is_ascii_digit()) {
-        let t = t.to_lowercase();
-        if !tags.contains(&t) {
-            tags.push(t);
-        }
-    }
-}
-
 /// Find the workspace for a path: the nearest ancestor containing `.obsidian`, else the folder itself.
 pub fn find_workspace_root(p: &Path) -> PathBuf {
     let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
@@ -456,49 +340,6 @@ pub fn find_workspace_root(p: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    fn links_and_tags(text: &str) -> (Vec<String>, Vec<String>) {
-        let (refs, tags, _) = parse(text, parsers());
-        (refs.into_iter().map(|r| r.target).collect(), tags)
-    }
-
-    #[test]
-    fn link_positions() {
-        let (refs, _, _) = parse(
-            "---\nup: \"[[Parent]]\"\n---\n\nSee [[A]] and\n[[B|bee]] here",
-            &Parsers::new(),
-        );
-        let pos: Vec<(&str, usize, &str)> = refs
-            .iter()
-            .map(|r| (r.target.as_str(), r.line, r.context.as_str()))
-            .collect();
-        assert_eq!(
-            pos,
-            [
-                ("Parent", 2, "up: \"[[Parent]]\""),
-                ("A", 5, "See [[A]] and"),
-                ("B", 6, "[[B|bee]] here")
-            ]
-        );
-    }
-
-    #[test]
-    fn wikilink_forms() {
-        let (links, _) = links_and_tags(
-            "[[Plain]] [[With Alias|shown]] [[Heading#Section]] ![[Embedded]] [[Block^abc]] [[folder/Deep]]",
-        );
-        assert_eq!(
-            links,
-            [
-                "Plain",
-                "With Alias",
-                "Heading",
-                "Embedded",
-                "Block",
-                "folder/Deep"
-            ]
-        );
-    }
-
     #[test]
     fn attachments_are_known_file_types_and_dotted_note_names_are_notes() {
         assert_eq!(attachment_kind("kilauea-lava-lake.jpg"), Some("image"));
@@ -508,15 +349,6 @@ mod tests {
         assert_eq!(attachment_kind("David A. Johnston"), None);
         assert_eq!(attachment_kind("v1.2/notes"), None);
         assert_eq!(attachment_kind("Lahar"), None);
-    }
-
-    #[test]
-    fn markdown_links_and_attachments() {
-        let (links, _) = links_and_tags(
-            "[a](Other%20Note.md) [b](https://example.com/x.md) ![[photo.png]] [[file.pdf]] [[v1.2 notes]] [c](K%C4%ABlauea.md)",
-        );
-        // Wikilinks are collected before markdown links on each line.
-        assert_eq!(links, ["v1.2 notes", "Other Note", "Kīlauea"]);
     }
 
     #[test]
@@ -540,46 +372,6 @@ mod tests {
             "ʻAʻā.md",
             "written unescaped"
         );
-    }
-
-    #[test]
-    fn code_is_ignored() {
-        let (links, tags) = links_and_tags("```\n[[InFence]] #fenced\n```\n`[[Inline]]` [[Real]]");
-        assert_eq!(links, ["Real"]);
-        assert!(tags.is_empty());
-    }
-
-    #[test]
-    fn tags_inline_and_frontmatter() {
-        let text = "---\ntags: [Project, area/work]\naliases:\n  - x\n---\n# Heading\nText #Idea and #123 and #nested/tag.";
-        let (_, tags) = links_and_tags(text);
-        assert_eq!(tags, ["project", "area/work", "idea", "nested/tag"]);
-    }
-
-    #[test]
-    fn frontmatter_aliases() {
-        let (_, _, a) = parse(
-            "---\naliases: [Big Island, \"Hawaiʻi\"]\ntags: x\n---\n",
-            &Parsers::new(),
-        );
-        assert_eq!(a, ["Big Island", "Hawaiʻi"]);
-        let (_, t, a) = parse(
-            "---\naliases:\n  - One\n  - 'Two'\ntags:\n  - t\n---\n",
-            &Parsers::new(),
-        );
-        assert_eq!(
-            (a, t),
-            (
-                vec!["One".to_string(), "Two".to_string()],
-                vec!["t".to_string()]
-            )
-        );
-    }
-
-    #[test]
-    fn frontmatter_list_tags() {
-        let (_, tags) = links_and_tags("---\ntags:\n  - one\n  - \"two\"\ntitle: x\n---\n");
-        assert_eq!(tags, ["one", "two"]);
     }
 
     #[test]

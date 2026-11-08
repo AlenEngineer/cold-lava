@@ -24,6 +24,14 @@ where.header = ["VEI", "Example"]
 key = ["vei"]
 fields = { vei = { column = "VEI" }, example = { column = "Example" }, volcanoes = { inlines = "links" } }
 
+# A row of a table of eruptions by volcano, like Volcanoes/Eruptions.csv: the csv-table extension
+# hands each of its rows over as a table row, so this matches them as it would in a note.
+[[types.eruption.from]]
+on = "table-row"
+where.header = ["Volcano", "VEI"]
+key = ["volcanoes"]
+fields = { vei = { column = "VEI" }, volcanoes = { inlines = "links" } }
+
 # A VEI written in prose, like "its 1883 eruption (VEI 6, …)": an inline type, found anywhere in
 # a paragraph, list item, heading or table row, as many times as it is written.
 [types.vei]
