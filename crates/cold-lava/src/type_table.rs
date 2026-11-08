@@ -1,16 +1,21 @@
-//! A type's items as a table (docs/extensions.md, "Types"): what the built-in table extension
-//! will send. Columns come from the type's schema in its order, then the note; rows are the
-//! items of the type across the workspace, by item id. In the menu the table reads them through
-//! the workspace gateway (`types/list`, `items/query`, `items/subscribe`) and keeps them current
-//! from `items/changed`.
+//! A type's items as a table (docs/extensions.md, "The table view, as built"): the built-in
+//! `table` extension, on the same path as one in a process. `i` (`table.open`) sends the types
+//! to pick from as a table through the view gateway; Enter on one sends that type's table.
+//! Columns come from the type's schema in its order, then the note; rows are the items of the
+//! type across the workspace, by item id, read through the workspace gateway (`types/list`,
+//! `items/query`, `items/subscribe`) and kept current from `items/changed`. An edited cell is
+//! `items/edit set-field`, and Enter opens the row's note with `workspace/open`.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::Value as Json;
 
-use crate::ext::Host;
-use crate::gateway::{self, News, Page, Query, Select, SubId};
+use crate::ext::view::{self, Content, Happened, ViewId, ViewNews};
+use crate::ext::{
+    CommandRequest, EditorRequest, Extension, Host, Manifest, PaneNews, Permission, TABLE,
+};
+use crate::gateway::{self, Edit, News, Op, Page, Query, Reason, Select, SubId};
 use crate::items::{Data, Item};
 use crate::table::{Column, Kind, Row, Table};
 use crate::types::{Definition, Source, Type, Value};
@@ -89,10 +94,6 @@ impl Feed {
         Ok(Some(Feed { ty, sub, items }))
     }
 
-    pub fn name(&self) -> &str {
-        &self.ty.name
-    }
-
     pub fn subscription(&self) -> SubId {
         self.sub
     }
@@ -137,6 +138,207 @@ impl Feed {
     /// Stop following the type.
     pub fn close(self, host: &mut Host<'_>) {
         let _ = host.unsubscribe_items(self.sub);
+    }
+}
+
+/// The command that opens it: a core command (`i`) the menu hands to it.
+pub const OPEN: &str = "table.open";
+
+/// The table extension: the type picker and the tables it has open.
+#[derive(Default)]
+pub struct Tables {
+    picker: Option<ViewId>,
+    open: HashMap<ViewId, Shown>,
+}
+
+/// One type's table as shown, and where each row's item is.
+struct Shown {
+    feed: Feed,
+    at: HashMap<String, At>,
+    /// The row to select with the next update: an edited item, under its id now.
+    select: Option<String>,
+}
+
+impl Tables {
+    /// The types to pick from, with how many items each has, in place of the picker it had.
+    fn pick(&mut self, host: &mut Host<'_>) -> Result<(), String> {
+        if let Some(old) = self.picker.take() {
+            host.close_view(old);
+        }
+        let types = types(host).map_err(|e| e.to_string())?;
+        let column = |name: &str, kind| Column {
+            name: name.into(),
+            kind,
+            look: None,
+            read_only: Some("pick a type with Enter".into()),
+        };
+        let table = Table {
+            title: "Table of…".into(),
+            columns: vec![column("type", Kind::Text), column("items", Kind::Number)],
+            rows: (types.into_iter())
+                .map(|(name, n)| Row {
+                    id: name.clone(),
+                    cells: vec![name.into(), n.into()],
+                })
+                .collect(),
+        };
+        let view = host
+            .open_view(Content::Table(table))
+            .map_err(|e| e.to_string())?;
+        self.picker = Some(view);
+        Ok(())
+    }
+
+    /// The table of type `ty`, in place of the picker.
+    fn show(&mut self, ty: &str, host: &mut Host<'_>) -> Result<(), String> {
+        if let Some(picker) = self.picker.take() {
+            host.close_view(picker);
+        }
+        let feed = match Feed::open(host, ty) {
+            Ok(Some(feed)) => feed,
+            Ok(None) => return Err(format!("no type called {ty}")),
+            Err(e) => return Err(e.to_string()),
+        };
+        let built = feed.table();
+        match host.open_view(Content::Table(built.table)) {
+            Ok(view) => {
+                let shown = Shown {
+                    feed,
+                    at: built.at,
+                    select: None,
+                };
+                self.open.insert(view, shown);
+                Ok(())
+            }
+            Err(e) => {
+                feed.close(host);
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
+impl Shown {
+    fn send(&mut self, view: ViewId, host: &mut Host<'_>) {
+        let built = self.feed.table();
+        self.at = built.at;
+        let select = self.select.take();
+        if let Err(e) = host.update_view(view, Content::Table(built.table), select) {
+            host.notify(format!("the table couldn't be shown: {e}"));
+        }
+    }
+
+    /// `items/edit set-field` on the row's item, as the version the table shows.
+    fn edit(&mut self, row: &str, column: &str, value: String, host: &mut Host<'_>) {
+        let Some(at) = self.at.get(row) else {
+            return host.notify(format!("{row} is gone"));
+        };
+        let edit = Edit {
+            id: row.to_string(),
+            rev: at.rev.clone(),
+            op: Op::SetField {
+                field: column.to_string(),
+                value: Json::String(value.clone()),
+            },
+        };
+        let name = at.note.trim_end_matches(".md").to_string();
+        let message = match host.edit_item(&edit) {
+            Ok(set) if !set.changed => format!("{column} is already {value}"),
+            Ok(set) => {
+                self.select = Some(set.item.id.clone());
+                match value.trim() {
+                    "" => format!("{name}: {column} removed"),
+                    v => format!("{name}: {column} set to {v}"),
+                }
+            }
+            Err(e) if e.reason == Reason::Changed => {
+                format!("not saved, {} · the table is read again", e.message)
+            }
+            Err(e) => format!("not saved: {e}"),
+        };
+        host.notify(message);
+    }
+}
+
+impl Extension for Tables {
+    fn initialize(&mut self) -> Manifest {
+        Manifest {
+            name: TABLE.into(),
+            title: "Table".into(),
+            version: String::new(),
+            description: "A type's items as a table".into(),
+            roles: Vec::new(),
+            hints: Vec::new(),
+            commands: Vec::new(),
+            types: Default::default(),
+            permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
+        }
+    }
+
+    fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
+
+    fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+
+    fn command(&mut self, request: CommandRequest, host: &mut Host<'_>) {
+        let CommandRequest::Run { id, .. } = request;
+        if id != OPEN {
+            return host.notify(format!("the table has no command {id}"));
+        }
+        if let Err(e) = self.pick(host) {
+            host.notify(format!("no types: {e}"));
+        }
+    }
+
+    fn items(&mut self, news: News, host: &mut Host<'_>) {
+        let sub = news.subscription();
+        let Some((&view, shown)) = (self.open.iter_mut()).find(|(_, s)| s.feed.sub == sub) else {
+            return;
+        };
+        match shown.feed.heard(host, news) {
+            Ok(()) => shown.send(view, host),
+            Err(e) => host.notify(format!("the table couldn't be read again: {e}")),
+        }
+    }
+
+    fn view(&mut self, news: ViewNews, host: &mut Host<'_>) {
+        match news {
+            ViewNews::Closed { view } if self.picker == Some(view) => self.picker = None,
+            ViewNews::Closed { view } => {
+                if let Some(shown) = self.open.remove(&view) {
+                    shown.feed.close(host);
+                }
+            }
+            ViewNews::Event(Happened {
+                view,
+                event: view::Event::Activated { row },
+            }) if self.picker == Some(view) => {
+                if let Err(e) = self.show(&row, host) {
+                    host.notify(format!("no table of {row}: {e}"));
+                }
+            }
+            ViewNews::Event(Happened { view, event }) => {
+                let Some(shown) = self.open.get_mut(&view) else {
+                    return;
+                };
+                match event {
+                    view::Event::Activated { row } => {
+                        if let Some(at) = shown.at.get(&row) {
+                            host.open_note(at.note.clone().into(), Some(at.line));
+                        }
+                    }
+                    view::Event::Edit { row, column, value } => {
+                        shown.edit(&row, &column, value, host)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Another workspace: its views and subscriptions went with the old one.
+    fn workspace(&mut self, _: Option<&Path>, _: &mut Host<'_>) {
+        self.picker = None;
+        self.open.clear();
     }
 }
 
@@ -288,6 +490,111 @@ mod tests {
             status.kind
         );
         assert!(Feed::open(&mut host, "nope").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The extension's whole path: the picker, a type's table in its place, an edit through
+    /// `items/edit` that comes back as an update selecting the row, Enter opening the note,
+    /// and closing it ending the subscription.
+    #[test]
+    fn the_table_is_an_extension_of_the_gateways() {
+        use crate::ext::{Effect, ExtId};
+        let dir = example("extension");
+        let mut core = Core::open(&dir).unwrap();
+        let mut r = Registry::new(vec![Box::new(Tables::default())]);
+        let ext = ExtId(0);
+        let run = CommandRequest::Run {
+            id: OPEN.into(),
+            args: Json::Null,
+        };
+        let effects = r.call(ext, Some(&mut core), |e, h| e.command(run, h));
+        let [
+            Effect::OpenView {
+                view: picker,
+                content: Content::Table(types),
+            },
+        ] = &effects[..]
+        else {
+            panic!("{effects:?}")
+        };
+        assert_eq!(types.title, "Table of…");
+        let eruption = (types.rows.iter()).find(|r| r.id == "eruption").unwrap();
+        assert_eq!(eruption.cells, [Json::from("eruption"), Json::from(4)]);
+        let happened = |view, event| ViewNews::Event(Happened { view, event });
+
+        let pick = happened(
+            *picker,
+            view::Event::Activated {
+                row: "eruption".into(),
+            },
+        );
+        let effects = r.call(ext, Some(&mut core), |e, h| e.view(pick, h));
+        let [
+            Effect::CloseView { view: closed },
+            Effect::OpenView {
+                view,
+                content: Content::Table(table),
+            },
+        ] = &effects[..]
+        else {
+            panic!("{effects:?}")
+        };
+        assert_eq!(closed, picker, "the table shows in the picker's place");
+        assert_eq!((table.title.as_str(), table.rows.len()), ("eruption", 4));
+        let row = table.rows[0].id.clone();
+
+        let set = happened(
+            *view,
+            view::Event::Edit {
+                row: row.clone(),
+                column: "example".into(),
+                value: "[[Eyjafjallajökull]] 2010, Iceland".into(),
+            },
+        );
+        let effects = r.call(ext, Some(&mut core), |e, h| e.view(set, h));
+        let said = Effect::Notify {
+            message: "Concepts/Volcanic Explosivity Index: example set to [[Eyjafjallajökull]] 2010, Iceland".into(),
+        };
+        assert_eq!(effects, [said]);
+        let mut updates = Vec::new();
+        for (by, news) in core.take_item_news() {
+            assert_eq!(by, TABLE, "the edit is the table's");
+            updates.extend(r.call(ext, Some(&mut core), |e, h| e.items(news, h)));
+        }
+        let [
+            Effect::UpdateView {
+                content: Content::Table(table),
+                select,
+                ..
+            },
+        ] = &updates[..]
+        else {
+            panic!("{updates:?}")
+        };
+        let edited = select.as_deref().expect("the edited row stays selected");
+        let cells = &table.rows.iter().find(|r| r.id == edited).unwrap().cells;
+        assert_eq!(cells[1], "[[Eyjafjallajökull]] 2010, Iceland");
+
+        let open = happened(*view, view::Event::Activated { row: edited.into() });
+        let effects = r.call(ext, Some(&mut core), |e, h| e.view(open, h));
+        let [
+            Effect::OpenNote {
+                note,
+                line: Some(_),
+            },
+        ] = &effects[..]
+        else {
+            panic!("{effects:?}")
+        };
+        assert_eq!(note, Path::new("Concepts/Volcanic Explosivity Index.md"));
+
+        let closed = ViewNews::Closed { view: *view };
+        r.call(ext, Some(&mut core), |e, h| e.view(closed, h));
+        let note = dir.join("Concepts/Volcanic Explosivity Index.md");
+        let text = std::fs::read_to_string(&note).unwrap();
+        std::fs::write(&note, text.replace("Krakatoa", "Krakatau")).unwrap();
+        core.note_changed_now(&note);
+        assert_eq!(core.take_item_news(), [], "it stopped following the type");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -129,6 +129,12 @@ change commands, keys and file formats; patch versions only fix things.
 - The agenda (`A`) is a built-in extension: it reads its tasks through `items/query` and
   `items/subscribe`, ticks through `items/edit` and shows its list through `view/open`, the path
   an extension in Python takes. It looks and works as before. `cold-lava ext list` names it.
+- The table (`i`) is a built-in extension too: it reads a type's items through `items/query`
+  and `items/subscribe`, edits cells through `items/edit set-field` and shows the type picker
+  and the table through `view/open`. The picker is now a table of the types and their item
+  counts over the main area: `/` filters it (typing no longer filters it straight away) and `s`
+  sorts it. The way back to a table now reads `⟵ table` rather than `⟵ volcano table`.
+  `cold-lava ext list` names it.
 - cold-lava calls a folder of notes a **workspace** now, not a vault: in the menu, the status
   line, `--help` (`cold-lava items WORKSPACE KIND`) and the docs. "Vault" is left for Obsidian's
   own. The commands `vault.add`, `vault.rescan` and `vault.tidy` are now `workspace.add`,
