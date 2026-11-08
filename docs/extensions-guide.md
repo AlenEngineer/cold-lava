@@ -3,13 +3,15 @@
 An extension is a program that cold-lava starts and talks to over its stdin and stdout. It can
 read the workspace's notes as data (tasks, list items, headings, typed items), follow them as they
 change, change one item at a time through cold-lava's safe edits, add commands to the menu,
-show messages in the status line, and show a list or a table that cold-lava draws. It never
+show messages in the status line, show a list or a table that cold-lava draws, and open a kind
+of file cold-lava doesn't read itself. It never
 draws and never sees your keystrokes: cold-lava owns the screen, and tells the extension what
 you did with its rows.
 
 This guide builds on the example in
 [`examples/extensions/open-tasks`](../examples/extensions/open-tasks): 140 lines of Python in
-`main.py`, and `cold_lava.py`, a helper with no third-party packages that you can copy. The protocol itself is in
+`main.py`, and `cold_lava.py`, a helper with no third-party packages that you can copy. Each
+example carries its own copy of the helper, so it can be installed alone. The protocol itself is in
 [extensions.md](extensions.md#transport-as-built).
 
 ## Install the example
@@ -60,7 +62,8 @@ keys = ["R"]                     # optional default keys; config.toml can change
 
 | Field | Meaning |
 | --- | --- |
-| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe` and `types/list`; `items.edit` for `items/edit`. A request without its permission is refused as `forbidden`. |
+| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe` and `types/list`; `items.edit` for `items/edit`; `files.read` and `files.write` to read and write files of kinds it doesn't own. A request without its permission is refused as `forbidden`. |
+| `[[file-types]]` | Kinds of file it opens: `extension`, `title`, and `new`, one of its commands that makes one ([Owning a kind of file](#owning-a-kind-of-file)). |
 | `transport` | How cold-lava talks to it. Only `stdio` exists, and it is the default. |
 | `api` | The protocol version it was written for. Only `1` exists, and it is the default. |
 | `[types.NAME]` | Types it defines, loaded as `<name>.NAME` ([extensions.md](extensions.md#types)). |
@@ -119,7 +122,7 @@ ext.run()
 ```
 
 A refusal comes back as a JSON-RPC error whose `data` is `{reason, message}`. `Refused.reason`
-is one of `changed`, `refused`, `read-back`, `io`, `forbidden` or `no-workspace`.
+is one of `changed`, `refused`, `read-back`, `io`, `forbidden`, `no-workspace` or `exists`.
 
 ## Views
 
@@ -187,6 +190,64 @@ def view_closed(params):                       # Esc or q
 
 The JSON of each view and event is in [extensions.md](extensions.md#the-view-gateway-as-built).
 
+## Owning a kind of file
+
+An extension can open a kind of file cold-lava doesn't read itself: a `.csv`, a `.kanban`, an
+`.excalidraw`. The example in
+[`examples/extensions/csv-table`](../examples/extensions/csv-table) opens `.csv` files as
+tables. Its manifest claims the kind:
+
+```toml
+name = "csv-table"
+version = "0.1.0"
+run = ["python3", "main.py"]
+permissions = []                 # an owner needs none for its own kind
+
+[[file-types]]
+extension = "csv"                # without the dot
+title = "CSV table"              # what the tree and the switcher call one
+new = "csv-table.new"            # the command that makes one
+
+[[commands]]
+id = "csv-table.new"
+title = "new CSV table"
+```
+
+Install it beside `open-tasks` and `.csv` files show in the note tree and the quick switcher.
+Enter on one, or on a link to one (`[[Eruptions.csv]]`), sends the extension `file/open` with
+the file's path, relative to the workspace. What it shows is up to it, as a list or a table:
+
+```python
+@ext.on("file/open")
+def file_open(params):
+    path = params["path"]
+    read = ext.read(path)                       # workspace/read: {"text", "rev"}
+    tables[path] = {"rev": read["rev"], "rows": parse(read["text"])}
+    tables[path]["view"] = ext.open_view(content(path, tables[path]["rows"]))
+```
+
+- **Saving.** `ext.write(path, text, expect=rev)` (`workspace/write`) replaces the file only if
+  it is still the version you read, and answers the new `rev`. If Obsidian, git or anything else
+  changed it meanwhile, it is refused as `changed`: read it again, make your change to what is
+  there now, and write again. The example does that for an edited cell.
+- **Changes made elsewhere.** `file/changed` comes with the `path` and its `rev` now (`None`
+  when it was deleted), from cold-lava's file watcher. Your own writes come back too, with the
+  `rev` your write answered, so compare it with yours and ignore those.
+- **Making one.** `ext.create(text, name="Untitled", extension="csv")` (`workspace/create`) puts
+  a new file where Obsidian puts new notes, as `Untitled 1.csv` when `Untitled.csv` is taken, and
+  answers its `path` and `rev`. `ext.create(text, path="Data/New.csv")` makes it exactly there,
+  refused as `exists` when something is. Nothing is ever overwritten.
+- **Listing.** `ext.files("csv")` (`workspace/files`) lists every file of a kind, for a picker.
+- **Bringing a table to the front.** Only `view/open` shows a view, so when `file/open` names a
+  file you already show, close its view and open it again.
+- **One owner per kind.** The first extension to claim a kind gets it; a second one is left out
+  of that kind, with a line on the status line and in `cold-lava keys`. `.md` and `.canvas`
+  can't be claimed. `cold-lava ext list` prints who opens what.
+- **Permissions.** An owner reads, writes, creates and lists its own kind without asking.
+  Reading any other file, a note included, needs `files.read`; writing or creating one needs
+  `files.write`. Paths are relative to the workspace and can't leave it: `..`, absolute paths,
+  hidden folders (`.obsidian`) and symlinks that lead outside are refused.
+
 ## When something goes wrong
 
 - **Logs.** What the program writes to stderr goes to
@@ -199,7 +260,7 @@ The JSON of each view and event is in [extensions.md](extensions.md#the-view-gat
   10 seconds is stopped. A command it doesn't answer in 10 seconds is reported, and the extension
   keeps running.
 - **Testing.** `cold-lava drive` runs the real program in a hidden terminal and checks the
-  screen. `crates/cold-lava/tests/drive/open-tasks.drive` installs this example in an empty
+  screen; its `write FILE TEXT` step changes a file the way another program would. `crates/cold-lava/tests/drive/open-tasks.drive` installs this example in an empty
   home, runs its command from the palette and waits for its status line;
   `open-tasks-list.drive` opens its list, ticks a task with `x`, opens a note with Enter, comes
   back with `Ctrl-o` and closes the list.

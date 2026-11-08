@@ -1,0 +1,16 @@
+name = "csv-table"
+title = "CSV tables"
+version = "0.1.0"
+description = "Opens .csv files as tables, saves edited cells, follows changes made elsewhere, and makes new ones"
+run = ["python3", "main.py"]
+# Owners read and write files of their own kinds without asking, and it needs nothing else.
+permissions = []
+
+[[file-types]]
+extension = "csv"
+title = "CSV table"
+new = "csv-table.new"
+
+[[commands]]
+id = "csv-table.new"
+title = "new CSV table"

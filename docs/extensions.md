@@ -171,7 +171,8 @@ then a query and a view, not a parser of its own.
   them: `changed` (the item is gone or not the version `rev` names, or the file changed while
   writing), `refused` (an unknown kind or field, a read-only source, a value that doesn't fit,
   a toggle on no task), `read-back` (the note wouldn't read back as asked; nothing was
-  written), `io`, `forbidden` (the manifest doesn't ask for the permission) and `no-workspace`.
+  written), `io`, `forbidden` (the manifest doesn't ask for the permission), `no-workspace` and
+  `exists` (`workspace/create` at a path where a file is).
 - **Edits are made during the call, not queued.** An extension's reads and edits both need an
   answer (the new `rev`, or why it was refused), and a later edit in the same call must see the
   first one, so the core edits and reads the note again before `edit_item` returns. The
@@ -198,7 +199,9 @@ then a query and a view, not a parser of its own.
 - **Over the wire.** An extension in its own process sends these as JSON-RPC requests, and
   `rpc::serve` reads each as a `gateway::Request` and answers it through the same `Host`, so
   the permission gate is the same; news goes out as notifications ("Transport, as built").
-- **Not yet:** `workspace/*` and `files/*`, and the ops `set-status`, `set-date`, `set-property`,
+- **Files.** `workspace/read`, `workspace/write`, `workspace/create` and `workspace/files`
+  read and write whole files ("File types, as built" below).
+- **Not yet:** the ops `set-status`, `set-date`, `set-property`,
   `set-cell`, `replace` and `insert-after`. `set-field` already sets a status, a date, a
   property or a cell of a typed item; the others wait until an extension needs one.
 
@@ -750,7 +753,9 @@ style.minutes = { badge = true, icon = "⏱" }
 
 ## File types
 
-*(design)*
+*(design; owners in manifests, `file/open`, `file/changed` and the file messages exist: "File
+types, as built" below. Items and links contributed by owners, previews and the whiteboard as
+an owner are design.)*
 
 Markdown is the engine's own format. Any other kind of file (`.canvas`, `.kanban`,
 `.excalidraw`, `.csv`) can have an **owner**: an extension that says so in its manifest.
@@ -782,6 +787,72 @@ new = "kanban.new"         # the command that makes one
 - **The whiteboard is the first owner:** `.canvas`, drawn as a scene, merged three ways on save,
   contributing its cards and their links. Images get a view kind of their own (`image`, drawn
   with Kitty pixels where the terminal has them), since every frontend can show a picture.
+
+### File types, as built
+
+- **Claiming a kind.** A manifest's `[[file-types]]` (`ext::FileType`: `extension`, `title`,
+  optional `new`) names the kinds of file the extension opens. `extension` is read lowercase
+  without its dot, and must be letters, digits, `-` and `_` (`tar.gz` is refused); `new` must
+  be one of its own `[[commands]]`, which joins the palette and keys like any other. A mistake
+  leaves the extension out, as other manifest mistakes do. Built-in extensions declare kinds
+  in the `Manifest` they return, so both kinds of extension take one path.
+- **One owner per kind.** `Registry` gives each kind to the first extension that claims it, in
+  load order (built-in ones first, then the user's by folder name). A second claim, and any
+  claim on `md` (notes are the engine's) or `canvas` (the whiteboard is the core's until it
+  becomes an owner), is left out and reported like a command conflict: on the status line at
+  start and in `cold-lava keys`. `cold-lava ext list` prints each claim as `opens: .csv  CSV
+  table, new: csv-table.new`, with `(left out: … opens them)` on the one that lost.
+- **Where owned files show.** In the note tree (`▤`, by their whole file name; the right pane
+  says `CSV table · ⏎ to open it in csv-table`), in the quick switcher after the notes (with
+  their folder and kind), as links (`[[Eruptions.csv]]` resolves to the file the way an
+  attachment link does), and as bookmarks. Enter on any of these, or following the link, sends
+  the owner `file/open {path}`. The owner shows the file in a view; the view's `view/open`
+  puts where you were in Back's history, so `Ctrl-o` returns to the note the link was in. A
+  kind nobody owns behaves as before: not in the tree, and a link to it creates a note. Owned
+  files are not yet links in the index, so the graph shows a link to one as unresolved and
+  backlinks don't list it; tidy no longer calls it unresolved, since the file exists.
+- **File messages** (`crates/engine/src/files.rs`, answered by the core: `Core::read_file`,
+  `write_file`, `create_file`, `files`). Paths are workspace-relative, `/`-separated:
+
+  | Request | Answer |
+  | --- | --- |
+  | `workspace/read {path}` | `{text, rev}`; a file that isn't UTF-8 is `refused` |
+  | `workspace/write {path, text, expect}` | `{rev}`, the new version; `changed` unless the file is still the version `expect`, or when it is gone |
+  | `workspace/create {path, text}` or `{name, extension, text}` | `{path, rev}`; at `path`, refused as `exists` when something is there, or as `name.extension` where Obsidian puts a new file (`newFileLocation` in `.obsidian/app.json`, as for a new note), `name 1.extension` and so on when taken |
+  | `workspace/files {extension}` | `{files}`, every file with that extension (any case, with or without the dot) outside hidden folders, sorted |
+
+  A `rev` is 16 hex digits of the FNV-1a hash of the file's bytes. A write checks it, then
+  writes through `write::replace`, which checks the bytes again just before the atomic rename,
+  so an edit made in Obsidian meanwhile is never overwritten. A create goes through
+  `write::create`. A note written or created this way is read again at once, like an item
+  edit, so the next query sees it. A path is refused unless it is relative, has no `..`, `.` or
+  hidden part (`.obsidian`, `.trash`, `.git`), and leads inside the workspace once symlinks are
+  followed (for a new file, its deepest folder that exists).
+- **`file/changed {path, rev}`** (host → extension, a notification) comes from the core's one
+  watcher: every file that isn't a note, outside hidden folders, is now reported as
+  `Event::FileChanged` once things settle, and the menu tells the owner of its kind, with its
+  `rev` as it is now (`null` when it is gone). Its own writes come back too, with the `rev` its
+  write answered, so an owner compares and ignores those. A file created or removed outside
+  also updates the tree.
+- **Permissions.** An owner may read, write, create and list files of its own kinds with no
+  permission at all: opening them is what it is for. Anything else needs `files.read`
+  (`workspace/read`, `workspace/files`) or `files.write` (`workspace/write`,
+  `workspace/create`), which together cover notes too, as text. The check is `Host::files_core`,
+  beside the items' permissions, so it holds for built-in extensions and over the wire alike. The
+  menu's screens (`reader`, `table`) get neither. Refusals are `forbidden`, naming the
+  permission.
+- **The example** is `examples/extensions/csv-table` (Python, no dependencies): `file/open` reads
+  the file and sends a table view (a text column per header cell, a row per line); `view/event
+  edit` sets the cell and sends `workspace/write` with the `rev` it showed, and on `changed`
+  reads the file again and sets the cell in what is there now (up to three times);
+  `file/changed` with another `rev` sends the table again; `csv-table.new` creates
+  `Untitled.csv` and opens it. A table it already shows is closed and opened again on
+  `file/open`, since only `view/open` brings a view to the front. `csv-table.drive` checks it
+  through the menu (open from the tree, an edit saved, a change made outside with the drive
+  step `write`, a link, the switcher, a new table), and `ext/process.rs` checks the retry.
+- **Not yet:** owners contributing items and links ("Joining the workspace"), previews, the
+  whiteboard as an owner, a view kind for images, and a way for the host to bring an open
+  view to the front.
 
 ## Commands
 
@@ -889,7 +960,7 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
 
 - The host calls the extension: `initialize` (capabilities, the API version and the
   `commands` it registers), `command/run` (`id`, `args`: one of its commands),
-  `view/render`, `shutdown`.
+  `view/render`, `shutdown`, and `file/open` and `file/changed` for a kind of file it owns.
   - The editor gets `editor/open` (a note, and a `jump` to a line, heading or block),
     `editor/save`, `editor/renamed` (`from`, `to`) and `editor/deleted` (`note`: it went to
     the trash; forget it without writing it back).
@@ -915,16 +986,18 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
   `view/event` and `view/closed` for an extension's views, `event/noteChanged` and friends.
 
 The method set is versioned (`apiVersion` in `initialize`), so old extensions keep working.
-Paths are absolute and inside the workspace. A message's tag is its method name, for example
+Paths in the `editor/*` messages are absolute and inside the workspace; items, `workspace/open`
+and the file messages name them relative to the workspace. A message's tag is its method name, for example
 `{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
 
 Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
 (with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
-`editor/deleted`, `pane/message`, `pane/exited`, `items/changed`, `items/reset`, `view/event`
-and `view/closed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
+`editor/deleted`, `pane/message`, `pane/exited`, `items/changed`, `items/reset`, `view/event`,
+`view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
 `workspace/saved`, `workspace/open`, `pane/open`, `pane/input`, `items/query`,
-`items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `view/open`, `view/update`
-and `view/close` from the extension. The `items/*` and `types/list` requests are answered
+`items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/read`,
+`workspace/write`, `workspace/create`, `workspace/files`, `view/open`, `view/update` and
+`view/close` from the extension. The `items/*`, `types/list` and file requests are answered
 during the call, and `view/open` names its view at once; the rest are queued.
 
 ### Over the wire, as built
@@ -935,13 +1008,13 @@ during the call, and `view/open` names its view at once; the rest are queued.
   it. `command/run` (`id`, `args`) is a request, so a refusal (the error's message) and a
   missing answer show on the status line. `shutdown` is a request, then `exit` a notification,
   as LSP does. `items/changed`, `items/reset`, `view/event`, `view/closed`, `pane/message`,
-  `pane/exited` and the `editor/*` messages are notifications, the same `{"method", "params"}` the in-process types pin.
+  `pane/exited`, `file/open`, `file/changed` and the `editor/*` messages are notifications, the same `{"method", "params"}` the in-process types pin.
   Commands come from the manifest, not from `initialize`, so the menu's command table and
   `config.toml`'s keys are checked before any extension starts.
 - **Extension → host.** Requests, answered with a result or an error: the workspace gateway's
   (`items/query` with `{items, next}`, `items/subscribe` with `{subscription}`,
-  `items/unsubscribe` and `types/list`, and `items/edit` with `{item, changed, next,
-  warning}`), and `ui/notify` (`message`), `ui/status` (`text`, `null` to clear: the
+  `items/unsubscribe` and `types/list`, `items/edit` with `{item, changed, next,
+  warning}`, and the file messages of "File types, as built"), and `ui/notify` (`message`), `ui/status` (`text`, `null` to clear: the
   extension's own part of the first status line, kept until it sends another), `command/run`
   (`id`, `args`), `workspace/saved` and `editor/opened` (`note`), `pane/open` (`program`,
   `args`, answered with `{pane}`) and `pane/input` (`pane`, `text`), each answered `null` once
@@ -984,6 +1057,11 @@ transport = "stdio"              # the default
 run = ["python3", "main.py"]     # run in the extension's folder
 permissions = ["items.read"]    # the default; add "items.edit" to change items
 
+[[file-types]]                   # it opens *.wc files
+extension = "wc"
+title = "Word counts"
+new = "word-count.new"           # one of its [[commands]]
+
 [types.doc]                      # loaded as word-count.doc
 on = "note"
 fields.words = { property = "words", type = "number" }
@@ -1003,7 +1081,8 @@ keys = ["W"]                     # default keys; config.toml can change them
 - **Mistakes** are collected like config.toml's: an unknown field, a bad name, a name
   cold-lava keeps (`nvim`, `table`, `agenda`, `reader`), a folder named otherwise, a second
   extension of the same name, an `api` other than 1, a transport cold-lava doesn't have, an empty
-  `run` or a permission it doesn't know leave that extension out with one line each. The menu
+  `run`, a permission it doesn't know, or a file type with a bad extension or a `new` that isn't
+  one of its commands leave that extension out with one line each. The menu
   says so at start, and `cold-lava ext list [WORKSPACE]` prints every extension (where it runs
   from, its permissions, commands, types and log) and then the mistakes, exiting 1 when there
   are any.
@@ -1023,13 +1102,14 @@ field, an extension may read. *(Exists: `ext::Permission`, checked by `Host`.)*
 | --- | --- |
 | `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` |
 | `items.edit` | `items/edit` |
+| `files.read` | `workspace/read` and `workspace/files` for kinds of file it doesn't own |
+| `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own |
 
 A request without its permission is refused as `forbidden`, with the permission it needs in
-the message. `files.read`, `files.write` and `files.create` are reserved for `workspace/read`,
-`workspace/write` and `workspace/create`; until those exist, a manifest that names one doesn't
-load.
-An extension changes notes only through the gateway: `items/edit` now, `workspace/write`
-later, never by writing files itself. The built-in Neovim declares `permissions = []`: it edits
+the message. An owner needs no permission for files of its own kinds ("File types, as built").
+Creating is a write, so there is no `files.create`, and a manifest that names it doesn't load.
+An extension changes notes only through the gateway (`items/edit`, or `workspace/write` with
+`files.write`), never by writing files itself. The built-in Neovim declares `permissions = []`: it edits
 notes as text in its pane, which the core watches like any other editor. The menu's own
 screens (the table, the reader's `x`) read and edit as `table` and `reader`; the built-in
 agenda asks for `items.read` and `items.edit` like any extension.
@@ -1202,7 +1282,10 @@ after its call returns, so it never holds the menu's state.
       cancelled lines and priorities, the example workspace's elevation and VEI)*; the table view
       *(done: `table.rs`, `type_table.rs`, `i`, `cold-lava table`)*. Types are done.
    6. File types: owners in manifests, `file/open`, `workspace/files`, `workspace/create`, items and
-      links contributed by owners; the whiteboard as the first owner.
+      links contributed by owners; the whiteboard as the first owner. *(in progress: owners in
+      manifests, `file/open`, `file/changed`, `workspace/read`, `workspace/write`,
+      `workspace/create` and `workspace/files`, with the `csv-table` example, are done ("File
+      types, as built"); next are items and links contributed by owners, then the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.

@@ -863,6 +863,49 @@ fn the_python_example_extension_lists_tasks_in_a_view_of_its_own() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Needs python3, which CI's runners have.
+#[test]
+fn the_python_example_extension_opens_edits_and_makes_csv_files() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-table");
+    let home = dir.join("home");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions/csv-table"),
+        &home.join(".config/cold-lava/extensions/csv-table"),
+    );
+    let out = drive_with(
+        "csv-table.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let workspace = dir.join("example-workspace");
+    let eruptions = std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv"));
+    assert_eq!(
+        eruptions.unwrap(),
+        "volcano,year,vei\nVesuvius,79,5\nKrakatoa,1884,6\nMount St. Helens,1980,5\n\
+         Eyjafjallajökull,2010,4\nTambora,1815,7\n",
+        "both edits saved, on top of the change made outside"
+    );
+    let made = std::fs::read_to_string(workspace.join("Untitled.csv"));
+    assert_eq!(made.unwrap(), "name,notes\n,\n");
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn ext_list_prints_what_each_extension_may_do() {
     let dir = sandbox("ext-list");

@@ -13,6 +13,8 @@ Things to try, in order:
 2. [[Colour Groups]]: press `g` to colour notes by folder, by tag, or with Obsidian's own groups.
 3. [[Whiteboard]]: press `w` and open *Welcome* or *Eruptions Timeline*.
 4. [[Agenda and Tasks]]: dated tasks and daily notes, for scripts and status bars.
+5. [[Eruptions.csv]]: a table in a CSV file, which opens in an extension that owns `.csv`
+   files (`examples/extensions/csv-table`).
 
 Good places to start exploring: [[Ring of Fire]], [[Plate Tectonics]] and [[Kīlauea]].
 
