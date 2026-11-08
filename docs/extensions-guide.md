@@ -2,12 +2,13 @@
 
 An extension is a program that cold-lava starts and talks to over its stdin and stdout. It can
 read the workspace's notes as data (tasks, list items, headings, typed items), follow them as they
-change, change one item at a time through cold-lava's safe edits, add commands to the menu, and
-show messages in the status line. It never draws and never sees your keystrokes: cold-lava owns
-the screen.
+change, change one item at a time through cold-lava's safe edits, add commands to the menu,
+show messages in the status line, and show a list or a table that cold-lava draws. It never
+draws and never sees your keystrokes: cold-lava owns the screen, and tells the extension what
+you did with its rows.
 
 This guide builds on the example in
-[`examples/extensions/open-tasks`](../examples/extensions/open-tasks): 80 lines of Python in
+[`examples/extensions/open-tasks`](../examples/extensions/open-tasks): 140 lines of Python in
 `main.py`, and `cold_lava.py`, a helper with no third-party packages that you can copy. The protocol itself is in
 [extensions.md](extensions.md#transport-as-built).
 
@@ -24,7 +25,8 @@ cold-lava ext list
 
 `cold-lava ext list` prints every extension, where it runs from, what it may do, and why any
 didn't load. Open a workspace in the main menu. The status line shows `☐ 3 open tasks`, and the
-command palette (`:`) has *move every overdue open task to today*.
+command palette (`:`) has *move every overdue open task to today* and *list the open tasks by
+note*.
 
 ## Security
 
@@ -46,7 +48,7 @@ config folder if you want it. Loading them after a one-time trust prompt is futu
 name = "open-tasks"              # lowercase letters, digits and dashes; also the folder's name
 title = "Open tasks"             # optional, for people
 version = "0.1.0"
-description = "Counts the workspace's open tasks in the status line, and moves overdue ones to today"
+description = "Counts the workspace's open tasks in the status line, moves overdue ones to today, and lists them by note"
 run = ["python3", "main.py"]     # the program and its arguments, run in this folder
 permissions = ["items.read", "items.edit"]
 
@@ -119,6 +121,72 @@ ext.run()
 A refusal comes back as a JSON-RPC error whose `data` is `{reason, message}`. `Refused.reason`
 is one of `changed`, `refused`, `read-back`, `io`, `forbidden` or `no-workspace`.
 
+## Views
+
+An extension shows something bigger than a status line by sending a **view**: a list (groups of
+rows, each with text, an optional checkbox and a right side) or a table (typed columns, rows of
+cells), as JSON. cold-lava draws it over the main area and owns everything you do in it: moving,
+folding, filtering, sorting. The extension hears what you did to which row, by the row's id.
+The example's *list the open tasks by note* (`open-tasks.list`) is one:
+
+```python
+view, listed = None, {}
+
+def task_list():
+    groups = {}
+    for task in ext.query("task", {"status": ["todo", "in_progress"]}):
+        listed[task["id"]] = task
+        row = {"id": task["id"], "text": [{"text": task["text"]}], "check": "unchecked"}
+        groups.setdefault(task["note"], []).append(row)
+    return {
+        "kind": "list",
+        "title": "Open tasks",
+        "groups": [{"id": n, "title": n, "rows": rows} for n, rows in groups.items()],
+        "keys": [{"key": "t", "command": "today", "title": "due today"}],
+    }
+
+@ext.command("open-tasks.list")
+def show_list(args):
+    global view
+    view = ext.open_view(task_list())          # view/open, answered with its id
+
+@ext.on("items/changed")
+def changed(params):
+    if view is not None:
+        ext.update_view(view, task_list())     # view/update: cold-lava keeps the selection
+
+@ext.on("view/event")
+def view_event(params):
+    task = listed[params["row"]]
+    if params["event"] == "activated":         # Enter
+        ext.open_note(task["note"], task["line"])
+    elif params["event"] == "toggled":         # x on a row with a checkbox
+        ext.edit(task, "toggle")
+    elif params["event"] == "command":         # one of the list's keys: t
+        ext.edit(task, "set-field", field="due", value="2026-11-07")
+
+@ext.on("view/closed")
+def view_closed(params):                       # Esc or q
+    global view
+    view = None
+```
+
+- **Events.** `view/event` says `activated` (Enter), `toggled` (`x` on a row with a checkbox),
+  `command` with the `command` of a key the list declares, or, in a table, `edit` with the
+  `column` and the `value` typed. The view's own keys come first, so a key you declare that it
+  uses (`x`, `j`, `/`, …) never reaches you. `view/closed` comes when Esc or `q` closed it.
+- **Updates.** Send the whole list again. cold-lava keeps the selection, the folds, the sort
+  and the filter by id, and draws only the last update of each frame, so sending one on every
+  `items/changed` is fine. `update_view(view, content, select=id)` also selects a row.
+- **Going to a note.** `open_note(note, line)` (`workspace/open`) opens a note at a line. Back
+  (`Ctrl-o`) returns to your view as it was, as long as it is open.
+- **Limits.** A view has at most 50,000 rows and groups, 64 columns and 32 keys; a bigger one is
+  refused. An extension has at most 8 views open; a ninth closes its oldest.
+- **No permission** is needed to show a view. Reading the tasks still needs `items.read`, and
+  ticking them `items.edit`.
+
+The JSON of each view and event is in [extensions.md](extensions.md#the-view-gateway-as-built).
+
 ## When something goes wrong
 
 - **Logs.** What the program writes to stderr goes to
@@ -132,4 +200,6 @@ is one of `changed`, `refused`, `read-back`, `io`, `forbidden` or `no-workspace`
   keeps running.
 - **Testing.** `cold-lava drive` runs the real program in a hidden terminal and checks the
   screen. `crates/cold-lava/tests/drive/open-tasks.drive` installs this example in an empty
-  home, runs its command from the palette and waits for its status line.
+  home, runs its command from the palette and waits for its status line;
+  `open-tasks-list.drive` opens its list, ticks a task with `x`, opens a note with Enter, comes
+  back with `Ctrl-o` and closes the list.

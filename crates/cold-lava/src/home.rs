@@ -981,9 +981,10 @@ impl Home {
             return;
         };
         let path = root.join(note);
-        let inside = path
-            .canonicalize()
-            .is_ok_and(|p| p.starts_with(&root) && p.is_file());
+        let inside = match (path.canonicalize(), root.canonicalize()) {
+            (Ok(p), Ok(r)) => p.starts_with(r) && p.is_file(),
+            _ => false,
+        };
         if !inside {
             let name = &self.registry.manifest(ext).name;
             let note = note.display();

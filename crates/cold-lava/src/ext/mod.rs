@@ -87,8 +87,9 @@ pub(crate) fn read_only() -> Vec<Permission> {
 /// The menu's screens built the way their extensions will be: they reach notes as data only
 /// through `Host`, under these names (`Registry::screen`), which edits are attributed to.
 pub const TABLE: &str = "table";
-pub const AGENDA: &str = "agenda";
 pub const READER: &str = "reader";
+/// The built-in agenda extension's name (`crate::agenda`).
+pub const AGENDA: &str = "agenda";
 const SCREEN_PERMISSIONS: &[Permission] = &[Permission::ItemsRead, Permission::ItemsEdit];
 
 /// A command an extension registers. Its id is `<extension name>.<something>`.
@@ -529,7 +530,7 @@ impl Registry {
         host.effects
     }
 
-    /// The workspace gateway for one of the menu's screens (`TABLE`, `AGENDA`, `READER`), which
+    /// The workspace gateway for one of the menu's screens (`TABLE`, `READER`), which
     /// may read and edit items. Screens ask for no effects.
     pub fn screen<'a>(&'a mut self, name: &'static str, core: &'a mut Core) -> Host<'a> {
         Host {

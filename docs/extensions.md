@@ -181,13 +181,20 @@ then a query and a view, not a parser of its own.
 - **Attribution.** Every edit through the gateway makes the core emit `ItemEdited {note, item,
   by, what}` after the note's `NoteChanged`, with `by` the extension's name and `what` "set
   due", "removed due" or "ticked". The status line says `<extension>: set due on <note>`. A
-  screen of the menu says more right after, so its own message wins.
-- **The menu's screens are clients too.** The table, the agenda's ticks and the reader's `x`
-  go through `Registry::screen`, a `Host` named `table`, `agenda` or `reader` that may read and
-  edit, so they use exactly the path an extension does. The agenda still reads its tasks from
-  the core's cache: `tasks::Task::of` needs the workspace's Tasks settings to give a status
-  symbol its type, and a task's line for a subtype that reads no `status`, neither of which an
-  item carries. That waits for the agenda's move to an extension.
+  screen of the menu says more right after, and so does an extension: after a call in which it
+  edited, the menu reads the edits back (`Core::has_unseen`, then `poll`) before it applies what
+  the extension asked, so the extension's own message comes last. Calls made while reading back
+  (the news it hands out) leave their edits for the next frame, so an extension that edits on
+  every change can't loop within one.
+- **A task says its status.** An item that answers to `task` always has a `status` and a
+  `status_type` in answers, news and the answer to an edit, even when its type reads neither (a
+  subtype that names its checkbox otherwise, or reads none): the status from its line, its type
+  from the workspace's Tasks settings, as `tasks::Task` reads them (`gateway::answer`). The
+  `status` filter sees them too, so such a subtype is an open task. A client never needs the
+  settings or the note's lines.
+- **The menu's screens are clients too.** The table and the reader's `x` go through
+  `Registry::screen`, a `Host` named `table` or `reader` that may read and edit, so they use
+  exactly the path an extension does. The agenda is an extension (below).
 - **Over the wire.** An extension in its own process sends these as JSON-RPC requests, and
   `rpc::serve` reads each as a `gateway::Request` and answers it through the same `Host`, so
   the permission gate is the same; news goes out as notifications ("Transport, as built").
@@ -661,9 +668,11 @@ style.minutes = { badge = true, icon = "⏱" }
   says where it is read from. It reads through the workspace gateway, as the screen `table`
   (`Registry::screen`): the type's definition from `types/list`, its items from `items/query`
   a page of 500 at a time, kept by an `items/subscribe` (`type_table::Feed`). The picker's
-  counts are queries too, made when it opens. The menu runs it in process (`i`, `table.open`),
-  not through the `Extension` trait, since `view/open` doesn't exist yet. `cold-lava table`
-  calls `gateway::query` directly.
+  counts are queries too, made when it opens. The menu still runs it as a screen of its own
+  (`i`, `table.open`), not as an extension over `view/open` as the agenda now is: the picker is
+  a popup of the menu's, and Back keeps the table's sort and filter in `Place::Table`. Moving it
+  means sending the picker as a list, the table with `view/open`, and edits as `view/event
+  edit`. `cold-lava table` calls `gateway::query` directly.
 - **Editing** is `items/edit set-field` with the row's `rev`, the value as typed (so `1h30m`,
   an enum's written form or `""` to remove all work). The status line says what happened: set,
   removed, already that value, or the refusal (`refused` and `read-back` with their reason,
@@ -677,8 +686,7 @@ style.minutes = { badge = true, icon = "⏱" }
   the table as it was (`Place::Table`: its type, row, column, sort and filter).
 - **CLI.** `cold-lava table WORKSPACE TYPE` prints the rows as the view lays them out, every value
   whole; `--sort FIELD` (or `-FIELD`) sorts as `s` (`S`) does, `--json` prints the `Table`.
-- **Not yet:** editing several values at once, a column picker, and the extension and its
-  `view/open`.
+- **Not yet:** editing several values at once, a column picker, and running it as an extension.
 
 ### The list view and the agenda, as built
 
@@ -701,9 +709,11 @@ style.minutes = { badge = true, icon = "⏱" }
   does (a chip only as wide as its text, an icon before it), the text cut with `…` to leave room
   for the right side, a whole-row look (a done task) under the pieces'. The view's own keys win
   over the sender's.
-- **The agenda** is `agenda.rs`, what the built-in agenda extension will send: every item that
-  answers to `task` (subtypes too) from the core's cached items, filed by the date `cold-lava
-  agenda` files it under (`Task::agenda_date`: due, else scheduled, else start, else its daily
+- **The agenda** is `agenda.rs`, a built-in extension (`Extension` in process, named `agenda`,
+  reading and editing items) on the path one in a process takes: it follows every item that
+  answers to `task` (subtypes too) with `items/query` and `items/subscribe`
+  (`type_table::Feed`), reads each one's `status_type` and dates from the item, and sends the
+  list with `view/open`. Tasks are filed by the date `cold-lava agenda` files them under (`Task::agenda_date`: due, else scheduled, else start, else its daily
   note's). Groups, in order: Overdue (before today), Today, each of the next seven days that has
   tasks, Later, and Undated last, folded. A task with a non-task status is left out. Open tasks
   (todo, in progress) always show; a task done or cancelled today shows too, where it was, so a
@@ -714,22 +724,24 @@ style.minutes = { badge = true, icon = "⏱" }
   look of its status (done and cancelled fade and strike through), and on the right the date
   (in Overdue, red while open, and in Later) and the note's name. Today is `tasks::today()`,
   which `COLD_LAVA_TODAY` pins for scripted runs.
-- **Ticking** is `items/edit toggle` with the row's id and `rev`, as the screen `agenda`; `x`
-  in the reader is the same as the screen `reader`. Both reach `tasks::toggle`, as `task
+- **Ticking** is `view/event toggled` to the agenda, which sends `items/edit toggle` with the
+  row's id and `rev`; `x` in the reader is the same edit as the screen `reader`. Both reach `tasks::toggle`, as `task
   toggle --id` does: done dates, recurrence, custom statuses' next symbols, the cancelled
   date. A task changed since the agenda was read is refused with the reason on the status line.
-  After a tick the menu has the core read the note at once, the agenda is built again, and the
-  ticked row stays selected under its new line (a recurring task's next occurrence goes above
-  it).
-- **Live and back.** The agenda is built again on every change the core reports, keeping the
-  selection, the folds and the filter. Enter opens the note at the task's line, where `x` ticks
-  that same task; Back (`Ctrl-o`) returns to the agenda as it was (`Place::Agenda`: its spot and
-  whether done tasks show). The menu runs it in process (`A`, `agenda.open`), not through the
-  `Extension` trait, for the same reason as the table.
+  After the call the menu reads the edit back, the agenda hears it through its subscription and
+  sends the list again with `select` naming the ticked task as it reads now, so it stays
+  selected under its new line (a recurring task's next occurrence goes above it).
+- **Live and back.** The agenda sends the list again on every `items/changed` its subscription
+  hears, and the view keeps the selection, the folds and the filter. Enter is `view/event
+  activated`, and the agenda asks for `workspace/open` at the task's line, where `x` ticks that
+  same task; Back (`Ctrl-o`) returns to the agenda's view as it was, since a view is a place
+  while it is open. `d` is `view/event command show-done`, and the agenda sends the list again
+  with or without the closed tasks. `A` (`agenda.open`) stays a core command, with its place in
+  the help and which-key, and the menu hands it to the agenda as `command/run`. The drive script
+  (`agenda.drive`) is the one the screen had, unchanged.
 - **Not yet:** nesting subtasks under their parent (`depth` is there; the agenda sends every
-  task at depth 0), a range other than the next seven days, and reading the tasks through
-  `items/query` and `items/subscribe` (it reads the core's cache, for the reason "The workspace
-  gateway, as built" gives), then `view/open`.
+  task at depth 0), and a range other than the next seven days. The agenda's list follows the
+  day only when a task changes: left open past midnight, it files by yesterday until then.
 
 ## File types
 
@@ -882,7 +894,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
 - The extension calls the host: `workspace/notes`, `workspace/read`, `workspace/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
   `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit` and `types/list` (see
-  "The workspace gateway, as built"), `ui/notify`, `ui/openNote`, `events/subscribe`, and:
+  "The workspace gateway, as built"), `view/open`, `view/update`, `view/close` and
+  `workspace/open` (see "The view gateway, as built"), `ui/notify`, `events/subscribe`, and:
   - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
     core command or another extension's. Core commands ignore `args`, except
     `note.follow-link` (`from`, `link`), which only extensions can run, and `search.open`
@@ -894,7 +907,7 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
   - `pane/open` (a `pane` id the extension picks, and the program with its arguments),
     `pane/input` (text to type into the pane) and `pane/close`.
 - The host notifies subscribers: `items/changed` and `items/reset` for item subscriptions,
-  `event/noteChanged` and friends.
+  `view/event` and `view/closed` for an extension's views, `event/noteChanged` and friends.
 
 The method set is versioned (`apiVersion` in `initialize`), so old extensions keep working.
 Paths are absolute and inside the workspace. A message's tag is its method name, for example
@@ -902,11 +915,12 @@ Paths are absolute and inside the workspace. A message's tag is its method name,
 
 Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
 (with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
-`editor/deleted`, `pane/message`, `pane/exited`, `items/changed` and `items/reset` from the
-host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`, `workspace/saved`,
-`pane/open`, `pane/input`, `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit`
-and `types/list` from the extension. The `items/*` and `types/list` requests are answered during
-the call; the rest are queued.
+`editor/deleted`, `pane/message`, `pane/exited`, `items/changed`, `items/reset`, `view/event`
+and `view/closed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
+`workspace/saved`, `workspace/open`, `pane/open`, `pane/input`, `items/query`,
+`items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `view/open`, `view/update`
+and `view/close` from the extension. The `items/*` and `types/list` requests are answered
+during the call, and `view/open` names its view at once; the rest are queued.
 
 ### Over the wire, as built
 
@@ -915,8 +929,8 @@ the call; the rest are queued.
   `capabilities.methods`, the methods it may call; its answer is not read, but an error stops
   it. `command/run` (`id`, `args`) is a request, so a refusal (the error's message) and a
   missing answer show on the status line. `shutdown` is a request, then `exit` a notification,
-  as LSP does. `items/changed`, `items/reset`, `pane/message`, `pane/exited` and the `editor/*`
-  messages are notifications, the same `{"method", "params"}` the in-process types pin.
+  as LSP does. `items/changed`, `items/reset`, `view/event`, `view/closed`, `pane/message`,
+  `pane/exited` and the `editor/*` messages are notifications, the same `{"method", "params"}` the in-process types pin.
   Commands come from the manifest, not from `initialize`, so the menu's command table and
   `config.toml`'s keys are checked before any extension starts.
 - **Extension → host.** Requests, answered with a result or an error: the workspace gateway's
@@ -926,7 +940,10 @@ the call; the rest are queued.
   extension's own part of the first status line, kept until it sends another), `command/run`
   (`id`, `args`), `workspace/saved` and `editor/opened` (`note`), `pane/open` (`program`,
   `args`, answered with `{pane}`) and `pane/input` (`pane`, `text`), each answered `null` once
-  queued. The same methods sent as notifications do the same and get no answer.
+  queued. The view gateway's: `view/open` (`content`, answered with `{view}`), `view/update`
+  (`view`, `content`, `select`) and `view/close` (`view`), and `workspace/open` (`note`, `line`);
+  a view over the limits is refused as `refused`. The same methods sent as notifications do the
+  same and get no answer.
 - **Errors.** A refusal of the workspace gateway is code `-32000` with the refusal as `data`:
   `{"code": -32000, "message": "...", "data": {"reason": "forbidden", "message": "..."}}`. Bad
   params are `-32602` (an unknown op or filter key, named in the message), an unknown method
@@ -1009,8 +1026,16 @@ load.
 An extension changes notes only through the gateway: `items/edit` now, `workspace/write`
 later, never by writing files itself. The built-in Neovim declares `permissions = []`: it edits
 notes as text in its pane, which the core watches like any other editor. The menu's own
-screens (the table, the agenda, the reader's `x`) read and edit as `table`, `agenda` and
-`reader`.
+screens (the table, the reader's `x`) read and edit as `table` and `reader`; the built-in
+agenda asks for `items.read` and `items.edit` like any extension.
+
+Views need no permission. Like `ui/notify` and `pane/open`, a view is the frontend's to draw,
+size and close: the user closes it with Esc or `q`, it takes no keys but the ones its list
+declares and a table's edit, and it is bounded ("The view gateway, as built"). A permission
+would guard nothing an extension can't already do with `command/run` or a pane, and every
+extension that shows anything would have to ask for it. What a view shows is read, and what
+its events change is written, through the workspace gateway, under `items.read` and
+`items.edit`.
 
 ## Views
 
@@ -1025,6 +1050,62 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   the pane goes through a terminal emulator.
 - **A scene** *(design)*: nodes, edges and labels that the core draws, for the graph, the
   whiteboard, and anything shaped like them (a mind map, a kanban board, a timeline).
+
+### The view gateway, as built
+
+- **Where it lives.** The messages are `crates/cold-lava/src/ext/view.rs` (`Content`, `Event`,
+  `ViewNews`) and the `Effect`s in `ext/mod.rs`, pinned by tests; the frontend's open views are
+  `crates/cold-lava/src/views.rs`, drawn with the list and table views. An extension reaches
+  them through `Host` (`open_view`, `update_view`, `close_view`, `open_note`), and one in a
+  process through `rpc::serve`, so both take one path.
+- **Extension → host.** `view/open {content}` answers `{view}`, an id the host picks, unique
+  among every extension's. `content` is a list or a table as their JSON is pinned, with a
+  `kind`:
+
+  ```json
+  {"jsonrpc": "2.0", "id": 4, "method": "view/open", "params": {"content": {
+    "kind": "list", "title": "Open tasks",
+    "groups": [{"id": "Plan.md", "title": "Plan", "rows": [
+      {"id": "4f…", "text": [{"text": "Pay rent"}], "check": "unchecked",
+       "right": [{"text": "2026-11-07"}]}]}],
+    "keys": [{"key": "t", "command": "today", "title": "due today"}]}}}
+  ```
+
+  `view/update {view, content, select}` replaces what it shows: the frontend keeps the
+  selection, the folds, the sort and the filter by row and group id, as the screens always did
+  on updates, and `select` (optional) names a row to select now or when it shows up. `view/close
+  {view}` closes it. `workspace/open {note, line}` opens a note (an item's `note`, relative to
+  the workspace, or an absolute path inside it; anything else is refused on the status line) at
+  a line, from wherever the user is, which Back returns to. Updates and closes of a view the
+  extension doesn't have do nothing. The design's `title` and `place` are not there: the
+  content has its title, and there is one place, the main area, until a second is needed.
+- **Host → extension.** Notifications: `view/event {view, event, …}` with the list's and the
+  table's events flattened in, by row id: `{"view": 3, "event": "activated", "row": "4f…"}`
+  (Enter), `"toggled"` (`x` on a row with a checkbox), `"command"` with `command` and `row` (a
+  key the list declares), `"edit"` with `row`, `column` and `value` as typed (a table's cell);
+  and `view/closed {view}` when the user closed it, or the host did to make room. A view's
+  events go only to the extension that opened it.
+- **The frontend owns** layout, drawing and keys. A view shows over the main area, one at a
+  time, in place of what showed, which becomes the way back. The extension never sees a key: it
+  hears the list's declared keys (one character each; the view's own keys win) and the table's
+  edit, as events. Esc and `q` always close, `Ctrl-o` and `Ctrl-i` always go back and forward.
+- **History.** A view is a place (`Place::View`, labelled with its extension's name) while it
+  is open, and keeps how it was while out of sight, so Enter on a row, then Back, finds it as it
+  was, updated meanwhile. A closed view, and every view of an extension that stopped or of a
+  workspace that was closed, leaves Back's history, so Back skips it.
+- **Bounds.** A view has at most 50,000 rows and groups together (`view::MAX_ROWS`), 64
+  columns and 32 keys, else `view/open` and `view/update` are refused (`refused`, with the
+  count). Updates wait for the frame and only the last one each view got is drawn
+  (`Views::settle`), so an extension sending one per change costs one rebuild per frame; the
+  frame's effect budget and the 64 messages read per poll bound the rest. An extension has at
+  most 8 views open (`views::PER_EXTENSION`): opening a ninth closes its oldest, with
+  `view/closed`.
+- **The built-in agenda** is an extension on this path ("The list view and the agenda, as
+  built"), and the example in `examples/extensions/open-tasks` sends a list of its own
+  (`open-tasks.list`), checked through the real transport (`ext/process.rs`) and through the
+  menu (`open-tasks-list.drive`).
+- **Not yet:** the table as an extension ("The table view, as built"), Markdown and tree views,
+  a view beside the tree rather than over it, and `scene` (below).
 
 ### Scenes
 
@@ -1098,9 +1179,9 @@ after its call returns, so it never holds the menu's state.
       `set-field` and `toggle`, `types/list`; permissions in the manifest; every edit
       attributed; the table reads and edits through it, the agenda and the reader tick through
       it)*
-   4. The declarative list view, and the agenda as an extension. *(the view and the agenda as a
-      screen of the menu are done: `list.rs`, `agenda.rs`, `A`; it becomes an extension with
-      `items/query` and `view/open`)*
+   4. The declarative list view, and the agenda as an extension. *(done: `list.rs`, and
+      `agenda.rs` as a built-in extension over `items/query`, `items/subscribe`, `items/edit`,
+      `view/open` and `workspace/open`; `A`)*
    5. Types, in small steps: the loader and `cold-lava types` (with
       `example-workspace/.cold-lava/types.toml`: `volcano` notes and `eruption` table rows)
       *(done: `types::load`, definitions' JSON pinned for `types/list`)*;
@@ -1124,8 +1205,9 @@ after its call returns, so it never holds the menu's state.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
    *(in progress: the stdio transport, JSON-RPC, manifests in `~/.config/cold-lava/extensions`,
    `cold-lava ext list`, `ui/status` and the `open-tasks` example in Python, checked by a drive
-   script, are done ("Transport, as built"); next is `view/open`, so an extension can send the
-   list and table views, then workspace-local extensions behind a trust prompt)*
+   script, are done ("Transport, as built"), and so is the view gateway, so an extension can
+   send the list and table views (`view/open`, "The view gateway, as built"); next are the
+   menu's table as an extension, then workspace-local extensions behind a trust prompt)*
 5. Installing extensions (`cold-lava ext install <git-url>`), permissions, versioning.
 
 ## Compatibility with Obsidian plugins

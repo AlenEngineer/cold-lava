@@ -24,6 +24,17 @@ change commands, keys and file formats; patch versions only fix things.
   count of open tasks in the status line, kept current as notes change, and a command that moves
   overdue tasks to today. [docs/extensions-guide.md](docs/extensions-guide.md) explains how to
   write one.
+- Views from extensions. An extension sends a list or a table with `view/open` (`view/update`
+  replaces it, `view/close` closes it), and cold-lava draws it over the main area with its own
+  keys, folding, filtering and sorting, and tells the extension what you did as `view/event`
+  (Enter, `x` on a checkbox, a key the list declares, a table's edit) and `view/closed` (Esc or
+  `q`). `workspace/open` opens a note at a line. An open view is a place in Back's history, kept
+  as it was. Views are bounded (50,000 rows, 64 columns, 32 keys, 8 open per extension, updates
+  drawn once a frame) and need no permission. The example extension's *list the open tasks by
+  note* (`open-tasks.list`) shows one: `x` ticks, `t` sets the due date to today, Enter opens the
+  task's note.
+- An item that answers to `task` always has its `status` and `status_type` over the workspace
+  gateway, even when its type reads neither, so the `status` filter finds such a subtype.
 
 - The item messages of the workspace gateway, in-process (`crates/engine/src/gateway.rs`,
   through `Host`): `items/query` (a kind or type, a filter on folder, tag, status, a date range,
@@ -115,6 +126,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- The agenda (`A`) is a built-in extension: it reads its tasks through `items/query` and
+  `items/subscribe`, ticks through `items/edit` and shows its list through `view/open`, the path
+  an extension in Python takes. It looks and works as before. `cold-lava ext list` names it.
 - cold-lava calls a folder of notes a **workspace** now, not a vault: in the menu, the status
   line, `--help` (`cold-lava items WORKSPACE KIND`) and the docs. "Vault" is left for Obsidian's
   own. The commands `vault.add`, `vault.rescan` and `vault.tidy` are now `workspace.add`,
