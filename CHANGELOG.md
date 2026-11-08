@@ -165,6 +165,8 @@ change commands, keys and file formats; patch versions only fix things.
 - A custom status whose next status is cancelled (`nextStatusSymbol`) now gets the cancelled date
   (`❌ 2026-11-07`, or `[cancelled:: …]` in the Dataview format) and loses its done date, as the
   Tasks plugin does; `setCancelledDate: false` leaves it out.
+- The agenda follows the day: left open past midnight, it files tasks by the new day (Today,
+  Tomorrow, Overdue) instead of keeping yesterday's groups until a task changed.
 
 ## [0.3.0] - 2026-11-07
 
