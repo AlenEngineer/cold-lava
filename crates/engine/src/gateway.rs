@@ -5,6 +5,7 @@
 //! they are. The core answers them (`Core::query_items`, `Core::subscribe_items`,
 //! `Core::edit_item`); the frontend's `Host` checks an extension's permissions first.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
@@ -329,10 +330,6 @@ fn date(v: &Json) -> Option<NaiveDate> {
 }
 
 impl Select {
-    fn matches(&self, note: &Note, item: &Item) -> bool {
-        item.data.answers_to(&self.kind) && self.filter.matches(note, item)
-    }
-
     /// Refused unless its kind is a native kind or a loaded type.
     fn check(&self, workspace: &Workspace) -> Result<(), Error> {
         let kind = self.kind.as_str();
@@ -346,10 +343,56 @@ impl Select {
         }
     }
 
-    /// The note's items it names.
-    fn in_note<'a>(&self, workspace: &'a Workspace, note: &'a Note) -> Vec<&'a Item> {
-        let items = workspace.items(note).iter();
-        items.filter(|i| self.matches(note, i)).collect()
+    /// The note's items it names, as the gateway hands them out (`answer`).
+    fn in_note<'a>(&self, workspace: &'a Workspace, note: &'a Note) -> Vec<Cow<'a, Item>> {
+        (workspace.items(note).iter())
+            .filter(|i| i.data.answers_to(&self.kind))
+            .map(|i| answer(workspace, note, i))
+            .filter(|i| self.filter.matches(note, i))
+            .collect()
+    }
+}
+
+/// An item as the gateway hands it out. One that answers to `task` always has a `status` and
+/// a `status_type`, even when its type reads neither (a subtype that names its checkbox
+/// otherwise): the status from its line, its type from the workspace's Tasks settings, as
+/// `tasks::Task` reads them. So a client never needs the settings or the line.
+fn answer<'a>(workspace: &Workspace, note: &Note, item: &'a Item) -> Cow<'a, Item> {
+    let Data::Typed(t) = &item.data else {
+        return Cow::Borrowed(item);
+    };
+    let has = |f: &str| t.fields.get(f).is_some_and(|v| !v.is_null());
+    if !item.data.answers_to("task") || (has("status") && has("status_type")) {
+        return Cow::Borrowed(item);
+    }
+    let line = note.text.lines().nth(item.line - 1).unwrap_or_default();
+    let Some(task) = tasks::Task::of(item, line, &workspace.item_settings().tasks) else {
+        return Cow::Borrowed(item);
+    };
+    let mut item = item.clone();
+    if let Data::Typed(t) = &mut item.data {
+        for (field, value) in [
+            ("status", task.status.to_string()),
+            ("status_type", task.status_type.name().to_string()),
+        ] {
+            let slot = t.fields.entry(field.into()).or_insert(Json::Null);
+            if slot.is_null() {
+                *slot = Json::String(value);
+            }
+        }
+    }
+    Cow::Owned(item)
+}
+
+/// `answer`, for an item of the note at `rel` (workspace-relative, with `.md`).
+fn answered(workspace: &Workspace, rel: &str, item: Item) -> Item {
+    let rel = rel.strip_suffix(".md").unwrap_or(rel);
+    match workspace
+        .notes
+        .binary_search_by(|n| n.rel.as_str().cmp(rel))
+    {
+        Ok(i) => answer(workspace, &workspace.notes[i], &item).into_owned(),
+        Err(_) => item,
     }
 }
 
@@ -370,7 +413,7 @@ pub fn query(workspace: &Workspace, q: &Query) -> Result<Found, Error> {
         return Err(Error::new(Reason::Changed, message));
     }
     let limit = q.page.limit.unwrap_or(usize::MAX).max(1);
-    let items: Vec<Item> = all.by_ref().take(limit).cloned().collect();
+    let items: Vec<Item> = all.by_ref().take(limit).map(Cow::into_owned).collect();
     let next = match items.len() == limit && all.next().is_some() {
         true => items.last().map(|i| i.id.clone()),
         false => None,
@@ -403,7 +446,7 @@ impl Sub {
     }
 }
 
-fn revs(items: &[&Item]) -> Vec<(String, String)> {
+fn revs(items: &[Cow<'_, Item>]) -> Vec<(String, String)> {
     (items.iter())
         .map(|i| (i.id.clone(), i.rev.clone()))
         .collect()
@@ -476,8 +519,8 @@ impl Subscriptions {
                 );
                 for item in &now {
                     match old.get(&item.id) {
-                        None => added.push((*item).clone()),
-                        Some(rev) if *rev != item.rev => updated.push((*item).clone()),
+                        None => added.push(item.as_ref().clone()),
+                        Some(rev) if *rev != item.rev => updated.push(item.as_ref().clone()),
                         Some(_) => {}
                     }
                 }
@@ -616,13 +659,15 @@ pub(crate) fn read_back(workspace: &Workspace, w: Written) -> Result<Edited, Err
             .cloned()
     };
     let (item, next) = match w.after {
-        After::Set(item) => (item, None),
+        After::Set(item) => (answered(workspace, &w.note, item), None),
         After::Toggled { line, next } => {
             let item = task_at(line).ok_or_else(|| {
                 let message = format!("ticked, but line {line} of {} reads as no task", w.note);
                 Error::new(Reason::ReadBack, message)
             })?;
-            (item, next.and_then(task_at))
+            let next = next.and_then(task_at);
+            let fill = |i: Item| answered(workspace, &w.note, i);
+            (fill(item), next.map(fill))
         }
     };
     Ok(Edited {
@@ -777,6 +822,15 @@ fields.scheduled = { marker = "⏳", type = "date" }
             ..Filter::default()
         };
         assert_eq!(f(status), ["Done thing", "Repot the fern"]);
+        let todo = Filter {
+            status: vec!["todo".into()],
+            ..Filter::default()
+        };
+        assert_eq!(
+            f(todo),
+            ["Pay rent", "Water plants", "Glass from sand #idea"],
+            "a subtype that reads no status_type has one"
+        );
         let due = range(DateField::Due, "2026-11-05", "");
         assert_eq!(f(due), ["Pay rent", "Water plants"]);
         let agenda = range(DateField::Agenda, "2026-11-08", "2026-11-30");
@@ -800,6 +854,57 @@ fields.scheduled = { marker = "⏳", type = "date" }
         let e = e.unwrap_err();
         assert_eq!(e.reason, Reason::Refused);
         assert!(e.message.contains("book"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_task_always_says_its_status_and_status_type() {
+        let dir = workspace("status");
+        let chore = r#"version = 1
+[types.chore]
+extends = "task"
+on = "list-item"
+where.tag = ["chore"]
+match = '^\[[^\n]\]\s'
+fields.text = { rest = true }
+"#;
+        std::fs::write(dir.join(".cold-lava/types.toml"), chore).unwrap();
+        std::fs::write(dir.join("Chores.md"), "- [/] Sweep #chore\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let errors = &core.index.workspace.item_settings().types.errors;
+        assert!(errors.is_empty(), "{errors:?}");
+        let chore = core.query_items(&all(select("chore", Filter::default())));
+        let chore = chore.unwrap().items.remove(0);
+        let field = |item: &Item, f: &str| match &item.data {
+            Data::Typed(t) => t.fields[f].clone(),
+            _ => panic!("{item:?}"),
+        };
+        assert_eq!(field(&chore, "status"), "/", "read from its line");
+        assert_eq!(field(&chore, "status_type"), "in_progress");
+        let sub = core.subscribe_items("t", select("task", Filter::default()));
+        let edited = core.edit_item("t", &tick(&chore)).unwrap();
+        assert_eq!(
+            field(&edited.item, "status_type"),
+            "done",
+            "an edit's answer"
+        );
+        let news = core.take_item_news();
+        let [
+            (
+                _,
+                News::Changed {
+                    subscription,
+                    added,
+                    ..
+                },
+            ),
+        ] = &news[..]
+        else {
+            panic!("{news:?}")
+        };
+        assert_eq!(Ok(*subscription), sub);
+        // Its words are its key, and they read the checkbox too, so it has a new id.
+        assert_eq!(field(&added[0], "status_type"), "done", "and news");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -916,9 +1021,9 @@ fields.scheduled = { marker = "⏳", type = "date" }
             std::thread::sleep(Duration::from_millis(30));
         }
         // The watcher may report a folder too, and then the core reads everything again. The
-        // idea reads no `status_type`, so it was never an open task.
+        // idea reads no `status_type`, but has one, so it was an open task too.
         if !(news.iter()).any(|(_, n)| matches!(n, News::Reset { .. })) {
-            assert_eq!(counts(&news), [(1, 1, 0), (0, 0, 1)], "one batch each");
+            assert_eq!(counts(&news), [(1, 1, 1), (0, 0, 1)], "one batch each");
             let News::Changed { added, .. } = &news[0].1 else {
                 unreachable!()
             };

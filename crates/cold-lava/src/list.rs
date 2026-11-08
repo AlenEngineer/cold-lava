@@ -130,14 +130,6 @@ enum Shown {
     Row(usize, usize),
 }
 
-/// Where the view is, for Back to come back to: the selection, the filter and the folds.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Spot {
-    sel: Option<Sel>,
-    filter: String,
-    folds: HashMap<String, bool>,
-}
-
 pub struct ListView {
     list: List,
     shown: Vec<Shown>,
@@ -181,20 +173,6 @@ impl ListView {
         };
         self.list = list;
         self.reshow(keep);
-    }
-
-    pub fn spot(&self) -> Spot {
-        Spot {
-            sel: self.at(),
-            filter: self.filter.clone(),
-            folds: self.folds.clone(),
-        }
-    }
-
-    pub fn restore(&mut self, s: Spot) {
-        self.filter = s.filter;
-        self.folds = s.folds;
-        self.reshow(s.sel);
     }
 
     /// Select the row with this id now, or when it shows up.
@@ -722,7 +700,6 @@ mod tests {
         v.key(key(KeyCode::Char('/')));
         v.key(key(KeyCode::Char('r')));
         v.key(key(KeyCode::Enter));
-        let spot = v.spot();
         let mut l = list();
         l.groups[0].rows.remove(0);
         l.groups[1].rows.push(row("a", "Pay rent"));
@@ -736,10 +713,7 @@ mod tests {
         v.update(l2);
         assert_eq!(v.selected().unwrap().id, "e", "followed when it showed up");
         v.key(key(KeyCode::Char('h')));
-        let mut back = ListView::new(list());
-        back.restore(spot);
-        assert_eq!(back.selected().unwrap().id, "b");
-        assert_eq!(back.filter, "r");
+        assert_eq!(v.filter, "r");
         let mut l3 = list();
         l3.groups[0].rows.clear();
         v.update(l3);

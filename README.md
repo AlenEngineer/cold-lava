@@ -666,8 +666,9 @@ type may take it).
 An extension is a program, in any language, that cold-lava starts when you open a workspace. It
 reads the workspace's notes as data (tasks, list items, headings, your types), hears when they
 change, changes one item at a time through the same safe edits the table and the agenda use,
-adds commands to the palette and shows text in the status line. It never draws and never sees
-your keys. Install one by putting its folder in `~/.config/cold-lava/extensions/`:
+adds commands to the palette, shows text in the status line, and shows lists and tables that
+cold-lava draws and keys for it, telling it what you did with which row. It never draws and
+never sees your keys. The agenda is built the same way. Install one by putting its folder in `~/.config/cold-lava/extensions/`:
 
 ```bash
 cp -r examples/extensions/open-tasks ~/.config/cold-lava/extensions/
@@ -675,7 +676,9 @@ cold-lava ext list            # what is installed, what each may do, and why any
 ```
 
 `open-tasks`, the example in Python, keeps `☐ 4 open tasks` in the status line and adds *move
-every overdue open task to today* to the palette (`:`). Its `extension.toml` names the program
+every overdue open task to today* and *list the open tasks by note* to the palette (`:`). The
+list is its own view: `x` ticks a task, `t` makes it due today, Enter opens its note (`Ctrl-o`
+comes back to the list), Esc closes it. Its `extension.toml` names the program
 to run, its commands and its permissions: `items.read` (the default) to read items,
 `items.edit` to change them. An extension runs as you, like an Obsidian or Neovim plugin, so
 install only ones you trust; permissions limit what cold-lava does for it, not what the program

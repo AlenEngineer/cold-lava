@@ -10,6 +10,7 @@ use crate::commands::{
 };
 use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
+use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
     AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, Host, Manifest, PaneId,
     PaneNews, PaneSpec, READER, Registry, TABLE,
@@ -18,7 +19,6 @@ use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Edit, Op, Reason};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
-use crate::list::{self, ListView};
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::paths::{config_dir, home_dir};
@@ -27,6 +27,7 @@ use crate::table::{self, TableView};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::type_table::{self, At};
+use crate::views::{self, Views};
 use crate::{agenda, board, items, templates, term, whichkey, workspace};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
@@ -444,15 +445,11 @@ enum Mode {
     },
     /// A type's items as a table.
     Table(Box<Tabled>),
-    /// The workspace's tasks by day.
-    Agenda(Box<Agendaed>),
-}
-
-/// The agenda's list, where each row's task is, and whether done tasks show.
-struct Agendaed {
-    view: ListView,
-    at: HashMap<String, At>,
-    show_done: bool,
+    /// A view an extension opened, kept in `Home::views`.
+    View {
+        owner: ExtId,
+        view: ViewId,
+    },
 }
 
 /// The table of a type's items, the gateway's subscription it is kept by, and where each row's
@@ -596,6 +593,11 @@ pub struct Home {
     effects_left: usize,
     /// Each extension's own part of the status line (`ui/status`).
     statuses: Vec<(ExtId, String)>,
+    /// The views extensions opened and haven't closed, shown or not.
+    views: Views,
+    /// Reading an extension's edits back during `call`: calls meanwhile leave theirs for the
+    /// next frame.
+    catching_up: bool,
     shown: Option<PathBuf>,
     pending: Option<(PathBuf, Instant)>,
     /// What was deleted or merged this session, most recent last.
@@ -672,6 +674,8 @@ impl Home {
             requested: Vec::new(),
             effects_left: EFFECTS_PER_FRAME,
             statuses: Vec::new(),
+            views: Views::default(),
+            catching_up: false,
             shown: None,
             pending: None,
             undo: Vec::new(),
@@ -776,6 +780,7 @@ impl Home {
             }
             self.load_pending();
             self.check_disk();
+            self.views.settle();
             terminal.draw(|f| self.draw(f))?;
             let ms = if self.pane.is_some() || self.pending.is_some() {
                 15
@@ -809,10 +814,27 @@ impl Home {
         for ext in self.registry.ids() {
             self.call(ext, |e, host| e.poll(host));
         }
+        let registry = &self.registry;
+        self.views.retain_owners(|e| registry.running(e));
+        self.forget_closed_views();
+    }
+
+    /// Back and the screen no longer lead to views that closed.
+    fn forget_closed_views(&mut self) {
+        let views = &self.views;
+        (self.history).retain(|p| match p {
+            Place::View { owner, view, .. } => views.has(*owner, *view),
+            _ => true,
+        });
+        if let Mode::View { owner, view } = self.mode
+            && !self.views.has(owner, view)
+        {
+            self.mode = Mode::Normal;
+        }
     }
 
     /// Tell every extension which workspace is open, or only the ones that `stopped`, to start
-    /// them again.
+    /// them again. Their views belonged to the workspace before.
     fn tell_workspace(&mut self, stopped: bool) {
         let root = self.root.clone();
         for ext in self.registry.ids() {
@@ -820,6 +842,7 @@ impl Home {
                 continue;
             }
             self.statuses.retain(|(e, _)| *e != ext);
+            self.views.retain_owners(|e| e != ext);
             self.call(ext, |e, host| e.workspace(root.as_deref(), host));
         }
     }
@@ -855,9 +878,21 @@ impl Home {
         }
     }
 
-    /// Call an extension, then do what it asked for.
+    /// Call an extension, then do what it asked for. When it edited items, the menu reads them
+    /// back first, as after its own screens' edits, so every view shows the edit and the
+    /// extension's message about it comes after the attribution.
     fn call(&mut self, ext: ExtId, f: impl FnOnce(&mut dyn Extension, &mut Host<'_>)) {
-        for effect in self.registry.call(ext, self.core.as_mut(), f) {
+        let effects = self.registry.call(ext, self.core.as_mut(), f);
+        if !self.catching_up
+            && let Some(core) = self.core.as_mut()
+            && core.has_unseen()
+        {
+            self.catching_up = true;
+            let events = core.poll();
+            self.sync_with_core(&events);
+            self.catching_up = false;
+        }
+        for effect in effects {
             if self.effects_left == 0 {
                 let name = &self.registry.manifest(ext).name;
                 let msg = format!("{name} asked for too much at once; the rest was skipped");
@@ -907,7 +942,59 @@ impl Home {
                     p.term.send(text.as_bytes());
                 }
             }
+            Effect::OpenView { view, content } => self.open_view(ext, view, content),
+            Effect::UpdateView {
+                view,
+                content,
+                select,
+            } => {
+                self.views.update(ext, view, content, select);
+            }
+            Effect::CloseView { view } => {
+                self.views.close(ext, view);
+                self.forget_closed_views();
+            }
+            Effect::OpenNote { note, line } => self.open_for(ext, &note, line),
         }
+    }
+
+    /// Show an extension's new view in place of what showed, which Back returns to.
+    fn open_view(&mut self, ext: ExtId, view: ViewId, content: crate::ext::view::Content) {
+        if let Some(oldest) = self.views.open(ext, view, content) {
+            self.forget_closed_views();
+            let closed = ViewNews::Closed { view: oldest };
+            self.call(ext, |e, host| e.view(closed, host));
+        }
+        if let Some(here) = self.here() {
+            self.history.visit(here);
+        }
+        if self.focus == Focus::Pane {
+            self.focus = Focus::Notes;
+        }
+        self.mode = Mode::View { owner: ext, view };
+    }
+
+    /// `workspace/open`: the note at `note` (inside the workspace, absolute or relative to it),
+    /// at `line`, from where you are.
+    fn open_for(&mut self, ext: ExtId, note: &Path, line: Option<usize>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let path = root.join(note);
+        let inside = match (path.canonicalize(), root.canonicalize()) {
+            (Ok(p), Ok(r)) => p.starts_with(r) && p.is_file(),
+            _ => false,
+        };
+        if !inside {
+            let name = &self.registry.manifest(ext).name;
+            let note = note.display();
+            return self.flash(format!(
+                "{name} asked to open {note}, which isn't in the workspace"
+            ));
+        }
+        let from = self.here();
+        self.mode = Mode::Normal;
+        self.open_found(from, &path, line.map(Jump::Line));
     }
 
     /// Start `spec` in the pane. If it can't start, or another pane is open, the extension hears
@@ -1191,11 +1278,9 @@ impl Home {
                 spot: t.view.spot(),
             });
         }
-        if let Mode::Agenda(a) = &self.mode {
-            return Some(Place::Agenda {
-                spot: a.view.spot(),
-                show_done: a.show_done,
-            });
+        if let Mode::View { owner, view } = self.mode {
+            let label = self.registry.manifest(owner).name.clone();
+            return Some(Place::View { owner, view, label });
         }
         Some(Place::Note {
             path: self.shown.clone()?,
@@ -1254,8 +1339,13 @@ impl Home {
                     self.open_table(&ty, Some(spot));
                     None
                 }
-                Place::Agenda { spot, show_done } => {
-                    self.open_agenda(Some(spot), show_done);
+                Place::View { owner, view, .. } => {
+                    if self.views.has(owner, view) {
+                        if self.focus == Focus::Pane {
+                            self.focus = Focus::Notes;
+                        }
+                        self.mode = Mode::View { owner, view };
+                    }
                     None
                 }
             };
@@ -1498,7 +1588,6 @@ impl Home {
             view.update(crate::tidy::report(&core.index));
         }
         self.deliver_item_news();
-        self.refresh_agenda();
         let shown_rel = self
             .shown
             .as_ref()
@@ -1635,8 +1724,8 @@ impl Home {
         if matches!(self.mode, Mode::Table(_)) {
             return self.table_key(k, terminal);
         }
-        if matches!(self.mode, Mode::Agenda(_)) {
-            return self.agenda_key(k, terminal);
+        if matches!(self.mode, Mode::View { .. }) {
+            return self.view_key(k, terminal);
         }
         if matches!(self.mode, Mode::Palette { .. }) {
             return self.palette_key(k, terminal);
@@ -1806,7 +1895,7 @@ impl Home {
             | Mode::Tidy(_)
             | Mode::TablePick { .. }
             | Mode::Table(_)
-            | Mode::Agenda(_)
+            | Mode::View { .. }
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
         }
@@ -2240,10 +2329,13 @@ impl Home {
             MenuAction::Tidy => self.open_tidy(),
             MenuAction::Table => self.open_table_pick(),
             MenuAction::Agenda => {
-                if let Some(here) = self.here() {
-                    self.history.visit(here);
+                if let Some(ext) = self.registry.by_name(AGENDA) {
+                    let request = CommandRequest::Run {
+                        id: agenda::OPEN.into(),
+                        args: Value::Null,
+                    };
+                    self.call(ext, |e, host| e.command(request, host));
                 }
-                self.open_agenda(None, false);
             }
             MenuAction::Bookmark => match self.bookmark_target() {
                 Some(target) => self.toggle_bookmark(target),
@@ -4176,54 +4268,25 @@ impl Home {
         Ok(())
     }
 
-    // ---------- agenda ----------
+    // ---------- extensions' views ----------
 
-    /// Show the agenda, as it was at `spot`.
-    fn open_agenda(&mut self, spot: Option<list::Spot>, show_done: bool) {
-        let Some(core) = self.core.as_ref() else {
-            return;
-        };
-        let built = agenda::build(&core.index.workspace, crate::tasks::today(), show_done);
-        let mut view = ListView::new(built.list);
-        if let Some(spot) = spot {
-            view.restore(spot);
-        }
-        if self.focus == Focus::Pane {
-            self.focus = Focus::Notes;
-        }
-        self.mode = Mode::Agenda(Box::new(Agendaed {
-            view,
-            at: built.at,
-            show_done,
-        }));
-    }
-
-    /// The agenda again from the core's items, after the workspace changed (or the day did).
-    fn refresh_agenda(&mut self) {
-        let (Mode::Agenda(a), Some(core)) = (&mut self.mode, &self.core) else {
-            return;
-        };
-        let built = agenda::build(&core.index.workspace, crate::tasks::today(), a.show_done);
-        a.view.update(built.list);
-        a.at = built.at;
-    }
-
-    fn agenda_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Mode::Agenda(mut a) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+    /// A key in an extension's view: the view's own, else Back and Forward, else nothing.
+    /// What the user did goes to the extension as `view/event`, and Esc or `q` close it.
+    fn view_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Mode::View { owner, view } = self.mode else {
             return Ok(());
         };
-        let here = |a: &Agendaed| Place::Agenda {
-            spot: a.view.spot(),
-            show_done: a.show_done,
+        let Some(open) = self.views.get_mut(owner, view) else {
+            self.mode = Mode::Normal;
+            return Ok(());
         };
-        if !a.view.typing()
+        if !open.typing()
             && let Some(MenuCommand::Core(MenuAction::History(h))) = self.keys.get(k)
         {
-            let from = here(&a);
-            self.mode = Mode::Agenda(a);
+            let here = self.here();
             let to = match h {
-                HistoryAction::Back => self.history.back(Some(from)),
-                HistoryAction::Forward => self.history.forward(Some(from)),
+                HistoryAction::Back => self.history.back(here),
+                HistoryAction::Forward => self.history.forward(here),
             };
             if let Some(place) = to {
                 self.mode = Mode::Normal;
@@ -4231,45 +4294,18 @@ impl Home {
             }
             return Ok(());
         }
-        let Some(root) = self.root.clone() else {
-            return Ok(());
-        };
-        match a.view.key(k) {
-            list::Action::Stay => self.mode = Mode::Agenda(a),
-            list::Action::Close => {}
-            list::Action::Send(list::Event::Activated { row }) => {
-                let Some(at) = a.at.get(&row).cloned() else {
-                    self.mode = Mode::Agenda(a);
-                    return Ok(());
-                };
-                let from = here(&a);
-                self.open_found(Some(from), &root.join(&at.note), Some(Jump::Line(at.line)));
+        match open.key(k) {
+            views::Action::Stay => {}
+            views::Action::Say(s) => self.flash(s),
+            views::Action::Close => {
+                self.views.close(owner, view);
+                self.forget_closed_views();
+                let closed = ViewNews::Closed { view };
+                self.call(owner, |e, host| e.view(closed, host));
             }
-            list::Action::Send(list::Event::Toggled { row }) => {
-                let at = a.at.get(&row).cloned();
-                let text = (a.view.selected().and_then(|r| r.text.first()))
-                    .map(|p| p.text.clone())
-                    .unwrap_or_default();
-                self.mode = Mode::Agenda(a);
-                let Some(at) = at else { return Ok(()) };
-                // The tick reads the note again, which rebuilds the agenda; the ticked row stays
-                // selected (a recurring one moves down a line, under its next occurrence).
-                if let Some(line) = self.tick(AGENDA, &row, &at.rev, &at.note, &text)
-                    && let Mode::Agenda(a) = &mut self.mode
-                    && let Some(id) = (a.at.iter())
-                        .find(|(_, t)| t.note == at.note && t.line == line)
-                        .map(|(id, _)| id.clone())
-                {
-                    a.view.select(&id);
-                }
-            }
-            list::Action::Send(list::Event::Command { command, .. }) => {
-                if command == agenda::SHOW_DONE {
-                    let spot = a.view.spot();
-                    self.open_agenda(Some(spot), !a.show_done);
-                } else {
-                    self.mode = Mode::Agenda(a);
-                }
+            views::Action::Send(event) => {
+                let news = ViewNews::Event(Happened { view, event });
+                self.call(owner, |e, host| e.view(news, host));
             }
         }
         Ok(())
@@ -5204,8 +5240,10 @@ impl Home {
         if let Mode::Table(t) = &mut self.mode {
             draw_table(f, main, t);
         }
-        if let Mode::Agenda(a) = &self.mode {
-            draw_agenda(f, main, a);
+        if let Mode::View { owner, view } = self.mode
+            && let Some(open) = self.views.get_mut(owner, view)
+        {
+            draw_view(f, main, open);
         }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
@@ -6652,27 +6690,23 @@ fn draw_table(f: &mut Frame, area: Rect, t: &mut Tabled) {
     f.render_widget(Paragraph::new(t.view.status()), status);
 }
 
-/// The agenda over the whole main area, its filter on the bottom line.
-fn draw_agenda(f: &mut Frame, area: Rect, a: &Agendaed) {
+/// An extension's view over the whole main area, its filter on the bottom line.
+fn draw_view(f: &mut Frame, area: Rect, v: &mut views::Open) {
     f.render_widget(Clear, area);
-    let keys: String = (a.view.keys().iter())
-        .map(|k| format!(" · {} {}", k.key, k.title))
-        .collect();
-    let hint = format!(" ↑↓ move · x tick · ⏎ open · h/l fold · / filter{keys} · Esc close ");
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(ACCENT))
         .title(Line::styled(
-            format!(" {} ", a.view.title()),
+            format!(" {} ", v.title()),
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ))
-        .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
+        .title_bottom(Line::styled(v.hint(), Style::new().fg(MUTED)));
     let inner = block.inner(area);
     f.render_widget(block, area);
     let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-    let lines = a.view.lines(body.width as usize, body.height as usize);
+    let lines = v.lines(body.width as usize, body.height as usize);
     f.render_widget(Paragraph::new(lines), body);
-    f.render_widget(Paragraph::new(a.view.status()), status);
+    f.render_widget(Paragraph::new(v.status()), status);
 }
 
 /// The centred popup shared by the quick switcher and the command palette; returns its inside.

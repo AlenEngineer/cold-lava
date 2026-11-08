@@ -20,6 +20,7 @@ mod table;
 mod term;
 mod tidy_view;
 mod type_table;
+mod views;
 mod whichkey;
 
 use cold_lava_engine::{

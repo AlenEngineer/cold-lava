@@ -91,8 +91,8 @@ in `Lava`'s backlinks and the graph.
 
 ## Two gateways
 
-**The workspace gateway** *(the item messages are built, in-process: `gateway.rs` in the
-engine, `Host` in `ext/mod.rs`; the transport and `workspace/*` are next)* is the engine's
+**The workspace gateway** *(the item messages are built: `gateway.rs` in the engine, `Host` in
+`ext/mod.rs`, over the stdio transport too; `workspace/read`, `write` and friends are next)* is the engine's
 protocol: files, items, types, queries, edits and events. It knows nothing about screens. An
 extension that only aggregates and ticks tasks, a script, or a language server needs nothing
 else. An extension changes notes only through it, within the permissions its manifest asks
@@ -105,13 +105,18 @@ any language can be graphical (a kanban board is a few dozen lines of Python sen
 frontend draws the same view its own way, and drawing, keys and frame rate stay with the
 frontend. Neovim's UI protocol works this way, and so, at the extreme, does HTML.
 
+*(Built for lists and tables: an extension sends `view/open` with one and hears `view/event`
+when you press Enter, tick a row, use a key it bound or edit a cell; `crates/cold-lava/src/ext/view.rs`
+and `views.rs`, ["The view gateway, as built"](extensions.md#the-view-gateway-as-built). The
+agenda is a built-in extension on it, the same path an extension in Python takes.)*
+
 The vocabulary stays small, and grows only when a real extension needs a new word:
 
 | View | For | Status |
 | --- | --- | --- |
 | **markdown** | text with the reader's styling | built (the reader) |
-| **list / tree** | the agenda, a todo aggregator, outlines | built (`crates/cold-lava/src/list.rs`; the agenda, `A`, `agenda.open`) |
-| **table** | a type's items as rows: books, people, projects | built (`crates/cold-lava/src/table.rs`; `i`, `table.open`) |
+| **list / tree** | the agenda, a todo aggregator, outlines | built (`crates/cold-lava/src/list.rs`; over `view/open`; the agenda, `A`, `agenda.open`, is an extension) |
+| **table** | a type's items as rows: books, people, projects | built (`crates/cold-lava/src/table.rs`; over `view/open`; the menu's own table, `i`, `table.open`, is still a screen) |
 | **scene** | nodes and edges: the graph, the whiteboard, mind maps | designed |
 | **pane** | the escape hatch: any terminal program (a GUI's could be a web view) | built |
 | **image** | pictures, with Kitty pixels where the terminal has them | to design |

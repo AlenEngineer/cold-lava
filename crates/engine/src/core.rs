@@ -213,6 +213,11 @@ impl Core {
         gateway::read_back(&self.index.workspace, written)
     }
 
+    /// Whether `poll` has events waiting that no file change caused: an edit's.
+    pub fn has_unseen(&self) -> bool {
+        !self.unseen.is_empty()
+    }
+
     /// Read the whole workspace again on the next `poll`.
     pub fn rescan(&mut self) {
         self.rescan = true;

@@ -1,7 +1,7 @@
 name = "open-tasks"
 title = "Open tasks"
 version = "0.1.0"
-description = "Counts the workspace's open tasks in the status line, and moves overdue ones to today"
+description = "Counts the workspace's open tasks in the status line, moves overdue ones to today, and lists them by note"
 run = ["python3", "main.py"]
 # items.read is enough for the count; moving a task's due date needs items.edit.
 permissions = ["items.read", "items.edit"]
@@ -13,3 +13,7 @@ title = "say how many tasks are open, and how many are overdue"
 [[commands]]
 id = "open-tasks.reschedule"
 title = "move every overdue open task to today"
+
+[[commands]]
+id = "open-tasks.list"
+title = "list the open tasks by note"

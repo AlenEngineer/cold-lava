@@ -89,12 +89,13 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   Three rules:
   - An extension can only do what a message can say: every type that crosses derives serde.
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
-    into panes.
+    into panes, and draws the lists and tables they send (`view/open`), telling them what the
+    user did as `view/event`.
   - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
     returns, so extensions never hold `&mut Home`. The gateway's `items/*` and `types/list` are
     answered during the call by the core, after `Host` checks the manifest's `permissions`
-    (`items.read` by default, `items.edit`). The table, the agenda's ticks and the reader's `x`
-    use the same `Host`, as `Registry::screen`.
+    (`items.read` by default, `items.edit`). The table and the reader's `x` use the same
+    `Host`, as `Registry::screen`; the agenda is a built-in `Extension`.
 - `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
   commands it types into its pane.
 - `ext/process.rs`, `transport.rs`, `rpc.rs`, `frame.rs`, `installed.rs`: extensions in their own
@@ -103,6 +104,9 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   `Extension::poll` (once a frame) through `rpc::serve` and `Host`, so the permission gate holds;
   `Transport`/`Connector` (stdio, threads behind channels, so the UI never waits) carry
   LSP-framed JSON-RPC (`frame`). The example is `examples/extensions/open-tasks` (Python).
+- `ext/view.rs`: the view gateway's messages (`Content` is a list or a table with a `kind`,
+  `Event`, `ViewNews`) and its bounds. `views.rs` in the binary keeps the views extensions
+  opened: drawn with `ListView`/`TableView`, updated once a frame, places in history while open.
 
 **Features / UI** (`crates/cold-lava/src`):
 
@@ -120,8 +124,9 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   go through `edit::set_field`.
 - `list.rs`: the declarative list / tree view (groups of rows by id with a checkbox, pieces of
   text with looks, a right side; selection, folding, filtering; events back; serde like the
-  table). `agenda.rs` builds the agenda from typed tasks (`A`, `agenda.open`); ticks go through
-  `tasks::toggle` with the row's `rev`, as `x` in the reader does.
+  table). `agenda.rs` is the agenda as a built-in extension: it follows tasks with
+  `items/query` and `items/subscribe`, sends its list with `view/open` and ticks with
+  `items/edit toggle` (`A`, `agenda.open`, a core command the menu hands to it).
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
   with vt100, cursor-position queries answered.
@@ -176,6 +181,7 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
-  it; the graph, canvas, agenda and the menu should become extensions of the core too. Then
+  it, and so does the agenda (over the view gateway); the table, graph, canvas and the menu
+  should become extensions of the core too. Then
   performance for large workspaces (Barnes–Hut layout), a config file, light-terminal colours.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).

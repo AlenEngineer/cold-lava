@@ -1,0 +1,35 @@
+# The example extension's list (examples/extensions/open-tasks), installed in the empty home by
+# tests/drive.rs, which also adds an overdue task to Inbox/Seismograph.md. The palette runs
+# open-tasks.list, and cold-lava draws the list the extension sends: x ticks the seismograph
+# task (the extension edits it and sends the list again without it), Enter opens a task's note
+# at its line, Ctrl-o comes back to the list, and Esc closes it, which the extension hears.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 4 open tasks
+keys :
+type list the open
+wait-for list the open tasks by note
+keys enter
+wait-for ↑↓ move · x tick · ⏎ open · h/l fold · / filter · t due today · Esc close
+expect Open tasks
+expect ▾ Inbox/Seismograph  1
+expect ☐ Check the seismograph
+expect 2026-11-01
+expect ▾ Journal/2026-11-05  3
+screen
+keys j x
+wait-for 3 rows
+expect ☐ 3 open tasks
+expect-not Check the seismograph
+keys g j enter
+wait-for Journal/2026-11-05  reading
+wait-for Ctrl-o ⟵ open-tasks
+keys ctrl+o
+wait-for Write a note on lahars
+expect Open tasks
+keys esc
+wait-for closed the list of open tasks
+screen
+keys q
+exits 0
