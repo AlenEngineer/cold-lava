@@ -123,6 +123,12 @@ pub fn report(ix: &Index) -> Report {
             found(i, dir_of(&files.rels[i]), raw, &mut used);
         }
     }
+    for owned in &ix.workspace.owned {
+        let from = files.path(&owned.rel).unwrap_or(usize::MAX);
+        for (r, _) in &owned.links {
+            found(from, dir_of(&owned.rel), &r.target, &mut used);
+        }
+    }
     for (i, rel) in files.rels.iter().enumerate().skip(notes) {
         if attachment_kind(rel) != Some("whiteboard") {
             continue;
@@ -184,6 +190,24 @@ pub fn report(ix: &Index) -> Report {
                 });
             g.from.push(LinkAt {
                 note: files.rels[i].clone(),
+                line: r.line,
+                context: r.context.clone(),
+            });
+        }
+    }
+
+    for owned in &ix.workspace.owned {
+        let dir = dir_of(&owned.rel);
+        let nowhere = |r: &&crate::workspace::Ref| files.resolve(dir, &r.target).is_none();
+        for (r, _) in owned.links.iter().filter(|(r, _)| nowhere(&r)) {
+            let g = groups
+                .entry(r.target.to_lowercase())
+                .or_insert_with(|| Unresolved {
+                    target: r.target.clone(),
+                    from: Vec::new(),
+                });
+            g.from.push(LinkAt {
+                note: owned.rel.clone(),
                 line: r.line,
                 context: r.context.clone(),
             });

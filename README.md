@@ -702,6 +702,15 @@ table. *new CSV table* in the palette makes `Untitled.csv` where Obsidian puts n
 extension owns each kind, the first to claim it; notes (`.md`) and whiteboards (`.canvas`) stay
 cold-lava's. A kind of file nobody owns behaves as before.
 
+An owner also tells cold-lava what its files say, so they join the workspace: csv-table hands
+over each row as a table row and a cell like `- [ ] Read the report 📅 2026-11-20` as Markdown.
+`Volcanoes/Eruptions.csv`'s rows are then `eruption`s in the table (`i`), its task is in the
+agenda, its `[[Krakatoa]]` shows in Krakatoa's backlinks (Enter opens the CSV at that row) and
+in the graph, and a link to the CSV leads somewhere. What an owner said is kept by file version
+under `~/.cache/cold-lava/owners/`, so a workspace opens without waiting for it; it is asked
+again only when a file changes. Editing those items, and renames rewriting links in them, come
+next.
+
 ## What it understands
 
 - `[[wikilinks]]` (with aliases, headings and embeds), and `[text](note.md)` links

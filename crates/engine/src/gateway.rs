@@ -17,7 +17,7 @@ use serde_json::Value as Json;
 use crate::edit::EditError;
 use crate::items::{Data, Item, KINDS, Settings};
 use crate::owner::markdown::{self, After};
-use crate::workspace::{Note, NoteChange, Workspace, search_key};
+use crate::workspace::{Note, Owned, Workspace, search_key};
 use crate::{tasks, write};
 
 /// What a query or a subscription is about: items of a kind or type (a subtype answers to its
@@ -244,12 +244,63 @@ impl News {
     }
 }
 
+/// A file items come from: a note, or a file another owner reads.
+#[derive(Clone, Copy)]
+enum File<'a> {
+    Note(&'a Note),
+    Owned(&'a Owned),
+}
+
+impl<'a> File<'a> {
+    /// Workspace-relative: a note without `.md`, another file with its extension.
+    fn rel(self) -> &'a str {
+        match self {
+            File::Note(n) => &n.rel,
+            File::Owned(f) => &f.rel,
+        }
+    }
+
+    fn tags(self) -> &'a [String] {
+        match self {
+            File::Note(n) => &n.tags,
+            File::Owned(_) => &[],
+        }
+    }
+
+    /// How subscriptions know it: its path with its extension, as items name it.
+    fn key(self) -> String {
+        match self {
+            File::Note(n) => format!("{}.md", n.rel),
+            File::Owned(f) => f.rel.clone(),
+        }
+    }
+}
+
+/// Every file items come from: the notes, then the files other owners read.
+fn files(workspace: &Workspace) -> impl Iterator<Item = File<'_>> {
+    let notes = workspace.notes.iter().map(File::Note);
+    notes.chain(workspace.owned.iter().map(File::Owned))
+}
+
+/// The file at `key` (`File::key`).
+fn file<'a>(workspace: &'a Workspace, key: &str) -> Option<File<'a>> {
+    if let Some(rel) = key.strip_suffix(".md")
+        && let Ok(i) = (workspace.notes).binary_search_by(|n| n.rel.as_str().cmp(rel))
+    {
+        return Some(File::Note(&workspace.notes[i]));
+    }
+    let i = (workspace.owned)
+        .binary_search_by(|f| f.rel.as_str().cmp(key))
+        .ok()?;
+    Some(File::Owned(&workspace.owned[i]))
+}
+
 impl Filter {
     pub fn is_empty(&self) -> bool {
         *self == Filter::default()
     }
 
-    fn matches(&self, note: &Note, item: &Item) -> bool {
+    fn matches(&self, file: File<'_>, item: &Item) -> bool {
         let fields = match &item.data {
             Data::Typed(t) => Some(&t.fields),
             _ => None,
@@ -257,7 +308,7 @@ impl Filter {
         let field = |name: &str| fields.and_then(|f| f.get(name)).filter(|v| has_value(v));
         if let Some(folder) = &self.folder {
             let folder = folder.trim_matches('/');
-            let inside = note.rel.strip_prefix(folder);
+            let inside = file.rel().strip_prefix(folder);
             if !folder.is_empty() && !inside.is_some_and(|r| r.starts_with('/')) {
                 return false;
             }
@@ -265,7 +316,7 @@ impl Filter {
         if let Some(tag) = &self.tag {
             let tag = tag.trim_start_matches('#').to_lowercase();
             let nested = format!("{tag}/");
-            if !(note.tags.iter()).any(|t| *t == tag || t.starts_with(&nested)) {
+            if !(file.tags().iter()).any(|t| *t == tag || t.starts_with(&nested)) {
                 return false;
             }
         }
@@ -346,12 +397,19 @@ impl Select {
         }
     }
 
-    /// The note's items it names, as the gateway hands them out (`answer`).
-    fn in_note<'a>(&self, workspace: &'a Workspace, note: &'a Note) -> Vec<Cow<'a, Item>> {
-        (workspace.items(note).iter())
+    /// The file's items it names, as the gateway hands them out (`answer`).
+    fn in_file<'a>(&self, workspace: &'a Workspace, file: File<'a>) -> Vec<Cow<'a, Item>> {
+        let items: &[Item] = match file {
+            File::Note(note) => workspace.items(note),
+            File::Owned(f) => &f.items,
+        };
+        (items.iter())
             .filter(|i| i.data.answers_to(&self.kind))
-            .map(|i| answer(workspace, note, i))
-            .filter(|i| self.filter.matches(note, i))
+            .map(|i| match file {
+                File::Note(note) => answer(workspace, note, i),
+                File::Owned(_) => Cow::Borrowed(i),
+            })
+            .filter(|i| self.filter.matches(file, i))
             .collect()
     }
 }
@@ -361,15 +419,28 @@ impl Select {
 /// otherwise): the status from its line, its type from the workspace's Tasks settings, as
 /// `tasks::Task` reads them. So a client never needs the settings or the line.
 fn answer<'a>(workspace: &Workspace, note: &Note, item: &'a Item) -> Cow<'a, Item> {
+    let line = || note.text.lines().nth(item.line - 1).unwrap_or_default();
+    match needs_status(item) {
+        true => answer_line(workspace.item_settings(), line(), item),
+        false => Cow::Borrowed(item),
+    }
+}
+
+/// Whether a task's `status` or `status_type` isn't read by its type, so `answer` adds them.
+fn needs_status(item: &Item) -> bool {
     let Data::Typed(t) = &item.data else {
-        return Cow::Borrowed(item);
+        return false;
     };
     let has = |f: &str| t.fields.get(f).is_some_and(|v| !v.is_null());
-    if !item.data.answers_to("task") || (has("status") && has("status_type")) {
+    item.data.answers_to("task") && !(has("status") && has("status_type"))
+}
+
+/// `answer`, for an item whose first line is `line`.
+pub(crate) fn answer_line<'a>(s: &Settings, line: &str, item: &'a Item) -> Cow<'a, Item> {
+    if !needs_status(item) {
         return Cow::Borrowed(item);
     }
-    let line = note.text.lines().nth(item.line - 1).unwrap_or_default();
-    let Some(task) = tasks::Task::of(item, line, &workspace.item_settings().tasks) else {
+    let Some(task) = tasks::Task::of(item, line, &s.tasks) else {
         return Cow::Borrowed(item);
     };
     let mut item = item.clone();
@@ -407,7 +478,7 @@ impl Page {
 /// `items/query` on the workspace as the core has it now.
 pub fn query(workspace: &Workspace, q: &Query) -> Result<Found, Error> {
     q.select.check(workspace)?;
-    let mut all = (workspace.notes.iter()).flat_map(|n| q.select.in_note(workspace, n));
+    let mut all = files(workspace).flat_map(|f| q.select.in_file(workspace, f));
     if let Some(after) = &q.page.after
         && !all.by_ref().any(|i| i.id == *after)
     {
@@ -435,14 +506,14 @@ struct Sub {
     /// The extension that asked: the name in its manifest.
     owner: String,
     select: Select,
-    /// By note (workspace-relative, without `.md`): the matching items' ids and revs.
+    /// By file (`File::key`): the matching items' ids and revs.
     seen: HashMap<String, Vec<(String, String)>>,
 }
 
 impl Sub {
     fn snapshot(&mut self, workspace: &Workspace) {
-        self.seen = (workspace.notes.iter())
-            .map(|n| (n.rel.clone(), revs(&self.select.in_note(workspace, n))))
+        self.seen = files(workspace)
+            .map(|f| (f.key(), revs(&self.select.in_file(workspace, f))))
             .filter(|(_, items)| !items.is_empty())
             .collect();
     }
@@ -482,34 +553,21 @@ impl Subscriptions {
         self.subs.len() != before
     }
 
-    /// What each subscriber hears about these notes having been read again: one `items/changed`
-    /// per subscription that any of them touched, with its owner's name.
-    pub fn changed(
-        &mut self,
-        workspace: &Workspace,
-        changes: &[NoteChange],
-    ) -> Vec<(String, News)> {
-        let rels: Vec<&str> = (changes.iter())
-            .map(|c| match c {
-                NoteChange::Created(r) | NoteChange::Changed(r) | NoteChange::Removed(r) => {
-                    r.as_str()
-                }
-            })
-            .collect();
+    /// What each subscriber hears about these files having been read again (workspace-relative
+    /// paths with their extension, as items name them): one `items/changed` per subscription
+    /// that any of them touched, with its owner's name.
+    pub fn changed(&mut self, workspace: &Workspace, files: &[String]) -> Vec<(String, News)> {
         let mut out = Vec::new();
         for sub in &mut self.subs {
             let (mut added, mut updated, mut removed) = (Vec::new(), Vec::new(), Vec::new());
-            for rel in &rels {
-                let now = match workspace
-                    .notes
-                    .binary_search_by(|n| n.rel.as_str().cmp(rel))
-                {
-                    Ok(i) => sub.select.in_note(workspace, &workspace.notes[i]),
-                    Err(_) => Vec::new(),
+            for rel in files {
+                let now = match file(workspace, rel) {
+                    Some(f) => sub.select.in_file(workspace, f),
+                    None => Vec::new(),
                 };
                 let old: HashMap<String, String> = sub
                     .seen
-                    .remove(*rel)
+                    .remove(rel)
                     .unwrap_or_default()
                     .into_iter()
                     .collect();
@@ -575,6 +633,10 @@ pub(crate) struct Written {
 /// Make the edit on disk: the note's owner makes its new text, which is written with
 /// `write::replace`, refused if the note changed since it was read.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
+    if let Some(f) = (workspace.owned.iter()).find(|f| f.items.iter().any(|i| i.id == req.id)) {
+        let message = format!("{} is read by {}, which can't edit it yet", f.rel, f.owner);
+        return Err(Error::new(Reason::Refused, message));
+    }
     let item = (workspace.notes.iter())
         .flat_map(|n| workspace.items(n))
         .find(|i| i.id == req.id)

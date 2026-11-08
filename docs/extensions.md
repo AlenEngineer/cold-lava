@@ -790,8 +790,9 @@ new = "kanban.new"         # the command that makes one
 
 ### Owners and types
 
-*(design: the next slice of file types; Markdown is behind the owner interface:
-`crates/engine/src/owner/`)*
+*(design: the next slice of file types; Markdown is behind the owner interface, and owners in
+other processes give items and links: "Owners and types, as built" below; edits and renames
+through owners are design)*
 
 **Separated by file type, united by type data.** Types are what the user works with; a file type
 only decides how data is written down. A task is a `task` whether it is a line in a note, a card
@@ -871,9 +872,9 @@ graph all see the new date. None of them knew what a canvas is.
   attachment link does), and as bookmarks. Enter on any of these, or following the link, sends
   the owner `file/open {path}`. The owner shows the file in a view; the view's `view/open`
   puts where you were in Back's history, so `Ctrl-o` returns to the note the link was in. A
-  kind nobody owns behaves as before: not in the tree, and a link to it creates a note. Owned
-  files are not yet links in the index, so the graph shows a link to one as unresolved and
-  backlinks don't list it; tidy no longer calls it unresolved, since the file exists.
+  kind nobody owns behaves as before: not in the tree, and a link to it creates a note. A link
+  to an owned file resolves in the index and the graph, and the file's own links are
+  backlinks ("Owners and types, as built").
 - **File messages** (`crates/engine/src/files.rs`, answered by the core: `Core::read_file`,
   `write_file`, `create_file`, `files`). Paths are workspace-relative, `/`-separated:
 
@@ -913,9 +914,69 @@ graph all see the new date. None of them knew what a canvas is.
   `file/open`, since only `view/open` brings a view to the front. `csv-table.drive` checks it
   through the menu (open from the tree, an edit saved, a change made outside with the drive
   step `write`, a link, the switcher, a new table), and `ext/process.rs` checks the retry.
-- **Not yet:** owners contributing items and links ("Joining the workspace"), previews, the
-  whiteboard as an owner, a view kind for images, and a way for the host to bring an open
-  view to the front.
+- **Not yet:** previews, the whiteboard as an owner, a view kind for images, and a way for the
+  host to bring an open view to the front.
+
+### Owners and types, as built
+
+- **The owner interface** is `crates/engine/src/owner/`. Markdown is the first owner, in-process
+  (`owner/markdown.rs`): `read` (a note's links, tags and aliases, when it is scanned), `items`
+  (on first use), `edit` (one item → the note's new text: `edit::plan` for `set-field`,
+  `tasks::toggle_text` for `toggle`) and `relink` (rename's link rewriting; the `Rewriter` only
+  says what each link becomes). The engine writes what `edit` made with `write::replace`, so a
+  note is written in one place. `scripts/bench-items.py` measured no change.
+- **`file/read`** (host → owner, a request) `{path, rev, text}` answers `{items, links}`
+  (`owner/given.rs`, pinned by tests). An item is a Markdown piece `{place, text}`, read by the
+  Markdown owner in the workspace's flavour, so `task` and the user's types match in it as in a
+  note, or a typed item `{place, type, fields}` of a loaded type, each value read as its
+  field's type (`Matcher::given`). A link is `{target, place, text}`; the links in pieces are
+  read with them. Unknown keys are refused, and a type that isn't loaded or a field it doesn't
+  have is reported and that item left out.
+- **Where an owned file lives.** `Workspace::owned`, beside the notes: each file with its owner,
+  the `rev` its items and links were read from, its items and its links, and the owner's place
+  for each (`Owned::places` by item id, `Owned::links`), kept off the items so notes' items
+  don't grow. An item's id hashes its file, its kind and the owner's place (and, in a piece,
+  its key there, as in a note), so it is stable across processes and restarts. `items/query` and `items/subscribe` answer from
+  the notes, then the owned files; a filter's `folder` sees the file's path, and `tag` matches
+  none. Subscriptions key their state by file path with its extension, so an owned file's news
+  is one more `items/changed`.
+- **Links.** The resolver finds owned files by path or by name with their extension
+  (`Resolver::resolve_owned`), so `[[Eruptions.csv]]` counts as an outgoing link and the graph
+  draws the file as a node. An owned file's links resolve like a note's: they are backlinks
+  (`index::From::Owned`, with the place), edges in the graph, and tidy counts them (a note they
+  link to isn't an orphan, a link to nothing is unresolved). Enter on such a backlink sends the
+  owner `file/open {path, place}`.
+- **Opening at a place.** `workspace/open` takes an optional `item` (an id): on a file another
+  owner reads, its owner gets `file/open` with that item's place. The agenda and the table pass
+  the row's item. `view/open` takes an optional `select`, so the owner opens its view at the row
+  before the first frame.
+- **Asking, and the cache** (`owner/cache.rs`, `Core::set_owners`, `take_reads`,
+  `file_given`). When the menu opens a workspace it tells the core each owned kind with its
+  owner's name and version. The core lists those files, reads each one's `rev`, and takes what
+  the owner gave for that `rev` from `~/.cache/cold-lava/owners/<hash of the workspace's
+  path>-<owner>-<version>.json` (`{owner, version, files: {path: {rev, given}}}`, written after
+  the frame an answer came in); a file it has nothing for is still in the index, with no items,
+  and its owner is asked. The cache keeps the owner's answer, not items, so a change to the
+  workspace's types applies at once. The watcher's `FileChanged` for an owned kind reads the
+  `rev` again and asks again when it changed; a file removed leaves the index and the cache.
+- **Answers arrive later.** `Process` sends `file/read` as a request and hands the answer to
+  `Host::file_given`, which only the file's owner may call; the core installs it when the file
+  is still that `rev` (else asks again), resolves links again and queues `items/changed` and
+  `Event::OwnedChanged`, which the menu reads before it draws (backlinks, counts, news). An
+  error, an answer that doesn't parse, no answer in 10 s or an owner that stopped is
+  `Event::OwnerTrouble` on the status line, and the file keeps what it had. Nothing waits for an
+  owner: the scan and the menu go on.
+- **The example** `examples/extensions/csv-table` answers `file/read` with each row as a one-row
+  Markdown table under the file's header (place: its first cell), and a cell that starts with
+  `- ` as Markdown of its own (place: `row#column`). `Volcanoes/Eruptions.csv` (`Volcano, Year,
+  VEI, Notes`, with `[[links]]` and a task) is then `eruption` rows, matched by a second
+  table-row shape of that type in the example workspace's `types.toml`, five backlinks on
+  Krakatoa and a task in the agenda. `csv-items.drive` checks it through the menu, and
+  `ext/process.rs` through the real transport.
+- **Not yet:** `items/edit` on an item in an owned file is refused as `refused` (`file/edit`),
+  a rename doesn't rewrite links in owned files, the CLI's commands (`agenda`, `items`, `table`)
+  don't read owned files (they start no extension; the cache could serve them), owner-shipped
+  types need a shape like any type, and an owned file has no backlinks pane of its own.
 
 ## Commands
 
@@ -1023,7 +1084,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
 
 - The host calls the extension: `initialize` (capabilities, the API version and the
   `commands` it registers), `command/run` (`id`, `args`: one of its commands),
-  `view/render`, `shutdown`, and `file/open` and `file/changed` for a kind of file it owns.
+  `view/render`, `shutdown`, and `file/open`, `file/changed` and `file/read` for a kind of file
+  it owns.
   - The editor gets `editor/open` (a note, and a `jump` to a line, heading or block),
     `editor/save`, `editor/renamed` (`from`, `to`) and `editor/deleted` (`note`: it went to
     the trash; forget it without writing it back).
@@ -1070,7 +1132,8 @@ during the call, and `view/open` names its view at once; the rest are queued.
   `capabilities.methods`, the methods it may call; its answer is not read, but an error stops
   it. `command/run` (`id`, `args`) is a request, so a refusal (the error's message) and a
   missing answer show on the status line. `shutdown` is a request, then `exit` a notification,
-  as LSP does. `items/changed`, `items/reset`, `view/event`, `view/closed`, `pane/message`,
+  as LSP does. `file/read` (`path`, `rev`, `text`) is a request, answered with `{items,
+  links}` ("Owners and types, as built"). `items/changed`, `items/reset`, `view/event`, `view/closed`, `pane/message`,
   `pane/exited`, `file/open`, `file/changed` and the `editor/*` messages are notifications, the same `{"method", "params"}` the in-process types pin.
   Commands come from the manifest, not from `initialize`, so the menu's command table and
   `config.toml`'s keys are checked before any extension starts.
@@ -1081,8 +1144,9 @@ during the call, and `view/open` names its view at once; the rest are queued.
   extension's own part of the first status line, kept until it sends another), `command/run`
   (`id`, `args`), `workspace/saved` and `editor/opened` (`note`), `pane/open` (`program`,
   `args`, answered with `{pane}`) and `pane/input` (`pane`, `text`), each answered `null` once
-  queued. The view gateway's: `view/open` (`content`, answered with `{view}`), `view/update`
-  (`view`, `content`, `select`) and `view/close` (`view`), and `workspace/open` (`note`, `line`);
+  queued. The view gateway's: `view/open` (`content`, optional `select`, answered with
+  `{view}`), `view/update` (`view`, `content`, `select`) and `view/close` (`view`), and
+  `workspace/open` (`note`, `line`, optional `item`);
   a view over the limits is refused as `refused`. The same methods sent as notifications do the
   same and get no answer.
 - **Errors.** A refusal of the workspace gateway is code `-32000` with the refusal as `data`:
@@ -1206,9 +1270,9 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   `crates/cold-lava/src/views.rs`, drawn with the list and table views. An extension reaches
   them through `Host` (`open_view`, `update_view`, `close_view`, `open_note`), and one in a
   process through `rpc::serve`, so both take one path.
-- **Extension → host.** `view/open {content}` answers `{view}`, an id the host picks, unique
-  among every extension's. `content` is a list or a table as their JSON is pinned, with a
-  `kind`:
+- **Extension → host.** `view/open {content, select}` answers `{view}`, an id the host picks,
+  unique among every extension's, and shows it at the row `select` names (optional). `content`
+  is a list or a table as their JSON is pinned, with a `kind`:
 
   ```json
   {"jsonrpc": "2.0", "id": 4, "method": "view/open", "params": {"content": {
@@ -1224,7 +1288,8 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   on updates, and `select` (optional) names a row to select now or when it shows up. `view/close
   {view}` closes it. `workspace/open {note, line}` opens a note (an item's `note`, relative to
   the workspace, or an absolute path inside it; anything else is refused on the status line) at
-  a line, from wherever the user is, which Back returns to. Updates and closes of a view the
+  a line, from wherever the user is, which Back returns to; with `item`, an item's id, a file
+  another owner reads opens in its owner at the item's place. Updates and closes of a view the
   extension doesn't have do nothing. The design's `title` and `place` are not there: the
   content has its title, and there is one place, the main area, until a second is needed.
 - **Host → extension.** Notifications: `view/event {view, event, …}` with the list's and the
@@ -1348,8 +1413,10 @@ after its call returns, so it never holds the menu's state.
       links contributed by owners; the whiteboard as the first owner. *(in progress: owners in
       manifests, `file/open`, `file/changed`, `workspace/read`, `workspace/write`,
       `workspace/create` and `workspace/files`, with the `csv-table` example, are done ("File
-      types, as built"), and so is Markdown as the first owner behind the owner interface
-      (`owner/markdown.rs`); next are items and links contributed by other owners ("Owners and types"), then the whiteboard)*
+      types, as built"), and so are Markdown as the first owner behind the owner interface and
+      items and links from owners in other processes, cached by `rev` ("Owners and types, as
+      built"); next are edits and renames through owners (`file/edit`, "Owners and types"),
+      then the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.

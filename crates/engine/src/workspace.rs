@@ -5,6 +5,7 @@ use crate::items::{self, Item};
 use crate::owner::markdown;
 use anyhow::{Context, Result};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -41,20 +42,39 @@ pub struct Note {
     pub items: OnceLock<Vec<Item>>,
 }
 
-/// One link in a note.
+/// One link in a note, or in a file another owner reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ref {
     pub target: String,
-    /// 1-based line number.
+    /// 1-based line number: in the note, or in an owner's Markdown piece.
     pub line: usize,
     /// The line it's on, trimmed (for showing backlinks in context).
     pub context: String,
+}
+
+/// A file of a kind an extension owns, with the items and links its owner gave
+/// (docs/extensions.md, "Owners and types").
+pub struct Owned {
+    /// Workspace-relative, with its extension.
+    pub rel: String,
+    pub path: PathBuf,
+    /// The extension that owns its kind.
+    pub owner: String,
+    /// The version its items and links were read from; `None` until the owner answers.
+    pub rev: Option<String>,
+    pub items: Vec<Item>,
+    /// The owner's place for each item (a row's key, a card's id), by id: `file/open` takes it.
+    pub places: HashMap<String, String>,
+    /// Its links, each with the owner's place for it.
+    pub links: Vec<(Ref, String)>,
 }
 
 pub struct Workspace {
     pub root: PathBuf,
     pub name: String,
     pub notes: Vec<Note>,
+    /// Files other owners read, by `rel`. The core keeps them (`Core::set_owners`).
+    pub owned: Vec<Owned>,
     /// What items depend on (flavour, Tasks and daily-note settings), read on first use.
     pub item_settings: OnceLock<items::Settings>,
 }
@@ -149,6 +169,7 @@ pub fn scan(root: &Path) -> Result<Workspace> {
         root,
         name,
         notes,
+        owned: Vec::new(),
         item_settings: OnceLock::new(),
     })
 }

@@ -183,7 +183,7 @@ impl Tables {
                 .collect(),
         };
         let view = host
-            .open_view(Content::Table(table))
+            .open_view(Content::Table(table), None)
             .map_err(|e| e.to_string())?;
         self.picker = Some(view);
         Ok(())
@@ -200,7 +200,7 @@ impl Tables {
             Err(e) => return Err(e.to_string()),
         };
         let built = feed.table();
-        match host.open_view(Content::Table(built.table)) {
+        match host.open_view(Content::Table(built.table), None) {
             Ok(view) => {
                 let shown = Shown {
                     feed,
@@ -324,7 +324,7 @@ impl Extension for Tables {
                 match event {
                     view::Event::Activated { row } => {
                         if let Some(at) = shown.at.get(&row) {
-                            host.open_note(at.note.clone().into(), Some(at.line));
+                            host.open_note(at.note.clone().into(), Some(at.line), Some(row));
                         }
                     }
                     view::Event::Edit { row, column, value } => {
@@ -513,6 +513,7 @@ mod tests {
             Effect::OpenView {
                 view: picker,
                 content: Content::Table(types),
+                ..
             },
         ] = &effects[..]
         else {
@@ -535,6 +536,7 @@ mod tests {
             Effect::OpenView {
                 view,
                 content: Content::Table(table),
+                ..
             },
         ] = &effects[..]
         else {
@@ -582,6 +584,7 @@ mod tests {
             Effect::OpenNote {
                 note,
                 line: Some(_),
+                ..
             },
         ] = &effects[..]
         else {

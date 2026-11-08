@@ -342,7 +342,7 @@ impl Agenda {
         };
         let day = (self.today)();
         let built = build(&types, feed.items(), day, false);
-        match host.open_view(Content::List(built.list)) {
+        match host.open_view(Content::List(built.list), None) {
             Ok(view) => {
                 self.shown = Some(Shown {
                     view,
@@ -419,7 +419,7 @@ impl Extension for Agenda {
             ViewNews::Event(Happened { view, event }) if view == shown.view => match event {
                 view::Event::Activated { row } => {
                     if let Some(at) = shown.at.get(&row) {
-                        host.open_note(at.note.clone().into(), Some(at.line));
+                        host.open_note(at.note.clone().into(), Some(at.line), Some(row));
                     }
                 }
                 view::Event::Toggled { row } => shown.tick(&row, host),
@@ -666,7 +666,7 @@ mod tests {
             args: Json::Null,
         };
         let effects = r.call(ext, Some(&mut core), |e, h| e.command(run, h));
-        let [Effect::OpenView { view, content }] = &effects[..] else {
+        let [Effect::OpenView { view, content, .. }] = &effects[..] else {
             panic!("{effects:?}")
         };
         let Content::List(list) = content else {
@@ -699,11 +699,12 @@ mod tests {
             "the ticked row stays"
         );
 
-        let open = happened(view::Event::Activated { row: rent });
+        let open = happened(view::Event::Activated { row: rent.clone() });
         let effects = r.call(ext, Some(&mut core), |e, h| e.view(open, h));
         let note = Effect::OpenNote {
             note: "Plan.md".into(),
             line: Some(1),
+            item: Some(rent),
         };
         assert_eq!(effects, [note]);
 

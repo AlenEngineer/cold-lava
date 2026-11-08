@@ -56,6 +56,10 @@ impl Drawn {
             (Drawn::Table(v), Content::Table(t)) => v.update(t),
             (_, other) => *self = Drawn::new(other),
         }
+        self.select(select);
+    }
+
+    fn select(&mut self, select: Option<String>) {
         match (self, select) {
             (Drawn::List(v), Some(id)) => v.select(&id),
             (Drawn::Table(v), Some(id)) => v.select(&id),
@@ -66,16 +70,24 @@ impl Drawn {
 
 impl Views {
     /// Show `content` as `id`. Returns the owner's oldest view when it was closed to make room.
-    pub fn open(&mut self, owner: ExtId, id: ViewId, content: Content) -> Option<ViewId> {
+    pub fn open(
+        &mut self,
+        owner: ExtId,
+        id: ViewId,
+        content: Content,
+        select: Option<String>,
+    ) -> Option<ViewId> {
         let mine = self.open.iter().filter(|v| v.owner == owner).count();
         let closed = (mine >= PER_EXTENSION)
             .then(|| self.open.iter().position(|v| v.owner == owner))
             .flatten()
             .map(|i| self.open.remove(i).id);
+        let mut drawn = Drawn::new(content);
+        drawn.select(select);
         self.open.push(Open {
             owner,
             id,
-            drawn: Drawn::new(content),
+            drawn,
             pending: None,
         });
         closed
@@ -239,9 +251,10 @@ mod tests {
     fn updates_wait_for_the_frame_and_the_last_one_wins() {
         let mut views = Views::default();
         let id = ViewId(1);
-        views.open(A, id, list("First", &["r1", "r2"]));
+        views.open(A, id, list("First", &["r1", "r2"]), Some("r2".into()));
         let v = views.get_mut(A, id).unwrap();
-        v.key(press(KeyCode::Down));
+        assert_eq!(v.selected().as_deref(), Some("r2"), "opened at a row");
+        v.key(press(KeyCode::Up));
         v.key(press(KeyCode::Down));
         assert_eq!(v.selected().as_deref(), Some("r2"));
 
@@ -273,7 +286,7 @@ mod tests {
     #[test]
     fn keys_become_events_by_row_id_and_esc_closes() {
         let mut views = Views::default();
-        views.open(A, ViewId(1), list("L", &["r1"]));
+        views.open(A, ViewId(1), list("L", &["r1"]), None);
         let v = views.get_mut(A, ViewId(1)).unwrap();
         v.key(press(KeyCode::Down));
         let toggled = Event::Toggled { row: "r1".into() };
@@ -290,12 +303,15 @@ mod tests {
     #[test]
     fn an_extension_has_a_bounded_number_of_views() {
         let mut views = Views::default();
-        views.open(B, ViewId(100), list("B", &[]));
+        views.open(B, ViewId(100), list("B", &[]), None);
         for i in 0..PER_EXTENSION as u32 {
-            assert_eq!(views.open(A, ViewId(i), list("A", &[])), None);
+            assert_eq!(views.open(A, ViewId(i), list("A", &[]), None), None);
         }
         let n = PER_EXTENSION as u32;
-        assert_eq!(views.open(A, ViewId(n), list("A", &[])), Some(ViewId(0)));
+        assert_eq!(
+            views.open(A, ViewId(n), list("A", &[]), None),
+            Some(ViewId(0))
+        );
         assert!(views.has(B, ViewId(100)), "another's stay");
         views.retain_owners(|e| e != A);
         assert!(!views.has(A, ViewId(n)));

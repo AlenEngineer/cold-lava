@@ -891,12 +891,49 @@ fn the_python_example_extension_opens_edits_and_makes_csv_files() {
     let eruptions = std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv"));
     assert_eq!(
         eruptions.unwrap(),
-        "volcano,year,vei\nVesuvius,79,5\nKrakatoa,1884,6\nMount St. Helens,1980,5\n\
-         Eyjafjallajökull,2010,4\nTambora,1815,7\n",
+        "Volcano,Year,VEI,Notes\n[[Vesuvius]],79,5,\n\
+         [[Krakatoa]],1884,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
+         [[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n[[Tambora]],1815,7,\n",
         "both edits saved, on top of the change made outside"
     );
     let made = std::fs::read_to_string(workspace.join("Untitled.csv"));
     assert_eq!(made.unwrap(), "name,notes\n,\n");
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_csv_files_rows_links_and_tasks_join_the_workspace() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-items");
+    let home = dir.join("home");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions/csv-table"),
+        &home.join(".config/cold-lava/extensions/csv-table"),
+    );
+    let out = drive_with(
+        "csv-items.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cached = std::fs::read_dir(home.join(".cache/cold-lava/owners"))
+        .unwrap()
+        .count();
+    assert_eq!(cached, 1, "what csv-table gave is kept in the drive's home");
     let log = home.join(".cache/cold-lava/extensions/csv-table.log");
     assert_eq!(
         std::fs::read_to_string(log).unwrap(),

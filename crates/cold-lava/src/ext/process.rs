@@ -15,6 +15,7 @@ use super::transport::{self, Connector, Launch, Received, Transport};
 use super::view::ViewNews;
 use super::{CommandRequest, EditorRequest, Extension, FileNews, Host, Manifest, PaneNews};
 use crate::gateway::{News, SubId};
+use crate::owner::cache::FileRead;
 
 /// At most this many messages are read from one extension per frame; the rest wait for the next.
 const PER_POLL: usize = 64;
@@ -65,6 +66,11 @@ struct Live {
 enum Asked {
     Initialize,
     Command(String),
+    /// `file/read` for the file at `path`, at version `rev`.
+    Read {
+        path: String,
+        rev: String,
+    },
 }
 
 impl Process {
@@ -142,6 +148,11 @@ impl Process {
         for sub in live.subscriptions {
             let _ = host.unsubscribe_items(sub);
         }
+        for (asked, _) in live.waiting.into_values() {
+            if let Asked::Read { path, rev } = asked {
+                host.file_given(&path, &rev, Err(format!("it stopped: {why}")));
+            }
+        }
         let last = (self.launch.log.as_ref())
             .and_then(|log| std::fs::read_to_string(log).ok())
             .and_then(|text| {
@@ -171,6 +182,12 @@ impl Process {
             (Asked::Command(_), Err(e)) => {
                 host.notify(format!("{}: {}", self.manifest.name, e.message))
             }
+            (Asked::Read { path, rev }, outcome) => {
+                let given = outcome.map_err(|e| e.message).and_then(|v| {
+                    serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
+                });
+                host.file_given(&path, &rev, given);
+            }
             _ => {}
         }
     }
@@ -185,7 +202,7 @@ impl Process {
             .filter(|(_, (asked, sent))| {
                 let limit = match asked {
                     Asked::Initialize => t.start,
-                    Asked::Command(_) => t.request,
+                    Asked::Command(_) | Asked::Read { .. } => t.request,
                 };
                 sent.elapsed() > limit
             })
@@ -204,6 +221,11 @@ impl Process {
                 Asked::Command(command) => {
                     let secs = t.request.as_secs_f32();
                     host.notify(format!("{name} didn't answer {command} in {secs} s"));
+                }
+                Asked::Read { path, rev } => {
+                    let secs = t.request.as_secs_f32();
+                    let why = format!("it didn't answer file/read in {secs} s");
+                    host.file_given(&path, &rev, Err(why));
                 }
             }
         }
@@ -242,13 +264,26 @@ impl Extension for Process {
     }
 
     fn file(&mut self, news: FileNews, host: &mut Host<'_>) {
-        if let FileNews::Open { path } = &news
+        if let FileNews::Open { path, .. } = &news
             && !self.running()
         {
             let name = &self.manifest.name;
             return host.notify(format!("{name} isn't running, so it can't open {path}"));
         }
         self.tell(rpc::notification(news), host);
+    }
+
+    fn read_file(&mut self, read: FileRead, host: &mut Host<'_>) {
+        if !self.running() {
+            let why = format!("{} isn't running", self.manifest.name);
+            return host.file_given(&read.path, &read.rev, Err(why));
+        }
+        let asked = Asked::Read {
+            path: read.path.clone(),
+            rev: read.rev.clone(),
+        };
+        let params = serde_json::to_value(read).unwrap_or_default();
+        self.ask(asked, "file/read", params, host);
     }
 
     fn workspace(&mut self, root: Option<&Path>, host: &mut Host<'_>) {
@@ -649,6 +684,97 @@ mod tests {
     }
 
     #[test]
+    fn the_csv_example_says_what_its_files_say_as_items_and_links() {
+        use crate::core::Event;
+        use crate::gateway::Page;
+        use crate::owner::cache::Kind;
+        if !has_python() {
+            return;
+        }
+        let (mut r, mut core, root, dir) = python_example("csv-table", "python-csv-read");
+        r.call(ExtId(0), Some(&mut core), |e, h| {
+            e.workspace(Some(&root), h)
+        });
+        core.set_owners(r.owned_kinds(), None);
+        assert_eq!(
+            r.owned_kinds(),
+            [Kind {
+                extension: "csv".into(),
+                owner: "csv-table".into(),
+                version: "0.1.0".into(),
+            }]
+        );
+        let reads = core.take_reads();
+        assert_eq!(reads.len(), 1, "{reads:?}");
+        for (_, read) in reads {
+            r.call(ExtId(0), Some(&mut core), |e, h| e.read_file(read, h));
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while core.index.workspace.owned[0].rev.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "csv-table didn't answer file/read"
+            );
+            r.call(ExtId(0), Some(&mut core), |e, h| e.poll(h));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let events = core.poll();
+        assert!(events.contains(&Event::OwnedChanged("Volcanoes/Eruptions.csv".into())));
+        let found = |core: &Core, kind: &str| {
+            let select = Select {
+                kind: kind.into(),
+                filter: Filter {
+                    folder: Some("Volcanoes".into()),
+                    ..Filter::default()
+                },
+            };
+            let query = Query {
+                select,
+                page: Page::default(),
+            };
+            core.query_items(&query).unwrap().items
+        };
+        let tasks = found(&core, "task");
+        assert_eq!(tasks.len(), 1);
+        let places = &core.index.workspace.owned[0].places;
+        let place = places.get(&tasks[0].id).map(String::as_str);
+        assert_eq!(place, Some("[[Krakatoa]]#Notes"));
+        let rows = found(&core, "eruption");
+        let volcanoes: Vec<String> = (rows.iter())
+            .map(|i| serde_json::to_value(i).unwrap()["volcanoes"][0].to_string())
+            .collect();
+        assert_eq!(
+            volcanoes,
+            [
+                r#""Vesuvius""#,
+                r#""Krakatoa""#,
+                r#""Mount St. Helens""#,
+                r#""Eyjafjallajökull""#
+            ]
+        );
+        let krakatoa = core.index.by_rel("Volcanoes/Krakatoa").unwrap();
+        assert_eq!(core.index.backlinks(krakatoa).len(), 5, "two from the CSV");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("csv-table.log")).unwrap(),
+            ""
+        );
+
+        r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(None, h));
+        let read = crate::owner::cache::FileRead {
+            path: "Volcanoes/Eruptions.csv".into(),
+            rev: "0".into(),
+            text: String::new(),
+        };
+        r.call(ExtId(0), Some(&mut core), |e, h| e.read_file(read, h));
+        let trouble = core.poll().into_iter().find_map(|e| match e {
+            Event::OwnerTrouble { message, .. } => Some(message),
+            _ => None,
+        });
+        assert_eq!(trouble.as_deref(), Some("csv-table isn't running"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn the_csv_example_saves_on_top_of_a_change_it_hadnt_heard_of() {
         use crate::ext::FileNews;
         use crate::ext::view::{Event, Happened, ViewNews};
@@ -660,17 +786,20 @@ mod tests {
             e.workspace(Some(&root), h)
         });
         let path = "Volcanoes/Eruptions.csv";
-        let open = FileNews::Open { path: path.into() };
+        let open = FileNews::Open {
+            path: path.into(),
+            place: None,
+        };
         r.call(ExtId(0), Some(&mut core), |e, h| e.file(open, h));
         let opened = until(&mut r, &mut core, |e| matches!(e, Effect::OpenView { .. }));
         let Effect::OpenView { view, .. } = opened else {
             unreachable!()
         };
-        let elsewhere = "volcano,year,vei\nTambora,1815,7\nKrakatoa,1883,6\n";
+        let elsewhere = "Volcano,Year,VEI,Notes\nTambora,1815,7,\nKrakatoa,1883,6,\n";
         std::fs::write(root.join(path), elsewhere).unwrap();
         let event = Event::Edit {
             row: "2".into(),
-            column: "vei".into(),
+            column: "VEI".into(),
             value: "6.5".into(),
         };
         let edit = ViewNews::Event(Happened { view, event });
@@ -681,7 +810,7 @@ mod tests {
         });
         let text = std::fs::read_to_string(root.join(path)).unwrap();
         assert_eq!(
-            text, "volcano,year,vei\nTambora,1815,7\nKrakatoa,1883,6.5\n",
+            text, "Volcano,Year,VEI,Notes\nTambora,1815,7,\nKrakatoa,1883,6.5,\n",
             "refused as changed, read again, and the cell set in what was there"
         );
         r.shutdown();
@@ -745,6 +874,7 @@ mod tests {
         let Effect::OpenView {
             view,
             content: Content::List(list),
+            ..
         } = opened
         else {
             panic!("{opened:?}")
@@ -782,7 +912,7 @@ mod tests {
         let open = happened(Event::Activated { row: first });
         r.call(ExtId(0), Some(&mut core), |e, h| e.view(open, h));
         let note = until(&mut r, &mut core, |e| matches!(e, Effect::OpenNote { .. }));
-        let Effect::OpenNote { note, line } = note else {
+        let Effect::OpenNote { note, line, .. } = note else {
             unreachable!()
         };
         assert_eq!(note, Path::new("Journal/2026-11-05.md"));

@@ -25,7 +25,7 @@ mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, merge,
-    paths, rename, search, tasks, templates, tidy, trash, types, workspace, write,
+    owner, paths, rename, search, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;

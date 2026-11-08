@@ -166,7 +166,11 @@ enum Call {
     #[serde(rename = "pane/input")]
     PaneInput { pane: PaneId, text: String },
     #[serde(rename = "view/open")]
-    OpenView { content: Content },
+    OpenView {
+        content: Content,
+        #[serde(default)]
+        select: Option<String>,
+    },
     #[serde(rename = "view/update")]
     UpdateView {
         view: ViewId,
@@ -181,6 +185,8 @@ enum Call {
         note: PathBuf,
         #[serde(default)]
         line: Option<usize>,
+        #[serde(default)]
+        item: Option<String>,
     },
 }
 
@@ -273,8 +279,9 @@ pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Result
         Call::EditorOpened { note } => host.editor_opened(note),
         Call::OpenPane(spec) => return Ok(json!({ "pane": host.open_pane(spec) })),
         Call::PaneInput { pane, text } => host.pane_input(pane, text),
-        Call::OpenView { content } => {
-            return answer(host.open_view(content).map(|view| json!({ "view": view })));
+        Call::OpenView { content, select } => {
+            let opened = host.open_view(content, select);
+            return answer(opened.map(|view| json!({ "view": view })));
         }
         Call::UpdateView {
             view,
@@ -282,7 +289,7 @@ pub fn serve(method: &str, params: Option<Value>, host: &mut Host<'_>) -> Result
             select,
         } => return answer(host.update_view(view, content, select)),
         Call::CloseView { view } => host.close_view(view),
-        Call::OpenNote { note, line } => host.open_note(note, line),
+        Call::OpenNote { note, line, item } => host.open_note(note, line, item),
     }
     Ok(Value::Null)
 }
@@ -521,7 +528,8 @@ mod tests {
         let dir = workspace("views");
         let mut core = Core::open(&dir).unwrap();
         let list = json!({"kind": "list", "title": "Open", "groups": []});
-        let (opened, effects) = served(&mut core, &[], "view/open", json!({"content": list}));
+        let open = json!({"content": list, "select": "r1"});
+        let (opened, effects) = served(&mut core, &[], "view/open", open);
         assert_eq!(opened, Ok(json!({"view": 1})), "no permission needed");
         let Content::List(sent) = serde_json::from_value(list.clone()).unwrap() else {
             unreachable!()
@@ -531,7 +539,8 @@ mod tests {
             effects,
             [Effect::OpenView {
                 view: ViewId(1),
-                content: content.clone()
+                content: content.clone(),
+                select: Some("r1".into()),
             }]
         );
         let update = json!({"view": 1, "content": list, "select": "r2"});
@@ -552,6 +561,7 @@ mod tests {
         let note = Effect::OpenNote {
             note: "Plan.md".into(),
             line: Some(1),
+            item: None,
         };
         assert_eq!(effects, [note]);
 

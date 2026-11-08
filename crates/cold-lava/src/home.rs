@@ -19,9 +19,10 @@ use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Edit, Op, Reason};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
+use crate::index::Backlink;
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
-use crate::paths::{config_dir, home_dir};
+use crate::paths::{self, config_dir, home_dir};
 use crate::reader::{Reader, Spot};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
@@ -353,6 +354,8 @@ struct BackRow {
     name: String,
     path: PathBuf,
     line: usize,
+    /// In a file another owner reads: the owner's place for the link, which opens it there.
+    place: Option<String>,
     context: String,
 }
 
@@ -928,7 +931,11 @@ impl Home {
                     p.term.send(text.as_bytes());
                 }
             }
-            Effect::OpenView { view, content } => self.open_view(ext, view, content),
+            Effect::OpenView {
+                view,
+                content,
+                select,
+            } => self.open_view(ext, view, content, select),
             Effect::UpdateView {
                 view,
                 content,
@@ -940,13 +947,19 @@ impl Home {
                 self.views.close(ext, view);
                 self.forget_closed_views();
             }
-            Effect::OpenNote { note, line } => self.open_for(ext, &note, line),
+            Effect::OpenNote { note, line, item } => self.open_for(ext, &note, line, item),
         }
     }
 
     /// Show an extension's new view in place of what showed, which Back returns to.
-    fn open_view(&mut self, ext: ExtId, view: ViewId, content: crate::ext::view::Content) {
-        if let Some(oldest) = self.views.open(ext, view, content) {
+    fn open_view(
+        &mut self,
+        ext: ExtId,
+        view: ViewId,
+        content: crate::ext::view::Content,
+        select: Option<String>,
+    ) {
+        if let Some(oldest) = self.views.open(ext, view, content, select) {
             self.forget_closed_views();
             let closed = ViewNews::Closed { view: oldest };
             self.call(ext, |e, host| e.view(closed, host));
@@ -962,10 +975,21 @@ impl Home {
 
     /// `workspace/open`: the note at `note` (inside the workspace, absolute or relative to it),
     /// at `line`, from where you are.
-    fn open_for(&mut self, ext: ExtId, note: &Path, line: Option<usize>) {
+    fn open_for(&mut self, ext: ExtId, note: &Path, line: Option<usize>, item: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
         };
+        let owned = self.core.as_ref().and_then(|c| {
+            let rel = note.strip_prefix(c.root()).unwrap_or(note);
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            (c.index.workspace.owned.iter()).find(|f| f.rel == rel)
+        });
+        if let Some(f) = owned {
+            let place = item.and_then(|id| f.places.get(&id).cloned());
+            let path = f.path.clone();
+            self.mode = Mode::Normal;
+            return self.open_file_at(&path, place);
+        }
         let path = root.join(note);
         let inside = match (path.canonicalize(), root.canonicalize()) {
             (Ok(p), Ok(r)) => p.starts_with(r) && p.is_file(),
@@ -1127,6 +1151,7 @@ impl Home {
             remember(&dir, &v.path);
         }
         self.tell_workspace(false);
+        self.set_owners();
         self.select_row(0);
     }
 
@@ -1160,9 +1185,10 @@ impl Home {
             .backlinks(i)
             .iter()
             .map(|b| BackRow {
-                name: ix.workspace.notes[b.from].name.clone(),
-                path: ix.path(b.from),
+                name: ix.name(b.from).to_string(),
+                path: ix.path_of(b.from),
                 line: b.line,
+                place: b.place.clone(),
                 context: b.context.clone(),
             })
             .collect();
@@ -1536,6 +1562,8 @@ impl Home {
         let tree_changed = events.iter().any(|e| match e {
             CoreEvent::FileChanged(rel) => self.registry.owner_of(rel).is_some(),
             CoreEvent::NoteChanged(_)
+            | CoreEvent::OwnedChanged(_)
+            | CoreEvent::OwnerTrouble { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -1569,6 +1597,8 @@ impl Home {
             CoreEvent::Rescanned => true,
             CoreEvent::BoardChanged(_)
             | CoreEvent::FileChanged(_)
+            | CoreEvent::OwnedChanged(_)
+            | CoreEvent::OwnerTrouble { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -1579,12 +1609,21 @@ impl Home {
             r.invalidate();
         }
         for e in events {
-            if let CoreEvent::ItemEdited { note, by, what, .. } = e {
-                let name = note.rsplit('/').next().unwrap_or(note);
-                self.flash(format!("{by}: {what} on {name}"));
+            match e {
+                CoreEvent::ItemEdited { note, by, what, .. } => {
+                    let name = note.rsplit('/').next().unwrap_or(note);
+                    self.flash(format!("{by}: {what} on {name}"));
+                }
+                CoreEvent::OwnerTrouble {
+                    owner,
+                    path,
+                    message,
+                } => self.flash(format!("{owner} couldn't read {path}: {message}")),
+                _ => {}
             }
         }
         self.tell_owners(&root, events);
+        self.ask_owners();
     }
 
     /// The tree of the workspace at `root`, with the files extensions open.
@@ -1612,13 +1651,43 @@ impl Home {
     /// Hand the file at `path` to the extension that opens its kind (`file/open`), which shows
     /// it in a view.
     fn open_file(&mut self, path: &Path) {
+        self.open_file_at(path, None);
+    }
+
+    /// `open_file`, at the owner's `place` for an item or a link in it.
+    fn open_file_at(&mut self, path: &Path, place: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
         };
         let rel = path.strip_prefix(&root).unwrap_or(path);
         let rel = rel.to_string_lossy().replace('\\', "/");
         if let Some((owner, _)) = self.registry.owner_of(&rel) {
-            self.call(owner, |e, host| e.file(FileNews::Open { path: rel }, host));
+            let news = FileNews::Open { path: rel, place };
+            self.call(owner, |e, host| e.file(news, host));
+        }
+    }
+
+    /// Tell the core who owns which kind of file, so their files' items and links join it
+    /// (from the cache, else by asking the owners).
+    fn set_owners(&mut self) {
+        let kinds = self.registry.owned_kinds();
+        if let Some(core) = self.core.as_mut() {
+            let cache = paths::cache_dir().map(|d| d.join("cold-lava/owners"));
+            core.set_owners(kinds, cache.as_deref());
+        }
+        self.ask_owners();
+    }
+
+    /// Hand each owner the `file/read` requests the core has for it.
+    fn ask_owners(&mut self) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        for (owner, read) in core.take_reads() {
+            match self.registry.by_name(&owner) {
+                Some(ext) => self.call(ext, |e, host| e.read_file(read, host)),
+                None => drop(read),
+            }
         }
     }
 
@@ -2158,7 +2227,7 @@ impl Home {
         let view = match from {
             PeekFrom::Link => self.peek_link(),
             PeekFrom::Backlink => {
-                let b = self.backs.get(self.bsel);
+                let b = self.backs.get(self.bsel).filter(|b| b.place.is_none());
                 b.map(|b| self.peek_note(b.path.clone(), Some(Jump::Line(b.line))))
             }
         };
@@ -2383,7 +2452,10 @@ impl Home {
             MenuAction::Today => self.open_today(),
             MenuAction::AddWorkspace => self.mode = Mode::AddWorkspace(String::new()),
             MenuAction::NewFolder => self.mode = Mode::NewFolder(String::new()),
-            MenuAction::RestartExtensions => self.tell_workspace(true),
+            MenuAction::RestartExtensions => {
+                self.tell_workspace(true);
+                self.set_owners();
+            }
             MenuAction::Rescan => {
                 if let Some(core) = self.core.as_mut() {
                     core.rescan(); // applied on the next poll, as a Rescanned event
@@ -4215,13 +4287,13 @@ impl Home {
             let inside = |i: usize| doomed_path(&ix.workspace.notes[i].path);
             for i in (0..ix.workspace.notes.len()).filter(|&i| inside(i)) {
                 notes += 1;
-                backlinks.extend(ix.backlinks(i).iter().filter(|b| !inside(b.from)).map(|b| {
-                    BackRow {
-                        name: ix.workspace.notes[b.from].name.clone(),
-                        path: ix.path(b.from),
-                        line: b.line,
-                        context: b.context.clone(),
-                    }
+                let stays = |b: &&Backlink| !doomed_path(&ix.path_of(b.from));
+                backlinks.extend(ix.backlinks(i).iter().filter(stays).map(|b| BackRow {
+                    name: ix.name(b.from).to_string(),
+                    path: ix.path_of(b.from),
+                    line: b.line,
+                    place: b.place.clone(),
+                    context: b.context.clone(),
                 }));
             }
         }
@@ -4678,6 +4750,10 @@ impl Home {
     /// Open the note a backlink comes from, at the line with the link.
     fn open_backlink(&mut self, i: usize) {
         let Some(b) = self.backs.get(i) else { return };
+        if let Some(place) = b.place.clone() {
+            let path = b.path.clone();
+            return self.open_file_at(&path, Some(place));
+        }
         let (path, line) = (b.path.clone(), b.line);
         let from = self.here();
         self.leave(from, &path, Some(&Jump::Line(line)));

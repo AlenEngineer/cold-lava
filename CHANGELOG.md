@@ -28,6 +28,19 @@ change commands, keys and file formats; patch versions only fix things.
   workspace has `Volcanoes/Eruptions.csv`, linked from *Start Here*.
 - `cold-lava drive` scripts can `write FILE TEXT`, changing a file in the workspace the way
   another program would.
+- Owners give items and links. cold-lava asks a file's owner `file/read` (`path`, `rev`,
+  `text`), and the answer's items join `items/query` and `items/subscribe`, so the agenda and
+  the type tables show them: Markdown pieces (`{place, text}`), where `task` and your types match
+  as in a note, and typed items (`{place, type, fields}`) of a loaded type. Its links, and the
+  links in its pieces, are backlinks (Enter opens the file in its owner at the link's place),
+  edges in the graph and part of tidy; a link to an owned file resolves. What an owner gave is
+  kept by file version under `~/.cache/cold-lava/owners/`, so a workspace opens with it at once,
+  and an owner is asked again only when a file changes; one that fails or doesn't answer in
+  10 s is reported and its files keep what they had. `workspace/open` takes an `item`, which
+  opens a file another owner reads at that item, and `view/open` a `select`. csv-table gives
+  each row as a one-row Markdown table and each Markdown cell as Markdown, and the example
+  workspace's `Volcanoes/Eruptions.csv` now has `Volcano, Year, VEI, Notes` with links and a
+  task, which the `eruption` type matches with a second table-row shape.
 
 - Extensions in their own process. A folder in `~/.config/cold-lava/extensions/` with an
   `extension.toml` (`name`, `version`, `description`, `run`, `permissions`, `[[commands]]`,

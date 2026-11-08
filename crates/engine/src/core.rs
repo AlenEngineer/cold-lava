@@ -6,10 +6,13 @@ use crate::bookmarks::Bookmarks;
 use crate::files;
 use crate::gateway::{self, Edit, Edited, Found, News, Query, Select, SubId, Subscriptions};
 use crate::index::Index;
-use crate::workspace::{self, NoteChange};
+use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
+use crate::owner::given::{self, Given};
+use crate::workspace::{self, NoteChange, Owned};
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -28,6 +31,16 @@ pub enum Event {
     /// Another file that isn't a note was created, changed or removed: workspace-relative,
     /// with its extension. Its owner hears `file/changed`.
     FileChanged(String),
+    /// The items and links of a file another owner reads changed: its owner answered, or it
+    /// was found, or it is gone. Workspace-relative, with its extension.
+    OwnedChanged(String),
+    /// An owner couldn't read one of its files, or what it gave didn't all read. Its items stay
+    /// as they were.
+    OwnerTrouble {
+        owner: String,
+        path: String,
+        message: String,
+    },
     /// Obsidian's graph settings (colour groups) changed.
     GraphSettingsChanged,
     /// `.obsidian/bookmarks.json` changed; `Core::bookmarks` has been read again.
@@ -83,6 +96,8 @@ pub struct Core {
     items: Subscriptions,
     /// What item subscribers are to hear, with the owner of each subscription.
     news: Vec<(String, News)>,
+    /// The extensions that own kinds of file, and what they gave.
+    owners: Owners,
 }
 
 impl Core {
@@ -105,6 +120,7 @@ impl Core {
             unseen: Vec::new(),
             items: Subscriptions::default(),
             news: Vec::new(),
+            owners: Owners::default(),
         })
     }
 
@@ -155,7 +171,14 @@ impl Core {
     /// Read these notes again, and queue what item subscribers are to hear about them.
     fn refresh(&mut self, paths: &[PathBuf]) -> Vec<Event> {
         let changes = self.index.refresh(paths);
-        let news = self.items.changed(&self.index.workspace, &changes);
+        let files: Vec<String> = (changes.iter())
+            .map(|c| match c {
+                NoteChange::Created(r) | NoteChange::Changed(r) | NoteChange::Removed(r) => {
+                    format!("{r}.md")
+                }
+            })
+            .collect();
+        let news = self.items.changed(&self.index.workspace, &files);
         self.news.extend(news);
         changes.into_iter().map(Event::from).collect()
     }
@@ -165,8 +188,158 @@ impl Core {
         self.index = index;
         self.reload_bookmarks();
         self.changed.clear();
+        if !self.owners.kinds().is_empty() {
+            let _ = self.owned_scan();
+            self.index.relink();
+        }
         let news = self.items.reset(&self.index.workspace);
         self.news.extend(news);
+    }
+
+    /// The extensions that own these kinds of file: their files' items and links join the
+    /// workspace. What each owner gave before comes from `cache` (a folder; `None`: none), and
+    /// it is asked (`take_reads`) for the files it gave nothing for at their version now.
+    pub fn set_owners(&mut self, kinds: Vec<OwnedKind>, cache: Option<&Path>) {
+        self.owners = Owners::new(self.root(), kinds, cache);
+        let had = !self.index.workspace.owned.is_empty();
+        self.index.workspace.owned.clear();
+        let events = self.owned_scan();
+        if had || !events.is_empty() {
+            self.index.relink();
+            let news = self.items.reset(&self.index.workspace);
+            self.news.extend(news);
+        }
+        self.broadcast(&events);
+        self.unseen.extend(events);
+    }
+
+    /// Find every file of an owned kind again, and read each the way `owned_changed` does,
+    /// without telling subscribers (after a scan, which is a reset). Returns its events.
+    fn owned_scan(&mut self) -> Vec<Event> {
+        let mut rels = Vec::new();
+        for k in self.owners.kinds() {
+            rels.extend(files::list(&self.index, &k.extension).files);
+        }
+        (self.index.workspace.owned).retain(|f| rels.contains(&f.rel));
+        let (changed, mut events) = self.owned_read(&rels);
+        events.extend(changed.into_iter().map(Event::OwnedChanged));
+        events
+    }
+
+    /// `file/read` requests for the owners, each with its owner's name: files whose version
+    /// they gave nothing for. Their answers come back through `file_given`.
+    pub fn take_reads(&mut self) -> Vec<(String, FileRead)> {
+        self.owners.take_wanted()
+    }
+
+    /// `owner` answered `file/read` for `path` at `rev`: its items and links join the workspace
+    /// when the file is still that version; else it is asked again. An error is reported and
+    /// leaves the file's items as they were. Its events come from the next `poll`.
+    pub fn file_given(&mut self, owner: &str, path: &str, rev: &str, given: Result<Given, String>) {
+        if self.owners.owner_of(path) != Some(owner) {
+            return;
+        }
+        self.owners.answered(owner, path, rev, given.as_ref().ok());
+        let events = match given {
+            Ok(_) => self.owned_changed(&[path.to_string()]),
+            Err(message) => vec![Event::OwnerTrouble {
+                owner: owner.to_string(),
+                path: path.to_string(),
+                message,
+            }],
+        };
+        self.broadcast(&events);
+        self.unseen.extend(events);
+    }
+
+    /// Owned files at `rels` may have changed on disk: read them again, and tell subscribers.
+    fn owned_changed(&mut self, rels: &[String]) -> Vec<Event> {
+        let (changed, mut events) = self.owned_read(rels);
+        if !changed.is_empty() {
+            self.index.relink();
+            let news = self.items.changed(&self.index.workspace, &changed);
+            self.news.extend(news);
+        }
+        events.extend(changed.into_iter().map(Event::OwnedChanged));
+        events
+    }
+
+    /// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
+    /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
+    /// items or links changed, and what went wrong. Links are not resolved again here.
+    fn owned_read(&mut self, rels: &[String]) -> (Vec<String>, Vec<Event>) {
+        let root = self.root().to_path_buf();
+        let (mut changed, mut events) = (Vec::new(), Vec::new());
+        for rel in rels {
+            let Some(owner) = self.owners.owner_of(rel).map(String::from) else {
+                continue;
+            };
+            let owned = &mut self.index.workspace.owned;
+            let at = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
+            let Ok(bytes) = std::fs::read(root.join(rel)) else {
+                if let Ok(i) = at {
+                    owned.remove(i);
+                    self.owners.forget(rel);
+                    changed.push(rel.clone());
+                }
+                continue;
+            };
+            let rev = files::rev(&bytes);
+            let i = match at {
+                Ok(i) if owned[i].rev.as_deref() == Some(rev.as_str()) => continue,
+                Ok(i) => i,
+                Err(i) => {
+                    let file = Owned {
+                        rel: rel.clone(),
+                        path: root.join(rel),
+                        owner: owner.clone(),
+                        rev: None,
+                        items: Vec::new(),
+                        places: HashMap::new(),
+                        links: Vec::new(),
+                    };
+                    owned.insert(i, file);
+                    changed.push(rel.clone());
+                    i
+                }
+            };
+            let settings = self.index.workspace.item_settings();
+            let Some(given) = self.owners.given(&owner, rel, &rev) else {
+                match String::from_utf8(bytes) {
+                    Ok(text) => self.owners.ask(
+                        &owner,
+                        FileRead {
+                            path: rel.clone(),
+                            rev,
+                            text,
+                        },
+                    ),
+                    Err(_) => events.push(Event::OwnerTrouble {
+                        owner,
+                        path: rel.clone(),
+                        message: "it isn't UTF-8 text".into(),
+                    }),
+                }
+                continue;
+            };
+            let read = given::read(rel, given, settings);
+            if !read.problems.is_empty() {
+                events.push(Event::OwnerTrouble {
+                    owner,
+                    path: rel.clone(),
+                    message: read.problems.join("; "),
+                });
+            }
+            let file = &mut self.index.workspace.owned[i];
+            file.rev = Some(rev);
+            file.items = read.items;
+            file.places = read.places;
+            file.links = read.links;
+            if changed.last() != Some(rel) {
+                changed.push(rel.clone());
+            }
+        }
+        (changed, events)
     }
 
     fn broadcast(&mut self, events: &[Event]) {
@@ -286,6 +459,7 @@ impl Core {
     /// Collect file-system events, and once things settle, update the index and emit events.
     /// Call it regularly (every frame is fine: it's cheap when nothing changed).
     pub fn poll(&mut self) -> Vec<Event> {
+        self.owners.save();
         let unseen = std::mem::take(&mut self.unseen);
         self.collect_fs_events();
         if self.due.is_none_or(|t| Instant::now() < t) {
@@ -309,11 +483,13 @@ impl Core {
                 .into_iter()
                 .map(Event::BoardChanged),
         );
-        events.extend(
-            std::mem::take(&mut self.files)
-                .into_iter()
-                .map(Event::FileChanged),
-        );
+        let files = std::mem::take(&mut self.files);
+        let owned: Vec<String> = (files.iter())
+            .filter(|f| self.owners.owner_of(f).is_some())
+            .cloned()
+            .collect();
+        events.extend(self.owned_changed(&owned));
+        events.extend(files.into_iter().map(Event::FileChanged));
         if std::mem::take(&mut self.graph_settings) {
             events.push(Event::GraphSettingsChanged);
         }
@@ -502,6 +678,164 @@ mod tests {
 
         core.rescan();
         assert!(wait_for(&mut core, |e| e.contains(&Event::Rescanned)).contains(&Event::Rescanned));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn owned_files_join_the_index_with_what_their_owner_gave() {
+        use crate::gateway::{Page, Query, Select};
+        use crate::index::From;
+        let dir = std::env::temp_dir().join(format!("cold-lava-owned-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("w/.cold-lava")).unwrap();
+        std::fs::write(dir.join("w/Krakatoa.md"), "# Krakatoa\n").unwrap();
+        std::fs::write(dir.join("w/Lava.md"), "See [[Eruptions.csv]].\n").unwrap();
+        std::fs::write(dir.join("w/Eruptions.csv"), "volcano,vei\nKrakatoa,6\n").unwrap();
+        std::fs::write(
+            dir.join("w/.cold-lava/types.toml"),
+            "version = 1\n[types.eruption]\non = \"table-row\"\nwhere.header = [\"VEI\"]\n\
+             fields.vei = { column = \"VEI\", type = \"number\" }\n\
+             fields.volcano = { column = \"Volcano\", type = \"link\" }\n",
+        )
+        .unwrap();
+        let kinds = || {
+            vec![OwnedKind {
+                extension: "csv".into(),
+                owner: "csv-table".into(),
+                version: "1".into(),
+            }]
+        };
+        let cache = dir.join("cache");
+        let mut core = Core::open(&dir.join("w")).unwrap();
+        core.set_owners(kinds(), Some(&cache));
+        let reads = core.take_reads();
+        assert_eq!(reads.len(), 1);
+        let (owner, read) = &reads[0];
+        assert_eq!(
+            (owner.as_str(), read.path.as_str()),
+            ("csv-table", "Eruptions.csv")
+        );
+        assert!(read.text.starts_with("volcano,vei"));
+        let lava = core.index.by_rel("Lava").unwrap();
+        assert_eq!(
+            core.index.counts(lava).1,
+            1,
+            "a link to an owned file leads somewhere"
+        );
+        assert!(core.take_reads().is_empty(), "asked once");
+
+        let tasks = Select {
+            kind: "task".into(),
+            ..Select::default()
+        };
+        let sub = core.subscribe_items("agenda", tasks.clone()).unwrap();
+        let given: Given = serde_json::from_value(serde_json::json!({
+            "items": [
+                {"place": "2", "text": "- [ ] Read the report on [[Krakatoa]] 📅 2026-11-20"},
+                {"place": "2", "type": "eruption", "fields": {"volcano": "Krakatoa", "vei": "6"}},
+                {"place": "3", "type": "nothing"},
+            ],
+            "links": [{"target": "Krakatoa", "place": "2", "text": "Krakatoa,6"}],
+        }))
+        .unwrap();
+        core.file_given(
+            "someone-else",
+            "Eruptions.csv",
+            &read.rev,
+            Ok(given.clone()),
+        );
+        assert!(
+            core.index.workspace.owned[0].items.is_empty(),
+            "only its owner answers"
+        );
+        core.file_given("csv-table", "Eruptions.csv", &read.rev, Ok(given));
+        let events = core.poll();
+        assert!(
+            events.contains(&Event::OwnedChanged("Eruptions.csv".into())),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::OwnerTrouble { message, .. }
+                if message.contains("no type called nothing"))),
+            "{events:?}"
+        );
+        let query = |core: &Core, kind: &str| {
+            let q = Query {
+                select: Select {
+                    kind: kind.into(),
+                    ..Select::default()
+                },
+                page: Page::default(),
+            };
+            core.query_items(&q).unwrap().items
+        };
+        let found = query(&core, "task");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].note, "Eruptions.csv");
+        let places = &core.index.workspace.owned[0].places;
+        assert_eq!(places.get(&found[0].id).map(String::as_str), Some("2"));
+        let json = serde_json::to_value(&found[0]).unwrap();
+        assert_eq!(json["status_type"], "todo");
+        assert_eq!(json["due"], "2026-11-20");
+        let rows = query(&core, "eruption");
+        let json = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(
+            (json["vei"].clone(), json["volcano"].clone()),
+            (6.into(), "Krakatoa".into())
+        );
+        let news = core.take_item_news();
+        assert!(
+            matches!(&news[..], [(who, News::Changed { subscription, added, .. })]
+                if who == "agenda" && *subscription == sub && added.len() == 1),
+            "{news:?}"
+        );
+        let krakatoa = core.index.by_rel("Krakatoa").unwrap();
+        let backs = core.index.backlinks(krakatoa);
+        assert_eq!(backs.len(), 2, "the piece's link and the owner's");
+        assert!(backs.iter().all(|b| b.from == From::Owned(0)));
+        assert_eq!(core.index.name(backs[0].from), "Eruptions.csv");
+
+        // Opened again, with nothing to ask: what it gave comes from the cache.
+        let mut again = Core::open(&dir.join("w")).unwrap();
+        again.set_owners(kinds(), Some(&cache));
+        assert!(again.take_reads().is_empty());
+        assert_eq!(query(&again, "task").len(), 1);
+
+        // Changed on disk: asked again, and what it gave stays until it answers.
+        let changed = |core: &mut Core| {
+            core.files.push("Eruptions.csv".into());
+            core.schedule(Duration::ZERO);
+            wait_for(core, |e| {
+                e.contains(&Event::OwnedChanged("Eruptions.csv".into()))
+            })
+        };
+        std::fs::write(again.root().join("Eruptions.csv"), "volcano,vei\n").unwrap();
+        let mut reads = Vec::new();
+        for _ in 0..100 {
+            again.files.push("Eruptions.csv".into());
+            again.schedule(Duration::ZERO);
+            again.poll();
+            reads.extend(again.take_reads());
+            if !reads.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert_eq!(reads.len(), 1);
+        assert_eq!(query(&again, "task").len(), 1);
+        again.file_given("csv-table", "Eruptions.csv", "old", Err("it broke".into()));
+        assert!(
+            again
+                .poll()
+                .iter()
+                .any(|e| matches!(e, Event::OwnerTrouble { .. }))
+        );
+        std::fs::remove_file(again.root().join("Eruptions.csv")).unwrap();
+        let events = changed(&mut again);
+        assert!(events.contains(&Event::OwnedChanged("Eruptions.csv".into())));
+        assert!(query(&again, "task").is_empty(), "gone with its file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

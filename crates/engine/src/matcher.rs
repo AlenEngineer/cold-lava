@@ -256,6 +256,51 @@ impl Matcher {
         self.types.iter().map(|t| t.name.as_str())
     }
 
+    /// An item of the type `kind` with these fields, as an owner gave them: each value read as
+    /// its field's type (as it would be written, or as JSON), a list field from a list. A value
+    /// that doesn't read is counted in `unparsed`; a field the type doesn't have is an error.
+    pub fn given(
+        &self,
+        kind: &str,
+        given: &serde_json::Map<String, Json>,
+    ) -> Result<Typed, String> {
+        let ty = (self.types.iter())
+            .find(|t| t.name == kind)
+            .ok_or_else(|| format!("no type called {kind}"))?;
+        let mut typed = Typed {
+            kind: ty.name.clone(),
+            is: ty.is.clone(),
+            fields: Fields::new(ty.names.clone()),
+            spans: Spans::default(),
+            unparsed: 0,
+            place: Place::default(),
+        };
+        for (name, v) in given {
+            let i = (ty.schema.iter())
+                .position(|(n, ..)| **n == **name)
+                .ok_or_else(|| format!("{kind} has no field {name}"))?;
+            let (_, value, list) = &ty.schema[i];
+            let given: Vec<&Json> = match v {
+                Json::Array(vs) if *list => vs.iter().collect(),
+                Json::Null => Vec::new(),
+                v => vec![v],
+            };
+            let read: Vec<Json> = (given.iter())
+                .filter_map(|v| match v {
+                    Json::String(s) => parse(value, s, &self.daily.format),
+                    v => parse(value, &v.to_string(), &self.daily.format),
+                })
+                .collect();
+            typed.unparsed += given.len() - read.len();
+            match (*list, read.first()) {
+                (true, _) if !read.is_empty() => typed.fields.set(i, Json::Array(read)),
+                (false, Some(one)) => typed.fields.set(i, one.clone()),
+                _ => {}
+            }
+        }
+        Ok(typed)
+    }
+
     /// Which shapes the note passes: folder, frontmatter properties and tags. Checked once per
     /// note, before any block.
     pub fn gate(&self, note: &Note) -> Vec<Vec<bool>> {

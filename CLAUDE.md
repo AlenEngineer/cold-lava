@@ -68,7 +68,12 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:
   the link parser, `items::extract`, `edit::plan`, `tasks::toggle_text` and rename's link
-  rewriting, each reached through it. Read and change notes through the owner.
+  rewriting, each reached through it. Read and change notes through the owner. An extension
+  can own another kind: `owner/given.rs` reads its `file/read` answer (Markdown pieces, typed
+  items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
+  `~/.cache/cold-lava/owners/`) and says what to ask. `Core::set_owners`, `take_reads` and
+  `file_given` run it; owned files are `Workspace::owned`, beside the notes, and the index,
+  the gateway, the graph and tidy read them too.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one pulldown-cmark pass in the workspace's flavour; `Workspace::items()` caches them per note on
   first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`
