@@ -461,8 +461,9 @@ recurs and its priority on a chip, and on the right the date (red when overdue) 
 | `d` | show / hide done and cancelled tasks (tasks closed today always show, where they were) |
 | `Esc` / `q` | back to the menu |
 
-The agenda follows changes on disk, keeping your place. A task changed elsewhere since the
-agenda was read isn't touched: the status line says so and the agenda reads it again.
+The agenda follows changes on disk, keeping your place, and the date: left open past midnight,
+it files tasks by the new day. A task changed elsewhere since the agenda was read isn't
+touched: the status line says so and the agenda reads it again.
 
 ### Agenda, daily notes and tasks (for scripts and status bars)
 
