@@ -6875,10 +6875,7 @@ fn draw_help(
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().fg(ACCENT))
-                .title(format!(
-                    " cold-lava {} · any key closes ",
-                    env!("CARGO_PKG_VERSION")
-                )),
+                .title(format!(" cold-lava {} · any key closes ", crate::VERSION)),
         ),
         r,
     );

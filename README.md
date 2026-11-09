@@ -791,7 +791,8 @@ list of workspaces stay out of it; `cold-lava drive --real-home` uses yours, and
 
 cold-lava uses [semantic versioning](https://semver.org). Before 1.0, a minor version (0.**2**.0)
 may change commands, keys or file formats; a patch version (0.1.**1**) only fixes things. Every
-release is listed in [CHANGELOG.md](CHANGELOG.md), and `cold-lava --version` prints yours.
+release is listed in [CHANGELOG.md](CHANGELOG.md), and `cold-lava --version` prints yours, with the commit it was built from (`cold-lava 0.3.0
+(1a2b3c4d5e6f)`; none for a build outside a git checkout).
 
 Releases are automatic. To cut one, open a PR that:
 
