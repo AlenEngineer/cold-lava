@@ -121,10 +121,11 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
     let mut edges = Vec::new();
     for (ni, n) in v.notes.iter().enumerate() {
         let from = note_node[ni];
+        let dir = crate::resolver::dir_of(&n.rel);
         for t in &n.links {
             let tl = t.to_lowercase();
             let tl = tl.trim_start_matches("./").trim_start_matches('/');
-            let to = match (resolver.resolve(t), resolver.resolve_owned(t)) {
+            let to = match (resolver.resolve(dir, t), resolver.resolve_owned(dir, t)) {
                 (Some(target), _) => note_node[target],
                 (None, Some(file)) => owned_node[file],
                 (None, None) if o.unresolved => {
@@ -163,10 +164,11 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
 
     for (fi, f) in v.owned.iter().enumerate() {
         let from = owned_node[fi];
+        let dir = crate::resolver::dir_of(&f.rel);
         for (r, _) in &f.links {
             let to = match (
-                resolver.resolve(&r.target),
-                resolver.resolve_owned(&r.target),
+                resolver.resolve(dir, &r.target),
+                resolver.resolve_owned(dir, &r.target),
             ) {
                 (Some(target), _) => note_node[target],
                 (None, Some(file)) => owned_node[file],
@@ -444,6 +446,79 @@ mod tests {
         let a = g.find("n:a").unwrap();
         let target = g.edges.iter().find(|e| e.0 == a).unwrap().1;
         assert_eq!(g.nodes[target].rel.as_deref(), Some("Dup"));
+    }
+
+    /// Each `./` and `../` form leads to the file its path names, and backlinks, the graph,
+    /// following the link and a rename all say the same file.
+    #[test]
+    fn relative_links_lead_to_one_note_everywhere() {
+        use crate::index::{From, Index};
+        let dir = std::env::temp_dir().join(format!("cl-graph-relative-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let linking = [
+            ("B/Sub/Wiki up.md", "[[../Top]]", "B/Top"),
+            ("B/Sub/Markdown up.md", "[t](../Top.md)", "B/Top"),
+            ("B/Sub/Wiki up twice.md", "[[../../Top|top]]", "Top"),
+            (
+                "B/Sub/Markdown up twice.md",
+                "[t](../../Top.md#Heading)",
+                "Top",
+            ),
+            ("B/Wiki here.md", "[[./Top]]", "B/Top"),
+            ("B/Markdown here.md", "[t](./Top.md)", "B/Top"),
+            ("B/Sub/Wiki here deep.md", "[[./Top]]", "B/Sub/Top"),
+            ("B/Markdown bare.md", "[t](Top.md)", "Top"),
+        ];
+        for rel in ["Top.md", "B/Top.md", "B/Sub/Top.md"] {
+            std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(rel), "# Heading\n").unwrap();
+        }
+        for (rel, text, _) in linking {
+            std::fs::write(dir.join(rel), text).unwrap();
+        }
+        let ix = Index::build(crate::workspace::scan(&dir).unwrap());
+        let g = build(&ix.workspace, ALL, &HashMap::new());
+        let node = |rel: &str| g.find(&format!("n:{}", rel.to_lowercase())).unwrap();
+        for (rel, _, to) in linking {
+            let (from, target) = (
+                ix.by_rel(rel.trim_end_matches(".md")).unwrap(),
+                ix.by_rel(to).unwrap(),
+            );
+            let note = &ix.workspace.notes[from];
+            let link = crate::resolver::split_link(&note.refs[0].target);
+            let dir_from = crate::resolver::dir_of(&note.rel);
+            assert_eq!(
+                ix.resolver.resolve(dir_from, &link.note),
+                Some(target),
+                "{rel} follows to {to}"
+            );
+            assert!(
+                ix.backlinks(target)
+                    .iter()
+                    .any(|b| b.from == From::Note(from)),
+                "{rel} is a backlink of {to}"
+            );
+            assert!(
+                g.edges
+                    .contains(&(node(rel.trim_end_matches(".md")), node(to))),
+                "{rel} → {to} in the graph"
+            );
+        }
+        for to in ["Top", "B/Top", "B/Sub/Top"] {
+            let target = ix.by_rel(to).unwrap();
+            let plan = crate::rename::plan(&ix, target, "Elsewhere/Moved.md").unwrap();
+            let mut edited: Vec<&str> = plan.edits.iter().map(|e| e.file.as_str()).collect();
+            let mut linked: Vec<&str> = (linking.iter().filter(|l| l.2 == to))
+                .map(|l| l.0)
+                .collect();
+            edited.sort();
+            linked.sort();
+            assert_eq!(
+                edited, linked,
+                "a rename of {to} rewrites the links that lead to it"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -179,9 +179,7 @@ pub fn report(ix: &Index) -> Report {
         }
         let dir = dir_of(&n.rel);
         // A link to a file that isn't a note (`[[Eruptions.csv]]`) leads somewhere too.
-        let nowhere = |r: &&crate::workspace::Ref| {
-            ix.resolver.resolve(&r.target).is_none() && files.resolve(dir, &r.target).is_none()
-        };
+        let nowhere = |r: &&crate::workspace::Ref| files.resolve(dir, &r.target).is_none();
         for r in n.refs.iter().filter(nowhere) {
             let g = groups
                 .entry(r.target.to_lowercase())

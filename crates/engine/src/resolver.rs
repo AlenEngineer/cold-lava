@@ -15,65 +15,88 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-/// The index's resolver: link targets (`Note`, `folder/Note`, `Note.md`) to notes, by
-/// workspace-relative path first, then by file name, preferring the shallowest match. Files
-/// other owners read are found the same way, by their name with its extension.
+/// The index's resolver: where a link leads among the notes (`resolve`) or the files other
+/// owners read (`resolve_owned`, `Eruptions.csv`). Same rules and tables as `Files`, which also
+/// sees attachments, so both give one answer.
 pub struct Resolver {
-    by_rel: HashMap<String, usize>,
-    by_name: HashMap<String, usize>,
-    owned_by_rel: HashMap<String, usize>,
-    owned_by_name: HashMap<String, usize>,
+    notes: Table,
+    owned: Table,
 }
 
 impl Resolver {
     pub fn new(v: &Workspace) -> Resolver {
-        let mut by_rel = HashMap::new();
-        let mut by_name: HashMap<String, usize> = HashMap::new();
-        for (i, n) in v.notes.iter().enumerate() {
-            by_rel.insert(n.rel.to_lowercase(), i);
-            let e = by_name.entry(n.name.to_lowercase()).or_insert(i);
-            if n.rel.matches('/').count() < v.notes[*e].rel.matches('/').count() {
-                *e = i;
-            }
-        }
-        let mut owned_by_rel = HashMap::new();
-        let mut owned_by_name: HashMap<String, usize> = HashMap::new();
-        for (i, f) in v.owned.iter().enumerate() {
-            let rel = f.rel.to_lowercase();
-            let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
-            let e = owned_by_name.entry(name).or_insert(i);
-            if f.rel.matches('/').count() < v.owned[*e].rel.matches('/').count() {
-                *e = i;
-            }
-            owned_by_rel.insert(rel, i);
-        }
         Resolver {
-            by_rel,
-            by_name,
-            owned_by_rel,
-            owned_by_name,
+            notes: Table::new(v.notes.iter().map(|n| n.rel.as_str()).enumerate(), None),
+            owned: Table::new(v.owned.iter().map(|f| f.rel.as_str()).enumerate(), None),
         }
     }
 
-    /// `target` without `#heading` / `|alias` (as stored in `Note::links`).
-    pub fn resolve(&self, target: &str) -> Option<usize> {
-        let t = target.trim().to_lowercase();
-        let t = t.strip_suffix(".md").unwrap_or(&t);
-        let t = t.trim_start_matches("./").trim_start_matches('/');
-        self.by_rel
-            .get(t)
-            .or_else(|| self.by_name.get(t.rsplit('/').next().unwrap_or(t)))
-            .copied()
+    /// The note a link written in a file in folder `dir` leads to. `target` is without
+    /// `#heading` / `|alias`, as in `Note::links`; `dir` is `""` for a name typed by the user.
+    pub fn resolve(&self, dir: &str, target: &str) -> Option<usize> {
+        self.notes.find(dir, target).map(|(i, _)| i)
     }
 
-    /// `resolve`, for a file another owner reads (`Workspace::owned`): `Eruptions.csv`.
-    pub fn resolve_owned(&self, target: &str) -> Option<usize> {
-        let t = target.trim().to_lowercase();
-        let t = t.trim_start_matches("./").trim_start_matches('/');
-        self.owned_by_rel
-            .get(t)
-            .or_else(|| self.owned_by_name.get(t.rsplit('/').next().unwrap_or(t)))
-            .copied()
+    /// `resolve`, for a file another owner reads (`Workspace::owned`).
+    pub fn resolve_owned(&self, dir: &str, target: &str) -> Option<usize> {
+        self.owned.find(dir, target).map(|(i, _)| i)
+    }
+}
+
+/// Files by workspace path and by name, the shallowest of a name winning (of several as deep,
+/// the first by path): the table Obsidian's rules look a link up in.
+struct Table {
+    by_path: HashMap<String, usize>,
+    by_name: HashMap<String, usize>,
+}
+
+impl Table {
+    /// From each file's index and workspace path; links can't find the file at `gone`.
+    fn new<'a>(rels: impl Iterator<Item = (usize, &'a str)>, gone: Option<usize>) -> Table {
+        let mut keys: Vec<(usize, &str)> = rels
+            .filter(|&(i, _)| Some(i) != gone)
+            .map(|(i, rel)| (i, link_key(rel)))
+            .collect();
+        keys.sort_by(|a, b| a.1.cmp(b.1));
+        let mut by_path = HashMap::new();
+        let mut by_name: HashMap<String, (usize, usize)> = HashMap::new();
+        for (i, key) in keys {
+            let key = key.to_lowercase();
+            let depth = key.matches('/').count();
+            let name = key.rsplit('/').next().unwrap_or(&key).to_string();
+            let e = by_name.entry(name).or_insert((i, depth));
+            if depth < e.1 {
+                *e = (i, depth);
+            }
+            by_path.insert(key, i);
+        }
+        let by_name = by_name.into_iter().map(|(n, (i, _))| (n, i)).collect();
+        Table { by_path, by_name }
+    }
+
+    /// The file at a workspace path (notes with or without `.md`).
+    fn path(&self, key: &str) -> Option<usize> {
+        self.by_path.get(&key.to_lowercase()).copied()
+    }
+
+    /// `./` and `../` start from `dir`, the linking file's folder. Any other link is a
+    /// workspace path, then (an attachment, or a path with a folder) a path from `dir`, then a
+    /// name.
+    fn find(&self, dir: &str, target: &str) -> Option<(usize, Via)> {
+        let target = target.trim();
+        let other = attachment_kind(target).is_some();
+        let key = if other { target } else { link_key(target) };
+        let by_path = |p: Option<String>| p.and_then(|p| self.path(&p)).map(|i| (i, Via::Path));
+        if key.starts_with("./") || key.starts_with("../") {
+            return by_path(normalize(&join(dir, key)));
+        }
+        let beside = other || key.contains('/');
+        by_path(Some(key.trim_start_matches('/').to_string()))
+            .or_else(|| by_path(normalize(&join(dir, key)).filter(|_| beside)))
+            .or_else(|| {
+                let name = key.rsplit('/').next().unwrap_or(key).to_lowercase();
+                self.by_name.get(&name).map(|&i| (i, Via::Name))
+            })
     }
 }
 
@@ -168,7 +191,7 @@ pub(crate) fn join(dir: &str, name: &str) -> String {
     }
 }
 
-pub(crate) fn dir_of(rel: &str) -> &str {
+pub fn dir_of(rel: &str) -> &str {
     rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
 
@@ -234,8 +257,7 @@ pub enum Style<'a> {
 pub struct Files {
     /// Workspace-relative, with extension; the index's notes first, in its order.
     pub rels: Vec<String>,
-    by_path: HashMap<String, usize>,
-    by_name: HashMap<String, usize>,
+    table: Table,
     /// How many files have each name.
     names: HashMap<String, usize>,
 }
@@ -270,30 +292,14 @@ impl Files {
     /// The files at `rels`, but links can't find the one at `gone` (it still has an index and a
     /// path, so a link that led to it is written as that path).
     pub(crate) fn without(rels: Vec<String>, gone: Option<usize>) -> Files {
-        let mut order: Vec<usize> = (0..rels.len()).filter(|&i| Some(i) != gone).collect();
-        order.sort_by(|&a, &b| link_key(&rels[a]).cmp(link_key(&rels[b])));
-        let (mut by_path, mut by_name, mut names) = (
-            HashMap::new(),
-            HashMap::<String, usize>::new(),
-            HashMap::new(),
-        );
-        for i in order {
-            let key = link_key(&rels[i]).to_lowercase();
+        let table = Table::new(rels.iter().map(String::as_str).enumerate(), gone);
+        let mut names = HashMap::new();
+        for (_, rel) in rels.iter().enumerate().filter(|&(i, _)| Some(i) != gone) {
+            let key = link_key(rel).to_lowercase();
             let name = key.rsplit('/').next().unwrap_or(&key).to_string();
-            let depth = key.matches('/').count();
-            *names.entry(name.clone()).or_insert(0) += 1;
-            let e = by_name.entry(name).or_insert(i);
-            if depth < link_key(&rels[*e]).matches('/').count() {
-                *e = i;
-            }
-            by_path.insert(key, i);
+            *names.entry(name).or_insert(0) += 1;
         }
-        Files {
-            rels,
-            by_path,
-            by_name,
-            names,
-        }
+        Files { rels, table, names }
     }
 
     /// The file a link written in a file in `dir` leads to (`target` already decoded:
@@ -343,24 +349,11 @@ impl Files {
 
     /// The file at a workspace path (notes with or without `.md`).
     pub(crate) fn path(&self, key: &str) -> Option<usize> {
-        self.by_path.get(&key.to_lowercase()).copied()
+        self.table.path(key)
     }
 
     fn find(&self, dir: &str, target: &str) -> Option<(usize, Via)> {
-        let target = target.trim();
-        let other = attachment_kind(target).is_some();
-        let key = if other { target } else { link_key(target) };
-        let by_path = |p: Option<String>| p.and_then(|p| self.path(&p)).map(|i| (i, Via::Path));
-        if key.starts_with("./") || key.starts_with("../") {
-            return by_path(normalize(&join(dir, key)));
-        }
-        let beside = other || key.contains('/');
-        by_path(Some(key.trim_start_matches('/').to_string()))
-            .or_else(|| by_path(normalize(&join(dir, key)).filter(|_| beside)))
-            .or_else(|| {
-                let name = key.rsplit('/').next().unwrap_or(key).to_lowercase();
-                self.by_name.get(&name).map(|&i| (i, Via::Name))
-            })
+        self.table.find(dir, target)
     }
 
     /// No other file has this name (a note's without `.md`).
@@ -477,17 +470,17 @@ mod tests {
         let ix = example();
         let name = |i: Option<usize>| i.map(|i| ix.workspace.notes[i].rel.clone());
         assert_eq!(
-            name(ix.resolver.resolve("kīlauea")),
+            name(ix.resolver.resolve("", "kīlauea")),
             Some("Volcanoes/Kīlauea".into())
         );
         assert_eq!(
-            name(ix.resolver.resolve("Volcanoes/Vesuvius.md")),
+            name(ix.resolver.resolve("", "Volcanoes/Vesuvius.md")),
             Some("Volcanoes/Vesuvius".into())
         );
-        assert_eq!(ix.resolver.resolve("Lahar"), None);
+        assert_eq!(ix.resolver.resolve("", "Lahar"), None);
         let link = split_link("Volcanoes/K%C4%ABlauea.md#Lava%20lake");
         assert_eq!(
-            name(ix.resolver.resolve(&link.note)),
+            name(ix.resolver.resolve("", &link.note)),
             Some("Volcanoes/Kīlauea".into())
         );
         assert_eq!(link.heading.as_deref(), Some("Lava lake"));
@@ -515,62 +508,40 @@ mod tests {
         assert_eq!(normalize("A/B/../C"), Some("A/C".into()));
     }
 
-    /// Every way a link can be written, and whether the index's `Resolver` (which doesn't know
-    /// the linking file's folder) reads it the same way.
-    const STYLES: [(Style, bool); 7] = [
-        (
-            Style::Wiki {
-                relative: false,
-                folder: false,
-                extension: false,
-            },
-            true,
-        ),
-        (
-            Style::Wiki {
-                relative: false,
-                folder: true,
-                extension: false,
-            },
-            true,
-        ),
-        (
-            Style::Wiki {
-                relative: false,
-                folder: true,
-                extension: true,
-            },
-            true,
-        ),
-        (
-            Style::Wiki {
-                relative: true,
-                folder: false,
-                extension: false,
-            },
-            false,
-        ),
-        (
-            Style::Markdown {
-                root: None,
-                like: "",
-            },
-            false,
-        ),
-        (
-            Style::Markdown {
-                root: Some(""),
-                like: "",
-            },
-            true,
-        ),
-        (
-            Style::Markdown {
-                root: Some("/"),
-                like: "%C4%81",
-            },
-            true,
-        ),
+    /// Every way a link can be written.
+    const STYLES: [Style; 7] = [
+        Style::Wiki {
+            relative: false,
+            folder: false,
+            extension: false,
+        },
+        Style::Wiki {
+            relative: false,
+            folder: true,
+            extension: false,
+        },
+        Style::Wiki {
+            relative: false,
+            folder: true,
+            extension: true,
+        },
+        Style::Wiki {
+            relative: true,
+            folder: false,
+            extension: false,
+        },
+        Style::Markdown {
+            root: None,
+            like: "",
+        },
+        Style::Markdown {
+            root: Some(""),
+            like: "",
+        },
+        Style::Markdown {
+            root: Some("/"),
+            like: "%C4%81",
+        },
     ];
 
     /// Links written to every file from every note, in every style, that don't lead back to it.
@@ -581,12 +552,11 @@ mod tests {
         for from in 0..notes {
             let dir = dir_of(&files.rels[from]);
             for to in 0..files.rels.len() {
-                for (style, index_reads_it) in STYLES {
+                for style in STYLES {
                     let link = files.write(to, dir, style);
                     let target = decode_target(&link);
                     let back = files.resolve(dir, &target);
-                    let indexed =
-                        (to < notes && index_reads_it).then(|| ix.resolver.resolve(&target));
+                    let indexed = (to < notes).then(|| ix.resolver.resolve(dir, &target));
                     if back != Some(to) || indexed.is_some_and(|i| i != Some(to)) {
                         wrong.push(format!(
                             "{} → {} as {style:?}: {link:?} leads to {:?} (index: {:?})",
