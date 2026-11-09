@@ -391,6 +391,7 @@ impl Extension for Agenda {
             types: Default::default(),
             permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
             file_types: Vec::new(),
+            shows: Vec::new(),
         }
     }
 

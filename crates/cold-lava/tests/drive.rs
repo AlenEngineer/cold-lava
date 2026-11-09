@@ -749,7 +749,7 @@ fn a_false_expect_fails_with_its_line_and_the_screen() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("example-workspace 34 notes"),
+        stdout.contains("example-workspace 35 notes"),
         "the screen: {stdout}"
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -958,6 +958,51 @@ fn the_python_example_extension_opens_edits_and_makes_csv_files() {
     let made = std::fs::read_to_string(workspace.join("Untitled.csv"));
     assert_eq!(made.unwrap(), "name,notes\n,\n");
     let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn the_kanban_example_shows_a_markdown_board_that_stays_markdown() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("kanban-board");
+    let home = dir.join("home");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions/kanban-board"),
+        &home.join(".config/cold-lava/extensions/kanban-board"),
+    );
+    let out = drive_with(
+        "kanban-board.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let board = std::fs::read_to_string(dir.join("example-workspace/Inbox/Field Season.md"));
+    let before = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace/Inbox/Field Season.md"),
+    );
+    assert_eq!(
+        board.unwrap(),
+        before.unwrap().replace(
+            "- [ ] Pack the gas masks\n",
+            "- [x] Pack the gas masks ✅ 2026-11-07\n"
+        ),
+        "the card ticked by Markdown's own edit, the rest of the board as it was"
+    );
+    let log = home.join(".cache/cold-lava/extensions/kanban-board.log");
     assert_eq!(
         std::fs::read_to_string(log).unwrap(),
         "",

@@ -33,6 +33,9 @@ pub struct Select {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Filter {
+    /// Items of this one note or file: workspace-relative, with its extension (`Board.md`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Notes in this folder or under it, workspace-relative.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
@@ -319,6 +322,9 @@ impl Filter {
             _ => None,
         };
         let field = |name: &str| fields.and_then(|f| f.get(name)).filter(|v| has_value(v));
+        if self.note.as_ref().is_some_and(|n| *n != file.key()) {
+            return false;
+        }
         if let Some(folder) = &self.folder {
             let folder = folder.trim_matches('/');
             let inside = file.rel().strip_prefix(folder);
@@ -857,6 +863,12 @@ fields.scheduled = { marker = "⏳", type = "date" }
         );
         assert_eq!(f(folder("Work/Deep/")), ["Repot the fern"]);
         assert_eq!(f(folder("Wor")), none, "a folder, not a prefix");
+        let note = |s: &str| Filter {
+            note: Some(s.into()),
+            ..Filter::default()
+        };
+        assert_eq!(f(note("Work/Deep/Notes.md")), ["Repot the fern"]);
+        assert_eq!(f(note("Work/Deep/Notes")), none, "with its extension");
         let tag = Filter {
             tag: Some("#home".into()),
             ..Filter::default()
@@ -1172,6 +1184,7 @@ fields.text = { rest = true }
     #[test]
     fn requests_are_json_rpc_messages() {
         let filter = Filter {
+            note: Some("Journal/2026-11-05.md".into()),
             folder: Some("Journal".into()),
             tag: Some("home".into()),
             status: vec!["todo".into()],
@@ -1191,7 +1204,8 @@ fields.text = { rest = true }
             json!({"method": "items/query", "params": {
                 "kind": "task",
                 "filter": {
-                    "folder": "Journal", "tag": "home", "status": ["todo"],
+                    "note": "Journal/2026-11-05.md", "folder": "Journal", "tag": "home",
+                    "status": ["todo"],
                     "date": {"field": "agenda", "from": "2026-11-01", "to": "2026-11-30"},
                     "text": "rent", "property": "due",
                 },

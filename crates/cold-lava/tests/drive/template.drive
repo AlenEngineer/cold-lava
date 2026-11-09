@@ -1,7 +1,7 @@
 # A new note from the Volcano template, next to Vesuvius: Tab picks the template under the name.
 # tests/drive.rs checks the file and that `cold-lava items` reads Etna as a volcano.
 env COLD_LAVA_EDITOR=none
-wait-for example-workspace 34 notes
+wait-for example-workspace 35 notes
 keys p vesuv
 wait-for Vesuvius
 keys enter
@@ -25,7 +25,7 @@ wait-for Volcanoes/Etna  reading
 expect # Etna
 expect A volcano in ... Is it on the Ring of Fire, or over a Hotspot?
 expect-not {{
-expect example-workspace 35 notes
+expect example-workspace 36 notes
 keys n
 wait-for new note · Tab template
 type Plain

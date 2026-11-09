@@ -332,7 +332,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.read",
         Group::Note,
         "reader / editor",
-        "read the note: switch the pane between the reader and the editor",
+        "read the note: switch the pane between the reader and the editor, or from an extension's view of it to the reader",
         &["v"],
     ),
     cmd(

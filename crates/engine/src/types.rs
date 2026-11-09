@@ -209,6 +209,24 @@ impl Where {
     pub fn is_empty(&self) -> bool {
         self == &Where::default()
     }
+
+    /// How specific it is: each header column and property counts, and so does each kind of
+    /// condition that names something. The more specific of two matching shapes wins.
+    pub fn conditions(&self) -> usize {
+        self.header.len()
+            + self.property.len()
+            + [
+                &self.tag,
+                &self.folder,
+                &self.file_type,
+                &self.section,
+                &self.language,
+                &self.inside,
+            ]
+            .iter()
+            .filter(|l| !l.is_empty())
+            .count()
+    }
 }
 
 /// A field's value type.

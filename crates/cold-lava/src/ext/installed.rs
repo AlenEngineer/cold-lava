@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::transport::{self, Launch};
-use super::{CommandSpec, FileType, Manifest, Permission, TypeSpec, read_only, rpc};
+use super::{CommandSpec, FileType, Manifest, Permission, Shows, TypeSpec, read_only, rpc};
 
 /// Names an installed extension can't take: the built-in ones and the menu's screens, which edits
 /// are attributed to.
@@ -46,6 +46,8 @@ struct File {
     types: Vec<TypeSpec>,
     #[serde(default, rename = "file-types")]
     file_types: Vec<FileType>,
+    #[serde(default)]
+    shows: Vec<Shows>,
 }
 
 fn api() -> u32 {
@@ -167,6 +169,7 @@ fn read(folder: &Path, path: &Path) -> Result<Installed, String> {
         types: file.types,
         permissions: file.permissions,
         file_types,
+        shows: file.shows,
         name,
     };
     let launch = Launch {
@@ -218,6 +221,11 @@ title = "No keys"
 extension = ".WC"
 title = "Word counts"
 new = "wc.show"
+
+[[shows]]
+title = "Word cloud"
+where.property = { wc = "cloud" }
+where.folder = ["Drafts"]
 "#;
 
     #[test]
@@ -248,6 +256,8 @@ new = "wc.show"
             new: Some("wc.show".into()),
         };
         assert_eq!(m.file_types, [counts], "lowercase, without the dot");
+        assert_eq!(m.shows[0].title, "Word cloud");
+        assert_eq!(m.shows[0].describe(), "wc: cloud, in Drafts");
         assert_eq!(wc.launch.dir, d.join("wc"));
         assert_eq!(wc.launch.run, ["python3", "main.py"]);
         assert_eq!(wc.launch.transport, "stdio");

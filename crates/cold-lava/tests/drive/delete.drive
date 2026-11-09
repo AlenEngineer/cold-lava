@@ -1,7 +1,7 @@
 # A folder asks first (n cancels). Delete a note that others link to: the prompt lists them, n cancels, y sends it to the trash,
 # u puts it back. Then a whiteboard, the tree's last row. tests/drive.rs checks the files.
 env COLD_LAVA_EDITOR=none
-wait-for example-workspace 34 notes
+wait-for example-workspace 35 notes
 keys home
 wait-for ▾ Concepts
 keys d
@@ -22,18 +22,18 @@ expect y delete · n cancel
 screen
 keys n
 wait-for delete cancelled
-expect example-workspace 34 notes
+expect example-workspace 35 notes
 keys d
 wait-for Delete Concepts/Lava?
 keys y
 wait-for deleted Lava · u undo
-wait-for example-workspace 33 notes
+wait-for example-workspace 34 notes
 expect-not • Lava 
 # The reader moved on to the next note in the tree.
 expect Concepts/Plate Tectonics  reading
 keys u
 wait-for restored Concepts/Lava.md
-wait-for example-workspace 34 notes
+wait-for example-workspace 35 notes
 wait-for • Lava 
 wait-for Concepts/Lava  reading
 expect Molten rock that reaches the surface.
@@ -42,7 +42,7 @@ keys d
 wait-for Delete Concepts/Lava?
 keys y
 wait-for deleted Lava · u undo
-wait-for example-workspace 33 notes
+wait-for example-workspace 34 notes
 keys esc
 wait-for ? help  q quit
 keys end

@@ -1285,6 +1285,9 @@ impl Home {
                 if path == from && jump.is_none() {
                     return;
                 }
+                if jump.is_none() && self.shower(&path).is_some() {
+                    return self.open_file(&path);
+                }
                 self.leave(here, &path, jump.as_ref());
                 self.show_at(&path, jump);
                 self.select_path(&path);
@@ -1726,17 +1729,41 @@ impl Home {
         self.open_file_at(path, None);
     }
 
-    /// `open_file`, at the owner's `place` for an item or a link in it.
+    /// `open_file`, at the owner's `place` for an item or a link in it. A note goes to the
+    /// extension that shows it, if one does.
     fn open_file_at(&mut self, path: &Path, place: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
         };
         let rel = path.strip_prefix(&root).unwrap_or(path);
         let rel = rel.to_string_lossy().replace('\\', "/");
-        if let Some((owner, _)) = self.registry.owner_of(&rel) {
+        let to =
+            (self.registry.owner_of(&rel).map(|(owner, _)| owner)).or_else(|| self.shower(path));
+        if let Some(to) = to {
             let news = FileNews::Open { path: rel, place };
-            self.call(owner, |e, host| e.file(news, host));
+            self.call(to, |e, host| e.file(news, host));
         }
+    }
+
+    /// The extension that shows the note at `path` instead of the reader (`[[shows]]`): the
+    /// most specific claim the note meets, of an extension that hasn't stopped.
+    fn shower(&self, path: &Path) -> Option<ExtId> {
+        let ix = &self.core.as_ref()?.index;
+        let note = &ix.workspace.notes[ix.by_path(path)?];
+        let rel = format!("{}.md", note.rel);
+        let (ext, _) = self.registry.shower_of(&rel, &note.text, &note.tags)?;
+        self.registry.stopped(ext).is_none().then_some(ext)
+    }
+
+    /// The note the view in front shows, when an extension shows one (`[[shows]]`).
+    fn viewed_note(&self) -> Option<PathBuf> {
+        let Mode::View { owner, view, .. } = self.mode else {
+            return None;
+        };
+        let file = self.views.get(owner, view)?.file.as_deref()?;
+        let path = self.root.as_ref()?.join(file);
+        let ix = &self.core.as_ref()?.index;
+        ix.by_path(&path).map(|_| path)
     }
 
     /// Tell the core who owns which kind of file, so their files' items and links join it
@@ -2120,7 +2147,8 @@ impl Home {
                 matches!(self.mode, Mode::Search { .. })
             }
             MenuCommand::Core(MenuAction::Read) => {
-                self.running_editor().is_some() && self.shown.is_some()
+                (self.running_editor().is_some() && self.shown.is_some())
+                    || self.viewed_note().is_some()
             }
             MenuCommand::Core(MenuAction::Hints | MenuAction::Outline) => {
                 self.reader.is_some() && self.shown.is_some()
@@ -2548,6 +2576,18 @@ impl Home {
             }
             MenuAction::OpenInObsidian => self.open_in_obsidian(),
             MenuAction::EditFullscreen => self.edit_fullscreen(terminal)?,
+            MenuAction::Read if self.viewed_note().is_some() => {
+                let path = self.viewed_note().unwrap_or_default();
+                if let Some(here) = self.here() {
+                    self.history.visit(here);
+                }
+                self.reader = None;
+                self.return_to_note(&path, None);
+                if self.reader.is_none() {
+                    self.reader = Some(self.shown_reader());
+                    self.focus = Focus::Pane;
+                }
+            }
             MenuAction::Read => {
                 if self.reader.take().is_none() {
                     self.save_editor();
@@ -2622,10 +2662,15 @@ impl Home {
                         }
                     }
                     ItemKind::Note => {
-                        if let Some(p) = self.current_path() {
-                            self.pending = None;
-                            self.show(&p);
+                        let Some(p) = self.current_path() else {
+                            return Ok(());
+                        };
+                        self.pending = None;
+                        if k.code == KeyCode::Enter && self.shower(&p).is_some() {
+                            self.open_file(&p);
+                            return Ok(());
                         }
+                        self.show(&p);
                         self.focus_pane();
                     }
                 }
@@ -4428,6 +4473,11 @@ impl Home {
                 self.view_backlinks(false);
                 true
             }
+            // A note an extension shows, in the plain reader.
+            Some(MenuCommand::Core(MenuAction::Read)) if self.viewed_note().is_some() => {
+                self.run_action(MenuAction::Read, terminal)?;
+                true
+            }
             _ if backs => {
                 match k.code {
                     KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.view_backlinks(false),
@@ -4979,8 +5029,13 @@ impl Home {
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
-    /// Open a note picked in the switcher or search, and give the editor focus.
+    /// Open a note picked in the switcher or search, and give the editor focus. A note an
+    /// extension shows goes to it, unless `jump` points into its text.
     fn open_found(&mut self, from: Option<Place>, path: &Path, jump: Option<Jump>) {
+        if jump.is_none() && self.shower(path).is_some() {
+            self.pending = None;
+            return self.open_file(path);
+        }
         self.leave(from, path, jump.as_ref());
         self.pending = None;
         self.show_at(path, jump);
@@ -6262,6 +6317,11 @@ impl Home {
                     (Some(c), false, true) => format!(" {c} · editing · {leave} back "),
                     (Some(c), false, false) => format!(" {c} · ⏎ edit · {read} read "),
                     (None, false, true) => String::new(),
+                };
+                let shower = (!focused).then(|| self.shower(p)).flatten();
+                let who = match shower.map(|e| self.registry.manifest(e)) {
+                    Some(m) => format!(" reader · ⏎ open in {} · → read ", m.name),
+                    None => who,
                 };
                 let mut place = rel.trim_end_matches(".md").to_string();
                 if let Some(r) = &self.reader {
