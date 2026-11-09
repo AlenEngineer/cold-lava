@@ -441,7 +441,7 @@ fn run() -> Result<()> {
             } else {
                 let i = ix
                     .by_rel(note)
-                    .or_else(|| ix.resolver.resolve(note))
+                    .or_else(|| ix.resolver.resolve("", note))
                     .ok_or_else(|| anyhow::anyhow!("no note or folder called {note}"))?;
                 let to = rename::target_rel(&format!("{}.md", ix.workspace.notes[i].rel), new)?;
                 rename::plan(ix, i, &to)?
