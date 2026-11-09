@@ -1,7 +1,7 @@
 //! The workspace index: the start of cold-lava's core. It knows every note's backlinks, from
 //! links the workspace's resolver (`resolver.rs`) resolved, so features don't each re-derive them.
 
-use crate::resolver::Resolver;
+use crate::resolver::{Resolver, dir_of};
 use crate::workspace::Workspace;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -58,15 +58,18 @@ impl Index {
         let n = workspace.notes.len();
         let mut backlinks = vec![Vec::new(); n];
         let mut outgoing = vec![0; n];
-        let notes = (workspace.notes.iter().enumerate())
-            .flat_map(|(i, n)| n.refs.iter().map(move |r| (From::Note(i), r, None)));
-        let owned = (workspace.owned.iter().enumerate()).flat_map(|(i, f)| {
-            (f.links.iter()).map(move |(r, place)| (From::Owned(i), r, Some(place)))
+        let notes = (workspace.notes.iter().enumerate()).flat_map(|(i, n)| {
+            let dir = dir_of(&n.rel);
+            n.refs.iter().map(move |r| (From::Note(i), dir, r, None))
         });
-        for (from, r, place) in notes.chain(owned) {
-            let Some(to) = self.resolver.resolve(&r.target) else {
+        let owned = (workspace.owned.iter().enumerate()).flat_map(|(i, f)| {
+            let dir = dir_of(&f.rel);
+            (f.links.iter()).map(move |(r, place)| (From::Owned(i), dir, r, Some(place)))
+        });
+        for (from, dir, r, place) in notes.chain(owned) {
+            let Some(to) = self.resolver.resolve(dir, &r.target) else {
                 if let From::Note(from) = from
-                    && self.resolver.resolve_owned(&r.target).is_some()
+                    && self.resolver.resolve_owned(dir, &r.target).is_some()
                 {
                     outgoing[from] += 1;
                 }

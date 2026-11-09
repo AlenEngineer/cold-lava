@@ -237,6 +237,14 @@ change commands, keys and file formats; patch versions only fix things.
   Tasks plugin does; `setCancelledDate: false` leaves it out.
 - The agenda follows the day: left open past midnight, it files tasks by the new day (Today,
   Tomorrow, Overdue) instead of keeping yesterday's groups until a task changed.
+- A rename or merge that leaves a relative link pointing into its own note's folder writes it
+  with `./` (`[x](./Top.md)`, `[[./Top]]`) when a bare name would lead to another file, such as
+  a shallower `Top.md`. It used to write `[x](Top.md)`, which then opened the other note.
+- A link that starts from its note's folder (`[[../Top]]`, `[t](../Top.md)`, `[[./Top]]`)
+  leads to the note its path names in backlinks, the graph, the reader and when you follow it,
+  as it already did for renames, merges and tidy. Before, all of these but rename found the
+  shallowest note with that name, so the backlinks pane could show a link going to a different
+  note than the one a rename updated.
 
 ## [0.3.0] - 2026-11-07
 
