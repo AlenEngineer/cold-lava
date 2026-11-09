@@ -431,6 +431,31 @@ fn opens_a_note_follows_a_link_and_quits() {
 }
 
 #[test]
+fn follows_a_relative_link_to_the_note_its_path_names() {
+    let dir = sandbox("relative-link");
+    let workspace = dir.join("example-workspace");
+    std::fs::create_dir_all(workspace.join("Volcanoes/Field")).unwrap();
+    std::fs::write(
+        workspace.join("Volcanoes/Lava.md"),
+        "A lava note beside the volcanoes.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("Volcanoes/Field/Field notes.md"),
+        "See [[../Lava]], not Concepts/Lava.\n",
+    )
+    .unwrap();
+    let out = drive("relative-link.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn tables_a_types_items_sorted_and_filtered() {
     let dir = sandbox("table");
     std::fs::write(
