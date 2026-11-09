@@ -11,6 +11,22 @@ change commands, keys and file formats; patch versions only fix things.
 
 - `cold-lava --version`, and the help's title, name the commit the binary was built from
   (`cold-lava 0.3.0 (1a2b3c4d5e6f)`), so a build says exactly which code it is.
+- Types shipped by owners. An extension's manifest defines types as `[[types]]`, each an `id`
+  in its namespace (`csv-table.row`, like its commands) and a definition in the language of
+  any type. They are listed in `types/list`, the table's type picker and `cold-lava types`
+  (origin `extension NAME`), and match an owner's Markdown pieces and typed items. An id
+  outside the namespace or given twice is left out and reported like a command conflict; a
+  definition that doesn't read drops that type only. A shape can say which kind of file it
+  matches in, `where.file-type = ["csv"]`. csv-table ships `csv-table.row` for the CSV rows
+  none of your types matches, and the example workspace has `Volcanoes/Observatories.csv`,
+  whose rows are that type while `Eruptions.csv`'s stay `eruption`s. `cold-lava types` counts
+  owned files' items too.
+- An owned file's backlinks. While an owner's view of a file is open (csv-table showing
+  `Volcanoes/Eruptions.csv`), the backlinks pane sits under it, as under the reader: every note
+  and every other owned file that links to it, kept up to date. `Tab` moves between the view and
+  the pane, `Enter` opens the source at the link (a note in the reader, an owned file in its
+  owner at the link's place), `b` hides and shows it, and Back returns to the view. An
+  extension says which file a view shows with `view/open`'s new optional `file`.
 - `view/show {view}` brings an extension's open view back to the front, from wherever you are,
   and Back returns there. csv-table uses it: opening a `.csv` whose table is already open shows
   that table as you left it (selection, sort, filter) instead of closing and reopening it.
@@ -183,6 +199,12 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- An extension's manifest writes its types as `[[types]]` tables with an `id`, like its
+  `[[commands]]`; `[types.NAME]` in a manifest now leaves the extension out and says how to
+  write it.
+- A shape's `note = "path"`, `"name"` and `"folder"`, and `where.folder`, read the file a
+  piece of an owned file comes from (`Volcanoes/Eruptions.csv`), not the file with the
+  owner's place appended.
 - A rename or move whose links reach a file another owner reads asks that owner for the file's
   new text before anything moves. Once every owner has answered and its text reads back as
   asked, the notes move and every file is written; an owner that refuses, writes something else

@@ -887,12 +887,16 @@ mod tests {
             }]
         );
         let reads = core.take_reads();
-        assert_eq!(reads.len(), 1, "{reads:?}");
+        assert_eq!(
+            reads.len(),
+            2,
+            "Eruptions.csv and Observatories.csv: {reads:?}"
+        );
         for (_, read) in reads {
             r.call(ExtId(0), Some(&mut core), |e, h| e.read_file(read, h));
         }
         let deadline = Instant::now() + Duration::from_secs(20);
-        while core.index.workspace.owned[0].rev.is_none() {
+        while (core.index.workspace.owned.iter()).any(|f| f.rev.is_none()) {
             assert!(
                 Instant::now() < deadline,
                 "csv-table didn't answer file/read"

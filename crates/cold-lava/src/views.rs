@@ -23,6 +23,8 @@ pub struct Views {
 pub struct Open {
     pub owner: ExtId,
     pub id: ViewId,
+    /// The workspace file it shows (workspace-relative), if it shows one.
+    pub file: Option<String>,
     drawn: Drawn,
     /// The last update since the frame was drawn, and the row it selects.
     pending: Option<(Content, Option<String>)>,
@@ -69,13 +71,15 @@ impl Drawn {
 }
 
 impl Views {
-    /// Show `content` as `id`. Returns the owner's oldest view when it was closed to make room.
+    /// Show `content` as `id`, a view of `file` if it names one. Returns the owner's oldest
+    /// view when it was closed to make room.
     pub fn open(
         &mut self,
         owner: ExtId,
         id: ViewId,
         content: Content,
         select: Option<String>,
+        file: Option<String>,
     ) -> Option<ViewId> {
         let mine = self.open.iter().filter(|v| v.owner == owner).count();
         let closed = (mine >= PER_EXTENSION)
@@ -87,6 +91,7 @@ impl Views {
         self.open.push(Open {
             owner,
             id,
+            file,
             drawn,
             pending: None,
         });
@@ -123,6 +128,10 @@ impl Views {
 
     pub fn has(&self, owner: ExtId, id: ViewId) -> bool {
         self.open.iter().any(|v| (v.owner, v.id) == (owner, id))
+    }
+
+    pub fn get(&self, owner: ExtId, id: ViewId) -> Option<&Open> {
+        self.open.iter().find(|v| (v.owner, v.id) == (owner, id))
     }
 
     pub fn get_mut(&mut self, owner: ExtId, id: ViewId) -> Option<&mut Open> {
@@ -259,7 +268,7 @@ mod tests {
     fn updates_wait_for_the_frame_and_the_last_one_wins() {
         let mut views = Views::default();
         let id = ViewId(1);
-        views.open(A, id, list("First", &["r1", "r2"]), Some("r2".into()));
+        views.open(A, id, list("First", &["r1", "r2"]), Some("r2".into()), None);
         let v = views.get_mut(A, id).unwrap();
         assert_eq!(v.selected().as_deref(), Some("r2"), "opened at a row");
         v.key(press(KeyCode::Up));
@@ -294,7 +303,7 @@ mod tests {
     #[test]
     fn keys_become_events_by_row_id_and_esc_closes() {
         let mut views = Views::default();
-        views.open(A, ViewId(1), list("L", &["r1"]), None);
+        views.open(A, ViewId(1), list("L", &["r1"]), None, None);
         let v = views.get_mut(A, ViewId(1)).unwrap();
         v.key(press(KeyCode::Down));
         let toggled = Event::Toggled { row: "r1".into() };
@@ -315,8 +324,8 @@ mod tests {
             unreachable!()
         };
         typing.filter = Filter::Typing;
-        views.open(A, ViewId(1), Content::List(typing), None);
-        views.open(A, ViewId(2), list("M", &["r1"]), None);
+        views.open(A, ViewId(1), Content::List(typing), None, None);
+        views.open(A, ViewId(2), list("M", &["r1"]), None, None);
         let v = views.get_mut(A, ViewId(1)).unwrap();
         assert!(v.takes(&press(KeyCode::Char('q'))));
         let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
@@ -333,13 +342,13 @@ mod tests {
     #[test]
     fn an_extension_has_a_bounded_number_of_views() {
         let mut views = Views::default();
-        views.open(B, ViewId(100), list("B", &[]), None);
+        views.open(B, ViewId(100), list("B", &[]), None, None);
         for i in 0..PER_EXTENSION as u32 {
-            assert_eq!(views.open(A, ViewId(i), list("A", &[]), None), None);
+            assert_eq!(views.open(A, ViewId(i), list("A", &[]), None, None), None);
         }
         let n = PER_EXTENSION as u32;
         assert_eq!(
-            views.open(A, ViewId(n), list("A", &[]), None),
+            views.open(A, ViewId(n), list("A", &[]), None, None),
             Some(ViewId(0))
         );
         assert!(views.has(B, ViewId(100)), "another's stay");

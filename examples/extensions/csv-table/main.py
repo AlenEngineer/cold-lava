@@ -146,7 +146,7 @@ def show(path, place=None):
     select = str(keys.index(row) + 1) if row in keys else None
     table = tables.get(path)
     if table is None:
-        view = ext.open_view(content(path, rows), select)
+        view = ext.open_view(content(path, rows), select, file=path)
         tables[path] = {"view": view, "rev": read["rev"], "rows": rows}
         paths[view] = path
     else:

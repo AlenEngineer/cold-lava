@@ -16,7 +16,7 @@ type mauna loa
 wait-for 1 notes
 keys enter
 wait-for Volcanoes/Vesuvius  into  Volcanoes/Mauna Loa
-expect 7 links in 7 files will lead to Mauna Loa:
+expect 8 links in 8 files will lead to Mauna Loa:
 keys j j j j j j j j
 wait-for ▤ Volcanoes/Eruptions.csv  1 link
 expect | [[Mauna Loa]] | 79 | 5 |  |

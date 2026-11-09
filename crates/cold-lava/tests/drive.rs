@@ -1002,6 +1002,72 @@ fn a_csv_files_rows_links_and_tasks_join_the_workspace() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn an_owned_files_view_lists_who_links_to_it() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-backlinks");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| main);
+    let out = drive_with(
+        "csv-backlinks.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn csv_tables_type_ships_with_it_for_rows_no_other_type_matches() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-types");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| main);
+    let out = drive_with(
+        "csv-types.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let csv = dir.join("example-workspace/Volcanoes/Observatories.csv");
+    assert_eq!(
+        std::fs::read_to_string(csv).unwrap(),
+        "Observatory,Volcano,Founded\nOsservatorio Vesuviano,[[Vesuvius]],1841\n\
+         Hawaiian Volcano Observatory,[[Kīlauea]],1912\n\
+         Cascades Volcano Observatory,[[Mount St. Helens]],1980\n",
+        "the row's name set through csv-table"
+    );
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// csv-table from the examples, installed in the drive's home; `patch` changes its `main.py`.
 fn install_csv_table(home: &Path, patch: impl Fn(String) -> String) {
     let installed = home.join(".config/cold-lava/extensions/csv-table");
@@ -1115,6 +1181,13 @@ fn a_merge_relinks_a_csv_file_through_csv_table() {
          [[Krakatoa]],1883,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
          [[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n",
         "Vesuvius's row leads to Mauna Loa"
+    );
+    let observatories = std::fs::read_to_string(workspace.join("Volcanoes/Observatories.csv"));
+    assert!(
+        observatories
+            .unwrap()
+            .contains("Vesuvius Observatory,[[Mauna Loa]],1841\n"),
+        "and so does the other CSV's"
     );
     assert!(!workspace.join("Volcanoes/Vesuvius.md").exists());
     let log = home.join(".cache/cold-lava/extensions/csv-table.log");

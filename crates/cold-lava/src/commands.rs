@@ -125,6 +125,14 @@ const fn cmd<A>(
     }
 }
 
+/// Whether `id` is in the extension `name`'s namespace: `<name>.<something>`. Its commands'
+/// and its types' ids must be.
+pub fn namespaced(name: &str, id: &str) -> bool {
+    (id.strip_prefix(name))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|rest| !rest.is_empty())
+}
+
 /// The main menu's commands, in the order the help screen lists them.
 pub const MENU: &[Command<MenuAction>] = &[
     cmd(
@@ -1278,11 +1286,7 @@ pub fn menu<'a>(
     for (ext, m) in extensions {
         for (i, c) in m.commands.iter().enumerate() {
             let (name, id) = (&m.name, &c.id);
-            let namespaced = id
-                .strip_prefix(name.as_str())
-                .and_then(|rest| rest.strip_prefix('.'))
-                .is_some_and(|rest| !rest.is_empty());
-            if !namespaced {
+            if !namespaced(name, id) {
                 refused.push(format!(
                     "{name}: command {id:?} was left out: its id must start with \"{name}.\""
                 ));

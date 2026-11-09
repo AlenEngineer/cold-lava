@@ -196,7 +196,7 @@ impl Tables {
             filter: Filter::Typing,
         };
         let view = host
-            .open_view(Content::Table(table), None)
+            .open_view(Content::Table(table), None, None)
             .map_err(|e| e.to_string())?;
         self.picker = Some(view);
         Ok(())
@@ -213,7 +213,7 @@ impl Tables {
             Err(e) => return Err(e.to_string()),
         };
         let built = feed.table();
-        match host.open_view(Content::Table(built.table), None) {
+        match host.open_view(Content::Table(built.table), None, None) {
             Ok(view) => {
                 let shown = Shown {
                     feed,

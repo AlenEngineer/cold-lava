@@ -170,6 +170,8 @@ enum Call {
         content: Content,
         #[serde(default)]
         select: Option<String>,
+        #[serde(default)]
+        file: Option<String>,
     },
     #[serde(rename = "view/update")]
     UpdateView {
@@ -313,8 +315,12 @@ fn serve_now(
         Call::EditorOpened { note } => host.editor_opened(note),
         Call::OpenPane(spec) => return Ok(json!({ "pane": host.open_pane(spec) })),
         Call::PaneInput { pane, text } => host.pane_input(pane, text),
-        Call::OpenView { content, select } => {
-            let opened = host.open_view(content, select);
+        Call::OpenView {
+            content,
+            select,
+            file,
+        } => {
+            let opened = host.open_view(content, select, file);
             return answer(opened.map(|view| json!({ "view": view })));
         }
         Call::UpdateView {
@@ -566,7 +572,7 @@ mod tests {
         let dir = workspace("views");
         let mut core = Core::open(&dir).unwrap();
         let list = json!({"kind": "list", "title": "Open", "groups": []});
-        let open = json!({"content": list, "select": "r1"});
+        let open = json!({"content": list, "select": "r1", "file": "Data/Eruptions.csv"});
         let (opened, effects) = served(&mut core, &[], "view/open", open);
         assert_eq!(opened, Ok(json!({"view": 1})), "no permission needed");
         let Content::List(sent) = serde_json::from_value(list.clone()).unwrap() else {
@@ -579,6 +585,7 @@ mod tests {
                 view: ViewId(1),
                 content: content.clone(),
                 select: Some("r1".into()),
+                file: Some("Data/Eruptions.csv".into()),
             }]
         );
         let update = json!({"view": 1, "content": list, "select": "r2"});
