@@ -1108,30 +1108,39 @@ round trip per link is never acceptable.
 - **One module.** `crates/engine/src/resolver.rs` holds both directions of Obsidian's rules.
   It is functions and data shapes, not a trait: a trait waits for a second implementation
   (step 3).
-- **Resolve.** `split_link` splits off the heading, block and alias. `Resolver` is the index's
-  table for notes and owned files, by path then by name (`resolve`, `resolve_owned`): the
-  index, the graph, following a link to a note, tidy's unresolved links and the CLI's `rename
-  NOTE` use it. `Files` sees every file on disk and knows the linking file's folder:
-  `Files::resolve` handles attachments, `./` and `../`, and files beside the note. Renames,
-  merges, tidy's orphans and `workspace/files` use it, and so do `resolver::attachment` and
-  `resolver::file` (following a link to an attachment or an owned file).
+- **Resolve.** `split_link` splits off the heading, block and alias. One set of rules
+  (`Table::find`) answers every lookup, from the linking file's folder: `./` and `../` start
+  there; any other link is a workspace path, then (an attachment, or a path with a folder) a
+  path from that folder, then a name, the shallowest winning. `Resolver` is the index's table
+  of notes and owned files (`resolve(dir, target)`, `resolve_owned`): backlinks, the graph,
+  following a link to a note, the reader's unresolved-link look and the CLI's `rename NOTE`
+  use it. `Files` is the same table over every file on disk: renames, merges, tidy and
+  `workspace/files` use it, and so do `resolver::attachment` and `resolver::file`. So a
+  backlink, a graph edge, following a link and a rename always name the same file.
 - **Write.** `Files::write(target, dir, style)` writes a link to a file from a folder.
   `Style` is how a link is written: `Wiki {relative, folder, extension}` or `Markdown {root,
-  like}`. `Rewriter::link` resolves a link before and after a move and writes it again in its
-  own style when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the
-  links and puts the new text in place. `resolver::new_note_path` and `new_file_path` say where
+  like}`. A relative link into the linking file's own folder is a bare name (`[t](Top.md)`), as
+  Obsidian writes it, unless that name leads elsewhere (Obsidian reads a bare name from the
+  workspace's root, then by name); then it starts with `./` (`[t](./Top.md)`).
+  `Rewriter::link` resolves a link before and after a move and writes it again in its own style
+  when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the links and puts
+  the new text in place. `resolver::new_note_path` and `new_file_path` say where
   a new note or file goes.
 - **Agreement is tested.** `resolver.rs`'s tests write a link to every file from every note in
   every style, over the example workspace and over a fixture with same-name notes, and check
-  that it resolves back to the same file, and that `Resolver` reads each link that doesn't start
-  from the linking file's folder the same way.
-- **Not yet:** `Resolver` and `Files` are two tables for one set of rules, kept as they were
-  before the move. They differ where a link starts from its file's folder: `Resolver` ignores
-  that folder, so `[[../Top]]` and `[t](../Top.md)` find the shallowest `Top` in backlinks and
-  the graph, not the one the path names. A rename also writes a relative link to a note in the
-  linking note's own folder as a bare name (`[t](Top.md)`), which finds a shallower `Top` if
-  there is one; the round-trip test skips that case. Fixing these changes what some links lead
-  to, so each is its own change. Items as targets and fallbacks are step 2.
+  that `Files` and `Resolver` both lead it back to the same file. `graph.rs` checks each `./`
+  and `../` form in backlinks, the graph, following the link and a rename, and
+  `relative-link.drive` follows a `../` link in the reader.
+- **What Obsidian does, and what is open.** Obsidian documents none of this; the rules follow
+  what its forum reports. A bare name or path is looked up from the vault's root first, so
+  `[t](Top.md)` in `B/Note.md` opens a root `Top.md` over `B/Top.md`, and `./` makes a link
+  relative ([forum
+  69542](https://forum.obsidian.md/t/absolute-link-path-has-higher-precedence-than-relative-path/69542)).
+  Obsidian itself writes a same-folder link as a bare name, a known bug ([forum
+  41786](https://forum.obsidian.md/t/relative-path-link-points-to-a-wrong-file-with-same-file-name/41786));
+  cold-lava writes `./` there instead. No source says how Obsidian reads `../`; cold-lava takes
+  it from the linking file's folder, so the link leads where its path says. Items as targets and
+  fallbacks are step 2.
 
 ## Commands
 
