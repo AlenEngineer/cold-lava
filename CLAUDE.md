@@ -63,14 +63,8 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   `Style`, `Rewriter` (renames and merges), `new_note_path`/`new_file_path`. Don't write another
   link resolver: ask this one (docs/extensions.md, "Link resolver").
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
-- `rename.rs` (in the `rename-core` PR until it's merged): rename/move with every link updated;
+- `rename.rs`: rename/move with every link updated;
   `plan()` then `apply()`.
-- `owner/`: the owner interface: what reads a kind of file into items and links and writes
-  edits back. `markdown.rs` is Markdown's (read, items, edit, relink); an extension owns other
-  kinds: `given.rs` reads its `file/read` answer, `cache.rs` keeps it by `rev`, `edits.rs`
-  holds an edit while its owner answers `file/edit` and reads the new text back. `Core` asks
-  owners through `take_reads`/`take_file_edits` and never waits; an `items/edit` of an owned
-  file is answered `Later` (`take_edited`).
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
@@ -81,9 +75,11 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   rewriting, each reached through it. Read and change notes through the owner. An extension
   can own another kind: `owner/given.rs` reads its `file/read` answer (Markdown pieces, typed
   items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
-  `~/.cache/cold-lava/owners/`) and says what to ask. `Core::set_owners`, `take_reads` and
-  `file_given` run it; owned files are `Workspace::owned`, beside the notes, and the index,
-  the gateway, the graph and tidy read them too.
+  `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` holds an edit while
+  its owner answers `file/edit` and reads the new text back. `Core::set_owners`, `take_reads`,
+  `take_file_edits` and `file_given` run it and never wait; an `items/edit` of an owned file
+  is answered `Later` (`take_edited`). Owned files are `Workspace::owned`, beside the notes,
+  and the index, the gateway, the graph and tidy read them too.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one pulldown-cmark pass in the workspace's flavour; `Workspace::items()` caches them per note on
   first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`

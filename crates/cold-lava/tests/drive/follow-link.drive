@@ -10,5 +10,7 @@ keys tab enter
 wait-for Concepts/Shield Volcano  reading
 expect-not Volcanoes/Kīlauea  reading
 # The driver waits for the program to answer the Esc, so the q can't read as Alt-q.
-keys esc q
+keys esc
+wait-gone reading · Esc / q back
+keys q
 exits 0

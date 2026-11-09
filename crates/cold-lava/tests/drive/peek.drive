@@ -75,5 +75,7 @@ keys tab
 wait-for Volcanoes/Mauna Loa
 keys enter
 wait-for Volcanoes/Mauna Loa  reading
-keys esc q
+keys esc
+wait-gone reading · Esc / q back
+keys q
 exits 0
