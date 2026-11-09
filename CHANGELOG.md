@@ -181,6 +181,13 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- A rename or move whose links reach a file another owner reads asks that owner for the file's
+  new text before anything moves. Once every owner has answered and its text reads back as
+  asked, the notes move and every file is written; an owner that refuses, writes something else
+  or doesn't answer in 10 s cancels the whole rename with its reason, and nothing is changed
+  (before, the notes had moved and only the owned file kept its old links). While owners
+  answer, the rename dialog says what it is waiting for, the menu keeps drawing, and Esc stops
+  waiting.
 - Items are faster and much smaller on large workspaces. A typed item (every task) keeps only
   the fields it has and shares its type's field names, and reading one copies and parses less.
   On a 3,000-note workspace with 33,000 tasks, the items kept for every note take 79 MB instead

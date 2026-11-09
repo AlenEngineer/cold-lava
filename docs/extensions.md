@@ -1017,18 +1017,27 @@ graph all see the new date. None of them knew what a canvas is.
 - **Renames.** `rename::plan` also lists the owned files whose links change, with their owner
   (`FileEdit::owned`): each Markdown piece relinked by the Markdown owner's `relink` as a note
   is, and each link the owner reported on its own, through the same `Rewriter`. A file whose
-  owner hasn't read it as it is now is left out with a warning. `apply` checks those files
-  didn't change, makes the moves and writes the notes; then `Core::relink_owned` asks each owner
-  `file/edit` with the plan's changes, read back and written as an item edit. An owner that
-  refuses, differs or doesn't answer leaves its file as it was, reported as
-  `Event::RelinkFailed` ("links in Volcanoes/Eruptions.csv weren't updated by csv-table: …");
-  the notes are renamed by then, and the file's links stay unresolved until it is fixed.
+  owner hasn't read it as it is now is left out with a warning. The owners are asked before
+  anything moves: once the rename is confirmed, `Core::relink` asks each owner `file/edit` with
+  the plan's changes and has it read the new text back, as for an item edit, but keeps the text
+  instead of writing it. `Core::take_relinked` hands back every owned file's edit with its new
+  text (`rename::answered` puts them into the plan), and only then does `rename::apply` check
+  that no file changed, make the moves and write every file, the owned ones as the notes are.
+  `apply` refuses a plan whose owners haven't answered. An owner that refuses, writes something
+  else or doesn't answer in 10 s cancels the whole rename with its reason ("rename cancelled,
+  nothing was changed: csv-table didn't edit Volcanoes/Eruptions.csv: …"), and every file is as
+  it was. The menu doesn't wait: the rename dialog stays open saying "waiting for csv-table to
+  update its files", and Esc stops waiting (`Core::cancel_relink`) and drops the late answer.
+  What each owner read in its new text is kept for the file's new `rev` (`Core::relinked`), so
+  nothing is asked again after the move.
 - **The example** puts each piece back where it came from: a row's one-row table into the row's
   cells (keeping its Markdown cells, which the row showed empty), a Markdown cell into its cell,
   and refuses a row without its first cell, which names it. `csv-edit.drive` ticks the CSV's
   task in the agenda, sets a row's VEI in the table and renames Krakatoa, and `tests/drive.rs`
   reads the CSV after; `csv-edit-refused.drive` runs a copy that refuses every edit and doesn't
-  answer one, and the CSV is unchanged. `ext/process.rs` checks the late JSON-RPC answer and
+  answer one, and the CSV is unchanged. `csv-rename-refused.drive` runs a copy that refuses one
+  rename and doesn't answer another, then cancels a third with Esc, and every file of the
+  workspace is byte for byte as it was. `ext/process.rs` checks the late JSON-RPC answer and
   the timeout through the transport.
 - **Not yet:** a merge (`merge.rs`) doesn't rewrite links in owned files, the CLI's
   `rename` and `merge` don't either and its `agenda`, `items` and `table` don't read owned files

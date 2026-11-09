@@ -1,0 +1,47 @@
+# A rename asks the owners of the files it relinks for their new texts before anything moves
+# (docs/extensions.md, "Owners and types, as built"). tests/drive.rs installs a csv-table that
+# refuses a rename to Krakatau and never answers one to Rakata: each rename is cancelled with the
+# owner's reason, and tests/drive.rs checks every file of the workspace is as it was.
+size 140x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys /
+type krakatoa
+wait-for Krakatoa
+keys enter
+wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Krakatau
+keys enter
+wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Krakatau.md
+keys enter
+wait-for 12s rename cancelled, nothing was changed: csv-table didn't edit Volcanoes/Eruptions.csv: this copy keeps the old names
+expect ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+# An owner that doesn't answer: the dialog says what it waits for, and gives up after 10 s.
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Rakata
+keys enter
+wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Rakata.md
+keys enter
+wait-for waiting for csv-table to update its files · Esc cancel
+screen
+wait-for 15s rename cancelled, nothing was changed: csv-table didn't edit Volcanoes/Eruptions.csv: it didn't answer file/edit in 10 s
+# Esc stops waiting.
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Rakata
+keys enter
+wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Rakata.md
+keys enter
+wait-for waiting for csv-table to update its files · Esc cancel
+keys esc
+wait-for rename cancelled
+expect ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+screen
+keys q
+exits 0

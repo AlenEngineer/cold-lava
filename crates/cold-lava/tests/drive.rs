@@ -1029,6 +1029,67 @@ ext.run()"#;
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Every file under `dir` with its bytes, by path.
+fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        match path.is_dir() {
+            true => out.extend(files_under(&path)),
+            false => out.push((path.clone(), std::fs::read(&path).unwrap())),
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn a_rename_its_owner_refuses_or_doesnt_answer_changes_nothing() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-rename-refused");
+    let home = dir.join("home");
+    let stubborn = r#"import json
+import time
+
+
+@ext.on("file/edit")
+def stubborn(params):
+    asked = json.dumps(params["changes"])
+    if "Rakata" in asked:
+        time.sleep(30)
+    if "Krakatau" in asked:
+        raise ValueError("this copy keeps the old names")
+    return file_edit(params)
+
+
+ext.run()"#;
+    install_csv_table(&home, |main| {
+        assert!(main.contains("def file_edit(params)"));
+        main.replace("ext.run()", stubborn)
+    });
+    let workspace = dir.join("example-workspace");
+    let before = files_under(&workspace);
+    let out = drive_with(
+        "csv-rename-refused.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        files_under(&workspace) == before,
+        "every file of the workspace is as it was"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn ext_list_prints_what_each_extension_may_do() {
     let dir = sandbox("ext-list");

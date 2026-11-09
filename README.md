@@ -716,7 +716,9 @@ CSV's task, `e` in the table sets a row's VEI, and renaming Krakatoa rewrites th
 (the rename's preview lists the CSV with the rest). cold-lava makes the change, asks csv-table
 for the file's new text, has it read that text back, and writes it only when it says what was
 asked and the file hasn't changed meanwhile. An owner that refuses, writes something else or
-doesn't answer in 10 s leaves the file as it was, and the status line says why.
+doesn't answer in 10 s leaves the file as it was, and the status line says why. A rename asks
+the owners first and moves nothing until all of them have answered, so a refusal cancels the
+whole rename (the dialog says what it is waiting for, and Esc stops waiting).
 
 ## What it understands
 

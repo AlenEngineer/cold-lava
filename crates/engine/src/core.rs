@@ -11,7 +11,7 @@ use crate::gateway::{
 use crate::index::Index;
 use crate::items::Item;
 use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
-use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Stage};
+use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Relink, Stage};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
 use crate::workspace::{self, NoteChange, Owned};
@@ -51,13 +51,6 @@ pub enum Event {
     GraphSettingsChanged,
     /// `.obsidian/bookmarks.json` changed; `Core::bookmarks` has been read again.
     BookmarksChanged,
-    /// A rename couldn't update the links in a file another owner reads: its owner refused,
-    /// didn't answer, or wrote something else. The file is as it was.
-    RelinkFailed {
-        owner: String,
-        path: String,
-        message: String,
-    },
     /// An item was changed through the workspace gateway by the extension named `by`, after the
     /// note's own `NoteChanged` (or the owned file's `OwnedChanged`; `note` is then its path with
     /// its extension). `what` says what, for the status line: "set due", "ticked".
@@ -648,6 +641,9 @@ impl Core {
             );
             return self.edit_failed(path, error(Reason::ReadBack, message));
         }
+        if let Goal::Relink(ticket) = p.goal {
+            return self.relink_read_back(ticket, path, text.clone(), given);
+        }
         let written =
             crate::write::replace(&self.root().join(path), p.text.as_bytes(), text.as_bytes());
         if let Err(e) = written {
@@ -708,53 +704,111 @@ impl Core {
         };
         match p.goal {
             Goal::Item { by, ticket, .. } => self.edits.done.push((by, ticket, Err(e))),
-            Goal::Relink => {
-                let event = Event::RelinkFailed {
-                    owner: p.owner,
-                    path: path.to_string(),
-                    message: e.message,
-                };
-                self.broadcast(std::slice::from_ref(&event));
-                self.unseen.push(event);
-            }
+            Goal::Relink(ticket) => self.relink_failed(ticket, e.message),
         }
     }
 
-    /// After `rename::apply`: ask the owners of the files the plan relinks through them for
-    /// their new text (`file/edit`), written as an item edit is. A file that changed since the
-    /// plan, or has an edit waiting, is left as it is and reported (`RelinkFailed`).
-    pub fn relink_owned(&mut self, plan: &crate::rename::Plan) {
-        for e in &plan.edits {
-            let Some(o) = &e.owned else { continue };
-            let path = plan.moved(&e.path);
-            let rel = path.strip_prefix(self.root()).unwrap_or(&path);
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            let failed = |message: String| Event::RelinkFailed {
-                owner: o.owner.clone(),
-                path: rel.clone(),
-                message,
-            };
-            let event = match std::fs::read_to_string(&path) {
-                _ if self.edits.pending.contains_key(&rel) => {
-                    Some(failed(format!("an edit of it is waiting for {}", o.owner)))
-                }
-                Ok(text) if text == e.old_text => None,
-                _ => Some(failed("it changed since the rename was planned".into())),
-            };
-            if let Some(event) = event {
-                self.broadcast(std::slice::from_ref(&event));
-                self.unseen.push(event);
-                continue;
+    /// Before a rename or merge moves anything: ask the owner of each file among `edits` that
+    /// another owner reads for its new text (`file/edit`), and have the owner read it back. `None`
+    /// when there is nothing to ask: `edits` are ready. Else the answer comes from
+    /// `take_relinked` under the ticket: every owned file's edit with its new text, or the first
+    /// owner's refusal, after which nothing else is kept. Refused at once when one of them changed
+    /// since it was planned or has an edit waiting.
+    pub fn relink(&mut self, edits: &[crate::rename::FileEdit]) -> Result<Option<Ticket>, String> {
+        let owned: Vec<_> = edits
+            .iter()
+            .filter(|e| e.owned.is_some())
+            .cloned()
+            .collect();
+        if owned.is_empty() {
+            return Ok(None);
+        }
+        for e in &owned {
+            let o = e.owned.as_ref().expect("owned");
+            if self.edits.pending.contains_key(&e.file) {
+                return Err(format!("{} has an edit waiting for {}", e.file, o.owner));
             }
+            if std::fs::read_to_string(&e.path).ok().as_ref() != Some(&e.old_text) {
+                return Err(format!("{} changed since it was planned", e.file));
+            }
+        }
+        let ticket = self.edits.ticket();
+        for e in &owned {
+            let o = e.owned.as_ref().expect("owned");
             let pending = Pending {
                 owner: o.owner.clone(),
                 rev: files::rev(e.old_text.as_bytes()),
                 text: e.old_text.clone(),
                 expect: given::apply(&o.given, &o.changes),
-                goal: Goal::Relink,
+                goal: Goal::Relink(ticket),
                 stage: Stage::Editing,
             };
-            self.ask_edit(rel, o.changes.clone(), pending);
+            self.ask_edit(e.file.clone(), o.changes.clone(), pending);
+        }
+        self.edits.relinks.insert(ticket, Relink { edits: owned });
+        Ok(Some(ticket))
+    }
+
+    /// Renames and merges whose owners have all answered (`relink`), or one refused.
+    pub fn take_relinked(&mut self) -> Vec<(Ticket, Result<Vec<crate::rename::FileEdit>, String>)> {
+        std::mem::take(&mut self.edits.relinked)
+    }
+
+    /// Stop waiting for the owners of the rename or merge `ticket`. Their answers are dropped.
+    pub fn cancel_relink(&mut self, ticket: Ticket) {
+        self.edits.relinks.remove(&ticket);
+        let ours = |p: &Pending| matches!(p.goal, Goal::Relink(t) if t == ticket);
+        self.edits.pending.retain(|_, p| !ours(p));
+        let pending = &self.edits.pending;
+        (self.edits.asks).retain(|(_, a)| pending.contains_key(&a.path));
+        (self.edits.reads).retain(|(_, r)| pending.contains_key(&r.path));
+    }
+
+    /// One owned file of the rename or merge `ticket` read back as asked: keep its new text.
+    fn relink_read_back(&mut self, ticket: Ticket, path: &str, text: String, given: Given) {
+        self.edits.pending.remove(path);
+        let Some(relink) = self.edits.relinks.get_mut(&ticket) else {
+            return;
+        };
+        if let Some(e) = relink.edits.iter_mut().find(|e| e.file == path) {
+            e.new_text = text;
+            if let Some(o) = e.owned.as_mut() {
+                o.after = Some(given);
+            }
+        }
+        if relink.done() {
+            let relink = self.edits.relinks.remove(&ticket).expect("waiting");
+            self.edits.relinked.push((ticket, Ok(relink.edits)));
+        }
+    }
+
+    /// An owner refused, or didn't answer, one file of the rename or merge `ticket`: it is
+    /// cancelled, with `message`.
+    fn relink_failed(&mut self, ticket: Ticket, message: String) {
+        if self.edits.relinks.contains_key(&ticket) {
+            self.cancel_relink(ticket);
+            self.edits.relinked.push((ticket, Err(message)));
+        }
+    }
+
+    /// After a rename or merge with `edits` was made, before reading the workspace again: what
+    /// the owners read in their files' new texts, at `moved` (where each file is now), is kept as
+    /// their answer for that version, so they aren't asked again.
+    pub fn relinked(
+        &mut self,
+        edits: &[crate::rename::FileEdit],
+        moved: impl Fn(&Path) -> PathBuf,
+    ) {
+        for e in edits {
+            let Some((o, after)) = e.owned.as_ref().and_then(|o| Some((o, o.after.as_ref()?)))
+            else {
+                continue;
+            };
+            let path = moved(&e.path);
+            let rel = path.strip_prefix(self.root()).unwrap_or(&path);
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let rev = files::rev(e.new_text.as_bytes());
+            self.owners.answered(&o.owner, &rel, &rev, Some(after));
         }
     }
 
@@ -1381,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_updates_links_in_owned_files_through_their_owner() {
+    fn a_rename_asks_owners_for_their_new_texts_before_moving_anything() {
         use crate::rename;
         let dir = std::env::temp_dir().join(format!("cold-lava-owned-mv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1397,14 +1451,7 @@ mod tests {
             .unwrap()
         };
         let csv = |to: &str, link: &str| format!("{};{link}\n", piece(to));
-        let rename = |core: &mut Core, from: &str, to: &str| {
-            let note = core.index.by_rel(from).unwrap();
-            let plan = rename::plan(&core.index, note, to).unwrap();
-            rename::apply(&plan).unwrap();
-            core.rescan_now();
-            core.relink_owned(&plan);
-            plan
-        };
+        let csv_now = || std::fs::read_to_string(dir.join("Eruptions.csv")).unwrap();
         std::fs::write(dir.join("Eruptions.csv"), csv("Krakatoa", "Tambora")).unwrap();
         let mut core = Core::open(&dir).unwrap();
         let kind = OwnedKind {
@@ -1414,42 +1461,61 @@ mod tests {
         };
         core.set_owners(vec![kind], None);
         let (_, read) = core.take_reads().pop().unwrap();
-        let rev = read.rev;
         core.file_given(
             "csv-table",
             "Eruptions.csv",
-            &rev,
+            &read.rev,
             Ok(given("Krakatoa", "Tambora")),
         );
+        let plan = |core: &Core, from: &str, to: &str| {
+            let note = core.index.by_rel(from).unwrap();
+            rename::plan(&core.index, note, to).unwrap()
+        };
+        // The owner answers `text`, and reads `gives` in it.
+        let answer = |core: &mut Core, text: Result<String, &str>, gives: Option<Given>| {
+            let (_, ask) = core.take_file_edits().pop().unwrap();
+            let text = text.map_err(String::from);
+            core.file_edited("csv-table", "Eruptions.csv", &ask.rev, text);
+            if let (Some(g), Some((_, back))) = (gives, core.take_reads().pop()) {
+                core.file_given("csv-table", "Eruptions.csv", &back.rev, Ok(g));
+            }
+            ask
+        };
 
-        let plan = rename(&mut core, "Krakatoa", "Krakatau");
-        let owned = plan
-            .edits
-            .iter()
-            .find(|e| e.file == "Eruptions.csv")
-            .unwrap();
+        let mut p = plan(&core, "Krakatoa", "Krakatau");
+        let owned = p.edits.iter().find(|e| e.file == "Eruptions.csv").unwrap();
         assert_eq!(owned.links, 1, "listed in the plan");
-        let (_, ask) = core.take_file_edits().pop().unwrap();
-        let text = piece("Krakatau");
+        assert!(rename::apply(&p).is_err(), "not before the owner answered");
+        let ticket = core.relink(&p.edits).unwrap().expect("waits for the owner");
+        assert!(
+            core.relink(&p.edits).is_err(),
+            "one edit of a file at a time"
+        );
+        let ask = answer(
+            &mut core,
+            Ok(csv("Krakatau", "Tambora")),
+            Some(given("Krakatau", "Tambora")),
+        );
         assert_eq!(
             ask.changes,
             [Change::Text {
                 place: "1".into(),
-                text
+                text: piece("Krakatau")
             }]
         );
-        let csv_now = || std::fs::read_to_string(dir.join("Eruptions.csv")).unwrap();
-        assert_eq!(csv_now(), csv("Krakatoa", "Tambora"), "the owner writes it");
-        core.file_edited(
-            "csv-table",
-            "Eruptions.csv",
-            &ask.rev,
-            Ok(csv("Krakatau", "Tambora")),
-        );
-        let (_, back) = core.take_reads().pop().unwrap();
-        let gave = Ok(given("Krakatau", "Tambora"));
-        core.file_given("csv-table", "Eruptions.csv", &back.rev, gave);
+        assert!(dir.join("Krakatoa.md").is_file(), "nothing moved yet");
+        assert_eq!(csv_now(), csv("Krakatoa", "Tambora"), "nothing written yet");
+        let relinked = core.take_relinked();
+        let [(t, Ok(answers))] = &relinked[..] else {
+            panic!("{relinked:?}");
+        };
+        assert_eq!(*t, ticket);
+        rename::answered(&mut p.edits, answers.clone());
+        rename::apply(&p).unwrap();
+        core.relinked(&p.edits, |path| p.moved(path));
+        core.rescan_now();
         assert_eq!(csv_now(), csv("Krakatau", "Tambora"));
+        assert!(core.take_reads().is_empty(), "what it read back is kept");
         let krakatau = core.index.by_rel("Krakatau").unwrap();
         assert_eq!(
             core.index.backlinks(krakatau).len(),
@@ -1457,32 +1523,38 @@ mod tests {
             "its link leads there now"
         );
 
-        // A link the owner reported, and an owner that doesn't write what was asked.
-        rename(&mut core, "Tambora", "Tambora volcano");
-        let (_, ask) = core.take_file_edits().pop().unwrap();
+        // A link the owner reported, and an owner that doesn't write what was asked, or
+        // refuses: the rename is cancelled and nothing changes.
+        let p = plan(&core, "Tambora", "Tambora volcano");
+        let ticket = core.relink(&p.edits).unwrap().unwrap();
+        let ask = answer(
+            &mut core,
+            Ok(csv("Krakatau", "x")),
+            Some(given("Krakatau", "x")),
+        );
         assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
             if link == "Tambora" && to == "Tambora volcano"));
-        core.file_edited(
-            "csv-table",
-            "Eruptions.csv",
-            &ask.rev,
-            Ok(csv("Krakatau", "x")),
-        );
-        let (_, back) = core.take_reads().pop().unwrap();
-        core.file_given(
-            "csv-table",
-            "Eruptions.csv",
-            &back.rev,
-            Ok(given("Krakatau", "x")),
-        );
-        let events = core.poll();
+        let relinked = core.take_relinked();
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::RelinkFailed { path, message, .. }
-                if path == "Eruptions.csv" && message.contains("links to x"))),
-            "{events:?}"
+            matches!(&relinked[..], [(t, Err(m))] if *t == ticket && m.contains("links to x")),
+            "{relinked:?}"
         );
+        core.relink(&p.edits).unwrap().unwrap();
+        answer(&mut core, Err("it is read-only"), None);
+        let relinked = core.take_relinked();
+        assert!(
+            matches!(&relinked[..], [(_, Err(m))]
+                if m == "csv-table didn't edit Eruptions.csv: it is read-only"),
+            "{relinked:?}"
+        );
+
+        // Cancelled while it waits: a late answer is dropped.
+        let ticket = core.relink(&p.edits).unwrap().unwrap();
+        core.cancel_relink(ticket);
+        assert!(core.take_file_edits().is_empty(), "not asked after all");
+        core.file_edited("csv-table", "Eruptions.csv", &ask.rev, Ok(csv("a", "b")));
+        assert!(core.take_relinked().is_empty() && core.take_reads().is_empty());
+        assert!(dir.join("Tambora.md").is_file());
         assert_eq!(csv_now(), csv("Krakatau", "Tambora"), "nothing written");
         let _ = std::fs::remove_dir_all(&dir);
     }
