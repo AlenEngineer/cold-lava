@@ -21,7 +21,7 @@ keys esc
 wait-for cold-lava workspaces
 # The table sets the VEI of the CSV's Krakatoa row.
 keys i
-wait-for eruption        8
+wait-for eruption             8
 type erup
 wait-for rows · /erup
 keys enter

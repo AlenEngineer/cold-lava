@@ -36,7 +36,7 @@ keys esc esc esc
 wait-for cold-lava workspaces
 # Its rows are eruptions in the type's table, beside the rows of the table in a note.
 keys i
-wait-for eruption        8
+wait-for eruption             8
 type erup
 wait-for rows · /erup
 keys enter

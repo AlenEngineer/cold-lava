@@ -6,8 +6,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::transport::{self, Launch};
-use super::{CommandSpec, FileType, Manifest, Permission, read_only, rpc};
-use crate::types::Definitions;
+use super::{CommandSpec, FileType, Manifest, Permission, TypeSpec, read_only, rpc};
 
 /// Names an installed extension can't take: the built-in ones and the menu's screens, which edits
 /// are attributed to.
@@ -44,7 +43,7 @@ struct File {
     #[serde(default)]
     commands: Vec<CommandSpec>,
     #[serde(default)]
-    types: Definitions,
+    types: Vec<TypeSpec>,
     #[serde(default, rename = "file-types")]
     file_types: Vec<FileType>,
 }
@@ -100,7 +99,15 @@ pub fn load(dir: &Path) -> (Vec<Installed>, Vec<String>) {
 
 fn read(folder: &Path, path: &Path) -> Result<Installed, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let file: File = toml::from_str(&text).map_err(|e| e.message().to_string())?;
+    let table: toml::Table = toml::from_str(&text).map_err(|e| e.message().to_string())?;
+    if let Some(toml::Value::Table(_)) = table.get("types") {
+        let name = table.get("name").and_then(|n| n.as_str()).unwrap_or("NAME");
+        return Err(format!(
+            "write each type as a [[types]] table with its id, like id = \"{name}.row\""
+        ));
+    }
+    let file: File = (toml::Value::Table(table).try_into())
+        .map_err(|e: toml::de::Error| e.message().to_string())?;
     let name = file.name;
     let named = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
     if name.is_empty() || !name.chars().all(named) || name.starts_with('-') {
@@ -193,7 +200,8 @@ description = "Counts words"
 run = ["python3", "main.py"]
 permissions = ["items.read", "items.edit"]
 
-[types.doc]
+[[types]]
+id = "wc.doc"
 on = "note"
 fields.words = { property = "words", type = "number" }
 
@@ -232,7 +240,8 @@ new = "wc.show"
         );
         assert_eq!(m.commands.len(), 2);
         assert!(m.commands[1].keys.is_empty());
-        assert!(m.types.contains_key("doc"));
+        assert_eq!(m.types[0].id, "wc.doc");
+        assert_eq!(m.types[0].definition["on"].as_str(), Some("note"));
         let counts = FileType {
             extension: "wc".into(),
             title: "Word counts".into(),
@@ -282,6 +291,10 @@ new = "wc.show"
                     "l",
                     &with("new = \"wc.show\"", "new = \"wc.make\"").replace("wc", "l"),
                 ),
+                (
+                    "m",
+                    &with("[[types]]\nid = \"wc.doc\"", "[types.doc]").replace("wc", "m"),
+                ),
             ],
         );
         std::fs::create_dir_all(d.join("no-manifest")).unwrap();
@@ -291,7 +304,7 @@ new = "wc.show"
         let says = |i: usize, what: &str| {
             assert!(mistakes[i].contains(what), "{i}: {}", mistakes[i]);
         };
-        assert_eq!(mistakes.len(), 12, "{mistakes:#?}");
+        assert_eq!(mistakes.len(), 13, "{mistakes:#?}");
         says(0, "lowercase letters");
         says(1, "folder must be called other");
         says(2, "API 2");
@@ -303,7 +316,11 @@ new = "wc.show"
         says(8, "unknown field `icon`");
         says(9, "\"tar.gz\" must be an extension");
         says(10, "l.make, which isn't one of its [[commands]]");
-        says(11, "keeps for itself");
+        says(
+            11,
+            "write each type as a [[types]] table with its id, like id = \"m.row\"",
+        );
+        says(12, "keeps for itself");
         let _ = std::fs::remove_dir_all(&d);
     }
 

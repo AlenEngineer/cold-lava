@@ -192,10 +192,17 @@ impl Matcher {
                 }
                 let conditions = w.header.len()
                     + w.property.len()
-                    + [&w.tag, &w.folder, &w.section, &w.language, &w.inside]
-                        .iter()
-                        .filter(|l| !l.is_empty())
-                        .count()
+                    + [
+                        &w.tag,
+                        &w.folder,
+                        &w.file_type,
+                        &w.section,
+                        &w.language,
+                        &w.inside,
+                    ]
+                    .iter()
+                    .filter(|l| !l.is_empty())
+                    .count()
                     + shape.pattern.is_some() as usize;
                 shapes.push(Shape {
                     index,
@@ -645,7 +652,8 @@ fn compile_source(s: &Source) -> Src {
 
 /// What the matcher knows about the note a block is in.
 pub struct Note<'a> {
-    /// Workspace-relative, with `.md`.
+    /// Workspace-relative, with `.md`; for a piece of a file another owner reads, that file's
+    /// path, with its extension.
     pub path: &'a str,
     /// The text pulldown-cmark read, and its map back to the file.
     pub src: &'a str,
@@ -679,7 +687,7 @@ impl<'a> Note<'a> {
             None => 0,
         };
         let mut note = Note {
-            path,
+            path: path.split('\0').next().unwrap_or(path),
             src,
             source,
             body: (&src[body_at..], body_at),
@@ -779,12 +787,15 @@ impl Block<'_> {
 }
 
 fn note_passes(w: &crate::types::Where, note: &Note) -> bool {
-    let folder = note.path.rsplit_once('/').map_or("", |(f, _)| f);
-    (w.folder.is_empty()
-        || w.folder.iter().any(|f| {
-            let f = f.trim_matches('/');
-            f.is_empty() || folder == f || folder.starts_with(&format!("{f}/"))
-        }))
+    let (folder, file) = note.path.rsplit_once('/').unwrap_or(("", note.path));
+    let kind = file.rsplit_once('.').map_or("", |(_, x)| x);
+    (w.file_type.is_empty()
+        || (w.file_type.iter()).any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(kind)))
+        && (w.folder.is_empty()
+            || w.folder.iter().any(|f| {
+                let f = f.trim_matches('/');
+                f.is_empty() || folder == f || folder.starts_with(&format!("{f}/"))
+            }))
         && w.property.iter().all(|(k, v)| {
             note.frontmatter
                 .as_ref()
@@ -1189,7 +1200,7 @@ mod tests {
     use super::*;
     use crate::items::{Data, Item, Settings, extract};
     use crate::tasks::TasksSettings;
-    use crate::types::{Definitions, Layer, load};
+    use crate::types::{Layer, load};
     use serde_json::json;
     use std::path::Path;
 
@@ -1767,18 +1778,66 @@ Survey the rim ~3h, not `~4h`, not~6h.
             "then by name"
         );
 
-        let ext: Definitions = [(
-            "thought".to_string(),
+        let ext = [(
+            "x.thought".to_string(),
             toml::from_str("on = \"list-item\"").unwrap(),
-        )]
-        .into();
+        )];
         let table: toml::Table = toml::from_str("[zzz]\non = \"list-item\"\n").unwrap();
         let s = settings_with(vec![
-            Layer::extension("x", &ext),
+            Layer::extension("x", ext),
             Layer::config(Path::new("config.toml"), table),
         ]);
         let all = extract("Note.md", "- think\n", &s);
         assert_eq!(all[0].data.kind(), "zzz", "config beats an extension");
+    }
+
+    #[test]
+    fn an_owners_type_matches_its_own_files_below_the_users_types() {
+        let row = toml::from_str(
+            "on = \"table-row\"\nwhere.file-type = [\"csv\"]\npriority = -1\n\
+             fields.name = { pattern = '^\\|\\s*(.*?)\\s*\\|' }\nfields.path = { note = \"path\" }\n",
+        )
+        .unwrap();
+        let mine: toml::Table = toml::from_str(
+            "[eruption]\non = \"table-row\"\nwhere.header = [\"Volcano\", \"VEI\"]\n\
+             fields.vei = { column = \"VEI\", type = \"number\" }\n",
+        )
+        .unwrap();
+        let s = settings_with(vec![
+            Layer::built_in(),
+            Layer::extension("csv-table", [("csv-table.row".to_string(), row)]),
+            Layer::config(Path::new("config.toml"), mine),
+        ]);
+        let row = |file: &str, header: &str, cells: &str| {
+            let text = format!("| {header} |\n| --- | --- |\n| {cells} |\n");
+            extract(&format!("{file}\0{cells}"), &text, &s)
+        };
+        let erupted = row("Data/Eruptions.csv", "Volcano | VEI", "Krakatoa | 6");
+        assert_eq!(erupted[0].data.kind(), "eruption", "the user's type wins");
+        let watched = row(
+            "Data/Observatories.csv",
+            "Observatory | Volcano",
+            "HVO | Kīlauea",
+        );
+        let [hvo] = &watched[..] else {
+            panic!("{watched:?}")
+        };
+        assert_eq!(
+            hvo.data.kind(),
+            "csv-table.row",
+            "no type of the user's matches"
+        );
+        let json = serde_json::to_value(hvo).unwrap();
+        assert_eq!(
+            (json["name"].clone(), json["path"].clone()),
+            ("HVO".into(), "Data/Observatories.csv".into()),
+            "a piece's note is its file"
+        );
+        let text = "| Observatory | Volcano |\n| --- | --- |\n| HVO | Kīlauea |\n";
+        assert!(
+            extract("Data/Observatories.md", text, &s).is_empty(),
+            "a table in a note is no CSV row"
+        );
     }
 
     #[test]

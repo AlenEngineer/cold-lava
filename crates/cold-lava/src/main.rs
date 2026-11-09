@@ -185,7 +185,10 @@ fn run() -> Result<()> {
     config::load(registry.commands());
     let mut layers: Vec<types::Layer> = registry
         .manifests()
-        .map(|m| types::Layer::extension(&m.name, &m.types))
+        .map(|m| {
+            let types = m.types.iter().map(|t| (t.id.clone(), t.definition.clone()));
+            types::Layer::extension(&m.name, types)
+        })
         .collect();
     if let Some(path) = config::path() {
         layers.push(types::Layer::config(&path, config::get().types.clone()));
@@ -238,7 +241,8 @@ fn run() -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&found)?);
             } else {
-                let counts = workspace::scan(&root).ok().map(|v| type_counts(&v));
+                let counts = owned::workspace(&root, &registry).ok();
+                let counts = counts.map(|v| type_counts(&v));
                 print_types(&found, counts.as_ref());
                 if !found.errors.is_empty() {
                     eprintln!("errors:");
@@ -750,8 +754,8 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
             println!("  command: {}  {}", c.id, c.title);
         }
         if !m.types.is_empty() {
-            let names: Vec<String> = m.types.keys().map(|t| format!("{}.{t}", m.name)).collect();
-            println!("  types: {}", names.join(", "));
+            let ids: Vec<&str> = m.types.iter().map(|t| t.id.as_str()).collect();
+            println!("  types: {}", ids.join(", "));
         }
         for t in &m.file_types {
             let new = t.new.as_ref().map(|n| format!(", new: {n}"));
@@ -895,16 +899,17 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
     }
 }
 
-/// Items found and values that didn't parse, by type: an item counts for its own type only.
+/// Items found and values that didn't parse, by type, in the notes and the files other owners
+/// read: an item counts for its own type only.
 fn type_counts(workspace: &workspace::Workspace) -> HashMap<String, (usize, usize)> {
     let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
-    for note in &workspace.notes {
-        for item in workspace.items(note) {
-            if let items::Data::Typed(t) = &item.data {
-                let c = counts.entry(t.kind.clone()).or_default();
-                c.0 += 1;
-                c.1 += t.unparsed;
-            }
+    let notes = (workspace.notes.iter()).flat_map(|n| workspace.items(n).iter());
+    let owned = (workspace.owned.iter()).flat_map(|f| &f.items);
+    for item in notes.chain(owned) {
+        if let items::Data::Typed(t) = &item.data {
+            let c = counts.entry(t.kind.clone()).or_default();
+            c.0 += 1;
+            c.1 += t.unparsed;
         }
     }
     counts
@@ -937,6 +942,7 @@ fn where_label(w: &types::Where) -> String {
         ("header", &w.header),
         ("tag", &w.tag),
         ("folder", &w.folder),
+        ("file-type", &w.file_type),
         ("section", &w.section),
         ("language", &w.language),
         ("inside", &w.inside),

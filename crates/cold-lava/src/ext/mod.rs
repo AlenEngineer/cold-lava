@@ -30,9 +30,10 @@ use crate::gateway::{
 use crate::owner::cache::{FileRead, Kind};
 use crate::owner::edits::FileEdit;
 use crate::owner::given::Given;
-use crate::types::{Definitions, Type};
+use crate::types::Type;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use view::{Content, ViewId, ViewNews};
 
@@ -61,9 +62,9 @@ pub struct Manifest {
     pub hints: Vec<(String, String)>,
     /// What it adds to the menu's commands, for keys, the palette, the help and config.toml.
     pub commands: Vec<CommandSpec>,
-    /// Types it defines, named `<extension name>.<type>` once loaded.
-    #[serde(default, skip_serializing_if = "Definitions::is_empty")]
-    pub types: Definitions,
+    /// Types it defines, each with its id: `<extension name>.<type>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<TypeSpec>,
     /// What it may ask of the workspace gateway. Without the field, read only.
     #[serde(default = "read_only")]
     pub permissions: Vec<Permission>,
@@ -139,6 +140,16 @@ pub struct CommandSpec {
     /// Its default keys, written as in config.toml: "g", "ctrl+o".
     #[serde(default)]
     pub keys: Vec<String>,
+}
+
+/// A type an extension defines (`[[types]]`): its id, `<extension name>.<type>`, and the rest
+/// of its table, a definition in the same language as any type's (docs/extensions.md, "Types").
+/// The engine reads the definition, so a broken one leaves out that type, not the extension.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TypeSpec {
+    pub id: String,
+    #[serde(flatten)]
+    pub definition: toml::Table,
 }
 
 /// A part of cold-lava an extension provides.
@@ -592,6 +603,27 @@ pub struct Registry {
     owners: Vec<(String, ExtId)>,
 }
 
+/// Leaves out of `m` the types it can't define, as commands are: an id outside its namespace
+/// (`<name>.<type>`), or one it gave already. Returns why, one line each.
+fn leave_out_types(m: &mut Manifest) -> Vec<String> {
+    let mut why = Vec::new();
+    let mut ids = HashSet::new();
+    let name = m.name.clone();
+    m.types.retain(|t| {
+        let id = &t.id;
+        let problem = if !commands::namespaced(&name, id) {
+            format!("its id must start with \"{name}.\"")
+        } else if !ids.insert(id.clone()) {
+            "that id is taken".into()
+        } else {
+            return true;
+        };
+        why.push(format!("{name}: type {id:?} was left out: {problem}"));
+        false
+    });
+    why
+}
+
 impl Registry {
     /// The built-in extensions that can run here, then the user's (`installed::user_dir`).
     pub fn load() -> Registry {
@@ -630,8 +662,14 @@ impl Registry {
             .iter()
             .position(|(_, m)| m.roles.contains(&Role::Editor))
             .map(ExtId);
+        let mut loaded = loaded;
+        let mut refused = Vec::new();
+        for (_, m) in &mut loaded {
+            refused.extend(leave_out_types(m));
+        }
         let manifests = loaded.iter().enumerate().map(|(i, (_, m))| (ExtId(i), m));
-        let (commands, mut refused) = commands::menu(manifests);
+        let (commands, commands_refused) = commands::menu(manifests);
+        refused.extend(commands_refused);
         let mut owners: Vec<(String, ExtId)> = Vec::new();
         for (i, (_, m)) in loaded.iter().enumerate() {
             for t in &m.file_types {
@@ -996,7 +1034,7 @@ mod tests {
                 roles: vec![Role::Editor],
                 hints: vec![("Ctrl-o".into(), "back".into())],
                 commands: vec![command("nvim.restart", &["ctrl+r"])],
-                types: Definitions::new(),
+                types: Vec::new(),
                 permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
                 file_types: Vec::new(),
             },
@@ -1035,7 +1073,7 @@ mod tests {
                 roles: Vec::new(),
                 hints: Vec::new(),
                 commands: self.commands.clone(),
-                types: Definitions::new(),
+                types: Vec::new(),
                 permissions: Vec::new(),
                 file_types: Vec::new(),
             }
@@ -1409,6 +1447,37 @@ mod tests {
         // What a refused command's id was meant to run is still the core's.
         let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
         assert_eq!(keys.label("graph.open"), "g");
+    }
+
+    #[test]
+    fn types_outside_the_namespace_or_taken_are_left_out() {
+        let spec = |id: &str| TypeSpec {
+            id: id.into(),
+            definition: toml::from_str("on = \"note\"").unwrap(),
+        };
+        let mut m = Manifest {
+            name: "wc".into(),
+            title: "wc".into(),
+            version: String::new(),
+            description: String::new(),
+            roles: Vec::new(),
+            hints: Vec::new(),
+            commands: Vec::new(),
+            types: ["doc", "wcx.doc", "wc.", "wc.doc", "wc.doc"]
+                .map(spec)
+                .to_vec(),
+            permissions: read_only(),
+            file_types: Vec::new(),
+        };
+        let refused = leave_out_types(&mut m);
+        let ids: Vec<&str> = m.types.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["wc.doc"]);
+        assert_eq!(refused.len(), 4, "{refused:?}");
+        assert_eq!(
+            refused[0],
+            "wc: type \"doc\" was left out: its id must start with \"wc.\""
+        );
+        assert!(refused[3].ends_with("that id is taken"), "{refused:?}");
     }
 
     #[test]

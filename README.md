@@ -709,9 +709,13 @@ over each row as a table row and a cell like `- [ ] Read the report 📅 2026-11
 agenda, its `[[Krakatoa]]` shows in Krakatoa's backlinks (Enter opens the CSV at that row) and
 in the graph, and a link to the CSV leads somewhere. The CSV's own backlinks show under its
 table, as a note's show under the reader: `Tab` moves into them, `Enter` opens the note (or the
-other CSV) at the link, `b` hides them. What an owner said is kept by file version
-under `~/.cache/cold-lava/owners/`, so a workspace opens without waiting for it; it is asked
-again only when a file changes.
+other CSV) at the link, `b` hides them. What an owner said is kept by file version under
+`~/.cache/cold-lava/owners/`, so a workspace opens without waiting for it; it is asked again
+only when a file changes.
+
+An owner can also ship types in its manifest (`[[types]]`). csv-table has `csv-table.row` for
+the rows none of your types matches: `Volcanoes/Observatories.csv` is a table of those in `i`,
+beside `eruption`, which still takes `Eruptions.csv`'s rows by their columns.
 
 Those items are edited the way a note's are, through their owner: `x` in the agenda ticks the
 CSV's task, `e` in the table sets a row's VEI, and renaming Krakatoa rewrites the CSV's links

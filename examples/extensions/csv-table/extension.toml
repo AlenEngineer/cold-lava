@@ -14,3 +14,16 @@ new = "csv-table.new"
 [[commands]]
 id = "csv-table.new"
 title = "new CSV table"
+
+# A row of any CSV file that none of your types matches. csv-table hands each row over as a
+# one-row Markdown table, so your type whose table-row shape names the file's columns
+# (`where.header`) matches first: this one's priority is below every type's default. Its id is
+# in csv-table's namespace, as its commands' are.
+[[types]]
+id = "csv-table.row"
+on = "table-row"
+where.file-type = ["csv"]
+priority = -1
+fields.name = { pattern = '^\|\s*(.*?)\s*\|' }
+fields.links = { inlines = "links", type = "link" }
+fields.tags = { inlines = "tags", type = "tag" }

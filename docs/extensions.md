@@ -291,7 +291,7 @@ style.minutes = { badge = true, icon = "⏱" }
   frontmatter, a fence). An inline item's parent is the block it sits in. Existing ids don't
   change.
 - **Where definitions live,** in load order: built in (`types/*.toml` in the binary), extension
-  manifests (named `<extension>.<name>`), `[types.*]` in `config.toml`, and
+  manifests (`[[types]]`, each with its id `<extension>.<name>`), `[types.*]` in `config.toml`, and
   `<workspace>/.cold-lava/types.toml`, which travels with the workspace. Built-in names can be extended
   but not redefined. Mistakes are collected like `config.toml`'s: one line each, the broken type
   is dropped and the rest load. `cold-lava types WORKSPACE` lists every type, its fields and where
@@ -336,7 +336,8 @@ style.minutes = { badge = true, icon = "⏱" }
   `info` on `code`, `marker` and `rest` on text blocks, …), and `Source::on` in types.rs is that
   table.
 - **`where`** has `header`, `property` (string values), `tag` (a nested tag counts),
-  `folder`, `section`, `language` (the fence's) and `inside` (a type, native kind or primitive).
+  `folder`, `file-type` (the file's extension: `md` for a note, `csv` for a file an owner
+  reads), `section`, `language` (the fence's) and `inside` (a type, native kind or primitive).
 - **Looks:** `colour` (or `color`): `red`, `orange`, `yellow`, `green`, `cyan`, `purple`,
   `accent`, `muted`; `badge`, `icon`, `dim`, `strike`, `bold`, `hide`, `link` (the value is
   followed as a link), `whole` (the look covers the whole item), and `by-value` (looks by enum
@@ -368,7 +369,8 @@ style.minutes = { badge = true, icon = "⏱" }
   (`types::for_workspace`). `list`, `heading` and `block` are native kinds (`types::NATIVE`), and
   `task` is a built-in type (`types::BUILT_IN`): all four can be extended and not redefined, and
   only the built-in origin may define one of those names. An extension's manifest carries
-  `types` (named `<extension>.<name>`); `config.toml`'s `[types.NAME]` is handed to the engine
+  `[[types]]`, each with its `id` (`<extension>.<name>`) and a definition like any other
+  ("Owners and types, as built"); `config.toml`'s `[types.NAME]` is handed to the engine
   by the frontend, since the engine never reads config.toml; the workspace's
   `.cold-lava/types.toml` must start with `version = 1`, and a missing or unknown version skips
   the file. A later origin replacing an earlier type is a note, not an error. `actions` must be
@@ -449,8 +451,8 @@ style.minutes = { badge = true, icon = "⏱" }
   typed note keep `parent: null`; the note item is not their parent.
 - **Conflicts** go as designed, with "origin" as workspace, then `config.toml`, then an extension,
   and the type's name as the last tie-break. The more specific shape is the one with more
-  conditions: each header column and property counts, as do `tag`, `folder`, `section`,
-  `language`, `inside` and a `match`.
+  conditions: each header column and property counts, as do `tag`, `folder`, `file-type`,
+  `section`, `language`, `inside` and a `match`.
 - **Settings.** `items::Settings` carries the loaded types and the compiled matcher, cached per
   workspace. The frontend hands over extensions' and `config.toml`'s types once at startup
   (`types::set_configured`), and `types::for_workspace` adds the workspace's own file.
@@ -1072,7 +1074,30 @@ graph all see the new date. None of them knew what a canvas is.
   ends the command with the owner's reason and "nothing was changed"; `--dry-run` starts
   nothing. What the owners read is kept in the cache. `tests/owned.rs` runs it with csv-table
   in a home of its own. The CLI has no merge command.
-- **Not yet:** owner-shipped types need a shape like any type.
+- **Types shipped by owners.** A manifest's `[[types]]` (`ext::TypeSpec`) are an `id` and a
+  definition in the language of any type, shapes and all, loaded with origin `extension NAME`
+  between the built-in types and `config.toml`'s (`types::Layer::extension`). Like a command's,
+  the id must start with the extension's name and a dot (`csv-table.row`); one outside that
+  namespace, or a second with the same id, is left out and reported like a command conflict,
+  on the status line at start and in `cold-lava keys` (`ext::leave_out_types`). A definition
+  that doesn't read or doesn't check is dropped with its error in `cold-lava types`, and the
+  extension and its other types load. `[types.NAME]` in a manifest, the earlier form, leaves
+  the extension out and says how to write it. A later origin may still replace an extension's
+  type by its id, as a note. The types are in `types/list` and `cold-lava types` like any
+  other, with how many items each found, owned files' included (from the owners' cache), and
+  they match an owner's Markdown pieces by their shapes and its typed items by name. A shape
+  meant for an owner's files says so with `where.file-type` (the file's extension), so it never
+  matches a table in a note; inside a piece, the note a shape reads (`note = "path"`, `folder`,
+  `where.folder`) is the owned file.
+- **The example's type.** csv-table ships `csv-table.row`, a table-row shape with
+  `where.file-type = ["csv"]` and `priority = -1`, for the rows no type of the user's matches:
+  its `name` is the row's first cell (a `pattern`, so it is written back like any field),
+  `links` and `tags` the row's. The workspace's `eruption` keeps matching `Eruptions.csv`'s rows
+  by their columns (it has the default priority, 0), and `Volcanoes/Observatories.csv`
+  (`Observatory, Volcano, Founded`) is three `csv-table.row`s. `csv-types.drive` checks it
+  through the menu: the type picker lists it, its table shows those rows, and a name edited
+  there is saved in the CSV through csv-table; `tests/owned.rs` checks `cold-lava types` and
+  `cold-lava items` from the cache.
 
 ### Link resolver
 
@@ -1379,7 +1404,8 @@ extension = "wc"
 title = "Word counts"
 new = "word-count.new"           # one of its [[commands]]
 
-[types.doc]                      # loaded as word-count.doc
+[[types]]                        # a type, in the language of any type's definition
+id = "word-count.doc"            # must start with the extension's name, as a command's
 on = "note"
 fields.words = { property = "words", type = "number" }
 
@@ -1398,8 +1424,9 @@ keys = ["W"]                     # default keys; config.toml can change them
 - **Mistakes** are collected like config.toml's: an unknown field, a bad name, a name
   cold-lava keeps (`nvim`, `table`, `agenda`, `reader`), a folder named otherwise, a second
   extension of the same name, an `api` other than 1, a transport cold-lava doesn't have, an empty
-  `run`, a permission it doesn't know, or a file type with a bad extension or a `new` that isn't
-  one of its commands leave that extension out with one line each. The menu
+  `run`, a permission it doesn't know, a file type with a bad extension or a `new` that isn't
+  one of its commands, or types written as `[types.NAME]` instead of `[[types]]` leave that
+  extension out with one line each. The menu
   says so at start, and `cold-lava ext list [WORKSPACE]` prints every extension (where it runs
   from, its permissions, commands, types and log) and then the mistakes, exiting 1 when there
   are any.

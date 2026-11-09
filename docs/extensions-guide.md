@@ -66,7 +66,7 @@ keys = ["R"]                     # optional default keys; config.toml can change
 | `[[file-types]]` | Kinds of file it opens: `extension`, `title`, and `new`, one of its commands that makes one ([Owning a kind of file](#owning-a-kind-of-file)). |
 | `transport` | How cold-lava talks to it. Only `stdio` exists, and it is the default. |
 | `api` | The protocol version it was written for. Only `1` exists, and it is the default. |
-| `[types.NAME]` | Types it defines, loaded as `<name>.NAME` ([extensions.md](extensions.md#types)). |
+| `[[types]]` | Types it defines: an `id` that starts with its name and a dot, like a command's (`csv-table.row`), and a definition like any type's ([Shipping a type](#shipping-a-type)). |
 
 A mistake in a manifest leaves that extension out and says why in `cold-lava ext list`. The rest
 load.
@@ -298,6 +298,33 @@ def file_read(params):
   workspace opens with your files' items before you have started. Change `version` when you
   change what you give. Answer within 10 s; an error, a late answer or an answer that doesn't
   read is said on the status line, and the file keeps what you gave before.
+
+## Shipping a type
+
+An owner can ship types of its own in its manifest, for what its files hold whatever the
+user's types say. A `[[types]]` table is an `id` in your namespace and a definition written as
+in `types.toml` ([extensions.md](extensions.md#types)):
+
+```toml
+[[types]]
+id = "csv-table.row"
+on = "table-row"
+where.file-type = ["csv"]           # only in .csv files, never a table in a note
+priority = -1                       # below the user's types: their row types win
+fields.name = { pattern = '^\|\s*(.*?)\s*\|' }
+fields.links = { inlines = "links", type = "link" }
+fields.tags = { inlines = "tags", type = "tag" }
+```
+
+- It matches your Markdown pieces by its shapes, like any type, and your typed items name it
+  (`{"place": "4", "type": "csv-table.row", "fields": {…}}`).
+- `where.file-type` keeps a shape to your files. `priority = -1` makes it a fallback: a user's
+  type that matches the same row has priority 0, so it wins.
+- It shows in `types/list`, in the table's type picker (`i`) and in `cold-lava types`, with
+  origin `extension csv-table`. A user's `config.toml` or workspace can replace it by its id.
+- An id outside your namespace, or one you give twice, is left out and said on the status line
+  and in `cold-lava keys`. A definition that doesn't read is dropped, and said in
+  `cold-lava types`; your other types and the extension still load.
 
 ## Writing items back
 

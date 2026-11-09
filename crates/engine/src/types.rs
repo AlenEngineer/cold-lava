@@ -64,9 +64,6 @@ pub const BUILT_IN_TASK: &str = include_str!("../types/task.toml");
 /// What one pattern may compile to, so no definition can make matching slow.
 const REGEX_LIMIT: usize = 256 * 1024;
 
-/// Definitions by name, as an extension's manifest carries them.
-pub type Definitions = IndexMap<String, Definition>;
-
 /// One type: its schema and the shapes it shows up in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Written")]
@@ -193,6 +190,10 @@ pub struct Where {
     /// The note is under one of these folders.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub folder: Vec<String>,
+    /// The file is of one of these kinds, by its extension: `md` for a note, `csv` for a file
+    /// another owner reads. So an owner's type matches only in its own files.
+    #[serde(rename = "file-type", skip_serializing_if = "Vec::is_empty")]
+    pub file_type: Vec<String>,
     /// The block is under a heading with one of these names.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub section: Vec<String>,
@@ -854,14 +855,16 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn extension(name: &str, definitions: &Definitions) -> Layer {
+    /// An extension's `[[types]]`, each by its id (`<extension>.<name>`; the frontend leaves
+    /// out the ones outside its namespace) and the rest of its table. A broken one is dropped
+    /// with its error, and the extension's other types load.
+    pub fn extension(name: &str, types: impl IntoIterator<Item = (String, toml::Table)>) -> Layer {
         Layer {
             origin: Origin::Extension {
                 name: name.to_string(),
             },
-            definitions: definitions
-                .iter()
-                .map(|(n, d)| (format!("{name}.{n}"), Ok(d.clone())))
+            definitions: (types.into_iter())
+                .map(|(id, table)| (id, parse(toml::Value::Table(table))))
                 .collect(),
             errors: Vec::new(),
         }
@@ -934,14 +937,8 @@ impl Layer {
     }
 
     fn from_table(origin: Origin, table: toml::Table) -> Layer {
-        let definitions = table
-            .into_iter()
-            .map(|(name, value)| {
-                let parsed = value
-                    .try_into::<Definition>()
-                    .map_err(|e| e.to_string().replace('\n', " ").trim().to_string());
-                (name, parsed)
-            })
+        let definitions = (table.into_iter())
+            .map(|(name, value)| (name, parse(value)))
             .collect();
         Layer {
             origin,
@@ -949,6 +946,12 @@ impl Layer {
             errors: Vec::new(),
         }
     }
+}
+
+/// One definition as written, or why it doesn't read, on one line.
+fn parse(value: toml::Value) -> Result<Definition, String> {
+    (value.try_into::<Definition>())
+        .map_err(|e| e.to_string().replace('\n', " ").trim().to_string())
 }
 
 /// Every loaded type, and what was wrong with the rest.
@@ -1318,6 +1321,15 @@ fn check(name: &str, d: &Definition) -> Vec<String> {
 fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
     let on = shape.on;
     let w = &shape.conditions;
+    for x in &w.file_type {
+        let kind = x.trim_start_matches('.');
+        let fits = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        if kind.is_empty() || !kind.chars().all(fits) {
+            p.push(format!(
+                "{at}where.file-type: {x:?} is not a kind of file: an extension like \"csv\""
+            ));
+        }
+    }
     for (set, key, ok) in [
         (!w.header.is_empty(), "header", on == On::TableRow),
         (!w.language.is_empty(), "language", on == On::Code),
@@ -1872,12 +1884,28 @@ mod tests {
     }
 
     #[test]
+    fn a_file_type_is_an_extension() {
+        let bad = check(
+            "row",
+            &definition("on = \"table-row\"\nwhere.file-type = [\".csv\", \"tar.gz\"]"),
+        );
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(
+            bad[0].contains("\"tar.gz\" is not a kind of file"),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
     fn load_order_and_replacements() {
-        let ext: Definitions = [(
-            "count".to_string(),
-            definition("on = \"note\"\nfields.words = \"number\""),
-        )]
-        .into();
+        let table = |toml: &str| toml::from_str::<toml::Table>(toml).unwrap();
+        let ext = [
+            (
+                "word-count.count".to_string(),
+                table("on = \"note\"\nfields.words = \"number\""),
+            ),
+            ("word-count.broken".to_string(), table("on = \"nowhere\"")),
+        ];
         let root = workspace(
             "order",
             "version = 1\n[types.book]\non = \"table-row\"\n\
@@ -1886,7 +1914,7 @@ mod tests {
         let t = load(
             [
                 Some(Layer::built_in()),
-                Some(Layer::extension("word-count", &ext)),
+                Some(Layer::extension("word-count", ext)),
                 Some(config(
                     "[book]\non = \"note\"\n[idea]\nextends = \"task\"\non = \"list-item\"\n",
                 )),
@@ -1895,7 +1923,11 @@ mod tests {
             .into_iter()
             .flatten(),
         );
-        assert!(t.errors.is_empty(), "{:?}", t.errors);
+        assert!(
+            matches!(&t.errors[..], [e] if e.starts_with("extension word-count: [types.word-count.broken]")),
+            "a broken type is dropped, and the extension's others load: {:?}",
+            t.errors
+        );
         assert_eq!(
             names(&t),
             ["task", "word-count.count", "idea", "book", "tally"]
