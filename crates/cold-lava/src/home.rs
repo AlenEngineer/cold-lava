@@ -598,6 +598,10 @@ pub struct Home {
     views: Views,
     /// What owners answered to `file/preview`, for the embeds the reader draws.
     previews: Previews,
+    /// The picture placed with Kitty graphics: its view and the cells it covers. And the one
+    /// the frame just drawn wants there.
+    picture: Option<(ExtId, ViewId, Rect)>,
+    picture_wanted: Option<(ExtId, ViewId, Rect)>,
     /// Reading an extension's edits back during `call`: calls meanwhile leave theirs for the
     /// next frame.
     catching_up: bool,
@@ -678,8 +682,14 @@ impl Home {
             requested: Vec::new(),
             effects_left: EFFECTS_PER_FRAME,
             statuses: Vec::new(),
-            views: Views::default(),
+            views: Views::new(match render {
+                Render::Braille => false,
+                Render::Auto => crate::kitty::supported(),
+                Render::Pixels => true,
+            }),
             previews: Previews::default(),
+            picture: None,
+            picture_wanted: None,
             catching_up: false,
             shown: None,
             pending: None,
@@ -791,7 +801,9 @@ impl Home {
                 self.bsel = 0;
                 self.refresh_backlinks();
             }
+            self.picture_wanted = None;
             terminal.draw(|f| self.draw(f))?;
+            self.place_picture()?;
             let ms = if self.pane.is_some() || self.pending.is_some() {
                 15
             } else if self.registry.has_processes() {
@@ -814,6 +826,7 @@ impl Home {
                 }
             }
         }
+        self.hide_picture()?;
         self.save_editor();
         self.registry.shutdown();
         Ok(())
@@ -1171,6 +1184,7 @@ impl Home {
         };
         self.vsel = i;
         self.root = Some(v.path.clone());
+        self.views.root = Some(v.path.clone());
         self.flavour = markdown::flavour_for(&v.path);
         self.expanded.clear();
         self.filter.clear();
@@ -1742,6 +1756,35 @@ impl Home {
         }
     }
 
+    /// Remove the picture shown with Kitty graphics, before another screen takes the terminal.
+    fn hide_picture(&mut self) -> Result<()> {
+        self.picture_wanted = None;
+        self.place_picture()
+    }
+
+    /// Show the picture of the view in front with Kitty graphics, under the text, or remove
+    /// the one shown when that view is gone, moved or out of sight.
+    fn place_picture(&mut self) -> Result<()> {
+        if self.picture == self.picture_wanted {
+            return Ok(());
+        }
+        let mut out = Vec::new();
+        if self.picture.take().is_some() {
+            out.extend(crate::kitty::delete(crate::kitty::PICTURE));
+        }
+        if let Some((owner, view, at)) = self.picture_wanted {
+            let png = self.views.get(owner, view).and_then(|v| v.picture()?.png());
+            if let Some(png) = png {
+                out.extend(crate::kitty::place_png(png, at, crate::kitty::PICTURE));
+                self.picture = self.picture_wanted;
+            }
+        }
+        let mut stdout = std::io::stdout();
+        std::io::Write::write_all(&mut stdout, &out)?;
+        std::io::Write::flush(&mut stdout)?;
+        Ok(())
+    }
+
     /// Ask owners for the previews the reader wanted while drawing (`file/preview`).
     fn ask_previews(&mut self) {
         for (path, rev, width) in self.previews.take_wanted() {
@@ -1772,10 +1815,21 @@ impl Home {
         let path = crate::resolver::file(ix, &link.note, from.and_then(|p| ix.by_path(p)))?;
         let rel = path.strip_prefix(&ix.workspace.root).ok()?;
         let rel = rel.to_string_lossy().replace('\\', "/");
-        let (owner, _) = self.registry.owner_of(&rel)?;
-        let rev = files::rev_at(&ix.workspace.root, &rel)?;
+        let root = &ix.workspace.root;
+        let Some((owner, _)) = self.registry.owner_of(&rel) else {
+            // A picture nobody owns: its kind and size, and a PNG in half blocks.
+            workspace::attachment_kind(&rel).filter(|k| *k == "image")?;
+            let image = crate::image::Image {
+                title: rel.clone(),
+                source: crate::image::Source::Path(rel),
+            };
+            let content = crate::ext::view::Content::Image(image);
+            let lines = views::preview(&content, Some(root), width, previews::HEIGHT as usize);
+            return Some(lines.into_iter().skip(1).collect());
+        };
+        let rev = files::rev_at(root, &rel)?;
         let name = &self.registry.manifest(owner).name;
-        Some(previews.lines(&rel, &rev, name, width as u16))
+        Some(previews.lines(&rel, &rev, name, width as u16, Some(root)))
     }
 
     /// Hand the file at `path` to the extension that opens its kind (`file/open`), which shows
@@ -5229,6 +5283,7 @@ impl Home {
         terminal: &mut DefaultTerminal,
         selected: Option<String>,
     ) -> Result<Option<Place>> {
+        self.hide_picture()?;
         // The graph borrows the menu's live workspace and gives it back, so there's one watcher and
         // changes made while the graph is open show up here too.
         let Some(core) = self.core.take() else {
@@ -5279,6 +5334,7 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return Ok(None);
         };
+        self.hide_picture()?;
         let exit = board::open(terminal, &root, path.clone(), Some(Nav::of(&self.history)))?;
         terminal.clear()?;
         self.reload_tree();
@@ -5286,6 +5342,7 @@ impl Home {
     }
 
     fn edit_fullscreen(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        self.hide_picture()?;
         let (Some(p), Some(root)) = (self.current_path(), self.root.clone()) else {
             return Ok(());
         };
@@ -5530,7 +5587,11 @@ impl Home {
             let (va, ba) = self.backlinks_split(main, of_file);
             self.areas[3] = ba;
             if let Some(open) = self.views.get_mut(owner, view) {
-                draw_view(f, va, open);
+                let body = draw_view(f, va, open);
+                let png = open.picture().and_then(|p| p.png()).is_some();
+                if png && self.views.pixels {
+                    self.picture_wanted = Some((owner, view, crate::image::pixels_area(body)));
+                }
             }
             if ba.height > 0 {
                 f.render_widget(Clear, ba);
@@ -6989,7 +7050,8 @@ fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) -> R
 }
 
 /// An extension's view over the whole main area, its filter on the bottom line.
-fn draw_view(f: &mut Frame, area: Rect, v: &mut views::Open) {
+/// Draws the view in `area` and returns where its rows went.
+fn draw_view(f: &mut Frame, area: Rect, v: &mut views::Open) -> Rect {
     f.render_widget(Clear, area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -7005,6 +7067,7 @@ fn draw_view(f: &mut Frame, area: Rect, v: &mut views::Open) {
     let lines = v.lines(body.width as usize, body.height as usize);
     f.render_widget(Paragraph::new(lines), body);
     f.render_widget(Paragraph::new(v.status()), status);
+    body
 }
 
 /// The centred popup shared by the quick switcher and the command palette; returns its inside.

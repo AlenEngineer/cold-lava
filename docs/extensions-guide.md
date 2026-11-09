@@ -129,8 +129,10 @@ is one of `changed`, `refused`, `read-back`, `io`, `forbidden`, `no-workspace` o
 ## Views
 
 An extension shows something bigger than a status line by sending a **view**: a list (groups of
-rows, each with text, an optional checkbox and a right side) or a table (typed columns, rows of
-cells), as JSON. cold-lava draws it over the main area and owns everything you do in it: moving,
+rows, each with text, an optional checkbox and a right side), a table (typed columns, rows of
+cells) or an image (`{"kind": "image", "title": …, "path": "…png"}`, or `"png"` with base64
+bytes; pixels in Kitty-graphics terminals, else half blocks), as JSON. cold-lava draws it over
+the main area and owns everything you do in it: moving,
 folding, filtering, sorting. The extension hears what you did to which row, by the row's id.
 The example's *list the open tasks by note* (`open-tasks.list`) is one:
 

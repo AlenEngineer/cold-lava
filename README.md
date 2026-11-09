@@ -79,7 +79,9 @@ the menu. Press `v` to switch the pane to the **reader** and back.
 
 **The reader** shows the note rendered, in the workspace's [Markdown flavour](#markdown-flavour):
 headings, lists and tasks, quotes and callouts (folded ones show only their title), code blocks,
-tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden; typed values are
+tables, highlights, tags, and embeds: a picture alone on its line shows its kind and size and,
+for a PNG, a thumbnail in half blocks; a file an extension owns shows that extension's preview;
+any other embed shows its name. Frontmatter is hidden; typed values are
 drawn with their [looks](#types) (a VEI on an orange chip, done tasks struck through), and the
 note's typed frontmatter fields go on a line above it. Links are
 underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the

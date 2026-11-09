@@ -11,6 +11,7 @@ mod groups;
 mod hints;
 mod history;
 mod home;
+mod image;
 mod kitty;
 mod list;
 mod looks;

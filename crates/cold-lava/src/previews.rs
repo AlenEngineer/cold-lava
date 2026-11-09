@@ -32,7 +32,14 @@ struct Preview {
 impl Previews {
     /// What to draw for the file at `path`, at version `rev`, `width` columns wide: its
     /// owner's view, or a line saying why there is none yet. Asks for it when it hasn't.
-    pub fn lines(&mut self, path: &str, rev: &str, owner: &str, width: u16) -> Vec<Line<'static>> {
+    pub fn lines(
+        &mut self,
+        path: &str,
+        rev: &str,
+        owner: &str,
+        width: u16,
+        root: Option<&std::path::Path>,
+    ) -> Vec<Line<'static>> {
         let p = self.files.get(path);
         let asked = p.is_some_and(|p| p.rev == rev);
         if !asked && !self.wanted.iter().any(|(w, r, _)| w == path && r == rev) {
@@ -43,7 +50,7 @@ impl Previews {
             Some(Preview {
                 answer: Some(Ok(content)),
                 ..
-            }) if asked => crate::views::preview(content, width as usize, HEIGHT as usize),
+            }) if asked => crate::views::preview(content, root, width as usize, HEIGHT as usize),
             Some(Preview {
                 answer: Some(Err(why)),
                 ..
@@ -51,7 +58,7 @@ impl Previews {
             Some(Preview {
                 last: Some(content),
                 ..
-            }) => crate::views::preview(content, width as usize, HEIGHT as usize),
+            }) => crate::views::preview(content, root, width as usize, HEIGHT as usize),
             _ => note(format!("asking {owner} for a preview…")),
         }
     }
@@ -130,10 +137,10 @@ mod tests {
         let mut p = Previews::default();
         let csv = "Volcanoes/Eruptions.csv";
         assert_eq!(
-            text(&p.lines(csv, "r1", "csv-table", 40)),
+            text(&p.lines(csv, "r1", "csv-table", 40, None)),
             "asking csv-table for a preview…"
         );
-        p.lines(csv, "r1", "csv-table", 40);
+        p.lines(csv, "r1", "csv-table", 40, None);
         assert_eq!(
             p.take_wanted(),
             [(csv.to_string(), "r1".to_string(), 40)],
@@ -145,15 +152,15 @@ mod tests {
             "an answer for another version"
         );
         assert!(p.answer(csv, "r1", Ok(list("Krakatoa 1883"))));
-        assert!(text(&p.lines(csv, "r1", "csv-table", 40)).contains("Krakatoa 1883"));
+        assert!(text(&p.lines(csv, "r1", "csv-table", 40, None)).contains("Krakatoa 1883"));
         assert!(p.take_wanted().is_empty(), "answered: nothing to ask");
 
-        assert!(text(&p.lines(csv, "r2", "csv-table", 40)).contains("Krakatoa 1883"));
+        assert!(text(&p.lines(csv, "r2", "csv-table", 40, None)).contains("Krakatoa 1883"));
         assert_eq!(p.take_wanted().len(), 1, "a new version is asked for");
-        assert!(text(&p.lines(csv, "r2", "csv-table", 40)).contains("Krakatoa 1883"));
+        assert!(text(&p.lines(csv, "r2", "csv-table", 40, None)).contains("Krakatoa 1883"));
         assert!(p.answer(csv, "r2", Err("it stopped".into())));
         assert_eq!(
-            text(&p.lines(csv, "r2", "csv-table", 40)),
+            text(&p.lines(csv, "r2", "csv-table", 40, None)),
             "no preview: it stopped"
         );
         assert!(p.has(csv) && !p.has("Other.csv"));

@@ -966,6 +966,27 @@ fn the_python_example_extension_opens_edits_and_makes_csv_files() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn an_embedded_png_is_drawn_in_half_blocks_in_the_reader() {
+    let dir = sandbox("image-embed");
+    let mut lake = tiny_skia::Pixmap::new(8, 4).unwrap();
+    lake.fill(tiny_skia::Color::from_rgba8(0, 0, 255, 255));
+    let mut red = tiny_skia::Paint::default();
+    red.set_color_rgba8(255, 0, 0, 255);
+    let top = tiny_skia::Rect::from_xywh(0.0, 0.0, 8.0, 2.0).unwrap();
+    lake.fill_rect(top, &red, tiny_skia::Transform::identity(), None);
+    let png = dir.join("example-workspace/Volcanoes/lava-lake.png");
+    std::fs::write(png, lake.encode_png().unwrap()).unwrap();
+    let out = drive("image-embed.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Needs python3, which CI's runners have.
 #[test]
 fn an_embedded_csv_shows_its_owners_preview_in_the_reader() {
