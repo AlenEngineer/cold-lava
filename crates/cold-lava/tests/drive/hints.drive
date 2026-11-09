@@ -54,5 +54,7 @@ keys f
 wait-for link hints · type a label
 keys k
 wait-for Volcanoes/Mauna Loa  reading
-keys esc q
+keys esc
+wait-gone reading · Esc / q back
+keys q
 exits 0

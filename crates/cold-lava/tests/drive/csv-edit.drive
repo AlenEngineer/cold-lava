@@ -35,7 +35,9 @@ keys enter
 wait-for 12s Volcanoes/Eruptions.csv: vei set to 7
 expect   7   ·
 screen
-keys esc esc right
+keys esc esc
+wait-for cold-lava workspaces
+keys right
 # Renaming Krakatoa lists the CSV with what will change in it, and csv-table rewrites it.
 keys R
 wait-for rename · ⏎ preview · Esc cancel

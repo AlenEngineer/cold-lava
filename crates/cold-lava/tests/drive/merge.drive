@@ -12,7 +12,9 @@ keys D
 wait-for duplicated as Kīlauea 1 · R rename
 wait-for example-workspace 35 notes
 expect Volcanoes/Kīlauea 1 › Kīlauea  reading
-keys esc p
+keys esc
+wait-gone reading · Esc / q back
+keys p
 type pahoehoe
 wait-for 1 notes
 keys enter

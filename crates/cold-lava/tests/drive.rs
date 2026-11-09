@@ -730,6 +730,26 @@ fn a_false_expect_fails_with_its_line_and_the_screen() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A key typed right after Esc can arrive with it and read as Alt plus that key on a slow
+/// machine, so each script waits for the Esc's effect on the screen before the next key.
+#[test]
+fn scripts_wait_after_esc_before_the_next_key() {
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive");
+    let mut hurried = Vec::new();
+    for entry in std::fs::read_dir(&scripts).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            let keys: Vec<&str> = line.split_whitespace().collect();
+            let esc_then_key = keys.windows(2).any(|k| k[0] == "esc" && k[1] != "esc");
+            if keys.first() == Some(&"keys") && esc_then_key {
+                hurried.push(format!("{}:{}: {line}", path.display(), i + 1));
+            }
+        }
+    }
+    assert_eq!(hurried, Vec::<String>::new());
+}
+
 /// Needs Neovim, which CI doesn't have; runs wherever `nvim` is on PATH.
 #[test]
 fn restarts_the_embedded_neovim() {

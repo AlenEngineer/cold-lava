@@ -40,5 +40,7 @@ keys j j enter
 wait-for 8 rows
 expect Krakatoa
 screen
-keys esc q
+keys esc
+wait-for cold-lava workspaces
+keys q
 exits 0

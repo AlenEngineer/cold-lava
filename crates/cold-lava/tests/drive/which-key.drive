@@ -34,7 +34,9 @@ keys y
 wait-gone keys · type one to run it
 expect Concepts/Lava  reading
 # The graph and the whiteboard have their own.
-keys esc g
+keys esc
+wait-gone reading · Esc / q back
+keys g
 wait-for , keys  ? help  q quit
 keys ,
 wait-for keys · type one to run it
@@ -53,7 +55,9 @@ wait-for 1  red
 wait-for n  new card
 keys ?
 wait-for this help
-keys esc q
+keys esc
+wait-gone whiteboard keys
+keys q
 wait-for , keys  ? help  q quit
 keys q
 exits 0

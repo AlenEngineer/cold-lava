@@ -18,7 +18,9 @@ keys [
 wait-for Concepts/Lava › Temperature  reading
 keys B
 wait-for bookmarked Lava › Temperature · ' bookmarks
-keys esc p
+keys esc
+wait-gone reading · Esc / q back
+keys p
 type krakatoa
 wait-for 1 notes
 keys enter
@@ -42,7 +44,9 @@ type magma
 wait-for matching lines
 keys ctrl+b
 wait-for bookmarked magma
-keys esc '
+keys esc
+wait-gone 3 notes · 3 matching lines
+keys '
 wait-for 11 bookmarks · type to filter
 expect • Krakatau
 expect § Lava › Temperature
