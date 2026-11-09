@@ -28,7 +28,7 @@ wait-for ╭ Agenda
 wait-for Read the Royal Society report on Krakatoa
 expect Fri 20 Nov  Eruptions
 screen
-keys G enter
+keys G k enter
 wait-for Volcanoes/Eruptions.csv
 keys e
 wait-for Volcano: [[Krakatoa]]▏

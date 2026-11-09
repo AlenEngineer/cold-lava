@@ -1,0 +1,49 @@
+# The example extension that shows Obsidian Kanban boards (examples/extensions/kanban-board),
+# installed in the empty home by tests/drive.rs. Inbox/Field Season.md has kanban-plugin in its
+# frontmatter, so the extension's [[shows]] claims it: in the tree the reader previews it and
+# says so, Enter hands it to the extension, which shows its lanes and cards. x ticks a card
+# through items/edit, Markdown writes it, and the board follows. v opens the plain reader on the
+# note, Ctrl-o comes back to the board, and the quick switcher brings the board to the front.
+# Enter on a card opens the note at the card's line, in the reader. tests/drive.rs reads the
+# note after.
+size 140x24
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for example-workspace
+keys /
+type field season
+wait-for Field Season
+keys enter j
+wait-for ⏎ open in kanban-board · → read
+expect ☐ Pack the gas masks
+keys enter
+wait-for ▾ To do  2
+expect ☑ Renew the park permit
+expect Backlinks none
+keys j j
+wait-for ☐ Pack the gas masks
+keys x
+wait-for ☑ Pack the gas masks
+screen
+keys v
+wait-for Inbox/Field Season  reading
+expect ☑ Pack the gas masks
+keys ctrl+o
+wait-for ▾ To do  2
+keys esc
+wait-for cold-lava workspaces
+keys p
+type field
+wait-for Field Season
+keys enter
+wait-for ▾ Doing  1
+keys j j j j
+keys enter
+wait-for Field Season › Doing  reading
+expect ☐ Read up on pāhoehoe
+keys ctrl+o
+wait-for ▾ Doing  1
+keys esc
+wait-for cold-lava workspaces
+keys q
+exits 0

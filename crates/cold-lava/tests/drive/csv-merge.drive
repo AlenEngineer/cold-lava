@@ -3,7 +3,7 @@
 # tests/drive.rs, rewrites Vesuvius's row; tests/drive.rs then reads Volcanoes/Eruptions.csv.
 size 140x30
 env COLD_LAVA_EDITOR=none
-wait-for example-workspace 34 notes
+wait-for example-workspace 35 notes
 keys p
 type vesuvius
 wait-for 1 notes

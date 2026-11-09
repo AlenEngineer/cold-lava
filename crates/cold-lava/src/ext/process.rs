@@ -493,6 +493,7 @@ mod tests {
             types: Default::default(),
             permissions: crate::ext::read_only(),
             file_types: Vec::new(),
+            shows: Vec::new(),
         };
         let launch = Launch {
             dir,
@@ -858,11 +859,19 @@ mod tests {
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extensions");
         let helper =
             |example: &str| std::fs::read_to_string(examples.join(example).join("cold_lava.py"));
-        assert_eq!(
-            helper("csv-table").unwrap(),
-            helper("open-tasks").unwrap(),
-            "each example carries a copy of cold_lava.py, so it can be copied alone: keep them alike"
-        );
+        let first = helper("open-tasks").unwrap();
+        let mut seen = 0;
+        for example in std::fs::read_dir(&examples).unwrap().flatten() {
+            let name = example.file_name().to_string_lossy().into_owned();
+            assert_eq!(
+                helper(&name).unwrap(),
+                first,
+                "{name}: each example carries a copy of cold_lava.py, so it can be copied \
+                 alone: keep them alike"
+            );
+            seen += 1;
+        }
+        assert!(seen >= 3, "every example is checked");
     }
 
     #[test]
@@ -1065,8 +1074,8 @@ mod tests {
         else {
             panic!("{opened:?}")
         };
-        let inbox = &list.groups[0];
-        assert_eq!(inbox.title, "Inbox/Seismograph");
+        let group = |title: &str| list.groups.iter().find(|g| g.title == title).cloned();
+        let inbox = group("Inbox/Seismograph").expect("a group for each note");
         let late = inbox.rows[0].clone();
         assert_eq!(late.text[0].text, "Check the seismograph");
         assert_eq!(late.right[0].text, "2000-01-01");
@@ -1094,7 +1103,8 @@ mod tests {
             "a ticked task isn't open"
         );
 
-        let first = list.groups[0].rows[0].id.clone();
+        let journal = list.groups.iter().find(|g| g.title == "Journal/2026-11-05");
+        let first = journal.unwrap().rows[0].id.clone();
         let open = happened(Event::Activated { row: first });
         r.call(ExtId(0), Some(&mut core), |e, h| e.view(open, h));
         let note = until(&mut r, &mut core, |e| matches!(e, Effect::OpenNote { .. }));

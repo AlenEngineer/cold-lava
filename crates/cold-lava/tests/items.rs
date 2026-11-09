@@ -84,14 +84,22 @@ fn items_lists_each_kind() {
     assert_eq!(
         run(&workspace, &["items", v, "task"]),
         "\
+Inbox/Field Season.md:9  [ ] Book the flight to Kīlauea
+Inbox/Field Season.md:10  [ ] Pack the gas masks
+Inbox/Field Season.md:14  [ ] Read up on pāhoehoe
+Inbox/Field Season.md:18  [x] Renew the park permit
 Journal/2026-11-05.md:7  [ ] Write a note on lahars ([[Lahar]] is still unresolved)
 Journal/2026-11-05.md:8  [x] Add the [[Volcanic Explosivity Index]] table
 Journal/2026-11-05.md:9  [ ] Look up the 2022 eruption of [[Mauna Loa]]  due 2026-11-12
 Journal/2026-11-05.md:10  [ ] Review the eruption timeline board  scheduled 2026-11-09
 "
     );
+    let journal: String = (run(&workspace, &["items", v, "task", "--json"]).lines())
+        .filter(|l| l.contains(r#""note":"Journal/"#))
+        .map(|l| format!("{l}\n"))
+        .collect();
     assert_eq!(
-        run(&workspace, &["items", v, "task", "--json"]),
+        journal,
         golden("items-task.json"),
         "the tasks' ids and JSON, as the native parser had them before the built-in definition"
     );
@@ -141,7 +149,7 @@ fn a_task_keeps_its_id_through_a_toggle_by_rev() {
         run(workspace, &["items", v, "task", "--json"])
             .lines()
             .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-            .find(|i| i["line"] == 9)
+            .find(|i| i["line"] == 9 && i["note"] == "Journal/2026-11-05.md")
             .unwrap()
     };
     let before = task_on_line_9(&workspace);
@@ -163,7 +171,7 @@ fn a_task_keeps_its_id_through_a_toggle_by_rev() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|t| t["line"] == 9)
+        .find(|t| t["line"] == 9 && t["file"] == "Journal/2026-11-05.md")
         .unwrap();
     assert_eq!(
         listed["id"], before["rev"],

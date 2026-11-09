@@ -14,7 +14,7 @@ wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
 # The agenda ticks the CSV's task as it ticks a note's.
 keys left A
 wait-for Read the Royal Society report on Krakatoa
-keys G x
+keys G k x
 wait-for 12s done: Read the Royal Society report on Krakatoa
 expect ☑ Read the Royal Society report on Krakatoa
 keys esc

@@ -190,20 +190,7 @@ impl Matcher {
                         }
                     }
                 }
-                let conditions = w.header.len()
-                    + w.property.len()
-                    + [
-                        &w.tag,
-                        &w.folder,
-                        &w.file_type,
-                        &w.section,
-                        &w.language,
-                        &w.inside,
-                    ]
-                    .iter()
-                    .filter(|l| !l.is_empty())
-                    .count()
-                    + shape.pattern.is_some() as usize;
+                let conditions = w.conditions() + shape.pattern.is_some() as usize;
                 shapes.push(Shape {
                     index,
                     on: shape.on,
@@ -787,7 +774,20 @@ impl Block<'_> {
 }
 
 fn note_passes(w: &crate::types::Where, note: &Note) -> bool {
-    let (folder, file) = note.path.rsplit_once('/').unwrap_or(("", note.path));
+    passes(w, note.path, note.frontmatter.as_ref())
+}
+
+/// Whether the note at `path` (workspace-relative, with `.md`), with `text` and `tags` (as the
+/// scan found them, frontmatter's and body's), meets `w` as a note shape's `where` would:
+/// folder, file type, frontmatter properties and tags. What a claim to show notes is matched
+/// with (docs/extensions.md, "Owners on top of Markdown, as built").
+pub fn note_meets(w: &crate::types::Where, path: &str, text: &str, tags: &[String]) -> bool {
+    passes(w, path, frontmatter::read(text).as_ref())
+        && (w.tag.is_empty() || w.tag.iter().any(|t| tags.iter().any(|x| tag_under(x, t))))
+}
+
+fn passes(w: &crate::types::Where, path: &str, fm: Option<&Frontmatter>) -> bool {
+    let (folder, file) = path.rsplit_once('/').unwrap_or(("", path));
     let kind = file.rsplit_once('.').map_or("", |(_, x)| x);
     (w.file_type.is_empty()
         || (w.file_type.iter()).any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(kind)))
@@ -796,11 +796,9 @@ fn note_passes(w: &crate::types::Where, note: &Note) -> bool {
                 let f = f.trim_matches('/');
                 f.is_empty() || folder == f || folder.starts_with(&format!("{f}/"))
             }))
-        && w.property.iter().all(|(k, v)| {
-            note.frontmatter
-                .as_ref()
-                .is_some_and(|fm| fm.values(k).iter().any(|w| w.text == v))
-        })
+        && w.property
+            .iter()
+            .all(|(k, v)| fm.is_some_and(|fm| fm.values(k).iter().any(|w| w.text == v)))
 }
 
 /// The conditions on the block itself; a note's tags are the note's, a block's its own, and an
@@ -1982,5 +1980,22 @@ Survey the rim ~3h, not `~4h`, not~6h.
         assert!(s.matcher.is_empty());
         let all = extract("Note.md", "| a |\n| - |\n| 1 |\n\nWords.\n", &s);
         assert!(all.is_empty());
+    }
+
+    #[test]
+    fn a_whole_note_meets_a_where_by_folder_property_and_tag() {
+        let w = |toml: &str| -> crate::types::Where { toml::from_str(toml).unwrap() };
+        let board = "---\nkanban-plugin: basic\n---\n\n## Doing\n\n- [ ] Survey #field\n";
+        let tags = ["field".to_string()];
+        let kanban = w("property = { kanban-plugin = \"basic\" }");
+        assert!(note_meets(&kanban, "Projects/Board.md", board, &tags));
+        assert!(!note_meets(&kanban, "Plain.md", "## Doing\n", &[]));
+        let other = w("property = { kanban-plugin = \"board\" }");
+        assert!(!note_meets(&other, "Projects/Board.md", board, &tags));
+        let tagged = w("tag = [\"field\"]\nfolder = [\"Projects\"]");
+        assert!(note_meets(&tagged, "Projects/Board.md", board, &tags));
+        assert!(!note_meets(&tagged, "Elsewhere/Board.md", board, &tags));
+        assert!(!note_meets(&tagged, "Projects/Board.md", board, &[]));
+        assert_eq!((kanban.conditions(), tagged.conditions()), (1, 2));
     }
 }

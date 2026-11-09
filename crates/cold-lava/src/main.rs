@@ -25,8 +25,9 @@ mod views;
 mod whichkey;
 
 use cold_lava_engine::{
-    bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, merge,
-    owner, paths, rename, resolver, search, tasks, templates, tidy, trash, types, workspace, write,
+    bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, matcher,
+    merge, owner, paths, rename, resolver, search, tasks, templates, tidy, trash, types, workspace,
+    write,
 };
 
 use anyhow::Result;
@@ -769,6 +770,17 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
                 t.extension,
                 t.title,
                 new.unwrap_or_default()
+            );
+        }
+        for (n, s) in m.shows.iter().enumerate() {
+            let left_out = match registry.shows(ext, n) {
+                true => "",
+                false => " (left out)",
+            };
+            println!(
+                "  shows: notes with {}  {}{left_out}",
+                s.describe(),
+                s.title
             );
         }
         if let Some(log) = on_disk.and_then(|i| i.launch.log.as_ref()) {

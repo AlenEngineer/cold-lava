@@ -50,7 +50,7 @@ type task
 wait-for 1 of 4 rows · /task
 expect-not by type
 keys enter
-wait-for 6 rows
+wait-for 10 rows
 expect Ring the observatory
 expect  high
 screen

@@ -147,6 +147,8 @@ then a query and a view, not a parser of its own.
   unknown filter key is refused when the message is read. Items come by note, then line, the
   order `cold-lava items` prints. A page is `after` (the last id of the previous page) and
   `limit`; the answer is `{items, next}`, with `next` the `after` of the next page or `null`.
+  `note` keeps one note's or owned file's items: its workspace-relative path with its
+  extension (`Inbox/Field Season.md`).
   When the `after` item no longer matches, the query is refused as `changed`. An unknown kind
   is `refused`.
 - **`items/subscribe`** takes `kind` and `filter` and answers `{subscription}`. The core keeps,
@@ -798,7 +800,7 @@ new = "kanban.new"         # the command that makes one
 
 *(design; Markdown is behind the owner interface, and owners in other processes give items and
 links, and edit and relink their files: "Owners and types, as built" below. Owners on top of
-Markdown are design)*
+Markdown show notes: "Owners on top of Markdown, as built")*
 
 **Separated by file type, united by type data.** Types are what the user works with; a file type
 only decides how data is written down. A task is a `task` whether it is a line in a note, a card
@@ -1098,6 +1100,49 @@ graph all see the new date. None of them knew what a canvas is.
   through the menu: the type picker lists it, its table shows those rows, and a name edited
   there is saved in the CSV through csv-table; `tests/owned.rs` checks `cold-lava types` and
   `cold-lava items` from the cache.
+
+### Owners on top of Markdown, as built
+
+- **The claim.** A manifest's `[[shows]]` (`ext::Shows`) is a `title` and a `where`: the
+  engine's `types::Where`, read as a note shape's, with only `property` (frontmatter values),
+  `tag` (the note's tags, frontmatter's and body's, a nested tag counting) and `folder`. Every
+  condition given must hold (`matcher::note_meets`, which shares the note gate with types). A
+  claim with none of them, or with a block's condition (`header`, `section`, `language`,
+  `inside`, `file-type`), is left out and reported on the status line and in `cold-lava keys`:
+  no claim takes every note. `cold-lava ext list` prints each as `shows: notes with
+  kanban-plugin: basic  Kanban board`, with `(left out)` on one that lost.
+- **Which claim shows a note** (`Registry::shower_of`): of the claims it meets, the one with
+  the most conditions (`Where::conditions`, the count types' shapes are ranked by: each
+  property, then each kind of list that names something). Two claims with the same `where`
+  conflict when loaded: the first extension keeps it and the second is reported, like a
+  command conflict. Two different claims with as many conditions both match one note only at
+  run time, and the first loaded wins. A claim of an extension that stopped shows nothing, so
+  the reader shows the note.
+- **Opening.** An open of the whole note hands it to the claim's extension as `file/open
+  {path}` (the path with `.md`) instead of showing the reader: Enter in the tree, the quick
+  switcher, a link without a heading or block, a bookmark of the note, and `workspace/open`
+  without a line. An open that points into the text goes to the reader there: a link to a
+  heading or a block, a backlink, a search hit, `workspace/open` with a line (the agenda's
+  Enter on a task, the example's Enter on a card). Moving through the tree still previews the
+  note in the reader, whose title says `⏎ open in kanban-board · → read`; `→` reads it. In the
+  extension's view `v` (`note.read`) opens the note in the reader, and Back returns to the view.
+- **Markdown keeps the note.** The extension shows the note; it doesn't own it. The note's
+  items, links, backlinks, renames and merges are Markdown's, as for any note, and the
+  extension reads it through `items/query` (`note` filter) and changes it through `items/edit`,
+  with no file permission. Obsidian opens it as before. A view whose `file` is the note has the
+  note's backlinks under it.
+- **The example** is `examples/extensions/kanban-board` (Python, no dependencies). Its claims are
+  `kanban-plugin: basic` and `kanban-plugin: board` (the Kanban plugin's older and newer
+  marks). `file/open` queries the note's headings and tasks and sends a list with a group per
+  lane (a heading, in order) and a row per card (a task, grouped by the last heading it is
+  under); it subscribes to both with the `note` filter and sends the list again on
+  `items/changed`. `x` on a card is `items/edit toggle` (the done date as the Tasks plugin
+  writes it), Enter opens the note at the card's line in the reader. The example workspace's
+  `Inbox/Field Season.md` is a board, and `kanban-board.drive` checks it through the menu:
+  the tree's hint, Enter, a tick that `tests/drive.rs` reads back in the note, `v` and Back,
+  the switcher, and Enter on a card.
+- **Not yet:** a claim on a type (a view for every note of a type), and previews of a shown
+  note in another note.
 
 ### Link resolver
 
@@ -1653,7 +1698,8 @@ after its call returns, so it never holds the menu's state.
       items and links from owners in other processes, cached by `rev` ("Owners and types, as
       built"), and so are edits and renames through owners (`file/edit`), and the link
       resolver's first step, Obsidian's rules in one module for both directions ("Link
-      resolver"); next is the whiteboard)*
+      resolver"), and owners on top of Markdown, notes an extension shows (`[[shows]]`); next
+      is the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
       scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.

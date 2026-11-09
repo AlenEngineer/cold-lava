@@ -12,7 +12,7 @@ keys enter
 wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
 keys left A
 wait-for Read the Royal Society report on Krakatoa
-keys G x
+keys G k x
 wait-for 12s not ticked: csv-table didn't edit Volcanoes/Eruptions.csv: this copy is read-only
 expect ☐ Read the Royal Society report on Krakatoa
 keys esc

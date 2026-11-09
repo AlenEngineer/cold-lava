@@ -2,9 +2,10 @@
 # empty folder). Tidy lists them; the orphan and the image go to the trash together after one
 # prompt, u brings both back, then they go again for tests/drive.rs to find in the sandbox trash.
 env COLD_LAVA_EDITOR=none
-wait-for example-workspace 35 notes
+wait-for example-workspace 36 notes
 keys T
-wait-for Orphans: no links in or out · 2
+wait-for Orphans: no links in or out · 3
+expect • Inbox/Field Season.md
 expect • Inbox/Loose thought.md
 expect • Inbox/Stray.md
 expect Unused attachments · 1
@@ -18,8 +19,8 @@ screen
 keys a
 wait-for Notes nothing links to · 
 keys a
-wait-for Orphans: no links in or out · 2
-keys down space space
+wait-for Orphans: no links in or out · 3
+keys down down space space
 wait-for Tidy · 2 marked
 expect ✓ • Inbox/Stray.md
 expect ✓ ▫ Inbox/stray.png
@@ -30,17 +31,17 @@ expect ✕ Inbox/stray.png
 expect They go to the system trash.
 keys y
 wait-for deleted 2 items · u undo
-wait-for Orphans: no links in or out · 1
+wait-for Orphans: no links in or out · 2
 expect Unused attachments · 0
 expect-not Inbox/Stray.md
 expect Empty folders · 1
 screen
 keys u
 wait-for restored 2 items
-wait-for Orphans: no links in or out · 2
+wait-for Orphans: no links in or out · 3
 expect ▫ Inbox/stray.png
 expect-not Tidy · 2 marked
-keys home down space space d
+keys home down down space space d
 wait-for Delete 2 marked items?
 keys y
 wait-for deleted 2 items · u undo

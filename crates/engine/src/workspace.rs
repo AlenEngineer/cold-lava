@@ -434,7 +434,7 @@ mod tests {
         let v =
             scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace")).unwrap();
         assert_eq!(v.name, "example-workspace");
-        assert_eq!(v.notes.len(), 34);
+        assert_eq!(v.notes.len(), 35);
         // Hidden folders (.obsidian) are skipped; subfolders and non-ASCII names are included.
         assert!(v.notes.iter().all(|n| !n.rel.starts_with('.')));
         let kilauea = v

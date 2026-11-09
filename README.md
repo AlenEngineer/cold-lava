@@ -717,6 +717,20 @@ An owner can also ship types in its manifest (`[[types]]`). csv-table has `csv-t
 the rows none of your types matches: `Volcanoes/Observatories.csv` is a table of those in `i`,
 beside `eruption`, which still takes `Eruptions.csv`'s rows by their columns.
 
+An extension can also show some notes its own way while they stay Markdown. `kanban-board`, the
+third example, shows Obsidian Kanban boards, notes with `kanban-plugin` in their frontmatter:
+
+```bash
+cp -r examples/extensions/kanban-board ~/.config/cold-lava/extensions/
+```
+
+Enter on `Inbox/Field Season.md` in the tree (or picking it in the switcher, or following a
+link to it) then shows its lanes and cards instead of the reader; `x` ticks a card, which
+cold-lava writes into the note as it would from the reader, and Obsidian still opens the board.
+The claim is a `[[shows]]` in the manifest, matched like a type's `where` (a frontmatter
+property, a tag, a folder); the most specific claim wins. `→` in the tree, or `v` in the
+board, reads the note in the reader.
+
 Those items are edited the way a note's are, through their owner: `x` in the agenda ticks the
 CSV's task, `e` in the table sets a row's VEI, and renaming Krakatoa rewrites the CSV's links
 (the rename's preview lists the CSV with the rest). cold-lava makes the change, asks csv-table

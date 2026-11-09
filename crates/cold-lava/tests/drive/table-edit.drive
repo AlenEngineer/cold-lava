@@ -39,7 +39,7 @@ wait-for rows
 keys /
 type lahars
 keys enter
-wait-for 1 of 4 rows · /lahars
+wait-for 1 of 8 rows · /lahars
 keys l l l e
 wait-for due: ▏
 type 2026-12-01

@@ -2,7 +2,7 @@
 # a heading, a note and a search, rename the note and the bookmark follows it. tests/drive.rs
 # adds items cold-lava doesn't know and checks the file keeps them.
 env COLD_LAVA_EDITOR=none
-wait-for example-workspace 34 notes
+wait-for example-workspace 35 notes
 keys '
 wait-for 8 bookmarks · type to filter
 expect ▾ Field trip

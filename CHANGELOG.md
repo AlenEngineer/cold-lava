@@ -9,6 +9,18 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Extensions that show Markdown notes. A manifest's `[[shows]]` claims notes the way a type's
+  `where` matches them (frontmatter `property`, `tag`, `folder`): opening such a note (Enter in
+  the tree, the quick switcher, a link, a bookmark, `workspace/open`) hands it to the extension
+  as `file/open` instead of the reader, while Markdown still reads its items and links and
+  writes its edits, so Obsidian opens it as before. The most specific claim wins; two equal
+  claims are reported like command conflicts. `→` in the tree still reads the note, `v` in the
+  extension's view opens it in the reader, and an open that points into the text (a heading
+  link, a backlink, a search hit, a task's line) goes to the reader. The new example
+  `examples/extensions/kanban-board` shows Obsidian Kanban boards (`kanban-plugin` in the
+  frontmatter) as their lanes and cards and ticks cards with `items/edit`; the example
+  workspace has one, `Inbox/Field Season.md`. `items/query` and `items/subscribe` take a
+  `note` filter for one note's items.
 - `cold-lava --version`, and the help's title, name the commit the binary was built from
   (`cold-lava 0.3.0 (1a2b3c4d5e6f)`), so a build says exactly which code it is.
 - Types shipped by owners. An extension's manifest defines types as `[[types]]`, each an `id`

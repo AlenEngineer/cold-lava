@@ -1,7 +1,7 @@
 list, heading, block  built in, read natively
 
 task  built in
-  found 4 items
+  found 8 items
   priority 1 · requires task-lists · actions tasks.toggle
   on list-item · match '^\[[^\n]\]\s+.*${tasks.global-filter}' · key text · required text
     status       text                                 checkbox                                                                writable

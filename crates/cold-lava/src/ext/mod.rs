@@ -71,6 +71,9 @@ pub struct Manifest {
     /// Kinds of file it opens, by extension.
     #[serde(default, rename = "file-types", skip_serializing_if = "Vec::is_empty")]
     pub file_types: Vec<FileType>,
+    /// Notes it shows instead of the reader.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shows: Vec<Shows>,
 }
 
 /// A kind of file an extension owns: the menu hands it every file whose name ends in
@@ -85,6 +88,51 @@ pub struct FileType {
     /// One of its commands, which makes a new file of this kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new: Option<String>,
+}
+
+/// Notes an extension shows instead of the reader (`[[shows]]`): those that meet `where` as a
+/// note shape's `where` matches a note (frontmatter properties, tags, folder). Opening one hands
+/// it to the extension (`file/open`); Markdown still reads its items and links and writes its
+/// edits, so the extension shows the note, it doesn't own it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Shows {
+    /// For people: "Kanban board".
+    pub title: String,
+    #[serde(rename = "where")]
+    pub conditions: crate::types::Where,
+}
+
+impl Shows {
+    /// Why it can't be a claim: it must name a note's conditions, and only those.
+    pub fn problem(&self) -> Option<&'static str> {
+        let w = &self.conditions;
+        let block = !(w.header.is_empty()
+            && w.section.is_empty()
+            && w.language.is_empty()
+            && w.inside.is_empty()
+            && w.file_type.is_empty());
+        if block {
+            Some("its where may only name property, tag and folder")
+        } else if w.is_empty() {
+            Some("its where must name a property, a tag or a folder: it can't show every note")
+        } else {
+            None
+        }
+    }
+
+    /// Its conditions as people read them: `kanban-plugin: basic, #board, in Projects`.
+    pub fn describe(&self) -> String {
+        let w = &self.conditions;
+        let props = w.property.iter().map(|(k, v)| format!("{k}: {v}"));
+        let tags = (w.tag.iter()).map(|t| format!("#{}", t.trim_start_matches('#')));
+        let folders = w.folder.iter().map(|f| format!("in {f}"));
+        props
+            .chain(tags)
+            .chain(folders)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// Extensions nobody can own: notes are the engine's own, and whiteboards the core's until the
@@ -601,6 +649,8 @@ pub struct Registry {
     processes: bool,
     /// Who opens each kind of file, by extension: the first to claim it.
     owners: Vec<(String, ExtId)>,
+    /// The claims to show notes that hold, in load order: the extension and its claim's index.
+    shows: Vec<(ExtId, usize)>,
 }
 
 /// Leaves out of `m` the types it can't define, as commands are: an id outside its namespace
@@ -686,6 +736,30 @@ impl Registry {
                 }
             }
         }
+        let mut shows: Vec<(ExtId, usize)> = Vec::new();
+        for (i, (_, m)) in loaded.iter().enumerate() {
+            for (n, claim) in m.shows.iter().enumerate() {
+                let what = claim.describe();
+                let same = |&&(e, k): &&(ExtId, usize)| {
+                    loaded[e.0].1.shows[k].conditions == claim.conditions
+                };
+                if let Some(problem) = claim.problem() {
+                    refused.push(format!(
+                        "{}: shows {what:?} was left out: {problem}",
+                        m.name
+                    ));
+                } else if let Some((first, _)) = shows.iter().find(same) {
+                    let first = &loaded[first.0].1.name;
+                    let why = format!(
+                        "{} and {first} both show notes with {what}: {first} does",
+                        m.name
+                    );
+                    refused.push(why);
+                } else {
+                    shows.push((ExtId(i), n));
+                }
+            }
+        }
         Registry {
             loaded,
             editor,
@@ -696,7 +770,30 @@ impl Registry {
             mistakes: Vec::new(),
             processes: false,
             owners,
+            shows,
         }
+    }
+
+    /// The extension that shows the note at `path` (workspace-relative, with `.md`, its text
+    /// and its tags) instead of the reader, and its claim: of the claims the note meets, the
+    /// most specific (the most conditions, as types' shapes are ranked); of equals, the first
+    /// loaded.
+    pub fn shower_of(&self, path: &str, text: &str, tags: &[String]) -> Option<(ExtId, &Shows)> {
+        let mut best: Option<(ExtId, &Shows)> = None;
+        for &(ext, n) in &self.shows {
+            let claim = &self.manifest(ext).shows[n];
+            let more =
+                best.is_none_or(|(_, b)| claim.conditions.conditions() > b.conditions.conditions());
+            if more && crate::matcher::note_meets(&claim.conditions, path, text, tags) {
+                best = Some((ext, claim));
+            }
+        }
+        best
+    }
+
+    /// Whether the extension's claim `n` holds: it wasn't left out.
+    pub fn shows(&self, ext: ExtId, n: usize) -> bool {
+        self.shows.contains(&(ext, n))
     }
 
     /// The extension that opens files that end in `.<extension>` (lowercase).
@@ -1037,6 +1134,7 @@ mod tests {
                 types: Vec::new(),
                 permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
                 file_types: Vec::new(),
+                shows: Vec::new(),
             },
             json!({
                 "name": "nvim",
@@ -1076,6 +1174,7 @@ mod tests {
                 types: Vec::new(),
                 permissions: Vec::new(),
                 file_types: Vec::new(),
+                shows: Vec::new(),
             }
         }
         fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
@@ -1279,6 +1378,81 @@ mod tests {
         );
     }
 
+    struct Shower {
+        name: &'static str,
+        shows: &'static [&'static str],
+    }
+
+    impl Extension for Shower {
+        fn initialize(&mut self) -> Manifest {
+            let mut manifest = (Commands {
+                name: self.name,
+                commands: Vec::new(),
+            })
+            .initialize();
+            manifest.shows = (self.shows.iter())
+                .map(|w| Shows {
+                    title: format!("{} view", self.name),
+                    conditions: toml::from_str(w).unwrap(),
+                })
+                .collect();
+            manifest
+        }
+        fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
+        fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+    }
+
+    #[test]
+    fn the_most_specific_claim_shows_a_note_and_equal_claims_conflict() {
+        let r = Registry::new(vec![
+            Box::new(Shower {
+                name: "kanban",
+                shows: &[r#"property = { kanban-plugin = "basic" }"#],
+            }),
+            Box::new(Shower {
+                name: "boards",
+                shows: &[
+                    r#"property = { kanban-plugin = "basic" }"#,
+                    r#"property = { kanban-plugin = "basic" }
+                       folder = ["Work"]"#,
+                    r#"tag = ["cards"]"#,
+                    r#"header = ["Front"]"#,
+                    "",
+                ],
+            }),
+        ]);
+        let board = "---\nkanban-plugin: basic\n---\n## Doing\n";
+        let shower = |path: &str, text: &str, tags: &[&str]| {
+            let tags: Vec<String> = tags.iter().map(|t| t.to_string()).collect();
+            (r.shower_of(path, text, &tags)).map(|(e, s)| (e, s.describe()))
+        };
+        assert_eq!(
+            shower("Board.md", board, &[]),
+            Some((ExtId(0), "kanban-plugin: basic".into()))
+        );
+        assert_eq!(
+            shower("Work/Board.md", board, &["cards"]),
+            Some((ExtId(1), "kanban-plugin: basic, in Work".into())),
+            "more conditions win"
+        );
+        assert_eq!(
+            shower("Deck.md", "# Deck\n", &["cards/spanish"]),
+            Some((ExtId(1), "#cards".into())),
+            "a nested tag counts"
+        );
+        assert_eq!(shower("Plan.md", "# Plan\n", &[]), None);
+        assert_eq!(
+            r.refused(),
+            [
+                "boards and kanban both show notes with kanban-plugin: basic: kanban does",
+                "boards: shows \"\" was left out: its where may only name property, tag and folder",
+                "boards: shows \"\" was left out: its where must name a property, a tag or a \
+                 folder: it can't show every note",
+            ]
+        );
+        assert!(r.shows(ExtId(1), 1) && !r.shows(ExtId(1), 0));
+    }
+
     #[test]
     fn owners_read_and_write_their_own_kinds_and_others_need_files_permissions() {
         use Permission::{FilesRead, FilesWrite};
@@ -1468,6 +1642,7 @@ mod tests {
                 .to_vec(),
             permissions: read_only(),
             file_types: Vec::new(),
+            shows: Vec::new(),
         };
         let refused = leave_out_types(&mut m);
         let ids: Vec<&str> = m.types.iter().map(|t| t.id.as_str()).collect();

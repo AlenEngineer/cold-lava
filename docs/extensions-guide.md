@@ -4,7 +4,7 @@ An extension is a program that cold-lava starts and talks to over its stdin and 
 read the workspace's notes as data (tasks, list items, headings, typed items), follow them as they
 change, change one item at a time through cold-lava's safe edits, add commands to the menu,
 show messages in the status line, show a list or a table that cold-lava draws, and open a kind
-of file cold-lava doesn't read itself. It never
+of file cold-lava doesn't read itself or show some notes its own way. It never
 draws and never sees your keystrokes: cold-lava owns the screen, and tells the extension what
 you did with its rows.
 
@@ -26,7 +26,7 @@ cold-lava ext list
 ```
 
 `cold-lava ext list` prints every extension, where it runs from, what it may do, and why any
-didn't load. Open a workspace in the main menu. The status line shows `☐ 3 open tasks`, and the
+didn't load. Open a workspace in the main menu. The status line shows `☐ 6 open tasks`, and the
 command palette (`:`) has *move every overdue open task to today* and *list the open tasks by
 note*.
 
@@ -67,6 +67,7 @@ keys = ["R"]                     # optional default keys; config.toml can change
 | `transport` | How cold-lava talks to it. Only `stdio` exists, and it is the default. |
 | `api` | The protocol version it was written for. Only `1` exists, and it is the default. |
 | `[[types]]` | Types it defines: an `id` that starts with its name and a dot, like a command's (`csv-table.row`), and a definition like any type's ([Shipping a type](#shipping-a-type)). |
+| `[[shows]]` | Notes it shows instead of the reader: a `title` and a `where` with `property`, `tag` or `folder`, as a type's note shape writes them ([Showing Markdown notes](#showing-markdown-notes)). |
 
 A mistake in a manifest leaves that extension out and says why in `cold-lava ext list`. The rest
 load.
@@ -262,6 +263,57 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
   Reading any other file, a note included, needs `files.read`; writing or creating one needs
   `files.write`. Paths are relative to the workspace and can't leave it: `..`, absolute paths,
   hidden folders (`.obsidian`) and symlinks that lead outside are refused.
+
+## Showing Markdown notes
+
+Some Obsidian plugins keep their data in ordinary notes: the Kanban plugin writes a board as a
+`.md` file with `kanban-plugin: basic` in its frontmatter, lanes as headings and cards as tasks.
+An extension can show such notes its own way while they stay Markdown. The example in
+[`examples/extensions/kanban-board`](../examples/extensions/kanban-board) shows boards as a
+list with a group for each lane:
+
+```toml
+name = "kanban-board"
+version = "0.1.0"
+run = ["python3", "main.py"]
+permissions = ["items.read", "items.edit"]
+
+[[shows]]
+title = "Kanban board"
+where.property = { kanban-plugin = "basic" }     # as a type's note shape writes it
+```
+
+Opening a note the claim matches (Enter in the tree, the quick switcher, a link, a bookmark)
+sends `file/open` with the note's path, `.md` included, instead of showing the reader. You don't
+read or parse the note: cold-lava already reads it, so ask for its items and change them through
+the gateway, and every edit is checked and written the way the reader's are.
+
+```python
+@ext.on("file/open")
+def open_board(params):
+    path = params["path"]
+    lanes = ext.query("heading", {"note": path})     # the note filter: one note's items
+    cards = ext.query("task", {"note": path})        # each with its section, the lane
+    ext.subscribe("task", {"note": path})            # items/changed when a card changes
+    view = ext.open_view(board(lanes, cards), file=path)
+```
+
+`x` on a card is `ext.edit(card, "toggle")`, and Enter is `ext.open_note(card["note"],
+card["line"])`, which opens the reader at that line.
+
+- **`where`** takes `property` (frontmatter values), `tag` (the note's tags, frontmatter's and
+  body's; a nested tag counts) and `folder`, and every condition given must hold. A claim
+  with none of them, or with conditions only blocks have (`header`, `section`), is left out:
+  a claim can't take every note.
+- **The most specific claim shows a note**: the one with the most conditions, counted as for
+  types' shapes. Two extensions with the same `where` conflict; the first loaded keeps it and
+  the other is reported on the status line and in `cold-lava keys`. Of two different claims
+  with as many conditions, the first loaded wins.
+- **The reader is always a key away.** `→` in the tree reads the note, `v` in your view opens
+  it in the reader, and anything that opens the note at a place in its text (a link to a
+  heading, a backlink, a search hit, `ext.open_note` with a line) opens the reader there.
+- **Your view shows the note's backlinks** under it when you pass `file=path`, as for a file you
+  own.
 
 ## Giving items and links
 

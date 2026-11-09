@@ -5,14 +5,14 @@
 size 140x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
-wait-for ☐ 4 open tasks
+wait-for ☐ 7 open tasks
 keys p
 type 2026-11-05
 wait-for 1 note
 keys enter
 wait-for Journal/2026-11-05  reading
 keys x
-wait-for ☐ 3 open tasks
+wait-for ☐ 6 open tasks
 keys esc
 wait-gone reading · Esc / q back
 keys :
