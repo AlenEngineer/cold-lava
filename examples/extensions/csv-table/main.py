@@ -156,12 +156,8 @@ def show(path, place=None):
 
 @ext.on("file/open")
 def file_open(params):
-    # A view comes to the front only when it opens, so a table already open opens again.
-    table = tables.get(params["path"])
-    if table is not None:
-        ext.close_view(table["view"])
-        forget(table["view"])
     show(params["path"], params.get("place"))
+    ext.show_view(tables[params["path"]]["view"])
 
 
 @ext.on("file/changed")

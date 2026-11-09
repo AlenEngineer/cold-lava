@@ -180,6 +180,8 @@ enum Call {
     },
     #[serde(rename = "view/close")]
     CloseView { view: ViewId },
+    #[serde(rename = "view/show")]
+    ShowView { view: ViewId },
     #[serde(rename = "workspace/open")]
     OpenNote {
         note: PathBuf,
@@ -211,6 +213,7 @@ pub const HOST_METHODS: &[&str] = &[
     "view/open",
     "view/update",
     "view/close",
+    "view/show",
     "workspace/open",
 ];
 
@@ -320,6 +323,7 @@ fn serve_now(
             select,
         } => return answer(host.update_view(view, content, select)),
         Call::CloseView { view } => host.close_view(view),
+        Call::ShowView { view } => host.show_view(view),
         Call::OpenNote { note, line, item } => host.open_note(note, line, item),
     }
     Ok(Value::Null)
@@ -557,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn views_open_update_and_close_over_the_wire() {
+    fn views_open_update_close_and_show_over_the_wire() {
         use crate::ext::view::{Content, MAX_ROWS, ViewId};
         let dir = workspace("views");
         let mut core = Core::open(&dir).unwrap();
@@ -590,6 +594,8 @@ mod tests {
         );
         let (_, effects) = served(&mut core, &[], "view/close", json!({"view": 1}));
         assert_eq!(effects, [Effect::CloseView { view: ViewId(1) }]);
+        let (_, effects) = served(&mut core, &[], "view/show", json!({"view": 1}));
+        assert_eq!(effects, [Effect::ShowView { view: ViewId(1) }]);
         let open = json!({"note": "Plan.md", "line": 1});
         let (_, effects) = served(&mut core, &[], "workspace/open", open);
         let note = Effect::OpenNote {

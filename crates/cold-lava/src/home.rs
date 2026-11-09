@@ -947,6 +947,7 @@ impl Home {
                 self.views.close(ext, view);
                 self.forget_closed_views();
             }
+            Effect::ShowView { view } => self.show_view(ext, view),
             Effect::OpenNote { note, line, item } => self.open_for(ext, &note, line, item),
         }
     }
@@ -963,6 +964,16 @@ impl Home {
             self.forget_closed_views();
             let closed = ViewNews::Closed { view: oldest };
             self.call(ext, |e, host| e.view(closed, host));
+        }
+        self.show_view(ext, view);
+    }
+
+    /// Bring one of an extension's open views to the front, in place of what showed, which
+    /// Back returns to. Nothing when it isn't open or is in front already.
+    fn show_view(&mut self, ext: ExtId, view: ViewId) {
+        let shown = matches!(self.mode, Mode::View { owner, view: v } if (owner, v) == (ext, view));
+        if shown || !self.views.has(ext, view) {
+            return;
         }
         if let Some(here) = self.here() {
             self.history.visit(here);
@@ -4229,7 +4240,7 @@ impl Home {
             self.mode = Mode::Normal;
             return Ok(());
         };
-        if !open.typing()
+        if !open.takes(&k)
             && let Some(MenuCommand::Core(MenuAction::History(h))) = self.keys.get(k)
         {
             let here = self.here();

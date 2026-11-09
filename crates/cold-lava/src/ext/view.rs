@@ -34,6 +34,10 @@ impl Content {
                 if l.keys.len() > MAX_KEYS {
                     return Err(format!("a list binds at most {MAX_KEYS} keys"));
                 }
+                if l.filter == list::Filter::Typing && !l.keys.is_empty() {
+                    let why = "a list that filters as you type can't bind keys: typing takes them";
+                    return Err(why.into());
+                }
                 l.groups.len() + l.groups.iter().map(|g| g.rows.len()).sum::<usize>()
             }
             Content::Table(t) => {
@@ -151,6 +155,7 @@ mod tests {
                 title: "due today".into(),
             }],
             empty: None,
+            filter: Default::default(),
         }
     }
 
@@ -179,6 +184,7 @@ mod tests {
                 id: "v1".into(),
                 cells: vec![json!(4169)],
             }],
+            filter: Default::default(),
         };
         wire(
             Content::Table(table),
@@ -236,6 +242,12 @@ mod tests {
         let mut keys = list(1);
         keys.keys = vec![keys.keys[0].clone(); MAX_KEYS + 1];
         assert!(Content::List(keys).check().is_err());
+        let mut typing = list(1);
+        typing.filter = list::Filter::Typing;
+        let why = Content::List(typing.clone()).check().unwrap_err();
+        assert!(why.contains("filters as you type"), "{why}");
+        typing.keys.clear();
+        assert_eq!(Content::List(typing).check(), Ok(()));
         let wide = table::Table {
             title: "wide".into(),
             columns: vec![
@@ -248,6 +260,7 @@ mod tests {
                 MAX_COLUMNS + 1
             ],
             rows: Vec::new(),
+            filter: Default::default(),
         };
         assert!(Content::Table(wide).check().is_err());
     }

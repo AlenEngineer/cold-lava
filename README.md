@@ -621,8 +621,8 @@ video and colours are left out.
 
 #### Tables
 
-`i` (`table.open`, also in the palette) lists the types with how many items each has (`/` to
-filter them, `Enter` to pick one). The type you pick shows its items across the workspace as a
+`i` (`table.open`, also in the palette) lists the types with how many items each has (type a
+few letters to filter them, `Enter` to pick one). The type you pick shows its items across the workspace as a
 table: one column per field in the type's order, then the note, values drawn with the type's
 looks (a VEI on its orange chip, a done task faded and struck through). In the table:
 
@@ -698,7 +698,8 @@ cp -r examples/extensions/csv-table ~/.config/cold-lava/extensions/
 to one (`[[Eruptions.csv]]` in *Start Here*), opens it as a table. `e` edits a cell, which is
 saved to the file unless the file changed since it was read (then the extension reads it again
 and sets the cell in what is there now); a change made in another program shows up in the
-table. *new CSV table* in the palette makes `Untitled.csv` where Obsidian puts new files. One
+table. Opening a file whose table is already open brings that table back to the front, as you
+left it. *new CSV table* in the palette makes `Untitled.csv` where Obsidian puts new files. One
 extension owns each kind, the first to claim it; notes (`.md`) and whiteboards (`.canvas`) stay
 cold-lava's. A kind of file nobody owns behaves as before.
 

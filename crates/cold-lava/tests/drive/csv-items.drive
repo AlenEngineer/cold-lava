@@ -36,7 +36,9 @@ keys esc esc esc
 # Its rows are eruptions in the type's table, beside the rows of the table in a note.
 keys i
 wait-for eruption        8
-keys j j enter
+type erup
+wait-for rows · /erup
+keys enter
 wait-for 8 rows
 expect Krakatoa
 screen

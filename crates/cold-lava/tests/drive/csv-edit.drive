@@ -21,7 +21,9 @@ keys esc
 # The table sets the VEI of the CSV's Krakatoa row.
 keys i
 wait-for eruption        8
-keys j j enter
+type erup
+wait-for rows · /erup
+keys enter
 wait-for 8 rows
 keys /
 type krakatoa

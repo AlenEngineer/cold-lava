@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::app::{ACCENT, DIM, HIT, MUTED, NOTE};
+use crate::list::{Filter, type_into};
 use crate::looks;
 use crate::types::Look;
 use crate::workspace::search_key;
@@ -22,6 +23,8 @@ pub struct Table {
     pub title: String,
     pub columns: Vec<Column>,
     pub rows: Vec<Row>,
+    #[serde(default, skip_serializing_if = "Filter::is_slash")]
+    pub filter: Filter,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -151,6 +154,10 @@ impl TableView {
         self.reorder(keep.as_deref());
     }
 
+    pub fn filters(&self) -> Filter {
+        self.table.filter
+    }
+
     pub fn columns(&self) -> &[Column] {
         &self.table.columns
     }
@@ -272,6 +279,12 @@ impl TableView {
                 return Action::Stay;
             }
             Input::None => {}
+        }
+        if self.table.filter.takes(&k) {
+            let keep = self.selected().map(|r| r.id.clone());
+            type_into(&mut self.filter, &k);
+            self.reorder(keep.as_deref());
+            return Action::Stay;
         }
         let rows = self.order.len();
         let cols = self.table.columns.len();
@@ -706,6 +719,7 @@ mod tests {
                     json!(["Mauna Loa", 4169, "todo", "2025-12-31", "Mauna Loa"]),
                 ),
             ],
+            filter: Default::default(),
         }
     }
 
@@ -756,6 +770,41 @@ mod tests {
         }
         assert!(ids(&v).is_empty(), "every word must match");
         assert_eq!(v.key(key(KeyCode::Esc)), Action::Stay);
+        assert_eq!(v.key(key(KeyCode::Esc)), Action::Close);
+    }
+
+    #[test]
+    fn a_table_that_filters_as_you_type_takes_its_letter_keys_as_text() {
+        let mut v = TableView::new(Table {
+            filter: Filter::Typing,
+            ..table()
+        });
+        for c in "etnasq".chars() {
+            assert_eq!(v.key(key(KeyCode::Char(c))), Action::Stay, "{c} is typed");
+        }
+        assert!(
+            ids(&v).is_empty(),
+            "e, s and q are typed, not an edit, a sort or Close"
+        );
+        assert_eq!(v.sort, None);
+        for _ in 0..2 {
+            v.key(key(KeyCode::Backspace));
+        }
+        assert_eq!(ids(&v), ["b"]);
+        assert_eq!(
+            v.key(key(KeyCode::Enter)),
+            Action::Send(Event::Activated { row: "b".into() }),
+            "Enter opens the row, with no filter prompt to end first"
+        );
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        v.key(ctrl_u);
+        assert_eq!(ids(&v).len(), 4);
+        v.key(key(KeyCode::Char('e')));
+        assert_eq!(
+            v.key(key(KeyCode::Esc)),
+            Action::Stay,
+            "Esc clears the filter first"
+        );
         assert_eq!(v.key(key(KeyCode::Esc)), Action::Close);
     }
 
@@ -844,6 +893,12 @@ mod tests {
                 ],
                 "rows": [{"id": "a", "cells": ["Kīlauea", 1247, "done"]}],
             })
+        );
+        t.filter = Filter::Typing;
+        let typing = serde_json::to_value(&t).unwrap();
+        assert_eq!(
+            typing["filter"], "typing",
+            "the default, slash, is left out"
         );
         let e = Event::Edit {
             row: "a".into(),
