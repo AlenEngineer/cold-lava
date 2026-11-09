@@ -968,6 +968,36 @@ fn the_python_example_extension_opens_edits_and_makes_csv_files() {
 
 /// Needs python3, which CI's runners have.
 #[test]
+fn an_embedded_csv_shows_its_owners_preview_in_the_reader() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-preview");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| main);
+    let out = drive_with(
+        "csv-preview.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
 fn the_kanban_example_shows_a_markdown_board_that_stays_markdown() {
     if !has_python() {
         eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");

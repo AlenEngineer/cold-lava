@@ -9,6 +9,13 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Previews of embedded files. A note that embeds a file an extension owns
+  (`![[Eruptions.csv]]`) shows the owner's small view of it in the reader, under the embed's
+  name: cold-lava asks `file/preview {path, rev, width, height}` and draws the list or table it
+  answers (at most 200 rows, cut to 8 lines). The reader never waits: it says it is asking
+  until the answer comes, keeps the answer for that version of the file, and asks again when
+  the file changes, showing the old preview meanwhile. csv-table answers with the header and
+  the first rows. An embed nobody owns stays its name, as before.
 - Extensions that show Markdown notes. A manifest's `[[shows]]` claims notes the way a type's
   `where` matches them (frontmatter `property`, `tag`, `folder`): opening such a note (Enter in
   the tree, the quick switcher, a link, a bookmark, `workspace/open`) hands it to the extension

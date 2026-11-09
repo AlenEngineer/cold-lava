@@ -70,6 +70,23 @@ impl Drawn {
     }
 }
 
+/// `content` drawn as a view would draw it, in `height` lines of `width` columns, with nothing
+/// selected: a preview of a file in a note.
+pub fn preview(content: &Content, width: usize, height: usize) -> Vec<Line<'static>> {
+    let mut lines = match Drawn::new(content.clone()) {
+        Drawn::List(v) => v.lines(width, height),
+        Drawn::Table(mut v) => v.lines(width, height),
+    };
+    for line in &mut lines {
+        line.style.bg = None;
+        for span in &mut line.spans {
+            span.style.bg = None;
+        }
+    }
+    lines.truncate(height);
+    lines
+}
+
 impl Views {
     /// Show `content` as `id`, a view of `file` if it names one. Returns the owner's oldest
     /// view when it was closed to make room.

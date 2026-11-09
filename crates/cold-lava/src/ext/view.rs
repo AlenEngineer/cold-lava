@@ -56,6 +56,25 @@ impl Content {
     }
 }
 
+impl Content {
+    /// Refused (with why) when it has more rows and groups than a preview may.
+    pub fn small(&self) -> Result<(), String> {
+        let rows = match self {
+            Content::List(l) => {
+                l.groups.len() + l.groups.iter().map(|g| g.rows.len()).sum::<usize>()
+            }
+            Content::Table(t) => t.rows.len(),
+        };
+        match rows > super::PREVIEW_ROWS {
+            true => Err(format!(
+                "a preview has at most {} rows and groups; this one has {rows}",
+                super::PREVIEW_ROWS
+            )),
+            false => Ok(()),
+        }
+    }
+}
+
 /// What the user did in a view: the list's events and the table's, by row id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]

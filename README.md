@@ -701,7 +701,9 @@ and sets the cell in what is there now); a change made in another program shows 
 table. Opening a file whose table is already open brings that table back to the front, as you
 left it. *new CSV table* in the palette makes `Untitled.csv` where Obsidian puts new files. One
 extension owns each kind, the first to claim it; notes (`.md`) and whiteboards (`.canvas`) stay
-cold-lava's. A kind of file nobody owns behaves as before.
+cold-lava's. A kind of file nobody owns behaves as before. A note that embeds a CSV
+(`![[Eruptions.csv]]`) shows csv-table's preview of it in the reader: the header and the first
+rows, drawn as soon as csv-table answers and asked again when the file changes.
 
 An owner also tells cold-lava what its files say, so they join the workspace: csv-table hands
 over each row as a table row and a cell like `- [ ] Read the report 📅 2026-11-20` as Markdown.

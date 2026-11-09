@@ -13,7 +13,9 @@ use super::installed::Installed;
 use super::rpc::{self, Message, Served};
 use super::transport::{self, Connector, Launch, Received, Transport};
 use super::view::ViewNews;
-use super::{CommandRequest, EditorRequest, Extension, FileNews, Host, Manifest, PaneNews};
+use super::{
+    CommandRequest, EditorRequest, Extension, FileNews, FilePreview, Host, Manifest, PaneNews,
+};
 use crate::gateway::{self, Edited, News, SubId, Ticket};
 use crate::owner::cache::FileRead;
 use crate::owner::edits::{FileEdit, NewText};
@@ -76,6 +78,11 @@ enum Asked {
     },
     /// `file/edit` for the file at `path`, at version `rev`.
     Edit {
+        path: String,
+        rev: String,
+    },
+    /// `file/preview` for the file at `path`, at version `rev`.
+    Preview {
         path: String,
         rev: String,
     },
@@ -165,6 +172,9 @@ impl Process {
                 Asked::Edit { path, rev } => {
                     host.file_edited(&path, &rev, Err(format!("it stopped: {why}")))
                 }
+                Asked::Preview { path, rev } => {
+                    host.file_previewed(&path, &rev, Err(format!("it stopped: {why}")))
+                }
                 _ => {}
             }
         }
@@ -211,6 +221,12 @@ impl Process {
                 });
                 host.file_edited(&path, &rev, text);
             }
+            (Asked::Preview { path, rev }, outcome) => {
+                let content = outcome.map_err(|e| e.message).and_then(|v| {
+                    serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
+                });
+                host.file_previewed(&path, &rev, content);
+            }
             _ => {}
         }
     }
@@ -225,7 +241,10 @@ impl Process {
             .filter(|(_, (asked, sent))| {
                 let limit = match asked {
                     Asked::Initialize => t.start,
-                    Asked::Command(_) | Asked::Read { .. } | Asked::Edit { .. } => t.request,
+                    Asked::Command(_)
+                    | Asked::Read { .. }
+                    | Asked::Edit { .. }
+                    | Asked::Preview { .. } => t.request,
                 };
                 sent.elapsed() > limit
             })
@@ -254,6 +273,11 @@ impl Process {
                     let secs = t.request.as_secs_f32();
                     let why = format!("it didn't answer file/edit in {secs} s");
                     host.file_edited(&path, &rev, Err(why));
+                }
+                Asked::Preview { path, rev } => {
+                    let secs = t.request.as_secs_f32();
+                    let why = format!("it didn't answer file/preview in {secs} s");
+                    host.file_previewed(&path, &rev, Err(why));
                 }
             }
         }
@@ -312,6 +336,19 @@ impl Extension for Process {
         };
         let params = serde_json::to_value(read).unwrap_or_default();
         self.ask(asked, "file/read", params, host);
+    }
+
+    fn preview_file(&mut self, preview: FilePreview, host: &mut Host<'_>) {
+        if !self.running() {
+            let why = format!("{} isn't running", self.manifest.name);
+            return host.file_previewed(&preview.path, &preview.rev, Err(why));
+        }
+        let asked = Asked::Preview {
+            path: preview.path.clone(),
+            rev: preview.rev.clone(),
+        };
+        let params = serde_json::to_value(preview).unwrap_or_default();
+        self.ask(asked, "file/preview", params, host);
     }
 
     fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
@@ -432,6 +469,7 @@ impl Extension for Process {
 mod tests {
     use super::*;
     use crate::core::Core;
+    use crate::ext::view::Content;
     use crate::ext::{Effect, ExtId, Permission, Registry};
     use crate::gateway::{Answer, Edit, Filter, Op, Query, Select};
     use std::collections::VecDeque;
@@ -592,6 +630,79 @@ mod tests {
         assert_eq!(notes(&effects), [format!("fake stopped: {why}")]);
         assert!(!r.running(ExtId(0)), "its commands can't run");
         assert_eq!(r.stopped(ExtId(0)), Some(why));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_preview_comes_back_from_its_owner_and_one_not_answered_or_too_big_fails() {
+        static PREVIEWS: Scripted = Scripted(|m| {
+            let row = |i: usize| json!({"id": i.to_string(), "cells": [i.to_string()]});
+            let table = |n: usize| {
+                json!({"kind": "table", "title": "Data.csv",
+                       "columns": [{"name": "n", "type": "text"}],
+                       "rows": (0..n).map(row).collect::<Vec<_>>()})
+            };
+            Some(match (m["method"].as_str(), m["params"]["path"].as_str()) {
+                (Some("initialize"), _) => vec![answer(m, json!({}))],
+                (Some("file/preview"), Some("Data.csv")) => {
+                    assert_eq!(
+                        (
+                            m["params"]["width"].as_u64(),
+                            m["params"]["height"].as_u64()
+                        ),
+                        (Some(40), Some(8))
+                    );
+                    vec![answer(m, table(2))]
+                }
+                (Some("file/preview"), Some("Big.csv")) => vec![answer(m, table(201))],
+                _ => Vec::new(),
+            })
+        });
+        let dir = workspace("previews");
+        let mut core = Core::open(&dir).unwrap();
+        let mut installed = installed(dir.clone(), None);
+        installed.manifest.file_types = vec![crate::ext::FileType {
+            extension: "csv".into(),
+            title: "CSV".into(),
+            new: None,
+        }];
+        let p = Process::with(installed, &PREVIEWS, QUICK);
+        let mut r = Registry::new(vec![Box::new(p)]);
+        r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
+        for path in ["Data.csv", "Big.csv", "Slow.csv"] {
+            let ask = FilePreview {
+                path: path.into(),
+                rev: "r1".into(),
+                width: 40,
+                height: 8,
+            };
+            r.call(ExtId(0), Some(&mut core), |e, h| e.preview_file(ask, h));
+        }
+        let effects = poll_for(&mut r, &mut core, Duration::from_millis(300));
+        let previewed: Vec<(&str, Result<usize, &str>)> = (effects.iter())
+            .filter_map(|e| match e {
+                Effect::Previewed { path, content, .. } => Some((
+                    path.as_str(),
+                    match content {
+                        Ok(Content::Table(t)) => Ok(t.rows.len()),
+                        Ok(_) => Ok(0),
+                        Err(why) => Err(why.as_str()),
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            previewed,
+            [
+                ("Data.csv", Ok(2)),
+                (
+                    "Big.csv",
+                    Err("a preview has at most 200 rows and groups; this one has 201")
+                ),
+                ("Slow.csv", Err("it didn't answer file/preview in 0.1 s")),
+            ]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -15,6 +15,7 @@ mod kitty;
 mod list;
 mod looks;
 mod owned;
+mod previews;
 mod reader;
 mod scene;
 mod table;

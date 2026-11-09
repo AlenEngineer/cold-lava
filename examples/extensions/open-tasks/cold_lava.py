@@ -39,7 +39,7 @@ class Extension:
     def on(self, method):
         """Handle a request or notification from cold-lava: `initialize`, `items/changed`,
         `items/reset`, `view/event`, `view/closed`, `file/open`, `file/changed`, `file/read`,
-        `shutdown`.
+        `file/edit`, `file/preview`, `shutdown`.
         The handler gets the params; a request is answered with what it returns."""
 
         def register(handler):

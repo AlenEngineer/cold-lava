@@ -763,7 +763,7 @@ style.minutes = { badge = true, icon = "⏱" }
 
 *(design; owners in manifests, `file/open`, `file/changed` and the file messages exist: "File
 types, as built" below; so do items and links from owners and edits through them: "Owners and
-types, as built". Previews and the whiteboard as an owner are design.)*
+types, as built"; previews too: "Previews, as built". The whiteboard as an owner is design.)*
 
 Markdown is the engine's own format. Any other kind of file (`.canvas`, `.kanban`,
 `.excalidraw`, `.csv`) can have an **owner**: an extension that says so in its manifest.
@@ -924,7 +924,7 @@ graph all see the new date. None of them knew what a canvas is.
   the tree, an edit saved, a change made outside with the drive step `write`, a link, the
   switcher bringing the filtered table back, a new table), and `ext/process.rs` checks the
   retry.
-- **Not yet:** previews, the whiteboard as an owner, and a view kind for images.
+- **Not yet:** the whiteboard as an owner, and a view kind for images.
 
 ### Owners and types, as built
 
@@ -1143,6 +1143,38 @@ graph all see the new date. None of them knew what a canvas is.
   the switcher, and Enter on a card.
 - **Not yet:** a claim on a type (a view for every note of a type), and previews of a shown
   note in another note.
+
+### Previews, as built
+
+- **The request.** When the reader lays out a note with an embed alone in its paragraph
+  (`![[Eruptions.csv]]`) whose target resolves (by Obsidian's rules, as a link does) to a file
+  an extension owns, it asks the owner:
+
+  | Request (host → owner) | Answer |
+  | --- | --- |
+  | `file/preview {path, rev, width, height}` | a view's content, `{"kind": "list", …}` or `{"kind": "table", …}`, as `view/open` takes it |
+
+  `width` is the columns the reader has under the embed, `height` the lines it gives a preview
+  (`previews::HEIGHT`, 8). The answer is checked like `view/open`'s content and may have at
+  most 200 rows and groups (`ext::PREVIEW_ROWS`); a bigger one is refused.
+- **Drawn in the reader.** Under the embed's name (`⧉ Eruptions.csv`) the reader draws the
+  content as the list or table view would, with nothing selected and cut to `height` lines,
+  behind a `│` bar (`views::preview`). An embed of a file nobody owns, or a picture, stays its
+  name as before. The peek popup shows the name only.
+- **Never waiting.** The reader asks while it lays the note out and draws `asking csv-table for
+  a preview…` meanwhile; the requests go out before the next frame (`Home::ask_previews`), and
+  the answer, `Effect::Previewed` from `Host::file_previewed` (only the file's owner may
+  answer), makes the reader lay the note out again. An error, a refusal, no answer in 10 s or
+  an owner that stopped is drawn as `no preview: why`.
+- **Cached by `rev`** (`crate::previews`): each file's last answer is kept with the version it
+  was asked for, so a note is laid out again (scrolled, resized) without asking. When the
+  watcher says the file changed, the reader lays the note out again, asks for the new `rev`,
+  and draws the old preview until the new one comes.
+- **The example.** csv-table answers with the file's header and its first rows as a table.
+  `csv-preview.drive` writes a note that embeds `Eruptions.csv` and a picture, checks the
+  preview in the reader, changes the CSV as another program would, and sees the new rows;
+  `ext/process.rs` checks the answer, the bound and the timeout through the transport.
+- **Not yet:** a file card on a whiteboard asking for a preview, and previews in the peek popup.
 
 ### Link resolver
 

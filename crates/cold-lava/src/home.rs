@@ -12,8 +12,8 @@ use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
-    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, FileNews, Host, Manifest,
-    PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
+    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, FileNews, FilePreview, Host,
+    Manifest, PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
@@ -23,6 +23,7 @@ use crate::index::Backlink;
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::paths::{self, config_dir, home_dir};
+use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
 use crate::resolver::dir_of;
 use crate::tidy_view::{self, TidyView};
@@ -42,6 +43,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use serde::Deserialize;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -594,6 +596,8 @@ pub struct Home {
     statuses: Vec<(ExtId, String)>,
     /// The views extensions opened and haven't closed, shown or not.
     views: Views,
+    /// What owners answered to `file/preview`, for the embeds the reader draws.
+    previews: Previews,
     /// Reading an extension's edits back during `call`: calls meanwhile leave theirs for the
     /// next frame.
     catching_up: bool,
@@ -675,6 +679,7 @@ impl Home {
             effects_left: EFFECTS_PER_FRAME,
             statuses: Vec::new(),
             views: Views::default(),
+            previews: Previews::default(),
             catching_up: false,
             shown: None,
             pending: None,
@@ -781,6 +786,7 @@ impl Home {
             self.load_pending();
             self.check_disk();
             self.views.settle();
+            self.ask_previews();
             if self.backlinks_target() != self.backs_of {
                 self.bsel = 0;
                 self.refresh_backlinks();
@@ -965,6 +971,13 @@ impl Home {
             }
             Effect::ShowView { view } => self.show_view(ext, view),
             Effect::OpenNote { note, line, item } => self.open_for(ext, &note, line, item),
+            Effect::Previewed { path, rev, content } => {
+                if self.previews.answer(&path, &rev, content)
+                    && let Some(r) = self.reader.as_mut()
+                {
+                    r.invalidate();
+                }
+            }
         }
     }
 
@@ -1712,6 +1725,12 @@ impl Home {
             let CoreEvent::FileChanged(rel) = e else {
                 continue;
             };
+            // Its preview, in the note shown, is asked for again.
+            if self.previews.has(rel)
+                && let Some(r) = self.reader.as_mut()
+            {
+                r.invalidate();
+            }
             let Some((owner, _)) = self.registry.owner_of(rel) else {
                 continue;
             };
@@ -1721,6 +1740,42 @@ impl Home {
             };
             self.call(owner, |e, host| e.file(news, host));
         }
+    }
+
+    /// Ask owners for the previews the reader wanted while drawing (`file/preview`).
+    fn ask_previews(&mut self) {
+        for (path, rev, width) in self.previews.take_wanted() {
+            let Some((owner, _)) = self.registry.owner_of(&path) else {
+                continue;
+            };
+            let preview = FilePreview {
+                path,
+                rev,
+                width,
+                height: previews::HEIGHT,
+            };
+            self.call(owner, |e, host| e.preview_file(preview, host));
+        }
+    }
+
+    /// What an embed in the note at `from` shows under its name: its owner's preview, when an
+    /// extension owns the file it names (`file/preview`); `None` leaves its name alone.
+    fn embed_lines(
+        &self,
+        previews: &mut Previews,
+        from: Option<&Path>,
+        target: &str,
+        width: usize,
+    ) -> Option<Vec<Line<'static>>> {
+        let ix = &self.core.as_ref()?.index;
+        let link = crate::resolver::split_link(target);
+        let path = crate::resolver::file(ix, &link.note, from.and_then(|p| ix.by_path(p)))?;
+        let rel = path.strip_prefix(&ix.workspace.root).ok()?;
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let (owner, _) = self.registry.owner_of(&rel)?;
+        let rev = files::rev_at(&ix.workspace.root, &rel)?;
+        let name = &self.registry.manifest(owner).name;
+        Some(previews.lines(&rel, &rev, name, width as u16))
     }
 
     /// Hand the file at `path` to the extension that opens its kind (`file/open`), which shows
@@ -5579,7 +5634,7 @@ impl Home {
         };
         let (title, body) = match &mut *view {
             Peek::Note { path, reader } => {
-                reader.layout(room, &|raw| resolves(ix, Some(path), raw));
+                reader.layout(room, &|raw| resolves(ix, Some(path), raw), &|_, _| None);
                 let rel = path.strip_prefix(root).unwrap_or(path);
                 let rel = rel.to_string_lossy();
                 let place = rel.trim_end_matches(".md").to_string() + &breadcrumb(reader, path);
@@ -6289,10 +6344,16 @@ impl Home {
     }
 
     fn draw_editor(&mut self, f: &mut Frame, area: Rect, inner: Rect) {
-        if let Some(r) = self.reader.as_mut() {
+        if let Some(mut r) = self.reader.take() {
             let ix = self.core.as_ref().map(|c| &c.index);
             let shown = self.shown.as_deref();
-            r.layout(inner.width, &|raw| resolves(ix, shown, raw));
+            let previews = RefCell::new(std::mem::take(&mut self.previews));
+            let embed = |target: &str, width: usize| {
+                self.embed_lines(&mut previews.borrow_mut(), shown, target, width)
+            };
+            r.layout(inner.width, &|raw| resolves(ix, shown, raw), &embed);
+            self.previews = previews.into_inner();
+            self.reader = Some(r);
         }
         let title = match &self.shown {
             Some(p) => {

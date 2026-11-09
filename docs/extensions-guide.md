@@ -252,6 +252,20 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
   answers its `path` and `rev`. `ext.create(text, path="Data/New.csv")` makes it exactly there,
   refused as `exists` when something is. Nothing is ever overwritten.
 - **Listing.** `ext.files("csv")` (`workspace/files`) lists every file of a kind, for a picker.
+- **Previews.** A note that embeds one of your files (`![[Eruptions.csv]]`) shows a small view
+  of it in the reader. cold-lava asks `file/preview` with the `path`, its `rev` and the room it
+  has (`width` columns, `height` lines), and draws what you answer: a list or a table, as you
+  would send to `ext.open_view`, at most 200 rows and cut to `height` lines. It never waits:
+  it says it is asking until you answer, keeps your answer for that `rev`, and asks again when
+  the file changes. The example answers with the header and the first rows:
+
+  ```python
+  @ext.on("file/preview")
+  def file_preview(params):
+      table = content(params["path"], parse(ext.read(params["path"])["text"]))
+      table["rows"] = table["rows"][: max(params["height"] - 1, 1)]
+      return table
+  ```
 - **Bringing a table to the front.** When `file/open` names a file you already show, update
   its view if the file changed and bring it to the front with `ext.show_view(view)`
   (`view/show`): the table comes back as the user left it, filter and sort included. The
