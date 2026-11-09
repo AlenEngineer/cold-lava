@@ -707,7 +707,9 @@ An owner also tells cold-lava what its files say, so they join the workspace: cs
 over each row as a table row and a cell like `- [ ] Read the report 📅 2026-11-20` as Markdown.
 `Volcanoes/Eruptions.csv`'s rows are then `eruption`s in the table (`i`), its task is in the
 agenda, its `[[Krakatoa]]` shows in Krakatoa's backlinks (Enter opens the CSV at that row) and
-in the graph, and a link to the CSV leads somewhere. What an owner said is kept by file version
+in the graph, and a link to the CSV leads somewhere. The CSV's own backlinks show under its
+table, as a note's show under the reader: `Tab` moves into them, `Enter` opens the note (or the
+other CSV) at the link, `b` hides them. What an owner said is kept by file version
 under `~/.cache/cold-lava/owners/`, so a workspace opens without waiting for it; it is asked
 again only when a file changes.
 

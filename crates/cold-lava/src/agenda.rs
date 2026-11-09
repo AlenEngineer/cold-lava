@@ -357,7 +357,7 @@ impl Agenda {
         };
         let day = (self.today)();
         let built = build(&types, feed.items(), day, false);
-        match host.open_view(Content::List(built.list), None) {
+        match host.open_view(Content::List(built.list), None, None) {
             Ok(view) => {
                 self.shown = Some(Shown {
                     view,

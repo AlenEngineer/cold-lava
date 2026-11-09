@@ -1222,6 +1222,16 @@ mod tests {
         assert_eq!(backs.len(), 2, "the piece's link and the owner's");
         assert!(backs.iter().all(|b| b.from == From::Owned(0)));
         assert_eq!(core.index.name(backs[0].from), "Eruptions.csv");
+        let csv = core.index.backlinks_of(&core.root().join("Eruptions.csv"));
+        assert!(
+            matches!(csv, Some([b]) if b.from == From::Note(lava) && b.place.is_none()),
+            "the owned file's backlinks: Lava links to it"
+        );
+        assert_eq!(
+            core.index.backlinks_of(&core.root().join("Krakatoa.md")),
+            Some(backs),
+            "a note's, by its path"
+        );
 
         // Opened again, with nothing to ask: what it gave comes from the cache.
         let mut again = Core::open(&dir.join("w")).unwrap();

@@ -448,10 +448,12 @@ enum Mode {
     },
     /// What nothing uses: orphan notes, unused attachments, empty folders, unresolved links.
     Tidy(Box<TidyView>),
-    /// A view an extension opened, kept in `Home::views`.
+    /// A view an extension opened, kept in `Home::views`. `backlinks`: keys go to the backlinks
+    /// pane under it, the backlinks of the file it shows, instead of to the view.
     View {
         owner: ExtId,
         view: ViewId,
+        backlinks: bool,
     },
 }
 
@@ -565,6 +567,8 @@ pub struct Home {
     /// The open workspace: index, file watching and change events.
     core: Option<Core>,
     backs: Vec<BackRow>,
+    /// The file `backs` are the backlinks of (`backlinks_target`).
+    backs_of: Option<PathBuf>,
     bsel: usize,
     show_backlinks: bool,
     keys: Keymap<MenuCommand>,
@@ -654,6 +658,7 @@ impl Home {
             links: HashMap::new(),
             core: None,
             backs: Vec::new(),
+            backs_of: None,
             bsel: 0,
             show_backlinks: true,
             keys: Keymap::configured(registry.commands()),
@@ -776,6 +781,10 @@ impl Home {
             self.load_pending();
             self.check_disk();
             self.views.settle();
+            if self.backlinks_target() != self.backs_of {
+                self.bsel = 0;
+                self.refresh_backlinks();
+            }
             terminal.draw(|f| self.draw(f))?;
             let ms = if self.pane.is_some() || self.pending.is_some() {
                 15
@@ -821,7 +830,7 @@ impl Home {
             Place::View { owner, view, .. } => views.has(*owner, *view),
             _ => true,
         });
-        if let Mode::View { owner, view } = self.mode
+        if let Mode::View { owner, view, .. } = self.mode
             && !self.views.has(owner, view)
         {
             self.mode = Mode::Normal;
@@ -941,7 +950,8 @@ impl Home {
                 view,
                 content,
                 select,
-            } => self.open_view(ext, view, content, select),
+                file,
+            } => self.open_view(ext, view, content, select, file),
             Effect::UpdateView {
                 view,
                 content,
@@ -965,8 +975,9 @@ impl Home {
         view: ViewId,
         content: crate::ext::view::Content,
         select: Option<String>,
+        file: Option<String>,
     ) {
-        if let Some(oldest) = self.views.open(ext, view, content, select) {
+        if let Some(oldest) = self.views.open(ext, view, content, select, file) {
             self.forget_closed_views();
             let closed = ViewNews::Closed { view: oldest };
             self.call(ext, |e, host| e.view(closed, host));
@@ -977,7 +988,8 @@ impl Home {
     /// Bring one of an extension's open views to the front, in place of what showed, which
     /// Back returns to. Nothing when it isn't open or is in front already.
     fn show_view(&mut self, ext: ExtId, view: ViewId) {
-        let shown = matches!(self.mode, Mode::View { owner, view: v } if (owner, v) == (ext, view));
+        let shown =
+            matches!(self.mode, Mode::View { owner, view: v, .. } if (owner, v) == (ext, view));
         if shown || !self.views.has(ext, view) {
             return;
         }
@@ -987,7 +999,11 @@ impl Home {
         if self.focus == Focus::Pane {
             self.focus = Focus::Notes;
         }
-        self.mode = Mode::View { owner: ext, view };
+        self.mode = Mode::View {
+            owner: ext,
+            view,
+            backlinks: false,
+        };
     }
 
     /// `workspace/open`: the note at `note` (inside the workspace, absolute or relative to it),
@@ -1191,15 +1207,30 @@ impl Home {
         self.refresh_backlinks();
     }
 
-    /// Backlinks of the note in the editor pane.
+    /// The file whose backlinks the pane lists: the one the view in front shows, else the note
+    /// in the editor pane. A view of no file has none.
+    fn backlinks_target(&self) -> Option<PathBuf> {
+        match self.mode {
+            Mode::View { owner, view, .. } => {
+                let file = self.views.get(owner, view)?.file.as_ref()?;
+                Some(self.root.as_ref()?.join(file))
+            }
+            _ => self.shown.clone(),
+        }
+    }
+
+    /// Backlinks of the note in the editor pane, or of the file the view in front shows: a
+    /// note or a file another owner reads.
     fn refresh_backlinks(&mut self) {
         self.backs.clear();
-        let (Some(ix), Some(shown)) = (self.core.as_ref().map(|c| &c.index), &self.shown) else {
+        self.backs_of = self.backlinks_target();
+        let (Some(ix), Some(of)) = (self.core.as_ref().map(|c| &c.index), &self.backs_of) else {
             return;
         };
-        let Some(i) = ix.by_path(shown) else { return };
-        self.backs = ix
-            .backlinks(i)
+        let Some(backs) = ix.backlinks_of(of) else {
+            return;
+        };
+        self.backs = backs
             .iter()
             .map(|b| BackRow {
                 name: ix.name(b.from).to_string(),
@@ -1310,7 +1341,7 @@ impl Home {
                 sel: *sel,
             });
         }
-        if let Mode::View { owner, view } = self.mode {
+        if let Mode::View { owner, view, .. } = self.mode {
             let label = self.registry.manifest(owner).name.clone();
             return Some(Place::View { owner, view, label });
         }
@@ -1372,7 +1403,11 @@ impl Home {
                         if self.focus == Focus::Pane {
                             self.focus = Focus::Notes;
                         }
-                        self.mode = Mode::View { owner, view };
+                        self.mode = Mode::View {
+                            owner,
+                            view,
+                            backlinks: false,
+                        };
                     }
                     None
                 }
@@ -4350,27 +4385,64 @@ impl Home {
     /// A key in an extension's view: the view's own, else Back and Forward, else nothing.
     /// What the user did goes to the extension as `view/event`, and Esc or `q` close it.
     fn view_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Mode::View { owner, view } = self.mode else {
+        let Mode::View {
+            owner,
+            view,
+            backlinks: backs,
+        } = self.mode
+        else {
             return Ok(());
         };
         let Some(open) = self.views.get_mut(owner, view) else {
             self.mode = Mode::Normal;
             return Ok(());
         };
-        if !open.takes(&k)
-            && let Some(MenuCommand::Core(MenuAction::History(h))) = self.keys.get(k)
-        {
-            let here = self.here();
-            let to = match h {
-                HistoryAction::Back => self.history.back(here),
-                HistoryAction::Forward => self.history.forward(here),
-            };
-            if let Some(place) = to {
-                self.mode = Mode::Normal;
-                self.go(place, terminal)?;
+        let of_file = open.file.is_some();
+        let pane = of_file && self.show_backlinks;
+        let menu = match backs || !open.takes(&k) {
+            true => self.keys.get(k),
+            false => None,
+        };
+        let done = match menu {
+            Some(MenuCommand::Core(MenuAction::History(h))) => {
+                let here = self.here();
+                let to = match h {
+                    HistoryAction::Back => self.history.back(here),
+                    HistoryAction::Forward => self.history.forward(here),
+                };
+                if let Some(place) = to {
+                    self.mode = Mode::Normal;
+                    self.go(place, terminal)?;
+                }
+                true
             }
+            // Between the view and the backlinks of the file it shows.
+            Some(MenuCommand::Core(MenuAction::FocusNext | MenuAction::FocusPrevious))
+                if backs || (pane && !self.backs.is_empty()) =>
+            {
+                self.view_backlinks(!backs);
+                true
+            }
+            Some(MenuCommand::Core(MenuAction::ToggleBacklinks)) if of_file => {
+                self.show_backlinks = !self.show_backlinks;
+                self.view_backlinks(false);
+                true
+            }
+            _ if backs => {
+                match k.code {
+                    KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.view_backlinks(false),
+                    _ => self.backlinks_key(k),
+                }
+                true
+            }
+            _ => false,
+        };
+        if done {
             return Ok(());
         }
+        let Some(open) = self.views.get_mut(owner, view) else {
+            return Ok(());
+        };
         match open.key(k) {
             views::Action::Stay => {}
             views::Action::Say(s) => self.flash(s),
@@ -4386,6 +4458,21 @@ impl Home {
             }
         }
         Ok(())
+    }
+
+    /// Keys go to the backlinks pane under the view in front (`true`), or to the view.
+    fn view_backlinks(&mut self, on: bool) {
+        if let Mode::View { backlinks, .. } = &mut self.mode {
+            *backlinks = on;
+        }
+    }
+
+    /// Whether keys go to the backlinks pane: the view's, or the reader's.
+    fn in_backlinks(&self) -> bool {
+        match self.mode {
+            Mode::View { backlinks, .. } => backlinks,
+            _ => self.focus == Focus::Backlinks,
+        }
     }
 
     // ---------- delete & undo ----------
@@ -4926,6 +5013,7 @@ impl Home {
         let (path, line) = (b.path.clone(), b.line);
         let from = self.here();
         self.leave(from, &path, Some(&Jump::Line(line)));
+        self.mode = Mode::Normal;
         self.pending = None;
         self.show_at(&path, Some(Jump::Line(line)));
         self.select_path(&path);
@@ -4948,7 +5036,10 @@ impl Home {
             if let MouseEventKind::Down(MouseButton::Left) = m.kind {
                 let r = (m.row.saturating_sub(ba.y + 1)) as usize;
                 if r < self.backs.len() && m.row > ba.y {
-                    self.focus = Focus::Backlinks;
+                    match self.mode {
+                        Mode::View { .. } => self.view_backlinks(true),
+                        _ => self.focus = Focus::Backlinks,
+                    }
                     if r == self.bsel {
                         self.open_backlink(r);
                     } else {
@@ -5243,8 +5334,26 @@ impl Home {
 
     // ---------- drawing ----------
 
+    /// `area` with the backlinks pane under it, when it has one (`has`) and it isn't hidden.
+    fn backlinks_split(&self, area: Rect, has: bool) -> (Rect, Rect) {
+        if !(self.show_backlinks && has && area.height > 12) {
+            return (area, Rect::default());
+        }
+        let want = if self.backs.is_empty() {
+            3
+        } else {
+            self.backs.len() as u16 + 2
+        };
+        let h = want.min(area.height / 3).max(3);
+        let [e, b] = Layout::vertical([Constraint::Min(5), Constraint::Length(h)]).areas(area);
+        (e, b)
+    }
+
     fn block(&self, title: Line<'static>, focus: Focus) -> Block<'static> {
-        let active = self.focus == focus;
+        self.frame(title, self.focus == focus)
+    }
+
+    fn frame(&self, title: Line<'static>, active: bool) -> Block<'static> {
         Block::bordered()
             .border_type(if active {
                 BorderType::Thick
@@ -5269,19 +5378,7 @@ impl Home {
             .areas(main);
             (a, b, c)
         };
-        // Backlinks under the editor.
-        let (ea, ba) = if self.show_backlinks && self.shown.is_some() && ea.height > 12 {
-            let want = if self.backs.is_empty() {
-                3
-            } else {
-                self.backs.len() as u16 + 2
-            };
-            let h = want.min(ea.height / 3).max(3);
-            let [e, b] = Layout::vertical([Constraint::Min(5), Constraint::Length(h)]).areas(ea);
-            (e, b)
-        } else {
-            (ea, Rect::default())
-        };
+        let (ea, ba) = self.backlinks_split(ea, self.shown.is_some());
         let editor_inner = inner(ea);
         self.areas = [va, na, editor_inner, ba];
 
@@ -5315,10 +5412,20 @@ impl Home {
         if let Mode::Tidy(view) = &self.mode {
             self.draw_tidy(f, main, view);
         }
-        if let Mode::View { owner, view } = self.mode
-            && let Some(open) = self.views.get_mut(owner, view)
-        {
-            draw_view(f, main, open);
+        if let Mode::View { owner, view, .. } = self.mode {
+            let of_file = self
+                .views
+                .get(owner, view)
+                .is_some_and(|v| v.file.is_some());
+            let (va, ba) = self.backlinks_split(main, of_file);
+            self.areas[3] = ba;
+            if let Some(open) = self.views.get_mut(owner, view) {
+                draw_view(f, va, open);
+            }
+            if ba.height > 0 {
+                f.render_widget(Clear, ba);
+                self.draw_backlinks(f, ba);
+            }
         }
         if matches!(self.mode, Mode::Search { .. }) {
             self.draw_search(f, main);
@@ -6229,7 +6336,8 @@ impl Home {
                 Style::new().fg(MUTED),
             ),
         ]);
-        let block = self.block(title, Focus::Backlinks);
+        let focused = self.in_backlinks();
+        let block = self.frame(title, focused);
         let inner = block.inner(area);
         f.render_widget(block, area);
         if n == 0 {
@@ -6241,7 +6349,6 @@ impl Home {
             return;
         }
         let shown = self.visible_backlinks(inner.height);
-        let focused = self.focus == Focus::Backlinks;
         let lines: Vec<Line> = self
             .backs
             .iter()
@@ -6363,6 +6470,13 @@ impl Home {
                     .collect();
                 format!(" {}", parts.join(" · "))
             }
+            (
+                _,
+                Mode::View {
+                    backlinks: true, ..
+                },
+            ) => " backlinks · ↑↓ choose · ⏎ open at the link · ← back to the view · b hide"
+                .to_string(),
             (Focus::Backlinks, _) => {
                 " backlinks · ↑↓ choose · ⏎ open at the link · ← back to notes · b hide".to_string()
             }

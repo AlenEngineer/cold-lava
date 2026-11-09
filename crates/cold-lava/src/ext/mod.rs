@@ -241,13 +241,16 @@ pub enum Effect {
     OpenPane { pane: PaneId, spec: PaneSpec },
     #[serde(rename = "pane/input")]
     PaneInput { pane: PaneId, text: String },
-    /// Show a view, at the row `select` if it names one; the host named it `view`.
+    /// Show a view, at the row `select` if it names one; the host named it `view`. `file` is
+    /// the workspace file it shows, whose backlinks the menu shows under it.
     #[serde(rename = "view/open")]
     OpenView {
         view: ViewId,
         content: Content,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         select: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
     },
     /// What one of its views shows now; `select` is a row to select, now or when it shows up.
     #[serde(rename = "view/update")]
@@ -391,12 +394,13 @@ impl Host<'_> {
     }
 
     /// `view/open`: the view shows once the call returns, in place of what showed, which Back
-    /// returns to, at the row `select` names. Refused when it is over the limits
-    /// (`view::MAX_ROWS`, …).
+    /// returns to, at the row `select` names, with the backlinks of `file` (workspace-relative)
+    /// under it when it shows one. Refused when it is over the limits (`view::MAX_ROWS`, …).
     pub fn open_view(
         &mut self,
         content: Content,
         select: Option<String>,
+        file: Option<String>,
     ) -> Result<ViewId, gateway::Error> {
         content
             .check()
@@ -407,6 +411,7 @@ impl Host<'_> {
             view,
             content,
             select,
+            file,
         });
         Ok(view)
     }
@@ -859,8 +864,18 @@ mod tests {
                 view,
                 content: content(),
                 select: None,
+                file: None,
             },
             json!({"method": "view/open", "params": {"view": 4, "content": list}}),
+        );
+        wire(
+            Effect::OpenView {
+                view,
+                content: content(),
+                select: None,
+                file: Some("Volcanoes/Eruptions.csv".into()),
+            },
+            json!({"method": "view/open", "params": {"view": 4, "content": list, "file": "Volcanoes/Eruptions.csv"}}),
         );
         wire(
             Effect::UpdateView {

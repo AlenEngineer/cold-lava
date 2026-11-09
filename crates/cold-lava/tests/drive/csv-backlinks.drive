@@ -1,0 +1,47 @@
+# An owned file's backlinks (docs/extensions.md, "Owners and types, as built"). csv-table,
+# installed in the empty home by tests/drive.rs, opens Volcanoes/Eruptions.csv as a table and
+# says the view shows that file, so the menu lists who links to it under the table, as it lists
+# a note's under the reader: notes, and files other owners read.
+size 140x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys /
+type eruptions
+wait-for ▤ Volcanoes/Eruptions.csv
+keys enter j
+wait-for CSV table · ⏎ to open it in csv-table
+keys enter
+wait-for [[Mount St. Helens]]  1980
+wait-for Backlinks 1 · b hide
+expect ← Start Here
+# Another program writes a CSV that links to it: csv-table reads it, and its row is a backlink.
+write Volcanoes/Visits.csv Date,Notes\n2026-03-14,Compared the VEIs in [[Eruptions.csv]]\n
+wait-for Backlinks 2 · b hide
+expect ← Visits.csv
+screen
+# Tab moves between the table and its backlinks; Enter opens the note at the link.
+keys tab
+wait-for ← back to the view
+keys enter
+wait-for a table in a CSV file
+expect Backlinks
+# Back returns to the table, with its backlinks.
+keys ctrl+o
+wait-for [[Mount St. Helens]]  1980
+expect ← Visits.csv
+# Enter on a row of another CSV opens that file in its owner, at the row.
+keys tab j enter
+wait-for Volcanoes/Visits.csv
+expect Compared the VEIs
+expect Backlinks none
+# b hides the pane under the table, and shows it again.
+keys ctrl+o
+wait-for [[Mount St. Helens]]  1980
+keys b
+wait-gone Backlinks 2
+keys b
+wait-for Backlinks 2 · b hide
+keys esc
+wait-for cold-lava workspaces
+keys q
+exits 0

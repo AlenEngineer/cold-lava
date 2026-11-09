@@ -147,13 +147,16 @@ class Extension:
         """Every file in the workspace whose name ends in `.extension`."""
         return self.request("workspace/files", {"extension": extension})["files"]
 
-    def open_view(self, content, select=None):
+    def open_view(self, content, select=None, file=None):
         """Show a list or a table ({"kind": "list", ...}) in cold-lava, which draws it and owns
-        its keys, at the row `select`. Returns the view's id, which `view/event` and
+        its keys, at the row `select`; when it shows a workspace `file`, cold-lava lists who
+        links to that file under it. Returns the view's id, which `view/event` and
         `view/closed` name."""
         params = {"content": content}
         if select is not None:
             params["select"] = select
+        if file is not None:
+            params["file"] = file
         return self.request("view/open", params)["view"]
 
     def update_view(self, view, content, select=None):

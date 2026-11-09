@@ -233,8 +233,11 @@ def file_open(params):
     path = params["path"]
     read = ext.read(path)                       # workspace/read: {"text", "rev"}
     tables[path] = {"rev": read["rev"], "rows": parse(read["text"])}
-    tables[path]["view"] = ext.open_view(content(path, tables[path]["rows"]))
+    tables[path]["view"] = ext.open_view(content(path, tables[path]["rows"]), file=path)
 ```
+
+`file=path` says the view shows that file: cold-lava then lists who links to it under the
+view, as it does under a note, and `Enter` there opens the linking note or file.
 
 - **Saving.** `ext.write(path, text, expect=rev)` (`workspace/write`) replaces the file only if
   it is still the version you read, and answers the new `rev`. If Obsidian, git or anything else

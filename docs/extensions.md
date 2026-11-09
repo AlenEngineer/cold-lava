@@ -951,6 +951,19 @@ graph all see the new date. None of them knew what a canvas is.
   (`index::From::Owned`, with the place), edges in the graph, and tidy counts them (a note they
   link to isn't an orphan, a link to nothing is unresolved). Enter on such a backlink sends the
   owner `file/open {path, place}`.
+- **An owned file's backlinks.** The index keeps who links to each owned file too, notes and
+  other owned files alike (`Index::backlinks_of`, by path, for a note or an owned file). An
+  owner's `view/open` names the file the view shows (`file`), and while that view is in front
+  the menu shows the file's backlinks pane under it, the same pane the reader has: the same
+  rows, height and `b` to hide it, kept up to date as the index changes. The view stays where
+  views show (the whole main area) and gives the pane's rows to it, so a file's backlinks sit
+  under what shows the file, note or not. `Tab` (`focus.next`) moves between the view and the
+  pane, unless the view is typing (a filter or a cell); in the pane `↑↓` choose, `Enter` opens
+  the source as the reader's pane does (a note at the line with the link, an owned file in its
+  owner at the link's place), `←` or `Esc` returns to the view, and Back from the source
+  returns to the view. A view of no file (the agenda, a type's table) has no pane.
+  `csv-backlinks.drive` checks it with csv-table: a note's link and a second CSV's, which
+  another program writes while the table is open.
 - **Opening at a place.** `workspace/open` takes an optional `item` (an id): on a file another
   owner reads, its owner gets `file/open` with that item's place. The agenda and the table pass
   the row's item. `view/open` takes an optional `select`, so the owner opens its view at the row
@@ -1059,8 +1072,7 @@ graph all see the new date. None of them knew what a canvas is.
   ends the command with the owner's reason and "nothing was changed"; `--dry-run` starts
   nothing. What the owners read is kept in the cache. `tests/owned.rs` runs it with csv-table
   in a home of its own. The CLI has no merge command.
-- **Not yet:** owner-shipped types need a shape like any type, and an owned file has no
-  backlinks pane of its own.
+- **Not yet:** owner-shipped types need a shape like any type.
 
 ### Link resolver
 
@@ -1448,8 +1460,10 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   `crates/cold-lava/src/views.rs`, drawn with the list and table views. An extension reaches
   them through `Host` (`open_view`, `update_view`, `close_view`, `open_note`), and one in a
   process through `rpc::serve`, so both take one path.
-- **Extension → host.** `view/open {content, select}` answers `{view}`, an id the host picks,
-  unique among every extension's, and shows it at the row `select` names (optional). `content`
+- **Extension → host.** `view/open {content, select, file}` answers `{view}`, an id the host
+  picks, unique among every extension's, and shows it at the row `select` names (optional).
+  `file` (optional, workspace-relative) is the file the view shows: an owner's view of one of
+  its files, whose backlinks the menu shows under it ("Owners and types, as built"). `content`
   is a list or a table as their JSON is pinned, with a `kind`:
 
   ```json
@@ -1479,7 +1493,8 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   and `view/closed {view}` when the user closed it, or the host did to make room. A view's
   events go only to the extension that opened it.
 - **The frontend owns** layout, drawing and keys. A view shows over the main area, one at a
-  time, in place of what showed, which becomes the way back. The extension never sees a key: it
+  time, in place of what showed, which becomes the way back. A view of a file has that file's
+  backlinks pane under it. The extension never sees a key: it
   hears the list's declared keys (one character each; the view's own keys win) and the table's
   edit, as events. Esc always closes (once any filter is cleared), `q` closes, and `Ctrl-o` and
   `Ctrl-i` always go back and forward.

@@ -27,6 +27,8 @@ pub struct Index {
     pub workspace: Workspace,
     pub resolver: Resolver,
     backlinks: Vec<Vec<Backlink>>,
+    /// Links to each file another owner reads, by its place in `workspace.owned`.
+    owned_backlinks: Vec<Vec<Backlink>>,
     outgoing: Vec<usize>,
     folded: OnceLock<Vec<Folded>>,
 }
@@ -44,6 +46,7 @@ impl Index {
             resolver: Resolver::new(&workspace),
             workspace,
             backlinks: Vec::new(),
+            owned_backlinks: Vec::new(),
             outgoing: Vec::new(),
             folded: OnceLock::new(),
         };
@@ -57,6 +60,7 @@ impl Index {
         self.resolver = Resolver::new(workspace);
         let n = workspace.notes.len();
         let mut backlinks = vec![Vec::new(); n];
+        let mut owned_backlinks = vec![Vec::new(); workspace.owned.len()];
         let mut outgoing = vec![0; n];
         let notes = (workspace.notes.iter().enumerate()).flat_map(|(i, n)| {
             let dir = dir_of(&n.rel);
@@ -67,19 +71,18 @@ impl Index {
             (f.links.iter()).map(move |(r, place)| (From::Owned(i), dir, r, Some(place)))
         });
         for (from, dir, r, place) in notes.chain(owned) {
-            let Some(to) = self.resolver.resolve(dir, &r.target) else {
-                if let From::Note(from) = from
-                    && self.resolver.resolve_owned(dir, &r.target).is_some()
-                {
-                    outgoing[from] += 1;
-                }
-                continue;
+            let (to, list) = match self.resolver.resolve(dir, &r.target) {
+                Some(to) => (From::Note(to), &mut backlinks[to]),
+                None => match self.resolver.resolve_owned(dir, &r.target) {
+                    Some(to) => (From::Owned(to), &mut owned_backlinks[to]),
+                    None => continue,
+                },
             };
             if let From::Note(from) = from {
                 outgoing[from] += 1;
             }
-            if from != From::Note(to) {
-                backlinks[to].push(Backlink {
+            if from != to {
+                list.push(Backlink {
                     from,
                     line: r.line,
                     place: place.cloned(),
@@ -87,7 +90,7 @@ impl Index {
                 });
             }
         }
-        for list in &mut backlinks {
+        for list in backlinks.iter_mut().chain(&mut owned_backlinks) {
             list.sort_by(|a, b| {
                 let (na, nb) = (self.name(a.from), self.name(b.from));
                 na.to_lowercase()
@@ -96,6 +99,7 @@ impl Index {
             });
         }
         self.backlinks = backlinks;
+        self.owned_backlinks = owned_backlinks;
         self.outgoing = outgoing;
         self.folded = OnceLock::new();
     }
@@ -175,6 +179,15 @@ impl Index {
 
     pub fn backlinks(&self, i: usize) -> &[Backlink] {
         &self.backlinks[i]
+    }
+
+    /// Who links to the note or the file another owner reads at `path`; `None` when it is
+    /// neither.
+    pub fn backlinks_of(&self, path: &Path) -> Option<&[Backlink]> {
+        match (self.workspace.owned.iter()).position(|f| f.path == path) {
+            Some(i) => Some(&self.owned_backlinks[i]),
+            None => self.by_path(path).map(|i| &self.backlinks[i][..]),
+        }
     }
 
     /// (incoming links from other notes, resolved outgoing links)

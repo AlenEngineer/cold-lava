@@ -1002,6 +1002,35 @@ fn a_csv_files_rows_links_and_tasks_join_the_workspace() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn an_owned_files_view_lists_who_links_to_it() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-backlinks");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| main);
+    let out = drive_with(
+        "csv-backlinks.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// csv-table from the examples, installed in the drive's home; `patch` changes its `main.py`.
 fn install_csv_table(home: &Path, patch: impl Fn(String) -> String) {
     let installed = home.join(".config/cold-lava/extensions/csv-table");
