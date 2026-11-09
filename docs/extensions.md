@@ -763,7 +763,7 @@ style.minutes = { badge = true, icon = "⏱" }
 
 *(design; owners in manifests, `file/open`, `file/changed` and the file messages exist: "File
 types, as built" below; so do items and links from owners and edits through them: "Owners and
-types, as built". Previews and the whiteboard as an owner are design.)*
+types, as built"; previews too: "Previews, as built". The whiteboard as an owner is design.)*
 
 Markdown is the engine's own format. Any other kind of file (`.canvas`, `.kanban`,
 `.excalidraw`, `.csv`) can have an **owner**: an extension that says so in its manifest.
@@ -924,7 +924,8 @@ graph all see the new date. None of them knew what a canvas is.
   the tree, an edit saved, a change made outside with the drive step `write`, a link, the
   switcher bringing the filtered table back, a new table), and `ext/process.rs` checks the
   retry.
-- **Not yet:** previews, the whiteboard as an owner, and a view kind for images.
+- **Not yet:** the whiteboard as an owner. Images have a view kind ("The image view, as
+  built").
 
 ### Owners and types, as built
 
@@ -1143,6 +1144,38 @@ graph all see the new date. None of them knew what a canvas is.
   the switcher, and Enter on a card.
 - **Not yet:** a claim on a type (a view for every note of a type), and previews of a shown
   note in another note.
+
+### Previews, as built
+
+- **The request.** When the reader lays out a note with an embed alone in its paragraph
+  (`![[Eruptions.csv]]`) whose target resolves (by Obsidian's rules, as a link does) to a file
+  an extension owns, it asks the owner:
+
+  | Request (host → owner) | Answer |
+  | --- | --- |
+  | `file/preview {path, rev, width, height}` | a view's content, `{"kind": "list", …}` or `{"kind": "table", …}`, as `view/open` takes it |
+
+  `width` is the columns the reader has under the embed, `height` the lines it gives a preview
+  (`previews::HEIGHT`, 8). The answer is checked like `view/open`'s content and may have at
+  most 200 rows and groups (`ext::PREVIEW_ROWS`); a bigger one is refused.
+- **Drawn in the reader.** Under the embed's name (`⧉ Eruptions.csv`) the reader draws the
+  content as the list or table view would, with nothing selected and cut to `height` lines,
+  behind a `│` bar (`views::preview`). An embed of a file nobody owns, or a picture, stays its
+  name as before. The peek popup shows the name only.
+- **Never waiting.** The reader asks while it lays the note out and draws `asking csv-table for
+  a preview…` meanwhile; the requests go out before the next frame (`Home::ask_previews`), and
+  the answer, `Effect::Previewed` from `Host::file_previewed` (only the file's owner may
+  answer), makes the reader lay the note out again. An error, a refusal, no answer in 10 s or
+  an owner that stopped is drawn as `no preview: why`.
+- **Cached by `rev`** (`crate::previews`): each file's last answer is kept with the version it
+  was asked for, so a note is laid out again (scrolled, resized) without asking. When the
+  watcher says the file changed, the reader lays the note out again, asks for the new `rev`,
+  and draws the old preview until the new one comes.
+- **The example.** csv-table answers with the file's header and its first rows as a table.
+  `csv-preview.drive` writes a note that embeds `Eruptions.csv` and a picture, checks the
+  preview in the reader, changes the CSV as another program would, and sees the new rows;
+  `ext/process.rs` checks the answer, the bound and the timeout through the transport.
+- **Not yet:** a file card on a whiteboard asking for a preview, and previews in the peek popup.
 
 ### Link resolver
 
@@ -1596,7 +1629,8 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   picks, unique among every extension's, and shows it at the row `select` names (optional).
   `file` (optional, workspace-relative) is the file the view shows: an owner's view of one of
   its files, whose backlinks the menu shows under it ("Owners and types, as built"). `content`
-  is a list or a table as their JSON is pinned, with a `kind`:
+  is a list, a table or an image ("The image view, as built") as their JSON is pinned, with a
+  `kind`:
 
   ```json
   {"jsonrpc": "2.0", "id": 4, "method": "view/open", "params": {"content": {
@@ -1660,6 +1694,41 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   items as a table and turns a cell's edit into `items/edit set-field`.
 - **Not yet:** Markdown and tree views, a view beside the tree rather than over it, and `scene`
   (below).
+
+### The image view, as built
+
+- **The content** (`crate::image::Image`, pinned in `ext/view.rs`): `{"kind": "image", "title":
+  "Lava lake", "path": "Volcanoes/lava-lake.png"}`, a workspace-relative path that must stay
+  inside the workspace and out of hidden folders (`files::resolve`), or `{"kind": "image",
+  "title": …, "png": "<base64>"}`, a PNG's bytes. Either is at most 8 MB (`image::MAX_BYTES`);
+  `view/open` refuses bigger bytes sent, and a bigger file shows why instead. It opens, updates,
+  closes and goes into history like any view; `Esc` and `q` close it, and it has no rows, so
+  the extension hears no events from it.
+- **Pixels.** Where the terminal speaks the Kitty graphics protocol (`render` in `config.toml`,
+  `auto` asks `kitty::supported`, as the graph does), the view draws the picture's name and
+  `PNG image · 640×480 · 120 KB` and the terminal draws the PNG under the text in the rest of
+  the view (`kitty::place_png`: `a=T,f=100`, chunked base64, `z=-1`, scaled to the cells). The
+  menu places it after drawing a frame, only when the view, or where it is, changed, and
+  deletes it (`kitty::delete`, image 7101, apart from the graph's) when the view closes or
+  goes out of sight and before the graph, a whiteboard or the full-screen editor take the
+  terminal.
+- **Text fallback.** Elsewhere the view draws the same two lines, then the PNG as a thumbnail of
+  half blocks (`▀`, the top pixel's colour on the bottom pixel's), scaled to fit, about square
+  cells. Only PNG is decoded (with tiny-skia, already used for the graph's pixels): a JPEG, GIF
+  or WebP shows its name, kind and size, and is not sent to the terminal either, since Kitty
+  decodes only PNG itself.
+- **In the reader.** A picture embedded alone in its paragraph (`![[lava-lake.png]]`) that
+  resolves to a file in the workspace, and that no extension owns, is drawn under its name as
+  this text fallback: its kind and size, and a PNG's thumbnail in up to 6 rows. Always half
+  blocks, since the reader scrolls and the pixels wouldn't follow. A picture that isn't there
+  stays its name.
+- **Checked** by unit tests of the escape output (`kitty.rs`: the header, the 4096-byte chunks,
+  the cursor saved and restored, the delete), of the thumbnail's colours (`image.rs`) and of the
+  view with and without pixels (`views.rs`), and by `image-embed.drive` on the real binary.
+  Pixels themselves can't be seen in a pseudo-terminal; check them in Kitty, Ghostty or
+  WezTerm.
+- **Not yet:** decoding JPEG and the other formats, pixels in the reader, and an example
+  extension that opens an image view.
 
 ### Scenes
 

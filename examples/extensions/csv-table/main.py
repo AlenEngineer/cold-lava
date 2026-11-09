@@ -136,6 +136,15 @@ def content(path, rows):
     }
 
 
+@ext.on("file/preview")
+def file_preview(params):
+    """A note embeds the file (`![[Eruptions.csv]]`): its header and first rows, as many as fit
+    in the lines the reader has."""
+    table = content(params["path"], parse(ext.read(params["path"])["text"]))
+    table["rows"] = table["rows"][: max(params["height"] - 1, 1)]
+    return table
+
+
 def show(path, place=None):
     """Read the file and show it: in its table when it is open, else in a new one; at the row
     `place` names (its own, or one of its cells')."""

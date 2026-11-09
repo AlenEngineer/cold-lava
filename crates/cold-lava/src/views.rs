@@ -3,11 +3,14 @@
 //! while it is out of sight, so Back returns to it as it was. Updates wait for the frame and
 //! only the last one is drawn; an extension has at most `PER_EXTENSION` views open.
 
-use ratatui::crossterm::event::KeyEvent;
+use std::path::{Path, PathBuf};
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::Line;
 
 use crate::ext::ExtId;
 use crate::ext::view::{Content, Event, ViewId};
+use crate::image::Picture;
 use crate::list::{self, Filter, ListView};
 use crate::table::{self, TableView};
 
@@ -18,6 +21,18 @@ pub const PER_EXTENSION: usize = 8;
 pub struct Views {
     /// Oldest first.
     open: Vec<Open>,
+    /// Where pictures' paths lead: the workspace open.
+    pub root: Option<PathBuf>,
+    /// Whether the terminal shows pictures' pixels (Kitty graphics), so their views leave
+    /// room for them instead of drawing half blocks.
+    pub pixels: bool,
+}
+
+/// What draws a picture.
+pub struct PictureView {
+    title: String,
+    pub picture: Picture,
+    pixels: bool,
 }
 
 pub struct Open {
@@ -33,6 +48,14 @@ pub struct Open {
 enum Drawn {
     List(ListView),
     Table(TableView),
+    Picture(PictureView),
+}
+
+/// Where views find what they draw.
+#[derive(Clone, Copy)]
+struct Context<'a> {
+    root: Option<&'a Path>,
+    pixels: bool,
 }
 
 /// What the menu should do after a key in a view.
@@ -45,18 +68,23 @@ pub enum Action {
 }
 
 impl Drawn {
-    fn new(content: Content) -> Drawn {
+    fn new(content: Content, cx: Context) -> Drawn {
         match content {
             Content::List(l) => Drawn::List(ListView::new(l)),
             Content::Table(t) => Drawn::Table(TableView::new(t)),
+            Content::Image(i) => Drawn::Picture(PictureView {
+                picture: Picture::load(&i, cx.root),
+                title: i.title,
+                pixels: cx.pixels,
+            }),
         }
     }
 
-    fn update(&mut self, content: Content, select: Option<String>) {
+    fn update(&mut self, content: Content, select: Option<String>, cx: Context) {
         match (&mut *self, content) {
             (Drawn::List(v), Content::List(l)) => v.update(l),
             (Drawn::Table(v), Content::Table(t)) => v.update(t),
-            (_, other) => *self = Drawn::new(other),
+            (_, other) => *self = Drawn::new(other, cx),
         }
         self.select(select);
     }
@@ -65,9 +93,37 @@ impl Drawn {
         match (self, select) {
             (Drawn::List(v), Some(id)) => v.select(&id),
             (Drawn::Table(v), Some(id)) => v.select(&id),
-            (_, None) => {}
+            _ => {}
         }
     }
+}
+
+/// `content` drawn as a view would draw it, in `height` lines of `width` columns, with nothing
+/// selected: a preview of a file in a note. A picture's path leads into `root`; it is drawn
+/// in half blocks, since the reader scrolls over pixels.
+pub fn preview(
+    content: &Content,
+    root: Option<&Path>,
+    width: usize,
+    height: usize,
+) -> Vec<Line<'static>> {
+    let cx = Context {
+        root,
+        pixels: false,
+    };
+    let mut lines = match Drawn::new(content.clone(), cx) {
+        Drawn::List(v) => v.lines(width, height),
+        Drawn::Table(mut v) => v.lines(width, height),
+        Drawn::Picture(v) => return v.picture.lines(width, height, false),
+    };
+    for line in &mut lines {
+        line.style.bg = None;
+        for span in &mut line.spans {
+            span.style.bg = None;
+        }
+    }
+    lines.truncate(height);
+    lines
 }
 
 impl Views {
@@ -86,7 +142,7 @@ impl Views {
             .then(|| self.open.iter().position(|v| v.owner == owner))
             .flatten()
             .map(|i| self.open.remove(i).id);
-        let mut drawn = Drawn::new(content);
+        let mut drawn = Drawn::new(content, self.context());
         drawn.select(select);
         self.open.push(Open {
             owner,
@@ -140,11 +196,30 @@ impl Views {
             .find(|v| (v.owner, v.id) == (owner, id))
     }
 
+    /// No views yet; `pixels` when the terminal shows pictures' pixels.
+    pub fn new(pixels: bool) -> Views {
+        Views {
+            pixels,
+            ..Views::default()
+        }
+    }
+
+    fn context(&self) -> Context<'_> {
+        Context {
+            root: self.root.as_deref(),
+            pixels: self.pixels,
+        }
+    }
+
     /// Before drawing: each view takes its last update.
     pub fn settle(&mut self) {
+        let cx = Context {
+            root: self.root.as_deref(),
+            pixels: self.pixels,
+        };
         for v in &mut self.open {
             if let Some((content, select)) = v.pending.take() {
-                v.drawn.update(content, select);
+                v.drawn.update(content, select, cx);
             }
         }
     }
@@ -155,6 +230,15 @@ impl Open {
         match &self.drawn {
             Drawn::List(v) => v.title(),
             Drawn::Table(v) => v.title(),
+            Drawn::Picture(v) => &v.title,
+        }
+    }
+
+    /// The picture it shows, when it shows one.
+    pub fn picture(&self) -> Option<&Picture> {
+        match &self.drawn {
+            Drawn::Picture(v) => Some(&v.picture),
+            _ => None,
         }
     }
 
@@ -164,6 +248,7 @@ impl Open {
         match &self.drawn {
             Drawn::List(v) => v.typing() || v.filters().takes(k),
             Drawn::Table(v) => v.typing() || v.filters().takes(k),
+            Drawn::Picture(_) => false,
         }
     }
 
@@ -179,6 +264,10 @@ impl Open {
                 table::Action::Close => Action::Close,
                 table::Action::Say(s) => Action::Say(s),
                 table::Action::Send(e) => Action::Send(e.into()),
+            },
+            Drawn::Picture(_) => match k.code {
+                KeyCode::Esc | KeyCode::Char('q') => Action::Close,
+                _ => Action::Stay,
             },
         }
     }
@@ -201,6 +290,7 @@ impl Open {
             Drawn::Table(_) => {
                 " ←→↑↓ move · s/S sort · / filter · e edit · ⏎ open · Esc close ".into()
             }
+            Drawn::Picture(_) => " Esc close ".into(),
         }
     }
 
@@ -208,6 +298,7 @@ impl Open {
         match &mut self.drawn {
             Drawn::List(v) => v.lines(width, height),
             Drawn::Table(v) => v.lines(width, height),
+            Drawn::Picture(v) => v.picture.lines(width, height, v.pixels),
         }
     }
 
@@ -215,6 +306,7 @@ impl Open {
         match &self.drawn {
             Drawn::List(v) => v.status(),
             Drawn::Table(v) => v.status(),
+            Drawn::Picture(_) => Line::default(),
         }
     }
 
@@ -223,6 +315,7 @@ impl Open {
         match &self.drawn {
             Drawn::List(v) => v.selected().map(|r| r.id.clone()),
             Drawn::Table(v) => v.selected().map(|r| r.id.clone()),
+            Drawn::Picture(_) => None,
         }
     }
 }
@@ -315,6 +408,33 @@ mod tests {
         assert!(views.close(A, ViewId(1)));
         assert!(!views.close(A, ViewId(1)));
         assert!(!views.has(A, ViewId(1)));
+    }
+
+    #[test]
+    fn a_picture_view_leaves_room_for_pixels_or_draws_half_blocks_and_esc_closes() {
+        use base64::Engine;
+        let png = tiny_skia::Pixmap::new(4, 4).unwrap().encode_png().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let image = || {
+            Content::Image(crate::image::Image {
+                title: "Chart".into(),
+                source: crate::image::Source::Png(b64.clone()),
+            })
+        };
+        for pixels in [false, true] {
+            let mut views = Views::new(pixels);
+            views.open(A, ViewId(1), image(), None, None);
+            let v = views.get_mut(A, ViewId(1)).unwrap();
+            assert_eq!(v.title(), "Chart");
+            let lines: Vec<String> = v.lines(20, 10).iter().map(|l| l.to_string()).collect();
+            assert!(lines[1].starts_with("PNG image · 4×4 · "), "{lines:?}");
+            let rows = if pixels { 2 } else { 4 };
+            assert_eq!(lines.len(), rows, "half blocks only without pixels");
+            assert_eq!(v.picture().and_then(|p| p.png()), Some(png.as_slice()));
+            assert!(!v.takes(&press(KeyCode::Char('x'))));
+            assert_eq!(v.key(press(KeyCode::Char('x'))), Action::Stay);
+            assert_eq!(v.key(press(KeyCode::Esc)), Action::Close);
+        }
     }
 
     #[test]

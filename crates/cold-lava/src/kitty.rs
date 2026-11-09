@@ -182,6 +182,40 @@ impl Kitty {
     }
 }
 
+/// The image id a picture in a view is placed with, apart from the graph's.
+pub const PICTURE: u32 = 7101;
+
+/// The escape sequence that shows `png` scaled into the cells of `area`, under the text
+/// (z = -1), as image `id`: the terminal decodes the PNG (`f=100`). The cursor stays where it
+/// was.
+pub fn place_png(png: &[u8], area: Rect, id: u32) -> Vec<u8> {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+    let mut out = Vec::with_capacity(b64.len() + 128);
+    let _ = write!(out, "\x1b7\x1b[{};{}H", area.y + 1, area.x + 1);
+    let chunks: Vec<&[u8]> = b64.as_bytes().chunks(4096).collect();
+    for (k, chunk) in chunks.iter().enumerate() {
+        let more = usize::from(k + 1 < chunks.len());
+        if k == 0 {
+            let _ = write!(
+                out,
+                "\x1b_Ga=T,f=100,i={id},p=1,q=2,C=1,z=-1,c={},r={},m={more};",
+                area.width, area.height
+            );
+        } else {
+            let _ = write!(out, "\x1b_Gm={more};");
+        }
+        out.extend_from_slice(chunk);
+        out.extend_from_slice(b"\x1b\\");
+    }
+    out.extend_from_slice(b"\x1b8");
+    out
+}
+
+/// The escape sequence that removes image `id`.
+pub fn delete(id: u32) -> Vec<u8> {
+    format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\").into_bytes()
+}
+
 fn paint(c: Color, a: u8) -> Paint<'static> {
     let (r, g, b) = match c {
         Color::Rgb(r, g, b) => (r, g, b),
@@ -194,4 +228,28 @@ fn paint(c: Color, a: u8) -> Paint<'static> {
     p.set_color_rgba8(r, g, b, a);
     p.anti_alias = true;
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_png_is_placed_in_chunks_under_the_text_and_deleted_by_id() {
+        let png = vec![7u8; 6000];
+        let out = String::from_utf8(place_png(&png, Rect::new(4, 2, 30, 10), PICTURE)).unwrap();
+        assert!(
+            out.starts_with("\x1b7\x1b[3;5H\x1b_Ga=T,f=100,i=7101,p=1,q=2,C=1,z=-1,c=30,r=10,m=1;")
+        );
+        assert!(out.ends_with("\x1b\\\x1b8"), "the cursor goes back");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        assert_eq!(b64.len(), 8000);
+        assert_eq!(
+            out.matches("\x1b_G").count(),
+            2,
+            "4096 base64 bytes a chunk"
+        );
+        assert!(out.contains(&format!("\x1b\\\x1b_Gm=0;{}\x1b\\", &b64[4096..])));
+        assert_eq!(delete(PICTURE), b"\x1b_Ga=d,d=I,i=7101,q=2\x1b\\");
+    }
 }

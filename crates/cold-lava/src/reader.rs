@@ -105,14 +105,16 @@ impl Reader {
     }
 
     /// Lays the doc out for `width` unless it already is. `resolved` tells whether a wiki or
-    /// Markdown link's target exists.
-    pub fn layout(&mut self, width: u16, resolved: &dyn Fn(&str) -> bool) {
+    /// Markdown link's target exists; `embed` gives the lines an embed (`![[Eruptions.csv]]`)
+    /// shows under its name, at most so many columns wide, or `None` for its name alone.
+    pub fn layout(&mut self, width: u16, resolved: &dyn Fn(&str) -> bool, embed: &Embeds) {
         if self.page.as_ref().is_some_and(|p| p.width == width) {
             return;
         }
         let mut b = Builder {
             width: width as usize,
             resolved,
+            embed,
             page: Page {
                 width,
                 ..Page::default()
@@ -487,9 +489,13 @@ fn width(s: &str) -> usize {
     Span::raw(s).width()
 }
 
+/// What an embed shows under its name, by target and width (`Reader::layout`).
+pub type Embeds<'a> = dyn Fn(&str, usize) -> Option<Vec<Line<'static>>> + 'a;
+
 struct Builder<'a> {
     width: usize,
     resolved: &'a dyn Fn(&str) -> bool,
+    embed: &'a Embeds<'a>,
     page: Page,
     /// How deep in lists, for the bullet.
     depth: usize,
@@ -654,6 +660,14 @@ impl Builder<'_> {
                     style,
                 );
                 self.wrap(toks, g);
+                let bar = Span::styled("│ ", DIM);
+                let mut inner = g.nest_with(bar.clone(), bar);
+                let room = self.width.saturating_sub(inner.width() + 2);
+                for line in (self.embed)(target, room).unwrap_or_default() {
+                    let mut spans = inner.take();
+                    spans.extend(line.spans);
+                    self.page.lines.push(Line::from(spans));
+                }
             }
         }
     }
@@ -1078,7 +1092,7 @@ mod tests {
     fn reader(text: &str, width: u16, height: u16) -> Reader {
         let doc = parse(text, &Flavour::built_in("obsidian").unwrap());
         let mut r = Reader::new(doc, Looks::default());
-        r.layout(width, &|t| t.starts_with("Shield"));
+        r.layout(width, &|t| t.starts_with("Shield"), &|_, _| None);
         r.render(
             Rect::new(0, 0, width, height),
             &mut Buffer::empty(Rect::new(0, 0, width, height)),
@@ -1239,7 +1253,7 @@ mod tests {
             header: Vec::new(),
         };
         let mut r = Reader::new(doc, looks);
-        r.layout(60, &|_| true);
+        r.layout(60, &|_| true, &|_, _| None);
         let line = &lines(&r)[0];
         assert_eq!(line, "Due  📅 soon  and Lava here.");
         let chip = style_at(&r, 0, 5);
@@ -1275,7 +1289,7 @@ mod tests {
             header: Vec::new(),
         };
         let mut r = Reader::new(doc, looks);
-        r.layout(60, &|_| true);
+        r.layout(60, &|_| true, &|_, _| None);
         assert_eq!(lines(&r), ["see #volcano"]);
     }
 

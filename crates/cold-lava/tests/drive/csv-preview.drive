@@ -1,0 +1,26 @@
+# A note that embeds a CSV file (![[Eruptions.csv]]) shows csv-table's preview of it in the
+# reader, under the embed's name: csv-table (examples/extensions/csv-table, installed in the
+# empty home by tests/drive.rs) answers file/preview with the file's first rows as a table. A
+# change made to the CSV by another program brings a new preview. An embed of a file nobody
+# owns (Kīlauea's picture) stays its name, as before.
+size 120x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+write Inbox/Log.md # Log\n\nThe eruptions so far:\n\n![[Eruptions.csv]]\n\nAnd a picture: ![[kilauea-lava-lake.jpg]]\n
+keys p
+type log
+wait-for Log
+keys enter
+wait-for Inbox/Log  reading
+wait-for │ [[Krakatoa]]          1883    6
+expect ⧉ Eruptions.csv
+expect │ Volcano               Year    VEI    ›
+expect And a picture: 🖼 kilauea-lava-lake.jpg
+write Volcanoes/Eruptions.csv Volcano,Year,VEI,Notes\n[[Krakatoa]],1883,6,\n[[Tambora]],1815,7,\n
+wait-for │ [[Tambora]]   1815    7
+expect-not Vesuvius
+screen
+keys esc
+wait-gone reading · Esc / q back
+keys q
+exits 0

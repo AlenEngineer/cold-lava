@@ -79,7 +79,9 @@ the menu. Press `v` to switch the pane to the **reader** and back.
 
 **The reader** shows the note rendered, in the workspace's [Markdown flavour](#markdown-flavour):
 headings, lists and tasks, quotes and callouts (folded ones show only their title), code blocks,
-tables, highlights, tags, and embeds as placeholders. Frontmatter is hidden; typed values are
+tables, highlights, tags, and embeds: a picture alone on its line shows its kind and size and,
+for a PNG, a thumbnail in half blocks; a file an extension owns shows that extension's preview;
+any other embed shows its name. Frontmatter is hidden; typed values are
 drawn with their [looks](#types) (a VEI on an orange chip, done tasks struck through), and the
 note's typed frontmatter fields go on a line above it. Links are
 underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the
@@ -701,7 +703,9 @@ and sets the cell in what is there now); a change made in another program shows 
 table. Opening a file whose table is already open brings that table back to the front, as you
 left it. *new CSV table* in the palette makes `Untitled.csv` where Obsidian puts new files. One
 extension owns each kind, the first to claim it; notes (`.md`) and whiteboards (`.canvas`) stay
-cold-lava's. A kind of file nobody owns behaves as before.
+cold-lava's. A kind of file nobody owns behaves as before. A note that embeds a CSV
+(`![[Eruptions.csv]]`) shows csv-table's preview of it in the reader: the header and the first
+rows, drawn as soon as csv-table answers and asked again when the file changes.
 
 An owner also tells cold-lava what its files say, so they join the workspace: csv-table hands
 over each row as a table row and a cell like `- [ ] Read the report 📅 2026-11-20` as Markdown.

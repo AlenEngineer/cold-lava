@@ -18,6 +18,7 @@ pub struct ViewId(pub u32);
 pub enum Content {
     List(list::List),
     Table(table::Table),
+    Image(crate::image::Image),
 }
 
 /// The most rows (a list's groups count too) and columns one view may have, and the most keys
@@ -46,10 +47,31 @@ impl Content {
                 }
                 t.rows.len()
             }
+            Content::Image(i) => return i.check(),
         };
         match rows > MAX_ROWS {
             true => Err(format!(
                 "a view has at most {MAX_ROWS} rows and groups; this one has {rows}"
+            )),
+            false => Ok(()),
+        }
+    }
+}
+
+impl Content {
+    /// Refused (with why) when it has more rows and groups than a preview may.
+    pub fn small(&self) -> Result<(), String> {
+        let rows = match self {
+            Content::List(l) => {
+                l.groups.len() + l.groups.iter().map(|g| g.rows.len()).sum::<usize>()
+            }
+            Content::Table(t) => t.rows.len(),
+            Content::Image(_) => 0,
+        };
+        match rows > super::PREVIEW_ROWS {
+            true => Err(format!(
+                "a preview has at most {} rows and groups; this one has {rows}",
+                super::PREVIEW_ROWS
             )),
             false => Ok(()),
         }
@@ -194,6 +216,14 @@ mod tests {
                 "columns": [{"name": "elevation", "type": "number"}],
                 "rows": [{"id": "v1", "cells": [4169]}],
             }),
+        );
+        let image = crate::image::Image {
+            title: "Lava lake".into(),
+            source: crate::image::Source::Path("Volcanoes/lava-lake.png".into()),
+        };
+        wire(
+            Content::Image(image),
+            json!({"kind": "image", "title": "Lava lake", "path": "Volcanoes/lava-lake.png"}),
         );
     }
 

@@ -268,6 +268,21 @@ pub enum FileNews {
     Changed { path: String, rev: Option<String> },
 }
 
+/// `file/preview` (host → owner, a request): a small view of a file of a kind it owns, for a
+/// note that embeds it (`![[Eruptions.csv]]`). `width` and `height` are the room the reader
+/// has, in columns and lines; the answer is a view's content (`view::Content`), drawn there
+/// and cut to `height` lines.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FilePreview {
+    pub path: String,
+    pub rev: String,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// The most rows and groups a preview may have: a preview is small, so more is refused.
+pub const PREVIEW_ROWS: usize = 200;
+
 /// `command/run` (host → extension): run one of the commands it registered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -324,6 +339,14 @@ pub enum Effect {
     /// Bring one of its open views to the front.
     #[serde(rename = "view/show")]
     ShowView { view: ViewId },
+    /// The answer to `file/preview` for `path` at version `rev`, from its owner. Not a message
+    /// an extension sends: its owner answers the request, and the menu keeps the view.
+    #[serde(skip)]
+    Previewed {
+        path: String,
+        rev: String,
+        content: Result<Content, String>,
+    },
     /// Open a note, at a line: a path inside the workspace, absolute or relative to its root
     /// as items name their notes.
     #[serde(rename = "workspace/open")]
@@ -366,6 +389,12 @@ pub trait Extension {
     fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
         let why = "it doesn't edit files".to_string();
         host.file_edited(&edit.path, &edit.rev, Err(why));
+    }
+    /// `file/preview`: a small view of a file of a kind it owns, answered now or later with
+    /// `Host::file_previewed`.
+    fn preview_file(&mut self, preview: FilePreview, host: &mut Host<'_>) {
+        let why = "it doesn't preview files".to_string();
+        host.file_previewed(&preview.path, &preview.rev, Err(why));
     }
     /// The answer to an `items/edit` that `Host::edit_item` answered `Later`: an edit of a file
     /// another owner reads, now written, or why not.
@@ -521,6 +550,24 @@ impl Host<'_> {
         if let (true, Some(core)) = (owns, self.core.as_deref_mut()) {
             core.file_given(name, path, rev, given);
         }
+    }
+
+    /// The answer to `file/preview` for a file of a kind it owns: what to draw where a note
+    /// embeds it, or why not. Only the file's owner may answer; a view over the limits, or
+    /// with more than `PREVIEW_ROWS` rows, is refused.
+    pub fn file_previewed(&mut self, path: &str, rev: &str, content: Result<Content, String>) {
+        let me = self.me;
+        let owns = (self.owners.iter())
+            .any(|(x, owner)| Some(x) == files::extension_of(path).as_ref() && Some(*owner) == me);
+        if !owns {
+            return;
+        }
+        let content = content.and_then(|c| match c.check().and_then(|()| c.small()) {
+            Ok(()) => Ok(c),
+            Err(why) => Err(why),
+        });
+        let (path, rev) = (path.to_string(), rev.to_string());
+        self.effects.push(Effect::Previewed { path, rev, content });
     }
 
     /// The answer to `file/edit` for a file of a kind it owns: the file's new text, or why not.
@@ -1563,6 +1610,16 @@ mod tests {
                 new: Some("csv-table.new".into()),
             },
             json!({"extension": "csv", "title": "CSV table", "new": "csv-table.new"}),
+        );
+        wire(
+            FilePreview {
+                path: "Data/Eruptions.csv".into(),
+                rev: "00ff00ff00ff00ff".into(),
+                width: 60,
+                height: 8,
+            },
+            json!({"path": "Data/Eruptions.csv", "rev": "00ff00ff00ff00ff",
+                   "width": 60, "height": 8}),
         );
     }
 

@@ -1,0 +1,22 @@
+# A note that embeds a picture: tests/drive.rs puts an 8×4 PNG, red over blue, in the
+# workspace. The reader draws it under the embed's name as the image view's text fallback
+# does: its kind, size and bytes, then a thumbnail of half blocks (here two rows). An embed of
+# a picture that isn't there (Kīlauea's) stays its name.
+size 120x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+write Inbox/Lake.md # Lake\n\n![[lava-lake.png]]\n\n![[kilauea-lava-lake.jpg]]\n
+keys p
+type lake
+wait-for Lake
+keys enter
+wait-for Inbox/Lake  reading
+wait-for 🖼 lava-lake.png
+expect │ PNG image · 8×4 ·
+expect │ ▀▀▀▀▀▀▀▀
+expect 🖼 kilauea-lava-lake.jpg
+screen
+keys esc
+wait-gone reading · Esc / q back
+keys q
+exits 0
