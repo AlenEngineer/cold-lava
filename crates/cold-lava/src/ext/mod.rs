@@ -259,6 +259,9 @@ pub enum Effect {
     },
     #[serde(rename = "view/close")]
     CloseView { view: ViewId },
+    /// Bring one of its open views to the front.
+    #[serde(rename = "view/show")]
+    ShowView { view: ViewId },
     /// Open a note, at a line: a path inside the workspace, absolute or relative to its root
     /// as items name their notes.
     #[serde(rename = "workspace/open")]
@@ -431,6 +434,12 @@ impl Host<'_> {
     /// `view/close`
     pub fn close_view(&mut self, view: ViewId) {
         self.effects.push(Effect::CloseView { view });
+    }
+
+    /// `view/show`: one of its open views shows in place of what showed, which Back returns
+    /// to, as when it opened. A view that isn't open, or is in front already, stays as it is.
+    pub fn show_view(&mut self, view: ViewId) {
+        self.effects.push(Effect::ShowView { view });
     }
 
     /// `workspace/open`: show a note, at a line; or the file of the item `item` at its place.
@@ -841,6 +850,7 @@ mod tests {
                 groups: Vec::new(),
                 keys: Vec::new(),
                 empty: None,
+                filter: Default::default(),
             })
         };
         let list = json!({"kind": "list", "title": "Open", "groups": []});
@@ -863,6 +873,10 @@ mod tests {
         wire(
             Effect::CloseView { view },
             json!({"method": "view/close", "params": {"view": 4}}),
+        );
+        wire(
+            Effect::ShowView { view },
+            json!({"method": "view/show", "params": {"view": 4}}),
         );
         wire(
             Effect::OpenNote {

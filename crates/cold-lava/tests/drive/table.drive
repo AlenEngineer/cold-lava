@@ -1,6 +1,6 @@
-# The table view: i sends the types as a table to pick from, Enter on one sends its items as
-# the rows. Sorting by elevation, filtering by
-# country, Enter opening the selected volcano's note and Ctrl-o coming back to the table as it
+# The table view: i sends the types as a table to pick from, filtered as you type (so the s and
+# k of "task" are text, not a sort and a move), Enter on one sends its items as the rows.
+# Sorting by elevation, filtering by country, Enter opening the selected volcano's note and Ctrl-o coming back to the table as it
 # was; then the eruption table's VEI chips and the task table (tests/drive.rs adds
 # Inbox/Today.md, with a priority).
 size 160x30
@@ -9,9 +9,8 @@ wait-for example-workspace
 keys i
 wait-for Table of…
 expect volcano         9
-keys /
+expect type to filter
 type volc
-keys enter
 wait-for 1 of 4 rows · /volc
 keys enter
 wait-for 9 rows
@@ -38,9 +37,7 @@ keys esc
 wait-gone by elevation
 keys i
 wait-for Table of…
-keys /
 type erup
-keys enter
 wait-for 1 of 4 rows · /erup
 keys enter
 wait-for 4 rows
@@ -49,10 +46,9 @@ expect  6   [[Krakatoa]] 1883
 screen
 keys q i
 wait-for Table of…
-keys /
 type task
-keys enter
 wait-for 1 of 4 rows · /task
+expect-not by type
 keys enter
 wait-for 6 rows
 expect Ring the observatory

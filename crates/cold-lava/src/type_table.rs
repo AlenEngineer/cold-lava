@@ -19,6 +19,7 @@ use crate::gateway::{
     self, Answer, Edit, Edited, News, Op, Page, Query, Reason, Select, SubId, Ticket,
 };
 use crate::items::{Data, Item};
+use crate::list::Filter;
 use crate::table::{Column, Kind, Row, Table};
 use crate::types::{Definition, Source, Type, Value};
 
@@ -192,6 +193,7 @@ impl Tables {
                     cells: vec![name.into(), n.into()],
                 })
                 .collect(),
+            filter: Filter::Typing,
         };
         let view = host
             .open_view(Content::Table(table), None)
@@ -438,6 +440,7 @@ pub fn build(ty: &Type, items: &[Item]) -> TypeTable {
         title: ty.name.clone(),
         columns,
         rows,
+        filter: Default::default(),
     };
     TypeTable { table, at }
 }

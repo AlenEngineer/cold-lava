@@ -6,9 +6,7 @@ env COLD_LAVA_EDITOR=none
 wait-for example-workspace
 keys i
 wait-for Table of…
-keys /
 type erup
-keys enter
 wait-for 1 of 4 rows · /erup
 keys enter
 wait-for 4 rows
@@ -34,9 +32,7 @@ keys enter
 wait-for Volcanic Explosivity Index (VEI)  reading
 keys i
 wait-for Table of…
-keys /
 type task
-keys enter
 wait-for 1 of 4 rows · /task
 keys enter
 wait-for rows

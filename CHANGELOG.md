@@ -9,6 +9,15 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- `view/show {view}` brings an extension's open view back to the front, from wherever you are,
+  and Back returns there. csv-table uses it: opening a `.csv` whose table is already open shows
+  that table as you left it (selection, sort, filter) instead of closing and reopening it.
+- A list or table can ask to be filtered as you type (`"filter": "typing"`), with no `/`
+  first. Every character then goes into the filter, so the view's letter keys and the list's
+  own `keys` are out of reach (a list that binds keys can't ask for it); the arrows, `Enter`,
+  `Esc`, `Backspace` and `Ctrl-u` still work. The table's type picker (`i`) filters as you
+  type again, as it did before the table became an extension.
+
 - File types. An extension's manifest can claim a kind of file (`[[file-types]]` with
   `extension`, `title` and `new`, the command that makes one). Files of that kind show in the
   note tree and the quick switcher, and Enter on one, or following a link to it
