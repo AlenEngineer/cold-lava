@@ -7,7 +7,9 @@ keys p johnston
 wait-for David A. Johnston
 keys enter
 wait-for People/David A. Johnston  reading
-keys esc h R
+keys esc
+wait-gone reading · Esc / q back
+keys h R
 wait-for rename · ⏎ preview · Esc cancel
 expect new name: People
 keys ctrl+u

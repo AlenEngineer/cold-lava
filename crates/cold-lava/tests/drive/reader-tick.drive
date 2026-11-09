@@ -21,5 +21,7 @@ keys j j j j j j j j j j x
 wait-for done: Review the eruption timeline board · next occurrence added
 wait-for ☑ Review the eruption timeline board
 screen
-keys esc q
+keys esc
+wait-gone reading · Esc / q back
+keys q
 exits 0
