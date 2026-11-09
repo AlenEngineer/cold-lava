@@ -716,7 +716,15 @@ CSV's task, `e` in the table sets a row's VEI, and renaming Krakatoa rewrites th
 (the rename's preview lists the CSV with the rest). cold-lava makes the change, asks csv-table
 for the file's new text, has it read that text back, and writes it only when it says what was
 asked and the file hasn't changed meanwhile. An owner that refuses, writes something else or
-doesn't answer in 10 s leaves the file as it was, and the status line says why.
+doesn't answer in 10 s leaves the file as it was, and the status line says why. A rename asks
+the owners first and moves nothing until all of them have answered, so a refusal cancels the
+whole rename (the dialog says what it is waiting for, and Esc stops waiting). Merging a note
+into another (`M`) relinks those files the same way.
+
+The command line sees them too: `cold-lava items`, `agenda` and `table` list an owned file's
+items from what its owner said last time (open the workspace in cold-lava once, and a file not
+read yet is named on stderr), and `cold-lava rename` starts csv-table to rewrite the CSV's
+links, or stops with its reason and changes nothing.
 
 ## What it understands
 

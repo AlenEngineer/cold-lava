@@ -377,6 +377,21 @@ pub struct Agenda {
 }
 
 /// The workspace's dated tasks and daily notes from `from` to `to`, read from its items.
+/// The line of the Markdown piece an item of an owned file was read from (empty for a typed
+/// item the owner gave).
+fn owned_line<'a>(f: &'a crate::workspace::Owned, item: &Item) -> &'a str {
+    let place = f.places.get(&item.id);
+    let piece = f.given.items.iter().find_map(|g| match g {
+        crate::owner::given::GivenItem::Markdown { place: p, text } if Some(p) == place => {
+            Some(text)
+        }
+        _ => None,
+    });
+    piece
+        .and_then(|t| t.lines().nth(item.line.saturating_sub(1)))
+        .unwrap_or_default()
+}
+
 pub fn agenda(workspace: &Workspace, from: NaiveDate, to: NaiveDate) -> Agenda {
     let in_range = |d: NaiveDate| d >= from && d <= to;
     let settings = workspace.item_settings();
@@ -396,6 +411,16 @@ pub fn agenda(workspace: &Workspace, from: NaiveDate, to: NaiveDate) -> Agenda {
         let lines: Vec<&str> = note.text.lines().collect();
         for item in workspace.items_once(note).iter() {
             let raw = lines.get(item.line - 1).copied().unwrap_or_default();
+            if let Some(t) = Task::of(item, raw, &settings.tasks)
+                && t.agenda_date().is_some_and(|(d, _)| in_range(d))
+            {
+                tasks.push(AgendaTask::new(item, t, &workspace.root, raw));
+            }
+        }
+    }
+    for f in &workspace.owned {
+        for item in &f.items {
+            let raw = owned_line(f, item);
             if let Some(t) = Task::of(item, raw, &settings.tasks)
                 && t.agenda_date().is_some_and(|(d, _)| in_range(d))
             {

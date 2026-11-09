@@ -16,7 +16,7 @@ use crate::ext::{
     PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
-use crate::gateway::{Answer, Edit, Op, Reason};
+use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
 use crate::index::Backlink;
@@ -414,11 +414,16 @@ enum Mode {
         scroll: usize,
         /// It moves the marked items, so the marks are done with afterwards.
         marked: bool,
+        /// Confirmed, and waiting for the owners of files other owners read to give their new
+        /// texts (`Core::relink`); nothing has moved yet.
+        waiting: Option<Ticket>,
     },
     /// Showing what merging a note into another will change before doing it.
     ConfirmMerge {
         plan: Box<crate::merge::Merge>,
         scroll: usize,
+        /// Confirmed, and waiting for owners, as a rename's.
+        waiting: Option<Ticket>,
     },
     /// Asking before a note or folder goes to the trash.
     ConfirmDelete(Box<PendingDelete>),
@@ -1579,7 +1584,6 @@ impl Home {
             CoreEvent::NoteChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
-            | CoreEvent::RelinkFailed { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -1615,7 +1619,6 @@ impl Home {
             | CoreEvent::FileChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
-            | CoreEvent::RelinkFailed { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -1636,19 +1639,13 @@ impl Home {
                     path,
                     message,
                 } => self.flash(format!("{owner} couldn't read {path}: {message}")),
-                CoreEvent::RelinkFailed {
-                    owner,
-                    path,
-                    message,
-                } => self.flash(format!(
-                    "links in {path} weren't updated by {owner}: {message}"
-                )),
                 _ => {}
             }
         }
         self.tell_owners(&root, events);
         self.ask_owners();
         self.deliver_edited();
+        self.deliver_relinked();
     }
 
     /// Hand the answers to `items/edit` that came later (edits of files other owners read) to
@@ -3383,21 +3380,18 @@ impl Home {
                 _ => {}
             },
             Mode::ConfirmRename {
-                plan,
-                scroll,
-                marked,
+                scroll, waiting, ..
             } => match k.code {
                 KeyCode::Esc | KeyCode::Char('n') => {
+                    if let (Some(t), Some(core)) = (*waiting, self.core.as_mut()) {
+                        core.cancel_relink(t);
+                    }
                     self.mode = Mode::Normal;
                     self.flash("rename cancelled");
                 }
                 KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
                 KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::Enter | KeyCode::Char('y') => {
-                    let (plan, marked) = ((**plan).clone(), *marked);
-                    self.mode = Mode::Normal;
-                    self.apply_rename(plan, marked);
-                }
+                KeyCode::Enter | KeyCode::Char('y') if waiting.is_none() => self.confirm_rename(),
                 _ => {}
             },
             _ => {}
@@ -3450,6 +3444,7 @@ impl Home {
                     plan: Box::new(plan),
                     scroll: 0,
                     marked: false,
+                    waiting: None,
                 }
             }
             Err(e) => self.flash(format!("can't rename: {e}")),
@@ -3477,6 +3472,7 @@ impl Home {
                     plan: Box::new(plan),
                     scroll: 0,
                     marked: true,
+                    waiting: None,
                 }
             }
             Err(e) => self.flash(format!("can't move: {e}")),
@@ -3647,10 +3643,86 @@ impl Home {
         self.flash(msg);
     }
 
+    /// The rename shown was confirmed: ask the owners of the files other owners read in it for
+    /// their new texts first (`deliver_relinked` makes it once they have), else make it now.
+    fn confirm_rename(&mut self) {
+        let Mode::ConfirmRename {
+            plan,
+            marked,
+            waiting,
+            ..
+        } = &mut self.mode
+        else {
+            return;
+        };
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        match core.relink(&plan.edits) {
+            Ok(Some(ticket)) => {
+                *waiting = Some(ticket);
+                self.ask_owners();
+            }
+            Ok(None) => {
+                let (plan, marked) = ((**plan).clone(), *marked);
+                self.mode = Mode::Normal;
+                self.apply_rename(plan, marked);
+            }
+            Err(why) => {
+                self.mode = Mode::Normal;
+                self.flash(format!("rename cancelled, nothing was changed: {why}"));
+            }
+        }
+    }
+
+    /// Make the rename or merge whose owners have given their files' new texts, or say why one
+    /// didn't.
+    fn deliver_relinked(&mut self) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        for (ticket, answer) in core.take_relinked() {
+            let ours = match &self.mode {
+                Mode::ConfirmRename { waiting, .. } | Mode::ConfirmMerge { waiting, .. } => {
+                    *waiting == Some(ticket)
+                }
+                _ => false,
+            };
+            if !ours {
+                continue;
+            }
+            match (std::mem::replace(&mut self.mode, Mode::Normal), answer) {
+                (
+                    Mode::ConfirmRename {
+                        mut plan, marked, ..
+                    },
+                    Ok(answers),
+                ) => {
+                    crate::rename::answered(&mut plan.edits, answers);
+                    self.apply_rename(*plan, marked);
+                }
+                (Mode::ConfirmMerge { mut plan, .. }, Ok(answers)) => {
+                    crate::rename::answered(&mut plan.edits, answers);
+                    self.apply_merge(*plan);
+                }
+                (Mode::ConfirmMerge { .. }, Err(why)) => {
+                    self.flash(format!("merge cancelled, nothing was changed: {why}"))
+                }
+                (_, Err(why)) => {
+                    self.flash(format!("rename cancelled, nothing was changed: {why}"))
+                }
+                (_, Ok(_)) => {}
+            }
+        }
+    }
+
     fn apply_rename(&mut self, plan: crate::rename::Plan, marked: bool) {
         if let Err(e) = crate::rename::apply(&plan) {
             self.reload_tree();
             return self.flash(format!("rename failed: {e}"));
+        }
+        if let Some(core) = self.core.as_mut() {
+            core.relinked(&plan.edits, |p| plan.moved(p));
         }
         if let Some(editor) = self.running_editor() {
             for (from, to) in plan.file_moves() {
@@ -3692,10 +3764,6 @@ impl Home {
                 .collect();
         }
         self.reload_tree();
-        if let Some(core) = self.core.as_mut() {
-            core.relink_owned(&plan);
-            self.ask_owners();
-        }
         if let Some(first) = plan.moves.first() {
             self.select_path(&first.to_path);
         }
@@ -3738,7 +3806,13 @@ impl Home {
     }
 
     fn draw_confirm_rename(&self, f: &mut Frame, area: Rect) {
-        let Mode::ConfirmRename { plan, scroll, .. } = &self.mode else {
+        let Mode::ConfirmRename {
+            plan,
+            scroll,
+            waiting,
+            ..
+        } = &self.mode
+        else {
             return;
         };
         let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
@@ -3753,6 +3827,14 @@ impl Home {
         let (title, hint) = match plan.moves.len() {
             1 => (" Rename ", " ⏎ rename · Esc cancel · ↑↓ scroll "),
             _ => (" Move ", " ⏎ move · Esc cancel · ↑↓ scroll "),
+        };
+        let waiting_hint;
+        let hint = match waiting {
+            Some(_) => {
+                waiting_hint = waiting_for(&plan.edits);
+                waiting_hint.as_str()
+            }
+            None => hint,
         };
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -3899,6 +3981,7 @@ impl Home {
                 self.mode = Mode::ConfirmMerge {
                     plan: Box::new(plan),
                     scroll: 0,
+                    waiting: None,
                 }
             }
             Err(e) => self.flash(format!("can't merge: {e}")),
@@ -3906,21 +3989,42 @@ impl Home {
     }
 
     fn merge_key(&mut self, k: KeyEvent) {
-        let Mode::ConfirmMerge { scroll, .. } = &mut self.mode else {
+        let Mode::ConfirmMerge {
+            plan,
+            scroll,
+            waiting,
+        } = &mut self.mode
+        else {
             return;
         };
         match k.code {
             KeyCode::Esc | KeyCode::Char('n') => {
+                if let (Some(t), Some(core)) = (*waiting, self.core.as_mut()) {
+                    core.cancel_relink(t);
+                }
                 self.mode = Mode::Normal;
                 self.flash("merge cancelled");
             }
             KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
             KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Char('y') => {
-                if let Mode::ConfirmMerge { plan, .. } =
-                    std::mem::replace(&mut self.mode, Mode::Normal)
-                {
-                    self.apply_merge(*plan);
+            KeyCode::Enter | KeyCode::Char('y') if waiting.is_none() => {
+                let Some(core) = self.core.as_mut() else {
+                    return;
+                };
+                match core.relink(&plan.edits) {
+                    Ok(Some(ticket)) => {
+                        *waiting = Some(ticket);
+                        self.ask_owners();
+                    }
+                    Ok(None) => {
+                        let plan = (**plan).clone();
+                        self.mode = Mode::Normal;
+                        self.apply_merge(plan);
+                    }
+                    Err(why) => {
+                        self.mode = Mode::Normal;
+                        self.flash(format!("merge cancelled, nothing was changed: {why}"));
+                    }
                 }
             }
             _ => {}
@@ -3935,6 +4039,9 @@ impl Home {
                 return self.flash(format!("merge failed: {e:#}"));
             }
         };
+        if let Some(core) = self.core.as_mut() {
+            core.relinked(&plan.edits, Path::to_path_buf);
+        }
         let (source, target) = (&plan.source_path, &plan.target_path);
         if let Some(editor) = self.running_editor() {
             let request = EditorRequest::Deleted {
@@ -4008,8 +4115,17 @@ impl Home {
     }
 
     fn draw_confirm_merge(&self, f: &mut Frame, area: Rect) {
-        let Mode::ConfirmMerge { plan, scroll } = &self.mode else {
+        let Mode::ConfirmMerge {
+            plan,
+            scroll,
+            waiting,
+        } = &self.mode
+        else {
             return;
+        };
+        let hint = match waiting {
+            Some(_) => waiting_for(&plan.edits),
+            None => " ⏎ merge · Esc cancel · ↑↓ scroll ".to_string(),
         };
         let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
         let h = (area.height * 2 / 3).clamp(10.min(area.height), 34);
@@ -4027,10 +4143,7 @@ impl Home {
                 " Merge ",
                 Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
             ))
-            .title_bottom(Line::styled(
-                " ⏎ merge · Esc cancel · ↑↓ scroll ",
-                Style::new().fg(MUTED),
-            ));
+            .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
         let inner = block.inner(r);
         f.render_widget(block, r);
         let name = |rel: &str| {
@@ -6372,6 +6485,19 @@ fn cut_left(text: &str, width: usize) -> String {
 }
 
 /// A file's rewritten links in a preview: its name, then the first few changed lines.
+/// The hint of a rename or merge dialog waiting for the owners of the files in `edits`.
+fn waiting_for(edits: &[crate::rename::FileEdit]) -> String {
+    let mut owners: Vec<&str> = (edits.iter())
+        .filter_map(|e| Some(e.owned.as_ref()?.owner.as_str()))
+        .collect();
+    owners.sort();
+    owners.dedup();
+    format!(
+        " waiting for {} to update its files · Esc cancel ",
+        owners.join(", ")
+    )
+}
+
 fn link_changes(e: &crate::rename::FileEdit, width: u16) -> Vec<Line<'static>> {
     let mut out = vec![Line::from(vec![
         Span::styled(

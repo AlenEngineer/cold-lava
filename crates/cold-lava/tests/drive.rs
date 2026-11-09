@@ -1089,6 +1089,105 @@ ext.run()"#;
 }
 
 #[test]
+fn a_merge_relinks_a_csv_file_through_csv_table() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-merge");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| main);
+    let out = drive_with(
+        "csv-merge.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let workspace = dir.join("example-workspace");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv")).unwrap(),
+        "Volcano,Year,VEI,Notes\n[[Mauna Loa]],79,5,\n\
+         [[Krakatoa]],1883,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
+         [[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n",
+        "Vesuvius's row leads to Mauna Loa"
+    );
+    assert!(!workspace.join("Volcanoes/Vesuvius.md").exists());
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Every file under `dir` with its bytes, by path.
+fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        match path.is_dir() {
+            true => out.extend(files_under(&path)),
+            false => out.push((path.clone(), std::fs::read(&path).unwrap())),
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn a_rename_or_merge_its_owner_refuses_or_doesnt_answer_changes_nothing() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-rename-refused");
+    let home = dir.join("home");
+    let stubborn = r#"import json
+import time
+
+
+@ext.on("file/edit")
+def stubborn(params):
+    asked = json.dumps(params["changes"])
+    if "Rakata" in asked:
+        time.sleep(30)
+    if "Krakatau" in asked or "Mount Fuji" in asked:
+        raise ValueError("this copy keeps the old names")
+    return file_edit(params)
+
+
+ext.run()"#;
+    install_csv_table(&home, |main| {
+        assert!(main.contains("def file_edit(params)"));
+        main.replace("ext.run()", stubborn)
+    });
+    let workspace = dir.join("example-workspace");
+    let before = files_under(&workspace);
+    let out = drive_with(
+        "csv-rename-refused.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        files_under(&workspace) == before,
+        "every file of the workspace is as it was"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn ext_list_prints_what_each_extension_may_do() {
     let dir = sandbox("ext-list");
     let home = dir.join("home");

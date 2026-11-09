@@ -4,6 +4,8 @@
 //! read that text (`file/read`) and checks it reads as asked: what the owner gave before, with the
 //! change made. Only then is it written, with `write::replace`, refused if the file changed since.
 //! Owners answer later, so each edit waits here, one per file, until its owner has answered both.
+//! A rename or merge asks every owned file's owner this way before anything moves, and keeps
+//! each new text that read back until all are in (`Relink`).
 
 use crate::gateway::{Edited, Error, Ticket};
 use crate::items::Item;
@@ -60,8 +62,21 @@ pub(crate) enum Goal {
         what: String,
         warning: Option<String>,
     },
-    /// Links to files a rename moved.
-    Relink,
+    /// Links in one of the files of the rename or merge `Ticket`, whose new text is kept, not
+    /// written.
+    Relink(Ticket),
+}
+
+/// A rename or merge waiting for the owners of its owned files: their edits, each given its
+/// new text (and what the owner read in it) as it reads back.
+pub(crate) struct Relink {
+    pub edits: Vec<crate::rename::FileEdit>,
+}
+
+impl Relink {
+    pub fn done(&self) -> bool {
+        (self.edits.iter()).all(|e| e.owned.as_ref().is_some_and(|o| o.after.is_some()))
+    }
 }
 
 /// The edits waiting for owners, and what is to be sent and handed out.
@@ -76,6 +91,10 @@ pub(crate) struct Edits {
     pub reads: Vec<(String, FileRead)>,
     /// Answers to `items/edit`, by who asked.
     pub done: Vec<(String, Ticket, Result<Edited, Error>)>,
+    /// Renames and merges waiting for owners.
+    pub relinks: HashMap<Ticket, Relink>,
+    /// Their answers: the owned files' edits with their new texts, or why the owner didn't.
+    pub relinked: Vec<(Ticket, Result<Vec<crate::rename::FileEdit>, String>)>,
 }
 
 impl Edits {
@@ -86,6 +105,9 @@ impl Edits {
 
     /// Whether there is something to send or to hand out.
     pub fn has_news(&self) -> bool {
-        !(self.asks.is_empty() && self.reads.is_empty() && self.done.is_empty())
+        !(self.asks.is_empty()
+            && self.reads.is_empty()
+            && self.done.is_empty()
+            && self.relinked.is_empty())
     }
 }

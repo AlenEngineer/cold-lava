@@ -56,7 +56,8 @@ pub struct Merge {
     /// Links in the source's text that were changed for the target's folder (or to itself).
     pub own_links: usize,
     pub properties: Vec<Property>,
-    /// The other notes and canvases whose links change.
+    /// The other notes, canvases and files other owners read whose links change. An owned
+    /// file's new text comes from its owner (`Core::relink`) before the merge is made.
     pub edits: Vec<FileEdit>,
     /// Obsidian's bookmarks of the source, pointed at the target.
     pub bookmarks: Option<FileEdit>,
@@ -100,7 +101,9 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
         after: Files::without(rels, Some(source)),
         before,
     };
+    let mut warnings = Vec::new();
     let mut edits = rename::edits(ix, &rw)?;
+    edits.extend(rename::owned_edits(ix, &rw, &mut warnings));
     let mut own = |rel: &str, text: &str| match edits.iter().position(|e| e.file == rel) {
         Some(i) => {
             let e = edits.remove(i);
@@ -111,7 +114,6 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
     let (source_text, _, own_links) = own(&source_rel, &s.text);
     let (target_text, changes, links) = own(&target_rel, &t.text);
 
-    let mut warnings = Vec::new();
     let (merged, properties) =
         merge_frontmatter(&target_text, &source_text, &s.name, &t.name, &mut warnings);
     let body = body(&source_text);
@@ -318,10 +320,12 @@ fn add_lines(text: &str, lines: &str) -> String {
     format!("{}{lines}{}", &text[..close], &text[close..])
 }
 
-/// Carry out a merge: refuse if any file changed since it was planned, write the target and every
-/// file whose links change (putting back the ones written if one fails), then send the source to
-/// the trash. `system` is the system trash (`trash::system_bin()`; tests pass their own).
+/// Carry out a merge: refuse if any file changed since it was planned, or a file another owner
+/// reads has no new text from it yet (`Core::relink`), write the target and every file whose links
+/// change (putting back the ones written if one fails), then send the source to the trash.
+/// `system` is the system trash (`trash::system_bin()`; tests pass their own).
 pub fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
+    rename::check_answered(&m.edits)?;
     let source_now =
         std::fs::read(&m.source_path).with_context(|| format!("reading {}", m.source))?;
     if source_now != m.source_text.as_bytes() {

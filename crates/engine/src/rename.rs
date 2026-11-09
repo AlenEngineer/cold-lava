@@ -42,18 +42,43 @@ pub struct FileEdit {
     /// Links rewritten in this file.
     pub links: usize,
     pub changes: Vec<Change>,
-    /// For a file another owner reads, what to ask it: `new_text` is then empty, and the owner
-    /// makes it (`Core::relink_owned`) once the moves are made.
+    /// For a file another owner reads, what to ask it. `new_text` is the owner's answer, empty
+    /// until `Core::relink` has it; nothing moves before then.
     #[serde(skip)]
     pub owned: Option<Through>,
 }
 
-/// The changes to ask the owner of a file for (`file/edit`), and what it gave before them.
+/// The changes to ask the owner of a file for (`file/edit`), what it gave before them, and what
+/// it gave for its new text once that read back as asked.
 #[derive(Clone, Debug)]
 pub struct Through {
     pub owner: String,
     pub changes: Vec<Ask>,
     pub given: Given,
+    pub after: Option<Given>,
+}
+
+/// Put the owners' answers (`Core::take_relinked`) into `edits`, by file.
+pub fn answered(edits: &mut [FileEdit], answers: Vec<FileEdit>) {
+    for a in answers {
+        if let Some(e) = edits.iter_mut().find(|e| e.file == a.file) {
+            *e = a;
+        }
+    }
+}
+
+/// Refuse a plan whose files other owners read have no new text from their owners yet.
+pub(crate) fn check_answered<'a>(edits: impl IntoIterator<Item = &'a FileEdit>) -> Result<()> {
+    for e in edits {
+        if let Some(o) = e.owned.as_ref().filter(|o| o.after.is_none()) {
+            bail!(
+                "{} hasn't given the new text of {} yet; nothing was changed",
+                o.owner,
+                e.file
+            );
+        }
+    }
+    Ok(())
 }
 
 /// One note, other file or folder that moves.
@@ -530,9 +555,9 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
 
 /// Every file another owner reads whose links change: each Markdown piece's links rewritten as
 /// a note's are, and each link the owner reported on its own. Nothing is made here; the owner
-/// makes the file's new text once the moves are made (`Core::relink_owned`). A file its owner
-/// hasn't read as it is now is left out, with a warning.
-fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>) -> Vec<FileEdit> {
+/// makes the file's new text before anything moves (`Core::relink`). A file its owner hasn't
+/// read as it is now is left out, with a warning.
+pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>) -> Vec<FileEdit> {
     let mut out = Vec::new();
     for f in &ix.workspace.owned {
         let Some(i) = rw.before.rels.iter().position(|r| *r == f.rel) else {
@@ -593,16 +618,18 @@ fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>) -> Vec<Fil
                 owner: f.owner.clone(),
                 changes: asks,
                 given: f.given.clone(),
+                after: None,
             }),
         });
     }
     out
 }
 
-/// Carry out a plan: refuse if any file changed since it was made, then make the moves (undoing
-/// the ones made if one fails) and write each changed file atomically. Files other owners read
-/// are left to `Core::relink_owned`.
+/// Carry out a plan: refuse if any file changed since it was made, or a file another owner reads
+/// has no new text from it yet (`Core::relink`), then make the moves (undoing the ones made if one
+/// fails) and write each changed file atomically.
 pub fn apply(plan: &Plan) -> Result<()> {
+    check_answered(&plan.edits)?;
     for e in plan.edits.iter().chain(&plan.bookmarks) {
         let now =
             std::fs::read_to_string(&e.path).with_context(|| format!("reading {}", e.file))?;
@@ -630,7 +657,7 @@ pub fn apply(plan: &Plan) -> Result<()> {
         }
     }
     let mut failed = Vec::new();
-    for e in (plan.edits.iter().chain(&plan.bookmarks)).filter(|e| e.owned.is_none()) {
+    for e in plan.edits.iter().chain(&plan.bookmarks) {
         // Still guarded: a file edited between the check above and now is left alone.
         let path = plan.moved(&e.path);
         if let Err(err) = crate::write::replace(&path, e.old_text.as_bytes(), e.new_text.as_bytes())
