@@ -1558,4 +1558,75 @@ mod tests {
         assert_eq!(csv_now(), csv("Krakatau", "Tambora"), "nothing written");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_merge_relinks_owned_files_through_their_owner() {
+        use crate::{merge, rename};
+        let dir =
+            std::env::temp_dir().join(format!("cold-lava-owned-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ws")).unwrap();
+        let ws = dir.join("ws");
+        std::fs::write(ws.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
+        std::fs::write(ws.join("Krakatau.md"), "# Krakatau\n").unwrap();
+        let given = |to: &str| -> Given {
+            serde_json::from_value(serde_json::json!({"links": [{"target": to, "place": "1"}]}))
+                .unwrap()
+        };
+        std::fs::write(ws.join("Eruptions.csv"), "Krakatoa\n").unwrap();
+        let mut core = Core::open(&ws).unwrap();
+        let kind = OwnedKind {
+            extension: "csv".into(),
+            owner: "csv-table".into(),
+            version: "1".into(),
+        };
+        core.set_owners(vec![kind], None);
+        let (_, read) = core.take_reads().pop().unwrap();
+        core.file_given(
+            "csv-table",
+            "Eruptions.csv",
+            &read.rev,
+            Ok(given("Krakatoa")),
+        );
+        let (source, target) = (
+            core.index.by_rel("Krakatoa").unwrap(),
+            core.index.by_rel("Krakatau").unwrap(),
+        );
+        let mut m = merge::plan(&core.index, source, target).unwrap();
+        assert_eq!(m.links(), 1, "the CSV's link is counted");
+        let bin = crate::trash::Bin::Folder(dir.join("bin"));
+        assert!(
+            merge::apply(&m, Some(&bin)).is_err(),
+            "not before csv-table answered"
+        );
+        core.relink(&m.edits).unwrap().unwrap();
+        let (_, ask) = core.take_file_edits().pop().unwrap();
+        assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
+            if link == "Krakatoa" && to == "Krakatau"));
+        core.file_edited(
+            "csv-table",
+            "Eruptions.csv",
+            &ask.rev,
+            Ok("Krakatau\n".into()),
+        );
+        let (_, back) = core.take_reads().pop().unwrap();
+        core.file_given(
+            "csv-table",
+            "Eruptions.csv",
+            &back.rev,
+            Ok(given("Krakatau")),
+        );
+        let (_, answers) = core.take_relinked().pop().unwrap();
+        rename::answered(&mut m.edits, answers.unwrap());
+        merge::apply(&m, Some(&bin)).unwrap();
+        core.relinked(&m.edits, Path::to_path_buf);
+        core.rescan_now();
+        let csv = std::fs::read_to_string(ws.join("Eruptions.csv")).unwrap();
+        assert_eq!(csv, "Krakatau\n");
+        assert!(!ws.join("Krakatoa.md").exists(), "in the trash");
+        assert!(core.take_reads().is_empty(), "what it read back is kept");
+        let krakatau = core.index.by_rel("Krakatau").unwrap();
+        assert_eq!(core.index.backlinks(krakatau).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -1,0 +1,31 @@
+# A merge relinks a file another owner reads through its owner, before anything is written
+# (docs/extensions.md, "Owners and types, as built"). csv-table, installed in the empty home by
+# tests/drive.rs, rewrites Vesuvius's row; tests/drive.rs then reads Volcanoes/Eruptions.csv.
+size 140x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 34 notes
+keys p
+type vesuvius
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Vesuvius  reading
+wait-for ← Eruptions.csv  | Vesuvius | 79 | 5 |
+keys M
+wait-for Merge Vesuvius into…
+type mauna loa
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Vesuvius  into  Volcanoes/Mauna Loa
+expect 7 links in 7 files will lead to Mauna Loa:
+keys j j j j j j j j
+wait-for ▤ Volcanoes/Eruptions.csv  1 link
+expect | [[Mauna Loa]] | 79 | 5 |  |
+screen
+keys enter
+wait-for 12s merged Vesuvius into Mauna Loa
+wait-for 12s ← Eruptions.csv  | Mauna Loa | 79 | 5 |
+screen
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

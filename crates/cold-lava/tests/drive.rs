@@ -1029,6 +1029,44 @@ ext.run()"#;
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn a_merge_relinks_a_csv_file_through_csv_table() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("csv-merge");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| main);
+    let out = drive_with(
+        "csv-merge.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let workspace = dir.join("example-workspace");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv")).unwrap(),
+        "Volcano,Year,VEI,Notes\n[[Mauna Loa]],79,5,\n\
+         [[Krakatoa]],1883,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
+         [[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n",
+        "Vesuvius's row leads to Mauna Loa"
+    );
+    assert!(!workspace.join("Volcanoes/Vesuvius.md").exists());
+    let log = home.join(".cache/cold-lava/extensions/csv-table.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Every file under `dir` with its bytes, by path.
 fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut out = Vec::new();
@@ -1044,7 +1082,7 @@ fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 }
 
 #[test]
-fn a_rename_its_owner_refuses_or_doesnt_answer_changes_nothing() {
+fn a_rename_or_merge_its_owner_refuses_or_doesnt_answer_changes_nothing() {
     if !has_python() {
         eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
         return;
@@ -1060,7 +1098,7 @@ def stubborn(params):
     asked = json.dumps(params["changes"])
     if "Rakata" in asked:
         time.sleep(30)
-    if "Krakatau" in asked:
+    if "Krakatau" in asked or "Mount Fuji" in asked:
         raise ValueError("this copy keeps the old names")
     return file_edit(params)
 

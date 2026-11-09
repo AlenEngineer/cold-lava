@@ -188,6 +188,10 @@ change commands, keys and file formats; patch versions only fix things.
   (before, the notes had moved and only the owned file kept its old links). While owners
   answer, the rename dialog says what it is waiting for, the menu keeps drawing, and Esc stops
   waiting.
+- Merging a note into another also rewrites links in files other owners read, through their
+  owners, the way a rename does: the preview lists those files, the owners are asked before
+  anything is written, and a refusal cancels the merge with nothing changed. Merging Vesuvius
+  into Mauna Loa rewrites `Eruptions.csv`'s row.
 - Items are faster and much smaller on large workspaces. A typed item (every task) keeps only
   the fields it has and shares its type's field names, and reading one copies and parses less.
   On a 3,000-note workspace with 33,000 tasks, the items kept for every note take 79 MB instead

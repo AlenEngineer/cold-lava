@@ -1030,6 +1030,11 @@ graph all see the new date. None of them knew what a canvas is.
   update its files", and Esc stops waiting (`Core::cancel_relink`) and drops the late answer.
   What each owner read in its new text is kept for the file's new `rev` (`Core::relinked`), so
   nothing is asked again after the move.
+- **Merges** relink owned files the same way: `merge::plan` lists them with the notes (the
+  source is planned as moving onto the target, so each link to it gets `{place, link, to}` or a
+  piece's new text), the merge dialog waits for the owners after Enter, and `merge::apply`
+  writes the target, the notes and the owned files only once every owner has answered. Undo
+  puts every written file back, owned ones included, if it is still what the merge wrote.
 - **The example** puts each piece back where it came from: a row's one-row table into the row's
   cells (keeping its Markdown cells, which the row showed empty), a Markdown cell into its cell,
   and refuses a row without its first cell, which names it. `csv-edit.drive` ticks the CSV's
@@ -1037,10 +1042,10 @@ graph all see the new date. None of them knew what a canvas is.
   reads the CSV after; `csv-edit-refused.drive` runs a copy that refuses every edit and doesn't
   answer one, and the CSV is unchanged. `csv-rename-refused.drive` runs a copy that refuses one
   rename and doesn't answer another, then cancels a third with Esc, and every file of the
-  workspace is byte for byte as it was. `ext/process.rs` checks the late JSON-RPC answer and
+  workspace is byte for byte as it was; a merge it refuses is in that script too.
+  `csv-merge.drive` merges Vesuvius into Mauna Loa, and the CSV's row then leads to Mauna Loa. `ext/process.rs` checks the late JSON-RPC answer and
   the timeout through the transport.
-- **Not yet:** a merge (`merge.rs`) doesn't rewrite links in owned files, the CLI's
-  `rename` and `merge` don't either and its `agenda`, `items` and `table` don't read owned files
+- **Not yet:** the CLI's `rename` and `merge` don't rewrite links in owned files and its `agenda`, `items` and `table` don't read owned files
   (they start no extension; the cache could serve them), owner-shipped types need a shape like
   any type, and an owned file has no backlinks pane of its own.
 

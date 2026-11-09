@@ -718,7 +718,8 @@ for the file's new text, has it read that text back, and writes it only when it 
 asked and the file hasn't changed meanwhile. An owner that refuses, writes something else or
 doesn't answer in 10 s leaves the file as it was, and the status line says why. A rename asks
 the owners first and moves nothing until all of them have answered, so a refusal cancels the
-whole rename (the dialog says what it is waiting for, and Esc stops waiting).
+whole rename (the dialog says what it is waiting for, and Esc stops waiting). Merging a note
+into another (`M`) relinks those files the same way.
 
 ## What it understands
 

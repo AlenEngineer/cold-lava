@@ -421,6 +421,8 @@ enum Mode {
     ConfirmMerge {
         plan: Box<crate::merge::Merge>,
         scroll: usize,
+        /// Confirmed, and waiting for owners, as a rename's.
+        waiting: Option<Ticket>,
     },
     /// Asking before a note or folder goes to the trash.
     ConfirmDelete(Box<PendingDelete>),
@@ -3669,29 +3671,43 @@ impl Home {
         }
     }
 
-    /// Make the renames whose owners have given their files' new texts, or say why one didn't.
+    /// Make the rename or merge whose owners have given their files' new texts, or say why one
+    /// didn't.
     fn deliver_relinked(&mut self) {
         let Some(core) = self.core.as_mut() else {
             return;
         };
         for (ticket, answer) in core.take_relinked() {
-            let ours =
-                matches!(&self.mode, Mode::ConfirmRename { waiting: Some(t), .. } if *t == ticket);
+            let ours = match &self.mode {
+                Mode::ConfirmRename { waiting, .. } | Mode::ConfirmMerge { waiting, .. } => {
+                    *waiting == Some(ticket)
+                }
+                _ => false,
+            };
             if !ours {
                 continue;
             }
-            let Mode::ConfirmRename {
-                mut plan, marked, ..
-            } = std::mem::replace(&mut self.mode, Mode::Normal)
-            else {
-                continue;
-            };
-            match answer {
-                Ok(answers) => {
+            match (std::mem::replace(&mut self.mode, Mode::Normal), answer) {
+                (
+                    Mode::ConfirmRename {
+                        mut plan, marked, ..
+                    },
+                    Ok(answers),
+                ) => {
                     crate::rename::answered(&mut plan.edits, answers);
                     self.apply_rename(*plan, marked);
                 }
-                Err(why) => self.flash(format!("rename cancelled, nothing was changed: {why}")),
+                (Mode::ConfirmMerge { mut plan, .. }, Ok(answers)) => {
+                    crate::rename::answered(&mut plan.edits, answers);
+                    self.apply_merge(*plan);
+                }
+                (Mode::ConfirmMerge { .. }, Err(why)) => {
+                    self.flash(format!("merge cancelled, nothing was changed: {why}"))
+                }
+                (_, Err(why)) => {
+                    self.flash(format!("rename cancelled, nothing was changed: {why}"))
+                }
+                (_, Ok(_)) => {}
             }
         }
     }
@@ -3811,15 +3827,7 @@ impl Home {
         let waiting_hint;
         let hint = match waiting {
             Some(_) => {
-                let mut owners: Vec<&str> = (plan.edits.iter())
-                    .filter_map(|e| Some(e.owned.as_ref()?.owner.as_str()))
-                    .collect();
-                owners.sort();
-                owners.dedup();
-                waiting_hint = format!(
-                    " waiting for {} to update its files · Esc cancel ",
-                    owners.join(", ")
-                );
+                waiting_hint = waiting_for(&plan.edits);
                 waiting_hint.as_str()
             }
             None => hint,
@@ -3969,6 +3977,7 @@ impl Home {
                 self.mode = Mode::ConfirmMerge {
                     plan: Box::new(plan),
                     scroll: 0,
+                    waiting: None,
                 }
             }
             Err(e) => self.flash(format!("can't merge: {e}")),
@@ -3976,21 +3985,42 @@ impl Home {
     }
 
     fn merge_key(&mut self, k: KeyEvent) {
-        let Mode::ConfirmMerge { scroll, .. } = &mut self.mode else {
+        let Mode::ConfirmMerge {
+            plan,
+            scroll,
+            waiting,
+        } = &mut self.mode
+        else {
             return;
         };
         match k.code {
             KeyCode::Esc | KeyCode::Char('n') => {
+                if let (Some(t), Some(core)) = (*waiting, self.core.as_mut()) {
+                    core.cancel_relink(t);
+                }
                 self.mode = Mode::Normal;
                 self.flash("merge cancelled");
             }
             KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
             KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Char('y') => {
-                if let Mode::ConfirmMerge { plan, .. } =
-                    std::mem::replace(&mut self.mode, Mode::Normal)
-                {
-                    self.apply_merge(*plan);
+            KeyCode::Enter | KeyCode::Char('y') if waiting.is_none() => {
+                let Some(core) = self.core.as_mut() else {
+                    return;
+                };
+                match core.relink(&plan.edits) {
+                    Ok(Some(ticket)) => {
+                        *waiting = Some(ticket);
+                        self.ask_owners();
+                    }
+                    Ok(None) => {
+                        let plan = (**plan).clone();
+                        self.mode = Mode::Normal;
+                        self.apply_merge(plan);
+                    }
+                    Err(why) => {
+                        self.mode = Mode::Normal;
+                        self.flash(format!("merge cancelled, nothing was changed: {why}"));
+                    }
                 }
             }
             _ => {}
@@ -4005,6 +4035,9 @@ impl Home {
                 return self.flash(format!("merge failed: {e:#}"));
             }
         };
+        if let Some(core) = self.core.as_mut() {
+            core.relinked(&plan.edits, Path::to_path_buf);
+        }
         let (source, target) = (&plan.source_path, &plan.target_path);
         if let Some(editor) = self.running_editor() {
             let request = EditorRequest::Deleted {
@@ -4078,8 +4111,17 @@ impl Home {
     }
 
     fn draw_confirm_merge(&self, f: &mut Frame, area: Rect) {
-        let Mode::ConfirmMerge { plan, scroll } = &self.mode else {
+        let Mode::ConfirmMerge {
+            plan,
+            scroll,
+            waiting,
+        } = &self.mode
+        else {
             return;
+        };
+        let hint = match waiting {
+            Some(_) => waiting_for(&plan.edits),
+            None => " ⏎ merge · Esc cancel · ↑↓ scroll ".to_string(),
         };
         let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
         let h = (area.height * 2 / 3).clamp(10.min(area.height), 34);
@@ -4097,10 +4139,7 @@ impl Home {
                 " Merge ",
                 Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
             ))
-            .title_bottom(Line::styled(
-                " ⏎ merge · Esc cancel · ↑↓ scroll ",
-                Style::new().fg(MUTED),
-            ));
+            .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
         let inner = block.inner(r);
         f.render_widget(block, r);
         let name = |rel: &str| {
@@ -6436,6 +6475,19 @@ fn cut_left(text: &str, width: usize) -> String {
 }
 
 /// A file's rewritten links in a preview: its name, then the first few changed lines.
+/// The hint of a rename or merge dialog waiting for the owners of the files in `edits`.
+fn waiting_for(edits: &[crate::rename::FileEdit]) -> String {
+    let mut owners: Vec<&str> = (edits.iter())
+        .filter_map(|e| Some(e.owned.as_ref()?.owner.as_str()))
+        .collect();
+    owners.sort();
+    owners.dedup();
+    format!(
+        " waiting for {} to update its files · Esc cancel ",
+        owners.join(", ")
+    )
+}
+
 fn link_changes(e: &crate::rename::FileEdit, width: u16) -> Vec<Line<'static>> {
     let mut out = vec![Line::from(vec![
         Span::styled(
