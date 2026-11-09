@@ -1192,6 +1192,66 @@ round trip per link is never acceptable.
   it from the linking file's folder, so the link leads where its path says. Items as targets and
   fallbacks are step 2.
 
+## Workspace style
+
+*(design)*
+
+A workspace has a style, whether or not anyone wrote it down: `-` or `*` for list items, wikilinks
+or Markdown links, emoji (`📅 2026-11-12`) or Dataview (`[due:: 2026-11-12]`) task fields, a date
+format, the order of frontmatter keys, `#` or underlined headings. Text cold-lava writes should look
+like the user wrote it, so it can live beside Obsidian without leaving a trace. Today some of this is
+followed case by case: a new date takes the line's format or the workspace's (`${daily.format}`), a
+task field the format its line is written in, a link the style it was written in.
+
+The idea (from OpenRewrite's lossless semantic trees, which detect a project's formatting once and
+format new code to match): **detect the style once, keep it, and use it wherever the engine writes
+new text.**
+
+- **Detected, not configured.** The engine counts what the notes already do (list markers, link
+  style, task-field format, date formats per field, frontmatter key order, heading style, how tags
+  are written in frontmatter) when it scans, and keeps the majority per workspace, and per folder
+  where a folder differs. Obsidian's own settings win where it has one (`useMarkdownLinks`,
+  `newLinkFormat` in `.obsidian/app.json`, the Tasks plugin's format, Daily notes' date format).
+- **One place that writes new text.** Inserting a task, a field, a link, a frontmatter key, a
+  list item or a heading asks the style how to spell it. Changing existing text keeps what is
+  there (a value's own format, a link's own style), as now.
+- **Visible and overridable.** `cold-lava style WORKSPACE` prints what was detected and why
+  (counts), and `[style]` in `config.toml` or `.cold-lava/style.toml` in the workspace overrides
+  any of it.
+- **Through the gateway.** Extensions that insert text ask for the style (`workspace/style`) or,
+  better, insert through item messages that apply it, so they write in the workspace's style
+  without knowing it.
+
+## Recipes
+
+*(design)*
+
+A **recipe** is a named, reusable change to a whole workspace that you preview as a diff before
+anything is written: rename a tag everywhere; move inline `key:: value` fields into frontmatter;
+switch tasks from emoji to Dataview fields; turn wikilinks into Markdown links; rename a field
+across every item of a type; merge two tags. The idea is OpenRewrite's (recipes over lossless
+semantic trees): where its trees carry the compiler's types, cold-lava's items carry the user's
+types and the resolver's links, so a recipe finds what it changes by meaning, not by regex.
+
+- **Built from what exists.** A recipe finds its targets with `items/query` (types, fields, tags,
+  links) and changes them with the edits the engine already checks (`set-field`, `toggle`, the
+  resolver's relink, owners' `file/edit` for other file types). It runs as a **plan**, like a
+  rename: every file it would change, with the diff, nothing written; then **apply**, which
+  refuses a file that changed since the plan, and writes through the safe write path. One undo
+  reverts a whole recipe.
+- **Recipes compose.** A recipe can be a list of others with options (`rename-tag {from, to}`
+  then `sort-frontmatter`), so a migration is written once and run on any workspace.
+- **Where they come from.** Built-in recipes for common migrations; extensions ship recipes in
+  their manifest like commands (`[[recipes]]`, ids namespaced `<extension>.<name>`), run by the
+  extension over the workspace gateway with its permissions, each edit attributed to it.
+- **Where they run.** The palette (`recipe.run`: pick, fill options, see the plan, apply) and the
+  CLI (`cold-lava recipe WORKSPACE NAME [OPTIONS] [--dry-run] [--json]`), so a recipe can run in
+  a script or CI over a folder of notes.
+- **Style-aware.** Text a recipe adds is written in the workspace's style ("Workspace style").
+- **First slice:** `rename-tag` (inline `#tag`, frontmatter `tags`, nested tags `#a/b`), with the
+  plan shown in the palette and printed by the CLI, apply and undo; then the recipe runner that
+  lets extensions ship their own.
+
 ## Commands
 
 Every action has a name, such as `graph.open`, `note.rename`, `daily.today`. Commands are what

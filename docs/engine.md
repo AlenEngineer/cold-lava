@@ -203,6 +203,14 @@ change what it shows, never how it works.
 - **Text is still typed in your editor.** A text editor good enough to live in is a project of
   its own, so Neovim (or yours) keeps typing; cold-lava inserts references and edits items for
   you. A light block editor for quick, one-paragraph edits may come later, never a full editor.
+- **A lossless Markdown tree when editing moves in place.** Today a note is parsed whole and
+  edited by byte ranges (a value's span, a link's text), checked by reading it back: that is
+  already lossless and gives the smallest diff. Once `cold-lava-editor` edits in place, reparsing
+  a whole note per keystroke stops being cheap; then the note becomes a concrete syntax tree of
+  Obsidian-flavoured Markdown in the style of rust-analyzer's `rowan` (an immutable "green" tree
+  holding every byte, trivia included, with shared subtrees; a "red" layer for parents and
+  offsets; incremental reparsing), with items and links read from it. Prior art: `rowan`,
+  `cstree`, and `panache-parser` (a rowan-based lossless parser for Pandoc Markdown).
 - **A framework, extracted, not designed up front.** The frontend is built concrete and
   opinionated first. Once its parts have proven themselves (the view host, the document
   layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a
