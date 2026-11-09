@@ -35,7 +35,9 @@ keys enter
 wait-for saved Volcanoes/Eruptions.csv
 expect [[Tambora]]           1815
 screen
-keys esc esc p
+keys esc esc
+wait-for cold-lava workspaces
+keys p
 type start here
 wait-for Start Here
 keys enter
@@ -49,19 +51,25 @@ keys enter
 wait-for 1 of 5 rows · /tamb
 keys ctrl+o
 wait-for Guide/Start Here  reading
-keys esc p
+keys esc
+wait-gone reading · Esc / q back
+keys p
 type erupt
 wait-for Eruptions.csv
 expect Volcanoes  CSV table
 keys enter
 wait-for 1 of 5 rows · /tamb
 wait-for Ctrl-o ⟵ Start Here
-keys esc esc :
+keys esc esc
+wait-for cold-lava workspaces
+keys :
 type new csv
 wait-for new CSV table
 keys enter
 wait-for made Untitled.csv
 expect Untitled.csv
 screen
-keys esc q
+keys esc
+wait-for cold-lava workspaces
+keys q
 exits 0

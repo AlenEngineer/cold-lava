@@ -15,6 +15,7 @@ wait-for PDF document
 wait-for trail map.pdf isn't in the workspace
 screen
 keys esc
+wait-gone PDF document
 keys enter
 wait-for trail map.pdf isn't in the workspace
 expect Inbox/Field trip  reading
@@ -27,5 +28,7 @@ keys ctrl+o
 wait-for Inbox/Field trip  reading
 keys tab enter
 wait-for Volcanoes/Mount St. Helens  reading
-keys esc q
+keys esc
+wait-gone reading · Esc / q back
+keys q
 exits 0

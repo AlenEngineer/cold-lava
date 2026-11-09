@@ -18,6 +18,7 @@ keys G x
 wait-for 12s done: Read the Royal Society report on Krakatoa
 expect ☑ Read the Royal Society report on Krakatoa
 keys esc
+wait-for cold-lava workspaces
 # The table sets the VEI of the CSV's Krakatoa row.
 keys i
 wait-for eruption        8
@@ -37,7 +38,9 @@ keys enter
 wait-for 12s Volcanoes/Eruptions.csv: vei set to 7
 expect   7   ·
 screen
-keys esc esc right
+keys esc esc
+wait-for cold-lava workspaces
+keys right
 # Renaming Krakatoa lists the CSV with what will change in it, and csv-table rewrites it.
 keys R
 wait-for rename · ⏎ preview · Esc cancel

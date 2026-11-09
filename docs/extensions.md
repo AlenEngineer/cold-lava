@@ -1496,8 +1496,10 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   built"), and the example in `examples/extensions/open-tasks` sends a list of its own
   (`open-tasks.list`), checked through the real transport (`ext/process.rs`) and through the
   menu (`open-tasks-list.drive`).
-- **Not yet:** the table as an extension ("The table view, as built"), Markdown and tree views,
-  a view beside the tree rather than over it, and `scene` (below).
+- **The built-in table** is one too ("The table view, as built"): `type_table.rs` sends a type's
+  items as a table and turns a cell's edit into `items/edit set-field`.
+- **Not yet:** Markdown and tree views, a view beside the tree rather than over it, and `scene`
+  (below).
 
 ### Scenes
 

@@ -29,5 +29,7 @@ wait-for Inbox/Today  reading
 wait-for Ring the observatory  ⏫
 expect Read about Lava ✅ 2026-11-05
 screen
-keys esc q
+keys esc
+wait-gone reading · Esc / q back
+keys q
 exits 0
