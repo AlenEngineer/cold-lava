@@ -33,6 +33,7 @@ wait-for Volcanoes/Eruptions.csv
 keys e
 wait-for Volcano: [[Krakatoa]]▏
 keys esc esc esc
+wait-for cold-lava workspaces
 # Its rows are eruptions in the type's table, beside the rows of the table in a note.
 keys i
 wait-for eruption        8
@@ -42,5 +43,7 @@ keys enter
 wait-for 8 rows
 expect Krakatoa
 screen
-keys esc q
+keys esc
+wait-for cold-lava workspaces
+keys q
 exits 0

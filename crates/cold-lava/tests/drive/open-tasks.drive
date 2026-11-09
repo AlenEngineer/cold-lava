@@ -13,7 +13,9 @@ keys enter
 wait-for Journal/2026-11-05  reading
 keys x
 wait-for ☐ 3 open tasks
-keys esc :
+keys esc
+wait-gone reading · Esc / q back
+keys :
 type overdue
 wait-for move every overdue open task to today
 keys enter
