@@ -659,7 +659,8 @@ style.minutes = { badge = true, icon = "⏱" }
 - **The frontend owns** selection by row and column, sorting (`s` / `S` on the selected column:
   numbers and durations as numbers, dates and datetimes as their ISO text, enums by their
   declared order, bools, the rest by `search_key`; empty cells last either way; stable, so the
-  sender's order breaks ties), filtering (`/`: every folded word must be in some cell's text),
+  sender's order breaks ties), filtering (`/`, or typing when the table asks for it: every
+  folded word must be in some cell's text),
   column widths (the widest cell or the name, capped at 32 columns, cut with `…`), horizontal
   scrolling that keeps the selected column on screen, the edit prompt (prefilled with the value
   as shown; a list's cell and a `read_only` column say so instead of prompting), and keeping the
@@ -676,8 +677,9 @@ style.minutes = { badge = true, icon = "⏱" }
   `items/subscribe` (`type_table::Feed`). `i` (`table.open`) stays a core command, with its
   place in the help and which-key, and the menu hands it to the extension as `command/run`. The
   extension sends the picker with `view/open`: a table titled "Table of…" with a row per type
-  (`type`, and `items`, how many items answer to it, counted with queries when it opens), so
-  `/` filters it and `s` sorts it like any table. Enter on a type is `view/event activated`;
+  (`type`, and `items`, how many items answer to it, counted with queries when it opens) and
+  `"filter": "typing"`, so typing a few letters filters it at once, as the menu's popup did
+  before the table was an extension. Enter on a type is `view/event activated`;
   the extension closes the picker and opens that type's table in its place. Each table it has
   open keeps its own subscription until `view/closed`, so Back can return to any of them.
   `cold-lava table` calls `gateway::query` directly and prints `type_table::build`.
@@ -712,9 +714,9 @@ style.minutes = { badge = true, icon = "⏱" }
 - **The frontend owns** the selection (a group's header or a row, kept by id when a new list
   arrives; a row folded away selects its group's header, and `select` follows a row that shows
   up later), folding (`h`/`←` folds the selection's group, `l`/`→` opens it, `Tab` and Enter
-  on a header switch it; a fold by hand wins over `collapsed` across updates), filtering (`/`:
-  every folded word must be in the row's text or right side; folded groups show their matches,
-  empty groups hide), and drawing: the checkbox, the pieces with `looks::apply` as the table
+  on a header switch it; a fold by hand wins over `collapsed` across updates), filtering (`/`,
+  or typing when the list asks for it: every folded word must be in the row's text or right
+  side; folded groups show their matches, empty groups hide), and drawing: the checkbox, the pieces with `looks::apply` as the table
   does (a chip only as wide as its text, an icon before it), the text cut with `…` to leave room
   for the right side, a whole-row look (a done task) under the pieces'. The view's own keys win
   over the sender's.
@@ -912,12 +914,13 @@ graph all see the new date. None of them knew what a canvas is.
   edit` sets the cell and sends `workspace/write` with the `rev` it showed, and on `changed`
   reads the file again and sets the cell in what is there now (up to three times);
   `file/changed` with another `rev` sends the table again; `csv-table.new` creates
-  `Untitled.csv` and opens it. A table it already shows is closed and opened again on
-  `file/open`, since only `view/open` brings a view to the front. `csv-table.drive` checks it
-  through the menu (open from the tree, an edit saved, a change made outside with the drive
-  step `write`, a link, the switcher, a new table), and `ext/process.rs` checks the retry.
-- **Not yet:** previews, the whiteboard as an owner, a view kind for images, and a way for the
-  host to bring an open view to the front.
+  `Untitled.csv` and opens it. On `file/open` of a file it already shows, it reads the file
+  again, sends the table with `view/update` and brings it to the front with `view/show`, so
+  the selection, sort and filter stay. `csv-table.drive` checks it through the menu (open from
+  the tree, an edit saved, a change made outside with the drive step `write`, a link, the
+  switcher bringing the filtered table back, a new table), and `ext/process.rs` checks the
+  retry.
+- **Not yet:** previews, the whiteboard as an owner, and a view kind for images.
 
 ### Owners and types, as built
 
@@ -1091,30 +1094,39 @@ round trip per link is never acceptable.
 - **One module.** `crates/engine/src/resolver.rs` holds both directions of Obsidian's rules.
   It is functions and data shapes, not a trait: a trait waits for a second implementation
   (step 3).
-- **Resolve.** `split_link` splits off the heading, block and alias. `Resolver` is the index's
-  table for notes and owned files, by path then by name (`resolve`, `resolve_owned`): the
-  index, the graph, following a link to a note, tidy's unresolved links and the CLI's `rename
-  NOTE` use it. `Files` sees every file on disk and knows the linking file's folder:
-  `Files::resolve` handles attachments, `./` and `../`, and files beside the note. Renames,
-  merges, tidy's orphans and `workspace/files` use it, and so do `resolver::attachment` and
-  `resolver::file` (following a link to an attachment or an owned file).
+- **Resolve.** `split_link` splits off the heading, block and alias. One set of rules
+  (`Table::find`) answers every lookup, from the linking file's folder: `./` and `../` start
+  there; any other link is a workspace path, then (an attachment, or a path with a folder) a
+  path from that folder, then a name, the shallowest winning. `Resolver` is the index's table
+  of notes and owned files (`resolve(dir, target)`, `resolve_owned`): backlinks, the graph,
+  following a link to a note, the reader's unresolved-link look and the CLI's `rename NOTE`
+  use it. `Files` is the same table over every file on disk: renames, merges, tidy and
+  `workspace/files` use it, and so do `resolver::attachment` and `resolver::file`. So a
+  backlink, a graph edge, following a link and a rename always name the same file.
 - **Write.** `Files::write(target, dir, style)` writes a link to a file from a folder.
   `Style` is how a link is written: `Wiki {relative, folder, extension}` or `Markdown {root,
-  like}`. `Rewriter::link` resolves a link before and after a move and writes it again in its
-  own style when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the
-  links and puts the new text in place. `resolver::new_note_path` and `new_file_path` say where
+  like}`. A relative link into the linking file's own folder is a bare name (`[t](Top.md)`), as
+  Obsidian writes it, unless that name leads elsewhere (Obsidian reads a bare name from the
+  workspace's root, then by name); then it starts with `./` (`[t](./Top.md)`).
+  `Rewriter::link` resolves a link before and after a move and writes it again in its own style
+  when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the links and puts
+  the new text in place. `resolver::new_note_path` and `new_file_path` say where
   a new note or file goes.
 - **Agreement is tested.** `resolver.rs`'s tests write a link to every file from every note in
   every style, over the example workspace and over a fixture with same-name notes, and check
-  that it resolves back to the same file, and that `Resolver` reads each link that doesn't start
-  from the linking file's folder the same way.
-- **Not yet:** `Resolver` and `Files` are two tables for one set of rules, kept as they were
-  before the move. They differ where a link starts from its file's folder: `Resolver` ignores
-  that folder, so `[[../Top]]` and `[t](../Top.md)` find the shallowest `Top` in backlinks and
-  the graph, not the one the path names. A rename also writes a relative link to a note in the
-  linking note's own folder as a bare name (`[t](Top.md)`), which finds a shallower `Top` if
-  there is one; the round-trip test skips that case. Fixing these changes what some links lead
-  to, so each is its own change. Items as targets and fallbacks are step 2.
+  that `Files` and `Resolver` both lead it back to the same file. `graph.rs` checks each `./`
+  and `../` form in backlinks, the graph, following the link and a rename, and
+  `relative-link.drive` follows a `../` link in the reader.
+- **What Obsidian does, and what is open.** Obsidian documents none of this; the rules follow
+  what its forum reports. A bare name or path is looked up from the vault's root first, so
+  `[t](Top.md)` in `B/Note.md` opens a root `Top.md` over `B/Top.md`, and `./` makes a link
+  relative ([forum
+  69542](https://forum.obsidian.md/t/absolute-link-path-has-higher-precedence-than-relative-path/69542)).
+  Obsidian itself writes a same-folder link as a bare name, a known bug ([forum
+  41786](https://forum.obsidian.md/t/relative-path-link-points-to-a-wrong-file-with-same-file-name/41786));
+  cold-lava writes `./` there instead. No source says how Obsidian reads `../`; cold-lava takes
+  it from the linking file's folder, so the link leads where its path says. Items as targets and
+  fallbacks are step 2.
 
 ## Commands
 
@@ -1233,8 +1245,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
 - The extension calls the host: `workspace/notes`, `workspace/read`, `workspace/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
   `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit` and `types/list` (see
-  "The workspace gateway, as built"), `view/open`, `view/update`, `view/close` and
-  `workspace/open` (see "The view gateway, as built"), `ui/notify`, `events/subscribe`, and:
+  "The workspace gateway, as built"), `view/open`, `view/update`, `view/close`, `view/show`
+  and `workspace/open` (see "The view gateway, as built"), `ui/notify`, `events/subscribe`, and:
   - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
     core command or another extension's. Core commands ignore `args`, except
     `note.follow-link` (`from`, `link`), which only extensions can run, and `search.open`
@@ -1259,8 +1271,8 @@ Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`):
 `view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
 `workspace/saved`, `workspace/open`, `pane/open`, `pane/input`, `items/query`,
 `items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/read`,
-`workspace/write`, `workspace/create`, `workspace/files`, `view/open`, `view/update` and
-`view/close` from the extension. The `items/*`, `types/list` and file requests are answered
+`workspace/write`, `workspace/create`, `workspace/files`, `view/open`, `view/update`,
+`view/close` and `view/show` from the extension. The `items/*`, `types/list` and file requests are answered
 during the call, and `view/open` names its view at once; the rest are queued.
 
 ### Over the wire, as built
@@ -1283,7 +1295,8 @@ during the call, and `view/open` names its view at once; the rest are queued.
   (`id`, `args`), `workspace/saved` and `editor/opened` (`note`), `pane/open` (`program`,
   `args`, answered with `{pane}`) and `pane/input` (`pane`, `text`), each answered `null` once
   queued. The view gateway's: `view/open` (`content`, optional `select`, answered with
-  `{view}`), `view/update` (`view`, `content`, `select`) and `view/close` (`view`), and
+  `{view}`), `view/update` (`view`, `content`, `select`), `view/close` and `view/show`
+  (`view`), and
   `workspace/open` (`note`, `line`, optional `item`);
   a view over the limits is refused as `refused`. The same methods sent as notifications do the
   same and get no answer.
@@ -1424,7 +1437,9 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   `view/update {view, content, select}` replaces what it shows: the frontend keeps the
   selection, the folds, the sort and the filter by row and group id, as the screens always did
   on updates, and `select` (optional) names a row to select now or when it shows up. `view/close
-  {view}` closes it. `workspace/open {note, line}` opens a note (an item's `note`, relative to
+  {view}` closes it. `view/show {view}` brings one of its open views to the front, in place of
+  what showed, which Back returns to, as `view/open` does; a view in front already, or not open,
+  stays as it is. `workspace/open {note, line}` opens a note (an item's `note`, relative to
   the workspace, or an absolute path inside it; anything else is refused on the status line) at
   a line, from wherever the user is, which Back returns to; with `item`, an item's id, a file
   another owner reads opens in its owner at the item's place. Updates and closes of a view the
@@ -1439,7 +1454,19 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
 - **The frontend owns** layout, drawing and keys. A view shows over the main area, one at a
   time, in place of what showed, which becomes the way back. The extension never sees a key: it
   hears the list's declared keys (one character each; the view's own keys win) and the table's
-  edit, as events. Esc and `q` always close, `Ctrl-o` and `Ctrl-i` always go back and forward.
+  edit, as events. Esc always closes (once any filter is cleared), `q` closes, and `Ctrl-o` and
+  `Ctrl-i` always go back and forward.
+- **Filtering as you type.** A list or a table filters with `/` first by default
+  (`"filter": "slash"`, left out of the JSON). With `"filter": "typing"` it filters as soon as
+  you type, for a view whose whole job is picking a row (the table's type picker). The rule:
+  every character typed without Ctrl or Alt goes into the filter, and so do Backspace and
+  `Ctrl-u` (clear). Everything else keeps its meaning: the arrows (a table's columns, a list's
+  folds), PageUp/PageDown, Home/End, `Tab` (a list's fold), Enter (activate the selected row:
+  there is no prompt to end first), Esc (clear the filter, then close), and `Ctrl-o`/`Ctrl-i` (Back and Forward; bound to a plain character
+  in `config.toml`, that character is typed instead). So the view's letter keys (`j`/`k`,
+  `h`/`l`, `g`/`G`, `0`/`$`, `s`/`S`, `e`, `x`, `q`, `/`) are out of reach, and a list that
+  binds `keys` can't ask for it: `view/open` and `view/update` refuse it (`refused`). The
+  status line shows the filter as `/text`, the hint line "type to filter".
 - **History.** A view is a place (`Place::View`, labelled with its extension's name) while it
   is open, and keeps how it was while out of sight, so Enter on a row, then Back, finds it as it
   was, updated meanwhile. A closed view, and every view of an extension that stopped or of a

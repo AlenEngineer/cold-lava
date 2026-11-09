@@ -431,6 +431,31 @@ fn opens_a_note_follows_a_link_and_quits() {
 }
 
 #[test]
+fn follows_a_relative_link_to_the_note_its_path_names() {
+    let dir = sandbox("relative-link");
+    let workspace = dir.join("example-workspace");
+    std::fs::create_dir_all(workspace.join("Volcanoes/Field")).unwrap();
+    std::fs::write(
+        workspace.join("Volcanoes/Lava.md"),
+        "A lava note beside the volcanoes.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("Volcanoes/Field/Field notes.md"),
+        "See [[../Lava]], not Concepts/Lava.\n",
+    )
+    .unwrap();
+    let out = drive("relative-link.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn tables_a_types_items_sorted_and_filtered() {
     let dir = sandbox("table");
     std::fs::write(
@@ -739,10 +764,24 @@ fn scripts_wait_after_esc_before_the_next_key() {
     for entry in std::fs::read_dir(&scripts).unwrap() {
         let path = entry.unwrap().path();
         let text = std::fs::read_to_string(&path).unwrap();
+        let mut after_esc = false;
         for (i, line) in text.lines().enumerate() {
-            let keys: Vec<&str> = line.split_whitespace().collect();
-            let esc_then_key = keys.windows(2).any(|k| k[0] == "esc" && k[1] != "esc");
-            if keys.first() == Some(&"keys") && esc_then_key {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let hurries = match words.first() {
+                Some(&"keys") => {
+                    let in_step = words.windows(2).any(|k| k[0] == "esc" && k[1] != "esc");
+                    let next = after_esc && words.get(1) != Some(&"esc");
+                    after_esc = words.last() == Some(&"esc");
+                    in_step || next
+                }
+                Some(&("type" | "click")) => std::mem::take(&mut after_esc),
+                Some(&("wait-for" | "wait-gone" | "wait" | "exits")) => {
+                    after_esc = false;
+                    false
+                }
+                _ => false,
+            };
+            if hurries {
                 hurried.push(format!("{}:{}: {line}", path.display(), i + 1));
             }
         }

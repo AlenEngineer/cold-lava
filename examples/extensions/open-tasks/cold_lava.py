@@ -167,6 +167,11 @@ class Extension:
     def close_view(self, view):
         self.notify("view/close", {"view": view})
 
+    def show_view(self, view):
+        """Bring one of your open views to the front, as `open_view` does with a new one. Back
+        returns to where the user was."""
+        self.notify("view/show", {"view": view})
+
     def open_note(self, note, line=None):
         """Open a note in cold-lava (an item's `note`, or a path inside the workspace), at a
         line. Back returns to where the user was."""

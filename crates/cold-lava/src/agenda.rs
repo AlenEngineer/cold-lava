@@ -193,6 +193,7 @@ pub fn build(types: &[Type], tasks: &[Item], today: NaiveDate, show_done: bool) 
             },
         }],
         empty: Some("no tasks: write one as - [ ] in any note".into()),
+        filter: Default::default(),
     };
     Built { list, at }
 }

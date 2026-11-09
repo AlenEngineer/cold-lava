@@ -16,9 +16,12 @@ keys G x
 wait-for 12s not ticked: csv-table didn't edit Volcanoes/Eruptions.csv: this copy is read-only
 expect ☐ Read the Royal Society report on Krakatoa
 keys esc
+wait-for cold-lava workspaces
 keys i
 wait-for eruption        8
-keys j j enter
+type erup
+wait-for rows · /erup
+keys enter
 wait-for 8 rows
 keys /
 type krakatoa

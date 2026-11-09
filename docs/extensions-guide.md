@@ -184,6 +184,15 @@ def view_closed(params):                       # Esc or q
   `items/changed` is fine. `update_view(view, content, select=id)` also selects a row.
 - **Going to a note.** `open_note(note, line)` (`workspace/open`) opens a note at a line. Back
   (`Ctrl-o`) returns to your view as it was, as long as it is open.
+- **Coming back to a view.** `show_view(view)` (`view/show`) brings one of your open views to
+  the front from wherever the user is, as it was left (selection, folds, sort, filter), and Back
+  returns to where they were. Use it instead of opening a second view of the same thing.
+- **Filtering as you type.** A list or table filters after `/` by default. Add
+  `"filter": "typing"` to the content for a view that is only for picking a row: typing filters
+  at once and Enter opens the selected row. Every character then goes into the filter, so the
+  view's letter keys (`j`, `k`, `x`, `s`, `e`, `q`, …) don't work there: the user moves with the
+  arrows and closes with Esc (the first Esc clears the filter). A list that filters as you type
+  can't declare `keys`; cold-lava refuses it.
 - **Limits.** A view has at most 50,000 rows and groups, 64 columns and 32 keys; a bigger one is
   refused. An extension has at most 8 views open; a ninth closes its oldest.
 - **No permission** is needed to show a view. Reading the tasks still needs `items.read`, and
@@ -239,8 +248,10 @@ def file_open(params):
   answers its `path` and `rev`. `ext.create(text, path="Data/New.csv")` makes it exactly there,
   refused as `exists` when something is. Nothing is ever overwritten.
 - **Listing.** `ext.files("csv")` (`workspace/files`) lists every file of a kind, for a picker.
-- **Bringing a table to the front.** Only `view/open` shows a view, so when `file/open` names a
-  file you already show, close its view and open it again.
+- **Bringing a table to the front.** When `file/open` names a file you already show, update
+  its view if the file changed and bring it to the front with `ext.show_view(view)`
+  (`view/show`): the table comes back as the user left it, filter and sort included. The
+  example does this.
 - **One owner per kind.** The first extension to claim a kind gets it; a second one is left out
   of that kind, with a line on the status line and in `cold-lava keys`. `.md` and `.canvas`
   can't be claimed. `cold-lava ext list` prints who opens what.

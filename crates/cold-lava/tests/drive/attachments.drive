@@ -15,6 +15,7 @@ wait-for PDF document
 wait-for trail map.pdf isn't in the workspace
 screen
 keys esc
+wait-gone PDF document
 keys enter
 wait-for trail map.pdf isn't in the workspace
 expect Inbox/Field trip  reading

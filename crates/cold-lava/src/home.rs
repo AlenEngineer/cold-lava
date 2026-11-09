@@ -24,6 +24,7 @@ use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::paths::{self, config_dir, home_dir};
 use crate::reader::{Reader, Spot};
+use crate::resolver::dir_of;
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::type_table;
@@ -947,6 +948,7 @@ impl Home {
                 self.views.close(ext, view);
                 self.forget_closed_views();
             }
+            Effect::ShowView { view } => self.show_view(ext, view),
             Effect::OpenNote { note, line, item } => self.open_for(ext, &note, line, item),
         }
     }
@@ -963,6 +965,16 @@ impl Home {
             self.forget_closed_views();
             let closed = ViewNews::Closed { view: oldest };
             self.call(ext, |e, host| e.view(closed, host));
+        }
+        self.show_view(ext, view);
+    }
+
+    /// Bring one of an extension's open views to the front, in place of what showed, which
+    /// Back returns to. Nothing when it isn't open or is in front already.
+    fn show_view(&mut self, ext: ExtId, view: ViewId) {
+        let shown = matches!(self.mode, Mode::View { owner, view: v } if (owner, v) == (ext, view));
+        if shown || !self.views.has(ext, view) {
+            return;
         }
         if let Some(here) = self.here() {
             self.history.visit(here);
@@ -1206,7 +1218,10 @@ impl Home {
         if link.note.is_empty() {
             return Some(Destination::Note(from.to_path_buf(), jump));
         }
-        if let Some(i) = ix.resolver.resolve(&link.note) {
+        let dir = ix
+            .by_path(from)
+            .map_or("", |i| dir_of(&ix.workspace.notes[i].rel));
+        if let Some(i) = ix.resolver.resolve(dir, &link.note) {
             return Some(Destination::Note(ix.path(i), jump));
         }
         let owned = self.registry.owner_of(&link.note).is_some();
@@ -4229,7 +4244,7 @@ impl Home {
             self.mode = Mode::Normal;
             return Ok(());
         };
-        if !open.typing()
+        if !open.takes(&k)
             && let Some(MenuCommand::Core(MenuAction::History(h))) = self.keys.get(k)
         {
             let here = self.here();
@@ -5289,7 +5304,7 @@ impl Home {
         };
         let (title, body) = match &mut *view {
             Peek::Note { path, reader } => {
-                reader.layout(room, &|raw| resolves(ix, raw));
+                reader.layout(room, &|raw| resolves(ix, Some(path), raw));
                 let rel = path.strip_prefix(root).unwrap_or(path);
                 let rel = rel.to_string_lossy();
                 let place = rel.trim_end_matches(".md").to_string() + &breadcrumb(reader, path);
@@ -6001,7 +6016,8 @@ impl Home {
     fn draw_editor(&mut self, f: &mut Frame, area: Rect, inner: Rect) {
         if let Some(r) = self.reader.as_mut() {
             let ix = self.core.as_ref().map(|c| &c.index);
-            r.layout(inner.width, &|raw| resolves(ix, raw));
+            let shown = self.shown.as_deref();
+            r.layout(inner.width, &|raw| resolves(ix, shown, raw));
         }
         let title = match &self.shown {
             Some(p) => {
@@ -6273,11 +6289,16 @@ impl Home {
     }
 }
 
-/// Whether a wiki or Markdown link written in a note leads to a note (a heading in the same
-/// note always does).
-fn resolves(ix: Option<&crate::index::Index>, raw: &str) -> bool {
+/// Whether a wiki or Markdown link written in the note at `from` leads to a note (a heading in
+/// the same note always does).
+fn resolves(ix: Option<&crate::index::Index>, from: Option<&Path>, raw: &str) -> bool {
     let link = crate::resolver::split_link(raw);
-    link.note.is_empty() || ix.is_some_and(|ix| ix.resolver.resolve(&link.note).is_some())
+    link.note.is_empty()
+        || ix.is_some_and(|ix| {
+            let note = from.and_then(|p| ix.by_path(p));
+            let dir = note.map_or("", |i| dir_of(&ix.workspace.notes[i].rel));
+            ix.resolver.resolve(dir, &link.note).is_some()
+        })
 }
 
 /// What kind of attachment a link names (`photo.jpg` → `JPG image`); `None` for a note.

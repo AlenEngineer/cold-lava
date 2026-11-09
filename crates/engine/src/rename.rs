@@ -920,6 +920,25 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_link_into_its_own_folder_keeps_leading_there() {
+        let (dir, ix) = workspace_with(
+            "same-folder",
+            &[
+                ("Top.md", "root"),
+                ("B/Top.md", "moving"),
+                ("A/Note.md", "[x](../B/Top.md) [[../B/Top]]\n"),
+            ],
+        );
+        apply(&plan(&ix, ix.by_rel("B/Top").unwrap(), "A/Top.md").unwrap()).unwrap();
+        assert_eq!(
+            read(&dir, "A/Note.md"),
+            "[x](./Top.md) [[./Top]]\n",
+            "a bare Top would be the root's"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn folder_moves_that_are_refused() {
         let (dir, ix) = workspace_with(
             "refuse",

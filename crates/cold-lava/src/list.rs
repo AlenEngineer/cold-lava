@@ -27,6 +27,50 @@ pub struct List {
     /// What an empty list says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub empty: Option<String>,
+    #[serde(default, skip_serializing_if = "Filter::is_slash")]
+    pub filter: Filter,
+}
+
+/// How a view starts filtering: with `/` (the default), or as soon as you type, for a view
+/// whose whole job is picking a row. Typing then takes every character, so the view's letter
+/// keys and the sender's keys are out of reach; the arrows, Enter and Esc still work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Filter {
+    #[default]
+    Slash,
+    Typing,
+}
+
+impl Filter {
+    pub fn is_slash(&self) -> bool {
+        *self == Filter::Slash
+    }
+
+    /// Whether a view filtering this way takes `k` into its filter: when it filters as you
+    /// type, a character (without Ctrl or Alt), Backspace and Ctrl-u.
+    pub fn takes(self, k: &KeyEvent) -> bool {
+        let plain = !(k.modifiers).intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        self == Filter::Typing
+            && match k.code {
+                KeyCode::Char('u') if k.modifiers == KeyModifiers::CONTROL => true,
+                KeyCode::Char(_) => plain,
+                KeyCode::Backspace => true,
+                _ => false,
+            }
+    }
+}
+
+/// `k` typed into `text`, as `Filter::takes` says it takes it.
+pub fn type_into(text: &mut String, k: &KeyEvent) {
+    match k.code {
+        KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
+        KeyCode::Char(c) => text.push(c),
+        KeyCode::Backspace => {
+            text.pop();
+        }
+        _ => {}
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -165,6 +209,10 @@ impl ListView {
         &self.list.keys
     }
 
+    pub fn filters(&self) -> Filter {
+        self.list.filter
+    }
+
     /// The list as it is now, keeping the selection by id, the filter and the folds.
     pub fn update(&mut self, list: List) {
         let keep = match self.follow.take() {
@@ -278,6 +326,12 @@ impl ListView {
                 KeyCode::Char(c) if !ctrl => self.filter.push(c),
                 _ => {}
             }
+            self.reshow(keep);
+            return Action::Stay;
+        }
+        if self.list.filter.takes(&k) {
+            let keep = self.at();
+            type_into(&mut self.filter, &k);
             self.reshow(keep);
             return Action::Stay;
         }
@@ -582,6 +636,7 @@ mod tests {
                 title: "show done".into(),
             }],
             empty: None,
+            filter: Default::default(),
         }
     }
 
@@ -693,6 +748,45 @@ mod tests {
     }
 
     #[test]
+    fn a_list_that_filters_as_you_type_takes_its_letter_keys_as_text() {
+        let mut v = ListView::new(List {
+            keys: Vec::new(),
+            filter: Filter::Typing,
+            ..list()
+        });
+        v.key(key(KeyCode::Down));
+        assert_eq!(v.selected().unwrap().id, "a");
+        assert_eq!(
+            v.key(key(KeyCode::Char('x'))),
+            Action::Stay,
+            "x is typed, not a tick"
+        );
+        assert!(v.shown.is_empty(), "no row has an x");
+        v.key(key(KeyCode::Backspace));
+        for c in "lah".chars() {
+            assert_eq!(
+                v.key(key(KeyCode::Char(c))),
+                Action::Stay,
+                "{c} is typed, not a fold"
+            );
+        }
+        assert_eq!(v.shown.len(), 2, "Later and its lahars");
+        assert!(!v.typing(), "no prompt: Enter and the arrows act at once");
+        v.key(key(KeyCode::End));
+        assert_eq!(
+            v.key(key(KeyCode::Enter)),
+            Action::Send(Event::Activated { row: "c".into() })
+        );
+        assert_eq!(
+            v.key(key(KeyCode::Esc)),
+            Action::Stay,
+            "Esc clears the filter first"
+        );
+        assert_eq!(v.shown.len(), 6);
+        assert_eq!(v.key(key(KeyCode::Esc)), Action::Close);
+    }
+
+    #[test]
     fn an_update_keeps_the_selection_folds_and_filter() {
         let mut v = ListView::new(list());
         v.key(key(KeyCode::Down));
@@ -771,6 +865,8 @@ mod tests {
                 "keys": [{"key": "d", "command": "show-done", "title": "show done"}],
             })
         );
+        l.filter = Filter::Typing;
+        assert_eq!(serde_json::to_value(&l).unwrap()["filter"], "typing");
         let e = Event::Command {
             command: "show-done".into(),
             row: None,

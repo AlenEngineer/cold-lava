@@ -2,7 +2,8 @@
 # empty home by tests/drive.rs. Volcanoes/Eruptions.csv shows in the tree, and Enter hands it to
 # the extension, which shows it as a table. An edited cell is saved to the file; a change made by
 # another program shows up in the table, and the next edit saves on top of it. A link to the file
-# and the quick switcher open it too, and the extension's command makes a new table. tests/drive.rs
+# and the quick switcher open it too; the switcher brings the table already open to the front
+# (view/show), filtered as it was left. The extension's command makes a new table. tests/drive.rs
 # then reads both files.
 size 140x24
 env COLD_LAVA_EDITOR=none
@@ -44,6 +45,10 @@ wait-for Guide/Start Here  reading
 keys tab tab tab tab tab enter
 wait-for Tambora
 wait-for Ctrl-o ⟵ Start Here
+keys /
+type tamb
+keys enter
+wait-for 1 of 5 rows · /tamb
 keys ctrl+o
 wait-for Guide/Start Here  reading
 keys esc
@@ -53,8 +58,9 @@ type erupt
 wait-for Eruptions.csv
 expect Volcanoes  CSV table
 keys enter
-wait-for Tambora
-keys esc
+wait-for 1 of 5 rows · /tamb
+wait-for Ctrl-o ⟵ Start Here
+keys esc esc
 wait-for cold-lava workspaces
 keys :
 type new csv

@@ -1,0 +1,17 @@
+# A `../` link leads to the note its path names, not the first note of that name, and that
+# note counts it as a backlink. drive.rs adds Volcanoes/Lava.md and Volcanoes/Field/Field notes.md.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys p
+type field notes
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Field/Field notes  reading
+keys tab enter
+wait-for Volcanoes/Lava  reading
+expect Volcanoes/Lava.md   ←1 in
+expect A lava note beside the volcanoes.
+keys esc
+wait-gone reading · Esc / q back
+keys q
+exits 0

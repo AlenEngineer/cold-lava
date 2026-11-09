@@ -8,7 +8,7 @@ use ratatui::text::Line;
 
 use crate::ext::ExtId;
 use crate::ext::view::{Content, Event, ViewId};
-use crate::list::{self, ListView};
+use crate::list::{self, Filter, ListView};
 use crate::table::{self, TableView};
 
 /// Opening one more closes the extension's oldest.
@@ -149,11 +149,12 @@ impl Open {
         }
     }
 
-    /// Typing a filter or a cell: keys are text then.
-    pub fn typing(&self) -> bool {
+    /// Whether the view takes `k` as text: a filter or a cell being typed, or a character in
+    /// a view that filters as you type.
+    pub fn takes(&self, k: &KeyEvent) -> bool {
         match &self.drawn {
-            Drawn::List(v) => v.typing(),
-            Drawn::Table(v) => v.typing(),
+            Drawn::List(v) => v.typing() || v.filters().takes(k),
+            Drawn::Table(v) => v.typing() || v.filters().takes(k),
         }
     }
 
@@ -176,11 +177,17 @@ impl Open {
     /// The keys, for the bottom of its frame.
     pub fn hint(&self) -> String {
         match &self.drawn {
+            Drawn::List(v) if v.filters() == Filter::Typing => {
+                " ↑↓ move · ←→ fold · type to filter · ⏎ open · Esc close ".into()
+            }
             Drawn::List(v) => {
                 let keys: String = (v.keys().iter())
                     .map(|k| format!(" · {} {}", k.key, k.title))
                     .collect();
                 format!(" ↑↓ move · x tick · ⏎ open · h/l fold · / filter{keys} · Esc close ")
+            }
+            Drawn::Table(v) if v.filters() == Filter::Typing => {
+                " ←→↑↓ move · type to filter · ⏎ open · Esc close ".into()
             }
             Drawn::Table(_) => {
                 " ←→↑↓ move · s/S sort · / filter · e edit · ⏎ open · Esc close ".into()
@@ -237,6 +244,7 @@ mod tests {
             }],
             keys: Vec::new(),
             empty: None,
+            filter: Default::default(),
         })
     }
 
@@ -298,6 +306,28 @@ mod tests {
         assert!(views.close(A, ViewId(1)));
         assert!(!views.close(A, ViewId(1)));
         assert!(!views.has(A, ViewId(1)));
+    }
+
+    #[test]
+    fn a_view_that_filters_as_you_type_takes_characters_but_not_back() {
+        let mut views = Views::default();
+        let Content::List(mut typing) = list("L", &["r1"]) else {
+            unreachable!()
+        };
+        typing.filter = Filter::Typing;
+        views.open(A, ViewId(1), Content::List(typing), None);
+        views.open(A, ViewId(2), list("M", &["r1"]), None);
+        let v = views.get_mut(A, ViewId(1)).unwrap();
+        assert!(v.takes(&press(KeyCode::Char('q'))));
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert!(!v.takes(&ctrl_o), "Ctrl-o still goes back");
+        assert!(!v.takes(&press(KeyCode::Enter)));
+        assert!(v.hint().contains("type to filter"), "{}", v.hint());
+        let v = views.get_mut(A, ViewId(2)).unwrap();
+        assert!(
+            !v.takes(&press(KeyCode::Char('q'))),
+            "q closes a view filtered with /"
+        );
     }
 
     #[test]
