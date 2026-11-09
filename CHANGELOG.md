@@ -228,6 +228,9 @@ change commands, keys and file formats; patch versions only fix things.
   Tasks plugin does; `setCancelledDate: false` leaves it out.
 - The agenda follows the day: left open past midnight, it files tasks by the new day (Today,
   Tomorrow, Overdue) instead of keeping yesterday's groups until a task changed.
+- A rename or merge that leaves a relative link pointing into its own note's folder writes it
+  with `./` (`[x](./Top.md)`, `[[./Top]]`) when a bare name would lead to another file, such as
+  a shallower `Top.md`. It used to write `[x](Top.md)`, which then opened the other note.
 
 ## [0.3.0] - 2026-11-07
 

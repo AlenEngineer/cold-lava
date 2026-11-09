@@ -1100,9 +1100,12 @@ round trip per link is never acceptable.
   `resolver::file` (following a link to an attachment or an owned file).
 - **Write.** `Files::write(target, dir, style)` writes a link to a file from a folder.
   `Style` is how a link is written: `Wiki {relative, folder, extension}` or `Markdown {root,
-  like}`. `Rewriter::link` resolves a link before and after a move and writes it again in its
-  own style when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the
-  links and puts the new text in place. `resolver::new_note_path` and `new_file_path` say where
+  like}`. A relative link into the linking file's own folder is a bare name (`[t](Top.md)`), as
+  Obsidian writes it, unless that name leads elsewhere (Obsidian reads a bare name from the
+  workspace's root, then by name); then it starts with `./` (`[t](./Top.md)`).
+  `Rewriter::link` resolves a link before and after a move and writes it again in its own style
+  when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the links and puts
+  the new text in place. `resolver::new_note_path` and `new_file_path` say where
   a new note or file goes.
 - **Agreement is tested.** `resolver.rs`'s tests write a link to every file from every note in
   every style, over the example workspace and over a fixture with same-name notes, and check
@@ -1111,10 +1114,8 @@ round trip per link is never acceptable.
 - **Not yet:** `Resolver` and `Files` are two tables for one set of rules, kept as they were
   before the move. They differ where a link starts from its file's folder: `Resolver` ignores
   that folder, so `[[../Top]]` and `[t](../Top.md)` find the shallowest `Top` in backlinks and
-  the graph, not the one the path names. A rename also writes a relative link to a note in the
-  linking note's own folder as a bare name (`[t](Top.md)`), which finds a shallower `Top` if
-  there is one; the round-trip test skips that case. Fixing these changes what some links lead
-  to, so each is its own change. Items as targets and fallbacks are step 2.
+  the graph, not the one the path names. Fixing it changes what some links lead to, so it is
+  its own change. Items as targets and fallbacks are step 2.
 
 ## Commands
 

@@ -4,7 +4,7 @@
 //! renames from that.
 //!
 //! Both directions, which agree: `Files::write` writes a link to a file that `Files::resolve`
-//! leads back to it (the one known exception is in the round-trip test). The rules: `#heading` and `|alias` are split off first (`split_link`); a
+//! leads back to it. The rules: `#heading` and `|alias` are split off first (`split_link`); a
 //! note by its workspace path, then by its name anywhere, the shallowest winning; other files
 //! by path, beside the linking note, then by name; `./` and `../` from the linking file. A link
 //! that leads nowhere creates its note where Obsidian would (`new_note_path`).
@@ -305,23 +305,33 @@ impl Files {
     /// How to write a link to file `target` from a file in folder `dir`, in `style`.
     pub fn write(&self, target: usize, dir: &str, style: Style) -> String {
         let rel = &self.rels[target];
+        // A path to the linking file's own folder is a bare name, which Obsidian looks up from
+        // the workspace's root and then by name; `./` keeps it in that folder.
+        let from_here = |to: &str| {
+            let path = relative(dir, to);
+            if path.contains('/') || self.resolve(dir, &path) == Some(target) {
+                path
+            } else {
+                format!("./{path}")
+            }
+        };
         match style {
             Style::Markdown { root, like } => {
                 let path = match root {
                     Some(slash) => format!("{slash}{rel}"),
-                    None => relative(dir, rel),
+                    None => from_here(rel),
                 };
                 encode_target_like(&path, like)
             }
             Style::Wiki {
-                relative: from_here,
+                relative: relative_link,
                 folder,
                 extension,
             } => {
                 let shown = if extension { rel } else { link_key(rel) };
                 let name = shown.rsplit('/').next().unwrap_or(shown);
-                if from_here {
-                    relative(dir, shown)
+                if relative_link {
+                    from_here(shown)
                 } else if folder || !self.unique(link_key(name)) {
                     shown.to_string()
                 } else {
@@ -573,16 +583,6 @@ mod tests {
             for to in 0..files.rels.len() {
                 for (style, index_reads_it) in STYLES {
                     let link = files.write(to, dir, style);
-                    // Known bug, kept as it was: a relative link to a note in the same folder is
-                    // a bare name, which finds the shallowest note of that name instead.
-                    let relative = matches!(
-                        style,
-                        Style::Wiki { relative: true, .. } | Style::Markdown { root: None, .. }
-                    );
-                    let name = link_key(&files.rels[to]).rsplit('/').next().unwrap_or("");
-                    if relative && to < notes && !link.contains('/') && !files.unique(name) {
-                        continue;
-                    }
                     let target = decode_target(&link);
                     let back = files.resolve(dir, &target);
                     let indexed =
