@@ -204,7 +204,9 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   (or `vim`) installed.
 - To try a pushed branch without compiling it here (this laptop is short on memory), CI uploads
   its Linux release binary for 3 days: `gh run download RUN_ID -n cold-lava-linux -D DIR`, then
-  `chmod +x DIR/cold-lava` (`gh pr checks PR` links the run).
+  `chmod +x DIR/cold-lava` (`gh pr checks PR` links the run). `DIR/cold-lava --version` names the
+  commit it was built from: for a PR, GitHub's merge commit, whose second parent is the PR's head
+  (`git log -1 --format=%P COMMIT`). Check it before trusting the binary.
 - Pixel mode only shows in terminals with the Kitty graphics protocol (Ghostty, Kitty, WezTerm),
   not in a pseudo-terminal or tmux; check it in the real terminal.
 

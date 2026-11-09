@@ -9,6 +9,8 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- `cold-lava --version`, and the help's title, name the commit the binary was built from
+  (`cold-lava 0.3.0 (1a2b3c4d5e6f)`), so a build says exactly which code it is.
 - `view/show {view}` brings an extension's open view back to the front, from wherever you are,
   and Back returns there. csv-table uses it: opening a `.csv` whose table is already open shows
   that table as you left it (selection, sort, filter) instead of closing and reopening it.

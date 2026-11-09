@@ -136,6 +136,10 @@ impl Args {
     }
 }
 
+/// The version, and the commit it was built from when built from a git checkout
+/// (`build.rs`): `0.3.0 (1a2b3c4d5e6f)`.
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("COLD_LAVA_COMMIT_SUFFIX"));
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("cold-lava: {e:#}");
@@ -166,7 +170,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if args.has("version") {
-        println!("cold-lava {}", env!("CARGO_PKG_VERSION"));
+        println!("cold-lava {VERSION}");
         return Ok(());
     }
     let render = if args.has("braille") {
