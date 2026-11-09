@@ -721,6 +721,11 @@ the owners first and moves nothing until all of them have answered, so a refusal
 whole rename (the dialog says what it is waiting for, and Esc stops waiting). Merging a note
 into another (`M`) relinks those files the same way.
 
+The command line sees them too: `cold-lava items`, `agenda` and `table` list an owned file's
+items from what its owner said last time (open the workspace in cold-lava once, and a file not
+read yet is named on stderr), and `cold-lava rename` starts csv-table to rewrite the CSV's
+links, or stops with its reason and changes nothing.
+
 ## What it understands
 
 - `[[wikilinks]]` (with aliases, headings and embeds), and `[text](note.md)` links

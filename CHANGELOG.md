@@ -192,6 +192,11 @@ change commands, keys and file formats; patch versions only fix things.
   owners, the way a rename does: the preview lists those files, the owners are asked before
   anything is written, and a refusal cancels the merge with nothing changed. Merging Vesuvius
   into Mauna Loa rewrites `Eruptions.csv`'s row.
+- The command line sees files extensions own. `cold-lava items`, `agenda` and `table` include
+  them from what their owners gave before (the cache in `~/.cache/cold-lava/owners/`), and name
+  on stderr a file the cache has nothing for as it is now. `cold-lava rename` starts the owners
+  it needs, so renaming Krakatoa also rewrites `Eruptions.csv` through csv-table; an owner that
+  refuses or can't start ends the rename with its reason, and nothing is changed.
 - Items are faster and much smaller on large workspaces. A typed item (every task) keeps only
   the fields it has and shares its type's field names, and reading one copies and parses less.
   On a 3,000-note workspace with 33,000 tasks, the items kept for every note take 79 MB instead

@@ -117,6 +117,11 @@ impl Owners {
         self.wanted.push((owner.to_string(), read));
     }
 
+    /// Whether a file waits for its owner to read it: to be asked, or asked and not answered.
+    pub fn is_reading(&self) -> bool {
+        !(self.asked.is_empty() && self.wanted.is_empty())
+    }
+
     /// Whether there is something to ask.
     pub fn has_wanted(&self) -> bool {
         !self.wanted.is_empty()

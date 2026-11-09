@@ -1045,9 +1045,22 @@ graph all see the new date. None of them knew what a canvas is.
   workspace is byte for byte as it was; a merge it refuses is in that script too.
   `csv-merge.drive` merges Vesuvius into Mauna Loa, and the CSV's row then leads to Mauna Loa. `ext/process.rs` checks the late JSON-RPC answer and
   the timeout through the transport.
-- **Not yet:** the CLI's `rename` and `merge` don't rewrite links in owned files and its `agenda`, `items` and `table` don't read owned files
-  (they start no extension; the cache could serve them), owner-shipped types need a shape like
-  any type, and an owned file has no backlinks pane of its own.
+- **The command line** (`crates/cold-lava/src/owned.rs`) has no menu to run extensions, so it
+  reads owned files from the owners' cache and starts an owner only to change its files.
+  `cold-lava items`, `agenda` and `table` open the workspace as a core that knows the
+  installed owners (`Core::set_owners` with `~/.cache/cold-lava/owners/`), so an owned file
+  joins them with what its owner gave for its version on disk; one the cache has nothing for is
+  left out and named on stderr ("Volcanoes/Eruptions.csv is left out: csv-table hasn't read
+  it as it is now"). Nothing is started there, and with no owner installed they scan as before.
+  `cold-lava rename` starts the owners the rename needs (`owned::Owners`, which hands them the
+  core's `file/read` and `file/edit` requests and polls them, as the menu does each frame):
+  first to read the owned files the cache lacks, so the plan sees their links, then through
+  `Core::relink` as in the menu. A refusal, or an owner that isn't installed or doesn't start,
+  ends the command with the owner's reason and "nothing was changed"; `--dry-run` starts
+  nothing. What the owners read is kept in the cache. `tests/owned.rs` runs it with csv-table
+  in a home of its own. The CLI has no merge command.
+- **Not yet:** owner-shipped types need a shape like any type, and an owned file has no
+  backlinks pane of its own.
 
 ### Link resolver
 

@@ -244,6 +244,11 @@ impl Core {
         reads
     }
 
+    /// Whether an owned file waits for its owner to read it (`take_reads`, `file_given`).
+    pub fn reading(&self) -> bool {
+        self.owners.is_reading()
+    }
+
     /// `file/edit` requests for the owners, each with its owner's name. Their answers come back
     /// through `file_edited`.
     pub fn take_file_edits(&mut self) -> Vec<(String, FileEdit)> {

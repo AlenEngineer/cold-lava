@@ -14,6 +14,7 @@ mod home;
 mod kitty;
 mod list;
 mod looks;
+mod owned;
 mod reader;
 mod scene;
 mod table;
@@ -176,7 +177,7 @@ fn run() -> Result<()> {
         app::Render::Auto
     };
     let json = args.has("json");
-    let registry = ext::Registry::load();
+    let mut registry = ext::Registry::load();
     config::load(registry.commands());
     let mut layers: Vec<types::Layer> = registry
         .manifests()
@@ -276,7 +277,7 @@ fn run() -> Result<()> {
             if to < from {
                 anyhow::bail!("--to is before --from");
             }
-            let agenda = tasks::agenda(&workspace::scan(&root)?, from, to);
+            let agenda = tasks::agenda(&owned::workspace(&root, &registry)?, from, to);
             if json {
                 println!("{}", serde_json::to_string_pretty(&agenda)?);
             } else {
@@ -296,7 +297,7 @@ fn run() -> Result<()> {
                         .join(", ")
                 );
             };
-            let workspace = workspace::scan(Path::new(root))?;
+            let workspace = owned::workspace(Path::new(root), &registry)?;
             let settings = workspace.item_settings();
             if !items::KINDS.contains(&kind) && !settings.matcher.names().any(|n| n == kind) {
                 let kinds: Vec<&str> = types::BUILT_IN
@@ -316,8 +317,9 @@ fn run() -> Result<()> {
                 );
             }
             let mut out = std::io::stdout().lock();
-            for note in &workspace.notes {
-                let items = workspace.items_once(note);
+            let notes = (workspace.notes.iter()).map(|n| workspace.items_once(n));
+            let owned = (workspace.owned.iter()).map(|f| std::borrow::Cow::Borrowed(&f.items[..]));
+            for items in notes.chain(owned) {
                 for item in items.iter().filter(|i| i.data.answers_to(kind)) {
                     let written = if json {
                         writeln!(out, "{}", serde_json::to_string(item)?)
@@ -337,7 +339,7 @@ fn run() -> Result<()> {
             let (Some(root), Some(ty)) = (args.word(1), args.word(2)) else {
                 anyhow::bail!("usage: cold-lava table WORKSPACE TYPE [--sort FIELD] [--json]");
             };
-            let workspace = workspace::scan(Path::new(root))?;
+            let workspace = owned::workspace(Path::new(root), &registry)?;
             let types = &workspace.item_settings().types.types;
             let Some(def) = types.iter().find(|t| t.name == ty) else {
                 let names: Vec<&str> = types.iter().map(|t| t.name.as_str()).collect();
@@ -429,21 +431,29 @@ fn run() -> Result<()> {
                      folder), a folder ending in / (keeps the name), or a full path"
                 );
             };
-            let ix = index::Index::build(workspace::scan(Path::new(root))?);
+            let mut core = owned::open(Path::new(root), &registry)?;
+            let mut owners = owned::Owners::new(&mut registry, &core);
+            owners.serve(&mut core, |c| !c.reading());
+            let ix = &core.index;
             let folder = note.trim_matches('/');
             let plan = if !folder.is_empty() && ix.workspace.root.join(folder).is_dir() {
-                rename::plan_folder(&ix, folder, &rename::folder_target(folder, new)?)?
+                rename::plan_folder(ix, folder, &rename::folder_target(folder, new)?)?
             } else {
                 let i = ix
                     .by_rel(note)
                     .or_else(|| ix.resolver.resolve(note))
                     .ok_or_else(|| anyhow::anyhow!("no note or folder called {note}"))?;
                 let to = rename::target_rel(&format!("{}.md", ix.workspace.notes[i].rel), new)?;
-                rename::plan(&ix, i, &to)?
+                rename::plan(ix, i, &to)?
             };
+            let mut plan = plan;
             let dry = args.has("dry-run");
             if !dry {
+                (owners.relink(&mut core, &mut plan.edits))
+                    .map_err(|e| anyhow::anyhow!("{e}; nothing was changed"))?;
                 rename::apply(&plan)?;
+                core.relinked(&plan.edits, |p| plan.moved(p));
+                core.poll();
             }
             if json {
                 let out = serde_json::json!({ "applied": !dry, "plan": plan });
