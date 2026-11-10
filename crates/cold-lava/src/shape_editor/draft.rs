@@ -548,10 +548,20 @@ pub fn rename_part(d: &mut Definition, part: usize, new: &str) {
 
 /// `expr` with the name `old` (a whole name, not part of `only-old`) replaced by `new`.
 fn rename_word(expr: &str, old: &str, new: &str) -> String {
+    rename_words(expr, &[(old.to_string(), new.to_string())])
+}
+
+/// `expr` with every name renamed at once by `names` (old, new), so renames never chain; a
+/// nested shape's parts (`old.part`) follow their shape.
+fn rename_words(expr: &str, names: &[(String, String)]) -> String {
     let mut out = String::new();
     let mut word = String::new();
     let flush = |word: &mut String, out: &mut String| {
-        out.push_str(if word == old { new } else { word });
+        let renamed = names.iter().find_map(|(old, new)| {
+            let rest = word.strip_prefix(old.as_str())?;
+            (rest.is_empty() || rest.starts_with('.')).then(|| format!("{new}{rest}"))
+        });
+        out.push_str(renamed.as_deref().unwrap_or(word));
         word.clear();
     };
     for c in expr.chars() {
@@ -650,6 +660,7 @@ pub fn merged(members: &[Member]) -> (Definition, Vec<String>) {
             Pos::Anchor(name) => m.shape.anchor(name).map(|p| at(xy(p))),
         };
         let mut renamed: Vec<(String, String)> = Vec::new();
+        let mut nests: Vec<(String, String)> = Vec::new();
         let mut fresh = |d: &Definition, id: &Option<String>| {
             let id = id.as_ref()?;
             let new = match d.parts.iter().any(|p| p.id() == Some(id.as_str())) {
@@ -756,7 +767,9 @@ pub fn merged(members: &[Member]) -> (Definition, Vec<String>) {
                         .iter()
                         .any(|p| matches!(p, PartDef::Shape(o) if o.id == n.id))
                     {
-                        n.id = fresh_id(&d, &format!("{}-{}", n.id, k + 1));
+                        let new = fresh_id(&d, &format!("{}-{}", n.id, k + 1));
+                        nests.push((n.id.clone(), new.clone()));
+                        n.id = new;
                     }
                     (n.from, n.to) = (at(n.from), at(n.to));
                     PartDef::Shape(n)
@@ -769,12 +782,7 @@ pub fn merged(members: &[Member]) -> (Definition, Vec<String>) {
             d.parts.push(new);
         }
         for r in &m.definition.regions {
-            let mut area = r.area.clone();
-            for (old, new) in &renamed {
-                if old != new {
-                    area = rename_word(&area, old, new);
-                }
-            }
+            let area = rename_words(&r.area, &[&renamed[..], &nests[..]].concat());
             let id = match d.regions.iter().any(|o| o.id == r.id) {
                 true => fresh_id(&d, &format!("{}-{}", r.id, k + 1)),
                 false => r.id.clone(),

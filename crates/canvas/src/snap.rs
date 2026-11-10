@@ -70,7 +70,10 @@ fn towards(degrees: f64, length: f64) -> Point {
 /// side's angle and length, then level or plumb with a point.
 pub fn vertex(p: Point, chain: &[Point], points: &[Point], reach: f64) -> Snapped {
     let near = |q: &Point| (*q - p).length() <= reach;
-    if let Some(q) = chain.iter().chain(points).find(|q| near(q)) {
+    let nearest = (chain.iter().chain(points))
+        .filter(|q| near(q))
+        .min_by(|a, b| (**a - p).length().total_cmp(&(**b - p).length()));
+    if let Some(q) = nearest {
         return Snapped {
             at: *q,
             guide: Some(Guide::Point),

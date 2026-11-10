@@ -86,9 +86,18 @@ fn value(v: &toml::Value, depth: usize) -> String {
     }
 }
 
-/// A coordinate or size, to four places, always with a point: `0.38`, `1.0`.
+fn has_version(text: &str) -> bool {
+    toml::from_str::<toml::Table>(text).is_ok_and(|t| t.contains_key("version"))
+}
+
+/// A coordinate or size, always with a point: `0.38`, `1.0`. A number written with up to six
+/// places stays as it is; one computed by the editor (`0.43301270…`) is kept to four.
 fn number(f: f64) -> String {
-    let r = (f * 10_000.0).round() / 10_000.0;
+    let short = (f * 1e6).round() / 1e6;
+    let r = match (short - f).abs() < 1e-12 {
+        true => short,
+        false => (f * 10_000.0).round() / 10_000.0,
+    };
     let r = if r == 0.0 { 0.0 } else { r };
     let s = format!("{r}");
     if s.contains('.') || s.contains('e') || !r.is_finite() {
@@ -130,7 +139,8 @@ pub fn blocks(text: &str) -> Vec<Block> {
         let mut end = next;
         // Comments and blank lines just before the next table are that table's.
         while end > h.at {
-            let line_start = text[..end - 1].rfind('\n').map_or(0, |i| i + 1);
+            let before = text[..end].strip_suffix('\n').unwrap_or(&text[..end]);
+            let line_start = before.rfind('\n').map_or(0, |i| i + 1);
             let line = text[line_start..end].trim();
             if line_start <= h.at || !(line.is_empty() || line.starts_with('#')) {
                 break;
@@ -258,6 +268,11 @@ pub fn splice(
             format!("{}{new}{}", &text[..b.span.start], &text[b.span.end..])
         }
         None if text.trim().is_empty() => format!("version = {VERSION}\n\n{new}"),
+        None if !has_version(text) => {
+            return Err(format!(
+                "not saved: {WORKSPACE_FILE} has no version = {VERSION}, so cold-lava skips it; add that line at its top"
+            ));
+        }
         None => {
             let sep = if text.ends_with("\n\n") {
                 ""
@@ -494,6 +509,19 @@ lava = "♨"
         );
         let fresh = splice("", None, "tock", &d).unwrap();
         assert!(fresh.starts_with("version = 1\n\n[[shapes]]\nid = \"tock\"\n"));
+    }
+
+    #[test]
+    fn odd_files_are_read_or_refused_never_broken() {
+        let d = def(&FILE[blocks(FILE)[1].span.clone()]);
+        let ends = format!("{}# done ✓", &FILE[..blocks(FILE)[1].span.end]);
+        assert_eq!(blocks(&ends).len(), 2);
+        assert!(splice(&ends, Some("tick"), "tick", &d).is_ok());
+        let why = splice("# my shapes\n", None, "tick", &d).unwrap_err();
+        assert!(why.contains("no version"), "{why}");
+        assert_eq!(number(0.33333), "0.33333");
+        assert_eq!(number(0.433_012_701_9), "0.433");
+        assert_eq!(number(1.0), "1.0");
     }
 
     #[test]

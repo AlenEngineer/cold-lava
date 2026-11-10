@@ -689,6 +689,9 @@ impl Editor<'_> {
 
     /// Moves a grip to `world`, as its guides place it.
     fn drag_grip(&mut self, part: usize, grip: Grip, world: Point) {
+        if part >= self.def.parts.len() {
+            return;
+        }
         let to = match grip {
             Grip::Side(k) => {
                 let PartDef::Path(p) = &self.def.parts[part] else {
@@ -782,8 +785,8 @@ impl Editor<'_> {
     fn place_vertex(&mut self, world: Point) {
         let chain: Vec<Point> = self.chain.iter().map(|v| self.to_world(*v)).collect();
         let at = self.snap(world, &chain, None);
-        let closes =
-            self.chain.len() >= 3 && self.guide == Some(Guide::Point) && at == self.chain[0];
+        let on_first = (chain.first()).is_some_and(|c| (self.to_world(at) - *c).length() < 1e-6);
+        let closes = self.chain.len() >= 3 && self.guide == Some(Guide::Point) && on_first;
         if closes {
             self.finish_path(true);
             return;
@@ -924,6 +927,9 @@ impl Editor<'_> {
             self.leaving = false;
         }
         self.msg = None;
+        if a == Action::Delete {
+            self.drag = None;
+        }
         let tool = |t| {
             move |e: &mut Editor| {
                 e.tool = t;
@@ -983,6 +989,7 @@ impl Editor<'_> {
             Action::Shows => self.shows_form(),
             Action::On => self.on_form(),
             Action::Bind => self.bind_form(),
+            Action::Undo if self.drag.is_some() => self.say("let go of the mouse first"),
             Action::Undo => match self.undo.pop() {
                 Some((id, d)) => {
                     (self.id, self.def) = (id, d);
@@ -1227,7 +1234,7 @@ impl Editor<'_> {
                     a => Some(
                         a.parse::<f64>()
                             .ok()
-                            .filter(|a| *a > 0.0)
+                            .filter(|a| a.is_finite() && *a > 0.0)
                             .ok_or("aspect is width over height, a number above 0")?,
                     ),
                 };
@@ -1242,8 +1249,15 @@ impl Editor<'_> {
             Ask::Shows => {
                 let mut shows = Vec::new();
                 for (i, r) in self.def.regions.iter().enumerate() {
-                    let label = draft::split_shows(r.shows.as_deref().unwrap_or(""))[4].clone();
+                    let old = r.shows.as_deref().unwrap_or("");
+                    let mut was = draft::split_shows(old).to_vec();
+                    let label = was.pop().unwrap_or_default();
                     let mut fields = v[i * 4..i * 4 + 4].to_vec();
+                    if fields == was {
+                        // Unchanged: kept as written, spacing inside quotes and all.
+                        shows.push(r.shows.clone());
+                        continue;
+                    }
                     fields.push(label);
                     let s = draft::join_shows(&fields);
                     if let Some(s) = &s
