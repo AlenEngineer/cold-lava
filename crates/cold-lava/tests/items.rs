@@ -290,3 +290,57 @@ fn table_prints_a_types_rows_sorted() {
     assert_eq!(json["rows"][2]["cells"][0], 6);
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
+
+#[test]
+fn item_set_finds_a_workspace_marked_by_cold_lava_and_explains_a_guess() {
+    let dir =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("items-locate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for ws in ["marked", "loose"] {
+        std::fs::create_dir_all(dir.join(ws).join("Notes")).unwrap();
+        std::fs::write(dir.join(ws).join("Notes/A.md"), "- [ ] Plain one\n").unwrap();
+    }
+    std::fs::create_dir_all(dir.join("marked/.cold-lava")).unwrap();
+    let id = |ws: &Path| -> String {
+        let out = cold_lava(ws)
+            .args(["items", ws.to_str().unwrap(), "task", "--json"])
+            .output()
+            .unwrap();
+        let line = String::from_utf8(out.stdout).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+        v["id"].as_str().unwrap().to_string()
+    };
+    let set = |ws: &Path, id: &str| {
+        cold_lava(ws)
+            .args([
+                "item",
+                "set",
+                ws.join("Notes/A.md").to_str().unwrap(),
+                id,
+                "due",
+                "2026-12-24",
+            ])
+            .output()
+            .unwrap()
+    };
+    // A .cold-lava folder marks the workspace, so the id from `items` on it matches.
+    let marked = dir.join("marked").canonicalize().unwrap();
+    let out = set(&marked, &id(&marked));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(marked.join("Notes/A.md"))
+            .unwrap()
+            .contains("2026-12-24")
+    );
+    // Without a marker, the note's folder is guessed, and the refusal says why.
+    let loose = dir.join("loose").canonicalize().unwrap();
+    let out = set(&loose, &id(&loose));
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no .obsidian or .cold-lava folder"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

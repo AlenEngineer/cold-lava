@@ -495,10 +495,27 @@ pub fn toggle(
     expect_id: Option<&str>,
     today: NaiveDate,
 ) -> Result<Toggled> {
+    toggle_in(
+        &crate::workspace::find_workspace_root(path),
+        path,
+        line,
+        expect_id,
+        today,
+    )
+}
+
+/// [`toggle`] in a workspace already found (`workspace::locate_workspace`).
+pub fn toggle_in(
+    root: &Path,
+    path: &Path,
+    line: usize,
+    expect_id: Option<&str>,
+    today: NaiveDate,
+) -> Result<Toggled> {
+    let root = root.to_path_buf();
     let path = path
         .canonicalize()
         .with_context(|| format!("no such file: {}", path.display()))?;
-    let root = crate::workspace::find_workspace_root(&path);
     let item_settings = items::Settings::load(&root);
     let style = crate::style::Lazy::new(|| crate::style::Style::of_root(&root));
     let rel = path
