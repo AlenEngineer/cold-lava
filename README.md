@@ -418,7 +418,9 @@ Marks follow the tree: a marked note that is renamed or deleted elsewhere drops 
 ### Recipes: changes to the whole workspace
 
 A recipe is a named change to every note at once, shown as a diff before anything is written.
-The first is `rename-tag`:
+The first is `rename-tag`. In the app, run `recipe.run` from the palette (`:`): pick the recipe,
+fill its options (`Tab` moves between them), read every file's diff (`↑↓` scroll), then `⏎`
+applies it and `u` undoes all of it. From the command line:
 
 ```bash
 cold-lava recipe --list                                                   # the recipes and their options

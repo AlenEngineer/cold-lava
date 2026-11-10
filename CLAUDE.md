@@ -147,6 +147,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 
 - `home.rs`: the main menu (workspaces, note tree, the right pane with the reader or an extension's
   program, backlinks, switcher, search). It applies the extensions' `Effect`s.
+- `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
+  plans, applies and undoes through `recipe.rs`, asking owners as the merge dialog does.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a
   private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (Neovim's come from `VIM_SCRIPT` in
   `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the

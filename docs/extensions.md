@@ -1302,7 +1302,7 @@ new text.**
 
 ## Recipes
 
-*(design; the engine, `rename-tag`, plan, apply and undo exist: "Recipes, as built" below)*
+*(design; the engine, `rename-tag`, plan, apply and undo, the CLI and the palette exist: "Recipes, as built" below)*
 
 A **recipe** is a named, reusable change to a whole workspace that you preview as a diff before
 anything is written: rename a tag everywhere; move inline `key:: value` fields into frontmatter;
@@ -1389,6 +1389,19 @@ types and the resolver's links, so a recipe finds what it changes by meaning, no
   pinned by `tests/recipe.rs`. `cold-lava recipe --list [--json]` names the recipes with their
   options. `tests/owned.rs` runs one through csv-table, and one whose owner edits a note while
   it is asked, which is refused.
+- **The palette.** `recipe.run` (no default key; `crates/cold-lava/src/recipe_view.rs`) is one
+  dialog in three steps, a `Step` the menu keeps in `Mode::Recipe`: pick a recipe (↑↓, Enter),
+  fill its options (Tab between them, Enter plans; an empty one gets the cursor, and a refusal
+  such as `to: "two words" isn't a tag` shows under them), then the plan: "Changes 13 tags in 13
+  files:", warnings, and each file with its diff (line numbers, `-` and `+` lines), scrolled
+  with ↑↓ and PageUp/PageDown. Enter or `y` asks the owners of owned files first, as the merge
+  dialog does (the hint says which it waits for, Esc stops waiting), then applies; Esc or `n`
+  cancels. Planning saves the editor and reads the workspace again first. After applying, the
+  status line says "rename-tag from=concept to=idea: changed 13 tags in 13 files · u undo", and
+  `u` (`note.undo-delete`) undoes the whole recipe as it undoes a merge, refused if a file was
+  edited since. `recipe.drive` renames `#concept` to `#idea` on a copy of the example
+  workspace: the tag prompt (`#`, Tab) completes `#idea` after and `#concept` again after the
+  undo, and `tests/drive.rs` checks each of the 13 notes differs only in its tag.
 - **Not yet:** composed recipes with options, more built-ins, `[[recipes]]` from extensions over
   the gateway with attribution, and text added in the workspace's style. Each has its place: a
   composed or extension recipe is another `Recipe` whose function fills the draft (an

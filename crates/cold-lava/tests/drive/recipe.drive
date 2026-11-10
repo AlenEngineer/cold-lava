@@ -1,0 +1,87 @@
+# Rename the tag #concept to #idea from the palette (recipe.run): pick rename-tag, fill from and
+# to, see every file's diff, cancel once, then apply; the workspace's tags read #idea, and u
+# undoes the whole recipe. tests/drive.rs checks the files after.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+keys :
+type recipe
+wait-for recipe.run
+keys enter
+wait-for rename-tag
+expect rename a tag everywhere
+keys enter
+wait-for Recipe · rename-tag
+expect the tag to rename (its nested tags follow)
+type concept
+keys enter
+wait-for Tab next · ⏎ preview
+type two words
+keys enter
+wait-for ! to: "two words" isn't a tag
+keys backspace backspace backspace backspace backspace backspace backspace backspace backspace
+type idea
+keys enter
+wait-for Changes 13 tags in 13 files:
+expect Recipe · rename-tag from=concept to=idea
+expect Concepts/Cinder Cone
+expect 2 - tags: [concept, volcano-type]
+expect 2 + tags: [idea, volcano-type]
+expect ⏎ apply · Esc cancel · ↑↓ scroll · u undoes it after
+screen
+keys n
+wait-for recipe cancelled, nothing was changed
+keys #
+wait-for tag
+type concep
+keys tab
+wait-for tag: #concept
+keys esc
+wait-gone tag: #concept
+keys :
+type recipe
+wait-for recipe.run
+keys enter
+wait-for rename-tag
+keys enter
+wait-for Recipe · rename-tag
+type concept
+keys tab
+type idea
+keys enter
+wait-for Changes 13 tags in 13 files:
+keys pagedown pagedown pagedown pagedown pagedown pagedown
+wait-for Concepts/ʻAʻā
+keys enter
+wait-for rename-tag from=concept to=idea: changed 13 tags in 13 files · u undo
+keys #
+wait-for tag
+type ide
+keys tab
+wait-for tag: #idea
+keys esc
+wait-gone tag: #idea
+keys u
+wait-for recipe undone: rename-tag from=concept to=idea · 13 files as they were
+keys #
+wait-for tag
+type concep
+keys tab
+wait-for tag: #concept
+keys esc
+wait-gone tag: #concept
+keys :
+type recipe
+wait-for recipe.run
+keys enter
+wait-for rename-tag
+keys enter
+wait-for Recipe · rename-tag
+type concept
+keys tab
+type idea
+keys enter
+wait-for Changes 13 tags in 13 files:
+keys y
+wait-for changed 13 tags in 13 files · u undo
+keys q
+exits 0

@@ -18,6 +18,7 @@ mod looks;
 mod owned;
 mod previews;
 mod reader;
+mod recipe_view;
 mod scene;
 mod table;
 mod term;

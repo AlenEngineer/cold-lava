@@ -1,0 +1,259 @@
+//! The palette's `recipe.run`: pick a recipe, fill its options, see its plan (every file with
+//! its diff) and apply it or not. The menu plans and applies; this is what is on screen and
+//! what a key asks for.
+
+use crate::app::{ACCENT, HIT, MUTED, NOTE, TAG};
+use crate::gateway::Ticket;
+use crate::recipe::{self, Options, Plan, Recipe};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+
+/// Where the dialog is.
+pub enum Step {
+    Pick {
+        sel: usize,
+    },
+    Options {
+        recipe: &'static Recipe,
+        values: Vec<String>,
+        at: usize,
+        /// Why the last plan was refused.
+        error: Option<String>,
+    },
+    Plan {
+        plan: Box<Plan>,
+        scroll: usize,
+        /// Confirmed, and waiting for the owners of files other owners read (`Core::relink`);
+        /// nothing is written yet.
+        waiting: Option<Ticket>,
+    },
+}
+
+/// What the menu should do after a key.
+pub enum Action {
+    Stay,
+    /// Closed; with a ticket, stop waiting for its owners.
+    Close(Option<Ticket>),
+    /// Plan this recipe with these options.
+    Plan(&'static Recipe, Options),
+    /// Apply the plan shown.
+    Apply,
+}
+
+pub struct RecipeView {
+    pub step: Step,
+}
+
+impl RecipeView {
+    pub fn new() -> RecipeView {
+        RecipeView {
+            step: Step::Pick { sel: 0 },
+        }
+    }
+
+    /// The options step again, saying why the plan was refused.
+    pub fn refused(&mut self, why: String) {
+        if let Step::Options { error, .. } = &mut self.step {
+            *error = Some(why);
+        }
+    }
+
+    pub fn key(&mut self, k: KeyEvent) -> Action {
+        match &mut self.step {
+            Step::Pick { sel } => match k.code {
+                KeyCode::Esc => return Action::Close(None),
+                KeyCode::Down => *sel = (*sel + 1).min(recipe::BUILT_IN.len() - 1),
+                KeyCode::Up => *sel = sel.saturating_sub(1),
+                KeyCode::Enter => {
+                    let recipe = &recipe::BUILT_IN[*sel];
+                    self.step = Step::Options {
+                        recipe,
+                        values: vec![String::new(); recipe.options.len()],
+                        at: 0,
+                        error: None,
+                    };
+                }
+                _ => {}
+            },
+            Step::Options {
+                recipe,
+                values,
+                at,
+                error,
+            } => match k.code {
+                KeyCode::Esc => return Action::Close(None),
+                KeyCode::Tab | KeyCode::Down => *at = (*at + 1) % values.len(),
+                KeyCode::BackTab | KeyCode::Up => *at = (*at + values.len() - 1) % values.len(),
+                KeyCode::Backspace => {
+                    values[*at].pop();
+                }
+                KeyCode::Char(c) => {
+                    values[*at].push(c);
+                    *error = None;
+                }
+                KeyCode::Enter => match values.iter().position(|v| v.trim().is_empty()) {
+                    Some(empty) => *at = empty,
+                    None => {
+                        let options = (recipe.options.iter())
+                            .zip(values.iter())
+                            .map(|(o, v)| (o.name.to_string(), v.trim().to_string()))
+                            .collect();
+                        return Action::Plan(recipe, options);
+                    }
+                },
+                _ => {}
+            },
+            Step::Plan {
+                plan,
+                scroll,
+                waiting,
+            } => match k.code {
+                KeyCode::Esc | KeyCode::Char('n') => return Action::Close(*waiting),
+                KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                KeyCode::PageDown => *scroll += 10,
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::Enter | KeyCode::Char('y')
+                    if waiting.is_none() && !plan.edits.is_empty() =>
+                {
+                    return Action::Apply;
+                }
+                _ => {}
+            },
+        }
+        Action::Stay
+    }
+
+    pub fn title(&self) -> String {
+        match &self.step {
+            Step::Pick { .. } => " Recipe ".into(),
+            Step::Options { recipe, .. } => format!(" Recipe · {} ", recipe.id),
+            Step::Plan { plan, .. } => format!(" Recipe · {} ", plan.title()),
+        }
+    }
+
+    /// What the keys do now; `undo` is the undo key's label.
+    pub fn hint(&self, undo: &str) -> String {
+        match &self.step {
+            Step::Pick { .. } => " ↑↓ choose · ⏎ its options · Esc cancel ".into(),
+            Step::Options { .. } => " Tab next · ⏎ preview · Esc cancel ".into(),
+            Step::Plan {
+                waiting: Some(_),
+                plan,
+                ..
+            } => {
+                let owners: Vec<&str> = (plan.edits.iter())
+                    .filter_map(|e| Some(e.owned.as_ref()?.owner.as_str()))
+                    .collect();
+                format!(
+                    " waiting for {} to update its files · Esc stop ",
+                    owners.join(", ")
+                )
+            }
+            Step::Plan { plan, .. } if plan.edits.is_empty() => " Esc close ".into(),
+            Step::Plan { .. } => {
+                format!(" ⏎ apply · Esc cancel · ↑↓ scroll · {undo} undoes it after ")
+            }
+        }
+    }
+
+    pub fn lines(&self, width: usize, height: usize) -> Vec<Line<'static>> {
+        let text = Style::new().fg(NOTE);
+        let muted = Style::new().fg(MUTED);
+        match &self.step {
+            Step::Pick { sel } => (recipe::BUILT_IN.iter().enumerate())
+                .flat_map(|(i, r)| {
+                    let mark = if i == *sel { "▸ " } else { "  " };
+                    let name = match i == *sel {
+                        true => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        false => text,
+                    };
+                    [
+                        Line::from(vec![Span::styled(format!(" {mark}{}", r.id), name)]),
+                        Line::styled(format!("     {}", r.about), muted),
+                    ]
+                })
+                .collect(),
+            Step::Options {
+                recipe,
+                values,
+                at,
+                error,
+            } => {
+                let mut lines = vec![
+                    Line::styled(format!(" {}", recipe.about), muted),
+                    Line::raw(""),
+                ];
+                let wide = recipe
+                    .options
+                    .iter()
+                    .map(|o| o.name.len())
+                    .max()
+                    .unwrap_or(0);
+                for (i, (o, v)) in recipe.options.iter().zip(values).enumerate() {
+                    let here = i == *at;
+                    let label = match here {
+                        true => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        false => text,
+                    };
+                    let cursor = if here { "▏" } else { "" };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!(" {:wide$}  ", o.name), label),
+                        Span::styled(format!("{v}{cursor}"), text),
+                    ]));
+                    lines.push(Line::styled(format!(" {:wide$}  {}", "", o.about), muted));
+                }
+                if let Some(why) = error {
+                    lines.push(Line::raw(""));
+                    lines.push(Line::styled(format!(" ! {why}"), Style::new().fg(HIT)));
+                }
+                lines
+            }
+            Step::Plan { plan, scroll, .. } => {
+                let mut head = vec![Line::styled(
+                    match plan.edits.is_empty() {
+                        true => " Nothing to change.".to_string(),
+                        false => format!(" Changes {}:", plan.what()),
+                    },
+                    text,
+                )];
+                for w in &plan.warnings {
+                    head.push(Line::styled(format!(" ! {w}"), Style::new().fg(HIT)));
+                }
+                head.push(Line::raw(""));
+                let mut detail = Vec::new();
+                for e in &plan.edits {
+                    let through = match &e.owned {
+                        Some(o) => format!(" (through {})", o.owner),
+                        None => String::new(),
+                    };
+                    detail.push(Line::styled(
+                        format!(" {}{through}", e.file),
+                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    ));
+                    for d in recipe::file_diff(e, 1) {
+                        let Some(d) = d else {
+                            detail.push(Line::styled("   ⋯", muted));
+                            continue;
+                        };
+                        let style = match d.op {
+                            '-' => Style::new().fg(HIT),
+                            '+' => Style::new().fg(TAG),
+                            _ => muted,
+                        };
+                        let line: String = format!(" {:>4} {} {}", d.line, d.op, d.text)
+                            .chars()
+                            .take(width)
+                            .collect();
+                        detail.push(Line::styled(line, style));
+                    }
+                }
+                let room = height.saturating_sub(head.len());
+                let start = (*scroll).min(detail.len().saturating_sub(room));
+                head.extend(detail.into_iter().skip(start).take(room));
+                head
+            }
+        }
+    }
+}

@@ -25,6 +25,7 @@ use crate::markdown::{self, Flavour};
 use crate::paths::{self, config_dir, home_dir};
 use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
+use crate::recipe_view::{self, RecipeView};
 use crate::resolver::dir_of;
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
@@ -450,6 +451,8 @@ enum Mode {
     },
     /// What nothing uses: orphan notes, unused attachments, empty folders, unresolved links.
     Tidy(Box<TidyView>),
+    /// `recipe.run`: picking a recipe, filling its options, or looking at its plan.
+    Recipe(Box<RecipeView>),
     /// A view an extension opened, kept in `Home::views`. `backlinks`: keys go to the backlinks
     /// pane under it, the backlinks of the file it shows, instead of to the view.
     View {
@@ -489,9 +492,10 @@ enum Undo {
     /// A delete: one item, or the marked ones.
     Delete(Vec<Trashed>),
     Merge(Box<crate::merge::Merged>),
+    Recipe(Box<crate::recipe::Applied>),
 }
 
-/// Deletes and merges that `note.undo-delete` can still put back.
+/// Deletes, merges and recipes that `note.undo-delete` can still put back.
 const UNDO_DELETES: usize = 20;
 
 /// What a peek looks at: Tab sweeps through these and Enter goes where the selected one leads.
@@ -2039,6 +2043,10 @@ impl Home {
             self.merge_key(k);
             return Ok(());
         }
+        if matches!(self.mode, Mode::Recipe(_)) {
+            self.recipe_key(k);
+            return Ok(());
+        }
         if matches!(self.mode, Mode::Keys) {
             self.mode = Mode::Normal;
             if !self.key_hints().iter().any(|h| h.key == Key::from(k)) {
@@ -2179,6 +2187,7 @@ impl Home {
             | Mode::Outline { .. }
             | Mode::Bookmarks { .. }
             | Mode::Tidy(_)
+            | Mode::Recipe(_)
             | Mode::View { .. }
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
@@ -2232,7 +2241,7 @@ impl Home {
                 | MenuAction::Tag
                 | MenuAction::Duplicate,
             ) => self.root.is_some(),
-            MenuCommand::Core(MenuAction::Merge) => self.core.is_some(),
+            MenuCommand::Core(MenuAction::Merge | MenuAction::Recipe) => self.core.is_some(),
             MenuCommand::Core(MenuAction::Mark) => {
                 self.focus == Focus::Notes && self.current().is_some()
             }
@@ -2631,6 +2640,7 @@ impl Home {
             MenuAction::UndoDelete => self.undo_delete(),
             MenuAction::Duplicate => self.duplicate(),
             MenuAction::Merge => self.start_merge(),
+            MenuAction::Recipe => self.mode = Mode::Recipe(Box::new(RecipeView::new())),
             MenuAction::Search => self.open_search(),
             MenuAction::ToggleBacklinks => {
                 self.show_backlinks = !self.show_backlinks;
@@ -3875,6 +3885,9 @@ impl Home {
                 Mode::ConfirmRename { waiting, .. } | Mode::ConfirmMerge { waiting, .. } => {
                     *waiting == Some(ticket)
                 }
+                Mode::Recipe(view) => {
+                    matches!(view.step, recipe_view::Step::Plan { waiting, .. } if waiting == Some(ticket))
+                }
                 _ => false,
             };
             if !ours {
@@ -3896,6 +3909,20 @@ impl Home {
                 }
                 (Mode::ConfirmMerge { .. }, Err(why)) => {
                     self.flash(format!("merge cancelled, nothing was changed: {why}"))
+                }
+                (Mode::Recipe(view), answer) => {
+                    let recipe_view::Step::Plan { mut plan, .. } = view.step else {
+                        continue;
+                    };
+                    match answer {
+                        Ok(answers) => {
+                            crate::rename::answered(&mut plan.edits, answers);
+                            self.apply_recipe(*plan);
+                        }
+                        Err(why) => {
+                            self.flash(format!("recipe cancelled, nothing was changed: {why}"))
+                        }
+                    }
                 }
                 (_, Err(why)) => {
                     self.flash(format!("rename cancelled, nothing was changed: {why}"))
@@ -4300,6 +4327,106 @@ impl Home {
             "merge undone: {} is back and {} is as it was",
             rel(&m.source_path),
             rel(&m.target_path)
+        ));
+    }
+
+    // ---------- recipes ----------
+
+    fn recipe_key(&mut self, k: KeyEvent) {
+        let Mode::Recipe(mut view) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return;
+        };
+        match view.key(k) {
+            recipe_view::Action::Stay => self.mode = Mode::Recipe(view),
+            recipe_view::Action::Close(waiting) => {
+                if let (Some(t), Some(core)) = (waiting, self.core.as_mut()) {
+                    core.cancel_relink(t);
+                }
+                if matches!(view.step, recipe_view::Step::Plan { .. }) {
+                    self.flash("recipe cancelled, nothing was changed");
+                }
+            }
+            recipe_view::Action::Plan(recipe, options) => {
+                self.save_editor();
+                self.reload_tree();
+                let Some(core) = self.core.as_ref() else {
+                    return;
+                };
+                match crate::recipe::plan(&core.index, recipe, options) {
+                    Ok(plan) => {
+                        view.step = recipe_view::Step::Plan {
+                            plan: Box::new(plan),
+                            scroll: 0,
+                            waiting: None,
+                        }
+                    }
+                    Err(e) => view.refused(format!("{e:#}")),
+                }
+                self.mode = Mode::Recipe(view);
+            }
+            recipe_view::Action::Apply => {
+                let recipe_view::Step::Plan { plan, waiting, .. } = &mut view.step else {
+                    return;
+                };
+                let Some(core) = self.core.as_mut() else {
+                    return;
+                };
+                match core.relink(&plan.edits) {
+                    Ok(Some(ticket)) => {
+                        *waiting = Some(ticket);
+                        self.mode = Mode::Recipe(view);
+                        self.ask_owners();
+                    }
+                    Ok(None) => {
+                        let plan = (**plan).clone();
+                        self.apply_recipe(plan);
+                    }
+                    Err(why) => {
+                        self.flash(format!("recipe cancelled, nothing was changed: {why}"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_recipe(&mut self, plan: crate::recipe::Plan) {
+        let done = match crate::recipe::apply(&plan) {
+            Ok(done) => done,
+            Err(e) => {
+                self.reload_tree();
+                return self.flash(format!("recipe failed: {e:#}"));
+            }
+        };
+        if let Some(core) = self.core.as_mut() {
+            core.relinked(&plan.edits, Path::to_path_buf);
+        }
+        self.reload_tree();
+        if self.running_editor().is_none() {
+            self.reload_reader();
+        }
+        let undo = self.keys.first_label("note.undo-delete");
+        self.flash(format!(
+            "{}: changed {} · {undo} undo",
+            plan.title(),
+            plan.what()
+        ));
+        self.push_undo(Undo::Recipe(Box::new(done)));
+    }
+
+    fn undo_recipe(&mut self, r: crate::recipe::Applied) {
+        self.save_editor();
+        if let Err(e) = crate::recipe::undo(&r) {
+            self.flash(format!("{e:#}"));
+            return self.push_undo(Undo::Recipe(Box::new(r)));
+        }
+        self.reload_tree();
+        if self.running_editor().is_none() {
+            self.reload_reader();
+        }
+        self.flash(format!(
+            "recipe undone: {} · {} as they were",
+            r.title,
+            plural(r.files, "file")
         ));
     }
 
@@ -4876,6 +5003,7 @@ impl Home {
         let batch = match self.undo.pop() {
             None => return self.flash("nothing to undo"),
             Some(Undo::Merge(m)) => return self.undo_merge(*m),
+            Some(Undo::Recipe(r)) => return self.undo_recipe(*r),
             Some(Undo::Delete(batch)) => batch,
         };
         let taken = batch.iter().any(|t| t.from.exists());
@@ -5578,6 +5706,12 @@ impl Home {
         }
         if let Mode::Tidy(view) = &self.mode {
             self.draw_tidy(f, main, view);
+        }
+        if let Mode::Recipe(view) = &self.mode {
+            let undo = self.keys.first_label("note.undo-delete");
+            let inner = picker_frame(f, main, &view.title(), &view.hint(&undo));
+            let lines = view.lines(inner.width as usize, inner.height as usize);
+            f.render_widget(Paragraph::new(lines), inner);
         }
         if let Mode::View { owner, view, .. } = self.mode {
             let of_file = self
