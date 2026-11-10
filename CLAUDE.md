@@ -97,6 +97,9 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   file changed; owned files get their text from their owners through `Core::relink` first) and
   `undo()`. A recipe finds what it changes through owners (tags: `owner::markdown::tags_in`),
   never by matching files itself.
+- `json_canvas.rs`: JSON Canvas, Obsidian's `.canvas`: `Doc` (unknown fields kept), `parse`,
+  `to_bytes`, and `fields`/`set` to change one node's `text` or `file` in place. The whiteboard
+  and the canvas owner share it; don't parse `.canvas` anywhere else.
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
@@ -111,7 +114,11 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   its owner answers `file/edit` and reads the new text back. `Core::set_owners`, `take_reads`,
   `take_file_edits` and `file_given` run it and never wait; an `items/edit` of an owned file
   is answered `Later` (`take_edited`). Owned files are `Workspace::owned`, beside the notes,
-  and the index, the gateway, the graph and tidy read them too.
+  and the index, the gateway, the graph and tidy read them too. `owner/canvas.rs` is the
+  engine's `.canvas` owner (`owner::BUILT_IN`): text nodes are Markdown pieces and file nodes
+  links, both at the node's id; it answers `owner::give`/`owner::edit` in the same call,
+  `workspace::scan` reads canvases into `owned`, and rename relinks them through it. No
+  extension may claim a built-in owner's kind.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one pulldown-cmark pass in the workspace's flavour; `Workspace::items()` caches them per note on
   first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`
@@ -212,7 +219,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   into a scene with its filters and colour groups (`graph::build`, `groups.rs`), sent with
   `view/open`, followed with `links/subscribe`. `app.rs` is the palette. The whiteboard is still
   a screen with its own loop (#92).
-- `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files, and placed shapes on it:
+- `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files (read and saved with the
+  engine's `json_canvas`; their items and links are the canvas owner's), and placed shapes on it:
   `board/placed.rs` is how a placed shape is stored on a node (the `cold-lava` field, which node
   type it is, the guard against a save that drops the field), `board/live.rs` binds each one
   through the core the menu lends the board and paints it with the canvas engine.
@@ -242,8 +250,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 
 - Never overwrite edits made elsewhere: canvases three-way merge (`board.rs::merge3`), renames
   and task toggles check the file didn't change since it was read.
-- Keep fields and formatting you don't understand (canvas `extra` maps; rename edits canvas files
-  as text instead of re-serialising them).
+- Keep fields and formatting you don't understand (canvas `extra` maps; item edits and renames
+  change a canvas node's `text` or `file` in place, `json_canvas::set`, instead of re-serialising).
 - Follow the workspace's own settings where Obsidian has one: `.obsidian/app.json` (new-note
   location), `daily-notes.json`, `graph.json` colour groups, Tasks plugin `data.json`.
 - Links keep the style they were written in (`[[Name]]` short, paths stay paths, relative

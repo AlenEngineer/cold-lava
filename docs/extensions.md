@@ -791,7 +791,9 @@ style.minutes = { badge = true, icon = "⏱" }
 
 *(design; owners in manifests, `file/open`, `file/changed` and the file messages exist: "File
 types, as built" below; so do items and links from owners and edits through them: "Owners and
-types, as built"; previews too: "Previews, as built". The whiteboard as an owner is design.)*
+types, as built"; previews too: "Previews, as built"; `.canvas` files have the engine's own
+owner: "The canvas owner, as built". The whiteboard screen moving onto the view gateway is
+design.)*
 
 Markdown is the engine's own format. Any other kind of file (`.canvas`, `.kanban`,
 `.excalidraw`, `.csv`) can have an **owner**: an extension that says so in its manifest.
@@ -898,8 +900,9 @@ graph all see the new date. None of them knew what a canvas is.
   in the `Manifest` they return, so both kinds of extension take one path.
 - **One owner per kind.** `Registry` gives each kind to the first extension that claims it, in
   load order (built-in ones first, then the user's by folder name). A second claim, and any
-  claim on `md` (notes are the engine's) or `canvas` (the whiteboard is the core's until it
-  becomes an owner), is left out and reported like a command conflict: on the status line at
+  claim on `md` (notes are the engine's) or on a kind one of the engine's built-in owners reads
+  (`owner::BUILT_IN`: `canvas`, "The canvas owner, as built"), is left out and reported like a
+  command conflict: on the status line at
   start and in `cold-lava keys`. `cold-lava ext list` prints each claim as `opens: .csv  CSV
   table, new: csv-table.new`, with `(left out: … opens them)` on the one that lost.
 - **Where owned files show.** In the note tree (`▤`, by their whole file name; the right pane
@@ -952,8 +955,9 @@ graph all see the new date. None of them knew what a canvas is.
   the tree, an edit saved, a change made outside with the drive step `write`, a link, the
   switcher bringing the filtered table back, a new table), and `ext/process.rs` checks the
   retry.
-- **Not yet:** the whiteboard as an owner. Images have a view kind ("The image view, as
-  built").
+- **Not yet:** the whiteboard as a view of the gateway: `.canvas` has the engine's owner for
+  its items and links ("The canvas owner, as built"), and the whiteboard is still a screen of
+  its own. Images have a view kind ("The image view, as built").
 
 ### Owners and types, as built
 
@@ -1129,6 +1133,82 @@ graph all see the new date. None of them knew what a canvas is.
   through the menu: the type picker lists it, its table shows those rows, and a name edited
   there is saved in the CSV through csv-table; `tests/owned.rs` checks `cold-lava types` and
   `cold-lava items` from the cache.
+
+### The canvas owner, as built
+
+Obsidian's whiteboards (`.canvas`, JSON Canvas) have the engine's second owner after Markdown,
+`crates/engine/src/owner/canvas.rs`. It is built in and in-process, with no UI, and it speaks
+the same terms an extension does (`Given`, `Change`), so the canvas joins the workspace through
+the owner machinery above: `Workspace::owned`, `items/query` and `items/subscribe`, backlinks,
+`links/query`, tidy, edits with the read-back check, and renames.
+
+- **Reading.** Each `text` node's `text` is a Markdown piece `{place, text}` with the node's id
+  as its place, read by the Markdown owner in the workspace's flavour: a task on a sticky or a
+  text card is a `task`, its `[[links]]` are links, its tags tags. Each `file` node is a link
+  `{target, place, text}` to its `file` (a workspace path) at the node's id, so the note's
+  backlinks list the canvas (`index::From::Owned`) and the graph draws the edge. `link` nodes
+  (web pages) and groups' labels are not workspace links, and neither are edges: an arrow joins
+  two nodes of the drawing. Placed shapes need nothing of their own: a sticky's text input is
+  its node's `text`, a card's note its node's `file` (docs/shapes.md, "Drawings join the
+  workspace, as built").
+- **One reader of JSON Canvas.** `crates/engine/src/json_canvas.rs` is the format, moved out of
+  the whiteboard: `Doc` (nodes, edges and every unknown field) with `parse` and `to_bytes`,
+  which the whiteboard reads and saves with and the owner reads with. Node coordinates default
+  to 0 when missing, so a canvas another tool wrote without them reads instead of failing.
+  `fields` finds each node's `text` and `file` where they are written (serde_json's
+  `RawValue` spans), and `set` replaces those strings in place, so an edit or a rename changes
+  that value and keeps every other byte: unknown fields, key order, the nodes' order, Obsidian's
+  formatting.
+- **Answering at once.** `owner::BUILT_IN` lists the kinds the engine's owners read
+  (`canvas` → `canvas`); `owner::give` and `owner::edit` answer `file/read` and `file/edit` for
+  them in-process, and `None` for an extension's kind. `workspace::scan` reads canvases with the
+  notes, so every `Index` has them, the command line's included, with no cache and no
+  `set_owners`. In the core, `Owners::owner_of` names the built-in owner first; `owned_read`
+  asks `owner::give` before the owners' cache, so a canvas changed on disk (the watcher's
+  `BoardChanged`, now also an `OwnedChanged`) is read again in the same poll; `set_owners`
+  keeps the built-in owners' files. A canvas that isn't JSON Canvas is in the index with nothing
+  and an `OwnerTrouble` says why; it keeps what it had when it changes into one that doesn't
+  parse.
+- **Edits** take the extensions' path, answered in the same call: `edit_owned` makes the change
+  to the piece as for any owned file, `ask_edit` gets the new text from `owner::edit` (the
+  node's `text` set in place) and `file_edited` reads it back through `owner::give` and
+  compares (`given::same`) before `write::replace` writes it over the text the edit began from.
+  `items/edit` is still answered `Later`, with the answer already in `take_edited`, so the
+  agenda and the table need nothing new. A canvas changed since it was read is refused as
+  `changed`, as for any owned file. A typed field is refused: a canvas gives none.
+- **Renames and merges** rewrite canvases with the notes, through the owner's `relink`: each
+  file node's `file` becomes the moved file's new workspace path, and each text node's text goes
+  through the Markdown owner's relink, so a link keeps its style. The plan lists a canvas with the
+  notes (`▤ Volcano Venn.canvas  2 links`), and there is nothing to wait for: the new text
+  is made when planned (`owned_edit` asks a built-in owner at once), and `owned_edits` leaves
+  canvases to `canvas_edit`, since a card holds a path, not a link written in a style. This
+  replaces the regular expression that rewrote `"file"` and `"text"` fields anywhere in the
+  file: only nodes' fields change now. Recipes reach canvas text the same way (a tag renamed on
+  a sticky).
+- **Tidy** reads what every owned file's owner gave as written, so a card's image counts as
+  used, as before, and a card's note isn't an orphan.
+- **No extension can claim `.canvas`** while the engine owns it: `Registry` leaves out a claim
+  on any kind in `owner::BUILT_IN` ("File types, as built"). Lifting that is a matter of taking
+  `canvas` out of the list, once the whiteboard is an extension that owns its file.
+- **Opening.** A canvas's backlink row, and Enter on a canvas's task in the agenda or the
+  table, open the whiteboard; Back returns to where you were.
+- **The example workspace.** `Volcano Venn.canvas`'s sticky task (`Two per person, for the
+  trip`) is in the agenda's Undated group and the task table, and its Krakatoa card is one of
+  Krakatoa's backlinks, as are `Eruptions Timeline.canvas`'s cards of its notes. `Welcome.canvas`'s
+  checklist is eight more tasks. `canvas-owner.drive` checks it through the menu: the card and
+  a sticky's link as backlinks, a tick in the agenda saved in the canvas with every other byte
+  kept, another program's change to a canvas while the agenda shows it, kept by the next tick,
+  Enter opening the whiteboard and Back, a rename rewriting the card and the sticky, and the
+  graph's edge; `tests/drive.rs` reads the canvases after. `core.rs` tests a refused edit.
+- **The command line.** `cold-lava item set FILE ID FIELD VALUE` on a canvas (or on any file
+  an owner reads) takes the agenda's path, `Core::edit_item` through `owned::set_field`: the
+  owner writes the node's text, it is read back before it is written, and a stale `--rev` or a
+  file changed since it was read is refused with exit code 3. An extension owner is started to
+  answer, and a file its owner hasn't read as it is now is refused, naming the owner.
+  `--dry-run` is refused there, since an owner makes the text only for a real edit. `task toggle
+  FILE:LINE` refuses a file an owner reads, since a line doesn't name a task in it, and says to
+  use `item set FILE ID status x`. `tests/items.rs` ticks the Venn sticky's task this way.
+- **Not yet:** the whiteboard doesn't select the node at the place it was opened for.
 
 ### Owners on top of Markdown, as built
 
@@ -2098,13 +2178,15 @@ after its call returns, so it never holds the menu's state.
       items and links from owners in other processes, cached by `rev` ("Owners and types, as
       built"), and so are edits and renames through owners (`file/edit`), and the link
       resolver's first step, Obsidian's rules in one module for both directions ("Link
-      resolver"), and owners on top of Markdown, notes an extension shows (`[[shows]]`); next
-      is the whiteboard)*
+      resolver"), and owners on top of Markdown, notes an extension shows (`[[shows]]`), and
+      the engine's own `.canvas` owner, so drawings' items and links join the workspace ("The
+      canvas owner, as built"); next is the whiteboard as a view (#92's second half))*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard
       *(done: `drag`, `scroll` and `expect-in`; `graph.drive` and `board.drive`)*. The scene
       view is extracted from the graph and runs in the menu's loop, and the graph becomes an
       extension *(done: `scene_view.rs`, `links/query` and `graph_ext.rs`, "Scenes, as
-      built")*. Then the whiteboard (#92).
+      built")*. Then the whiteboard (the second half of #92; its file format already has an
+      owner: "The canvas owner, as built").
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
    *(in progress: the stdio transport, JSON-RPC, manifests in `~/.config/cold-lava/extensions`,

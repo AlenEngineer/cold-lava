@@ -832,6 +832,49 @@ fn the_agenda_lists_tasks_by_day_and_ticks_them() {
 }
 
 #[test]
+fn canvases_join_the_workspace_through_their_owner() {
+    let dir = sandbox("canvas-owner");
+    let workspace = dir.join("example-workspace");
+    let venn = workspace.join("Volcano Venn.canvas");
+    let sticky = "Ash masks\\n- [ ] Two per person, for the trip";
+    let original = std::fs::read_to_string(&venn).unwrap();
+    assert!(original.contains(sticky));
+    let linked = original.replace(sticky, &format!("{sticky} to [[Krakatoa]]"));
+    std::fs::write(&venn, &linked).unwrap();
+    let trip = "{\"nodes\":[{\"id\":\"t\",\"type\":\"text\",\"text\":\"- [ ] Pack the hard hats\",\
+                \"x\":0,\"y\":0,\"width\":200,\"height\":80}],\"edges\":[]}\n";
+    std::fs::write(workspace.join("Inbox/Trip.canvas"), trip).unwrap();
+    let out = drive("canvas-owner.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&venn).unwrap(),
+        linked
+            .replace(
+                &format!("{sticky} to [[Krakatoa]]"),
+                "Ash masks\\n- [x] Two per person, for the trip to [[Krakatau]] ✅ 2026-11-07",
+            )
+            .replace("\"Volcanoes/Krakatoa.md\"", "\"Volcanoes/Krakatau.md\""),
+        "ticked in the agenda and relinked by the rename, every other byte as it was"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("Inbox/Trip.canvas")).unwrap(),
+        "{\"nodes\":[{\"id\":\"t\",\"type\":\"text\",\"text\":\"- [x] Pack the hard hats ✅ \
+         2026-11-07\",\"x\":0,\"y\":0,\"width\":200,\"height\":80,\"color\":\"2\"},{\"id\":\"o\",\
+         \"type\":\"text\",\"text\":\"- [ ] Charge the radios\",\"x\":0,\"y\":100,\"width\":200,\
+         \"height\":80}],\"edges\":[],\"theirs\":true}\n",
+        "the other program's changes kept"
+    );
+    let timeline = std::fs::read_to_string(workspace.join("Eruptions Timeline.canvas")).unwrap();
+    assert!(timeline.contains("\"file\": \"Volcanoes/Krakatau.md\""));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn ticks_tasks_in_the_reader() {
     let dir = sandbox("reader-tick");
     let out = drive("reader-tick.drive", &dir);

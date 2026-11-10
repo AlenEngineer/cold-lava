@@ -9,6 +9,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Whiteboards join the workspace (part of #92). A `.canvas` file is read by the engine's own
+  canvas owner: a task on a sticky or a text card is a task in the agenda, the type table,
+  `cold-lava items` and `items/query`, and its links and tags count; a note card is a link from
+  the board, so the note's backlinks list the board, the graph draws the edge and tidy doesn't
+  call the note an orphan. Ticking a board's task in the agenda changes that card's text in the
+  file and nothing else; `Enter` on it, or on the board's backlink, opens the whiteboard. In the
+  example workspace, `Volcano Venn.canvas`'s sticky task and `Welcome.canvas`'s checklist are in
+  the agenda, and Krakatoa lists both canvases with its card.
 - The shape editor (`S` on a whiteboard): draw a shape and it writes the same `[[shapes]]` TOML
   into the workspace's `.cold-lava/shapes.toml`. Vertices are clicked into place and dragged;
   a side's middle bends it into a `curve`; circles, ellipses and rectangles have their own tools.
@@ -19,6 +27,17 @@ change commands, keys and file formats; patch versions only fix things.
   Editing a workspace shape rewrites only its block and keeps the rest of the file as text,
   refused if the file changed since it was read. With a placed shape or a group selected, `S`
   makes a new shape of them.
+
+### Changed
+
+- Renames rewrite a board's note cards and the links in its text cards through the canvas
+  owner, only in nodes' `file` and `text`. The delete warning says "files link to them", since
+  a board can be one.
+- `cold-lava item set` on a whiteboard (or a file an extension owns) edits the item through its
+  owner, as the agenda does, instead of reading the file as a note; `--dry-run` is refused
+  there. `task toggle FILE:LINE` on such a file refuses and says to use `item set`.
+- The whiteboard reads a card without `x`, `y`, `width` or `height` as at 0 instead of refusing
+  the board.
 
 ## [0.5.0] - 2026-11-10
 

@@ -29,7 +29,7 @@ keys B
 wait-for bookmarked Krakatoa · ' bookmarks
 keys esc
 wait-for Volcanoes/Krakatoa  reader
-expect Krakatoa                    ★ ←3
+expect Krakatoa                    ★ ←5
 keys R
 wait-for rename · ⏎ preview · Esc cancel
 keys ctrl+u

@@ -5,15 +5,15 @@
 size 140x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
-wait-for ☐ 7 open tasks
+wait-for ☐ 16 open tasks
 keys g
-wait-for example-workspace · 36 nodes
-expect ☐ 7 open tasks
+wait-for example-workspace · 39 nodes
+expect ☐ 16 open tasks
 write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
-wait-for ☐ 8 open tasks
-expect example-workspace · 37 nodes
+wait-for ☐ 17 open tasks
+expect example-workspace · 40 nodes
 keys q
 wait-for cold-lava workspaces
-expect ☐ 8 open tasks
+expect ☐ 17 open tasks
 keys q
 exits 0

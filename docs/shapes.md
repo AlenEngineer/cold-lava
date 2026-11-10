@@ -438,9 +438,8 @@ like letters anywhere text goes.
   it doesn't know when it saves a canvas, at node, edge and top level (#132), but sorts the
   nodes and rounds `x`, `y`, `width` and `height` to integers.
 - **The drawing's file joins the workspace** through its owner: text on a shape is Markdown,
-  so a task written on a sticky note is a `task`, and a link on a card is a backlink. *(Not
-  yet: canvases aren't read into the index, so a card's note shows no backlink from the
-  drawing and a sticky's task isn't an item. Renames and tidy already read canvas cards.)*
+  so a task written on a sticky note is a `task`, and a link on a card is a backlink. This is
+  built: "Drawings join the workspace, as built" below.
 
 ### Placed shapes, as built
 
@@ -537,6 +536,26 @@ Dragging it moves it. Kitty pixels aren't used for shapes yet; braille is.
   extension's, whose `extension = true` gestures are asked `shape/gesture` and run when it
   answers. A refused step says why in the status line and writes nothing; the built-in Venn's
   drop is refused this way in the example workspace.
+
+### Drawings join the workspace, as built
+
+A `.canvas` file is read by the engine's canvas owner (`crates/engine/src/owner/canvas.rs`;
+docs/extensions.md, "The canvas owner, as built"), so what is drawn is data like what is
+written in a note. The node mapping above is what makes it work:
+
+- **A sticky's text is its node's `text`**, a Markdown piece at the node's id. A task on it is
+  a `task`: the agenda, the type table and `items/query` list it beside the notes' tasks, and
+  ticking it there rewrites that node's `text` in the `.canvas` and nothing else. Its
+  `[[links]]` are backlinks and its tags are tags. Any text card counts the same way, and so
+  does the title a Venn or an arrow keeps in its `text`.
+- **A card's note is its node's `file`**, a link from the drawing at the node's id. The note's
+  backlinks list the drawing (Enter on that row opens the whiteboard), the graph draws the
+  canvas as a node with an edge to the note, and tidy doesn't call the note an orphan. "Make it
+  a note" therefore gives the new note a backlink from the drawing at once.
+- **Renaming the note** rewrites the card's `file` and the links in text nodes in place, in the
+  style each was written.
+- **Not links:** a web page card (`link` node), a group's label, and edges: an arrow joins two
+  nodes of the drawing, not two files.
 
 Why the whiteboard and not a second canvas view: the whiteboard is already the one place that
 reads, writes, merges and watches `.canvas` files. Shapes on it are nodes among cards, edges and

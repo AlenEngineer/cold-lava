@@ -3,11 +3,12 @@
 //! notes that don't exist. Read-only: deleting is the caller's, through `trash`.
 //!
 //! Every link is resolved by `resolver::Files`, the way Obsidian resolves it (percent-encoded
-//! Markdown links included), from notes, canvas cards and canvas text.
+//! Markdown links included), from notes and from the files other owners read (a canvas's cards
+//! and text, through its owner).
 
 use crate::index::Index;
+use crate::owner::given::GivenItem;
 use crate::owner::markdown::link_targets;
-use crate::rename::canvas_targets;
 use crate::resolver::{Files, dir_of};
 use crate::workspace::{attachment_kind, decode_target};
 use serde::Serialize;
@@ -124,27 +125,18 @@ pub fn report(ix: &Index) -> Report {
             found(i, dir_of(&files.rels[i]), raw, &mut used);
         }
     }
+    // What an owned file's owner gave, as written: a canvas card's file, or an image a piece
+    // shows, is a link too, though it isn't a note.
     for owned in &ix.workspace.owned {
         let from = files.path(&owned.rel).unwrap_or(usize::MAX);
-        for (r, _) in &owned.links {
-            found(from, dir_of(&owned.rel), &r.target, &mut used);
-        }
-    }
-    for (i, rel) in files.rels.iter().enumerate().skip(notes) {
-        if attachment_kind(rel) != Some("whiteboard") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(root.join(rel)) else {
-            continue;
-        };
-        let (cards, links) = canvas_targets(&text);
-        for card in cards {
-            if let Some(to) = files.path(card.strip_suffix(".md").unwrap_or(&card)) {
-                used[to] = true;
-            }
-        }
-        for raw in &links {
-            found(i, dir_of(rel), raw, &mut used);
+        let pieces = owned.given.items.iter().filter_map(|i| match i {
+            GivenItem::Markdown { text, .. } => Some(text),
+            GivenItem::Typed { .. } => None,
+        });
+        let targets = (pieces.flat_map(|t| link_targets(t)))
+            .chain(owned.given.links.iter().map(|l| l.target.as_str()));
+        for raw in targets {
+            found(from, dir_of(&owned.rel), raw, &mut used);
         }
     }
 

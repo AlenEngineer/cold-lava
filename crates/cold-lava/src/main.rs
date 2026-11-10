@@ -31,9 +31,9 @@ mod views;
 mod whichkey;
 
 use cold_lava_engine::{
-    act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, links,
-    markdown, matcher, merge, owner, paths, recipe, rename, resolver, search, shapes, style, tasks,
-    templates, tidy, trash, types, workspace, write,
+    act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
+    json_canvas, links, markdown, matcher, merge, owner, paths, recipe, rename, resolver, search,
+    shapes, style, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -718,6 +718,16 @@ fn run() -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("usage: cold-lava task toggle FILE:LINE"))?;
             let (file, line) = tasks::locate(spec)?;
             let (root, found) = locate_note_workspace(&file);
+            let rel = file.canonicalize().unwrap_or(file.clone());
+            let rel = rel.strip_prefix(&root).unwrap_or(&rel).to_string_lossy();
+            if let Some(owner) = owned::owner_of(&registry, &rel.replace('\\', "/")) {
+                anyhow::bail!(
+                    "{} is read by {owner}, not as a note, so a line doesn't name a task in it: \
+                     tick it with `cold-lava item set FILE ID status x` (ids from `cold-lava \
+                     items WORKSPACE task --json`)",
+                    file.display()
+                );
+            }
             let result = tasks::toggle_in(
                 &root,
                 &file,
@@ -785,7 +795,26 @@ fn run() -> Result<()> {
                 value,
             };
             let dry = args.has("dry-run");
-            match (edit::set_field(&root, &note, &req, dry), json) {
+            let result = match owned::owner_of(&registry, &note) {
+                Some(owner) if dry => Err(edit::EditError::Refused(format!(
+                    "--dry-run: {note} is read by {owner}, which writes it only for a real edit"
+                ))),
+                Some(_) => {
+                    let (rev, value) = (req.rev, req.value.clone());
+                    owned::set_field(&root, &mut registry, &note, id, rev, field, value)
+                        .map(|e| edit::Set {
+                            text: String::new(),
+                            changed: e.changed,
+                            item: e.item,
+                        })
+                        .map_err(|e| match e.reason {
+                            gateway::Reason::Changed => edit::EditError::Changed(e.message),
+                            _ => edit::EditError::Refused(e.message),
+                        })
+                }
+                None => edit::set_field(&root, &note, &req, dry),
+            };
+            match (result, json) {
                 (Ok(set), true) => {
                     let out = serde_json::json!({
                         "applied": set.changed && !dry,

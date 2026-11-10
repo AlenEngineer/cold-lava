@@ -12,14 +12,13 @@
 
 use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
+use crate::owner::canvas;
 use crate::owner::given::{Change as Ask, Given, GivenItem};
-use crate::owner::markdown::{self, link_targets};
+use crate::owner::markdown;
 use crate::resolver::{Files, Rewriter, dir_of, join, link_key};
 use anyhow::{Context, Result, bail};
-use regex::Regex;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Change {
@@ -224,34 +223,12 @@ pub fn check_path(rel: &str) -> Result<()> {
     Ok(())
 }
 
-/// A canvas card's `file` or `text` field: its name, the colon, its JSON string.
-fn canvas_field() -> &'static Regex {
-    static P: OnceLock<Regex> = OnceLock::new();
-    P.get_or_init(|| Regex::new(r#""(file|text)"(\s*:\s*)("(?:[^"\\]|\\.)*")"#).unwrap())
-}
-
 impl Rewriter {
     /// Rewrite the links in a note's text (through its owner, `markdown::relink`). Returns the
     /// new text, changed lines and link count.
     fn note_text(&self, text: &str, dir_then: &str, dir_now: &str) -> (String, Vec<Change>, usize) {
         markdown::relink(text, |raw, md| self.link(raw, md, dir_then, dir_now))
     }
-}
-
-/// What an Obsidian Canvas file links to: its file cards' workspace paths, and the links written in
-/// its text cards.
-pub(crate) fn canvas_targets(text: &str) -> (Vec<String>, Vec<String>) {
-    let (mut files, mut links) = (Vec::new(), Vec::new());
-    for c in canvas_field().captures_iter(text) {
-        let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
-            continue;
-        };
-        match &c[1] {
-            "file" => files.push(value),
-            _ => links.extend(link_targets(&value).into_iter().map(str::to_string)),
-        }
-    }
-    (files, links)
 }
 
 /// Work out everything renaming/moving note `note` to workspace-relative `new_rel` (with `.md`)
@@ -489,8 +466,9 @@ pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
     Ok(edits)
 }
 
-/// An Obsidian Canvas file: file cards pointing at moved files, and links in text cards.
-/// Edited as text, so the rest of the file stays exactly as Obsidian wrote it.
+/// An Obsidian Canvas file, through its owner's relink: file cards pointing at moved files take
+/// their new paths, and links in text cards are rewritten as a note's are. Edited in place, so
+/// the rest of the file stays exactly as Obsidian wrote it.
 fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> {
     let rel = &rw.before.rels[i];
     let path = ix.workspace.root.join(rel);
@@ -498,57 +476,30 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
         return Ok(None);
     };
     let (dir_then, dir_now) = (dir_of(rel), dir_of(&rw.after.rels[i]));
-    let mut links = 0;
-    let mut changes = Vec::new();
-    let mut out = String::with_capacity(text.len());
-    let mut last = 0;
-    for c in canvas_field().captures_iter(&text) {
-        let whole = c.get(0).unwrap();
-        let Ok(value) = serde_json::from_str::<String>(&c[3]) else {
-            continue;
-        };
-        let new_value = match &c[1] {
-            "file" => rw
-                .before
-                .path(link_key(&value))
-                .map(|f| &rw.after.rels[f])
-                .filter(|new| **new != value)
-                .map(|new| {
-                    links += 1;
-                    new.clone()
-                }),
-            "text" => {
-                let (t, _, n) = rw.note_text(&value, dir_then, dir_now);
-                links += n;
-                (n > 0).then_some(t)
-            }
-            _ => None,
-        };
-        if let Some(v) = new_value {
-            let line = text[..whole.start()].matches('\n').count() + 1;
-            let encoded = serde_json::to_string(&v)?;
-            let replacement = format!("\"{}\"{}{}", &c[1], &c[2], encoded);
-            changes.push(Change {
-                line,
-                before: whole.as_str().to_string(),
-                after: replacement.clone(),
-            });
-            out.push_str(&text[last..whole.start()]);
-            out.push_str(&replacement);
-            last = whole.end();
-        }
-    }
-    if links == 0 {
+    let file = |value: &str| {
+        let f = rw.before.path(link_key(value))?;
+        Some(rw.after.rels[f].clone())
+    };
+    let piece = |value: &str| {
+        let (text, _, n) = rw.note_text(value, dir_then, dir_now);
+        (n > 0).then_some((text, n))
+    };
+    let Some((new_text, changed, links)) = canvas::relink(&text, file, piece) else {
         return Ok(None);
-    }
-    out.push_str(&text[last..]);
+    };
     Ok(Some(FileEdit {
         file: rel.clone(),
         path,
         old_text: text,
-        new_text: out,
+        new_text,
         links,
-        changes,
+        changes: (changed.into_iter())
+            .map(|c| Change {
+                line: c.line,
+                before: c.before,
+                after: c.after,
+            })
+            .collect(),
         owned: None,
     }))
 }
@@ -559,7 +510,8 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
 /// read as it is now is left out, with a warning.
 pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>) -> Vec<FileEdit> {
     let mut out = Vec::new();
-    for f in &ix.workspace.owned {
+    // A canvas is relinked with the notes (`canvas_edit`): its cards hold paths, not links.
+    for f in (ix.workspace.owned.iter()).filter(|f| crate::owner::built_in(&f.rel).is_none()) {
         let Some(i) = rw.before.rels.iter().position(|r| *r == f.rel) else {
             continue;
         };
@@ -606,7 +558,8 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
 }
 
 /// The edit of a file another owner reads that asks it for `asks`, its new text to come from
-/// the owner. Refused (with why) when the owner hasn't read the file as it is now.
+/// the owner: at once from a built-in owner (a canvas), else from the extension before anything
+/// moves. Refused (with why) when the owner hasn't read the file as it is now.
 pub(crate) fn owned_edit(
     f: &crate::workspace::Owned,
     asks: Vec<Ask>,
@@ -617,6 +570,19 @@ pub(crate) fn owned_edit(
         std::fs::read_to_string(&f.path).map_err(|e| format!("{} can't be read: {e}", f.rel))?;
     if f.rev.as_deref() != Some(crate::files::rev(text.as_bytes()).as_str()) {
         return Err(format!("{} hasn't read {} as it is now", f.owner, f.rel));
+    }
+    if let Some(new_text) = crate::owner::edit(&f.owner, &f.rel, &text, &asks) {
+        let new_text =
+            new_text.map_err(|why| format!("{} didn't edit {}: {why}", f.owner, f.rel))?;
+        return Ok(FileEdit {
+            file: f.rel.clone(),
+            path: f.path.clone(),
+            old_text: text,
+            new_text,
+            links,
+            changes,
+            owned: None,
+        });
     }
     Ok(FileEdit {
         file: f.rel.clone(),
