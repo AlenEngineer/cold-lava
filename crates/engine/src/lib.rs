@@ -5,6 +5,7 @@ pub mod act;
 pub mod bind;
 pub mod bookmarks;
 pub mod core;
+pub mod cst;
 pub mod daily;
 pub mod edit;
 pub mod fields;
