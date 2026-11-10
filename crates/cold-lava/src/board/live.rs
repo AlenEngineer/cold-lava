@@ -14,12 +14,17 @@ use cold_lava_canvas::{
     Grid, Handle, Hit, Mask, Placed, Placement, Point, Rect, Res, Style, Viewport, draw, hit,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The number for the next binding of a placed shape. Never reused while the program runs, so
+/// an extension's late answer to a binding that is gone (the shape editor's save binds every
+/// shape again, a closed board lets go of its own) names no binding and is dropped.
+static NEXT_PLACED: AtomicU64 = AtomicU64::new(1);
 
 /// The shapes of one canvas, by node id.
 pub struct Live {
     pub shapes: Shapes,
     nodes: HashMap<String, Shaped>,
-    next: u64,
     /// `shape/region` asks waiting to go to the extension that ships the shape.
     asks: Vec<(String, Ask)>,
 }
@@ -28,7 +33,7 @@ struct Shaped {
     /// The shape and its sources as saved: a change binds it again.
     key: String,
     binding: Result<Binding, String>,
-    /// Names this placed shape in an extension's answers.
+    /// Names this binding of the placed shape in an extension's answers.
     placed: u64,
     /// Bumped whenever what it shows may have changed.
     version: u64,
@@ -79,7 +84,6 @@ impl Live {
         Live {
             shapes,
             nodes: HashMap::new(),
-            next: 1,
             asks: Vec::new(),
         }
     }
@@ -117,8 +121,7 @@ impl Live {
             if let Err(e) = &binding {
                 problems.push(e.clone());
             }
-            let placed = self.next;
-            self.next += 1;
+            let placed = NEXT_PLACED.fetch_add(1, Ordering::Relaxed);
             let shaped = Shaped {
                 key,
                 binding,
@@ -220,7 +223,7 @@ impl Live {
         self.nodes.clear();
     }
 
-    /// The number that names the node's placed shape in an extension's answers.
+    /// The number that names the node's binding in an extension's answers.
     pub fn placed_id(&self, id: &str) -> Option<u64> {
         Some(self.nodes.get(id)?.placed)
     }
@@ -446,6 +449,81 @@ mod tests {
         );
         assert!(close(s.size, Point::new(30.0, 10.0)), "{s:?}");
         assert!(close(s.transform().apply(Point::new(0.0, 0.0)), fixed));
+    }
+
+    #[test]
+    fn an_answer_to_a_shape_bound_before_the_shapes_were_read_again_is_dropped() {
+        use crate::bind::Source;
+        use crate::shapes::{Layer, load};
+        let dir = std::env::temp_dir().join(format!("cold-lava-live-asks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let tally: toml::Table = toml::from_str(
+            r#"
+            inputs = ["a"]
+            parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
+            regions = [{ id = "count", area = "box", extension = true }]
+            "#,
+        )
+        .unwrap();
+        let shapes = || {
+            load([
+                Layer::built_in(),
+                Layer::extension("tally", [("tally.list".to_string(), tally.clone())]),
+            ])
+        };
+        let mut node: CNode = serde_json::from_value(serde_json::json!(
+            {"id": "n", "type": "text", "x": 0, "y": 0, "width": 1, "height": 1}
+        ))
+        .unwrap();
+        let sources: indexmap::IndexMap<String, Source> =
+            [("a".to_string(), Source::Items(vec!["Krakatoa".into()]))].into();
+        let at = Placement::new(Point::new(0.0, 0.0), Point::new(20.0, 10.0));
+        let inputs = ["a".to_string()];
+        super::super::placed::place(&mut node, "tally.list", &inputs, "Tally", &sources, at);
+        let nodes = [node];
+        let answer = |ask: &Ask, label: &str| ShapeAnswer {
+            by: "tally".into(),
+            ask: ask.clone(),
+            answer: Ok(Answered::Region {
+                items: vec![Entry {
+                    id: String::new(),
+                    label: label.into(),
+                }],
+            }),
+        };
+        let shown = |live: &Live| -> Vec<String> {
+            let b = live.binding("n").expect("bound");
+            (b.shown().regions[0].items.iter())
+                .map(|e| e.label.clone())
+                .collect()
+        };
+
+        let mut before = Live::new(shapes());
+        assert_eq!(before.sync(&mut core, &nodes), Vec::<String>::new());
+        let asks = before.take_asks();
+        let [(_, old)] = &asks[..] else {
+            panic!("one shape/region ask: {asks:?}")
+        };
+        before.close(&mut core);
+        let mut after = Live::new(shapes());
+        assert_eq!(after.sync(&mut core, &nodes), Vec::<String>::new());
+        let asks = after.take_asks();
+        let [(_, new)] = &asks[..] else {
+            panic!("one shape/region ask: {asks:?}")
+        };
+
+        after.answered(answer(old, "asked before"));
+        assert_eq!(
+            shown(&after),
+            Vec::<String>::new(),
+            "the answer was to a binding that is gone"
+        );
+        after.answered(answer(new, "asked now"));
+        assert_eq!(shown(&after), ["asked now"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,0 +1,26 @@
+# Creating a note reads the whole workspace again, which tells the agenda to query again
+# (items/reset). The agenda hears that at once, not with the next change: when the two came
+# together, it queried, found the new task already there, and then added it a second time.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for example-workspace
+keys A
+wait-for ↑↓ move · x tick · ⏎ open
+expect-not ▾ Today
+keys g j enter
+wait-for Ctrl-o ⟵ agenda
+keys n
+wait-for new note · Tab template · ⏎ create · Esc cancel
+type Ash fall
+keys enter
+wait-for created Journal/Ash fall.md
+write Inbox/Chores.md - [ ] Sweep the ash off the roof 📅 2026-11-07\n
+keys ctrl+o
+wait-for Ctrl-o ⟵ agenda
+keys ctrl+o
+wait-for ▾ Today · Sat 7 Nov  1
+expect ☐ Sweep the ash off the roof
+screen
+keys q q
+exits 0

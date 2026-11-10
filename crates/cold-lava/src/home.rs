@@ -1310,6 +1310,9 @@ impl Home {
         self.select_row(0);
     }
 
+    /// Read the workspace again (after cold-lava itself moved files around), and tell item
+    /// subscribers now: news left in the queue would reach them together with the next change's,
+    /// and a subscriber that queries again on `items/reset` would then count that change twice.
     fn reload_tree(&mut self) {
         let Some(root) = self.root.clone() else {
             return;
@@ -1327,6 +1330,7 @@ impl Home {
         }
         self.refresh_rows();
         self.refresh_backlinks();
+        self.deliver_item_news();
     }
 
     /// The file whose backlinks the pane lists: the one the view in front shows, else the note

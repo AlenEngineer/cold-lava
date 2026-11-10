@@ -53,6 +53,15 @@ change commands, keys and file formats; patch versions only fix things.
   longer the tag `heading`, and links and tags in indented code, in a ``` ``code`` ``` span, in an
   HTML block or past a fence line that doesn't close the fence no longer count.
 
+### Fixed
+
+- The agenda and the type table no longer list a task twice when it comes in the first change
+  after cold-lava created, renamed, moved, merged or deleted files (#172). Those read the
+  workspace again, and the `items/reset` that sends waited for the next change and came with
+  it; it is sent at once now, to extensions too.
+- An extension's late answer about one of its shapes on the whiteboard no longer lands on
+  another shape after the shape editor saved or the board was reopened (#172).
+
 ## [0.5.0] - 2026-11-10
 
 Shapes, usable end to end: a canvas engine draws any shape from its geometry, shapes are
