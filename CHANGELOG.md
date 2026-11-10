@@ -30,6 +30,12 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- The whiteboard runs in the menu's loop instead of its own (closes #92). Extensions keep being
+  answered while a drawing is open, and their status line words show in the whiteboard's.
+  Opening a board from a task in the agenda or the table, or from a backlink, selects the node
+  the task or the link is on; Back and Forward return to a board with the node that was
+  selected. A board that isn't a canvas says so in the status line instead of ending
+  cold-lava. The shape editor (`S`) and the board picker still pause extensions while open.
 - The graph lays out large workspaces much faster: nodes push each other apart through a
   Barnes–Hut quadtree instead of pair by pair, and a node's braille dot is filled dot by dot
   instead of drawn as rings of circles. On a GitHub runner, 2,000 notes settle in 5.3 s

@@ -495,8 +495,9 @@ file has `"cold-lava-version": 1` at its top level while it has one.
   A node deleted outside is a deletion, as for any card.
 
 **On the whiteboard.** Each placed shape is bound while the board is open (`board/live.rs`):
-the menu lends the board its core, query inputs are subscribed as `canvas` and their news goes
-to the bindings, core events reach `Binding::noticed`, and the extension that ships a shape is
+the board runs in the menu's loop, which hands it the core, query inputs are subscribed as
+`canvas` and the menu passes their news to the bindings, core events reach `Binding::noticed`
+through the menu too, and the extension that ships a shape is
 asked `shape/region` for the regions it computes and answers through
 `Core::take_shape_answers`. The canvas engine paints each shape into a grid (braille outlines,
 region tints, text, labels, and what each region shows), cached per shape until its placement,
@@ -560,8 +561,8 @@ written in a note. The node mapping above is what makes it work:
 Why the whiteboard and not a second canvas view: the whiteboard is already the one place that
 reads, writes, merges and watches `.canvas` files. Shapes on it are nodes among cards, edges and
 groups, sharing its undo, selection, camera and Obsidian-safe saving. A separate scene view for
-shapes would be a second editor of the same files until #92 moved the whiteboard onto it; with
-one, #92 moves one screen, cards and shapes together, into the menu's loop.
+shapes would have been a second editor of the same files; with one, #92 moved one screen, cards
+and shapes together, into the menu's loop.
 
 ### The shape editor, as built
 

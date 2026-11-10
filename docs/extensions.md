@@ -956,8 +956,9 @@ graph all see the new date. None of them knew what a canvas is.
   switcher bringing the filtered table back, a new table), and `ext/process.rs` checks the
   retry.
 - **Not yet:** the whiteboard as a view of the gateway: `.canvas` has the engine's owner for
-  its items and links ("The canvas owner, as built"), and the whiteboard is still a screen of
-  its own. Images have a view kind ("The image view, as built").
+  its items and links ("The canvas owner, as built"), and the whiteboard is a mode of the
+  menu's loop, built in ("Scenes, as built"). Images have a view kind ("The image view, as
+  built").
 
 ### Owners and types, as built
 
@@ -1191,7 +1192,8 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   on any kind in `owner::BUILT_IN` ("File types, as built"). Lifting that is a matter of taking
   `canvas` out of the list, once the whiteboard is an extension that owns its file.
 - **Opening.** A canvas's backlink row, and Enter on a canvas's task in the agenda or the
-  table, open the whiteboard; Back returns to where you were.
+  table, open the whiteboard with the node at the owner's place for it selected (the sticky the
+  task is on, the card that links); Back returns to where you were.
 - **The example workspace.** `Volcano Venn.canvas`'s sticky task (`Two per person, for the
   trip`) is in the agenda's Undated group and the task table, and its Krakatoa card is one of
   Krakatoa's backlinks, as are `Eruptions Timeline.canvas`'s cards of its notes. `Welcome.canvas`'s
@@ -1208,7 +1210,6 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   `--dry-run` is refused there, since an owner makes the text only for a real edit. `task toggle
   FILE:LINE` refuses a file an owner reads, since a line doesn't name a task in it, and says to
   use `item set FILE ID status x`. `tests/items.rs` ticks the Venn sticky's task this way.
-- **Not yet:** the whiteboard doesn't select the node at the place it was opened for.
 
 ### Owners on top of Markdown, as built
 
@@ -2110,9 +2111,25 @@ zooming wait.
   `ui/notify`. Enter runs `note.edit` with the node's `note` (an unresolved link's note is
   made first), and `o` runs `note.open-in-obsidian`, both core commands that take a `note`.
   `graph.drive` and `history-screens.drive`, written before the move, pass unchanged.
+- **The whiteboard** runs in the menu's loop too, but as a mode of the menu, not a scene on the
+  gateway (#92): `Mode::Board` with the open `Board` in `Home::board`. The menu keeps the core
+  and the registry and hands them to each call: it ticks the board once a frame (placed shapes
+  bound and asked, outside changes to the file merged three ways), draws it over the whole
+  screen with the extensions' `ui/status` words in its status line, gives it keys and the
+  mouse, and passes it the core's events and the item news of the placed shapes' subscriptions
+  (as `canvas`). So extensions keep being answered while a drawing is open
+  (`board-extensions.drive` checks it with `open-tasks`: a task written by another program and
+  one typed on a new card both reach the count). The board is a place in Back's history
+  (`Place::Board` with the selected node): Back and Forward leave it and reopen it with that
+  node selected, `q` goes to the menu, which Back returns from, and a card's note opens in the
+  reader. Opened for a task or a backlink, it selects the node it was opened for. Leaving it
+  closes it; it saves on every change, so nothing waits. The shape editor (`S`) is still a
+  screen with its own loop, lent the core, so extensions wait while it is open, and so does the
+  board picker (`w`). `cold-lava board FILE` runs the same `Board` in a small loop of its own.
 - **Not yet:** a scene's own keys (an extension's scene gets the graph's), fixed layouts,
-  `scene/update` deltas, cards, and a scene beside the tree. The whiteboard is still a screen
-  with its own loop; moving it is #92.
+  `scene/update` deltas, cards, and a scene beside the tree. The whiteboard as a scene on the
+  gateway would need all of these, plus input on cards and picking a node to connect; until
+  then it stays in the core, which the paragraph below calls a fair outcome.
 
 The graph moves first: it's read-only, already draws through a backend-neutral `Frame`, and is
 where the performance risk is (a 5k-note workspace is about 1.3 MB of `view/open`, sent once). The
@@ -2181,13 +2198,15 @@ after its call returns, so it never holds the menu's state.
       resolver's first step, Obsidian's rules in one module for both directions ("Link
       resolver"), and owners on top of Markdown, notes an extension shows (`[[shows]]`), and
       the engine's own `.canvas` owner, so drawings' items and links join the workspace ("The
-      canvas owner, as built"); next is the whiteboard as a view (#92's second half))*
+      canvas owner, as built"), and the whiteboard in the menu's loop (#92's second half,
+      "Scenes, as built"))*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard
       *(done: `drag`, `scroll` and `expect-in`; `graph.drive` and `board.drive`)*. The scene
       view is extracted from the graph and runs in the menu's loop, and the graph becomes an
       extension *(done: `scene_view.rs`, `links/query` and `graph_ext.rs`, "Scenes, as
-      built")*. Then the whiteboard (the second half of #92; its file format already has an
-      owner: "The canvas owner, as built").
+      built")*. The whiteboard runs in the menu's loop as a mode of the menu *(done: the second
+      half of #92; its file format has the engine's owner, "The canvas owner, as built")*;
+      moving it onto the scene protocol waits for fixed layouts, cards and input on them.
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
    *(in progress: the stdio transport, JSON-RPC, manifests in `~/.config/cold-lava/extensions`,
