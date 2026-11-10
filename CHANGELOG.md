@@ -48,6 +48,11 @@ change commands, keys and file formats; patch versions only fix things.
 - Text at an anchor (a shape's title) never overlaps another: a later one slides along its row,
   then is cut with "…", then left out.
 - The example workspace has shapes of its own: a three-circle Venn and an eruption timeline.
+- Shape bindings: a shape's inputs bound to a gateway query, a note, labels or text, kept up to
+  date as notes change; its regions show what their `shows` picks from the inputs (`a & b`,
+  `a | b`, `a - b`, matched on the shape's `key` with accents and case folded), and
+  `${a.title}` shows the input's title. `cold-lava shapes WORKSPACE --render ID --bind
+  INPUT=SOURCE` draws a shape bound to data, and `--json` prints what each region shows.
 
 ## [0.4.0] - 2026-11-09
 

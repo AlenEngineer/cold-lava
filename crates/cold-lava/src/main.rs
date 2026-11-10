@@ -30,7 +30,7 @@ mod views;
 mod whichkey;
 
 use cold_lava_engine::{
-    bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, links, markdown,
+    bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, links, markdown,
     matcher, merge, owner, paths, recipe, rename, resolver, search, shapes, style, tasks,
     templates, tidy, trash, types, workspace, write,
 };
@@ -78,8 +78,10 @@ Usage:
   cold-lava shapes [WORKSPACE]        every shape and glyph: where it comes from, its parts,
                                       regions, inputs and behaviour; checks [[shapes]] in
                                       config.toml and .cold-lava/shapes.toml
-  cold-lava shapes [WORKSPACE] --render ID [--size WxH]
-                                      draw a shape as text (braille, labels, then its regions)
+  cold-lava shapes [WORKSPACE] --render ID [--size WxH] [--bind INPUT=SOURCE…]
+                                      draw a shape as text (braille, labels, then its regions),
+                                      its inputs bound to data and its regions filled; with
+                                      --json, what it shows as data
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
                                       with an empty home unless --real-home
@@ -102,6 +104,9 @@ Options:
   --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
   --render ID          shapes: draw this shape, unbound (${a.title} shows as a.title)
   --size WxH           shapes --render: the terminal it is drawn on (default 60x18)
+  --bind INPUT=SOURCE  shapes --render, repeatable: bind an input to a query
+                       ('type=volcano tag=eruption title=Erupted'), a note (note:PATH),
+                       labels (items:A, B) or text (text:…)
   -V, --version        print the version
   -h, --help           this help
 
@@ -112,6 +117,8 @@ COLD_LAVA_EDITOR=none opens notes in the reader even when Neovim is installed.";
 /// Command-line arguments: positional words, `--flag value` options and `--switch`es.
 struct Args {
     words: Vec<String>,
+    /// `--bind`, which can be given more than once.
+    binds: Vec<String>,
     values: std::collections::HashMap<String, String>,
     switches: std::collections::HashSet<String>,
 }
@@ -121,13 +128,21 @@ impl Args {
         const WITH_VALUE: &[&str] = &["from", "to", "id", "limit", "rev", "sort", "render", "size"];
         let mut a = Args {
             words: Vec::new(),
+            binds: Vec::new(),
             values: Default::default(),
             switches: Default::default(),
         };
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
             if let Some(flag) = arg.strip_prefix("--") {
-                if let Some((k, v)) = flag.split_once('=') {
+                if flag == "bind" {
+                    let v = it
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--bind needs INPUT=SOURCE"))?;
+                    a.binds.push(v);
+                } else if let Some(v) = flag.strip_prefix("bind=") {
+                    a.binds.push(v.to_string());
+                } else if let Some((k, v)) = flag.split_once('=') {
                     a.values.insert(k.to_string(), v.to_string());
                 } else if WITH_VALUE.contains(&flag) {
                     let v = it
@@ -354,11 +369,35 @@ fn run() -> Result<()> {
                     .and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?)))
                     .filter(|&(w, h)| w > 0 && h > 0)
                     .ok_or_else(|| anyhow::anyhow!("--size is WxH in cells, like 60x18"))?;
-                let unbound = std::sync::Arc::new(shape.unbound());
                 let aspect = shape.definition.aspect;
+                let (drawn, contents) = match args.binds.is_empty() {
+                    true => (std::sync::Arc::new(shape.unbound()), Vec::new()),
+                    false => {
+                        let mut sources = Vec::new();
+                        for b in &args.binds {
+                            let (input, source) = b.split_once('=').ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "--bind {b:?}: write it INPUT=SOURCE, like a='type=volcano'"
+                                )
+                            })?;
+                            let source = bind::Source::parse(source)
+                                .map_err(|e| anyhow::anyhow!("--bind {input}: {e}"))?;
+                            sources.push((input.trim().to_string(), source));
+                        }
+                        let mut core = core::Core::open(&root)?;
+                        let binding = bind::Binding::new(&mut core, &found, id, sources)
+                            .map_err(|e| anyhow::anyhow!(e))?;
+                        let shown = binding.shown();
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&shown)?);
+                            return Ok(());
+                        }
+                        (binding.canvas(), shown.contents())
+                    }
+                };
                 print!(
                     "{}",
-                    cold_lava_canvas::draw::preview(unbound, cols, rows, aspect)
+                    cold_lava_canvas::draw::preview(drawn, cols, rows, aspect, &contents)
                 );
                 return Ok(());
             }

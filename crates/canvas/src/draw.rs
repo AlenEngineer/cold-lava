@@ -3,7 +3,7 @@
 //! their anchors.
 
 use crate::area::Area;
-use crate::fit::{self, Align, Room};
+use crate::fit::{self, Align, Flow, Room};
 use crate::geom::{Placement, Point};
 use crate::part::Kind;
 use crate::raster::{Grid, Mask, Res, Style, Viewport};
@@ -37,11 +37,40 @@ pub fn paint(grid: &mut Grid, placed: &Placed, view: &Viewport) -> usize {
     labels.hidden
 }
 
+/// Paints what each region shows: `contents[i]` are region `i`'s labels, in a column centred
+/// inside it, with "+N more" for those that don't fit. Returns how many were left out.
+pub fn paint_contents(
+    grid: &mut Grid,
+    placed: &Placed,
+    view: &Viewport,
+    contents: &[Vec<String>],
+) -> usize {
+    let mut hidden = 0;
+    for (region, labels) in placed.shape.regions().iter().zip(contents) {
+        if labels.is_empty() {
+            continue;
+        }
+        let room = Room::inside(&Mask::area(placed, &region.area, view, Res::BRAILLE));
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let fitted = fit::labels(&room, &labels, Flow::Column, Align::Center);
+        fitted.paint(grid, TEXT);
+        hidden += fitted.hidden;
+    }
+    hidden
+}
+
 /// `shape` alone on a `cols`×`rows` terminal, as text: in the largest box of `aspect` (width over
 /// height in world units, where a cell is 1×2) centred on the grid a cell in from its edges, or
-/// that whole space without one. The glyphs, then each region's tint by row (`.` for none, else
+/// that whole space without one, each region showing its `contents` (`paint_contents`; empty for
+/// a shape with nothing bound). The glyphs, then each region's tint by row (`.` for none, else
 /// the region's number).
-pub fn preview(shape: Arc<Shape>, cols: u16, rows: u16, aspect: Option<f64>) -> String {
+pub fn preview(
+    shape: Arc<Shape>,
+    cols: u16,
+    rows: u16,
+    aspect: Option<f64>,
+    contents: &[Vec<String>],
+) -> String {
     let view = Viewport::terminal(cols, rows);
     // A cell of margin, so outlines along the box's edges aren't cut off with the grid.
     let margin = view.cell;
@@ -57,6 +86,7 @@ pub fn preview(shape: Arc<Shape>, cols: u16, rows: u16, aspect: Option<f64>) -> 
     let placed = Placed::new(shape, Placement::new(at, size));
     let mut grid = Grid::new(&view);
     let left_out = paint(&mut grid, &placed, &view);
+    paint_contents(&mut grid, &placed, &view, contents);
     let mut out = grid.to_text();
     if left_out > 0 {
         let s = if left_out == 1 { "" } else { "s" };

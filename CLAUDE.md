@@ -137,6 +137,11 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   each is built into a `cold_lava_canvas::Shape` (nested shapes flattened, anchors resolved,
   glyphs looked up). Built-ins are TOML: add a shape by writing it there, never a match arm;
   extend the format when it can't say something. `cold-lava shapes` lists and `--render`s them.
+- `bind.rs`, `shows.rs`: bindings (docs/shapes.md, "Bindings, as built"). A `Binding` is a
+  placed shape's inputs bound to `Source`s (a gateway query, a note, labels, text), followed
+  with `items/subscribe` as `canvas` (`heard`, `noticed`), and answers what it shows now
+  (`shown`: each region's labels, each text filled; `canvas`: the shape to draw). `shows.rs`
+  reads and evaluates a region's `shows` over the inputs, matched on the shape's `key`.
 - `paths.rs`: the user's home and config folders.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine

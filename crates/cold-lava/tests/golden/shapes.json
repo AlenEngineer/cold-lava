@@ -176,8 +176,7 @@
       "regions": [
         {
           "id": "note",
-          "area": "frame",
-          "shows": "note"
+          "area": "frame"
         }
       ]
     },

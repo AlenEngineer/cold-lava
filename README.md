@@ -756,7 +756,15 @@ timeline.
 ```sh
 cold-lava shapes example-workspace                     # every shape, where it comes from, errors
 cold-lava shapes example-workspace --render venn3      # draw one as text (--size 60x18)
+cold-lava shapes example-workspace --render venn2 \
+  --bind a='type=volcano tag=eruption title=Erupted' \
+  --bind b='type=volcano tag=volcano/strato title=Stratovolcanoes'   # its inputs bound to data
 ```
+
+A placed shape's inputs are bound to data: a query (`type=volcano tag=eruption`), a note
+(`note:Volcanoes/Krakatoa`), labels (`items:Fuji, Krakatoa`) or text (`text:…`). Each region
+shows what its expression picks from them (`a & b`: what both have, matched on the shape's
+`key`), and stays up to date as notes change; `--json` prints it as data.
 
 Placing shapes on a canvas comes later; see [docs/shapes.md](docs/shapes.md).
 

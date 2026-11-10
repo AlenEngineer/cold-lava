@@ -19,7 +19,7 @@ arrow  built in  Arrow
 card  built in  Card (a note)
   inputs note · aspect 2.5
   parts rect frame, text title, line, text excerpt
-  region note: frame, shows note
+  region note: frame
 
 sticky  built in  Sticky note
   inputs text · aspect 2

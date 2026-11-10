@@ -137,8 +137,8 @@ loader builds each definition into a `cold_lava_canvas::Shape`, and the canvas c
   its own: name its parts in a region of yours (`l.circle`).
 - **`anchors`** names points of the shape's own (`tip = [0.9, 0.5]`); **`aspect`** is its width
   over height in world units, used when it is first placed and by `--render`.
-- **Placeholders.** `${a.title}` in text names an input and its field; until bindings fill
-  them (step 4), `--render` shows them as `a.title`. **Glyphs**: `:check:` in text is the
+- **Placeholders.** `${a.title}` in text names an input and its field; a binding fills them
+  ("Bindings, as built"), and an unbound shape shows them as `a.title`. **Glyphs**: `:check:` in text is the
   glyph's symbol, one character that draws like a letter; an unknown `:name:` stays as written.
 - **`on`.** Each entry is one gesture or action (`drop = { from, to }` between regions,
   `click` on a region or part, `key`, or a named `action` with a `title`) and its steps: `do = [
@@ -171,6 +171,75 @@ $ cold-lava shapes example-workspace --render venn2 --size 40x12
              ⠑⠤⣀ ⠈⠢⣄⣠⠔⠁ ⣀⠤⠊
                 ⠉⠉⠉  ⠉⠉⠉
 ```
+
+### Bindings, as built
+
+A placed shape's inputs are bound to data, and the engine says what it shows: `bind.rs` and
+`shows.rs` in the engine, data and no UI. A frontend makes a `Binding` for a placed shape,
+hands it the core's item news and events, and asks it what to draw.
+
+- **Sources.** Each input is bound to one `Source`, saved with the placed shape as the user
+  chose it:
+  - a **query**: an `items/query` selection (`kind` and the gateway's `filter`: `tag`,
+    `folder`, `note`, `status`, `property`, `text`, `date`), and an optional `title`;
+  - a **note** (`Volcanoes/Krakatoa.md`): one member with its `title` and `name` (the file's
+    stem), `path`, `tags` and `excerpt` (its first three lines of text, after the frontmatter
+    and a first heading). This is a card's input;
+  - **items**: labels written out, each a member whose `name` is the label;
+  - **text** of the drawing's own: a sticky's.
+
+  On the wire (and in `--bind` as JSON) a source is `{"query": {"kind": "volcano", "filter":
+  {"tag": "eruption"}, "title": "Erupted"}}`, `{"note": "…"}`, `{"items": ["…"]}` or
+  `{"text": "…"}`. Another shape's output as a source waits for placed shapes (#136), since it
+  names a placed shape.
+- **Live.** A query input is subscribed (`items/subscribe`) as the owner `canvas`; the frontend
+  hands `canvas`'s news to its bindings (`Binding::heard`), and the input is queried again. A
+  note input is read again on its `NoteChanged`, `NoteCreated` or `NoteRemoved`, and every input
+  after `Rescanned` (`Binding::noticed`). `close` ends the subscriptions.
+- **Members.** What an input holds: an item (its id, its `rev`, its fields; a list item's or a
+  heading's `text`; its `note`), a note, or a label. A member's **label**, unless the region
+  says otherwise, is its `name`, else its `title`, else its `text`, else its first text field,
+  else its id.
+- **Key.** The shape's `key` says what makes members of two inputs the same: the field's value
+  folded with `search_key` (case, accents and ʻokina), so `kilauea` matches `Kīlauea`. Without
+  a key, or for a member with no value for it, a member is only the same as itself (its id).
+- **Placeholders.** `${a}` is the input's text: a query's or note's title, the labels joined
+  with ", ", or the text. `${a.title}` is its **title**: a query's `title`, else the query read
+  out (`volcano #eruption in Volcanoes`); a note's name; a list's input name; text's first line.
+  `${a.count}` is how many members it has; a query's `${a.type}`, `${a.tag}`, `${a.folder}`
+  and `${a.note}` are its selection's; any other field is its one member's (`${note.excerpt}`),
+  and empty when it has more or none.
+- **What it shows.** `Binding::shown` is each region in order with its members' ids and labels
+  (what its `shows` picks), and each text and label part filled in; `Binding::canvas` is the
+  shape with its text filled, to draw. `cold-lava shapes WORKSPACE --render ID --bind
+  INPUT=SOURCE…` draws it with each region's labels fitted inside it (a centred column, "+N
+  more" when they don't fit); with `--json` it prints `shown`. `--bind` takes a query as words
+  (`type=volcano tag=eruption title="Erupted"`), `note:PATH`, `items:A, B`, `text:…`, or JSON.
+
+```console
+$ cold-lava shapes example-workspace --render venn2 --size 80x24 \
+    --bind a='type=volcano tag=eruption title=Erupted' \
+    --bind b='type=volcano tag=volcano/strato title=Stratovolcanoes'
+                               Erupted  Stratovolcanoes
+
+                            ⡠⠤⠒⠊⠉⠉⠉⠉⠉⠉⢒⡢⢔⡒⠉⠉⠉⠉⠉⠉⠑⠒⠤⢄
+                         ⡠⠔⠉       ⢀⠤⠊⠁  ⠈⠑⠤⡀       ⠉⠢⢄
+                       ⢠⠊         ⡔⠁        ⠈⢢         ⠑⡄
+                      ⡰⠁        ⢀⠎            ⠱⡀        ⠈⢆
+                     ⢰⠁         ⡎              ⢱         ⠈⡆
+                     ⡇         ⢸                ⡇         ⢸
+                    ⢸          ⡜Eyjafjallajökull⢣          ⡇
+                    ⢸Krakatoa  ⢣Mount St. Helens⡜ Mount Fu…⡇
+                     ⡇         ⢸    Vesuvius    ⡇         ⢸
+                     ⠸⡀         ⢇              ⡸         ⢀⠇
+                      ⠱⡀        ⠈⢆            ⡰⠁        ⢀⠎
+                       ⠘⢄         ⠣⡀        ⢀⠜         ⡠⠃
+                         ⠑⠢⣀       ⠈⠒⢄⡀  ⢀⡠⠒⠁       ⣀⠔⠊
+                            ⠑⠒⠤⢄⣀⣀⣀⣀⣀⣀⠬⠕⠪⠥⣀⣀⣀⣀⣀⣀⡠⠤⠒⠊
+```
+
+The built-in `card`'s region `note` has no `shows`: the card's text already shows its note, and
+the region is there to be clicked.
 
 The example workspace has a three-circle Venn, a timeline that nests a `tick` three times, and
 a glyph of its own (`:eruption:`) in `.cold-lava/shapes.toml`. `venn2` is built in rather than
@@ -253,8 +322,10 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
   rotate grip above the top edge, only on the selected shape), the topmost part (inside an area,
   or within a tolerance of a stroke) and the region. Blank space inside a shape's box still hits
   the shape.
-- **Bindings:** inputs run as gateway queries and stay live (`items/subscribe`); region
-  expressions are evaluated when an input changes; gestures become gateway edits.
+- **Bindings** *(as built: "Bindings, as built" above, in the engine rather than this crate,
+  which stays pure geometry)*: inputs run as gateway queries and stay live (`items/subscribe`);
+  region expressions are evaluated when an input changes; gestures become gateway edits.
+  `draw::paint_contents` fits each region's labels inside it.
 
 The TUI only paints what the engine hands it. In a terminal, text stays upright, one glyph per
 cell; strokes and areas rotate and stretch freely in braille or pixels. That is the
@@ -270,6 +341,7 @@ engine/frontend split again: the model is general, each frontend draws it as wel
 3. Shape definitions: loaded like types, with built-ins, `cold-lava shapes WORKSPACE`. *(as
    built: `crates/engine/src/shapes.rs`, #134; "Shape definitions, as built" above.)*
 4. Bindings: inputs as live queries, the region expression language, behaviour as edits.
+   *(as built: `bind.rs` and `shows.rs` in the engine, #135; "Bindings, as built" above.)*
 5. Placed shapes in the scene view (after scenes, #91): place, move, stretch and rotate; the
    Venn diagram in the example workspace as the showcase; then the whiteboard (#92) built on
    shapes, and shapes in the document view through `![[…]]`.

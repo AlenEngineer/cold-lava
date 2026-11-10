@@ -83,6 +83,73 @@ fn shapes_render_as_text() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The two-circle Venn bound to two queries over the example workspace: volcanoes with an
+/// `#eruption` against stratovolcanoes, matched on their names.
+const ERUPTED: &str = "a=type=volcano tag=eruption title=Erupted";
+const STRATO: &str = "b=type=volcano tag=volcano/strato title=Stratovolcanoes";
+
+#[test]
+fn bound_shapes_show_their_data() {
+    let dir = scratch("bound");
+    let ws = "example-workspace";
+    let venn = [
+        "--render", "venn2", "--size", "80x24", "--bind", ERUPTED, "--bind", STRATO,
+    ];
+    let out = stdout(&shapes(&dir, &[&[ws][..], &venn].concat()));
+    golden("shape-venn2-bound-80x24.txt", &out);
+    let json = stdout(&shapes(&dir, &[&[ws][..], &venn, &["--json"]].concat()));
+    golden("shape-venn2-bound.json", &json);
+    let shown: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let labels = |region: usize| -> Vec<String> {
+        (shown["regions"][region]["items"].as_array().unwrap().iter())
+            .map(|e| e["label"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(labels(0), ["Krakatoa"], "erupted, not a stratovolcano");
+    assert_eq!(
+        labels(1),
+        ["Eyjafjallajökull", "Mount St. Helens", "Vesuvius"],
+        "both"
+    );
+    assert_eq!(
+        labels(2),
+        ["Mount Fuji"],
+        "a stratovolcano with no #eruption"
+    );
+
+    let card = [
+        "--render",
+        "card",
+        "--size",
+        "50x10",
+        "--bind",
+        "note=note:Volcanoes/Krakatoa",
+    ];
+    golden(
+        "shape-card-bound-50x10.txt",
+        &stdout(&shapes(&dir, &[&[ws][..], &card].concat())),
+    );
+
+    for (bind, error) in [
+        ("c=items:x", "venn2 has no input c (its inputs: a, b)"),
+        (
+            "a=type=vulcano",
+            "input a: no item kind or type called vulcano",
+        ),
+        (
+            "a=type=volcano colour=red",
+            "--bind a: colour is not part of a query",
+        ),
+        ("a", "--bind \"a\": write it INPUT=SOURCE"),
+    ] {
+        let out = shapes(&dir, &[ws, "--render", "venn2", "--bind", bind]);
+        assert!(!out.status.success(), "{bind}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(error), "{bind}: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn the_venn_titles_never_touch_at_40x12() {
     let dir = scratch("titles");
