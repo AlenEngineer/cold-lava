@@ -3,7 +3,7 @@
 //! Each frame is rasterised with tiny-skia, zlib-compressed, and sent as an image placed under
 //! the text layer (z = -1), so ratatui's labels and borders still draw on top of it.
 
-use crate::scene::Scene;
+use crate::scene::Frame;
 use base64::Engine;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -63,13 +63,24 @@ impl Kitty {
         }
     }
 
+    /// A terminal whose cells are `cell_w` by `cell_h` pixels, without asking it.
+    #[cfg(test)]
+    pub fn with_cells(cell_w: f64, cell_h: f64) -> Kitty {
+        Kitty {
+            cell_w,
+            cell_h,
+            next_id: 7001,
+            shown: None,
+        }
+    }
+
     /// Height/width of a cell (2.0 is the classic assumption).
     pub fn cell_aspect(&self) -> f64 {
         self.cell_h / self.cell_w
     }
 
     /// Rasterise the scene and return the escape sequence that displays it over `area`.
-    pub fn frame(&mut self, scene: &Scene, area: Rect) -> Vec<u8> {
+    pub fn frame(&mut self, scene: &Frame, area: Rect) -> Vec<u8> {
         // Cap the work per frame (HiDPI screens can be 5+ megapixels); the terminal scales the
         // image to the c×r cell box, so rendering a bit smaller just softens it slightly.
         let full_w = area.width as f64 * self.cell_w;
@@ -251,5 +262,50 @@ mod tests {
         );
         assert!(out.contains(&format!("\x1b\\\x1b_Gm=0;{}\x1b\\", &b64[4096..])));
         assert_eq!(delete(PICTURE), b"\x1b_Ga=d,d=I,i=7101,q=2\x1b\\");
+    }
+
+    #[test]
+    fn a_frame_is_placed_under_the_text_and_the_one_before_deleted() {
+        use crate::scene::{Disc, Edge, Frame, Layer};
+        use ratatui::style::Color;
+        let frame = Frame {
+            view: (-10.0, 10.0, -10.0, 10.0),
+            zoom: 1.0,
+            layers: vec![Layer {
+                edges: vec![Edge {
+                    a: (-5.0, 0.0),
+                    b: (5.0, 0.0),
+                    color: Color::Rgb(68, 68, 82),
+                    bold: false,
+                }],
+                discs: vec![Disc {
+                    x: 0.0,
+                    y: 0.0,
+                    r: 3.0,
+                    color: Color::Rgb(167, 139, 250),
+                    ring: Some(Color::Rgb(167, 139, 250)),
+                }],
+            }],
+            labels: Vec::new(),
+        };
+        let mut k = Kitty::with_cells(8.0, 16.0);
+        let area = Rect::new(2, 3, 20, 10);
+        let first = String::from_utf8(k.frame(&frame, area)).unwrap();
+        assert!(
+            first.starts_with("\x1b7\x1b[4;3H\x1b_Ga=T,f=32,o=z,s=160,v=160,i=7001,"),
+            "{}",
+            &first[..60]
+        );
+        assert!(
+            first.contains(",z=-1,c=20,r=10,"),
+            "under the text, over the cells"
+        );
+        assert!(first.ends_with("\x1b\\\x1b8"), "the cursor is restored");
+        assert!(!first.contains("a=d"), "nothing to delete yet");
+        let second = String::from_utf8(k.frame(&frame, area)).unwrap();
+        assert!(second.contains("i=7002,"));
+        assert!(second.contains("\x1b_Ga=d,d=I,i=7001,q=2\x1b\\"));
+        let clear = String::from_utf8(k.clear()).unwrap();
+        assert!(clear.contains("i=7001") && clear.contains("i=7002"));
     }
 }

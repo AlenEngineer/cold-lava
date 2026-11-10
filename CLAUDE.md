@@ -46,8 +46,8 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
 - `core.rs`: `Core` = one live workspace. Owns the `Index`, is the only file watcher, re-reads only
-  changed notes and emits `Event`s (`poll()`, `subscribe()`). Screens share it: the menu lends
-  its core to the graph view and gets it back. Don't add another watcher or full rescan loop.
+  changed notes and emits `Event`s (`poll()`, `subscribe()`). The menu owns it, and the graph
+  runs in the menu's loop on it. Don't add another watcher or full rescan loop.
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read), `create`, `move_file`. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
@@ -162,8 +162,15 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (Neovim's come from `VIM_SCRIPT` in
   `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the
   extension that owns the pane.
-- `app.rs`, `graph.rs`, `scene.rs`, `kitty.rs`, `groups.rs`: graph view (force layout; braille
-  or Kitty-graphics pixels drawn under the text with `z=-1`; colour groups).
+- `scene_view.rs`: the scene view, a scene of nodes and links (`Scene`, serde) that the core
+  lays out (`graph.rs`'s force layout, positions kept by node id), draws (`scene.rs`'s `Frame`,
+  in braille or Kitty-graphics pixels under the text with `z=-1`, `kitty.rs`) and moves around
+  in. It runs in the menu's loop (`Mode::Graph`, `Place::Graph`): the menu ticks it once a
+  frame, so extensions keep being answered, and keys whose meaning is the sender's come back as
+  `Action::Command`.
+- `app.rs`: the palette, and the graph (`GraphScreen`): the workspace's notes and links as a
+  scene (`graph::build`, colour groups from `groups.rs`), its filters and what its commands
+  mean. The whiteboard is still a screen with its own loop (#92).
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
   cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):

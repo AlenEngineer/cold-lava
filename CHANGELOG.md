@@ -7,6 +7,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Changed
+
+- The graph view runs in the menu's loop instead of its own. Extensions keep being answered
+  while it is open, and their part of the status line (`ui/status`) and their messages show in
+  the graph's. The graph is kept while the workspace is open: going back to it, or pressing
+  `g` again, finds the layout where it was instead of laying it out again. `cold-lava graph
+  WORKSPACE` opens the menu on the graph; `q` there still quits.
+
 ### Added
 
 - `cold-lava drive` drags and scrolls the mouse: `drag ROW COL ROW2 COL2` presses the left

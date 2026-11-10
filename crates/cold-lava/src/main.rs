@@ -20,6 +20,7 @@ mod previews;
 mod reader;
 mod recipe_view;
 mod scene;
+mod scene_view;
 mod table;
 mod term;
 mod tidy_view;
@@ -323,8 +324,10 @@ fn run() -> Result<()> {
             if core.index.workspace.notes.is_empty() {
                 anyhow::bail!("no .md notes found under {}", core.root().display());
             }
-            let mut app = app::App::new(core, render);
-            with_terminal(|t| app.run(t))
+            drop(core);
+            let mut home = home::Home::new(render, Some(root), registry);
+            home.open_graph_alone()?;
+            with_terminal(|t| home.run(t))
         }
         Some("agenda") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));

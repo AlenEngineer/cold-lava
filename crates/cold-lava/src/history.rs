@@ -161,14 +161,12 @@ impl Nav {
     }
 }
 
-/// How the graph or a board was left.
+/// How a board was left.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Exit {
     Quit,
     Back,
     Forward,
-    /// The graph picked a board to open.
-    Board(PathBuf),
 }
 
 #[cfg(test)]

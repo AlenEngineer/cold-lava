@@ -1,4 +1,4 @@
-//! A backend-neutral description of one frame of the graph, drawn either with braille
+//! A backend-neutral description of one frame of a scene, drawn either with braille
 //! characters (any terminal) or as real pixels (Kitty graphics protocol).
 
 use ratatui::buffer::Buffer;
@@ -37,7 +37,7 @@ pub struct Layer {
     pub discs: Vec<Disc>,
 }
 
-pub struct Scene {
+pub struct Frame {
     /// World-space view rectangle: x0, x1, y0, y1 (y up).
     pub view: (f64, f64, f64, f64),
     /// World units -> braille dots.
@@ -47,7 +47,7 @@ pub struct Scene {
     pub labels: Vec<Label>,
 }
 
-impl Scene {
+impl Frame {
     pub fn paint_braille(&self, ctx: &mut Context) {
         for layer in &self.layers {
             for e in &layer.edges {
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn overlapping_labels_are_skipped_in_priority_order() {
-        let scene = Scene {
+        let scene = Frame {
             view: (0.0, 40.0, -10.0, 10.0),
             zoom: 1.0,
             layers: vec![],

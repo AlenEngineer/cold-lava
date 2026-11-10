@@ -57,18 +57,6 @@ impl Assignment {
             of_node: vec![None; n],
         }
     }
-
-    pub fn color(&self, i: usize) -> Option<Color> {
-        self.of_node
-            .get(i)
-            .copied()
-            .flatten()
-            .map(|g| self.groups[g].color)
-    }
-
-    pub fn count(&self, g: usize) -> usize {
-        self.of_node.iter().filter(|x| **x == Some(g)).count()
-    }
 }
 
 pub fn assign(mode: Mode, graph: &Graph, obsidian: &[Group]) -> Assignment {

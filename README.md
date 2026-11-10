@@ -206,6 +206,10 @@ places of the open workspace.
 | `,` / `?` | which key: the graph's commands by group / help |
 | `Ctrl-o` / `Alt-←`, `Alt-→` | from the menu: back to where you were, forward again |
 
+The graph runs inside the menu: extensions keep working while it is open, and their part of
+the status line shows in the graph's. It is kept while the workspace is open, so going back to
+it finds the layout where you left it.
+
 ### Whiteboard
 
 | Key | Action |

@@ -1926,7 +1926,34 @@ zooming wait.
   The **three-way merge** moves with the whiteboard extension, which reads with a revision and
   writes with `workspace/write` expecting it, merging and retrying when refused.
 
-The graph moves first: it's read-only, already draws through a backend-neutral `Scene`, and is
+### Scenes, as built
+
+- **The scene view** (`crates/cold-lava/src/scene_view.rs`) draws a `Scene`: a title, nodes
+  (`id`, `label`, a `look` of `note`, `ghost` or `tag`, a colour `group`, the `file` it stands
+  for and a `detail` for the status line), edges between node ids, colour groups (`label`,
+  `color` as `#rrggbb`) for the legend, and `flags` for the frame's top right. It owns the force
+  layout (`graph.rs`; positions kept by node id across updates, and an update that changes only
+  looks keeps the layout still), the camera, selection by arrow and along links, the local
+  graph, search over labels and files, labels, dragging nodes, and drawing in braille or Kitty
+  pixels (`scene.rs`'s `Frame`, `kitty.rs`).
+- **In the menu's loop.** The scene view is a place in the menu (`Mode::Graph`,
+  `Place::Graph` with the selected node's id), not a screen with its own loop: the menu ticks
+  it once a frame (a layout step, the camera easing), waits for input no longer than it needs,
+  and keeps answering extensions meanwhile. The menu owns the `Core`; nothing is lent. Back and
+  Forward leave it and come back to it as it was; `q` goes to the menu, which Back returns
+  from. Extensions' `ui/status` text and `ui/notify` messages show in its status line
+  (`graph-extensions.drive` checks it with the `open-tasks` example).
+- **Keys** are the graph's table (`graph.*`, configurable), owned by the core. The view handles
+  navigation, the camera, search, the local graph, labels and pixels itself; the commands whose
+  meaning is the sender's (`graph.open-note`, `graph.toggle-tags`, `graph.groups`, …) come back
+  as `Action::Command` with the selection.
+- **The graph** (`app.rs`, `GraphScreen`) builds its scene from the core's index
+  (`graph::build`, `groups::assign`) and follows the core's events. `graph.drive` and
+  `history-screens.drive`, written before the move, pass unchanged.
+- **Not yet:** the scene on the view gateway (the graph as an extension), fixed layouts,
+  cards and the whiteboard (#92), and a scene beside the tree.
+
+The graph moves first: it's read-only, already draws through a backend-neutral `Frame`, and is
 where the performance risk is (a 5k-note workspace is about 1.3 MB of `view/open`, sent once). The
 whiteboard follows once the graph has carried the protocol; if input and picking make the scene
 protocol grow into a UI toolkit, keeping the whiteboard in the core is a fair outcome. Scenes
@@ -1995,8 +2022,8 @@ after its call returns, so it never holds the menu's state.
       is the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard
       *(done: `drag`, `scroll` and `expect-in`; `graph.drive` and `board.drive`)*. The scene
-      view is extracted from the graph, runs in the menu's loop, and the graph becomes an
-      extension. Then the whiteboard.
+      view is extracted from the graph and runs in the menu's loop *(done: `scene_view.rs`,
+      "Scenes, as built")*, and the graph becomes an extension. Then the whiteboard.
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
    *(in progress: the stdio transport, JSON-RPC, manifests in `~/.config/cold-lava/extensions`,

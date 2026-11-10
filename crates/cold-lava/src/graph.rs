@@ -25,6 +25,31 @@ pub struct Node {
     pub pinned: bool,
 }
 
+impl Node {
+    pub fn new(key: String, label: String, kind: Kind, (x, y): (f64, f64)) -> Node {
+        Node {
+            key,
+            label,
+            kind,
+            path: None,
+            rel: None,
+            tags: Vec::new(),
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            pinned: false,
+        }
+    }
+}
+
+/// Where the `i`th node starts: a phyllotaxis spiral, deterministic and evenly spread.
+pub fn start(i: usize) -> (f64, f64) {
+    let r = 8.0 * ((i as f64) + 0.5).sqrt();
+    let a = i as f64 * std::f64::consts::PI * (3.0 - 5f64.sqrt());
+    (r * a.cos(), r * a.sin())
+}
+
 #[derive(Clone, Copy)]
 pub struct BuildOpts {
     pub unresolved: bool,
@@ -64,25 +89,10 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
             return i;
         }
         let i = nodes.len();
-        // Phyllotaxis spiral start position (deterministic, evenly spread).
-        let (x, y) = prev.get(&key).copied().unwrap_or_else(|| {
-            let r = 8.0 * ((i as f64) + 0.5).sqrt();
-            let a = i as f64 * std::f64::consts::PI * (3.0 - 5f64.sqrt());
-            (r * a.cos(), r * a.sin())
-        });
-        nodes.push(Node {
-            key: key.clone(),
-            label,
-            kind,
-            path,
-            rel,
-            tags: Vec::new(),
-            x,
-            y,
-            vx: 0.0,
-            vy: 0.0,
-            pinned: false,
-        });
+        let at = prev.get(&key).copied().unwrap_or_else(|| start(i));
+        let mut node = Node::new(key.clone(), label, kind, at);
+        (node.path, node.rel) = (path, rel);
+        nodes.push(node);
         index.insert(key, i);
         i
     };
@@ -188,7 +198,7 @@ pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) ->
 }
 
 impl Graph {
-    fn from_parts(nodes: Vec<Node>, edges: Vec<(usize, usize)>) -> Graph {
+    pub fn from_parts(nodes: Vec<Node>, edges: Vec<(usize, usize)>) -> Graph {
         let n = nodes.len();
         let mut adj = vec![Vec::new(); n];
         let mut links_out = vec![0; n];
