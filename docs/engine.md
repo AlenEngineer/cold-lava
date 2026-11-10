@@ -235,6 +235,19 @@ change what it shows, never how it works.
   opinionated first. Once its parts have proven themselves (the view host, the document
   layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a
   real app instead of guesses.
+- **Our own terminal graphics library, by extraction.** A TUI graphics library is two halves:
+  scene in, cells out (geometry, regions, rasterizing to cells, braille and pixels, fitting,
+  hit testing), and cells to the terminal (a cell buffer diffed frame to frame, escape codes,
+  keys and mouse). The first half is ours, the canvas engine (docs/shapes.md), and it is what no
+  widget library offers. The second half stays ratatui's buffer and crossterm, since it is solved
+  and fiddly. As shapes take over drawing (the graph, placed shapes, the whiteboard, the document
+  view, then tables and lists), ratatui's widgets drop out until only its buffer and backend
+  remain. **Decision point: around placed shapes (#136).** Replace that thin layer with our own
+  writer when ratatui's buffer blocks something we need: layers (text over braille over Kitty
+  pixels, which the graph fakes with `z=-1`), redrawing only damaged regions for smooth large
+  scenes, sub-cell placement, or synchronized output. The canvas engine plus that writer is then
+  cold-lava's terminal graphics library, and can be published as a crate. Until then the canvas
+  engine stays free of UI crates, so the switch stays small.
 - **Honest limits.** A terminal draws whiteboards, diagrams, boards and graphs well, with Kitty
   pixels where the terminal has them and braille elsewhere. It won't feel like a tablet.
 
