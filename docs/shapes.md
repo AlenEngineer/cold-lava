@@ -109,10 +109,25 @@ like letters anywhere text goes.
 
 ## The canvas engine
 
-A headless crate (like `cold-lava-editor`: nothing drawn), shared by every frontend:
+A headless crate (like `cold-lava-editor`: nothing drawn), shared by every frontend. It is
+`cold-lava-canvas` in `crates/canvas`, with no dependencies, built up in the order below.
 
-- **Geometry:** vector parts in a shape's box, transforms (move, stretch, rotate), anchors.
-- **Regions:** boolean operations on areas (`&`, `|`, `-`).
+- **Geometry** *(as built)*: parts in a shape's unit box (`part.rs`: `rect`, `circle`,
+  `ellipse`, `line`, `arrow`, `path` as a polyline or cubic Béziers flattened once, `text` as the
+  box its text will fill); a `Placement` (what is saved: top-left corner, size, rotation in
+  degrees clockwise about the centre) composed into one affine `Transform`; anchors
+  (`left.top`, a part's id for its centre, the box's own `center`, `top-left`, …, and `start`
+  and `end` of strokes). A part is an area (it has an inside) or a stroke (a line, an arrow, an
+  open path); an arrow's head keeps its size in world units when the shape is stretched.
+- **Regions** *(as built)*: boolean operations on areas (`&`, `|`, `-`). `area.rs` parses the
+  expression (`&` binds tighter than `|` and `-`, brackets group, `only-a` is one name so the
+  operator is written `a - b`) and keeps it as a tree that answers *is this point inside?*
+  from the parts' exact implicit forms (a circle is `|p − c| ≤ r`; a closed path, even-odd).
+  Nothing is clipped into a new outline: rasterizing samples the tree at the resolution it
+  draws at, hit testing asks it about one point, and a rotated or stretched shape maps the
+  point back into its unit box first. That has no slivers, tangent cases or precision drift;
+  it gives up exact vector outlines of a region, which a GUI can still get by sampling finely.
+  Shapes are made in code for now; their TOML definitions are step 3.
 - **Fitting:** text and region content laid out inside areas, overflow counted.
 - **Rasterizing:** areas and strokes to terminal cells, braille dots (2×4 per cell) and, where the
   terminal has Kitty graphics, pixels; a GUI would draw the same geometry exactly.

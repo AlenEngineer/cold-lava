@@ -25,7 +25,7 @@ required checks on `main`.
 
 ## Architecture
 
-A Cargo workspace of four crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
+A Cargo workspace of five crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
 `[workspace.package]`; `example-workspace/`, `docs/` and `scripts/` stay at the root.
 
 - `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
@@ -38,6 +38,12 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
 - `crates/editor`: `cold-lava-editor`, the small text editor, headless (text, cursors, edits,
   undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
   in place. Saves go through the engine's safe writes.
+- `crates/canvas`: `cold-lava-canvas`, the canvas engine of `docs/shapes.md`, headless and with
+  no dependencies: shapes made of parts in their own unit box, placements (move, stretch,
+  rotate), anchors, and regions (`&`, `|`, `-` over parts' insides, kept as expressions and
+  answered point by point). Its own crate, not `views`, because it is pure geometry every
+  frontend computes the same way, not a frontend piece; no UI crate (`cargo tree -p
+  cold-lava-canvas`). Nothing uses it yet; placed shapes come after scenes (#91).
 - `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
   workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
   a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
