@@ -30,8 +30,8 @@ mod views;
 mod whichkey;
 
 use cold_lava_engine::{
-    bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, links, markdown,
-    matcher, merge, owner, paths, recipe, rename, resolver, search, shapes, style, tasks,
+    act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, links,
+    markdown, matcher, merge, owner, paths, recipe, rename, resolver, search, shapes, style, tasks,
     templates, tidy, trash, types, workspace, write,
 };
 
@@ -78,8 +78,10 @@ Usage:
   cold-lava shapes [WORKSPACE]        every shape and glyph: where it comes from, its parts,
                                       regions, inputs and behaviour; checks [[shapes]] in
                                       config.toml and .cold-lava/shapes.toml
-  cold-lava shapes [WORKSPACE] --render ID [--size WxH]
-                                      draw a shape as text (braille, labels, then its regions)
+  cold-lava shapes [WORKSPACE] --render ID [--size WxH] [--bind INPUT=SOURCE…]
+                                      draw a shape as text (braille, labels, then its regions),
+                                      its inputs bound to data and its regions filled; with
+                                      --json, what it shows as data
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
                                       with an empty home unless --real-home
@@ -102,6 +104,12 @@ Options:
   --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
   --render ID          shapes: draw this shape, unbound (${a.title} shows as a.title)
   --size WxH           shapes --render: the terminal it is drawn on (default 60x18)
+  --bind INPUT=SOURCE  shapes --render, repeatable: bind an input to a query
+                       ('type=volcano tag=eruption title=Erupted where vei >= 6'), a note
+                       (note:PATH), labels (items:A, B) or text (text:…)
+  --do GESTURE         shapes --render --bind: first do what the shape does on a gesture
+                       (action:NAME, key:K, click:ON[:ITEM], drop:FROM:TO:ITEM), writing to
+                       the workspace; prints each step, then the shape as it is after
   -V, --version        print the version
   -h, --help           this help
 
@@ -112,22 +120,34 @@ COLD_LAVA_EDITOR=none opens notes in the reader even when Neovim is installed.";
 /// Command-line arguments: positional words, `--flag value` options and `--switch`es.
 struct Args {
     words: Vec<String>,
+    /// `--bind`, which can be given more than once.
+    binds: Vec<String>,
     values: std::collections::HashMap<String, String>,
     switches: std::collections::HashSet<String>,
 }
 
 impl Args {
     fn parse() -> Result<Args> {
-        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit", "rev", "sort", "render", "size"];
+        const WITH_VALUE: &[&str] = &[
+            "from", "to", "id", "limit", "rev", "sort", "render", "size", "do",
+        ];
         let mut a = Args {
             words: Vec::new(),
+            binds: Vec::new(),
             values: Default::default(),
             switches: Default::default(),
         };
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
             if let Some(flag) = arg.strip_prefix("--") {
-                if let Some((k, v)) = flag.split_once('=') {
+                if flag == "bind" {
+                    let v = it
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--bind needs INPUT=SOURCE"))?;
+                    a.binds.push(v);
+                } else if let Some(v) = flag.strip_prefix("bind=") {
+                    a.binds.push(v.to_string());
+                } else if let Some((k, v)) = flag.split_once('=') {
                     a.values.insert(k.to_string(), v.to_string());
                 } else if WITH_VALUE.contains(&flag) {
                     let v = it
@@ -354,11 +374,19 @@ fn run() -> Result<()> {
                     .and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?)))
                     .filter(|&(w, h)| w > 0 && h > 0)
                     .ok_or_else(|| anyhow::anyhow!("--size is WxH in cells, like 60x18"))?;
-                let unbound = std::sync::Arc::new(shape.unbound());
-                let aspect = shape.definition.aspect;
+                let (drawn, contents, aspect) = match args.binds.is_empty() {
+                    true => {
+                        let aspect = shape.definition.aspect;
+                        (std::sync::Arc::new(shape.unbound()), Vec::new(), aspect)
+                    }
+                    false => match bound_shape(&root, &found, id, &args, &mut registry, json)? {
+                        Some(drawn) => drawn,
+                        None => return Ok(()),
+                    },
+                };
                 print!(
                     "{}",
-                    cold_lava_canvas::draw::preview(unbound, cols, rows, aspect)
+                    cold_lava_canvas::draw::preview(drawn, cols, rows, aspect, &contents)
                 );
                 return Ok(());
             }
@@ -1047,6 +1075,112 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
 
 /// `cold-lava shapes`: each shape with where it comes from, then what it is made of, the data
 /// it takes and what it does, one line each; then the glyphs.
+/// What `cold-lava shapes --render ID --bind …` draws: the shape bound to data, after the
+/// gesture `--do` if there is one (each step printed), its extension asked for the regions it
+/// computes. `None` when `--json` printed it as data instead.
+type Drawn = (
+    std::sync::Arc<cold_lava_canvas::Shape>,
+    Vec<Vec<String>>,
+    Option<f64>,
+);
+
+fn bound_shape(
+    root: &Path,
+    found: &shapes::Shapes,
+    id: &str,
+    args: &Args,
+    registry: &mut ext::Registry,
+    json: bool,
+) -> Result<Option<Drawn>> {
+    use anyhow::anyhow;
+    let mut sources = Vec::new();
+    for b in &args.binds {
+        let (input, source) = b
+            .split_once('=')
+            .ok_or_else(|| anyhow!("--bind {b:?}: write it INPUT=SOURCE, like a='type=volcano'"))?;
+        let source = bind::Source::parse(source).map_err(|e| anyhow!("--bind {input}: {e}"))?;
+        sources.push((input.trim().to_string(), source));
+    }
+    let mut core = owned::open(root, registry)?;
+    let mut owners = owned::Owners::new(registry, &core);
+    let mut binding = bind::Binding::new(&mut core, found, id, sources).map_err(|e| anyhow!(e))?;
+    let mut done = None;
+    if let Some(g) = args.values.get("do") {
+        let gesture = act::Gesture::parse(g).map_err(|e| anyhow!("--do {e}"))?;
+        let ext = binding.extension().map(String::from);
+        let refused = |e: gateway::Error| anyhow!("--do: {e}");
+        let acted = match &ext {
+            Some(name) => {
+                owners.as_extension(&mut core, name, |host| binding.act(host, &gesture, 0))?
+            }
+            None => binding.act(&mut act::Direct::user(&mut core), &gesture, 0),
+        };
+        let ran = match (acted.map_err(refused)?, &ext) {
+            (act::Acted::Ran(d), _) => d,
+            (act::Acted::Ask(ask), Some(name)) => match owners.ask_shape(&mut core, name, ask)? {
+                act::Answered::Gesture { steps } => owners
+                    .as_extension(&mut core, name, |host| binding.run(host, &gesture, &steps))?
+                    .map_err(refused)?,
+                act::Answered::Region { .. } => unreachable!("the core checks the answer's form"),
+            },
+            (act::Acted::Ask(_), None) => unreachable!("only an extension's shape asks"),
+        };
+        for (owner, news) in core.take_item_news() {
+            if owner == bind::OWNER {
+                binding.heard(&core, &news);
+            }
+        }
+        for event in core.poll() {
+            binding.noticed(&core, &event);
+        }
+        if let Some(to) = &ran.rebind {
+            binding
+                .rebind(&mut core, found, to)
+                .map_err(|e| anyhow!(e))?;
+        }
+        if !json {
+            for step in &ran.steps {
+                match step {
+                    act::Did::Edited { item, later: false } => println!("edited {item}"),
+                    act::Did::Edited { item, later: true } => {
+                        println!("asked its file's owner to edit {item}")
+                    }
+                    act::Did::Created { path } => println!("created {path}"),
+                    act::Did::Recipe { title } => println!("ran {title}"),
+                }
+            }
+            if let Some(to) = &ran.rebind {
+                println!("now a {}", to.shape);
+            }
+        }
+        done = Some(ran);
+    }
+    if let Some(name) = binding.extension().map(String::from) {
+        for ask in binding.region_asks(0) {
+            let act::Ask::Region { region, .. } = &ask else {
+                continue;
+            };
+            let region = region.clone();
+            match owners.ask_shape(&mut core, &name, ask) {
+                Ok(act::Answered::Region { items }) => binding.answered(&region, items),
+                Ok(_) => {}
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+    }
+    let shown = binding.shown();
+    if json {
+        let out = match done {
+            Some(done) => serde_json::json!({"done": done, "shown": shown}),
+            None => serde_json::to_value(&shown)?,
+        };
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(None);
+    }
+    let aspect = binding.shape().definition.aspect;
+    Ok(Some((binding.canvas(), shown.contents(), aspect)))
+}
+
 fn print_shapes(found: &shapes::Shapes) {
     for s in &found.shapes {
         let d = &s.definition;

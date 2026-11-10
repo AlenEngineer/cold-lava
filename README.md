@@ -750,12 +750,31 @@ takes and what it does when you drop or click. They are written in TOML like typ
 (`text`, `rect`, `circle`, `line`, `arrow`, `card`, `sticky`, `table`, `venn2`), in an extension,
 under `[[shapes]]` in `~/.config/cold-lava/config.toml`, or in `.cold-lava/shapes.toml` in a
 workspace, each replacing the one before it by id. A `[glyphs]` table names symbols that draw like
-letters anywhere text goes (`:check:` is ✓). The example workspace has a three-circle Venn and a
-timeline.
+letters anywhere text goes (`:check:` is ✓). The example workspace has a three-circle Venn, a
+list of the tallest and a timeline.
 
 ```sh
 cold-lava shapes example-workspace                     # every shape, where it comes from, errors
 cold-lava shapes example-workspace --render venn3      # draw one as text (--size 60x18)
+cold-lava shapes example-workspace --render venn2 \
+  --bind a='type=volcano tag=eruption title=Erupted' \
+  --bind b='type=volcano tag=volcano/strato title=Stratovolcanoes'   # its inputs bound to data
+```
+
+A placed shape's inputs are bound to data: a query (`type=volcano tag=eruption`), a note
+(`note:Volcanoes/Krakatoa`), labels (`items:Fuji, Krakatoa`) or text (`text:…`). Each region
+shows what its expression picks from them (`a & b`: what both have, matched on the shape's
+`key`; `a where vei >= 6 sort by vei desc limit 5`), and stays up to date as notes change;
+`--json` prints it as data. A query input can take a `where` too
+(`--bind b='type=volcano where elevation >= 2500'`).
+
+A shape can also act: dropping, clicking or a key runs the steps its `on` declares, through
+the same safe edits as everything else, and a sticky's "make it a note" creates the note and
+becomes a card. `--do` runs one from the command line (on a copy of a workspace you care
+about, since it writes):
+
+```sh
+cold-lava shapes WORKSPACE --render sticky --bind 'text=text:Ash masks' --do action:make-a-note
 ```
 
 Placing shapes on a canvas comes later; see [docs/shapes.md](docs/shapes.md).

@@ -137,19 +137,21 @@ loader builds each definition into a `cold_lava_canvas::Shape`, and the canvas c
   its own: name its parts in a region of yours (`l.circle`).
 - **`anchors`** names points of the shape's own (`tip = [0.9, 0.5]`); **`aspect`** is its width
   over height in world units, used when it is first placed and by `--render`.
-- **Placeholders.** `${a.title}` in text names an input and its field; until bindings fill
-  them (step 4), `--render` shows them as `a.title`. **Glyphs**: `:check:` in text is the
+- **Placeholders.** `${a.title}` in text names an input and its field; a binding fills them
+  ("Bindings, as built"), and an unbound shape shows them as `a.title`. **Glyphs**: `:check:` in text is the
   glyph's symbol, one character that draws like a letter; an unknown `:name:` stays as written.
 - **`on`.** Each entry is one gesture or action (`drop = { from, to }` between regions,
   `click` on a region or part, `key`, or a named `action` with a `title`) and its steps: `do = [
-  … ]`, or one `edit` alone. Steps are `edit` (`item`, and one of `set-field` with one of
-  `value`, `add`, `remove`; `toggle`; `recipe`), `create` (a note: `text`, `name`), and `rebind`
-  (`shape`, `inputs`). They are stored and checked now, and run in step 4.
+  … ]`, or one `edit` alone, or `extension = true` (an extension's shape only: its extension
+  decides). Steps are `edit` (`item`, and one of `set-field` with one of `value`, `add`,
+  `remove`; `toggle`; or `recipe` with its `options` and no `item`), `create` (a note: `text`,
+  `name`), and `rebind` (`shape`, `inputs`). They run as "Behaviour, as built" says. A region
+  can say `extension = true` instead of `shows`, for its extension to compute.
 - **Checked at load,** one line each, naming the file and the shape: a definition that doesn't
   read (an unknown part kind or field), no id, no parts, a bad area (an unknown or stroke part,
   a stray operator), an anchor no earlier part has, two parts or anchors with one id, a
-  placeholder that isn't an input, a `shows` naming something not an input (its set expression,
-  before `where`, `sort` or `limit`, goes through the area parser with the inputs as names), a
+  placeholder that isn't an input, a `shows` that doesn't read or names something not an input
+  ("The region language" below; its sets go through the area parser with the inputs as names), a
   gesture count other than one, a `drop` between regions that don't exist, an edit with no or
   two kinds, a `rebind` or a nested shape naming a shape that didn't load, and a cycle of nested
   shapes. The shape is dropped; its siblings, and shapes in other files, load.
@@ -172,10 +174,185 @@ $ cold-lava shapes example-workspace --render venn2 --size 40x12
                 ⠉⠉⠉  ⠉⠉⠉
 ```
 
-The example workspace has a three-circle Venn, a timeline that nests a `tick` three times, and
-a glyph of its own (`:eruption:`) in `.cold-lava/shapes.toml`. `venn2` is built in rather than
-the example's, as the docs' example and the showcase of step 5: a placed Venn works in every
-workspace.
+### Bindings, as built
+
+A placed shape's inputs are bound to data, and the engine says what it shows: `bind.rs` and
+`shows.rs` in the engine, data and no UI. A frontend makes a `Binding` for a placed shape,
+hands it the core's item news and events, and asks it what to draw.
+
+- **Sources.** Each input is bound to one `Source`, saved with the placed shape as the user
+  chose it:
+  - a **query**: an `items/query` selection (`kind` and the gateway's `filter`: `tag`,
+    `folder`, `note`, `status`, `property`, `text`, `date`), an optional `where` (a condition
+    in the region language below, for what the gateway's filter can't say: `vei >= 6`), and
+    an optional `title`;
+  - a **note** (`Volcanoes/Krakatoa.md`): one member with its `title` and `name` (the file's
+    stem), `path`, `tags` and `excerpt` (its first three lines of text, after the frontmatter
+    and a first heading or a first line that is its name). This is a card's input;
+  - **items**: labels written out, each a member whose `name` is the label;
+  - **text** of the drawing's own: a sticky's.
+
+  On the wire (and in `--bind` as JSON) a source is `{"query": {"kind": "volcano", "filter":
+  {"tag": "eruption"}, "title": "Erupted"}}`, `{"note": "…"}`, `{"items": ["…"]}` or
+  `{"text": "…"}`. Another shape's output as a source waits for placed shapes (#136), since it
+  names a placed shape.
+- **Live.** A query input is subscribed (`items/subscribe`) as the owner `canvas`; the frontend
+  hands `canvas`'s news to its bindings (`Binding::heard`), and the input is queried again. A
+  note input is read again on its `NoteChanged`, `NoteCreated` or `NoteRemoved`, and every input
+  after `Rescanned` (`Binding::noticed`). `close` ends the subscriptions.
+- **Members.** What an input holds: an item (its id, its `rev`, its fields; a list item's or a
+  heading's `text`; its `note`), a note, or a label. A member's **label**, unless the region
+  says otherwise, is its `name`, else its `title`, else its `text`, else its first text field,
+  else its id.
+- **Key.** The shape's `key` says what makes members of two inputs the same: the field's value
+  folded with `search_key` (case, accents and ʻokina), so `kilauea` matches `Kīlauea`. Without
+  a key, or for a member with no value for it, a member is only the same as itself (its id).
+- **Placeholders.** `${a}` is the input's text: a query's or note's title, the labels joined
+  with ", ", or the text. `${a.title}` is its **title**: a query's `title`, else the query read
+  out (`volcano #eruption in Volcanoes`); a note's name; a list's input name; text's first line.
+  `${a.count}` is how many members it has; a query's `${a.type}`, `${a.tag}`, `${a.folder}`
+  and `${a.note}` are its selection's; any other field is its one member's (`${note.excerpt}`),
+  and empty when it has more or none.
+- **What it shows.** `Binding::shown` is each region in order with its members' ids and labels
+  (what its `shows` picks), and each text and label part filled in; `Binding::canvas` is the
+  shape with its text filled, to draw. `cold-lava shapes WORKSPACE --render ID --bind
+  INPUT=SOURCE…` draws it with each region's labels fitted inside it (a centred column, "+N
+  more" when they don't fit); with `--json` it prints `shown`. `--bind` takes a query as words
+  (`type=volcano tag=eruption title="Erupted" where vei >= 6`), `note:PATH`, `items:A, B`,
+  `text:…`, or JSON.
+
+#### The region language
+
+A region's `shows` is read when the shape loads (a mistake drops the shape with one line naming
+it) and evaluated each time `shown` is asked, so a changed input shows at once. It is a small
+language, not a programming language (`shows.rs`):
+
+```text
+shows   = sets [ "where" cond ] [ "sort" "by" FIELD [ "asc" | "desc" ] ] [ "limit" N ]
+          [ "label" FIELD ]
+sets    = input names with & | - and ( ), read as an area is over parts
+cond    = all { "or" all }
+all     = one { "and" one }
+one     = "not" one | "(" cond ")" | FIELD [ op value ]
+op      = "=" | "!=" | "<" | "<=" | ">" | ">="
+value   = "quoted text" | a word: 6, 2.5, 2026-11-10, ring-of-fire, #strato
+```
+
+- **Sets.** `&` binds tighter than `|` and `-`, which go left to right, as in areas. Members
+  are matched on the shape's `key`: `a & b` is each member of `a` whose key `b` has too, `a - b`
+  each one it doesn't, `a | b` the members of `a`, then those of `b` it doesn't have. A member
+  keeps its input's order, and comes from the left side.
+- **`where`** keeps the members the condition holds for. `FIELD` alone holds when the field has
+  a value. A comparison reads its value as a number when both sides are numbers, as a date when
+  both are `YYYY-MM-DD`, else as text folded with `search_key` (and a tag's `#` aside), so
+  `name = paricutin` finds Parícutin. On a list field (`tags`), `=` and the orderings hold when
+  one of its values does, and `!=` when none is equal. A member with no value for the field
+  never meets a comparison, `!=` included. `and` binds tighter than `or`; `not` and brackets
+  as usual.
+- **`sort by FIELD [desc]`** orders them, stably: numbers before text, a list by its first
+  value, members without the field last either way.
+- **`limit N`** keeps the first `N`.
+- **`label FIELD`** is what the region calls each member; its default label without a value.
+- The clauses come in that order, each at most once. The words `where`, `sort`, `limit`,
+  `label`, `and`, `or`, `not`, `by`, `asc` and `desc` are the language's, so a field can't be
+  called one.
+
+The example workspace's `tallest` shape lists the five tallest of what it is bound to:
+`shows = "volcanoes where elevation sort by elevation desc limit 5"`.
+
+```console
+$ cold-lava shapes example-workspace --render venn2 --size 80x24 \
+    --bind a='type=volcano tag=eruption title=Erupted' \
+    --bind b='type=volcano tag=volcano/strato title=Stratovolcanoes'
+                               Erupted  Stratovolcanoes
+
+                            ⡠⠤⠒⠊⠉⠉⠉⠉⠉⠉⢒⡢⢔⡒⠉⠉⠉⠉⠉⠉⠑⠒⠤⢄
+                         ⡠⠔⠉       ⢀⠤⠊⠁  ⠈⠑⠤⡀       ⠉⠢⢄
+                       ⢠⠊         ⡔⠁        ⠈⢢         ⠑⡄
+                      ⡰⠁        ⢀⠎            ⠱⡀        ⠈⢆
+                     ⢰⠁         ⡎              ⢱         ⠈⡆
+                     ⡇         ⢸                ⡇         ⢸
+                    ⢸          ⡜Eyjafjallajökull⢣          ⡇
+                    ⢸Krakatoa  ⢣Mount St. Helens⡜ Mount Fu…⡇
+                     ⡇         ⢸    Vesuvius    ⡇         ⢸
+                     ⠸⡀         ⢇              ⡸         ⢀⠇
+                      ⠱⡀        ⠈⢆            ⡰⠁        ⢀⠎
+                       ⠘⢄         ⠣⡀        ⢀⠜         ⡠⠃
+                         ⠑⠢⣀       ⠈⠒⢄⡀  ⢀⡠⠒⠁       ⣀⠔⠊
+                            ⠑⠒⠤⢄⣀⣀⣀⣀⣀⣀⠬⠕⠪⠥⣀⣀⣀⣀⣀⣀⡠⠤⠒⠊
+```
+
+The built-in `card`'s region `note` has no `shows`: the card's text already shows its note, and
+the region is there to be clicked.
+
+#### Behaviour, as built
+
+A placed shape does what its `on` says, through the workspace gateway: `act.rs` in the engine.
+Placed shapes on screen are #136, so a gesture arrives as data, and `cold-lava shapes --do`
+sends one from the command line.
+
+- **Gestures.** `{"gesture": "drop", "from": REGION, "to": REGION, "item": ID}`,
+  `{"gesture": "click", "on": REGION-OR-PART, "item": ID?}`, `{"gesture": "key", "key": K}`
+  and `{"gesture": "action", "name": NAME}`; the item is a member's id, as `shown` gives it.
+  `Binding::act` finds the `on` entry the gesture starts, refused (`refused`) when there is
+  none, and runs its steps in order, stopping at the first refused one.
+- **Placeholders in steps** are the inputs' (`${b.tag}`), the gesture's member's (`${dropped}`,
+  its label; `${dropped.name}`, `${clicked.visited}`), and the note an earlier `create` made
+  (`${created.path}`, `${created.title}`).
+- **`edit`** names its item: `dropped` or `clicked` (the gesture's member), or an input with
+  one member. `set-field` sends `items/edit set-field` at the member's `rev`, so an item changed
+  since it was shown is refused (`changed`); `value` is text the field's type reads, and `add` or
+  `remove` change a list field's values (once, compared folded), refused on a field that holds
+  one value. `toggle = true` ticks a task as the Tasks plugin does. `recipe` names a recipe and
+  its `options` (`{ recipe = "rename-tag", options = { from = "${a.tag}", to = "…" } }`),
+  planned and applied at once; one that would change a file another owner reads is refused,
+  and runs from its own screen instead. Every edit goes through the engine's checks, so a
+  drawing can ask for a change but never corrupt a note.
+- **`create`** makes a note with its `text` where Obsidian puts new notes (`.obsidian/app.json`),
+  named `name` or the text's first line, numbered when the name is taken (`workspace/create`).
+- **`rebind`** says what this placed shape becomes: `shape`, and its inputs, each `created`
+  (the note just made), the name of one of this shape's inputs (bound the same way), or text.
+  The frontend keeps the placement, so it is the same place and size, and calls
+  `Binding::rebind`. This is "make it a note": the built-in `sticky` creates a note with its
+  text and becomes a `card` bound to it.
+- **Attribution.** The steps run through a `Gateway`: for the user's shapes (built in,
+  config.toml, the workspace's), the core itself (`Direct`), edits attributed to `canvas`; for
+  an extension's shape, that extension's `Host`, with its manifest's permissions (`items.edit`
+  for an edit; `files.write` for `create` and a recipe) and its name on the edits
+  (`ItemEdited`'s `by`). A step without its permission is refused (`forbidden`) and nothing
+  after it runs.
+- **The extension's half.** A region with `extension = true` shows what the extension that
+  ships the shape answers to `shape/region` (asked after binding and whenever an input
+  changes, `Binding::region_asks`); a gesture whose `on` entry says `extension = true` asks it
+  `shape/gesture`, and the steps it answers run as above, through its own permissions. Only an
+  extension's shapes may say so; the messages are in docs/extensions.md ("Shapes, as built").
+
+```console
+$ cold-lava shapes WORKSPACE --render sticky --size 40x10 --do action:make-a-note \
+    --bind 'text=text:Ash masks
+Two per person, for the Krakatoa trip.'
+created Ash masks.md
+now a card
+
+ ⡖⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⢲
+ ⡇ Ash masks                          ⢸
+ ⡇                                    ⢸
+ ⡇                                    ⢸
+ ⡏⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⢹⠁
+ ⡇ Two per person, for the Krakatoa   ⢸
+ ⡇ trip.                              ⢸
+ ⠧⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠼
+```
+
+The built-in `venn2`'s drop (`only-a` to `both` adds `${b.tag}` to the item's `tags`) needs a
+`tags` field set-field can write. The example workspace's volcanoes read their tags from the
+text, which can't be written through a field yet, so there the drop is refused with that reason
+and nothing is written.
+
+The example workspace has a three-circle Venn, a `tallest` list ("The region language"), a
+timeline that nests a `tick` three times, and a glyph of its own (`:eruption:`) in
+`.cold-lava/shapes.toml`. `venn2` is built in rather than the example's, as the docs' example and
+the showcase of step 5: a placed Venn works in every workspace.
 
 ### Glyphs are shapes too
 
@@ -253,8 +430,10 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
   rotate grip above the top edge, only on the selected shape), the topmost part (inside an area,
   or within a tolerance of a stroke) and the region. Blank space inside a shape's box still hits
   the shape.
-- **Bindings:** inputs run as gateway queries and stay live (`items/subscribe`); region
-  expressions are evaluated when an input changes; gestures become gateway edits.
+- **Bindings** *(as built: "Bindings, as built" above, in the engine rather than this crate,
+  which stays pure geometry)*: inputs run as gateway queries and stay live (`items/subscribe`);
+  region expressions are evaluated when an input changes; gestures become gateway edits.
+  `draw::paint_contents` fits each region's labels inside it.
 
 The TUI only paints what the engine hands it. In a terminal, text stays upright, one glyph per
 cell; strokes and areas rotate and stretch freely in braille or pixels. That is the
@@ -270,6 +449,7 @@ engine/frontend split again: the model is general, each frontend draws it as wel
 3. Shape definitions: loaded like types, with built-ins, `cold-lava shapes WORKSPACE`. *(as
    built: `crates/engine/src/shapes.rs`, #134; "Shape definitions, as built" above.)*
 4. Bindings: inputs as live queries, the region expression language, behaviour as edits.
+   *(as built: `bind.rs`, `shows.rs` and `act.rs` in the engine, #135; "Bindings, as built" above.)*
 5. Placed shapes in the scene view (after scenes, #91): place, move, stretch and rotate; the
    Venn diagram in the example workspace as the showcase; then the whiteboard (#92) built on
    shapes, and shapes in the document view through `![[…]]`.

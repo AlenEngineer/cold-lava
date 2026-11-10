@@ -21,6 +21,7 @@ pub mod rpc;
 pub mod transport;
 pub mod view;
 
+use crate::act::{self, Answered, Ask};
 use crate::commands::{self, Entry, MenuCommand};
 use crate::core::{Core, Jump};
 use crate::files::{self, Create, Created, Listed, Text, Written};
@@ -401,6 +402,11 @@ pub trait Extension {
         let why = "it doesn't preview files".to_string();
         host.file_previewed(&preview.path, &preview.rev, Err(why));
     }
+    /// `shape/region`, `shape/gesture`: what a region of a shape it ships shows, or what a
+    /// gesture on one does, answered now or later with `Host::shape_answered`.
+    fn shape(&mut self, ask: Ask, host: &mut Host<'_>) {
+        host.shape_answered(&ask, Err("it doesn't answer for shapes".into()));
+    }
     /// The answer to an `items/edit` that `Host::edit_item` answered `Later`: an edit of a file
     /// another owner reads, now written, or why not.
     fn edited(
@@ -587,6 +593,25 @@ impl Host<'_> {
         }
     }
 
+    /// The answer to `shape/region` or `shape/gesture` about a shape it ships: the core keeps
+    /// it for the frontend's bindings (`Core::take_shape_answers`).
+    pub fn shape_answered(&mut self, ask: &Ask, answer: Result<Answered, String>) {
+        let name = self.name;
+        if let Some(core) = self.core.as_deref_mut() {
+            core.shape_answered(name, ask, answer);
+        }
+    }
+
+    /// A recipe on the whole workspace, for a step of a shape it ships: it rewrites files, so it
+    /// needs `files.write`.
+    pub fn run_recipe(
+        &mut self,
+        id: &str,
+        options: crate::recipe::Options,
+    ) -> Result<String, gateway::Error> {
+        self.core(Permission::FilesWrite)?.run_recipe(id, options)
+    }
+
     /// The core, when the caller's manifest asks for `needs`.
     fn core(&mut self, needs: Permission) -> Result<&mut Core, gateway::Error> {
         if !self.permissions.contains(&needs) {
@@ -704,6 +729,26 @@ impl Host<'_> {
     pub fn list_files(&mut self, extension: &str) -> Result<Listed, gateway::Error> {
         let kind = extension.trim_start_matches('.').to_ascii_lowercase();
         Ok(self.files_core(Some(kind), false)?.files(extension))
+    }
+}
+
+/// A shape's steps run through the `Host` of the extension that ships it: its permissions, its
+/// name on the edits.
+impl act::Gateway for Host<'_> {
+    fn edit_item(&mut self, edit: &Edit) -> Result<Answer, gateway::Error> {
+        Host::edit_item(self, edit)
+    }
+
+    fn create_file(&mut self, create: &Create) -> Result<Created, gateway::Error> {
+        Host::create_file(self, create)
+    }
+
+    fn run_recipe(
+        &mut self,
+        id: &str,
+        options: crate::recipe::Options,
+    ) -> Result<String, gateway::Error> {
+        Host::run_recipe(self, id, options)
     }
 }
 
@@ -985,6 +1030,24 @@ impl Registry {
         };
         f(extension.as_mut(), &mut host);
         host.effects
+    }
+
+    /// Asks the extension `ext` about a shape it ships (`Binding::region_asks`, `Acted::Ask`).
+    /// The ask carries the shape's inputs, so it needs `items.read`; without it the answer is
+    /// that, at once.
+    pub fn ask_shape(&mut self, ext: ExtId, mut core: Option<&mut Core>, ask: Ask) -> Vec<Effect> {
+        let manifest = &self.loaded[ext.0].1;
+        if !manifest.permissions.contains(&Permission::ItemsRead) {
+            let why = format!(
+                "{} may not be told a shape's inputs: its manifest's permissions don't include items.read",
+                manifest.name
+            );
+            if let Some(core) = core.as_deref_mut() {
+                core.shape_answered(&manifest.name, &ask, Err(why));
+            }
+            return Vec::new();
+        }
+        self.call(ext, core, |e, host| e.shape(ask, host))
     }
 
     /// The workspace gateway for one of the menu's screens (`READER`), which may read and
@@ -1422,6 +1485,165 @@ mod tests {
         }
         fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
         fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+    }
+
+    /// An extension that ships the shape `tally.list` and answers for it: its region says how
+    /// many volcanoes it is bound to, and a click marks the clicked one visited.
+    struct Tally {
+        permissions: Vec<Permission>,
+    }
+
+    const TALLY: &str = r#"
+        inputs = ["a"]
+        parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
+        regions = [{ id = "count", area = "box", extension = true }]
+        [[on]]
+        click = "count"
+        extension = true
+    "#;
+
+    impl Extension for Tally {
+        fn initialize(&mut self) -> Manifest {
+            let mut manifest = (Commands {
+                name: "tally",
+                commands: Vec::new(),
+            })
+            .initialize();
+            manifest.permissions = self.permissions.clone();
+            manifest
+        }
+        fn pane(&mut self, _: PaneNews, _: &mut Host<'_>) {}
+        fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
+        fn shape(&mut self, ask: Ask, host: &mut Host<'_>) {
+            let answer = match &ask {
+                Ask::Region { inputs, .. } => json!({"items": [
+                    {"label": format!("{} volcanoes", inputs["a"].members.len())}
+                ]}),
+                Ask::Gesture { .. } => json!({"do": [{"edit": {"item": "clicked",
+                    "set-field": {"field": "visited", "value": "yes"}}}]}),
+            };
+            host.shape_answered(&ask, Ok(serde_json::from_value(answer).unwrap()));
+        }
+    }
+
+    #[test]
+    fn an_extension_answers_for_its_shape_within_its_permissions() {
+        use crate::act::{Acted, Answered, Gesture};
+        use crate::bind::{Binding, Source};
+        use crate::shapes::{Layer, load};
+        use ItemsEdit as E;
+        use ItemsRead as R;
+        use Permission::{ItemsEdit, ItemsRead};
+        let dir = std::env::temp_dir().join(format!("cold-lava-ext-shape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
+        std::fs::write(
+            dir.join(".cold-lava/types.toml"),
+            "version = 1\n[types.volcano]\non = \"note\"\nwhere.tag = [\"volcano\"]\n\
+             fields.name = { note = \"name\" }\nfields.visited = { property = \"visited\" }\n",
+        )
+        .unwrap();
+        for name in ["Krakatoa", "Vesuvius"] {
+            std::fs::write(
+                dir.join(format!("{name}.md")),
+                "---\ntags: [volcano]\n---\n",
+            )
+            .unwrap();
+        }
+        let table: toml::Table = toml::from_str(TALLY).unwrap();
+        let shapes = load([
+            Layer::built_in(),
+            Layer::extension("tally", [("tally.list".to_string(), table)]),
+        ]);
+        assert!(shapes.errors.is_empty(), "{:?}", shapes.errors);
+
+        for (permissions, region, clicked) in [
+            (
+                vec![],
+                Err(
+                    "tally may not be told a shape's inputs: its manifest's permissions don't include items.read",
+                ),
+                None,
+            ),
+            (vec![R], Ok("2 volcanoes"), Some(Err(Reason::Forbidden))),
+            (vec![R, E], Ok("2 volcanoes"), Some(Ok(()))),
+        ] {
+            let mut core = Core::open(&dir).unwrap();
+            let mut r = Registry::new(vec![Box::new(Tally {
+                permissions: permissions.clone(),
+            })]);
+            let source = Source::parse("type=volcano").unwrap();
+            let mut b =
+                Binding::new(&mut core, &shapes, "tally.list", [("a".into(), source)]).unwrap();
+            assert_eq!(b.extension(), Some("tally"));
+            for ask in b.region_asks(1) {
+                r.ask_shape(ExtId(0), Some(&mut core), ask);
+            }
+            let answers = core.take_shape_answers();
+            let got = match &answers[..] {
+                [a] => a.answer.clone(),
+                _ => panic!("{answers:?}"),
+            };
+            match (got, region) {
+                (Ok(Answered::Region { items }), Ok(label)) => {
+                    b.answered("count", items);
+                    assert_eq!(b.shown().regions[0].items[0].label, label);
+                }
+                (Err(why), Err(expected)) => assert_eq!(why, expected),
+                (got, expected) => panic!("{permissions:?}: {got:?}, not {expected:?}"),
+            }
+            let Some(clicked) = clicked else {
+                continue;
+            };
+            let item = {
+                let q = crate::gateway::Query {
+                    select: Select {
+                        kind: "volcano".into(),
+                        ..Default::default()
+                    },
+                    page: Default::default(),
+                };
+                core.query_items(&q).unwrap().items.remove(0).id
+            };
+            let click = Gesture::Click {
+                on: "count".into(),
+                item: Some(item),
+            };
+            let mut acted = None;
+            r.call(ExtId(0), Some(&mut core), |_, host| {
+                acted = Some(b.act(host, &click, 1))
+            });
+            let Some(Ok(Acted::Ask(ask))) = acted else {
+                panic!("its extension decides: {acted:?}");
+            };
+            r.ask_shape(ExtId(0), Some(&mut core), ask);
+            let steps = match core.take_shape_answers().remove(0).answer {
+                Ok(Answered::Gesture { steps }) => steps,
+                a => panic!("{a:?}"),
+            };
+            let mut ran = None;
+            r.call(ExtId(0), Some(&mut core), |_, host| {
+                ran = Some(b.run(host, &click, &steps))
+            });
+            let text = std::fs::read_to_string(dir.join("Krakatoa.md")).unwrap();
+            match (ran.unwrap(), clicked) {
+                (Err(e), Err(reason)) => {
+                    assert_eq!(e.reason, reason);
+                    assert!(!text.contains("visited"), "nothing written: {text}");
+                }
+                (Ok(_), Ok(())) => {
+                    assert!(text.contains("visited: yes"), "{text}");
+                    let by = core.poll().into_iter().find_map(|e| match e {
+                        crate::core::Event::ItemEdited { by, .. } => Some(by),
+                        _ => None,
+                    });
+                    assert_eq!(by.as_deref(), Some("tally"), "attributed to the extension");
+                }
+                (got, expected) => panic!("{got:?}, not {expected:?}"),
+            }
+            b.close(&mut core);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn owners(extensions: Vec<Owner>) -> Registry {

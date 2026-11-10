@@ -1,0 +1,49 @@
+{
+  "regions": [
+    {
+      "id": "only-a",
+      "items": [
+        {
+          "id": "c1f676c3f665dbdd",
+          "label": "Krakatoa"
+        }
+      ]
+    },
+    {
+      "id": "both",
+      "items": [
+        {
+          "id": "62ddf2fdfea264a1",
+          "label": "Eyjafjallajökull"
+        },
+        {
+          "id": "45eb1eb785ffb4a8",
+          "label": "Mount St. Helens"
+        },
+        {
+          "id": "ce1c5b428c530c79",
+          "label": "Vesuvius"
+        }
+      ]
+    },
+    {
+      "id": "only-b",
+      "items": [
+        {
+          "id": "35caf998435781fe",
+          "label": "Mount Fuji"
+        }
+      ]
+    }
+  ],
+  "texts": [
+    {
+      "part": 2,
+      "text": "Erupted"
+    },
+    {
+      "part": 3,
+      "text": "Stratovolcanoes"
+    }
+  ]
+}

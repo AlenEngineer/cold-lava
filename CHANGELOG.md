@@ -48,6 +48,23 @@ change commands, keys and file formats; patch versions only fix things.
 - Text at an anchor (a shape's title) never overlaps another: a later one slides along its row,
   then is cut with "…", then left out.
 - The example workspace has shapes of its own: a three-circle Venn and an eruption timeline.
+- Shape bindings: a shape's inputs bound to a gateway query, a note, labels or text, kept up to
+  date as notes change; its regions show what their `shows` picks from the inputs (`a & b`,
+  `a | b`, `a - b`, matched on the shape's `key` with accents and case folded), and
+  `${a.title}` shows the input's title. `cold-lava shapes WORKSPACE --render ID --bind
+  INPUT=SOURCE` draws a shape bound to data, and `--json` prints what each region shows.
+- The region language: after a region's sets, `where` (comparisons on numbers, dates and folded
+  text, `and`, `or`, `not`), `sort by FIELD [desc]`, `limit N` and `label FIELD`, checked when
+  the shape loads; a query input takes a `where` too (`type=volcano where vei >= 6`). The
+  example workspace's `tallest` shape lists the five tallest of a collection.
+- Shape behaviour: a gesture (a drop between regions, a click, a key, a named action) runs the
+  shape's `on` steps through the workspace gateway: `edit` an item (`set-field`, `toggle`) or
+  run a recipe, `create` a note where Obsidian puts new notes, `rebind` the shape as another.
+  The user's shapes edit as `canvas`; an extension's shape edits as the extension, within its
+  permissions. The sticky's "make it a note" creates the note and becomes a card bound to it.
+  `cold-lava shapes WORKSPACE --render ID --bind … --do GESTURE` runs one from the command line.
+- Extensions can compute a region of a shape they ship, or handle a gesture on it
+  (`extension = true`), answering `shape/region` with labels and `shape/gesture` with steps.
 
 ## [0.4.0] - 2026-11-09
 

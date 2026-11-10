@@ -83,6 +83,226 @@ fn shapes_render_as_text() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The two-circle Venn bound to two queries over the example workspace: volcanoes with an
+/// `#eruption` against stratovolcanoes, matched on their names.
+const ERUPTED: &str = "a=type=volcano tag=eruption title=Erupted";
+const STRATO: &str = "b=type=volcano tag=volcano/strato title=Stratovolcanoes";
+
+#[test]
+fn bound_shapes_show_their_data() {
+    let dir = scratch("bound");
+    let ws = "example-workspace";
+    let venn = [
+        "--render", "venn2", "--size", "80x24", "--bind", ERUPTED, "--bind", STRATO,
+    ];
+    let out = stdout(&shapes(&dir, &[&[ws][..], &venn].concat()));
+    golden("shape-venn2-bound-80x24.txt", &out);
+    let json = stdout(&shapes(&dir, &[&[ws][..], &venn, &["--json"]].concat()));
+    golden("shape-venn2-bound.json", &json);
+    let shown: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let labels = |region: usize| -> Vec<String> {
+        (shown["regions"][region]["items"].as_array().unwrap().iter())
+            .map(|e| e["label"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(labels(0), ["Krakatoa"], "erupted, not a stratovolcano");
+    assert_eq!(
+        labels(1),
+        ["Eyjafjallajökull", "Mount St. Helens", "Vesuvius"],
+        "both"
+    );
+    assert_eq!(
+        labels(2),
+        ["Mount Fuji"],
+        "a stratovolcano with no #eruption"
+    );
+
+    let card = [
+        "--render",
+        "card",
+        "--size",
+        "50x10",
+        "--bind",
+        "note=note:Volcanoes/Krakatoa",
+    ];
+    golden(
+        "shape-card-bound-50x10.txt",
+        &stdout(&shapes(&dir, &[&[ws][..], &card].concat())),
+    );
+
+    for (bind, error) in [
+        ("c=items:x", "venn2 has no input c (its inputs: a, b)"),
+        (
+            "a=type=vulcano",
+            "input a: no item kind or type called vulcano",
+        ),
+        (
+            "a=type=volcano colour=red",
+            "--bind a: colour is not part of a query",
+        ),
+        ("a", "--bind \"a\": write it INPUT=SOURCE"),
+    ] {
+        let out = shapes(&dir, &[ws, "--render", "venn2", "--bind", bind]);
+        assert!(!out.status.success(), "{bind}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(error), "{bind}: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The region language over the example workspace: an input's `where`, and a region that
+/// filters, sorts and limits.
+#[test]
+fn bound_shapes_filter_sort_and_limit() {
+    let dir = scratch("language");
+    let ws = "example-workspace";
+    let tall = "b=type=volcano title=\"Over 2500 m\" where elevation >= 2500";
+    let venn = [
+        "--render", "venn2", "--size", "80x24", "--bind", ERUPTED, "--bind", tall,
+    ];
+    let json = stdout(&shapes(&dir, &[&[ws][..], &venn, &["--json"]].concat()));
+    let shown: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let labels = |shown: &serde_json::Value, region: usize| -> Vec<String> {
+        (shown["regions"][region]["items"].as_array().unwrap().iter())
+            .map(|e| e["label"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        labels(&shown, 0),
+        ["Eyjafjallajökull", "Krakatoa", "Vesuvius"]
+    );
+    assert_eq!(labels(&shown, 1), ["Mount St. Helens"]);
+    assert_eq!(labels(&shown, 2), ["Mauna Loa", "Mount Fuji", "Parícutin"]);
+    golden(
+        "shape-venn2-tall-80x24.txt",
+        &stdout(&shapes(&dir, &[&[ws][..], &venn].concat())),
+    );
+
+    let tallest = [ws, "--render", "tallest", "--size", "40x14"];
+    let bind = [
+        "--bind",
+        "volcanoes=type=volcano title=\"Tallest volcanoes\"",
+    ];
+    let json = stdout(&shapes(&dir, &[&tallest[..], &bind, &["--json"]].concat()));
+    let shown: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        labels(&shown, 0),
+        [
+            "Mauna Loa",
+            "Mount Fuji",
+            "Parícutin",
+            "Mount St. Helens",
+            "Eyjafjallajökull"
+        ],
+        "where elevation, sort by elevation desc, limit 5"
+    );
+    golden(
+        "shape-tallest-40x14.txt",
+        &stdout(&shapes(&dir, &[&tallest[..], &bind].concat())),
+    );
+
+    let out = shapes(
+        &dir,
+        &[
+            ws,
+            "--render",
+            "venn2",
+            "--bind",
+            "a=type=volcano where >= 3",
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--bind a: where >= 3: expected a field, found `>=`"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let dest = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+}
+
+/// `--do` on a copy of the example workspace: the sticky's "make it a note" creates the note
+/// and draws the card it became; a drop the workspace can't write is refused with nothing
+/// written; a gesture the shape doesn't answer is refused.
+#[test]
+fn gestures_run_the_shapes_steps() {
+    let dir = scratch("gestures");
+    let ws = dir.join("ws");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+        &ws,
+    );
+    let ws = ws.to_str().unwrap();
+    let sticky = "text=text:Ash masks\nTwo per person, for the Krakatoa trip.";
+    let out = stdout(&shapes(
+        &dir,
+        &[
+            ws,
+            "--render",
+            "sticky",
+            "--size",
+            "40x10",
+            "--bind",
+            sticky,
+            "--do",
+            "action:make-a-note",
+        ],
+    ));
+    golden("shape-sticky-made-a-note-40x10.txt", &out);
+    assert!(
+        out.starts_with("created Ash masks.md\nnow a card\n"),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(Path::new(ws).join("Ash masks.md")).unwrap(),
+        "Ash masks\nTwo per person, for the Krakatoa trip."
+    );
+
+    let venn = [ws, "--render", "venn2", "--bind", ERUPTED, "--bind", STRATO];
+    let shown: serde_json::Value =
+        serde_json::from_str(&stdout(&shapes(&dir, &[&venn[..], &["--json"]].concat()))).unwrap();
+    let krakatoa = shown["regions"][0]["items"][0]["id"].as_str().unwrap();
+    let before = std::fs::read_to_string(Path::new(ws).join("Volcanoes/Krakatoa.md")).unwrap();
+    let drop = format!("drop:only-a:both:{krakatoa}");
+    let out = shapes(&dir, &[&venn[..], &["--do", &drop]].concat());
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "--do: tags is read from the tags or links in the text, which can't be written"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(Path::new(ws).join("Volcanoes/Krakatoa.md")).unwrap(),
+        before,
+        "nothing written"
+    );
+
+    let out = shapes(&dir, &[&venn[..], &["--do", "key:z"]].concat());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--do: venn2 does nothing on the key z"),
+        "{stderr}"
+    );
+    let out = shapes(&dir, &[&venn[..], &["--do", "wave"]].concat());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("a gesture is action:NAME"), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn the_venn_titles_never_touch_at_40x12() {
     let dir = scratch("titles");

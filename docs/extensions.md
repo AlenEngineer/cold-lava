@@ -1618,8 +1618,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
 
 - The host calls the extension: `initialize` (capabilities, the API version and the
   `commands` it registers), `command/run` (`id`, `args`: one of its commands),
-  `view/render`, `shutdown`, and `file/open`, `file/changed` and `file/read` for a kind of file
-  it owns.
+  `view/render`, `shutdown`, `file/open`, `file/changed` and `file/read` for a kind of file
+  it owns, and `shape/region` and `shape/gesture` for a shape it ships ("Shapes, as built").
   - The editor gets `editor/open` (a note, and a `jump` to a line, heading or block),
     `editor/save`, `editor/renamed` (`from`, `to`) and `editor/deleted` (`note`: it went to
     the trash; forget it without writing it back).
@@ -1794,6 +1794,46 @@ would guard nothing an extension can't already do with `command/run` or a pane, 
 extension that shows anything would have to ask for it. What a view shows is read, and what
 its events change is written, through the workspace gateway, under `items.read` and
 `items.edit`.
+
+### Shapes, as built
+
+An extension's `[[shapes]]` can hand a region or a gesture to the extension itself, for what
+the region language or the `on` steps can't say (docs/shapes.md, "Behaviour, as built"):
+`extension = true` on a region instead of `shows`, or on an `on` entry instead of `do`/`edit`.
+Only an extension's shapes may; anyone else's is dropped at load with that error. The host asks
+with two requests (host → extension; `crate::act::Ask` in the engine pins their JSON):
+
+```json
+{"method": "shape/region", "params": {"placed": 7, "shape": "tally.list", "region": "count",
+  "inputs": {"a": {"title": "volcano #ring-of-fire", "members": [
+    {"id": "c1f676c3f665dbdd", "rev": "9a0e…", "fields": {"name": "Krakatoa", "vei": 6}}]}}}}
+
+{"method": "shape/gesture", "params": {"placed": 7, "shape": "tally.list",
+  "gesture": {"gesture": "click", "on": "count", "item": "c1f676c3f665dbdd"},
+  "inputs": {"a": {"title": "…", "members": […]}}}}
+```
+
+- **`placed`** is the frontend's name for the placed shape; the answer goes back to it. Each
+  input comes with its title and its members as a region sees them (an item's id, `rev` and
+  fields; a note's or a label's id and fields).
+- **`shape/region`** is answered with `{"items": [{"id": "…", "label": "…"}]}`: what the region
+  shows, in order (`id` may be left out for a label of its own). It is asked after the shape is
+  bound and again when an input changes.
+- **`shape/gesture`** is answered with `{"do": [ … ]}`: steps in the language of `on` (`edit`,
+  `create`, `rebind`), run through the extension's `Host`, so its permissions hold and the
+  edits are its own (`ItemEdited`'s `by`). `{"do": []}` does nothing.
+- **Permissions.** The asks carry the inputs' data, so an extension without `items.read` isn't
+  asked: the answer is that refusal, at once. Its steps need what they would need from it
+  directly: `items.edit` for `edit`, `files.write` for `create` and a recipe.
+- **Answers** come back through `Host::shape_answered` (in a process, the request's answer;
+  one not answered in time is an error saying so) and wait in the core
+  (`Core::take_shape_answers`) for the frontend's bindings: a region's go to
+  `Binding::answered`, a gesture's steps to `Binding::run`. An answer from another extension,
+  or in the wrong form, isn't taken.
+
+*(Exists: `Extension::shape`, `Registry::ask_shape`, `Process` over JSON-RPC, and `cold-lava
+shapes --render ID --bind … [--do GESTURE]` asking an installed extension. Placed shapes on
+screen, which ask from the menu, are #136.)*
 
 ## Views
 

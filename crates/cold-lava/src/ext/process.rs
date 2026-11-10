@@ -16,6 +16,7 @@ use super::view::ViewNews;
 use super::{
     CommandRequest, EditorRequest, Extension, FileNews, FilePreview, Host, Manifest, PaneNews,
 };
+use crate::act::Ask;
 use crate::gateway::{self, Edited, News, SubId, Ticket};
 use crate::owner::cache::FileRead;
 use crate::owner::edits::{FileEdit, NewText};
@@ -86,6 +87,8 @@ enum Asked {
         path: String,
         rev: String,
     },
+    /// `shape/region` or `shape/gesture`.
+    Shape(Box<Ask>),
 }
 
 impl Process {
@@ -227,6 +230,12 @@ impl Process {
                 });
                 host.file_previewed(&path, &rev, content);
             }
+            (Asked::Shape(ask), outcome) => {
+                let answer = outcome.map_err(|e| e.message).and_then(|v| {
+                    serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
+                });
+                host.shape_answered(&ask, answer);
+            }
             _ => {}
         }
     }
@@ -244,7 +253,8 @@ impl Process {
                     Asked::Command(_)
                     | Asked::Read { .. }
                     | Asked::Edit { .. }
-                    | Asked::Preview { .. } => t.request,
+                    | Asked::Preview { .. }
+                    | Asked::Shape(_) => t.request,
                 };
                 sent.elapsed() > limit
             })
@@ -278,6 +288,11 @@ impl Process {
                     let secs = t.request.as_secs_f32();
                     let why = format!("it didn't answer file/preview in {secs} s");
                     host.file_previewed(&path, &rev, Err(why));
+                }
+                Asked::Shape(ask) => {
+                    let secs = t.request.as_secs_f32();
+                    let why = format!("it didn't answer {} in {secs} s", ask.method());
+                    host.shape_answered(&ask, Err(why));
                 }
             }
         }
@@ -349,6 +364,18 @@ impl Extension for Process {
         };
         let params = serde_json::to_value(preview).unwrap_or_default();
         self.ask(asked, "file/preview", params, host);
+    }
+
+    fn shape(&mut self, ask: Ask, host: &mut Host<'_>) {
+        if !self.running() {
+            let why = format!("{} isn't running", self.manifest.name);
+            return host.shape_answered(&ask, Err(why));
+        }
+        let method = ask.method();
+        let params = (serde_json::to_value(&ask).ok())
+            .and_then(|mut v| v.get_mut("params").map(Value::take))
+            .unwrap_or_default();
+        self.ask(Asked::Shape(Box::new(ask)), method, params, host);
     }
 
     fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
@@ -704,6 +731,84 @@ mod tests {
                     Err("a preview has at most 200 rows and groups; this one has 201")
                 ),
                 ("Slow.csv", Err("it didn't answer file/preview in 0.1 s")),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_shape_ask_goes_over_json_rpc_and_its_answer_comes_back() {
+        use crate::act::{Answered, Gesture};
+        static SHAPES: Scripted = Scripted(|m| {
+            Some(
+                match (m["method"].as_str(), m["params"]["region"].as_str()) {
+                    (Some("initialize"), _) => vec![answer(m, json!({}))],
+                    (Some("shape/region"), Some("count")) => {
+                        let n = m["params"]["inputs"]["a"]["members"]
+                            .as_array()
+                            .unwrap()
+                            .len();
+                        vec![answer(
+                            m,
+                            json!({"items": [{"label": format!("{n} items")}]}),
+                        )]
+                    }
+                    (Some("shape/gesture"), _) => {
+                        assert_eq!(
+                            m["params"]["gesture"],
+                            json!({"gesture": "key", "key": "x"})
+                        );
+                        vec![answer(m, json!({"do": []}))]
+                    }
+                    _ => Vec::new(),
+                },
+            )
+        });
+        let dir = workspace("shapes");
+        let mut core = Core::open(&dir).unwrap();
+        let mut r = scripted(&SHAPES, &dir, None);
+        r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
+        let data = crate::act::InputData {
+            title: "tasks".into(),
+            members: Vec::new(),
+        };
+        let inputs: crate::act::Inputs = [("a".to_string(), data)].into_iter().collect();
+        let region = |name: &str| Ask::Region {
+            placed: 1,
+            shape: "fake.tally".into(),
+            region: name.into(),
+            inputs: inputs.clone(),
+        };
+        let gesture = Ask::Gesture {
+            placed: 1,
+            shape: "fake.tally".into(),
+            gesture: Gesture::Key { key: "x".into() },
+            inputs: Default::default(),
+        };
+        for ask in [region("count"), gesture, region("slow")] {
+            r.ask_shape(ExtId(0), Some(&mut core), ask);
+        }
+        poll_for(&mut r, &mut core, Duration::from_millis(300));
+        let answers: Vec<_> = (core.take_shape_answers().into_iter())
+            .map(|a| (a.ask.method(), a.answer))
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                (
+                    "shape/region",
+                    Ok(Answered::Region {
+                        items: vec![crate::bind::Entry {
+                            id: String::new(),
+                            label: "0 items".into()
+                        }]
+                    })
+                ),
+                ("shape/gesture", Ok(Answered::Gesture { steps: Vec::new() })),
+                (
+                    "shape/region",
+                    Err("it didn't answer shape/region in 0.1 s".into())
+                ),
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);

@@ -46,7 +46,7 @@ parts = [
   { line = { from = "frame.left", to = "frame.right" } },
   { text = { id = "excerpt", from = [0.04, 0.55], to = [0.96, 0.95], value = "${note.excerpt}" } },
 ]
-regions = [{ id = "note", area = "frame", shows = "note" }]
+regions = [{ id = "note", area = "frame" }]
 
 # Text that lives in the drawing's file (a JSON Canvas `text` node), with no file of its own.
 [[shapes]]

@@ -19,7 +19,7 @@ arrow  built in  Arrow
 card  built in  Card (a note)
   inputs note · aspect 2.5
   parts rect frame, text title, line, text excerpt
-  region note: frame, shows note
+  region note: frame
 
 sticky  built in  Sticky note
   inputs text · aspect 2
@@ -56,5 +56,10 @@ tick  workspace example-workspace/.cold-lava/shapes.toml  Timeline tick
 timeline  workspace example-workspace/.cold-lava/shapes.toml  Eruption timeline
   inputs eruptions · aspect 5
   parts arrow axis, past (tick), then (tick), now (tick), text at past.mark.bottom, text at then.mark.bottom, text at now.mark.bottom, text at then.mark.top
+
+tallest  workspace example-workspace/.cold-lava/shapes.toml  Tallest first
+  inputs volcanoes · aspect 1.5
+  parts rect box, text at box.top
+  region list: box, shows volcanoes where elevation sort by elevation desc limit 5
 
 glyphs  ✓ check  ✗ cross  • dot  ★ star  ◆ diamond  → arrow  ▲ eruption

@@ -1,6 +1,8 @@
 //! The workspace engine: what cold-lava knows about a workspace, with no user interface. See "Engine
 //! and frontend" in docs/engine.md.
 
+pub mod act;
+pub mod bind;
 pub mod bookmarks;
 pub mod core;
 pub mod daily;
@@ -22,6 +24,7 @@ pub mod rename;
 pub mod resolver;
 pub mod search;
 pub mod shapes;
+pub mod shows;
 pub mod style;
 pub mod tasks;
 pub mod templates;
