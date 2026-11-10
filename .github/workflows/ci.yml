@@ -24,6 +24,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      # The GUI is its own workspace with its own Cargo.lock, and CI never builds it, so a new
+      # engine dependency can leave that lock stale. Resolving it --locked fails if it is.
+      - name: GUI lock up to date
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo metadata --locked --format-version 1 --manifest-path crates/gui/Cargo.toml > /dev/null
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test

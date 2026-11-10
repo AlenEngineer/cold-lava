@@ -3,6 +3,7 @@
 //! `edit` (one item → the note's new text) and `relink` (links to moved files → new text).
 //! `tags_in` says where each tag is written, for `read` and for recipes that change tags.
 
+use crate::cst::{self, Kind, Step};
 use crate::edit::{self, SetField};
 use crate::frontmatter::{self, Value};
 use crate::gateway::{Edit, Error, Op, Reason};
@@ -27,9 +28,9 @@ pub struct Read {
     pub written: style::Links,
 }
 
-/// Read a note's links, tags and aliases.
+/// Read a note's links, tags and aliases from its syntax tree.
 pub fn read(text: &str) -> Read {
-    let (refs, tags, aliases, written) = parse(text, parsers());
+    let (refs, tags, aliases, written) = parse(text);
     Read {
         refs,
         tags,
@@ -241,7 +242,6 @@ pub(crate) fn link_targets(text: &str) -> Vec<&str> {
 struct Parsers {
     wikilink: Regex,
     mdlink: Regex,
-    tag: Regex,
     inline_code: Regex,
 }
 
@@ -252,7 +252,6 @@ impl Parsers {
             wikilink: Regex::new(r"\[\[([^\]\|#\^]*)[^\]]*\]\]").unwrap(),
             // [text](some/note.md) — local markdown links only
             mdlink: Regex::new(r"\]\(([^)\s]+?\.md)(?:#[^)]*)?\)").unwrap(),
-            tag: Regex::new(crate::markdown::TAG).unwrap(),
             inline_code: Regex::new(r"`[^`\n]*`").unwrap(),
         }
     }
@@ -263,42 +262,103 @@ fn parsers() -> &'static Parsers {
     P.get_or_init(Parsers::new)
 }
 
-fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
+/// Read the note `text` forwards in the syntax every workspace's links are read in, as its
+/// syntax tree would be walked, without making the tree.
+fn read_syntax<'t>(text: &'t str, f: &mut impl FnMut(Step<'t>)) {
+    cst::read(text, cst::Gates::INDEX, f)
+}
+
+fn body_tag(at: usize, tag: &str) -> TagSpan {
+    TagSpan {
+        name: at + 1..at + tag.len(),
+        place: TagPlace::Body,
+    }
+}
+
+/// The note path a Markdown link's destination names, as written: a local `.md` file, maybe
+/// with a `#heading`.
+fn md_target(dest: &str) -> Option<&str> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^([^)\s]+?\.md)(?:#[^)]*)?$").unwrap());
+    re.captures(dest).and_then(|c| c.get(1)).map(|m| m.as_str())
+}
+
+fn newlines(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| b == b'\n').count()
+}
+
+/// A link as the tree holds it: where it is, whether a Markdown link, and its target as
+/// written.
+struct Written<'t> {
+    at: usize,
+    md: bool,
+    target: &'t str,
+}
+
+fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
     let mut written = style::Links::default();
     let mut refs = Vec::new();
     let mut tags = Vec::new();
     let mut aliases: Vec<String> = Vec::new();
-    let lines: Vec<&str> = text.lines().collect();
-    let mut i = 0;
-    let add = |refs: &mut Vec<Ref>, target: Option<String>, i: usize, line: &str| {
+    let line_text = |at: usize| {
+        let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+        let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+        &text[start..end]
+    };
+    let add = |refs: &mut Vec<Ref>, target: Option<String>, n: usize, at: usize| {
         if let Some(target) = target {
+            let line = line_text(at);
             let mut context: String = line.trim().chars().take(240).collect();
             if line.trim().chars().count() > 240 {
                 context.push('…');
             }
             refs.push(Ref {
                 target,
-                line: i + 1,
+                line: n + 1,
                 context,
             });
         }
     };
 
-    for t in tags_in(text) {
+    let mut body_tags = Vec::new();
+    let mut frontmatter_end = 0;
+    let mut links: Vec<Written> = Vec::new();
+    let mut wiki: Option<Written> = None;
+    read_syntax(text, &mut |step| match step {
+        Step::Leave(Kind::Frontmatter, at) => frontmatter_end = at,
+        Step::Token(Kind::Tag, tag, at) => body_tags.push(body_tag(at, tag)),
+        Step::Enter(Kind::WikiLink | Kind::Embed, at) => {
+            wiki = Some(Written {
+                at,
+                md: false,
+                target: "",
+            })
+        }
+        Step::Token(Kind::Target, target, _) => {
+            if let Some(w) = &mut wiki {
+                w.target = target;
+            }
+        }
+        Step::Leave(Kind::WikiLink | Kind::Embed, _) => links.extend(wiki.take()),
+        Step::Token(Kind::LinkDest, dest, at) => {
+            links.extend(md_target(dest).map(|target| Written {
+                at,
+                md: true,
+                target,
+            }))
+        }
+        _ => {}
+    });
+    for t in with_frontmatter_tags(text, body_tags) {
         push_tag(&mut tags, &text[t.name]);
     }
 
     // YAML frontmatter: aliases, and links in properties.
-    if lines.first().map(|l| l.trim_end()) == Some("---") {
-        i = 1;
+    if frontmatter_end > 0 {
         let mut in_aliases = false;
-        while i < lines.len() {
-            let line = lines[i];
+        let lines = text[..frontmatter_end].lines();
+        for line in lines.skip(1) {
             let t = line.trim();
-            if t == "---" || t == "..." {
-                i += 1;
-                break;
-            }
             if let Some(rest) = t
                 .strip_prefix("aliases:")
                 .or_else(|| t.strip_prefix("alias:"))
@@ -311,27 +371,28 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>, style:
             } else if !t.is_empty() {
                 in_aliases = false;
             }
-            // Wikilinks inside frontmatter properties count too, like in Obsidian.
-            for c in p.wikilink.captures_iter(line) {
-                add(&mut refs, clean_target(&c[1]), i, line);
-            }
-            i += 1;
         }
     }
-
-    let mut in_fence = false;
-    for (n, raw) in lines.iter().enumerate().skip(i) {
-        let t = raw.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
+    // Wikilinks inside frontmatter properties count too, like in Obsidian. In the body, each
+    // line's wikilinks come before its Markdown links.
+    links.sort_by_key(|w| w.at);
+    let (mut line, mut counted) = (0, 0);
+    let mut numbered: Vec<(usize, Written)> = links
+        .into_iter()
+        .map(|w| {
+            line += newlines(&text.as_bytes()[counted..w.at]);
+            counted = w.at;
+            (line, w)
+        })
+        .collect();
+    let body = numbered.partition_point(|(_, w)| w.at < frontmatter_end);
+    numbered[body..].sort_by_key(|(n, w)| (*n, w.md));
+    for (k, (n, w)) in numbered.into_iter().enumerate() {
+        let target = clean_target(w.target);
+        if k >= body && target.is_some() {
+            written.add(w.md, w.target);
         }
-        if in_fence {
-            continue;
-        }
-        for target in links_in(raw, Some(&mut written)) {
-            add(&mut refs, Some(target), n, raw);
-        }
+        add(&mut refs, target, n, w.at);
     }
     (refs, tags, aliases, written)
 }
@@ -363,12 +424,19 @@ pub enum TagPlace {
 /// without `#`), then `#tags` in the body outside code blocks and inline code. A nested tag is
 /// one span (`area/work`). The tags `read` gives a note are exactly these.
 pub fn tags_in(text: &str) -> Vec<TagSpan> {
+    let mut body = Vec::new();
+    read_syntax(text, &mut |step| {
+        if let Step::Token(Kind::Tag, tag, at) = step {
+            body.push(body_tag(at, tag));
+        }
+    });
+    with_frontmatter_tags(text, body)
+}
+
+/// The frontmatter's tags, then `body`'s.
+fn with_frontmatter_tags(text: &str, body: Vec<TagSpan>) -> Vec<TagSpan> {
     let mut out = Vec::new();
-    let mut body_from = 0;
     if let Some(fm) = frontmatter::read(text) {
-        body_from = (text.split_inclusive('\n').take(fm.end_line))
-            .map(str::len)
-            .sum();
         let key = ["tags", "tag"].into_iter().find(|k| fm.get(k).is_some());
         match key.and_then(|k| fm.get(k)) {
             Some(Value::List(items)) => {
@@ -403,33 +471,7 @@ pub fn tags_in(text: &str) -> Vec<TagSpan> {
             _ => {}
         }
     }
-    let p = parsers();
-    let mut in_fence = false;
-    let mut at = body_from;
-    for line in text[body_from..].split_inclusive('\n') {
-        let start = at;
-        at += line.len();
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence || !line.contains('#') {
-            continue;
-        }
-        let code: Vec<Range<usize>> = (p.inline_code.find_iter(line)).map(|m| m.range()).collect();
-        for c in p.tag.captures_iter(line) {
-            let name = c.get(1).expect("the pattern has a name");
-            let hash = name.start() - 1;
-            if code.iter().any(|r| r.contains(&hash)) || is_number(name.as_str()) {
-                continue;
-            }
-            out.push(TagSpan {
-                name: start + name.start()..start + name.end(),
-                place: TagPlace::Body,
-            });
-        }
-    }
+    out.extend(body);
     out
 }
 
@@ -530,16 +572,14 @@ mod tests {
     use super::*;
 
     fn links_and_tags(text: &str) -> (Vec<String>, Vec<String>) {
-        let (refs, tags, _, _) = parse(text, parsers());
+        let (refs, tags, _, _) = parse(text);
         (refs.into_iter().map(|r| r.target).collect(), tags)
     }
 
     #[test]
     fn link_positions() {
-        let (refs, _, _, _) = parse(
-            "---\nup: \"[[Parent]]\"\n---\n\nSee [[A]] and\n[[B|bee]] here",
-            &Parsers::new(),
-        );
+        let (refs, _, _, _) =
+            parse("---\nup: \"[[Parent]]\"\n---\n\nSee [[A]] and\n[[B|bee]] here");
         let pos: Vec<(&str, usize, &str)> = refs
             .iter()
             .map(|r| (r.target.as_str(), r.line, r.context.as_str()))
@@ -597,15 +637,9 @@ mod tests {
 
     #[test]
     fn frontmatter_aliases() {
-        let (_, _, a, _) = parse(
-            "---\naliases: [Big Island, \"Hawaiʻi\"]\ntags: x\n---\n",
-            &Parsers::new(),
-        );
+        let (_, _, a, _) = parse("---\naliases: [Big Island, \"Hawaiʻi\"]\ntags: x\n---\n");
         assert_eq!(a, ["Big Island", "Hawaiʻi"]);
-        let (_, t, a, _) = parse(
-            "---\naliases:\n  - One\n  - 'Two'\ntags:\n  - t\n---\n",
-            &Parsers::new(),
-        );
+        let (_, t, a, _) = parse("---\naliases:\n  - One\n  - 'Two'\ntags:\n  - t\n---\n");
         assert_eq!(
             (a, t),
             (
@@ -619,5 +653,206 @@ mod tests {
     fn frontmatter_list_tags() {
         let (_, tags) = links_and_tags("---\ntags:\n  - one\n  - \"two\"\ntitle: x\n---\n");
         assert_eq!(tags, ["one", "two"]);
+    }
+
+    /// Notes were read line by line, with patterns, before the syntax tree. The line reader
+    /// stays here to show the tree reads every note of the corpus as it did.
+    mod lines {
+        use super::super::*;
+
+        pub fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
+            let p = parsers();
+            static TAG: OnceLock<Regex> = OnceLock::new();
+            let tag = TAG.get_or_init(|| Regex::new(crate::markdown::TAG).unwrap());
+            let mut written = style::Links::default();
+            let mut refs = Vec::new();
+            let mut tags = Vec::new();
+            let mut aliases: Vec<String> = Vec::new();
+            let lines: Vec<&str> = text.lines().collect();
+            let mut i = 0;
+            let add = |refs: &mut Vec<Ref>, target: Option<String>, i: usize, line: &str| {
+                if let Some(target) = target {
+                    let mut context: String = line.trim().chars().take(240).collect();
+                    if line.trim().chars().count() > 240 {
+                        context.push('…');
+                    }
+                    refs.push(Ref {
+                        target,
+                        line: i + 1,
+                        context,
+                    });
+                }
+            };
+            let mut body_from = 0;
+            if let Some(fm) = frontmatter::read(text) {
+                for t in with_frontmatter_tags(text, Vec::new()) {
+                    push_tag(&mut tags, &text[t.name]);
+                }
+                body_from = (text.split_inclusive('\n').take(fm.end_line))
+                    .map(str::len)
+                    .sum();
+            }
+            let mut in_fence = false;
+            for line in text[body_from..].lines() {
+                let t = line.trim_start();
+                if t.starts_with("```") || t.starts_with("~~~") {
+                    in_fence = !in_fence;
+                    continue;
+                }
+                if in_fence {
+                    continue;
+                }
+                let code: Vec<Range<usize>> =
+                    (p.inline_code.find_iter(line)).map(|m| m.range()).collect();
+                for c in tag.captures_iter(line) {
+                    let name = c.get(1).unwrap();
+                    if !code.iter().any(|r| r.contains(&(name.start() - 1))) {
+                        push_tag(&mut tags, name.as_str());
+                    }
+                }
+            }
+            if lines.first().map(|l| l.trim_end()) == Some("---") {
+                i = 1;
+                let mut in_aliases = false;
+                while i < lines.len() {
+                    let line = lines[i];
+                    let t = line.trim();
+                    if t == "---" || t == "..." {
+                        i += 1;
+                        break;
+                    }
+                    if let Some(rest) = t
+                        .strip_prefix("aliases:")
+                        .or_else(|| t.strip_prefix("alias:"))
+                    {
+                        in_aliases = true;
+                        let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
+                        aliases.extend(rest.split(',').filter_map(clean_alias));
+                    } else if in_aliases && t.starts_with("- ") {
+                        aliases.extend(clean_alias(&t[2..]));
+                    } else if !t.is_empty() {
+                        in_aliases = false;
+                    }
+                    for c in p.wikilink.captures_iter(line) {
+                        add(&mut refs, clean_target(&c[1]), i, line);
+                    }
+                    i += 1;
+                }
+            }
+            let mut in_fence = false;
+            for (n, raw) in lines.iter().enumerate().skip(i) {
+                let t = raw.trim_start();
+                if t.starts_with("```") || t.starts_with("~~~") {
+                    in_fence = !in_fence;
+                    continue;
+                }
+                if in_fence {
+                    continue;
+                }
+                for target in links_in(raw, Some(&mut written)) {
+                    add(&mut refs, Some(target), n, raw);
+                }
+            }
+            (refs, tags, aliases, written)
+        }
+    }
+
+    #[test]
+    fn a_link_to_a_heading_is_not_a_tag() {
+        let (_, tags) = links_and_tags("See [the agenda](#agenda), (#real) and #also.");
+        assert_eq!(tags, ["real", "also"]);
+    }
+
+    #[test]
+    fn the_tree_reads_the_corpus_as_the_lines_did() {
+        let mut differ = Vec::new();
+        for (name, text) in cst::corpus() {
+            let (tree, mut lines) = (parse(&text), lines::parse(&text));
+            // The one way they differ here: the line reader took a link to a heading of the
+            // same note, `[text](#heading)`, for a tag. The tree reads it as a link.
+            let anchor = |t: &String| text.to_lowercase().contains(&format!("](#{t})"));
+            lines.1.retain(|t| tree.1.contains(t) || !anchor(t));
+            if tree != lines {
+                let refs = |r: &[Ref]| -> Vec<String> {
+                    r.iter()
+                        .map(|r| format!("{}:{}", r.line, r.target))
+                        .collect()
+                };
+                differ.push(format!(
+                    "{name}\n  tree:  {:?} {:?} {:?}\n  lines: {:?} {:?} {:?}",
+                    refs(&tree.0),
+                    tree.1,
+                    tree.2,
+                    refs(&lines.0),
+                    lines.1,
+                    lines.2
+                ));
+            }
+        }
+        assert!(
+            differ.is_empty(),
+            "read differently:\n{}",
+            differ.join("\n")
+        );
+    }
+
+    /// What reading every note of a workspace costs: the line reader, `read` (the tree's parse
+    /// read forwards), and making each note's tree. Run on `scripts/bench-items.py`'s workspace:
+    /// `COLD_LAVA_BENCH_WS=DIR cargo test --release -p cold-lava-engine read_cost -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn read_cost() {
+        use std::time::{Duration, Instant};
+        let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
+        let notes: Vec<String> = walkdir::WalkDir::new(dir)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .collect();
+        let bytes: usize = notes.iter().map(String::len).sum();
+        let time = |f: &dyn Fn(&str)| {
+            let mut runs: Vec<Duration> = (0..9)
+                .map(|_| {
+                    let t = Instant::now();
+                    notes.iter().for_each(|n| f(n));
+                    t.elapsed()
+                })
+                .collect();
+            runs.sort();
+            (runs[4], runs[0], runs[8])
+        };
+        let lines = time(&|n| {
+            std::hint::black_box(lines::parse(n));
+        });
+        let read = time(&|n| {
+            std::hint::black_box(super::read(n));
+        });
+        let steps = time(&|n| {
+            let mut k = 0usize;
+            cst::read(n, cst::Gates::INDEX, &mut |_| k += 1);
+            std::hint::black_box(k);
+        });
+        let blocks = time(&|n| {
+            std::hint::black_box(cst::block_events(n, cst::Gates::INDEX));
+        });
+        let tree = time(&|n| {
+            std::hint::black_box(cst::Tree::with(n, cst::Gates::INDEX));
+        });
+        println!(
+            "read_cost: {} notes, {} KiB; median (min-max) of 9:",
+            notes.len(),
+            bytes / 1024
+        );
+        for (what, t) in [
+            ("line reader", lines),
+            ("read", read),
+            ("the parse's steps alone", steps),
+            ("blocks alone", blocks),
+            ("making the trees", tree),
+        ] {
+            println!("  {what}: {:?} ({:?}-{:?})", t.0, t.1, t.2);
+        }
     }
 }

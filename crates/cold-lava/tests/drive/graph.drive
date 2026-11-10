@@ -76,7 +76,12 @@ expect ● path:Volcanoes 9
 # Filters: tags, unresolved links, orphans.
 keys t
 wait-for tags shown
-expect #volcano/shield
+# A tag's label may sit under another one: search finds it wherever the layout put it.
+keys /
+type shield
+wait-for #volcano/shield
+keys esc
+wait-gone /shield
 keys t
 wait-for tags hidden
 wait-for 38 nodes · 100 links

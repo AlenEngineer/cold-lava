@@ -36,6 +36,10 @@ change commands, keys and file formats; patch versions only fix things.
   the task or the link is on; Back and Forward return to a board with the node that was
   selected. A board that isn't a canvas says so in the status line instead of ending
   cold-lava. The shape editor (`S`) and the board picker still pause extensions while open.
+- The graph lays out large workspaces much faster: nodes push each other apart through a
+  Barnes–Hut quadtree instead of pair by pair, and a node's braille dot is filled dot by dot
+  instead of drawn as rings of circles. On a GitHub runner, 2,000 notes settle in 5.3 s
+  instead of 11.7 s, 5,000 in 8.1 s instead of 36.3 s, and 10,000 in 12.8 s instead of 106 s.
 - Renames rewrite a board's note cards and the links in its text cards through the canvas
   owner, only in nodes' `file` and `text`. The delete warning says "files link to them", since
   a board can be one.
@@ -44,6 +48,10 @@ change commands, keys and file formats; patch versions only fix things.
   there. `task toggle FILE:LINE` on such a file refuses and says to use `item set`.
 - The whiteboard reads a card without `x`, `y`, `width` or `height` as at 0 instead of refusing
   the board.
+- A note's links and tags are read from its Markdown syntax tree (part of #140), so they follow
+  the Markdown the reader shows: a link to a heading of the same note (`[text](#heading)`) is no
+  longer the tag `heading`, and links and tags in indented code, in a ``` ``code`` ``` span, in an
+  HTML block or past a fence line that doesn't close the fence no longer count.
 
 ## [0.5.0] - 2026-11-10
 

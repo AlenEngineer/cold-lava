@@ -58,7 +58,10 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
   workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
   a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
-  webkit2gtk-4.1). The terminal UI stays the main frontend.
+  webkit2gtk-4.1). The terminal UI stays the main frontend. A new engine dependency must also
+  go into `crates/gui/Cargo.lock`: `cargo metadata --format-version 1 --manifest-path
+  crates/gui/Cargo.toml >/dev/null` resolves and writes it without building, and CI's "GUI lock
+  up to date" step fails while it is stale.
 
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
@@ -103,6 +106,12 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
+- `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
+  (every byte a token; printing it gives the note back), blocks found line by line as
+  CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
+  reparses only the top-level blocks an edit can change; `cst::read` gives a reader the steps
+  of a walk through the tree without making it (the scan uses it). The Markdown owner's `read`
+  and `tags_in` read links and tags this way; items still come from pulldown-cmark (#140).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:
@@ -210,8 +219,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the
   extension that owns the pane.
 - `scene_view.rs`: the scene view, a scene of nodes and links (`Scene`, the view gateway's
-  `scene` content) that the core lays out (`graph.rs`'s force layout, positions kept by node
-  id), draws (`scene.rs`'s `Frame`, in braille or Kitty-graphics pixels under the text with
+  `scene` content) that the core lays out (`graph.rs`'s force layout, its repulsion through a
+  Barnes–Hut quadtree, positions kept by node id), draws (`scene.rs`'s `Frame`, in braille or Kitty-graphics pixels under the text with
   `z=-1`, `kitty.rs`) and moves around in. It is one of `views.rs`'s views, ticked in the
   menu's loop while in front, so extensions keep being answered; keys whose meaning is the
   sender's go to it as `view/event`.
@@ -304,5 +313,5 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
   it, and so do the agenda, the table and the graph (over the view gateway); the canvas and
   the menu should become extensions of the core too. Then
-  performance for large workspaces (Barnes–Hut layout), a config file, light-terminal colours.
+  the rest of #97 (smaller items, a cache of parsed notes), a config file, light-terminal colours.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).

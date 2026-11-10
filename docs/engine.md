@@ -224,14 +224,47 @@ change what it shows, never how it works.
     and stylus belong to the GUI, on the same canvas engine and the same files.
   - **Other editors are extensions** over the gateway (Neovim today, in a pane), for people who
     want to keep theirs.
-- **A lossless Markdown tree for the editor.** Today a note is parsed whole and
-  edited by byte ranges (a value's span, a link's text), checked by reading it back: that is
-  already lossless and gives the smallest diff. Once `cold-lava-editor` edits in place, reparsing
-  a whole note per keystroke stops being cheap; then the note becomes a concrete syntax tree of
-  Obsidian-flavoured Markdown in the style of rust-analyzer's `rowan` (an immutable "green" tree
-  holding every byte, trivia included, with shared subtrees; a "red" layer for parents and
-  offsets; incremental reparsing), with items and links read from it. Prior art: `rowan`,
-  `cstree`, and `panache-parser` (a rowan-based lossless parser for Pandoc Markdown).
+- **A lossless Markdown tree for the editor** *(built: `cst.rs`; #140 step 1)*. A note is a
+  concrete syntax tree of Obsidian-flavoured Markdown on `rowan`, rust-analyzer's tree library:
+  an immutable "green" tree holding every byte, whitespace and blank lines included, with
+  shared subtrees, and a "red" layer made on demand for parents and offsets. Printing the tree
+  gives the note back byte for byte (a test does this for every note of the example workspace,
+  the docs and the fixtures, with CRLF, a BOM, tabs and no final newline among the edge cases).
+  - *Blocks* are found line by line as CommonMark does: a line first continues the open
+    containers it can (block quotes and callouts, lists and their items), then closes the rest,
+    then opens new blocks (frontmatter, ATX and setext headings, thematic breaks, fenced and
+    indented code, HTML blocks as opaque text, tables, `$$` math and `%%` comment blocks,
+    paragraphs with lazy lines). A container's marker on a later line (`>`, an item's
+    indentation) is a token of the innermost block that holds that line.
+  - *Inlines* are read per line, left to right, the first to start winning: code spans,
+    wikilinks and embeds (target, `#heading` or `^block`, `|alias`), Markdown links and images,
+    Dataview fields (`[key:: value]`, `(key:: value)`, a `key:: value` line), `%%comments%%`,
+    `$math$`, tags and block ids. A task's checkbox is a token of its list item. Emphasis,
+    highlights and footnotes stay text, and so do the Tasks plugin's emoji fields, which the
+    `task` type reads (its markers are data, not syntax). Every one of these is gated by the
+    flavour's `Syntax`.
+  - *Incremental reparsing:* `Tree::edit` parses again from the top-level block before the edit
+    (a block's end depends on the first line after it that isn't blank) until the parse is
+    back on a line where nothing is open and an old block starts, then splices the new blocks
+    into the old green tree, sharing the rest. An edit on line 1 parses the note whole, since
+    line 1 decides the frontmatter. A test makes thousands of random edits and checks each
+    against a full parse. A long list is one top-level block, so an edit inside it reparses
+    the whole list.
+  - *One parse, two sinks:* the parse writes to rowan's builder for a tree, or through
+    `cst::read`, which hands a reader the same steps a walk through the tree takes, without
+    making it. The workspace's scan reads every note once and drops it, so it uses `read`. On a
+    GitHub runner, 3,300 notes took 76 ms to make into trees and 54 ms to read so, where the
+    line reader before it took 58 ms. A test checks both give the same steps on every note of
+    the corpus.
+  - *What reads it:* the Markdown owner's `read` (links, aliases, how links are written) and
+    `tags_in`. They read in the same syntax whatever the flavour, as they always have
+    (`Gates::INDEX`: wikilinks, embeds and tags count; links in comments and math do too). A
+    test keeps the old line reader and checks both read every note of the corpus alike. Where
+    they differ, the tree follows the Markdown the reader shows: links in indented code, in a
+    ```` ``code`` ```` span, inside an HTML block or a fence that a shorter fence line didn't
+    close don't count; a tag needs to be text, not inside a link's destination or a wikilink.
+    Items still come from pulldown-cmark (`items::extract`), and `relink` and the matcher's
+    `line_links` still read lines; moving them onto the tree is #140's next step.
 - **A framework, extracted, not designed up front.** The frontend is built concrete and
   opinionated first. Once its parts have proven themselves (the view host, the document
   layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a
