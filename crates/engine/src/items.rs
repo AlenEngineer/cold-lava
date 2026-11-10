@@ -1730,16 +1730,17 @@ fields.w = { capture = "w" }
     }
 
     /// What reading every note's items costs, pulldown-cmark's pass against the tree's walk,
-    /// with the workspace's types. Run on `scripts/bench-items.py`'s workspace:
-    /// `COLD_LAVA_BENCH_WS=DIR cargo test --release -p cold-lava-engine items_cost -- --ignored
-    /// --nocapture`.
+    /// with the workspace's types and with none (the pass and the ids alone). Run on
+    /// `scripts/bench-items.py`'s workspace: `COLD_LAVA_BENCH_WS=DIR cargo test --release -p
+    /// cold-lava-engine items_cost -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn items_cost() {
         use std::time::{Duration, Instant};
         let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
         let root = Path::new(&dir);
-        let s = Settings::load(root);
+        let typed = Settings::load(root);
+        let plain = Settings::load_with(root, types::load(Vec::<types::Layer>::new()));
         let notes: Vec<(String, String)> = walkdir::WalkDir::new(root)
             .into_iter()
             .flatten()
@@ -1751,27 +1752,40 @@ fields.w = { capture = "w" }
             })
             .collect();
         let bytes: usize = notes.iter().map(|n| n.1.len()).sum();
-        let time = |f: &dyn Fn(&str, &str) -> usize| {
-            let mut items = 0usize;
-            let mut runs: Vec<Duration> = (0..9)
-                .map(|_| {
-                    let t = Instant::now();
-                    items = notes.iter().map(|(name, text)| f(name, text)).sum();
-                    t.elapsed()
-                })
-                .collect();
-            runs.sort();
-            (runs[4], runs[0], runs[8], items)
-        };
-        let old = time(&|name, text| pulldown::extract(name, text, &s).len());
-        let tree = time(&|name, text| extract(name, text, &s).len());
+        type Read = fn(&str, &str, &Settings) -> Vec<Item>;
+        let sides: [(&str, Read, &Settings); 4] = [
+            ("pulldown-cmark, with the types", pulldown::extract, &typed),
+            ("the tree, with the types", extract, &typed),
+            ("pulldown-cmark, no types", pulldown::extract, &plain),
+            ("the tree, no types", extract, &plain),
+        ];
+        let mut runs: Vec<Vec<Duration>> = vec![Vec::new(); sides.len()];
+        let mut items = vec![0usize; sides.len()];
+        // The sides take turns, so drift and caches favour none.
+        for _ in 0..9 {
+            for (k, (_, read, s)) in sides.iter().enumerate() {
+                let t = Instant::now();
+                items[k] = notes
+                    .iter()
+                    .map(|(name, text)| read(name, text, s).len())
+                    .sum();
+                runs[k].push(t.elapsed());
+            }
+        }
         println!(
             "items_cost: {} notes, {} KiB; median (min-max) of 9:",
             notes.len(),
             bytes / 1024
         );
-        for (what, t) in [("pulldown-cmark", old), ("the tree", tree)] {
-            println!("  {what}: {:?} ({:?}-{:?}), {} items", t.0, t.1, t.2, t.3);
+        for (k, (what, ..)) in sides.iter().enumerate() {
+            runs[k].sort();
+            println!(
+                "  {what}: {:?} ({:?}-{:?}), {} items",
+                runs[k][4],
+                runs[k][0],
+                runs[k][8],
+                items[k]
+            );
         }
     }
 }
