@@ -21,7 +21,11 @@ wait-for Alt-→ ⟶ Volcano Venn
 keys alt+right
 wait-for whiteboard Volcano Venn
 wait-for shape card · Card (a note)
+# Quitting the board goes to the menu (the reader it was opened from), which Back returns from.
 keys q
-wait-for cold-lava workspaces
+wait-for Volcanoes/Krakatoa  reading
+wait-for Ctrl-o ⟵ Volcano Venn
+keys esc
+wait-for ? help  q quit
 keys q
 exits 0
