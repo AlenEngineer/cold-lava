@@ -58,7 +58,10 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
   workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
   a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
-  webkit2gtk-4.1). The terminal UI stays the main frontend.
+  webkit2gtk-4.1). The terminal UI stays the main frontend. A new engine dependency must also
+  go into `crates/gui/Cargo.lock`: `cargo metadata --format-version 1 --manifest-path
+  crates/gui/Cargo.toml >/dev/null` resolves and writes it without building, and CI's "GUI lock
+  up to date" step fails while it is stale.
 
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
