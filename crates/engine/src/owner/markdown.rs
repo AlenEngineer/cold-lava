@@ -1,8 +1,10 @@
 //! Markdown, the engine's own format and the first owner. Its three jobs, each on a note's text:
 //! `read` (links, tags and aliases, when the note is scanned) with `items` (on first use),
 //! `edit` (one item → the note's new text) and `relink` (links to moved files → new text).
+//! `tags_in` says where each tag is written, for `read` and for recipes that change tags.
 
 use crate::edit::{self, SetField};
+use crate::frontmatter::{self, Value};
 use crate::gateway::{Edit, Error, Op, Reason};
 use crate::items::{self, Item, Settings};
 use crate::rename::Change;
@@ -274,10 +276,13 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
         }
     };
 
-    // YAML frontmatter: only `tags:` matters here.
+    for t in tags_in(text) {
+        push_tag(&mut tags, &text[t.name]);
+    }
+
+    // YAML frontmatter: aliases, and links in properties.
     if lines.first().map(|l| l.trim_end()) == Some("---") {
         i = 1;
-        let mut in_tags = false;
         let mut in_aliases = false;
         while i < lines.len() {
             let line = lines[i];
@@ -291,22 +296,11 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
                 .or_else(|| t.strip_prefix("alias:"))
             {
                 in_aliases = true;
-                in_tags = false;
                 let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
                 aliases.extend(rest.split(',').filter_map(clean_alias));
             } else if in_aliases && t.starts_with("- ") {
                 aliases.extend(clean_alias(&t[2..]));
-            } else if let Some(rest) = t.strip_prefix("tags:").or_else(|| t.strip_prefix("tag:")) {
-                in_tags = true;
-                in_aliases = false;
-                let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
-                for tag in rest.split(',') {
-                    push_tag(&mut tags, tag);
-                }
-            } else if in_tags && t.starts_with("- ") {
-                push_tag(&mut tags, &t[2..]);
             } else if !t.is_empty() {
-                in_tags = false;
                 in_aliases = false;
             }
             // Wikilinks inside frontmatter properties count too, like in Obsidian.
@@ -330,12 +324,151 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
         for target in line_links(raw) {
             add(&mut refs, Some(target), n, raw);
         }
-        let line = p.inline_code.replace_all(raw, "");
-        for c in p.tag.captures_iter(&line) {
-            push_tag(&mut tags, &c[1]);
-        }
     }
     (refs, tags, aliases)
+}
+
+/// A tag as written in a note: the bytes of its name (no `#`), and for one in the frontmatter's
+/// `tags`, the bytes that take it out of its list (`None` in the body, or when it is the list's
+/// only one).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TagSpan {
+    pub name: Range<usize>,
+    pub place: TagPlace,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TagPlace {
+    /// `#tag` in the body.
+    Body,
+    /// A value of the frontmatter's `tags`.
+    Frontmatter {
+        /// The bytes that take it out of the list; `None` when it is the only one.
+        entry: Option<Range<usize>>,
+        /// Written in quotes, so any name fits; a bare one YAML would misread needs them.
+        quoted: bool,
+    },
+}
+
+/// Every tag in a note's text, in order: the frontmatter's `tags` (or `tag`) in each form
+/// Obsidian reads (`- item` lines, `[a, b]`, or one string, comma-separated; each with or
+/// without `#`), then `#tags` in the body outside code blocks and inline code. A nested tag is
+/// one span (`area/work`). The tags `read` gives a note are exactly these.
+pub fn tags_in(text: &str) -> Vec<TagSpan> {
+    let mut out = Vec::new();
+    let mut body_from = 0;
+    if let Some(fm) = frontmatter::read(text) {
+        body_from = (text.split_inclusive('\n').take(fm.end_line))
+            .map(str::len)
+            .sum();
+        let key = ["tags", "tag"].into_iter().find(|k| fm.get(k).is_some());
+        match key.and_then(|k| fm.get(k)) {
+            Some(Value::List(items)) => {
+                let block = items.first().is_some_and(|w| {
+                    let (start, _) = line_around(text, w.span.start);
+                    text[start..w.span.start].trim_start().starts_with('-')
+                });
+                for (k, w) in items.iter().enumerate() {
+                    let entry = match block {
+                        true => Some(line_range(text, w.span.start)),
+                        false => list_entry(items, k),
+                    };
+                    out.extend(frontmatter_tag(text, w, entry));
+                }
+            }
+            Some(Value::Scalar(w)) => {
+                let mut parts = Vec::new();
+                let mut at = w.span.start;
+                for part in w.text.split(',') {
+                    let start = at + part.len() - part.trim_start().len();
+                    parts.push(frontmatter::Written {
+                        text: part.trim(),
+                        span: start..start + part.trim().len(),
+                    });
+                    at += part.len() + 1;
+                }
+                parts.retain(|w| !w.text.is_empty());
+                for (k, w) in parts.iter().enumerate() {
+                    out.extend(frontmatter_tag(text, w, list_entry(&parts, k)));
+                }
+            }
+            _ => {}
+        }
+    }
+    let p = parsers();
+    let mut in_fence = false;
+    let mut at = body_from;
+    for line in text[body_from..].split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || !line.contains('#') {
+            continue;
+        }
+        let code: Vec<Range<usize>> = (p.inline_code.find_iter(line)).map(|m| m.range()).collect();
+        for c in p.tag.captures_iter(line) {
+            let name = c.get(1).expect("the pattern has a name");
+            let hash = name.start() - 1;
+            if code.iter().any(|r| r.contains(&hash)) || is_number(name.as_str()) {
+                continue;
+            }
+            out.push(TagSpan {
+                name: start + name.start()..start + name.end(),
+                place: TagPlace::Body,
+            });
+        }
+    }
+    out
+}
+
+/// One value of the frontmatter's `tags`, its `#` left out of its name.
+fn frontmatter_tag(
+    text: &str,
+    w: &frontmatter::Written,
+    entry: Option<Range<usize>>,
+) -> Option<TagSpan> {
+    let hash = w.text.len() - w.text.trim_start_matches('#').len();
+    let name = w.span.start + hash..w.span.end;
+    if name.is_empty() || is_number(&text[name.clone()]) {
+        return None;
+    }
+    let quoted = w.span.start > 0 && matches!(text.as_bytes()[w.span.start - 1], b'"' | b'\'');
+    Some(TagSpan {
+        name,
+        place: TagPlace::Frontmatter { entry, quoted },
+    })
+}
+
+/// The bytes that take the `k`th of a comma-separated list out: it and the comma before it, or
+/// for the first, it and what separates it from the second. Quotes around a value stay with the
+/// neighbour's, which leaves them balanced.
+fn list_entry(items: &[frontmatter::Written], k: usize) -> Option<Range<usize>> {
+    match k {
+        _ if items.len() < 2 => None,
+        0 => Some(items[0].span.start..items[1].span.start),
+        k => Some(items[k - 1].span.end..items[k].span.end),
+    }
+}
+
+/// The line holding byte `at`, with its line ending.
+fn line_range(text: &str, at: usize) -> Range<usize> {
+    let (start, end) = line_around(text, at);
+    start..end
+}
+
+fn line_around(text: &str, at: usize) -> (usize, usize) {
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i + 1);
+    (start, end)
+}
+
+/// `#123` is not a tag: a tag needs at least one character that isn't a digit.
+fn is_number(name: &str) -> bool {
+    name.chars().all(|c| c.is_ascii_digit())
 }
 
 /// The link targets on one line outside inline code: wikilinks, then Markdown links.

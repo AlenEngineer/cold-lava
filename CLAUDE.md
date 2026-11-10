@@ -64,7 +64,13 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   link resolver: ask this one (docs/extensions.md, "Link resolver").
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs`: rename/move with every link updated;
-  `plan()` then `apply()`.
+  `plan()` then `apply()`. Its `FileEdit` (a file's planned new text, or what to ask its owner),
+  `check_unchanged` and `Written` (files written, to put back) are shared by merges and recipes.
+- `recipe.rs`: recipes, named whole-workspace changes (`BUILT_IN`: `rename-tag`). `plan()`
+  (a `Draft` of every file's new text, nothing written, a diff per file), `apply()` (refused if a
+  file changed; owned files get their text from their owners through `Core::relink` first) and
+  `undo()`. A recipe finds what it changes through owners (tags: `owner::markdown::tags_in`),
+  never by matching files itself.
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.

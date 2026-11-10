@@ -1302,7 +1302,7 @@ new text.**
 
 ## Recipes
 
-*(design)*
+*(design; the engine, `rename-tag`, plan, apply and undo exist: "Recipes, as built" below)*
 
 A **recipe** is a named, reusable change to a whole workspace that you preview as a diff before
 anything is written: rename a tag everywhere; move inline `key:: value` fields into frontmatter;
@@ -1329,6 +1329,59 @@ types and the resolver's links, so a recipe finds what it changes by meaning, no
 - **First slice:** `rename-tag` (inline `#tag`, frontmatter `tags`, nested tags `#a/b`), with the
   plan shown in the palette and printed by the CLI, apply and undo; then the recipe runner that
   lets extensions ship their own.
+
+### Recipes, as built
+
+- **The engine** (`crates/engine/src/recipe.rs`). A `Recipe` is an `id`, an `about`, its
+  `options` (each a name and what it is; all text) and a function that plans the change into a
+  `Draft`. `recipe::plan(index, recipe, options)` checks the options (an unknown one or a
+  missing one is refused, naming it), runs the recipe and gives a `Plan`: every file that
+  changes as a `rename::FileEdit`, the same shape renames and merges plan with, and warnings.
+  Nothing is written. `recipe::apply` refuses a plan whose owned files have no new text from
+  their owners yet, or a file that changed since the plan ("A.md changed since the recipe was
+  planned; nothing was changed. Try again."), then writes every file with `write::replace`,
+  putting back the ones written if one fails. It gives an `Applied`, and `recipe::undo` puts
+  every file back as it was, refused with nothing changed if one was edited since. The checks
+  and the writing are the merge's (`rename::check_unchanged`, `rename::Written`), now shared.
+- **The draft.** A recipe reads each file's text from the `Draft` (`note(i)`, `pieces(f)`) and
+  sets its new text there (`set_note`, `set_piece`), counting what it changed. So a recipe run
+  after another on the same draft sees the first one's text: composition is a recipe whose
+  function runs others' on its draft.
+- **Owned files.** A recipe changes the Markdown pieces of files other owners read as it changes
+  a note; the plan lists such a file with the pieces to ask for (`Ask::Text`), and its new text
+  comes from its owner through `Core::relink`, exactly as for a rename's links: `file/edit`, then
+  `file/read` of the answer, which must read as asked. A file its owner hasn't read as it is now
+  is left out with a warning. Typed items aren't changed by `rename-tag`.
+- **Targets by meaning.** A recipe asks the owners where things are; it never matches files
+  itself. Tags come from the Markdown owner's `tags_in` (`owner/markdown.rs`): each tag's name
+  as a byte range, and for one in the frontmatter, the bytes that take it out of its list. The
+  tags a note is read with (`Note::tags`, the tree's tag views, `items/query`'s `tag` filter) are
+  read from the same spans, so a tag renamed is exactly a tag the workspace sees.
+- **`rename-tag {from, to}`**, the first built-in. Both are tags as Obsidian takes them
+  (letters, digits, `_`, `-`, `/`; not only digits; a leading `#` and outer `/` are dropped).
+  - It renames `#from` and every tag nested under it (`#from/child` → `#to/child`), never a
+    tag that only starts the same (`#fromage`). `from` may be nested itself (`a/b`).
+  - In the body: `#tag` after the start of a line, a space, `(` or `,`, never in a fenced code
+    block (```` ``` ```` or `~~~`) or inline code.
+  - In the frontmatter's `tags` (or `tag`): a `- item` list, an inline `[a, b]` list, or a
+    string (`tags: a` or `tags: a, b`), each value with or without `#` and quoted or not; the
+    `#` and the quotes stay as written.
+  - Case: Obsidian reads tags case-insensitively ("Tags are case-insensitive. For example, #tag
+    and #TAG will be treated as identical.", [obsidian.md/help/tags](https://obsidian.md/help/tags)),
+    so `#Lava` and `#LAVA/flow` are renamed with `lava`, and `to` is written as typed; the rest of
+    a nested tag keeps its case.
+  - Into a tag that exists: the tags merge. In the frontmatter's list, a value that would then
+    be listed twice is taken out (`[lava, magma]` → `[magma]`); duplicates the rename didn't make
+    stay. In the body, `#magma` beside a renamed `#magma` stays: it is text.
+  - The plan's count is tags renamed (`FileEdit::links` holds it per file).
+- **Diffs.** `recipe::diff` gives a file's changed lines with context, in hunks; `file_diff` is a
+  note's whole-text diff, or an owned file's changed pieces; `unified` writes it as `@@ line N @@`
+  then ` `, `-` and `+` lines.
+- **Not yet:** composed recipes with options, more built-ins, `[[recipes]]` from extensions over
+  the gateway with attribution, and text added in the workspace's style. Each has its place: a
+  composed or extension recipe is another `Recipe` whose function fills the draft (an
+  extension's through gateway messages, attributed by the plan's recipe id,
+  `<extension>.<name>`).
 
 ## Commands
 

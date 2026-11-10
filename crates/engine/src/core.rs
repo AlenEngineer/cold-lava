@@ -1575,6 +1575,84 @@ mod tests {
     }
 
     #[test]
+    fn a_recipe_changes_owned_files_through_their_owner() {
+        use crate::{recipe, rename};
+        let dir =
+            std::env::temp_dir().join(format!("cold-lava-owned-recipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Note.md"), "#lava\n").unwrap();
+        let given = |tag: &str| -> Given {
+            serde_json::from_value(serde_json::json!({
+                "items": [{"place": "1", "text": format!("- [ ] sample #{tag}/ash")}],
+            }))
+            .unwrap()
+        };
+        let csv = |tag: &str| format!("- [ ] sample #{tag}/ash\n");
+        std::fs::write(dir.join("Samples.csv"), csv("lava")).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let kind = OwnedKind {
+            extension: "csv".into(),
+            owner: "csv-table".into(),
+            version: "1".into(),
+        };
+        core.set_owners(vec![kind], None);
+        let (_, read) = core.take_reads().pop().unwrap();
+        core.file_given("csv-table", "Samples.csv", &read.rev, Ok(given("lava")));
+        let options = recipe::Options::from([
+            ("from".to_string(), "lava".to_string()),
+            ("to".to_string(), "magma".to_string()),
+        ]);
+        let mut p =
+            recipe::plan(&core.index, recipe::find("rename-tag").unwrap(), options).unwrap();
+        let files: Vec<_> = p.edits.iter().map(|e| e.file.as_str()).collect();
+        assert_eq!(files, ["Note.md", "Samples.csv"]);
+        assert!(recipe::apply(&p).is_err(), "not before the owner answered");
+        let ticket = core.relink(&p.edits).unwrap().expect("waits for the owner");
+        let (_, ask) = core.take_file_edits().pop().unwrap();
+        assert_eq!(
+            ask.changes,
+            [Change::Text {
+                place: "1".into(),
+                text: "- [ ] sample #magma/ash".into()
+            }]
+        );
+        core.file_edited("csv-table", "Samples.csv", &ask.rev, Ok(csv("magma")));
+        let (_, back) = core.take_reads().pop().unwrap();
+        core.file_given("csv-table", "Samples.csv", &back.rev, Ok(given("magma")));
+        let relinked = core.take_relinked();
+        let [(t, Ok(answers))] = &relinked[..] else {
+            panic!("{relinked:?}");
+        };
+        assert_eq!(*t, ticket);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Note.md")).unwrap(),
+            "#lava\n"
+        );
+        rename::answered(&mut p.edits, answers.clone());
+        let done = recipe::apply(&p).unwrap();
+        core.relinked(&p.edits, Path::to_path_buf);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Note.md")).unwrap(),
+            "#magma\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Samples.csv")).unwrap(),
+            csv("magma")
+        );
+        recipe::undo(&done).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Note.md")).unwrap(),
+            "#lava\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Samples.csv")).unwrap(),
+            csv("lava")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_merge_relinks_owned_files_through_their_owner() {
         use crate::{merge, rename};
         let dir =
