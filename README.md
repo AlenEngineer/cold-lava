@@ -742,6 +742,24 @@ in (`note = "date"`), take an enum's values from a setting (`values = "${tasks.s
 name fields a block must have to be of that type (`required = ["text"]`; without one the next
 type may take it).
 
+### Shapes
+
+A **shape** says how something is drawn on the canvas: parts (rectangles, circles, lines, arrows,
+paths, text, other shapes) in a box, named regions made from them (`left & right`), the data it
+takes and what it does when you drop or click. They are written in TOML like types: built in
+(`text`, `rect`, `circle`, `line`, `arrow`, `card`, `sticky`, `table`, `venn2`), in an extension,
+under `[[shapes]]` in `~/.config/cold-lava/config.toml`, or in `.cold-lava/shapes.toml` in a
+workspace, each replacing the one before it by id. A `[glyphs]` table names symbols that draw like
+letters anywhere text goes (`:check:` is ✓). The example workspace has a three-circle Venn and a
+timeline.
+
+```sh
+cold-lava shapes example-workspace                     # every shape, where it comes from, errors
+cold-lava shapes example-workspace --render venn3      # draw one as text (--size 60x18)
+```
+
+Placing shapes on a canvas comes later; see [docs/shapes.md](docs/shapes.md).
+
 ### Extensions
 
 An extension is a program, in any language, that cold-lava starts when you open a workspace. It
@@ -849,7 +867,8 @@ frontends) and [docs/extensions.md](docs/extensions.md) (the extension protocol 
 
 The engine (`crates/engine`, no user interface), the terminal UI (`crates/cold-lava`), the
 frontend framework (`crates/views`, filled as its parts are extracted) and a small headless text
-editor both frontends render (`crates/editor`) are crates in one Cargo workspace. A graphical window on Tauri lives in `crates/gui`, outside the workspace so normal
+editor both frontends render (`crates/editor`) and the headless canvas engine shapes are drawn from
+(`crates/canvas`) are crates in one Cargo workspace. A graphical window on Tauri lives in `crates/gui`, outside the workspace so normal
 builds never compile a webview: `cargo run --manifest-path crates/gui/Cargo.toml` (on Linux it
 needs webkit2gtk-4.1). The terminal UI is and stays the main way to use cold-lava.
 

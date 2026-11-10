@@ -398,6 +398,34 @@ fields.tags = { inlines = "tags", type = "tag" }
   and in `cold-lava keys`. A definition that doesn't read is dropped, and said in
   `cold-lava types`; your other types and the extension still load.
 
+## Shipping a shape
+
+A shape says how something is drawn on the canvas ([shapes.md](shapes.md#shape-definitions)).
+Ship one in your manifest the same way, a `[[shapes]]` table with an `id` in your namespace:
+
+```toml
+[[shapes]]
+id = "csv-table.sheet"
+title = "A CSV sheet"
+inputs = ["rows"]
+aspect = 3.0
+parts = [
+  { rect = { id = "header", from = [0, 0], to = [1, 0.25] } },
+  { text = { at = "header.top", value = ":dot: ${rows.title}" } },
+  { rect = { id = "body", from = [0, 0.25], to = [1, 1] } },
+]
+regions = [{ id = "rows", area = "body", shows = "rows" }]
+```
+
+- `cold-lava shapes WORKSPACE` lists it with origin `extension csv-table`; `cold-lava shapes
+  WORKSPACE --render csv-table.sheet --size 50x12` draws it as text, to check it without a canvas.
+- A user's `config.toml` (`[[shapes]]`) or workspace (`.cold-lava/shapes.toml`) can replace it
+  by its id, and nest it in shapes of their own (`{ shape = { id = "s", use = "csv-table.sheet",
+  from = [0, 0], to = [1, 0.5] } }`).
+- The namespace and broken definitions work as for types: an id outside it is left out and said
+  in `cold-lava keys`, a definition that doesn't read is dropped with its error in `cold-lava
+  shapes`, and your other shapes still load.
+
 ## Writing items back
 
 When an extension edits an item of one of your files (`items/edit`), or the user renames a note

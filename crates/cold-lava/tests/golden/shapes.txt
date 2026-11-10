@@ -1,0 +1,60 @@
+text  built in  Text
+  inputs text · aspect 3
+  parts text body
+
+rect  built in  Rectangle
+  aspect 2
+  parts rect rect
+
+circle  built in  Circle
+  aspect 1
+  parts circle circle
+
+line  built in  Line
+  parts line line
+
+arrow  built in  Arrow
+  parts arrow arrow
+
+card  built in  Card (a note)
+  inputs note · aspect 2.5
+  parts rect frame, text title, line, text excerpt
+  region note: frame, shows note
+
+sticky  built in  Sticky note
+  inputs text · aspect 2
+  parts rect paper, text body
+  on action make-a-note (Make it a note): create a note, rebind to card
+
+table  built in  Table (a type's rows)
+  inputs rows · aspect 3
+  parts rect header, text heading, rect body
+  region rows: body, shows rows
+
+venn2  built in  Simple Venn diagram
+  inputs a, b · key name · aspect 1
+  parts circle left, circle right, text at left.top, text at right.top
+  region only-a: left - right, shows a - b
+  region both: left & right, shows a & b
+  region only-b: right - left, shows b - a
+  on drop only-a → both: edit
+
+venn3  workspace example-workspace/.cold-lava/shapes.toml  Three-way Venn diagram
+  inputs a, b, c · key name · aspect 1
+  parts circle left, circle right, circle low, text at left.top, text at right.top, text at low.bottom
+  region only-a: left - right - low, shows a - b - c
+  region only-b: right - left - low, shows b - a - c
+  region only-c: low - left - right, shows c - a - b
+  region a-and-b: left & right - low, shows a & b - c
+  region a-and-c: left & low - right, shows a & c - b
+  region b-and-c: right & low - left, shows b & c - a
+  region all: left & right & low, shows a & b & c
+
+tick  workspace example-workspace/.cold-lava/shapes.toml  Timeline tick
+  parts line mark
+
+timeline  workspace example-workspace/.cold-lava/shapes.toml  Eruption timeline
+  inputs eruptions · aspect 5
+  parts arrow axis, past (tick), then (tick), now (tick), text at past.mark.bottom, text at then.mark.bottom, text at now.mark.bottom, text at then.mark.top
+
+glyphs  ✓ check  ✗ cross  • dot  ★ star  ◆ diamond  → arrow  ▲ eruption

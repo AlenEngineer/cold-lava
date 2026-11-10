@@ -64,7 +64,10 @@ pub struct Manifest {
     pub commands: Vec<CommandSpec>,
     /// Types it defines, each with its id: `<extension name>.<type>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub types: Vec<TypeSpec>,
+    pub types: Vec<Spec>,
+    /// Shapes it defines, each with its id: `<extension name>.<shape>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shapes: Vec<Spec>,
     /// What it may ask of the workspace gateway. Without the field, read only.
     #[serde(default = "read_only")]
     pub permissions: Vec<Permission>,
@@ -191,11 +194,12 @@ pub struct CommandSpec {
     pub keys: Vec<String>,
 }
 
-/// A type an extension defines (`[[types]]`): its id, `<extension name>.<type>`, and the rest
-/// of its table, a definition in the same language as any type's (docs/extensions.md, "Types").
-/// The engine reads the definition, so a broken one leaves out that type, not the extension.
+/// A type or a shape an extension defines (`[[types]]`, `[[shapes]]`): its id,
+/// `<extension name>.<name>`, and the rest of its table, a definition in the same language as
+/// anyone's (docs/extensions.md, "Types"; docs/shapes.md, "Shape definitions"). The engine reads
+/// the definition, so a broken one leaves out that type or shape, not the extension.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TypeSpec {
+pub struct Spec {
     pub id: String,
     #[serde(flatten)]
     pub definition: toml::Table,
@@ -723,22 +727,28 @@ pub struct Registry {
     shows: Vec<(ExtId, usize)>,
 }
 
-/// Leaves out of `m` the types it can't define, as commands are: an id outside its namespace
-/// (`<name>.<type>`), or one it gave already. Returns why, one line each.
-fn leave_out_types(m: &mut Manifest) -> Vec<String> {
+/// Leaves out of `m` the types and shapes it can't define, as commands are: an id outside its
+/// namespace (`<name>.<type>`), or one it gave already. Returns why, one line each.
+fn leave_out_definitions(m: &mut Manifest) -> Vec<String> {
+    let name = m.name.clone();
+    let mut why = leave_out(&name, "type", &mut m.types);
+    why.extend(leave_out(&name, "shape", &mut m.shapes));
+    why
+}
+
+fn leave_out(name: &str, what: &str, specs: &mut Vec<Spec>) -> Vec<String> {
     let mut why = Vec::new();
     let mut ids = HashSet::new();
-    let name = m.name.clone();
-    m.types.retain(|t| {
+    specs.retain(|t| {
         let id = &t.id;
-        let problem = if !commands::namespaced(&name, id) {
+        let problem = if !commands::namespaced(name, id) {
             format!("its id must start with \"{name}.\"")
         } else if !ids.insert(id.clone()) {
             "that id is taken".into()
         } else {
             return true;
         };
-        why.push(format!("{name}: type {id:?} was left out: {problem}"));
+        why.push(format!("{name}: {what} {id:?} was left out: {problem}"));
         false
     });
     why
@@ -786,7 +796,7 @@ impl Registry {
         let mut loaded = loaded;
         let mut refused = Vec::new();
         for (_, m) in &mut loaded {
-            refused.extend(leave_out_types(m));
+            refused.extend(leave_out_definitions(m));
         }
         let manifests = loaded.iter().enumerate().map(|(i, (_, m))| (ExtId(i), m));
         let (commands, commands_refused) = commands::menu(manifests);
@@ -1203,6 +1213,7 @@ mod tests {
                 hints: vec![("Ctrl-o".into(), "back".into())],
                 commands: vec![command("nvim.restart", &["ctrl+r"])],
                 types: Vec::new(),
+                shapes: Vec::new(),
                 permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
                 file_types: Vec::new(),
                 shows: Vec::new(),
@@ -1243,6 +1254,7 @@ mod tests {
                 hints: Vec::new(),
                 commands: self.commands.clone(),
                 types: Vec::new(),
+                shapes: Vec::new(),
                 permissions: Vec::new(),
                 file_types: Vec::new(),
                 shows: Vec::new(),
@@ -1706,7 +1718,7 @@ mod tests {
 
     #[test]
     fn types_outside_the_namespace_or_taken_are_left_out() {
-        let spec = |id: &str| TypeSpec {
+        let spec = |id: &str| Spec {
             id: id.into(),
             definition: toml::from_str("on = \"note\"").unwrap(),
         };
@@ -1721,14 +1733,20 @@ mod tests {
             types: ["doc", "wcx.doc", "wc.", "wc.doc", "wc.doc"]
                 .map(spec)
                 .to_vec(),
+            shapes: ["lane", "wc.lane"].map(spec).to_vec(),
             permissions: read_only(),
             file_types: Vec::new(),
             shows: Vec::new(),
         };
-        let refused = leave_out_types(&mut m);
+        let refused = leave_out_definitions(&mut m);
         let ids: Vec<&str> = m.types.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["wc.doc"]);
-        assert_eq!(refused.len(), 4, "{refused:?}");
+        assert_eq!(m.shapes.len(), 1);
+        assert_eq!(refused.len(), 5, "{refused:?}");
+        assert_eq!(
+            refused[4],
+            "wc: shape \"lane\" was left out: its id must start with \"wc.\""
+        );
         assert_eq!(
             refused[0],
             "wc: type \"doc\" was left out: its id must start with \"wc.\""

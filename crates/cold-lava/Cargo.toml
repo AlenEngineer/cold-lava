@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 cold-lava-engine.workspace = true
+cold-lava-canvas.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true

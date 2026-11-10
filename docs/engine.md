@@ -171,7 +171,8 @@ chosen Markdown flavour). Frontends sit beside the engine:
      │         └─ cold-lava lsp: links, backlinks, completion and renames in any editor
      ├─ cold-lava (the terminal UI, the main frontend)
      └─ cold-lava-gui (a Tauri window, crates/gui)      both draw from cold-lava-views,
-                                                        and render cold-lava-editor (headless)
+                                                        and render cold-lava-editor and
+                                                        cold-lava-canvas (both headless)
 ```
 
 A frontend asks the engine and draws; the engine never knows which frontend is asking. That's
@@ -186,6 +187,11 @@ The engine stays separate because that's good design, not because we expect many
 The aim is **one frontend, opinionated enough that nobody needs to replace it**: extensions
 change what it shows, never how it works.
 
+- **One smart canvas** *(design: [shapes.md](shapes.md))*. Everything the frontend shows is a
+  drawing made of shapes (glyphs included), defined and tagged like types; a shape can be the
+  drawing of a type's data, and users and extensions make their own (a Venn diagram whose regions
+  show what two queries share). A headless canvas engine computes geometry, regions, fitting and
+  bindings; the TUI only paints.
 - **The UI is a host of views.** The frontend owns layout, drawing, keys, mouse and frame rate.
   Everything it shows (the reader, the agenda, a type's table, a whiteboard) is a view; the
   built-in ones use the same view gateway as anyone's. File-type owners only say how to show
@@ -200,10 +206,25 @@ change what it shows, never how it works.
 - **Making things where you are.** "Insert a whiteboard here" creates `….canvas` through
   `workspace/create`, puts `![[…]]` at the cursor, and opens it in place. Same for a diagram or any
   file type whose owner declares a `new` command. You write, drop in a board, keep writing.
-- **Text is still typed in your editor.** A text editor good enough to live in is a project of
-  its own, so Neovim (or yours) keeps typing; cold-lava inserts references and edits items for
-  you. A light block editor for quick, one-paragraph edits may come later, never a full editor.
-- **A lossless Markdown tree when editing moves in place.** Today a note is parsed whole and
+- **The notebook.** *(design; this replaces "text is still typed in your editor")* The
+  experience is a notebook and a pencil: you write, start a drawing right there, and make a
+  mental map of the concept you're writing about, on one page, without switching tools. So
+  cold-lava has its own writing surface:
+  - **The page is the note,** rendered as you type, the raw syntax showing only on the line you
+    are on; plain Markdown on disk, so Obsidian and git see a normal file. Plain writing keys by
+    default, a Vim mode as an option.
+  - **The pencil moment.** Anywhere in the text, "draw here" creates a drawing's file, puts
+    `![[…]]` at the cursor and opens it in place; Esc is back to writing below it. The drawing
+    lives in its own file (docs/shapes.md), so the note stays clean text.
+  - **The mental map.** "Map this note" makes a drawing bound to the note's structure (its
+    headings, the concepts it links, its tags), not a copy: as you write, the map follows, and
+    an arrow drawn between two concepts on the map can add the link in the text.
+  - **In a terminal there is no pencil:** freehand with the mouse works in braille but is coarse,
+    so the quick path is placing shapes, typing labels and connecting them by keyboard. Pencil
+    and stylus belong to the GUI, on the same canvas engine and the same files.
+  - **Other editors are extensions** over the gateway (Neovim today, in a pane), for people who
+    want to keep theirs.
+- **A lossless Markdown tree for the editor.** Today a note is parsed whole and
   edited by byte ranges (a value's span, a link's text), checked by reading it back: that is
   already lossless and gives the smallest diff. Once `cold-lava-editor` edits in place, reparsing
   a whole note per keystroke stops being cheap; then the note becomes a concrete syntax tree of
@@ -215,6 +236,19 @@ change what it shows, never how it works.
   opinionated first. Once its parts have proven themselves (the view host, the document
   layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a
   real app instead of guesses.
+- **Our own terminal graphics library, by extraction.** A TUI graphics library is two halves:
+  scene in, cells out (geometry, regions, rasterizing to cells, braille and pixels, fitting,
+  hit testing), and cells to the terminal (a cell buffer diffed frame to frame, escape codes,
+  keys and mouse). The first half is ours, the canvas engine (docs/shapes.md), and it is what no
+  widget library offers. The second half stays ratatui's buffer and crossterm, since it is solved
+  and fiddly. As shapes take over drawing (the graph, placed shapes, the whiteboard, the document
+  view, then tables and lists), ratatui's widgets drop out until only its buffer and backend
+  remain. **Decision point: around placed shapes (#136).** Replace that thin layer with our own
+  writer when ratatui's buffer blocks something we need: layers (text over braille over Kitty
+  pixels, which the graph fakes with `z=-1`), redrawing only damaged regions for smooth large
+  scenes, sub-cell placement, or synchronized output. The canvas engine plus that writer is then
+  cold-lava's terminal graphics library, and can be published as a crate. Until then the canvas
+  engine stays free of UI crates, so the switch stays small.
 - **Honest limits.** A terminal draws whiteboards, diagrams, boards and graphs well, with Kitty
   pixels where the terminal has them and braille elsewhere. It won't feel like a tablet.
 

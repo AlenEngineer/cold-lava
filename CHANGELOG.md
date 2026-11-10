@@ -36,6 +36,38 @@ change commands, keys and file formats; patch versions only fix things.
   they are: selecting, dragging nodes and cards, panning, zooming, the local graph, search,
   colour groups and filters, notes changed on disk, editing cards, and merging a canvas changed
   outside while a card is being edited.
+- Shape definitions: `[[shapes]]` in TOML, built in, from extensions, in `config.toml` and in a
+  workspace's `.cold-lava/shapes.toml`, loaded in the order types are, a broken one dropped with
+  its error while the rest load. Parts (rect, circle, ellipse, line, arrow, path, text, other
+  shapes), anchors, inputs, regions and behaviour (`on`: gestures and actions as gateway steps,
+  stored and checked; they run with bindings). Built in, written in the same TOML: `text`,
+  `rect`, `circle`, `line`, `arrow`, `card`, `sticky` (with a "make it a note" action), `table`,
+  `venn2` and a set of glyphs (`:check:`).
+- `cold-lava shapes [WORKSPACE] [--json]` lists them with their origins and errors;
+  `--render ID [--size WxH]` draws one as text.
+- Text at an anchor (a shape's title) never overlaps another: a later one slides along its row,
+  then is cut with "…", then left out.
+- The example workspace has shapes of its own: a three-circle Venn and an eruption timeline.
+
+## [0.4.0] - 2026-11-09
+
+The engine's other half: everything is reachable through the gateways, other kinds of file
+join the workspace, and whole-workspace changes become previewable recipes.
+
+- **Extensions in any language**: a stdio JSON-RPC transport, the workspace gateway (items,
+  types, files, style) and the view gateway (lists, tables, images); the agenda and the table
+  run as extensions on it.
+- **File types and owners**: an extension can own a kind of file (`.csv` in the example), give
+  its items and links to the workspace, and take edits and renames back; Markdown is the first
+  owner; extensions can show Markdown notes their own way (a Kanban board) and preview files
+  inside notes.
+- **Recipes** (`rename-tag` first) and **workspace style**: changes previewed as a diff before
+  anything is written, and new text written the way your notes already are.
+- **Links**: one resolver, both directions, with `./` and `../` meaning the same file
+  everywhere.
+
+### Added
+
 - Workspace style: cold-lava counts how the notes are written as it reads them (list markers,
   wikilinks or Markdown links and their paths, emoji or Dataview task fields, heading style,
   frontmatter lists, `#` in `tags`, the order of frontmatter keys, each field's date form) and
@@ -640,7 +672,8 @@ The first release.
 - Live updates when notes change on disk, accent-insensitive matching everywhere, and an example
   vault that shows every feature.
 
-[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AlenEngineer/cold-lava/releases/tag/v0.1.0

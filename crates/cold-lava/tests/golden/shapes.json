@@ -1,0 +1,657 @@
+{
+  "shapes": [
+    {
+      "id": "text",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Text",
+      "inputs": [
+        "text"
+      ],
+      "aspect": 3.0,
+      "parts": [
+        {
+          "text": {
+            "id": "body",
+            "value": "${text}",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "rect",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Rectangle",
+      "aspect": 2.0,
+      "parts": [
+        {
+          "rect": {
+            "id": "rect",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "circle",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Circle",
+      "aspect": 1.0,
+      "parts": [
+        {
+          "circle": {
+            "id": "circle",
+            "center": [
+              0.5,
+              0.5
+            ],
+            "radius": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "id": "line",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Line",
+      "parts": [
+        {
+          "line": {
+            "id": "line",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "arrow",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Arrow",
+      "parts": [
+        {
+          "arrow": {
+            "id": "arrow",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "card",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Card (a note)",
+      "inputs": [
+        "note"
+      ],
+      "aspect": 2.5,
+      "parts": [
+        {
+          "rect": {
+            "id": "frame",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "text": {
+            "id": "title",
+            "value": "${note.title}",
+            "from": [
+              0.04,
+              0.1
+            ],
+            "to": [
+              0.96,
+              0.3
+            ]
+          }
+        },
+        {
+          "line": {
+            "from": "frame.left",
+            "to": "frame.right"
+          }
+        },
+        {
+          "text": {
+            "id": "excerpt",
+            "value": "${note.excerpt}",
+            "from": [
+              0.04,
+              0.55
+            ],
+            "to": [
+              0.96,
+              0.95
+            ]
+          }
+        }
+      ],
+      "regions": [
+        {
+          "id": "note",
+          "area": "frame",
+          "shows": "note"
+        }
+      ]
+    },
+    {
+      "id": "sticky",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Sticky note",
+      "inputs": [
+        "text"
+      ],
+      "aspect": 2.0,
+      "parts": [
+        {
+          "rect": {
+            "id": "paper",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "text": {
+            "id": "body",
+            "value": "${text}",
+            "from": [
+              0.06,
+              0.12
+            ],
+            "to": [
+              0.94,
+              0.88
+            ]
+          }
+        }
+      ],
+      "on": [
+        {
+          "action": "make-a-note",
+          "title": "Make it a note",
+          "do": [
+            {
+              "create": {
+                "text": "${text}"
+              }
+            },
+            {
+              "rebind": {
+                "shape": "card",
+                "inputs": {
+                  "note": "created"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "table",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Table (a type's rows)",
+      "inputs": [
+        "rows"
+      ],
+      "aspect": 3.0,
+      "parts": [
+        {
+          "rect": {
+            "id": "header",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              0.3
+            ]
+          }
+        },
+        {
+          "text": {
+            "id": "heading",
+            "value": "${rows.type}",
+            "from": [
+              0.02,
+              0.05
+            ],
+            "to": [
+              0.98,
+              0.25
+            ]
+          }
+        },
+        {
+          "rect": {
+            "id": "body",
+            "from": [
+              0.0,
+              0.3
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "regions": [
+        {
+          "id": "rows",
+          "area": "body",
+          "shows": "rows"
+        }
+      ]
+    },
+    {
+      "id": "venn2",
+      "origin": {
+        "kind": "built-in"
+      },
+      "title": "Simple Venn diagram",
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "key": "name",
+      "aspect": 1.0,
+      "parts": [
+        {
+          "circle": {
+            "id": "left",
+            "center": [
+              0.38,
+              0.5
+            ],
+            "radius": 0.32
+          }
+        },
+        {
+          "circle": {
+            "id": "right",
+            "center": [
+              0.62,
+              0.5
+            ],
+            "radius": 0.32
+          }
+        },
+        {
+          "text": {
+            "value": "${a.title}",
+            "at": "left.top"
+          }
+        },
+        {
+          "text": {
+            "value": "${b.title}",
+            "at": "right.top"
+          }
+        }
+      ],
+      "regions": [
+        {
+          "id": "only-a",
+          "area": "left - right",
+          "shows": "a - b"
+        },
+        {
+          "id": "both",
+          "area": "left & right",
+          "shows": "a & b"
+        },
+        {
+          "id": "only-b",
+          "area": "right - left",
+          "shows": "b - a"
+        }
+      ],
+      "on": [
+        {
+          "drop": {
+            "from": "only-a",
+            "to": "both"
+          },
+          "edit": {
+            "item": "dropped",
+            "set-field": {
+              "field": "tags",
+              "add": "${b.tag}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "venn3",
+      "origin": {
+        "kind": "workspace",
+        "path": "example-workspace/.cold-lava/shapes.toml"
+      },
+      "title": "Three-way Venn diagram",
+      "inputs": [
+        "a",
+        "b",
+        "c"
+      ],
+      "key": "name",
+      "aspect": 1.0,
+      "parts": [
+        {
+          "circle": {
+            "id": "left",
+            "center": [
+              0.37,
+              0.4
+            ],
+            "radius": 0.27
+          }
+        },
+        {
+          "circle": {
+            "id": "right",
+            "center": [
+              0.63,
+              0.4
+            ],
+            "radius": 0.27
+          }
+        },
+        {
+          "circle": {
+            "id": "low",
+            "center": [
+              0.5,
+              0.62
+            ],
+            "radius": 0.27
+          }
+        },
+        {
+          "text": {
+            "value": "${a.title}",
+            "at": "left.top"
+          }
+        },
+        {
+          "text": {
+            "value": "${b.title}",
+            "at": "right.top"
+          }
+        },
+        {
+          "text": {
+            "value": "${c.title}",
+            "at": "low.bottom"
+          }
+        }
+      ],
+      "regions": [
+        {
+          "id": "only-a",
+          "area": "left - right - low",
+          "shows": "a - b - c"
+        },
+        {
+          "id": "only-b",
+          "area": "right - left - low",
+          "shows": "b - a - c"
+        },
+        {
+          "id": "only-c",
+          "area": "low - left - right",
+          "shows": "c - a - b"
+        },
+        {
+          "id": "a-and-b",
+          "area": "left & right - low",
+          "shows": "a & b - c"
+        },
+        {
+          "id": "a-and-c",
+          "area": "left & low - right",
+          "shows": "a & c - b"
+        },
+        {
+          "id": "b-and-c",
+          "area": "right & low - left",
+          "shows": "b & c - a"
+        },
+        {
+          "id": "all",
+          "area": "left & right & low",
+          "shows": "a & b & c"
+        }
+      ]
+    },
+    {
+      "id": "tick",
+      "origin": {
+        "kind": "workspace",
+        "path": "example-workspace/.cold-lava/shapes.toml"
+      },
+      "title": "Timeline tick",
+      "parts": [
+        {
+          "line": {
+            "id": "mark",
+            "from": [
+              0.5,
+              0.3
+            ],
+            "to": [
+              0.5,
+              0.7
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "timeline",
+      "origin": {
+        "kind": "workspace",
+        "path": "example-workspace/.cold-lava/shapes.toml"
+      },
+      "title": "Eruption timeline",
+      "inputs": [
+        "eruptions"
+      ],
+      "aspect": 5.0,
+      "parts": [
+        {
+          "arrow": {
+            "id": "axis",
+            "from": [
+              0.02,
+              0.5
+            ],
+            "to": [
+              0.98,
+              0.5
+            ]
+          }
+        },
+        {
+          "shape": {
+            "id": "past",
+            "use": "tick",
+            "from": [
+              0.08,
+              0.2
+            ],
+            "to": [
+              0.18,
+              0.8
+            ]
+          }
+        },
+        {
+          "shape": {
+            "id": "then",
+            "use": "tick",
+            "from": [
+              0.45,
+              0.2
+            ],
+            "to": [
+              0.55,
+              0.8
+            ]
+          }
+        },
+        {
+          "shape": {
+            "id": "now",
+            "use": "tick",
+            "from": [
+              0.82,
+              0.2
+            ],
+            "to": [
+              0.92,
+              0.8
+            ]
+          }
+        },
+        {
+          "text": {
+            "value": "1800",
+            "at": "past.mark.bottom"
+          }
+        },
+        {
+          "text": {
+            "value": "1900",
+            "at": "then.mark.bottom"
+          }
+        },
+        {
+          "text": {
+            "value": ":eruption: now",
+            "at": "now.mark.bottom"
+          }
+        },
+        {
+          "text": {
+            "value": "${eruptions.title}",
+            "at": "then.mark.top"
+          }
+        }
+      ]
+    }
+  ],
+  "glyphs": [
+    {
+      "name": "check",
+      "symbol": "✓",
+      "origin": {
+        "kind": "built-in"
+      }
+    },
+    {
+      "name": "cross",
+      "symbol": "✗",
+      "origin": {
+        "kind": "built-in"
+      }
+    },
+    {
+      "name": "dot",
+      "symbol": "•",
+      "origin": {
+        "kind": "built-in"
+      }
+    },
+    {
+      "name": "star",
+      "symbol": "★",
+      "origin": {
+        "kind": "built-in"
+      }
+    },
+    {
+      "name": "diamond",
+      "symbol": "◆",
+      "origin": {
+        "kind": "built-in"
+      }
+    },
+    {
+      "name": "arrow",
+      "symbol": "→",
+      "origin": {
+        "kind": "built-in"
+      }
+    },
+    {
+      "name": "eruption",
+      "symbol": "▲",
+      "origin": {
+        "kind": "workspace",
+        "path": "example-workspace/.cold-lava/shapes.toml"
+      }
+    }
+  ],
+  "errors": [],
+  "notes": []
+}

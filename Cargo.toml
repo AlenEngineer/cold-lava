@@ -6,13 +6,14 @@ exclude = ["crates/gui"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/AlenEngineer/cold-lava"
 
 [workspace.dependencies]
 cold-lava-engine = { path = "crates/engine" }
+cold-lava-canvas = { path = "crates/canvas" }
 anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
