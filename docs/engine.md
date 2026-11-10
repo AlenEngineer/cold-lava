@@ -186,6 +186,11 @@ The engine stays separate because that's good design, not because we expect many
 The aim is **one frontend, opinionated enough that nobody needs to replace it**: extensions
 change what it shows, never how it works.
 
+- **One smart canvas** *(design: [shapes.md](shapes.md))*. Everything the frontend shows is a
+  drawing made of shapes (glyphs included), defined and tagged like types; a shape can be the
+  drawing of a type's data, and users and extensions make their own (a Venn diagram whose regions
+  show what two queries share). A headless canvas engine computes geometry, regions, fitting and
+  bindings; the TUI only paints.
 - **The UI is a host of views.** The frontend owns layout, drawing, keys, mouse and frame rate.
   Everything it shows (the reader, the agenda, a type's table, a whiteboard) is a view; the
   built-in ones use the same view gateway as anyone's. File-type owners only say how to show
