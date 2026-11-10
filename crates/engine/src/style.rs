@@ -529,7 +529,88 @@ pub fn set_configured(overrides: Overrides) {
     let _ = CONFIGURED.set(overrides);
 }
 
+/// A style worked out the first time it is asked for, so a command that writes one note counts
+/// the workspace's notes only when it adds text that needs them.
+pub struct Lazy<'a> {
+    style: OnceLock<Style>,
+    make: Box<dyn Fn() -> Style + 'a>,
+}
+
+impl<'a> Lazy<'a> {
+    pub fn new(make: impl Fn() -> Style + 'a) -> Lazy<'a> {
+        Lazy {
+            style: OnceLock::new(),
+            make: Box::new(make),
+        }
+    }
+
+    pub fn get(&self) -> &Style {
+        self.style.get_or_init(&self.make)
+    }
+}
+
+impl std::convert::From<Style> for Lazy<'_> {
+    fn from(style: Style) -> Self {
+        Lazy {
+            style: OnceLock::from(style),
+            make: Box::new(Style::default),
+        }
+    }
+}
+
+/// Spelling new text: every insertion asks these (docs/extensions.md, "Workspace style, as
+/// built"). Text that is there keeps its own spelling; the callers decide that first.
 impl Style {
+    /// A link to `target` (a note's name or path, or a file's with its extension), with the
+    /// target as given.
+    pub fn link(&self, target: &str) -> String {
+        match self.links.value {
+            LinkSyntax::Wiki => format!("[[{target}]]"),
+            LinkSyntax::Markdown => {
+                let name = target.rsplit('/').next().unwrap_or(target);
+                let file = match crate::workspace::attachment_kind(target) {
+                    Some(_) => target.to_string(),
+                    None => format!("{target}.md"),
+                };
+                let name = name.strip_suffix(".md").unwrap_or(name);
+                format!(
+                    "[{name}]({})",
+                    crate::workspace::encode_target_like(&file, "")
+                )
+            }
+        }
+    }
+
+    /// A tag as a frontmatter value: `lava` or `#lava`.
+    pub fn tag(&self, tag: &str) -> String {
+        let tag = tag.trim_start_matches('#');
+        match self.tags.value {
+            Tags::Bare => tag.to_string(),
+            Tags::Hash => format!("#{tag}"),
+        }
+    }
+
+    /// The lines of a new frontmatter list `key` holding `item` (already quoted if YAML needs
+    /// it), each ending in `nl`.
+    pub fn new_list(&self, key: &str, item: &str, nl: &str) -> String {
+        match self.frontmatter_lists.value {
+            Lists::Indented => format!("{key}:{nl}  - {item}{nl}"),
+            Lists::Flush => format!("{key}:{nl}- {item}{nl}"),
+            Lists::Flow => format!("{key}: [{item}]{nl}"),
+        }
+    }
+
+    /// Of a frontmatter's `keys`, in order, the one a new `key` goes before: the first that the
+    /// workspace writes after it. `None` puts it last, as for a key the workspace doesn't order.
+    pub fn key_before<'k>(&self, keys: &[&'k str], key: &str) -> Option<&'k str> {
+        let order = &self.key_order.value;
+        let rank = |k: &str| order.iter().position(|o| o == k);
+        let new = rank(key)?;
+        keys.iter()
+            .copied()
+            .find(|k| rank(k).is_some_and(|r| r > new))
+    }
+
     /// The majority of the counts, without settings.
     pub fn from_tally(t: &Tally) -> Style {
         let c = &t.counts;

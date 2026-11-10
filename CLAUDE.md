@@ -66,7 +66,10 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   syntax as it reads (`Read::written`); `count_with()` counts the rest of a note the first time
   the style is asked for (`Note::style`); `Workspace::style()` adds them up into a `Style`, the majority,
   then Obsidian's settings, then `[style]` from config.toml (`style::set_configured`, from
-  `config.rs`), then `.cold-lava/style.toml`. `cold-lava style` prints it.
+  `config.rs`), then `.cold-lava/style.toml`. `cold-lava style` prints it. New text is spelled
+  through it (`Style::link`, `tag`, `new_list`, `key_before`, `task_fields`; frontmatter's
+  `new_key_at`): set-field, toggles, tag edits and merges ask it. Text already written keeps its
+  own spelling; never format new text by hand.
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs`: rename/move with every link updated;
   `plan()` then `apply()`. Its `FileEdit` (a file's planned new text, or what to ask its owner),

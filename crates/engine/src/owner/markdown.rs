@@ -8,7 +8,7 @@ use crate::frontmatter::{self, Value};
 use crate::gateway::{Edit, Error, Op, Reason};
 use crate::items::{self, Item, Settings};
 use crate::rename::Change;
-use crate::style;
+use crate::style::{self, Lazy};
 use crate::tasks;
 use crate::workspace::{Ref, attachment_kind, clean_target};
 use chrono::NaiveDate;
@@ -63,11 +63,13 @@ pub enum After {
 }
 
 /// Make `edit` on `item` of the note at workspace-relative `note` whose text is `text`: through
-/// `edit::plan` for `set-field`, `tasks::toggle_text` for `toggle`. Nothing is written.
+/// `edit::plan` for `set-field`, `tasks::toggle_text` for `toggle`, adding text in `style`.
+/// Nothing is written.
 pub fn edit(
     note: &str,
     text: &str,
     s: &Settings,
+    style: &Lazy,
     item: &Item,
     req: &Edit,
     today: NaiveDate,
@@ -80,7 +82,7 @@ pub fn edit(
                 field,
                 value: value.clone(),
             };
-            let set = edit::plan(note, text, s, &set)?;
+            let set = edit::plan(note, text, s, style, &set)?;
             let removed = value.is_null() || value.as_str().is_some_and(|v| v.trim().is_empty());
             let what = match removed {
                 true => format!("removed {field}"),
@@ -99,7 +101,8 @@ pub fn edit(
                 let message = format!("{} is a {}, not a task", req.id, item.data.kind());
                 return Err(Error::new(Reason::Refused, message));
             }
-            let t = tasks::toggle_text(note, note, text, s, item.line, Some(&req.rev), today)
+            let line = item.line;
+            let t = tasks::toggle_text(note, note, text, s, style, line, Some(&req.rev), today)
                 .map_err(|e| {
                     let reason = match e.downcast_ref::<tasks::Changed>() {
                         Some(_) => Reason::Changed,

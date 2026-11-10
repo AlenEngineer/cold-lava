@@ -473,7 +473,10 @@ impl Core {
         let (change, what, warning, after) = match (piece, &edit.op) {
             (Some(text), _) => {
                 let key = format!("{}\0{place}", file.rel);
-                let made = markdown::edit(&key, text, settings, item, edit, crate::tasks::today())?;
+                let workspace = &self.index.workspace;
+                let style = crate::style::Lazy::new(|| workspace.style());
+                let today = crate::tasks::today();
+                let made = markdown::edit(&key, text, settings, &style, item, edit, today)?;
                 if !made.changed {
                     return Ok(unchanged());
                 }

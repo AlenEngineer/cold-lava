@@ -19,6 +19,7 @@ use serde_json::Value as Json;
 use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
+use crate::style::{Lazy, Style, TaskFields};
 use crate::types::{On, Shape, Source, Value};
 use crate::{daily, workspace, write};
 
@@ -71,12 +72,14 @@ pub struct Set {
 }
 
 /// `set_field` on the note at workspace-relative `note` in `root`, written with `write::replace`
-/// unless `dry_run`.
+/// unless `dry_run`. New text follows the workspace's style, counted from its notes when the
+/// edit adds text that needs it.
 pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Result<Set, EditError> {
     let path = root.join(note);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| EditError::Io(format!("{}: {e}", path.display())))?;
-    let set = plan(note, &text, &Settings::load(root), req)?;
+    let style = Lazy::new(|| Style::of_root(root));
+    let set = plan(note, &text, &Settings::load(root), &style, req)?;
     if set.changed && !dry_run {
         write::replace(&path, text.as_bytes(), set.text.as_bytes()).map_err(|e| match e {
             write::WriteError::Changed(_) => Changed(e.to_string()),
@@ -87,8 +90,14 @@ pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Resu
 }
 
 /// The edit `set_field` would make to `text`, the note at workspace-relative `note`, checked by
-/// reading it back.
-pub fn plan(note: &str, text: &str, s: &Settings, req: &SetField) -> Result<Set, EditError> {
+/// reading it back. What it adds is spelled in `style`.
+pub fn plan(
+    note: &str,
+    text: &str,
+    s: &Settings,
+    style: &Lazy,
+    req: &SetField,
+) -> Result<Set, EditError> {
     let before = items::extract(note, text, s);
     let k = before
         .iter()
@@ -133,8 +142,11 @@ pub fn plan(note: &str, text: &str, s: &Settings, req: &SetField) -> Result<Set,
             shape.on.name()
         )));
     }
-    let dataview = s.tasks.dataview || text[typed.place.text.clone()].contains("::");
-    let (src, existing) = target(typed, shape, field, sources, dataview)?;
+    let dataview = || {
+        text[typed.place.text.clone()].contains("::")
+            || style.get().task_fields.value == TaskFields::Dataview
+    };
+    let (src, existing) = target(typed, shape, field, sources, &dataview)?;
     let value = input(src, value_type, &req.value, &s.daily.format)
         .map_err(|e| Refused(format!("{field}: {e}")))?;
     let unchanged = || Set {
@@ -155,6 +167,7 @@ pub fn plan(note: &str, text: &str, s: &Settings, req: &SetField) -> Result<Set,
         value_type,
         others: enum_forms_in(text, &before, &typed.kind, field),
         daily_format: &s.daily.format,
+        style,
     };
     let splice = w.splice(src)?;
     let mut new = String::with_capacity(text.len() + splice.with.len());
@@ -182,7 +195,7 @@ fn target<'a>(
     shape: &Shape,
     field: &str,
     sources: &'a [Source],
-    dataview: bool,
+    dataview: &dyn Fn() -> bool,
 ) -> Result<(&'a Source, Option<Range<usize>>), EditError> {
     let read_from = (typed.place.sources.iter()).find_map(|(f, j)| (&**f == field).then_some(*j));
     let spans = typed.spans.get(field).unwrap_or_default();
@@ -204,9 +217,11 @@ fn target<'a>(
         .filter_map(|(f, j)| shape.fields.get(&**f)?.0.get(*j))
         .map(Source::kind)
         .collect();
-    let preferred = if dataview { "inline" } else { "marker" };
     let pick = (candidates.iter().find(|s| used.contains(&s.kind())))
-        .or_else(|| candidates.iter().find(|s| s.kind() == preferred))
+        .or_else(|| {
+            let preferred = if dataview() { "inline" } else { "marker" };
+            candidates.iter().find(|s| s.kind() == preferred)
+        })
         .or(candidates.first());
     match pick {
         Some(s) => Ok((s, None)),
@@ -329,6 +344,7 @@ struct Writer<'a> {
     /// Forms the note already writes this field in.
     others: Vec<String>,
     daily_format: &'a str,
+    style: &'a Lazy<'a>,
 }
 
 impl Writer<'_> {
@@ -508,12 +524,15 @@ impl Writer<'_> {
                     format!("[{s}]({}.md)", workspace::encode_target_like(s, original))
                 }
                 Some(o) if !o.starts_with('[') => s.to_string(),
-                _ => format!("[[{s}]]"),
+                Some(_) => format!("[[{s}]]"),
+                // Obsidian reads only wikilinks in properties.
+                None if yaml => format!("[[{s}]]"),
+                None => self.style.get().link(s),
             },
             Value::Tag => match old {
                 Some(o) if o.starts_with('#') => format!("#{s}"),
                 Some(_) => s.to_string(),
-                None if yaml => s.to_string(),
+                None if yaml => self.style.get().tag(s),
                 None => format!("#{s}"),
             },
             Value::Enum { values } => {
@@ -645,15 +664,8 @@ impl Writer<'_> {
             ))),
             None => {
                 let line = format!("{key}: {}{nl}", yaml(&value)?);
-                Ok(match &fm {
-                    Some(fm) => {
-                        let at = t
-                            .split_inclusive('\n')
-                            .take(fm.end_line - 1)
-                            .map(str::len)
-                            .sum();
-                        insert(at, line)
-                    }
+                Ok(match frontmatter::new_key_at(t, key, self.style.get()) {
+                    Some(at) => insert(at, line),
                     None => insert(0, format!("---{nl}{line}---{nl}")),
                 })
             }

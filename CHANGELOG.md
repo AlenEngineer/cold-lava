@@ -16,6 +16,12 @@ change commands, keys and file formats; patch versions only fix things.
   `newLinkFormat`, the Tasks plugin's format). `cold-lava style WORKSPACE [--json]` shows what
   was found and the counts behind it; `[style]` in `config.toml` and `.cold-lava/style.toml` in
   the workspace override any of it.
+- New text follows the workspace's style. A field `item set` or the table view adds to a task
+  is a Dataview field or an emoji marker as the workspace writes them (the line's own way
+  first); a done or cancelled date added by a tick is written the same way; a new link value is
+  a wikilink or a Markdown link as the workspace writes them; a new frontmatter key goes where
+  the notes put it; a new `tags` or `aliases` list (adding a tag with `#`, merging notes) is
+  written `  - a`, `- a` or `[a]`, with `#` on tags when the workspace's have one.
 - Recipes: named changes to the whole workspace, shown as a diff per file before anything is
   written. `cold-lava recipe WORKSPACE rename-tag --from a --to b [--dry-run] [--json]` renames
   a tag and the tags nested under it, in the text (never in code) and in frontmatter `tags` in
@@ -240,6 +246,10 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- Ticking a task whose line writes its fields as emoji adds an emoji done date even when the
+  Tasks plugin is set to Dataview, and the other way round: the line's own way wins, as it does
+  for `item set`. A line with no fields gets the workspace's way, the Tasks plugin's where it is
+  set.
 - An extension's manifest writes its types as `[[types]]` tables with an `id`, like its
   `[[commands]]`; `[types.NAME]` in a manifest now leaves the extension out and says how to
   write it.

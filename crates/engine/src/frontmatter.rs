@@ -7,6 +7,8 @@
 
 use std::ops::Range;
 
+use crate::style::{Lists, Style};
+
 /// A value as written, and where it is in the note.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Written<'t> {
@@ -171,26 +173,70 @@ pub enum TagEdit {
 
 /// `text` with `tag` (`#` optional) added to or removed from its frontmatter `tags`, written the
 /// way the note writes its list (`[a, b]` or `- a` lines), or `None` when there is nothing to do.
-/// A note without frontmatter gets one; a `tags` it can't edit safely is refused with the reason.
-pub fn edit_tag(text: &str, tag: &str, edit: TagEdit) -> Result<Option<String>, String> {
+/// A new `tags`, and frontmatter for a note without one, are written in the workspace's `style`;
+/// a `tags` it can't edit safely is refused with the reason.
+pub fn edit_tag(
+    text: &str,
+    tag: &str,
+    edit: TagEdit,
+    style: &Style,
+) -> Result<Option<String>, String> {
     let tag = tag.trim().trim_start_matches('#');
     if !is_tag(tag) {
         return Err(format!("{tag:?} isn't a tag"));
     }
-    edit_list(text, &["tags", "tag"], tag, edit)
+    edit_list(text, &["tags", "tag"], tag, edit, style)
+}
+
+/// Where a new property `key` goes in `text`'s frontmatter: before the first key the workspace
+/// writes after it (`Style::key_before`), else before the closing `---`. `None` without
+/// frontmatter.
+pub fn new_key_at(text: &str, key: &str, style: &Style) -> Option<usize> {
+    let fm = read(text)?;
+    let keys: Vec<&str> = fm.properties.iter().map(|(k, _)| *k).collect();
+    let before = style.key_before(&keys, key);
+    if let Some(r) = before.and_then(|k| property_lines(text, k)) {
+        return Some(r.start);
+    }
+    Some(
+        text.split_inclusive('\n')
+            .take(fm.end_line - 1)
+            .map(str::len)
+            .sum(),
+    )
 }
 
 /// The same for any list property: `item` added to or removed from the first of `keys` the
 /// frontmatter has (`keys[0]` is made when it has none). Items are matched ignoring case and a
-/// leading `#`; one that YAML would misread is written quoted.
+/// leading `#`; one that YAML would misread is written quoted. A new list, and its place among
+/// the keys, follow the workspace's `style`; a tag added to a list follows the list's own `#`,
+/// else the style's.
 pub fn edit_list(
     text: &str,
     keys: &[&str],
     item: &str,
     edit: TagEdit,
+    style: &Style,
 ) -> Result<Option<String>, String> {
-    let item = item.trim();
     let tags = keys.iter().any(|k| matches!(*k, "tags" | "tag"));
+    let fm = read(text);
+    let item = item.trim();
+    let tagged;
+    let item = match tags && edit == TagEdit::Add {
+        true => {
+            let listed = (fm.as_ref()).and_then(|fm| {
+                keys.iter()
+                    .find_map(|k| fm.values(k).first().map(|w| w.text))
+            });
+            tagged = match listed {
+                Some(w) if w.starts_with('#') => format!("#{}", item.trim_start_matches('#')),
+                Some(_) => item.trim_start_matches('#').to_string(),
+                None => style.tag(item),
+            };
+            tagged.as_str()
+        }
+        false => item,
+    };
     let fits = |s: &str| match tags {
         true => is_tag(s.trim_start_matches('#')),
         false => !needs_quotes(s),
@@ -205,22 +251,21 @@ pub fn edit_list(
         w.text.trim_start_matches('#').to_lowercase() == item.trim_start_matches('#').to_lowercase()
     };
     let add = edit == TagEdit::Add;
-    let Some(fm) = read(text) else {
+    let Some(fm) = fm else {
         if lines(text)
             .next()
             .is_some_and(|(_, l)| l.trim_end() == "---")
         {
             return Err("its frontmatter has no closing ---".into());
         }
-        let key = keys[0];
-        return Ok(add.then(|| format!("---{nl}{key}:{nl}  - {new}{nl}---{nl}{text}")));
+        let list = style.new_list(keys[0], new, nl);
+        return Ok(add.then(|| format!("---{nl}{list}---{nl}{text}")));
     };
     let fm_lines: Vec<(usize, &str)> = lines(text).take(fm.end_line).collect();
     let key = keys.iter().copied().find(|k| fm.get(k).is_some());
     let Some((key, value)) = key.and_then(|k| Some((k, fm.get(k)?))) else {
-        let (close, _) = fm_lines[fm.end_line - 1];
-        let key = keys[0];
-        return Ok(add.then(|| splice(text, close..close, &format!("{key}:{nl}  - {new}{nl}"))));
+        let at = new_key_at(text, keys[0], style).expect("it has frontmatter");
+        return Ok(add.then(|| splice(text, at..at, &style.new_list(keys[0], new, nl))));
     };
     let (at, line) = *fm_lines
         .iter()
@@ -230,7 +275,14 @@ pub fn edit_list(
     let line_end = at + line.len() + text[at + line.len()..].find('\n').map_or(0, |i| i + 1);
     let edited = match value {
         Value::Nested => return Err(format!("its {key} aren't a plain list")),
-        Value::Empty if add => splice(text, line_end..line_end, &format!("  - {new}{nl}")),
+        Value::Empty if add => match style.frontmatter_lists.value {
+            Lists::Flow => {
+                let end = at + line.trim_end().len();
+                splice(text, end..end, &format!(" [{new}]"))
+            }
+            Lists::Flush => splice(text, line_end..line_end, &format!("- {new}{nl}")),
+            Lists::Indented => splice(text, line_end..line_end, &format!("  - {new}{nl}")),
+        },
         Value::Empty => return Ok(None),
         Value::Scalar(w) if !fits(w.text) => {
             return Err(format!("its {key} are one line of text, not a list"));
@@ -293,7 +345,7 @@ pub fn edit_list(
     // An item listed twice goes entirely.
     if !add {
         return Ok(Some(
-            edit_list(&edited, keys, item, edit)?.unwrap_or(edited),
+            edit_list(&edited, keys, item, edit, style)?.unwrap_or(edited),
         ));
     }
     Ok(Some(edited))
@@ -430,8 +482,9 @@ mod tests {
 
     #[test]
     fn adds_and_removes_a_tag_in_the_notes_own_list_style() {
-        let add = |t: &str, tag: &str| edit_tag(t, tag, TagEdit::Add).unwrap();
-        let remove = |t: &str, tag: &str| edit_tag(t, tag, TagEdit::Remove).unwrap();
+        let add = |t: &str, tag: &str| edit_tag(t, tag, TagEdit::Add, &Style::default()).unwrap();
+        let remove =
+            |t: &str, tag: &str| edit_tag(t, tag, TagEdit::Remove, &Style::default()).unwrap();
         let flow = "---\ntitle: X\ntags: [volcano, \"hot\"] # mine\n---\nBody #inline\n";
         let flow_added =
             "---\ntitle: X\ntags: [volcano, \"hot\", review] # mine\n---\nBody #inline\n";
@@ -499,6 +552,33 @@ mod tests {
     }
 
     #[test]
+    fn a_new_list_and_its_place_follow_the_style() {
+        let mut style = Style::default();
+        style.frontmatter_lists.value = Lists::Flush;
+        style.tags.value = crate::style::Tags::Hash;
+        style.key_order.value = ["title", "tags", "created"].map(String::from).to_vec();
+        let add = |t: &str| edit_tag(t, "rock", TagEdit::Add, &style).unwrap().unwrap();
+        assert_eq!(
+            add("---\ntitle: Pumice\ncreated: 03/11/2026\n---\n"),
+            "---\ntitle: Pumice\ntags:\n- \"#rock\"\ncreated: 03/11/2026\n---\n"
+        );
+        assert_eq!(add("Light.\n"), "---\ntags:\n- \"#rock\"\n---\nLight.\n");
+        assert_eq!(
+            add("---\ntags: [glass]\n---\n"),
+            "---\ntags: [glass, rock]\n---\n",
+            "a list that writes tags without # keeps doing so"
+        );
+        style.frontmatter_lists.value = Lists::Flow;
+        style.tags.value = crate::style::Tags::Bare;
+        let add = |t: &str| edit_tag(t, "rock", TagEdit::Add, &style).unwrap().unwrap();
+        assert_eq!(
+            add("---\nnote: x\n---\n"),
+            "---\nnote: x\ntags: [rock]\n---\n"
+        );
+        assert_eq!(add("---\ntags:\n---\n"), "---\ntags: [rock]\n---\n");
+    }
+
+    #[test]
     fn refuses_tags_it_cant_edit_safely() {
         for (text, tag) in [
             ("---\ntags:\n  a: 1\n---\n", "x"),
@@ -511,7 +591,7 @@ mod tests {
             ("# x\n", ""),
         ] {
             assert!(
-                edit_tag(text, tag, TagEdit::Add).is_err(),
+                edit_tag(text, tag, TagEdit::Add, &Style::default()).is_err(),
                 "{text:?} + {tag:?}"
             );
         }

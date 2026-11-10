@@ -670,6 +670,7 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
         &note,
         &text,
         &Settings::load(root),
+        &crate::style::Lazy::new(|| workspace.style()),
         item,
         req,
         tasks::today(),

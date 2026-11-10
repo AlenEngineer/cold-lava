@@ -345,6 +345,11 @@ key-order = ["title", "aliases", "tags", "created"]
 created = "DD/MM/YYYY"
 ```
 
+New text follows it: a field added to a task (`item set`, the table view), the date a tick
+adds, a link set as a field's value, a new frontmatter key and where it goes, and a new `tags`
+or `aliases` list (adding a tag, merging notes). Text already in a note keeps its own way: a
+task whose line writes emoji fields gets an emoji done date in any workspace.
+
 The style is the whole workspace's; a folder written differently follows the workspace.
 `cold-lava style` reports mistakes in either file and exits with 1.
 

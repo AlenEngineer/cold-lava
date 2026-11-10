@@ -488,7 +488,8 @@ style.minutes = { badge = true, icon = "⏱" }
   `status`), and `agenda` and `task toggle` read through it. Toggling stays native code
   (`tasks.toggle`): the status goes to its next symbol (the plugin's `nextStatusSymbol`, else
   done for an open task and todo for a closed one); to a done status it adds the done date
-  (`✅` or `[completion:: …]`, as the line writes its fields) and, for a recurring task, the next
+  (`✅` or `[completion:: …]`, as the line writes its fields, else as the workspace's style
+  does: "Workspace style, as built") and, for a recurring task, the next
   occurrence with its dates moved; to a cancelled status it adds the cancelled date (`❌` or
   `[cancelled:: …]`, unless the plugin's `setCancelledDate` is off) and takes the done date
   out; otherwise it takes the done and cancelled dates out. `tasks::today()` is the local date,
@@ -526,8 +527,9 @@ style.minutes = { badge = true, icon = "⏱" }
   read-back check. `item set` changes only the field; ticking with dates and recurrence is
   `task toggle`. A date the task doesn't have is added through a writable source of a kind the
   line already writes its other fields with (a marker beside `⏳ …`, a Dataview field beside
-  `[scheduled:: …]`), else a Dataview field when the workspace's Tasks plugin writes Dataview or the
-  line has a `::`, as `task toggle` decides, else a marker (`📅 …`). This is the rule for any
+  `[scheduled:: …]`), else a Dataview field when the workspace's style writes task fields so
+  (the Tasks plugin's format where it is set, else the notes' majority) or the line has a `::`,
+  else a marker (`📅 …`). This is the rule for any
   type's missing field, so it holds for subtypes of the task and for a type of one's own with
   both kinds of source.
 - **Cost,** on a generated 3,000-note workspace with 30,000 tasks in both formats (release, median
@@ -562,9 +564,10 @@ style.minutes = { badge = true, icon = "⏱" }
   link's target) or as a string the field's type reads (`1h30m`, `[[Lava]]`, an enum's written
   form); `null` or `""` removes. It is written by its value type: a date in the field's
   `format` (ISO without one), a datetime with `T` or a space as the old value had, a number as
-  JSON writes it, `yes`/`no` when the old value was written so, a link as `[[target]]` unless the
-  old value was a bare name or a Markdown link, a tag with `#` in text and without in a
-  property, an enum in the old value's form, else the form the note's other items of the type
+  JSON writes it, `yes`/`no` when the old value was written so, a link as the old value was (a
+  bare name, a Markdown link, else `[[target]]`) and a new one in the workspace's link syntax
+  (always `[[target]]` in a property, the only link Obsidian reads there), a tag as the old
+  value was, else with `#` in text and in a property as the workspace's `tags` are, an enum in the old value's form, else the form the note's other items of the type
   use, else the first, a duration as `1h30m` (minutes alone, `90m`, when the old value was).
   A datetime with a `format` is refused, as it doesn't read yet.
 - **Sources.** Replacing changes only the value's span. Adding and removing:
@@ -582,7 +585,8 @@ style.minutes = { badge = true, icon = "⏱" }
     for. Removing blanks the cell, keeping its width.
   - `property`: a scalar or a one-item list's value is replaced inside its quotes, or quoted
     when YAML needs it; `key:` with nothing gets the value on its line; a missing key is a new
-    line before the closing `---`, with new frontmatter when the note has none. Removing deletes
+    line where the workspace writes that key (before the first key its order puts after it,
+    else before the closing `---`), with new frontmatter when the note has none. Removing deletes
     the property's lines. Nested YAML and lists of several values are refused.
   - `capture` and `pattern`: replaced only. A pattern says where a value is read, not where one
     goes, so a missing value is refused, and so is removing one (it would leave the text around
@@ -1272,8 +1276,8 @@ round trip per link is never acceptable.
 
 ## Workspace style
 
-*(design; detection, `cold-lava style` and the overrides are built: "Workspace style, as built"
-below)*
+*(design; detection, `cold-lava style`, the overrides and writing in the style are built:
+"Workspace style, as built" below)*
 
 A workspace has a style, whether or not anyone wrote it down: `-` or `*` for list items, wikilinks
 or Markdown links, emoji (`📅 2026-11-12`) or Dataview (`[due:: 2026-11-12]`) task fields, a date
@@ -1341,6 +1345,38 @@ new text.**
   Dataview dates); counting links in the owner's pass, finding dates by hand and counting the
   rest only when the style is asked for leave the scan within noise (see the PR for the table).
   The lazy count itself is about 22 ms for those 3,000 notes (13 MB).
+- **Writing in the style.** `Style` spells what the engine adds (`link`, `tag`, `new_list`,
+  `key_before`, `task_fields`), and every path that adds text asks it; what is already written
+  keeps its own spelling, decided first by the caller (an old value's form, the line's own
+  task fields, a list's own `#`). The paths:
+  - `item set` and `items/edit set-field` (`edit::plan`): a missing task field is a Dataview
+    field or a marker as the style says, unless the line writes its fields one way; a new link
+    value is `[[target]]` or `[name](target.md)` (in a property always `[[target]]`); a new tag
+    in a property has `#` when the workspace's `tags` do; a new property goes where the key
+    order puts it (`frontmatter::new_key_at`).
+  - `task toggle`, `items/edit toggle`, `x` in the reader and the agenda (`tasks::toggle_text`):
+    the done and cancelled dates are written as the line writes its fields (a `::` is Dataview,
+    a Tasks glyph emoji), else in the style's format.
+  - Adding a tag (`#` in the menu, `frontmatter::edit_tag`) and a merge's tags and aliases
+    (`frontmatter::edit_list`): a new `tags` or `aliases` list is written in the style's list
+    form (`  - a`, `- a` or `[a]`) where the key order puts it, and a tag has `#` when the
+    list's own tags do, else when the style's do.
+  - A merge's properties the target lacks (`merge::add_lines`) go where the key order puts
+    them, written as the source had them.
+  - The style is asked for only when an edit adds text that needs it (`style::Lazy`): the
+    commands that write one note without a scan (`item set`, `task toggle`) read and count the
+    notes then (`Style::of_root`, about 300 ms on 3,000 notes against 14 ms for the edit
+    alone), and replacing a value or ticking a line that writes its fields costs nothing more;
+    the app and the gateway use the core's notes.
+- **Not routed, and why.** A note behind an unresolved link, a daily note and a canvas start
+  empty or from their template, so they add nothing to spell. A recurring task's next
+  occurrence is a copy of its line. Renames, merges and recipes rewrite links and tags in the
+  style they were written in, which is the rule for existing text. No path inserts a list item
+  or a heading yet, so the list marker and heading style are only reported (and given to
+  extensions). Dates: a field's date is written in the format its type reads (`format`, ISO
+  without one), since one written otherwise would not read back; the detected forms show where
+  a type's `format` and the notes disagree. The link path (`newLinkFormat`) is reported but not
+  applied: `set-field` writes the target as given, as the resolver isn't consulted there.
 
 ## Recipes
 

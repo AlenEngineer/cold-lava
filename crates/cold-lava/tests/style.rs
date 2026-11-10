@@ -147,3 +147,82 @@ fn obsidian_settings_then_config_then_the_workspace_file_win() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `OTHER` with notes to write into, and a type with a link and a property.
+fn writes() -> Vec<(&'static str, &'static str)> {
+    let mut files = OTHER.to_vec();
+    files.extend([
+        ("Inbox.md", "* [ ] Call the lab\n* [ ] Wash the samples\n"),
+        (
+            "Scoria.md",
+            "---\ntags:\n- \"#rock\"\ncreated: 02/11/2026\n---\n# Scoria\n",
+        ),
+        (
+            ".cold-lava/types.toml",
+            "version = 1\n\n[types.rock]\non = \"note\"\nwhere.tag = [\"rock\"]\n\
+             fields.site = { inline = \"site\", type = \"link\" }\n\
+             fields.title = { property = \"title\" }\n",
+        ),
+    ]);
+    files
+}
+
+/// The id of the item of `kind` on `note`'s `line`.
+fn id(dir: &Path, kind: &str, note: &str, line: u64) -> String {
+    let ws = dir.join("ws");
+    let out = stdout(&cold_lava(
+        dir,
+        &["items", ws.to_str().unwrap(), kind, "--json"],
+    ));
+    let items: Vec<serde_json::Value> = (out.lines())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let item = items
+        .iter()
+        .find(|i| i["note"] == note && i["line"] == line);
+    let item = item.unwrap_or_else(|| panic!("no {kind} on {note}:{line} in {out}"));
+    item["id"].as_str().unwrap().to_string()
+}
+
+fn set(dir: &Path, note: &str, id: &str, field: &str, value: &str) {
+    let file = dir.join("ws").join(note);
+    let args = ["item", "set", file.to_str().unwrap(), id, field, value];
+    stdout(&cold_lava(dir, &args));
+}
+
+fn read(dir: &Path, note: &str) -> String {
+    std::fs::read_to_string(dir.join("ws").join(note)).unwrap()
+}
+
+#[test]
+fn each_insertion_writes_in_the_workspaces_style() {
+    let dir = workspace("writes", &writes());
+
+    let call = id(&dir, "task", "Inbox.md", 1);
+    set(&dir, "Inbox.md", &call, "due", "2026-12-01");
+    let line = format!("{}:2", dir.join("ws/Inbox.md").to_str().unwrap());
+    stdout(&cold_lava(&dir, &["task", "toggle", &line]));
+    assert_eq!(
+        read(&dir, "Inbox.md"),
+        "* [ ] Call the lab [due:: 2026-12-01]\n\
+         * [x] Wash the samples [completion:: 2026-11-09]\n",
+        "a new task field and a done date are Dataview fields"
+    );
+
+    let basalt = id(&dir, "rock", "Basalt.md", 1);
+    set(&dir, "Basalt.md", &basalt, "site", "Projects/Lava");
+    let text = read(&dir, "Basalt.md");
+    assert!(
+        text.contains("---\nsite:: [Lava](Projects/Lava.md)\n* [x] Name it"),
+        "a new link is a Markdown link: {text}"
+    );
+
+    let scoria = id(&dir, "rock", "Scoria.md", 1);
+    set(&dir, "Scoria.md", &scoria, "title", "Scoria");
+    assert_eq!(
+        read(&dir, "Scoria.md"),
+        "---\ntitle: Scoria\ntags:\n- \"#rock\"\ncreated: 02/11/2026\n---\n# Scoria\n",
+        "a new key goes where the workspace writes it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

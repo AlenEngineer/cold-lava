@@ -11,6 +11,7 @@ use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
 use crate::rename::{self, FileEdit, Move, Written};
 use crate::resolver::{Files, Rewriter};
+use crate::style::Style;
 use crate::trash::{self, Bin, Contents, Trashed};
 use crate::write;
 use anyhow::{Context, Result, bail};
@@ -113,8 +114,15 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
     let (source_text, _, own_links) = own(&source_rel, &s.text);
     let (target_text, changes, links) = own(&target_rel, &t.text);
 
-    let (merged, properties) =
-        merge_frontmatter(&target_text, &source_text, &s.name, &t.name, &mut warnings);
+    let style = ix.workspace.style();
+    let (merged, properties) = merge_frontmatter(
+        &target_text,
+        &source_text,
+        &s.name,
+        &t.name,
+        &style,
+        &mut warnings,
+    );
     let body = body(&source_text);
     let appended = body.lines().count();
     let new_text = append(&merged, body);
@@ -207,12 +215,13 @@ fn merge_frontmatter(
     source: &str,
     source_name: &str,
     target_name: &str,
+    style: &Style,
     warnings: &mut Vec<String>,
 ) -> (String, Vec<Property>) {
     let mut out = target.to_string();
     let mut props = Vec::new();
     let Some(sfm) = frontmatter::read(source) else {
-        return add_alias(out, props, source_name, target_name, warnings);
+        return add_alias(out, props, source_name, target_name, style, warnings);
     };
     for (key, value) in &sfm.properties {
         let keys = synonyms(key);
@@ -225,7 +234,7 @@ fn merge_frontmatter(
             |text: &str, k: &str| frontmatter::property_lines(text, k).map(|r| text[r].to_string());
         let Some((tkey, tvalue)) = theirs else {
             if let Some(lines) = raw(source, key) {
-                out = add_lines(&out, &lines);
+                out = add_lines(&out, key, &lines, style);
                 props.push(Property::Added(key.to_string()));
             }
             continue;
@@ -245,7 +254,7 @@ fn merge_frontmatter(
                         true => w.text.trim_start_matches('#'),
                         false => w.text,
                     };
-                    match frontmatter::edit_list(&out, &[tkey], item, TagEdit::Add) {
+                    match frontmatter::edit_list(&out, &[tkey], item, TagEdit::Add, style) {
                         Ok(Some(new)) => {
                             out = new;
                             items.push(item.to_string());
@@ -272,7 +281,7 @@ fn merge_frontmatter(
             }),
         }
     }
-    add_alias(out, props, source_name, target_name, warnings)
+    add_alias(out, props, source_name, target_name, style, warnings)
 }
 
 /// A property's lines without the key, to compare two values as written.
@@ -286,12 +295,13 @@ fn add_alias(
     mut props: Vec<Property>,
     source_name: &str,
     target_name: &str,
+    style: &Style,
     warnings: &mut Vec<String>,
 ) -> (String, Vec<Property>) {
     if source_name.to_lowercase() == target_name.to_lowercase() {
         return (out, props);
     }
-    match frontmatter::edit_list(&out, &ALIASES, source_name, TagEdit::Add) {
+    match frontmatter::edit_list(&out, &ALIASES, source_name, TagEdit::Add, style) {
         Ok(Some(new)) => {
             out = new;
             props.push(Property::Alias(source_name.to_string()));
@@ -302,21 +312,19 @@ fn add_alias(
     (out, props)
 }
 
-/// `text` with property `lines` added at the end of its frontmatter (one is made if it has none).
-fn add_lines(text: &str, lines: &str) -> String {
+/// `text` with property `key`'s `lines` added to its frontmatter where the workspace writes `key`
+/// (one is made if it has none).
+fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let lines = lines.replace("\r\n", "\n").replace('\n', nl);
     let lines = match lines.ends_with('\n') {
         true => lines,
         false => format!("{lines}{nl}"),
     };
-    let Some(fm) = frontmatter::read(text) else {
-        return format!("---{nl}{lines}---{nl}{text}");
-    };
-    let close: usize = (text.split_inclusive('\n').take(fm.end_line - 1))
-        .map(str::len)
-        .sum();
-    format!("{}{lines}{}", &text[..close], &text[close..])
+    match frontmatter::new_key_at(text, key, style) {
+        Some(at) => format!("{}{lines}{}", &text[..at], &text[at..]),
+        None => format!("---{nl}{lines}---{nl}{text}"),
+    }
 }
 
 /// Carry out a merge: refuse if any file changed since it was planned, or a file another owner
@@ -447,8 +455,9 @@ mod tests {
         let done = apply(&m, Some(&system)).unwrap();
         assert_eq!(
             read(&dir, "Lava.md"),
-            "---\ntags: [concept, lava]\nstatus: draft # mine\ncolour: red\naliases: [Ropy lava, Pāhoehoe]\n\
-             source:\n  - Book: p. 3\n---\n# Lava\nHot.\n\n# Pāhoehoe\nSmooth.\n"
+            "---\ntags: [concept, lava]\naliases: [Ropy lava, Pāhoehoe]\nstatus: draft # mine\n\
+             colour: red\nsource:\n  - Book: p. 3\n---\n# Lava\nHot.\n\n# Pāhoehoe\nSmooth.\n",
+            "a new key goes where the workspace's notes write it"
         );
         assert!(!dir.join("workspace/Pāhoehoe.md").exists());
         assert_eq!(done.trashed.at, dir.join("system-trash/Pāhoehoe.md"));
