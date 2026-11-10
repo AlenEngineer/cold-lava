@@ -30,10 +30,15 @@ pub(super) enum Ev {
 
 /// The whole note's tree.
 pub(super) fn document(text: &str, gates: Gates) -> GreenNode {
+    build(text, &events(text, gates), gates)
+}
+
+/// The whole note's blocks, as events.
+pub(super) fn events(text: &str, gates: Gates) -> Vec<Ev> {
     let mut p = Parser::new(text, gates);
     let at = p.prefix();
     p.run(at, |_| false);
-    build(text, &p.events, gates)
+    p.events
 }
 
 /// The top-level blocks from byte `from`, a line where nothing is open, up to the first fresh

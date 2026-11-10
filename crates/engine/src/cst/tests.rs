@@ -10,6 +10,31 @@ fn github() -> Gates {
     Gates::of(&Flavour::built_in("github").unwrap())
 }
 
+fn step(s: Step<'_>) -> String {
+    match s {
+        Step::Enter(k, at) => format!("> {k:?} {at}"),
+        Step::Leave(k, at) => format!("< {k:?} {at}"),
+        Step::Token(k, t, at) => format!("{k:?} {t:?} {at}"),
+    }
+}
+
+#[test]
+fn reading_forwards_takes_the_steps_of_a_walk_through_the_tree() {
+    let mut notes = corpus();
+    notes.extend(EDGES.iter().map(|e| (format!("{e:?}"), e.to_string())));
+    for gates in [obsidian(), Gates::INDEX] {
+        for (name, text) in &notes {
+            let tree = Tree::with(text, gates);
+            let mut walked = vec![step(Step::Enter(Kind::Document, 0))];
+            walk(tree.green(), 0, &mut |s| walked.push(step(s)));
+            walked.push(step(Step::Leave(Kind::Document, text.len())));
+            let mut read_steps = Vec::new();
+            read(text, gates, &mut |s| read_steps.push(step(s)));
+            assert!(walked == read_steps, "{name}");
+        }
+    }
+}
+
 /// Every kind in the tree of `text`, in order.
 fn kinds(text: &str, gates: Gates) -> Vec<Kind> {
     let tree = Tree::with(text, gates);

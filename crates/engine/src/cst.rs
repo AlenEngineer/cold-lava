@@ -18,7 +18,7 @@ mod tests;
 
 use std::ops::Range;
 
-use rowan::{GreenNode, GreenNodeData, NodeOrToken};
+use rowan::{GreenNode, GreenNodeBuilder, GreenNodeData, NodeOrToken};
 
 use crate::markdown::{Flavour, Syntax};
 
@@ -327,6 +327,65 @@ impl Tree {
         };
         Some(self.green.splice_children(k..j, children))
     }
+}
+
+/// Where a parse goes: the green tree's builder, or a reader going forwards (`read`).
+trait Sink<'t> {
+    fn start(&mut self, kind: Kind);
+    fn finish(&mut self);
+    fn token(&mut self, kind: Kind, text: &'t str);
+}
+
+impl<'t> Sink<'t> for GreenNodeBuilder<'_> {
+    fn start(&mut self, kind: Kind) {
+        self.start_node(kind.into());
+    }
+
+    fn finish(&mut self) {
+        self.finish_node();
+    }
+
+    fn token(&mut self, kind: Kind, text: &'t str) {
+        GreenNodeBuilder::token(self, kind.into(), text);
+    }
+}
+
+/// A parse as the steps `walk` would take through its tree.
+struct Steps<F> {
+    at: usize,
+    open: Vec<Kind>,
+    f: F,
+}
+
+impl<'t, F: FnMut(Step<'t>)> Sink<'t> for Steps<F> {
+    fn start(&mut self, kind: Kind) {
+        (self.f)(Step::Enter(kind, self.at));
+        self.open.push(kind);
+    }
+
+    fn finish(&mut self) {
+        let kind = self.open.pop().expect("a node to finish");
+        (self.f)(Step::Leave(kind, self.at));
+    }
+
+    fn token(&mut self, kind: Kind, text: &'t str) {
+        (self.f)(Step::Token(kind, text, self.at));
+        self.at += text.len();
+    }
+}
+
+/// `text` read in `gates`, step by step as `walk` goes through its tree, without making the
+/// tree: for a reader that needs a note once, as the workspace's scan does.
+pub fn read<'t>(text: &'t str, gates: Gates, f: &mut impl FnMut(Step<'t>)) {
+    let events = block::events(text, gates);
+    let mut steps = Steps {
+        at: 0,
+        open: Vec::new(),
+        f,
+    };
+    steps.start(Kind::Document);
+    inline::build(text, &events, gates, &mut steps);
+    steps.finish();
 }
 
 /// One step of a walk through a green tree, with its byte offset.

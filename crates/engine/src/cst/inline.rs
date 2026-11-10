@@ -7,20 +7,19 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 use regex::Regex;
-use rowan::GreenNodeBuilder;
 
-use super::Gates;
 use super::Kind::{self, *};
 use super::block::Ev;
+use super::{Gates, Sink};
 use crate::markdown::Syntax as S;
 
 /// Build `events` into `b`, reading each line of text as it comes.
-pub(super) fn build(text: &str, events: &[Ev], gates: Gates, b: &mut GreenNodeBuilder<'_>) {
+pub(super) fn build<'t>(text: &'t str, events: &[Ev], gates: Gates, b: &mut impl Sink<'t>) {
     for ev in events {
         match *ev {
-            Ev::Start(kind) => b.start_node(kind.into()),
-            Ev::Finish => b.finish_node(),
-            Ev::Tok(kind, a, z) => b.token(kind.into(), &text[a..z]),
+            Ev::Start(kind) => b.start(kind),
+            Ev::Finish => b.finish(),
+            Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
             Ev::Inline(a, z) => {
                 let line = Line::new(text, gates, a);
                 match line.line_field(a, z) {
@@ -33,14 +32,14 @@ pub(super) fn build(text: &str, events: &[Ev], gates: Gates, b: &mut GreenNodeBu
     }
 }
 
-fn token(b: &mut GreenNodeBuilder<'_>, kind: Kind, text: &str, a: usize, z: usize) {
+fn token<'t>(b: &mut impl Sink<'t>, kind: Kind, text: &'t str, a: usize, z: usize) {
     if a < z {
-        b.token(kind.into(), &text[a..z]);
+        b.token(kind, &text[a..z]);
     }
 }
 
 /// A frontmatter line: its wikilinks, which count as the note's links, and text.
-fn yaml(text: &str, gates: Gates, b: &mut GreenNodeBuilder<'_>, a: usize, z: usize) {
+fn yaml<'t>(text: &'t str, gates: Gates, b: &mut impl Sink<'t>, a: usize, z: usize) {
     let line = Line {
         text,
         g: gates,
@@ -95,7 +94,7 @@ impl<'t> Line<'t> {
     }
 
     /// Read `a..z`; `in_link` inside a link's text, where no other link starts.
-    fn run(&self, b: &mut GreenNodeBuilder<'_>, a: usize, z: usize, in_link: bool) {
+    fn run(&self, b: &mut impl Sink<'t>, a: usize, z: usize, in_link: bool) {
         let t = self.text.as_bytes();
         let mut plain = a;
         let mut i = a;
@@ -151,17 +150,17 @@ impl<'t> Line<'t> {
         token(b, Text, self.text, plain, z);
     }
 
-    fn emit(&self, b: &mut GreenNodeBuilder<'_>, kind: Kind, a: usize, z: usize) {
+    fn emit(&self, b: &mut impl Sink<'t>, kind: Kind, a: usize, z: usize) {
         let text = self.text;
         match kind {
             Tag | BlockId => token(b, kind, text, a, z),
             CodeSpan => {
                 let run = text[a..z].bytes().take_while(|&c| c == b'`').count();
-                b.start_node(CodeSpan.into());
+                b.start(CodeSpan);
                 token(b, Backticks, text, a, a + run);
                 token(b, CodeText, text, a + run, z - run);
                 token(b, Backticks, text, z - run, z);
-                b.finish_node();
+                b.finish();
             }
             WikiLink => self.emit_wikilink(b, a, a, z),
             Embed => self.emit_wikilink(b, a, a + 1, z),
@@ -172,24 +171,24 @@ impl<'t> Line<'t> {
                     .find(')')
                     .map(|k| close + k)
                     .expect("and its `)`");
-                b.start_node(kind.into());
+                b.start(kind);
                 let opener = if kind == Image { ImageOpen } else { LBracket };
                 token(b, opener, text, a, open);
-                b.start_node(LinkText.into());
+                b.start(LinkText);
                 self.run(b, open, close, true);
-                b.finish_node();
+                b.finish();
                 token(b, RBracket, text, close, close + 1);
                 token(b, LParen, text, close + 1, close + 2);
                 token(b, LinkDest, text, close + 2, paren);
                 token(b, RParen, text, paren, paren + 1);
-                b.finish_node();
+                b.finish();
             }
             InlineField | LineField => {
                 let inline = kind == InlineField;
                 let key = if inline { a + 1 } else { a };
                 let colons = key + text[key..z].find("::").expect("a field has its `::`");
                 let value_end = if inline { z - 1 } else { z };
-                b.start_node(kind.into());
+                b.start(kind);
                 if inline {
                     let open = if text.as_bytes()[a] == b'[' {
                         LBracket
@@ -209,22 +208,22 @@ impl<'t> Line<'t> {
                     };
                     token(b, close, text, z - 1, z);
                 }
-                b.finish_node();
+                b.finish();
             }
             Comment => {
-                b.start_node(Comment.into());
+                b.start(Comment);
                 token(b, CommentMarker, text, a, a + 2);
                 token(b, CommentText, text, a + 2, z - 2);
                 token(b, CommentMarker, text, z - 2, z);
-                b.finish_node();
+                b.finish();
             }
             InlineMath => {
                 let run = if text[a..z].starts_with("$$") { 2 } else { 1 };
-                b.start_node(InlineMath.into());
+                b.start(InlineMath);
                 token(b, MathMarker, text, a, a + run);
                 token(b, MathText, text, a + run, z - run);
                 token(b, MathMarker, text, z - run, z);
-                b.finish_node();
+                b.finish();
             }
             _ => unreachable!("not an inline: {kind:?}"),
         }
@@ -261,14 +260,14 @@ impl<'t> Line<'t> {
 
     /// A wikilink whose `[[` is at `open` (`a` is its `!` for an embed): target, then `#…` or
     /// `^…`, then `|alias`.
-    fn emit_wikilink(&self, b: &mut GreenNodeBuilder<'_>, a: usize, open: usize, z: usize) {
+    fn emit_wikilink(&self, b: &mut impl Sink<'t>, a: usize, open: usize, z: usize) {
         let text = self.text;
         let (inner_a, inner_z) = (open + 2, z - 2);
         let inner = &text[inner_a..inner_z];
         let target = inner.find(['|', '#', '^']).unwrap_or(inner.len()) + inner_a;
         let pipe = text[target..inner_z].find('|').map(|k| target + k);
         let anchor_end = pipe.unwrap_or(inner_z);
-        b.start_node(if a < open { Embed } else { WikiLink }.into());
+        b.start(if a < open { Embed } else { WikiLink });
         token(
             b,
             if a < open { EmbedOpen } else { WikiOpen },
@@ -283,7 +282,7 @@ impl<'t> Line<'t> {
             token(b, Alias, text, p + 1, inner_z);
         }
         token(b, WikiClose, text, inner_z, z);
-        b.finish_node();
+        b.finish();
     }
 
     /// The `]` matching the `[` at `a`, before `z`.

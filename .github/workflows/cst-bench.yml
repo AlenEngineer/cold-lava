@@ -28,3 +28,5 @@ jobs:
         run: cargo test --release -p cold-lava-engine keystroke -- --ignored --nocapture
       - name: Items, agenda, table on 3,000 notes (main, then this branch)
         run: python3 scripts/bench-items.py --runs 11 "$HOME/cold-lava-main" "$HOME/cold-lava-branch"
+      - name: Reading 3,000 notes (line reader, read, trees)
+        run: COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000" cargo test --release -p cold-lava-engine read_cost -- --ignored --nocapture

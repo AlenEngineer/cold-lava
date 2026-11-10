@@ -262,9 +262,17 @@ fn parsers() -> &'static Parsers {
     P.get_or_init(Parsers::new)
 }
 
-/// The note `text` read in the syntax every workspace's links are read in.
-fn tree(text: &str) -> cst::Tree {
-    cst::Tree::with(text, cst::Gates::INDEX)
+/// Read the note `text` forwards in the syntax every workspace's links are read in, as its
+/// syntax tree would be walked, without making the tree.
+fn read_syntax<'t>(text: &'t str, f: &mut impl FnMut(Step<'t>)) {
+    cst::read(text, cst::Gates::INDEX, f)
+}
+
+fn body_tag(at: usize, tag: &str) -> TagSpan {
+    TagSpan {
+        name: at + 1..at + tag.len(),
+        place: TagPlace::Body,
+    }
 }
 
 /// The note path a Markdown link's destination names, as written: a local `.md` file, maybe
@@ -284,7 +292,6 @@ struct Written<'t> {
 }
 
 fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
-    let tree = tree(text);
     let mut written = style::Links::default();
     let mut refs = Vec::new();
     let mut tags = Vec::new();
@@ -312,15 +319,13 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
         }
     };
 
-    for t in tags_from(text, &tree) {
-        push_tag(&mut tags, &text[t.name]);
-    }
-
+    let mut body_tags = Vec::new();
     let mut frontmatter_end = 0;
     let mut links: Vec<Written> = Vec::new();
     let mut wiki: Option<Written> = None;
-    cst::walk(tree.green(), 0, &mut |step| match step {
+    read_syntax(text, &mut |step| match step {
         Step::Leave(Kind::Frontmatter, at) => frontmatter_end = at,
+        Step::Token(Kind::Tag, tag, at) => body_tags.push(body_tag(at, tag)),
         Step::Enter(Kind::WikiLink | Kind::Embed, at) => {
             wiki = Some(Written {
                 at,
@@ -343,6 +348,9 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
         }
         _ => {}
     });
+    for t in with_frontmatter_tags(text, body_tags) {
+        push_tag(&mut tags, &text[t.name]);
+    }
 
     // YAML frontmatter: aliases, and links in properties.
     if frontmatter_end > 0 {
@@ -409,11 +417,17 @@ pub enum TagPlace {
 /// without `#`), then `#tags` in the body outside code blocks and inline code. A nested tag is
 /// one span (`area/work`). The tags `read` gives a note are exactly these.
 pub fn tags_in(text: &str) -> Vec<TagSpan> {
-    tags_from(text, &tree(text))
+    let mut body = Vec::new();
+    read_syntax(text, &mut |step| {
+        if let Step::Token(Kind::Tag, tag, at) = step {
+            body.push(body_tag(at, tag));
+        }
+    });
+    with_frontmatter_tags(text, body)
 }
 
-/// `tags_in`, the body's from `tree`.
-fn tags_from(text: &str, tree: &cst::Tree) -> Vec<TagSpan> {
+/// The frontmatter's tags, then `body`'s.
+fn with_frontmatter_tags(text: &str, body: Vec<TagSpan>) -> Vec<TagSpan> {
     let mut out = Vec::new();
     if let Some(fm) = frontmatter::read(text) {
         let key = ["tags", "tag"].into_iter().find(|k| fm.get(k).is_some());
@@ -450,14 +464,7 @@ fn tags_from(text: &str, tree: &cst::Tree) -> Vec<TagSpan> {
             _ => {}
         }
     }
-    cst::walk(tree.green(), 0, &mut |step| {
-        if let Step::Token(Kind::Tag, tag, at) = step {
-            out.push(TagSpan {
-                name: at + 1..at + tag.len(),
-                place: TagPlace::Body,
-            });
-        }
-    });
+    out.extend(body);
     out
 }
 
@@ -670,7 +677,7 @@ mod tests {
             };
             let mut body_from = 0;
             if let Some(fm) = frontmatter::read(text) {
-                for t in tags_from(text, &cst::Tree::with("", cst::Gates::INDEX)) {
+                for t in with_frontmatter_tags(text, Vec::new()) {
                     push_tag(&mut tags, &text[t.name]);
                 }
                 body_from = (text.split_inclusive('\n').take(fm.end_line))
@@ -778,6 +785,59 @@ mod tests {
             differ.is_empty(),
             "read differently:\n{}",
             differ.join("\n")
+        );
+    }
+
+    /// What reading every note of a workspace costs: the line reader, `read` (the tree's parse
+    /// read forwards), and making each note's tree. Run on `scripts/bench-items.py`'s workspace:
+    /// `COLD_LAVA_BENCH_WS=DIR cargo test --release -p cold-lava-engine read_cost -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn read_cost() {
+        use std::time::{Duration, Instant};
+        let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
+        let notes: Vec<String> = walkdir::WalkDir::new(dir)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .collect();
+        let bytes: usize = notes.iter().map(String::len).sum();
+        let time = |f: &dyn Fn(&str)| {
+            let mut runs: Vec<Duration> = (0..9)
+                .map(|_| {
+                    let t = Instant::now();
+                    notes.iter().for_each(|n| f(n));
+                    t.elapsed()
+                })
+                .collect();
+            runs.sort();
+            (runs[4], runs[0], runs[8])
+        };
+        let lines = time(&|n| {
+            std::hint::black_box(lines::parse(n));
+        });
+        let read = time(&|n| {
+            std::hint::black_box(super::read(n));
+        });
+        let tree = time(&|n| {
+            std::hint::black_box(cst::Tree::with(n, cst::Gates::INDEX));
+        });
+        println!(
+            "read_cost: {} notes, {} KiB; median (min-max) of 9: line reader {:?} ({:?}-{:?}), \
+             read {:?} ({:?}-{:?}), making the trees {:?} ({:?}-{:?})",
+            notes.len(),
+            bytes / 1024,
+            lines.0,
+            lines.1,
+            lines.2,
+            read.0,
+            read.1,
+            read.2,
+            tree.0,
+            tree.1,
+            tree.2
         );
     }
 }
