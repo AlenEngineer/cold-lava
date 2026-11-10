@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+cold-lava-canvas.workspace = true
 indexmap.workspace = true
 notify.workspace = true
 pulldown-cmark.workspace = true

@@ -38,11 +38,14 @@ pub fn paint(grid: &mut Grid, placed: &Placed, view: &Viewport) -> usize {
 }
 
 /// `shape` alone on a `cols`×`rows` terminal, as text: in the largest box of `aspect` (width over
-/// height in world units, where a cell is 1×2) centred on the grid, or the whole grid without
-/// one. The glyphs, then each region's tint by row (`.` for none, else the region's number).
+/// height in world units, where a cell is 1×2) centred on the grid a cell in from its edges, or
+/// that whole space without one. The glyphs, then each region's tint by row (`.` for none, else
+/// the region's number).
 pub fn preview(shape: Arc<Shape>, cols: u16, rows: u16, aspect: Option<f64>) -> String {
     let view = Viewport::terminal(cols, rows);
-    let world = view.world_size();
+    // A cell of margin, so outlines along the box's edges aren't cut off with the grid.
+    let margin = view.cell;
+    let world = view.world_size() - margin * 2.0;
     let size = match aspect {
         Some(a) if a > 0.0 => {
             let w = world.x.min(world.y * a);
@@ -50,7 +53,7 @@ pub fn preview(shape: Arc<Shape>, cols: u16, rows: u16, aspect: Option<f64>) -> 
         }
         _ => world,
     };
-    let at = Point::new((world.x - size.x) / 2.0, (world.y - size.y) / 2.0);
+    let at = margin + Point::new((world.x - size.x) / 2.0, (world.y - size.y) / 2.0);
     let placed = Placed::new(shape, Placement::new(at, size));
     let mut grid = Grid::new(&view);
     let left_out = paint(&mut grid, &placed, &view);

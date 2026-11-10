@@ -7,6 +7,21 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- Shape definitions: `[[shapes]]` in TOML, built in, from extensions, in `config.toml` and in a
+  workspace's `.cold-lava/shapes.toml`, loaded in the order types are, a broken one dropped with
+  its error while the rest load. Parts (rect, circle, ellipse, line, arrow, path, text, other
+  shapes), anchors, inputs, regions and behaviour (`on`: gestures and actions as gateway steps,
+  stored and checked; they run with bindings). Built in, written in the same TOML: `text`,
+  `rect`, `circle`, `line`, `arrow`, `card`, `sticky` (with a "make it a note" action), `table`,
+  `venn2` and a set of glyphs (`:check:`).
+- `cold-lava shapes [WORKSPACE] [--json]` lists them with their origins and errors;
+  `--render ID [--size WxH]` draws one as text.
+- Text at an anchor (a shape's title) never overlaps another: a later one slides along its row,
+  then is cut with "…", then left out.
+- The example workspace has shapes of its own: a three-circle Venn and an eruption timeline.
+
 ## [0.4.0] - 2026-11-09
 
 The engine's other half: everything is reachable through the gateways, other kinds of file
