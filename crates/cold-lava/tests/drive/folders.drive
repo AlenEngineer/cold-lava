@@ -45,7 +45,7 @@ expect example-workspace 36 notes
 keys h d
 wait-for Delete Guide/Volcanologists/?
 expect It holds 3 notes, and everything else in it.
-expect 4 notes link to them from outside: Links, Mount St. Helens, Pyroclastic Flow, Vesuvius.
+expect 5 files link to them from outside: Links, Mount St. Helens, People.canvas, Pyroclastic Flow, Vesuvius.
 expect y delete · n cancel
 screen
 keys y

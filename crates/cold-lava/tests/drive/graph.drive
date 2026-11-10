@@ -7,7 +7,7 @@ env COLD_LAVA_EDITOR=none
 env VISUAL=perl -0777 -i -pe $_.="\n[[Ghostnote]]\n"
 wait-for example-workspace
 keys g
-wait-for example-workspace · 35 nodes · 92 links
+wait-for example-workspace · 38 nodes · 100 links
 expect obsidian groups · braille
 expect ● path:Volcanoes 9
 expect nothing selected — arrows/hjkl or Tab to pick a note, / to search, ? for help
@@ -15,7 +15,7 @@ expect ↑↓←→ move  Tab links  Enter open  / search  , keys  ? help  q qui
 keys space
 wait-for obsidian groups · paused · braille
 keys tab
-wait-for ● Start Here  ←5 in  7→ out  Guide/Start Here  [path:Guide]
+wait-for ● Start Here  ←6 in  7→ out  Guide/Start Here  [path:Guide]
 keys c
 expect-in 15 40 17 62 Start Here
 # Dragging a node moves it, selected.
@@ -24,7 +24,7 @@ expect-in 24 70 26 92 Start Here
 keys esc
 wait-for nothing selected
 click 24 80
-wait-for ● Start Here  ←5 in  7→ out
+wait-for ● Start Here  ←6 in  7→ out
 # Scrolling zooms in and out at the pointer: in close, the notes in view have their labels.
 keys esc
 wait-for nothing selected
@@ -37,7 +37,7 @@ wait-gone Start Here
 click 24 80
 wait-for ● Start Here
 keys f
-wait-for example-workspace · 9 nodes · 15 links
+wait-for example-workspace · 10 nodes · 17 links
 expect local·1 · obsidian groups · paused · braille
 keys ]
 wait-for local graph depth 2
@@ -50,7 +50,7 @@ expect-in 15 40 17 62 Start Here
 drag 2 2 9 19
 expect-in 22 57 24 79 Start Here
 keys esc
-wait-for 35 nodes · 92 links
+wait-for 38 nodes · 100 links
 expect ● Start Here
 # Search: Enter selects the best match, n goes through the matches.
 keys /
@@ -84,10 +84,10 @@ keys esc
 wait-gone /shield
 keys t
 wait-for tags hidden
-wait-for 35 nodes · 92 links
+wait-for 38 nodes · 100 links
 keys u
 wait-for unresolved links shown
-expect example-workspace · 39 nodes
+expect example-workspace · 42 nodes
 keys O
 wait-for orphans hidden
 expect obsidian groups · unresolved · no orphans · paused · braille
@@ -114,15 +114,20 @@ wait-gone keys · type one to run it
 # A note written by another program joins the graph.
 write Inbox/Pinned.md Pinned on [[Kīlauea]].
 wait-for workspace changed: +1 notes
-expect example-workspace · 40 nodes
-expect ● Kīlauea  ←7 in  5→ out
+expect example-workspace · 43 nodes
+expect ● Kīlauea  ←8 in  5→ out
 expect Pinned
 # Enter opens the selected note in the editor; the graph follows what it changed.
 keys enter
 wait-for workspace changed: graph updated
-expect example-workspace · 41 nodes
-expect ● Kīlauea  ←7 in  6→ out
-expect Ghostnote
+expect example-workspace · 44 nodes
+expect ● Kīlauea  ←8 in  6→ out
+# The new unresolved node is in the graph, wherever the layout put it.
+keys /
+type ghost
+wait-for /ghost▏  1 matches  Ghostnote
+keys esc
+wait-gone /ghost▏
 keys r
 wait-for workspace changed
 keys q

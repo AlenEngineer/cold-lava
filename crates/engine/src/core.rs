@@ -19,7 +19,6 @@ use crate::workspace::{self, NoteChange, Owned};
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -215,10 +214,12 @@ impl Core {
     /// it is asked (`take_reads`) for the files it gave nothing for at their version now.
     pub fn set_owners(&mut self, kinds: Vec<OwnedKind>, cache: Option<&Path>) {
         self.owners = Owners::new(self.root(), kinds, cache);
-        let had = !self.index.workspace.owned.is_empty();
-        self.index.workspace.owned.clear();
+        let owned = &mut self.index.workspace.owned;
+        let before = owned.len();
+        owned.retain(|f| crate::owner::built_in(&f.rel).is_some());
+        let dropped = before != owned.len();
         let events = self.owned_scan();
-        if had || !events.is_empty() {
+        if dropped || !events.is_empty() {
             self.index.relink();
             let news = self.items.reset(&self.index.workspace);
             self.news.extend(news);
@@ -227,12 +228,20 @@ impl Core {
         self.unseen.extend(events);
     }
 
-    /// Find every file of an owned kind again, and read each the way `owned_changed` does,
-    /// without telling subscribers (after a scan, which is a reset). Returns its events.
+    /// Find every file of an owned kind again, the built-in owners' included, and read each the
+    /// way `owned_changed` does, without telling subscribers (after a scan, which is a reset).
+    /// Returns its events.
     fn owned_scan(&mut self) -> Vec<Event> {
         let mut rels = Vec::new();
-        for k in self.owners.kinds() {
-            rels.extend(files::list(&self.index, &k.extension).files);
+        let built_in = crate::owner::BUILT_IN.iter().map(|(x, _)| *x);
+        for x in self
+            .owners
+            .kinds()
+            .iter()
+            .map(|k| k.extension.as_str())
+            .chain(built_in)
+        {
+            rels.extend(files::list(&self.index, x).files);
         }
         (self.index.workspace.owned).retain(|f| rels.contains(&f.rel));
         let (changed, mut events) = self.owned_read(&rels);
@@ -326,55 +335,46 @@ impl Core {
                 Ok(i) if owned[i].rev.as_deref() == Some(rev.as_str()) => continue,
                 Ok(i) => i,
                 Err(i) => {
-                    let file = Owned {
-                        rel: rel.clone(),
-                        path: root.join(rel),
-                        owner: owner.clone(),
-                        rev: None,
-                        items: Vec::new(),
-                        places: HashMap::new(),
-                        links: Vec::new(),
-                        given: Given::default(),
-                    };
-                    owned.insert(i, file);
+                    owned.insert(i, Owned::new(rel.clone(), root.join(rel), &owner));
                     changed.push(rel.clone());
                     i
                 }
             };
-            let settings = self.index.workspace.item_settings();
-            let Some(given) = self.owners.given(&owner, rel, &rev) else {
-                match String::from_utf8(bytes) {
-                    Ok(text) => self.owners.ask(
-                        &owner,
-                        FileRead {
-                            path: rel.clone(),
-                            rev,
-                            text,
-                        },
-                    ),
-                    Err(_) => events.push(Event::OwnerTrouble {
-                        owner,
-                        path: rel.clone(),
-                        message: "it isn't UTF-8 text".into(),
-                    }),
-                }
-                continue;
+            let trouble = |message: String| Event::OwnerTrouble {
+                owner: owner.clone(),
+                path: rel.clone(),
+                message,
             };
-            let given = given.clone();
-            let read = given::read(rel, &given, settings);
-            if !read.problems.is_empty() {
-                events.push(Event::OwnerTrouble {
-                    owner,
-                    path: rel.clone(),
-                    message: read.problems.join("; "),
-                });
+            let given = match self.owners.given(&owner, rel, &rev) {
+                Some(given) => given.clone(),
+                None => {
+                    let Ok(text) = String::from_utf8(bytes) else {
+                        events.push(trouble("it isn't UTF-8 text".into()));
+                        continue;
+                    };
+                    match crate::owner::give(&owner, rel, &text) {
+                        Some(Ok(given)) => given,
+                        Some(Err(message)) => {
+                            events.push(trouble(message));
+                            continue;
+                        }
+                        None => {
+                            let read = FileRead {
+                                path: rel.clone(),
+                                rev,
+                                text,
+                            };
+                            self.owners.ask(&owner, read);
+                            continue;
+                        }
+                    }
+                }
+            };
+            let read = given::read(rel, &given, self.index.workspace.item_settings());
+            let problems = self.index.workspace.owned[i].take(rev, given, read);
+            if !problems.is_empty() {
+                events.push(trouble(problems.join("; ")));
             }
-            let file = &mut self.index.workspace.owned[i];
-            file.rev = Some(rev);
-            file.items = read.items;
-            file.places = read.places;
-            file.links = read.links;
-            file.given = given;
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
             }
@@ -609,14 +609,19 @@ impl Core {
     /// Ask the owner of the file at `rel` for its new text with `changes` made (`file/edit`),
     /// and keep `edit` until it has answered.
     fn ask_edit(&mut self, rel: String, changes: Vec<Change>, edit: Pending) {
+        let owner = edit.owner.clone();
+        let built_in = crate::owner::edit(&owner, &rel, &edit.text, &changes);
         let ask = FileEdit {
             path: rel.clone(),
             rev: edit.rev.clone(),
             text: edit.text.clone(),
             changes,
         };
-        self.edits.asks.push((edit.owner.clone(), ask));
-        self.edits.pending.insert(rel, edit);
+        self.edits.pending.insert(rel.clone(), edit);
+        match built_in {
+            Some(text) => self.file_edited(&owner, &rel, &ask.rev, text),
+            None => self.edits.asks.push((owner, ask)),
+        }
     }
 
     /// `owner` answered `file/edit` for the file at `path` at version `rev`: the file's new
@@ -647,13 +652,17 @@ impl Core {
             }
             Ok(text) => {
                 let rev = files::rev(text.as_bytes());
+                let built_in = crate::owner::give(owner, path, &text);
                 let read = FileRead {
                     path: path.to_string(),
                     rev: rev.clone(),
                     text: text.clone(),
                 };
                 p.stage = Stage::Reading { rev, text };
-                self.edits.reads.push((owner.to_string(), read));
+                match built_in {
+                    Some(given) => self.edit_read_back(path, given),
+                    None => self.edits.reads.push((owner.to_string(), read)),
+                }
             }
         }
     }
@@ -1000,11 +1009,9 @@ impl Core {
             let paths = std::mem::take(&mut self.changed);
             events.extend(self.refresh(&paths));
         }
-        events.extend(
-            std::mem::take(&mut self.boards)
-                .into_iter()
-                .map(Event::BoardChanged),
-        );
+        let boards = std::mem::take(&mut self.boards);
+        events.extend(self.owned_changed(&boards));
+        events.extend(boards.into_iter().map(Event::BoardChanged));
         let files = std::mem::take(&mut self.files);
         let owned: Vec<String> = (files.iter())
             .filter(|f| self.owners.owner_of(f).is_some())
@@ -1817,5 +1824,132 @@ mod tests {
         let krakatau = core.index.by_rel("Krakatau").unwrap();
         assert_eq!(core.index.backlinks(krakatau).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_canvas_joins_the_workspace_through_its_built_in_owner() {
+        use crate::gateway::{Page, Query, Reason, Select};
+        let dir = std::env::temp_dir().join(format!("cold-lava-canvas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
+        std::fs::write(dir.join("Magma.md"), "# Magma\n").unwrap();
+        let canvas = "{\n\t\"nodes\":[\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"Masks\\n- [ ] Two each, see [[Magma]]\",\"x\":0,\"y\":0,\"width\":1,\"height\":1,\"cold-lava\":{\"shape\":\"sticky\",\"node\":\"text\"}},\n\t\t{\"id\":\"c\",\"type\":\"file\",\"file\":\"Lava.md\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[{\"id\":\"e\",\"fromNode\":\"s\",\"toNode\":\"c\"}],\n\t\"mine\": 1\n}\n";
+        std::fs::write(dir.join("Board.canvas"), canvas).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let tasks = |core: &Core| {
+            let select = Select {
+                kind: "task".into(),
+                ..Select::default()
+            };
+            let q = Query {
+                select,
+                page: Page::default(),
+            };
+            core.query_items(&q).unwrap().items
+        };
+        let task = tasks(&core).pop().expect("the sticky's task is a task");
+        assert_eq!(task.note, "Board.canvas");
+        let from = |core: &Core, rel: &str| {
+            let ix = &core.index;
+            let backs = ix.backlinks(ix.by_rel(rel).unwrap());
+            (backs.iter())
+                .map(|b| ix.name(b.from).to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            from(&core, "Lava"),
+            ["Board.canvas"],
+            "a card links to its note"
+        );
+        assert_eq!(
+            from(&core, "Magma"),
+            ["Board.canvas"],
+            "so does a sticky's link"
+        );
+        let graph = crate::links::graph(&core.index);
+        let edges: Vec<_> = (graph.links.iter())
+            .filter(|l| l.from == "Board.canvas")
+            .filter_map(|l| l.to.clone())
+            .collect();
+        assert_eq!(
+            edges,
+            ["Magma.md", "Lava.md"],
+            "an arrow between nodes isn't a link"
+        );
+
+        // Ticked: only the sticky's text changes, read back before it is written.
+        let tick = |item: &Item| Edit {
+            id: item.id.clone(),
+            rev: item.rev.clone(),
+            op: Op::Toggle,
+        };
+        let Ok(Answer::Later(ticket)) = core.edit_item("agenda", &tick(&task)) else {
+            panic!("an owned file's item is answered later");
+        };
+        assert!(
+            core.take_file_edits().is_empty(),
+            "nothing to ask an extension"
+        );
+        let (by, t, answer) = core.take_edited().pop().expect("answered at once");
+        assert_eq!((by.as_str(), t), ("agenda", ticket));
+        assert_eq!(answer.unwrap().item.rev, tasks(&core)[0].rev);
+        let now = std::fs::read_to_string(dir.join("Board.canvas")).unwrap();
+        let (head, tail) = canvas.split_once("- [ ] Two each, see [[Magma]]").unwrap();
+        let ticked = now.strip_prefix(head).expect("the bytes before it kept");
+        assert!(
+            ticked.starts_with("- [x] Two each, see [[Magma]] ✅ "),
+            "{now}"
+        );
+        assert!(now.ends_with(tail), "every byte after it kept: {now}");
+
+        // Changed outside since it was read: refused, and the other program's text stays.
+        let task = tasks(&core).pop().unwrap();
+        let theirs = now.replace("\"mine\": 1", "\"mine\": 2");
+        std::fs::write(dir.join("Board.canvas"), &theirs).unwrap();
+        let refused = core.edit_item("agenda", &tick(&task)).unwrap_err();
+        assert_eq!(refused.reason, Reason::Changed);
+        assert_eq!(read(&dir.join("Board.canvas")), theirs);
+        let rev = files::rev(theirs.as_bytes());
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            core.boards.push("Board.canvas".into());
+            core.schedule(Duration::ZERO);
+            events.extend(core.poll());
+            if core.index.workspace.owned[0].rev.as_ref() == Some(&rev) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert!(events.contains(&Event::OwnedChanged("Board.canvas".into())));
+        let task = tasks(&core).pop().unwrap();
+        let again = core.edit_item("agenda", &tick(&task));
+        assert!(matches!(again, Ok(Answer::Later(_))), "{:?}", again.err());
+        assert!(
+            core.take_edited().pop().unwrap().2.is_ok(),
+            "read again, it can"
+        );
+        let now = read(&dir.join("Board.canvas"));
+        assert!(
+            now.contains("\"mine\": 2") && now.contains("- [ ] Two each"),
+            "{now}"
+        );
+
+        // Renamed: the card's path and the sticky's link, in place, through the owner.
+        let lava = core.index.by_rel("Lava").unwrap();
+        crate::rename::apply(&crate::rename::plan(&core.index, lava, "Hot/Lava").unwrap()).unwrap();
+        core.rescan_now();
+        let magma = core.index.by_rel("Magma").unwrap();
+        crate::rename::apply(&crate::rename::plan(&core.index, magma, "Melt").unwrap()).unwrap();
+        assert_eq!(
+            read(&dir.join("Board.canvas")),
+            now.replace("\"file\":\"Lava.md\"", "\"file\":\"Hot/Lava.md\"")
+                .replace("[[Magma]]", "[[Melt]]")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap()
     }
 }

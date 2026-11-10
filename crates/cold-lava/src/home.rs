@@ -1112,7 +1112,10 @@ impl Home {
         if let Some(f) = owned {
             let place = item.and_then(|id| f.places.get(&id).cloned());
             let path = f.path.clone();
-            self.mode = Mode::Normal;
+            // The whiteboard is a screen of its own: Back from it returns to where you were.
+            if workspace::attachment_kind(&f.rel) != Some("whiteboard") {
+                self.mode = Mode::Normal;
+            }
             return self.open_file_at(&path, place);
         }
         let path = root.join(note);
@@ -1923,13 +1926,19 @@ impl Home {
     }
 
     /// `open_file`, at the owner's `place` for an item or a link in it. A note goes to the
-    /// extension that shows it, if one does.
+    /// extension that shows it, if one does; a canvas to the whiteboard.
     fn open_file_at(&mut self, path: &Path, place: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
         };
         let rel = path.strip_prefix(&root).unwrap_or(path);
         let rel = rel.to_string_lossy().replace('\\', "/");
+        if workspace::attachment_kind(&rel) == Some("whiteboard") {
+            self.go_to = Some(Place::Board {
+                path: path.to_path_buf(),
+            });
+            return;
+        }
         let to =
             (self.registry.owner_of(&rel).map(|(owner, _)| owner)).or_else(|| self.shower(path));
         if let Some(to) = to {
@@ -5216,9 +5225,9 @@ impl Home {
                         n if p.notes.is_some() => format!(
                             " {} from outside: {}. Their links will become unresolved.",
                             if n == 1 {
-                                "1 note links to them".to_string()
+                                "1 file links to them".to_string()
                             } else {
-                                format!("{n} notes link to them")
+                                format!("{n} files link to them")
                             },
                             names.join(", ")
                         ),
