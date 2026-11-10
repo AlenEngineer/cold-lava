@@ -1,0 +1,9 @@
+[package]
+name = "cold-lava-canvas"
+description = "cold-lava's canvas engine, headless: shapes, regions, fitting, rasterizing and hit testing; frontends paint it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

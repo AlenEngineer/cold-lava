@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "cold-lava"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -220,12 +220,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cold-lava-canvas"
+version = "0.4.0"
+
+[[package]]
 name = "cold-lava-editor"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "cold-lava-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -242,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "cold-lava-views"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "compact_str"
