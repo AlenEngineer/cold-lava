@@ -335,9 +335,11 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let wants = Wants::of(&s.matcher);
     let mut walk = Walk::new(&lines, &s.flavour, wants);
     // When a type reads the note's tags, they count whatever the flavour, as they always have.
-    cst::read(lines.src, gates.set(Syntax::Tags, wants.tags), &mut |step| {
-        walk.step(step)
-    });
+    cst::read(
+        lines.src,
+        gates.set(Syntax::Tags, wants.tags),
+        &mut |step| walk.step(step),
+    );
     finish(note, text, s, &source, &lines, walk.pass)
 }
 
