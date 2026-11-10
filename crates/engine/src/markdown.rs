@@ -153,8 +153,32 @@ impl Flavour {
     /// The text pulldown-cmark reads: without `%%comments%%` when the flavour has them. Line
     /// numbers stay those of the note, and `Source::file_range` maps byte offsets back to it.
     pub fn source<'t>(&self, text: &'t str) -> Source<'t> {
-        if self.has(S::Comments) {
-            strip_comments(text, self.options())
+        self.source_with(text, |text| {
+            Parser::new_ext(text, self.options())
+                .into_offset_iter()
+                .filter(|(e, _)| {
+                    matches!(
+                        e,
+                        Event::Code(_)
+                            | Event::InlineMath(_)
+                            | Event::DisplayMath(_)
+                            | Event::Start(Tag::CodeBlock(_))
+                    )
+                })
+                .map(|(_, r)| r)
+                .collect()
+        })
+    }
+
+    /// `source`, where `code` finds the code spans, code blocks and math of a note that has a
+    /// `%%`: a `%%` in code doesn't open or close a comment.
+    pub fn source_with<'t>(
+        &self,
+        text: &'t str,
+        code: impl FnOnce(&str) -> Vec<Range<usize>>,
+    ) -> Source<'t> {
+        if self.has(S::Comments) && text.contains("%%") {
+            strip_comments(text, &code(text))
         } else {
             Source {
                 text: Cow::Borrowed(text),
@@ -1073,26 +1097,7 @@ fn callout(mut blocks: Vec<Block>) -> BlockKind {
 }
 
 /// Removes `%%…%%` outside code, keeping the line breaks so lines still match the file.
-fn strip_comments(text: &str, options: Options) -> Source<'_> {
-    if !text.contains("%%") {
-        return Source {
-            text: Cow::Borrowed(text),
-            pieces: Vec::new(),
-        };
-    }
-    let code: Vec<Range<usize>> = Parser::new_ext(text, options)
-        .into_offset_iter()
-        .filter(|(e, _)| {
-            matches!(
-                e,
-                Event::Code(_)
-                    | Event::InlineMath(_)
-                    | Event::DisplayMath(_)
-                    | Event::Start(Tag::CodeBlock(_))
-            )
-        })
-        .map(|(_, r)| r)
-        .collect();
+fn strip_comments<'t>(text: &'t str, code: &[Range<usize>]) -> Source<'t> {
     let delims: Vec<usize> = text
         .match_indices("%%")
         .map(|(i, _)| i)

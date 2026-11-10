@@ -2,18 +2,21 @@
 //! blocks with an id), so features ask for them instead of parsing notes themselves. See
 //! "Notes as data" in docs/extensions.md.
 //!
-//! One pass of pulldown-cmark per note, in the workspace's flavour, over the same text the reader
-//! parses. Types match in the same pass: the pass collects the blocks some type reads, and
-//! `matcher` says which type each one is and which inline types sit in its text. A task is a
-//! list item the built-in `task` type (`types/task.toml`) matches.
+//! One walk through the note's syntax tree (`cst`), in the workspace's flavour, over the same
+//! text the reader parses (without `%%comments%%`). The walk reads the blocks as pulldown-cmark,
+//! which read them before, did, so ids, revs and spans stay what they were. Types match after
+//! it: the walk collects the blocks some type reads, and `matcher` says which type each one is
+//! and which inline types sit in its text. A task is a list item the built-in `task` type
+//! (`types/task.toml`) matches.
 
+use crate::cst::{self, Kind, Step};
 use crate::daily;
-use crate::markdown::{self, Flavour, Syntax};
+use crate::markdown::{self, Flavour, Source, Syntax};
 use crate::matcher::{self, Matcher, Typed};
 use crate::tasks::{self, FNV_START, TasksSettings, fnv, fnv_from};
 use crate::templates;
 use crate::types::{self, On, Types};
-use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
+use crate::workspace::clean_target;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -205,18 +208,6 @@ struct Raw {
     key: String,
 }
 
-/// A container pulldown-cmark has opened and not yet closed.
-struct Open {
-    start: usize,
-    line: usize,
-    /// The `Raw` this container is, for a list item.
-    item: Option<usize>,
-    /// For a list item: the last line before its first nested list.
-    own_end: Option<usize>,
-    /// The first line of the last child block that ended.
-    prev_child: Option<usize>,
-}
-
 /// A block some loaded type reads, found in the pass and matched once the note is read.
 struct Candidate {
     on: On,
@@ -240,310 +231,650 @@ struct Candidate {
     cells: Vec<Range<usize>>,
 }
 
+/// What a pass through a note finds before types match.
+#[derive(Default)]
+struct Pass {
+    /// Its items, in the order an id is given (a parent before its children).
+    raws: Vec<Raw>,
+    candidates: Vec<Candidate>,
+    /// Code spans, code blocks and math, in order, where inline types never match.
+    code: Vec<Range<usize>>,
+    /// Each table's header.
+    tables: Vec<Vec<String>>,
+    /// The tags and links in the note's body, when some type reads them.
+    tags: Vec<String>,
+    links: Vec<String>,
+}
+
+/// What the workspace's types read, which is all a pass collects.
+#[derive(Clone, Copy)]
+struct Wants {
+    typing: bool,
+    rows: bool,
+    paragraphs: bool,
+    lists: bool,
+    headings: bool,
+    inline: bool,
+    tags: bool,
+    links: bool,
+}
+
+impl Wants {
+    fn of(m: &Matcher) -> Wants {
+        let typing = !m.is_empty();
+        let want = |on: On| typing && m.reads(on);
+        Wants {
+            typing,
+            rows: want(On::TableRow),
+            paragraphs: want(On::Paragraph),
+            lists: want(On::ListItem),
+            headings: want(On::Heading),
+            inline: want(On::Inline),
+            tags: m.needs_tags,
+            links: m.needs_links,
+        }
+    }
+
+    /// Table rows are read for row types, and for the inline types in them.
+    fn collect_rows(self) -> bool {
+        self.rows || self.inline
+    }
+}
+
+/// A note's text as a pass reads it, and where its lines are.
+struct Lines<'a> {
+    src: &'a str,
+    newlines: Vec<usize>,
+    lines: Vec<&'a str>,
+}
+
+impl<'a> Lines<'a> {
+    fn new(src: &'a str) -> Lines<'a> {
+        Lines {
+            src,
+            newlines: src.match_indices('\n').map(|(i, _)| i).collect(),
+            lines: src.lines().collect(),
+        }
+    }
+
+    /// The line (from 1) byte `offset` is on.
+    fn of(&self, offset: usize) -> usize {
+        self.newlines.partition_point(|&n| n < offset) + 1
+    }
+
+    fn line(&self, n: usize) -> &'a str {
+        self.lines.get(n - 1).copied().unwrap_or_default()
+    }
+
+    /// Whether line `n` holds nothing but quote markers.
+    fn blank(&self, n: usize) -> bool {
+        self.line(n).trim().trim_start_matches('>').trim().is_empty()
+    }
+
+    /// Where line `n` ends, before its line break.
+    fn end(&self, n: usize) -> usize {
+        self.newlines.get(n - 1).copied().unwrap_or(self.src.len())
+    }
+}
+
 /// The items of the note at workspace-relative `note` (with `.md`) whose text is `text`.
 pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     if s.templates.is_template(note) {
         return Vec::new();
     }
-    let flavour = &s.flavour;
-    let source = flavour.source(text);
-    let src: &str = &source.text;
-    let newlines: Vec<usize> = src.match_indices('\n').map(|(i, _)| i).collect();
-    let line_of = |offset: usize| newlines.partition_point(|&n| n < offset) + 1;
-    let src_lines: Vec<&str> = src.lines().collect();
-    let src_line = |n: usize| src_lines.get(n - 1).copied().unwrap_or_default();
-    let is_blank = |n: usize| src_line(n).trim().trim_start_matches('>').trim().is_empty();
+    // The comments are taken out first, as for the reader, so their lines read as blank.
+    let gates = cst::Gates::of(&s.flavour).set(Syntax::Comments, false);
+    let source = s.flavour.source_with(text, |text| code_in(text, gates));
+    let lines = Lines::new(&source.text);
+    let mut walk = Walk::new(&lines, &s.flavour, Wants::of(&s.matcher));
+    // A note's tags count whatever the flavour, as they always have.
+    cst::read(lines.src, gates.set(Syntax::Tags, true), &mut |step| walk.step(step));
+    finish(note, text, s, &source, &lines, walk.pass)
+}
 
-    let m = &s.matcher;
-    let typing = !m.is_empty();
-    let want = |on: On| typing && m.reads(on);
-    let (want_rows, want_paragraphs) = (want(On::TableRow), want(On::Paragraph));
-    let (want_lists, want_headings) = (want(On::ListItem), want(On::Heading));
-    let want_inline = want(On::Inline);
-    let collect_rows = want_rows || want_inline;
-    let line_end = |n: usize| newlines.get(n - 1).copied().unwrap_or(src.len());
-    let mut candidates: Vec<Candidate> = Vec::new();
-    // Code spans, code blocks and math, where inline types never match.
-    let mut code: Vec<Range<usize>> = Vec::new();
-    let mut tables: Vec<Vec<String>> = Vec::new();
-    let mut cells: Vec<Range<usize>> = Vec::new();
-    let mut in_head = false;
-    let mut quotes = 0usize;
-    // Inside a code block or the frontmatter, text holds no tags.
-    let mut verbatim = 0usize;
-    let mut body_tags: Vec<String> = Vec::new();
-    let mut links: Vec<String> = Vec::new();
+/// The code spans, code blocks and math in `text`, where `%%` is no comment.
+fn code_in(text: &str, gates: cst::Gates) -> Vec<Range<usize>> {
+    let mut code = Vec::new();
+    let mut from = 0;
+    cst::read(text, gates, &mut |step| match step {
+        Step::Enter(kind, at) if is_code(kind) => from = at,
+        Step::Leave(kind, at) if is_code(kind) => code.push(from..at),
+        _ => {}
+    });
+    code
+}
 
-    let mut raws: Vec<Raw> = Vec::new();
-    let mut headings: Vec<(u8, String)> = Vec::new();
-    let names = |h: &[(u8, String)]| h.iter().map(|h| h.1.clone()).collect::<Vec<_>>();
-    let mut open = vec![Open {
-        start: 0,
-        line: 1,
-        item: None,
-        own_end: None,
-        prev_child: None,
-    }];
-    let enclosing = |open: &[Open]| open.iter().rev().find_map(|o| o.item);
+fn is_code(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::CodeSpan | Kind::InlineMath | Kind::MathBlock | Kind::FencedCode | Kind::IndentedCode
+    )
+}
 
-    for (event, range) in Parser::new_ext(src, flavour.options()).into_offset_iter() {
-        match event {
-            Event::Text(t) if m.needs_tags && verbatim == 0 && t.contains('#') => {
-                body_tags.extend(matcher::Note::tags_in(&t).map(|(tag, _)| tag.to_string()));
+/// A block the walk is inside.
+struct Open {
+    /// Where it starts: a paragraph, a table row or a fence at its first character, as
+    /// pulldown-cmark had them.
+    start: usize,
+    line: usize,
+    /// The `Raw` this container is, for a list item.
+    item: Option<usize>,
+    /// For a list item: the last line before its first nested list.
+    own_end: Option<usize>,
+    /// The first line of the last child block that ended.
+    prev_child: Option<usize>,
+    /// Whether `start` still moves past the indentation before its first character.
+    leading: bool,
+}
+
+/// A walk through a note's tree, step by step, reading the blocks as pulldown-cmark had them:
+/// a block id, a list item's own lines and the line of the block before a lone `^id` all come
+/// out the same.
+struct Walk<'a> {
+    lines: &'a Lines<'a>,
+    flavour: &'a Flavour,
+    wants: Wants,
+    pass: Pass,
+    open: Vec<Open>,
+    headings: Vec<(u8, String)>,
+    quotes: usize,
+    /// Inside a code block or the frontmatter.
+    verbatim: usize,
+    /// The level of the heading being read.
+    level: u8,
+    /// Where the code span or the math being read starts.
+    code_at: usize,
+    /// The wikilink being read: what it says before its `|`.
+    wiki: Option<String>,
+    /// Whether the link being read is a Markdown link, not an image.
+    link: bool,
+    /// The last callout's `[!type]`.
+    marker: Range<usize>,
+    /// A callout's title, which pulldown-cmark read as the first line of a paragraph that the
+    /// next line goes on: where the title ends, until the next block says whether it does.
+    title: Option<usize>,
+    /// The table being read: how many rows it has had, where its header starts, its columns.
+    rows: usize,
+    head: usize,
+    cols: usize,
+}
+
+impl<'a> Walk<'a> {
+    fn new(lines: &'a Lines<'a>, flavour: &'a Flavour, wants: Wants) -> Walk<'a> {
+        Walk {
+            lines,
+            flavour,
+            wants,
+            pass: Pass::default(),
+            open: vec![Open {
+                start: 0,
+                line: 1,
+                item: None,
+                own_end: None,
+                prev_child: None,
+                leading: false,
+            }],
+            headings: Vec::new(),
+            quotes: 0,
+            verbatim: 0,
+            level: 0,
+            code_at: 0,
+            wiki: None,
+            link: false,
+            marker: 0..0,
+            title: None,
+            rows: 0,
+            head: 0,
+            cols: 0,
+        }
+    }
+
+    fn step(&mut self, step: Step<'_>) {
+        match step {
+            Step::Enter(kind, at) => self.enter(kind, at),
+            Step::Leave(kind, at) => self.leave(kind, at),
+            Step::Token(kind, text, at) => self.token(kind, text, at),
+        }
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.headings.iter().map(|h| h.1.clone()).collect()
+    }
+
+    /// The list item the walk is inside.
+    fn enclosing(&self) -> Option<usize> {
+        self.open.iter().rev().find_map(|o| o.item)
+    }
+
+    fn begin(&mut self, at: usize, item: Option<usize>, leading: bool) {
+        let line = self.lines.of(at);
+        self.open.push(Open {
+            start: at,
+            line,
+            item,
+            own_end: None,
+            prev_child: None,
+            leading,
+        });
+    }
+
+    /// Ends the innermost block: it, and the line of the block that ended before it in its
+    /// parent.
+    fn end(&mut self) -> (Open, Option<usize>) {
+        let block = self.open.pop().expect("a block to end");
+        let parent = self.open.last_mut().expect("the note holds every block");
+        let before = parent.prev_child.replace(block.line);
+        (block, before)
+    }
+
+    fn enter(&mut self, kind: Kind, at: usize) {
+        if let Some(end) = self.title.take() {
+            let next = self.open.last().map_or(0, |o| o.line + 1);
+            if kind == Kind::Paragraph && self.lines.of(at) == next {
+                return;
             }
-            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) if typing => {
-                code.push(range)
-            }
-            Event::Start(tag) => {
-                let line = line_of(range.start);
-                let mut item = None;
-                match tag {
-                    Tag::Heading { level, .. } => {
-                        let level = level as u8;
-                        while headings.last().is_some_and(|h| h.0 >= level) {
-                            headings.pop();
-                        }
-                        let text = heading_text(&src[range.clone()]);
-                        let end_line = line_of(range.end.saturating_sub(1)).max(line);
-                        if want_headings || want_inline {
-                            let words = heading_range(src, range.clone());
-                            candidates.push(Candidate {
-                                on: On::Heading,
-                                typeable: want_headings,
-                                own: words.clone(),
-                                text: words,
-                                raw: Some(raws.len()),
-                                line,
-                                end_line,
-                                section: names(&headings),
-                                parent: enclosing(&open),
-                                block_id: None,
-                                in_quote: quotes > 0,
-                                table: 0,
-                                cells: Vec::new(),
-                            });
-                        }
-                        raws.push(Raw {
-                            line,
-                            end_line,
-                            section: names(&headings),
-                            parent: enclosing(&open),
-                            block_id: None,
-                            data: Data::Heading {
-                                level,
-                                text: text.clone(),
-                            },
-                            key: String::new(),
-                        });
-                        headings.push((level, text));
-                    }
-                    Tag::Item => {
-                        item = Some(raws.len());
-                        raws.push(Raw {
-                            line,
-                            end_line: line,
-                            section: names(&headings),
-                            parent: enclosing(&open),
-                            block_id: None,
-                            data: Data::Block,
-                            key: String::new(),
-                        });
-                    }
-                    Tag::List(_) => {
-                        if let Some(top) = open.last_mut()
-                            && top.item.is_some()
-                            && top.own_end.is_none()
-                        {
-                            top.own_end = Some(line.saturating_sub(1).max(top.line));
-                        }
-                    }
-                    Tag::BlockQuote(_) => quotes += 1,
-                    Tag::CodeBlock(_) => {
-                        verbatim += 1;
-                        if typing {
-                            code.push(range.clone());
-                        }
-                    }
-                    Tag::MetadataBlock(_) => verbatim += 1,
-                    Tag::Link {
-                        link_type,
-                        ref dest_url,
-                        ..
-                    } if m.needs_links => {
-                        let local = matches!(link_type, LinkType::WikiLink { .. })
-                            || dest_url
-                                .split('#')
-                                .next()
-                                .is_some_and(|d| d.ends_with(".md"));
-                        if local {
-                            let target = dest_url.split('#').next().unwrap_or_default();
-                            links.extend(crate::workspace::clean_target(target));
-                        }
-                    }
-                    Tag::Table(_) if collect_rows => tables.push(Vec::new()),
-                    Tag::TableHead => in_head = true,
-                    Tag::TableCell if collect_rows => {
-                        let cell = trim_cell(src, range.clone());
-                        match tables.last_mut() {
-                            Some(header) if in_head => header.push(src[cell].to_string()),
-                            _ => cells.push(cell),
-                        }
-                    }
-                    _ => {}
-                }
-                open.push(Open {
-                    start: range.start,
+            self.paragraph(end);
+        }
+        match kind {
+            Kind::Paragraph | Kind::MathBlock | Kind::TableRow => self.begin(at, None, true),
+            Kind::AtxHeading | Kind::SetextHeading => self.begin(at, None, false),
+            Kind::HtmlBlock => self.begin(at, None, false),
+            Kind::ListItem => {
+                let line = self.lines.of(at);
+                let (section, parent) = (self.names(), self.enclosing());
+                self.begin(at, Some(self.pass.raws.len()), false);
+                self.pass.raws.push(Raw {
                     line,
-                    item,
-                    own_end: None,
-                    prev_child: None,
+                    end_line: line,
+                    section,
+                    parent,
+                    block_id: None,
+                    data: Data::Block,
+                    key: String::new(),
                 });
             }
-            Event::End(end) => {
-                let Some(frame) = open.pop() else { break };
-                let Some(parent) = open.last() else { break };
-                let (parent_item, parent_prev) = (parent.item, parent.prev_child);
-                let mut last = line_of(range.end.saturating_sub(1)).max(frame.line);
-                match (end, frame.item) {
-                    (TagEnd::Item, Some(at)) => {
-                        last = frame.own_end.unwrap_or(last);
-                        while last > frame.line && is_blank(last) {
-                            last -= 1;
-                        }
-                        let first = &src[frame.start..];
-                        let first = first.lines().next().unwrap_or_default();
-                        let (first, block_id) = if flavour.has(Syntax::BlockIds) {
-                            let own_last = if last == frame.line {
-                                first
-                            } else {
-                                src_line(last)
-                            };
-                            match markdown::block_id_pattern().captures(own_last) {
-                                Some(c) if last == frame.line => {
-                                    (&first[..c.get(0).unwrap().start()], Some(c[1].to_string()))
-                                }
-                                Some(c) => (first, Some(c[1].to_string())),
-                                None => (first, None),
-                            }
-                        } else {
-                            (first, None)
-                        };
-                        if want_lists || want_inline {
-                            let start = frame.start + list_text_start(first);
-                            let end = frame.start + first.trim_end().len();
-                            let own_end = start + src[start..line_end(last)].trim_end().len();
-                            candidates.push(Candidate {
-                                on: On::ListItem,
-                                typeable: want_lists,
-                                own: start..own_end.max(start),
-                                text: start..end.max(start),
-                                raw: Some(at),
-                                line: frame.line,
-                                end_line: last,
-                                section: raws[at].section.clone(),
-                                parent: None,
-                                block_id: None,
-                                in_quote: quotes > 0,
-                                table: 0,
-                                cells: Vec::new(),
-                            });
-                        }
-                        let raw = &mut raws[at];
-                        raw.end_line = last;
-                        raw.block_id = block_id;
-                        raw.data = Data::List {
-                            text: list_text(first),
-                        };
-                    }
-                    (TagEnd::Paragraph, _) if parent_item.is_none() => {
-                        while last > frame.line && is_blank(last) {
-                            last -= 1;
-                        }
-                        let id = flavour
-                            .has(Syntax::BlockIds)
-                            .then(|| markdown::block_id_pattern().captures(src_line(last)))
-                            .flatten();
-                        let alone = id
-                            .as_ref()
-                            .is_some_and(|c| last == frame.line && c.get(0).unwrap().start() == 0);
-                        let mut raw = None;
-                        if let Some(c) = &id {
-                            let line = match parent_prev {
-                                Some(prev) if alone => prev,
-                                _ => frame.line,
-                            };
-                            raw = Some(raws.len());
-                            raws.push(Raw {
-                                line,
-                                end_line: last,
-                                section: names(&headings),
-                                parent: enclosing(&open),
-                                block_id: Some(c[1].to_string()),
-                                data: Data::Block,
-                                key: String::new(),
-                            });
-                        }
-                        if (want_paragraphs || want_inline) && !alone {
-                            let mut text = src[frame.start..range.end].trim_end();
-                            if let Some(c) = markdown::block_id_pattern().captures(text)
-                                && id.is_some()
-                            {
-                                text = text[..c.get(0).unwrap().start()].trim_end();
-                            }
-                            let text = frame.start..frame.start + text.len();
-                            candidates.push(Candidate {
-                                on: On::Paragraph,
-                                typeable: want_paragraphs,
-                                own: text.clone(),
-                                text,
-                                raw,
-                                line: frame.line,
-                                end_line: last,
-                                section: names(&headings),
-                                parent: enclosing(&open),
-                                block_id: None,
-                                in_quote: quotes > 0,
-                                table: 0,
-                                cells: Vec::new(),
-                            });
-                        }
-                    }
-                    (TagEnd::BlockQuote(_), _) => quotes = quotes.saturating_sub(1),
-                    (TagEnd::CodeBlock | TagEnd::MetadataBlock(_), _) => {
-                        verbatim = verbatim.saturating_sub(1)
-                    }
-                    (TagEnd::TableHead, _) => in_head = false,
-                    (TagEnd::TableRow, _) if collect_rows => {
-                        let row = src[frame.start..range.end].trim_end();
-                        let text = frame.start..frame.start + row.len();
-                        candidates.push(Candidate {
-                            on: On::TableRow,
-                            typeable: want_rows,
-                            own: text.clone(),
-                            text,
-                            raw: None,
-                            line: frame.line,
-                            end_line: frame.line,
-                            section: names(&headings),
-                            parent: enclosing(&open),
-                            block_id: None,
-                            in_quote: quotes > 0,
-                            table: tables.len().saturating_sub(1),
-                            cells: std::mem::take(&mut cells),
-                        });
-                    }
-                    _ => {}
+            Kind::List => {
+                let line = self.lines.of(at);
+                if let Some(top) = self.open.last_mut()
+                    && top.item.is_some()
+                    && top.own_end.is_none()
+                {
+                    top.own_end = Some(line.saturating_sub(1).max(top.line));
                 }
-                if let Some(parent) = open.last_mut() {
-                    parent.prev_child = Some(frame.line);
+                self.begin(at, None, false);
+            }
+            Kind::BlockQuote | Kind::Callout => {
+                self.quotes += 1;
+                self.begin(at, None, false);
+            }
+            Kind::FencedCode | Kind::IndentedCode | Kind::Frontmatter => {
+                self.verbatim += 1;
+                self.begin(at, None, true);
+            }
+            Kind::Table => {
+                if self.wants.collect_rows() {
+                    self.pass.tables.push(Vec::new());
+                }
+                (self.rows, self.cols) = (0, 0);
+                self.begin(at, None, false);
+            }
+            Kind::CalloutTitle => self.begin(self.marker.start, None, false),
+            Kind::CodeSpan | Kind::InlineMath => self.code_at = at,
+            Kind::WikiLink => self.wiki = Some(String::new()),
+            Kind::Link | Kind::Image => self.link = kind == Kind::Link,
+            _ => {}
+        }
+    }
+
+    fn leave(&mut self, kind: Kind, at: usize) {
+        if let Some(end) = self.title.take() {
+            self.paragraph(end);
+        }
+        match kind {
+            Kind::Paragraph => self.paragraph(at),
+            // pulldown-cmark read `$$` math as a paragraph.
+            Kind::MathBlock => {
+                if self.wants.typing {
+                    let start = self.open.last().map_or(at, |o| o.start);
+                    self.pass.code.push(start..at);
+                }
+                self.paragraph(at);
+            }
+            // A GitHub alert's `[!NOTE]` was no paragraph to pulldown-cmark; any other callout's
+            // title was.
+            Kind::CalloutTitle => {
+                if self.alert(at) {
+                    self.open.pop();
+                } else {
+                    self.title = Some(at);
+                }
+            }
+            Kind::AtxHeading | Kind::SetextHeading => self.heading(at),
+            Kind::ListItem => self.item(at),
+            Kind::TableRow => self.row(at),
+            Kind::TableDelimiterRow => self.header(),
+            Kind::BlockQuote | Kind::Callout => {
+                self.quotes = self.quotes.saturating_sub(1);
+                self.end();
+            }
+            Kind::FencedCode | Kind::IndentedCode => {
+                self.verbatim = self.verbatim.saturating_sub(1);
+                let (code, _) = self.end();
+                if self.wants.typing {
+                    self.pass.code.push(code.start..at);
+                }
+            }
+            Kind::Frontmatter => {
+                self.verbatim = self.verbatim.saturating_sub(1);
+                self.end();
+            }
+            Kind::List | Kind::HtmlBlock | Kind::Table => {
+                self.end();
+            }
+            Kind::CodeSpan | Kind::InlineMath if self.wants.typing => {
+                self.pass.code.push(self.code_at..at)
+            }
+            Kind::WikiLink => {
+                if let Some(wiki) = self.wiki.take()
+                    && self.wants.links
+                    && self.verbatim == 0
+                {
+                    let target = wiki.split('#').next().unwrap_or_default();
+                    self.pass.links.extend(clean_target(target));
                 }
             }
             _ => {}
         }
     }
-    if typing {
-        let mut found = matcher::Note::new(note, text, &source, m.needs_links);
-        for tag in &body_tags {
+
+    fn token(&mut self, kind: Kind, text: &str, at: usize) {
+        match kind {
+            Kind::Whitespace => {
+                if let Some(top) = self.open.last_mut()
+                    && top.leading
+                    && top.start == at
+                {
+                    top.start = at + text.len();
+                }
+            }
+            Kind::HeadingMarker => self.level = text.len() as u8,
+            Kind::SetextUnderline => self.level = if text.starts_with('=') { 1 } else { 2 },
+            Kind::CalloutMarker => self.marker = at..at + text.len(),
+            Kind::Delimiter => self.cols += 1,
+            Kind::Tag if self.wants.tags => {
+                let tags = matcher::Note::tags_in(text).map(|(tag, _)| tag.to_string());
+                self.pass.tags.extend(tags);
+            }
+            Kind::Target | Kind::Anchor => {
+                if let Some(wiki) = &mut self.wiki {
+                    wiki.push_str(text);
+                }
+            }
+            Kind::LinkDest if self.link && self.wants.links => {
+                let dest = match text.strip_prefix('<') {
+                    Some(pointy) => pointy.split('>').next(),
+                    None => text.split_whitespace().next(),
+                };
+                let target = dest.unwrap_or_default().split('#').next();
+                if let Some(target) = target.filter(|t| t.ends_with(".md")) {
+                    self.pass.links.extend(clean_target(target));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the callout title ending at `end` is a GitHub alert's, `[!NOTE]` alone.
+    fn alert(&self, end: usize) -> bool {
+        let src = self.lines.src;
+        let kind = src[self.marker.clone()]
+            .strip_prefix("[!")
+            .and_then(|k| k.strip_suffix(']'));
+        let alerts = ["note", "tip", "important", "warning", "caution"];
+        let is_alert = |k: &str| alerts.iter().any(|a| a.eq_ignore_ascii_case(k));
+        self.flavour.has(Syntax::Alerts)
+            && kind.is_some_and(is_alert)
+            && src[self.marker.end..end].trim().is_empty()
+    }
+
+    fn heading(&mut self, end: usize) {
+        let (block, _) = self.end();
+        let level = self.level;
+        while self.headings.last().is_some_and(|h| h.0 >= level) {
+            self.headings.pop();
+        }
+        let src = self.lines.src;
+        let range = block.start..end;
+        let text = heading_text(&src[range.clone()]);
+        let end_line = self.lines.of(end.saturating_sub(1)).max(block.line);
+        let (section, parent) = (self.names(), self.enclosing());
+        if self.wants.headings || self.wants.inline {
+            let words = heading_range(src, range);
+            self.pass.candidates.push(Candidate {
+                on: On::Heading,
+                typeable: self.wants.headings,
+                own: words.clone(),
+                text: words,
+                raw: Some(self.pass.raws.len()),
+                line: block.line,
+                end_line,
+                section: section.clone(),
+                parent,
+                block_id: None,
+                in_quote: self.quotes > 0,
+                table: 0,
+                cells: Vec::new(),
+            });
+        }
+        self.pass.raws.push(Raw {
+            line: block.line,
+            end_line,
+            section,
+            parent,
+            block_id: None,
+            data: Data::Heading {
+                level,
+                text: text.clone(),
+            },
+            key: String::new(),
+        });
+        self.headings.push((level, text));
+    }
+
+    fn item(&mut self, end: usize) {
+        let (block, _) = self.end();
+        let Some(at) = block.item else { return };
+        let lines = self.lines;
+        let src = lines.src;
+        let mut last = lines.of(end.saturating_sub(1)).max(block.line);
+        last = block.own_end.unwrap_or(last);
+        while last > block.line && lines.blank(last) {
+            last -= 1;
+        }
+        let first = src[block.start..].lines().next().unwrap_or_default();
+        let (first, block_id) = if self.flavour.has(Syntax::BlockIds) {
+            let own_last = if last == block.line {
+                first
+            } else {
+                lines.line(last)
+            };
+            match markdown::block_id_pattern().captures(own_last) {
+                Some(c) if last == block.line => {
+                    (&first[..c.get(0).unwrap().start()], Some(c[1].to_string()))
+                }
+                Some(c) => (first, Some(c[1].to_string())),
+                None => (first, None),
+            }
+        } else {
+            (first, None)
+        };
+        if self.wants.lists || self.wants.inline {
+            let start = block.start + list_text_start(first);
+            let end = block.start + first.trim_end().len();
+            let own_end = start + src[start..lines.end(last)].trim_end().len();
+            self.pass.candidates.push(Candidate {
+                on: On::ListItem,
+                typeable: self.wants.lists,
+                own: start..own_end.max(start),
+                text: start..end.max(start),
+                raw: Some(at),
+                line: block.line,
+                end_line: last,
+                section: self.pass.raws[at].section.clone(),
+                parent: None,
+                block_id: None,
+                in_quote: self.quotes > 0,
+                table: 0,
+                cells: Vec::new(),
+            });
+        }
+        let raw = &mut self.pass.raws[at];
+        raw.end_line = last;
+        raw.block_id = block_id;
+        raw.data = Data::List {
+            text: list_text(first),
+        };
+    }
+
+    /// A paragraph ends at `end`; in a list item, it is part of the item.
+    fn paragraph(&mut self, end: usize) {
+        let (block, before) = self.end();
+        if self.open.last().is_some_and(|p| p.item.is_some()) {
+            return;
+        }
+        let lines = self.lines;
+        let src = lines.src;
+        let mut last = lines.of(end.saturating_sub(1)).max(block.line);
+        while last > block.line && lines.blank(last) {
+            last -= 1;
+        }
+        let ids = self.flavour.has(Syntax::BlockIds);
+        let id = ids
+            .then(|| markdown::block_id_pattern().captures(lines.line(last)))
+            .flatten();
+        // A `^id` alone names the block before it.
+        let alone = id
+            .as_ref()
+            .is_some_and(|c| last == block.line && c.get(0).unwrap().start() == 0);
+        let (section, parent) = (self.names(), self.enclosing());
+        let mut raw = None;
+        if let Some(c) = &id {
+            let line = match before {
+                Some(before) if alone => before,
+                _ => block.line,
+            };
+            raw = Some(self.pass.raws.len());
+            self.pass.raws.push(Raw {
+                line,
+                end_line: last,
+                section: section.clone(),
+                parent,
+                block_id: Some(c[1].to_string()),
+                data: Data::Block,
+                key: String::new(),
+            });
+        }
+        if (self.wants.paragraphs || self.wants.inline) && !alone {
+            let mut text = src[block.start..end].trim_end();
+            if let Some(c) = markdown::block_id_pattern().captures(text)
+                && id.is_some()
+            {
+                text = text[..c.get(0).unwrap().start()].trim_end();
+            }
+            let text = block.start..block.start + text.len();
+            self.pass.candidates.push(Candidate {
+                on: On::Paragraph,
+                typeable: self.wants.paragraphs,
+                own: text.clone(),
+                text,
+                raw,
+                line: block.line,
+                end_line: last,
+                section,
+                parent,
+                block_id: None,
+                in_quote: self.quotes > 0,
+                table: 0,
+                cells: Vec::new(),
+            });
+        }
+    }
+
+    /// A table row ends at `end`. The first is the header, read once the delimiter row says how
+    /// many columns the table has.
+    fn row(&mut self, end: usize) {
+        let (block, _) = self.end();
+        self.rows += 1;
+        if !self.wants.collect_rows() {
+            return;
+        }
+        if self.rows == 1 {
+            self.head = block.start;
+            return;
+        }
+        let src = self.lines.src;
+        let row = src[block.start..end].trim_end();
+        let text = block.start..block.start + row.len();
+        let cells = row_cells(src, block.start, self.cols)
+            .into_iter()
+            .map(|c| trim_cell(src, c))
+            .collect();
+        let (section, parent) = (self.names(), self.enclosing());
+        self.pass.candidates.push(Candidate {
+            on: On::TableRow,
+            typeable: self.wants.rows,
+            own: text.clone(),
+            text,
+            raw: None,
+            line: block.line,
+            end_line: block.line,
+            section,
+            parent,
+            block_id: None,
+            in_quote: self.quotes > 0,
+            table: self.pass.tables.len().saturating_sub(1),
+            cells,
+        });
+    }
+
+    fn header(&mut self) {
+        if !self.wants.collect_rows() {
+            return;
+        }
+        let src = self.lines.src;
+        let header = row_cells(src, self.head, self.cols)
+            .into_iter()
+            .map(|c| src[trim_cell(src, c)].to_string())
+            .collect();
+        if let Some(table) = self.pass.tables.last_mut() {
+            *table = header;
+        }
+    }
+}
+
+/// Matches the types over what a pass found, then gives each item its id.
+fn finish(
+    note: &str,
+    text: &str,
+    s: &Settings,
+    source: &Source,
+    lines: &Lines,
+    pass: Pass,
+) -> Vec<Item> {
+    let Pass {
+        mut raws,
+        mut candidates,
+        code,
+        tables,
+        tags,
+        links,
+    } = pass;
+    let m = &s.matcher;
+    if !m.is_empty() {
+        let src = lines.src;
+        let want_inline = m.reads(On::Inline);
+        let mut found = matcher::Note::new(note, text, source, m.needs_links);
+        for tag in &tags {
             found.add_tag(tag);
         }
         found.links.extend(links);
@@ -652,10 +983,10 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
                     continue;
                 }
                 typed.place.span = source.file_range(start..end);
-                let line = line_of(start);
+                let line = lines.of(start);
                 raws.push(Raw {
                     line,
-                    end_line: line_of(end.saturating_sub(1)).max(line),
+                    end_line: lines.of(end.saturating_sub(1)).max(line),
                     section: c.section.clone(),
                     parent: host,
                     block_id: None,
@@ -754,6 +1085,45 @@ fn heading_range(src: &str, range: Range<usize>) -> Range<usize> {
     }
 }
 
+/// The cells of the table row starting at `start`, as pulldown-cmark split them: at each `|`
+/// that isn't escaped, a wikilink's too, then cut to the table's `cols` or filled with empty
+/// cells after the row's line break.
+fn row_cells(src: &str, start: usize, cols: usize) -> Vec<Range<usize>> {
+    let b = src.as_bytes();
+    let eol = src[start..].find(['\n', '\r']).map_or(src.len(), |i| start + i);
+    let after = match &b[eol..] {
+        [b'\r', b'\n', ..] => eol + 2,
+        [_, ..] => eol + 1,
+        [] => eol,
+    };
+    let mut cells = Vec::new();
+    let mut i = start;
+    loop {
+        if b.get(i) == Some(&b'|') {
+            i += 1;
+        }
+        let cell = i;
+        while i < eol && matches!(b[i], b' ' | b'\t') {
+            i += 1;
+        }
+        if i >= eol {
+            break;
+        }
+        while i < eol && b[i] != b'|' {
+            let escape = b[i] == b'\\' && b.get(i + 1).is_some_and(u8::is_ascii_punctuation);
+            i += match (escape, b.get(i + 1..i + 3)) {
+                (true, Some(b"\\|")) => 3,
+                (true, _) => 2,
+                _ => 1,
+            };
+        }
+        cells.push(cell..i);
+    }
+    cells.truncate(cols);
+    cells.resize(cols, after..after);
+    cells
+}
+
 /// A table cell without its padding and pipes.
 fn trim_cell(src: &str, range: Range<usize>) -> Range<usize> {
     let pad = [' ', '\t', '|', '\r', '\n'];
@@ -809,6 +1179,9 @@ fn list_text(first: &str) -> String {
     matcher::push_words(&mut text, t);
     text
 }
+
+#[cfg(test)]
+mod pulldown;
 
 #[cfg(test)]
 mod tests {
@@ -1112,5 +1485,198 @@ Setext
             assert_eq!(serde_json::to_value(back).unwrap(), json, "it reads back");
         }
         assert!(all.iter().all(|i| i.id.len() == 16 && i.rev.len() == 12));
+    }
+
+    /// Types that read every kind of block, the note's tags and links, and what a block is in.
+    const EVERY_TYPE: &str = r#"
+[page]
+on = "note"
+where.file-type = ["md"]
+fields.tags = { inlines = "tags", type = "tag" }
+fields.links = { inlines = "links", type = "link" }
+
+[para]
+on = "paragraph"
+fields.text = { rest = true }
+
+[head]
+on = "heading"
+fields.title = { rest = true }
+
+[line]
+on = "list-item"
+fields.what = { rest = true }
+
+[row]
+on = "table-row"
+fields.links = { inlines = "links", type = "link" }
+
+[word]
+on = "inline"
+match = '\bthe (?<w>\w+)'
+fields.w = { capture = "w" }
+
+[quoted]
+on = "inline"
+match = '\ba (?<w>\w+)'
+where.inside = ["quote"]
+fields.w = { capture = "w" }
+"#;
+
+    fn every_type(flavour: &str) -> Settings {
+        let table: toml::Table = toml::from_str(EVERY_TYPE).unwrap();
+        let found = types::load([
+            types::Layer::built_in(),
+            types::Layer::config(Path::new("config.toml"), table),
+        ]);
+        assert!(found.errors.is_empty(), "{:?}", found.errors);
+        let nowhere = Path::new("/nonexistent-cold-lava-workspace");
+        Settings::new(
+            Flavour::built_in(flavour).unwrap(),
+            TasksSettings::load(nowhere),
+            daily::Settings::load(nowhere),
+            templates::Settings::default(),
+            found,
+        )
+    }
+
+    /// Markdown whose blocks are easy to read differently from pulldown-cmark.
+    const TRICKY: &[&str] = &[
+        // Lazy lines.
+        "- [ ] task\nlazy line\n- [ ] next\n\n> quote\nlazy in quote ^q1\n\nPara\nlazy\n    still para ^p1\n",
+        // Loose and tight lists.
+        "- a\n\n- b\n  \n  more b\n- c\n\n\n- d after two blank lines\n\n1. one\n2. two\n\n   para in two ^two\n3) other delimiter\n",
+        // Indented code.
+        "Para\n\n    code ^not\n    - [ ] not a task\n\n- item\n\n      code in item\n- [ ] after code\n\n\tTabbed code\n",
+        // HTML blocks.
+        "<div>\n- [ ] in html\n\n- [ ] after html\n<!-- comment\n- [ ] in comment\n-->\n<details><summary>x</summary>\n\nInside details ^d1\n\n</details>\n<span>inline</span> text ^s1\n<custom-tag>\n- [ ] after a lone tag\n",
+        // Block ids.
+        "First para\n\n^alone\n\n- item ^i1\n  continued ^i2\n- item two\n  ^i3\n\n# Heading ^h1\n\n> quoted ^qq\n> ^quote-alone\n\n| a | b |\n|---|---|\n| 1 | 2 |\n^table-id\n\nText\n^glued\n\n***\n\n^after-rule\n```\ncode\n```\n^after-code\n",
+        // Nested lists under headings.
+        "# One\n## Two\n- a\n  - b\n    - [ ] c\n      - d\n  - e\n### Three\n- [x] f\n  1. g\n  2. h\n# Four\n- i\n- i\n",
+        // Headings.
+        "#NoSpace\n# Closed #\n## Trailing ##   \n#\n   ### Indented\nSetext one\nline two\n===\n> Quoted setext\n> ---\n- # In an item\n  Setext in an item\n  ---\n",
+        // Tables.
+        "| Name | VEI | Note |\n|---|:-:|--:|\n| [[Krakatoa]] the big | 6 | big |\n| a \\| b | 2 |\n| x | y | z | extra |\nno pipes row\n\n> | q | r |\n> |---|---|\n> | 1 | 2 |\n\n| [[A\\|B]] | c |\n| --- | --- |\n| d | [[E\\|F]] |\n|| empty |\n  | indented | row |\n",
+        // Fences.
+        "~~~md\n- [ ] in tilde\n~~~\n````\n```\n- [ ] in nested\n```\n````\n- item\n  ```\n  - [ ] in item fence\n  ```\n- [ ] after\n```\nunclosed\n- [ ] in unclosed\n",
+        // Callouts.
+        "> [!note] Title\n> body text ^c1\n\n> [!todo]- Folded\n> - [ ] in callout\n\n> [!info] Alone ^c2\n\n> [!NOTE]\n> GitHub alert body ^c3\n\n> [!tip]\n>\n> after blank ^c4\n\n> [!quote] the title\n> the body\n> > [!note] nested\n> > nested body ^c5\n",
+        // Comments.
+        "Text %%hidden%% more ^k1\n%%\n- [ ] commented\n%%\n- [ ] visible %%note%%\nPara\n%%inline only%%\nmore ^k2\n``%%code%%`` stays\n",
+        // Math.
+        "$$\nE = mc^2\n$$\n^eq1\n\nInline $x$ and $$y$$ VEI 4 the end\n\n$$\na\n$$ ^eq2\n",
+        // Frontmatter, and the body's tags and links.
+        "---\ntags: [a, b]\nlinks: \"[[X]]\"\n---\n# Body #tag\nSee [[Note]], [[Note#H|alias]], ![[Embed]], [md](Other%20Note.md), [title](Some.md \"t\"), [web](https://x.y), ![img](pic.md), [anchor](#local), `[[code]]` and #tag, #nested/tag, (#paren), #123, a#not ^b1\n",
+        // Line breaks, tabs, empty items, markers.
+        "# Title\r\n- [ ] crlf task\r\n  more\r\n\r\nPara ^crlf\r\n",
+        "- [ ] last line without a break",
+        "-\ttab item\n\t- nested by a tab\n*\tstar\n",
+        "-\n  content below\n- \n-   \n\n1.\n",
+        "- a\n+ b\n* c\n1. d\n2) e\n",
+        "Para\n- [ ] item interrupts\nPara2\n2. no interruption\nPara3\n# heading interrupts\n",
+        "> a\n> > b ^n1\n> c\n\n> - [ ] task in a quote\n>   - nested\n> lazy\n",
+        "- a\n---\n* * *\n- b\n",
+        "- [ ] \n- [x]\n- [ ]no space\n- [/] in progress\n  - [-] cancelled child\n- [  ] two spaces\n",
+    ];
+
+    /// How the tree's items and pulldown-cmark's differ for one note, if they do.
+    fn difference(name: &str, text: &str, s: &Settings) -> Option<String> {
+        let (tree, old) = (extract(name, text, s), pulldown::extract(name, text, s));
+        if tree == old {
+            return None;
+        }
+        let short = |i: Option<&Item>| format!("{i:?}").chars().take(400).collect::<String>();
+        let mut out = format!(
+            "{name} ({}): {} items, pulldown-cmark {}",
+            s.flavour.name,
+            tree.len(),
+            old.len()
+        );
+        let n = tree.len().max(old.len());
+        for k in (0..n).filter(|&k| tree.get(k) != old.get(k)).take(3) {
+            out += &format!("\n  tree: {}\n  then: {}", short(tree.get(k)), short(old.get(k)));
+        }
+        Some(out)
+    }
+
+    /// The walk through the tree gives every note the items pulldown-cmark gave it: the example
+    /// workspace as `cold-lava items` reads it, then every Markdown file of the repository and
+    /// the tricky cases in each flavour, with types that read every kind of block.
+    #[test]
+    fn the_tree_reads_items_as_pulldown_cmark_did() {
+        let mut differ = Vec::new();
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        let s = Settings::load(&workspace);
+        for e in walkdir::WalkDir::new(&workspace).into_iter().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "md") {
+                let name = p.strip_prefix(&workspace).unwrap().to_string_lossy();
+                let text = std::fs::read_to_string(p).unwrap();
+                differ.extend(difference(&name, &text, &s));
+            }
+        }
+        let corpus = cst::corpus();
+        for flavour in ["obsidian", "github", "commonmark"] {
+            let s = every_type(flavour);
+            for (name, text) in &corpus {
+                differ.extend(difference(name, text, &s));
+            }
+            for (k, text) in TRICKY.iter().enumerate() {
+                differ.extend(difference(&format!("Tricky {k}.md"), text, &s));
+            }
+        }
+        assert!(
+            differ.is_empty(),
+            "{} read differently:\n{}",
+            differ.len(),
+            differ.join("\n")
+        );
+    }
+
+    /// What reading every note's items costs, pulldown-cmark's pass against the tree's walk,
+    /// with the workspace's types. Run on `scripts/bench-items.py`'s workspace:
+    /// `COLD_LAVA_BENCH_WS=DIR cargo test --release -p cold-lava-engine items_cost -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn items_cost() {
+        use std::time::{Duration, Instant};
+        let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
+        let root = Path::new(&dir);
+        let s = Settings::load(root);
+        let notes: Vec<(String, String)> = walkdir::WalkDir::new(root)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+            .filter_map(|e| {
+                let name = e.path().strip_prefix(root).ok()?;
+                let name = name.to_string_lossy().to_string();
+                Some((name, std::fs::read_to_string(e.path()).ok()?))
+            })
+            .collect();
+        let bytes: usize = notes.iter().map(|n| n.1.len()).sum();
+        let time = |f: &dyn Fn(&str, &str) -> usize| {
+            let mut items = 0usize;
+            let mut runs: Vec<Duration> = (0..9)
+                .map(|_| {
+                    let t = Instant::now();
+                    items = notes.iter().map(|(name, text)| f(name, text)).sum();
+                    t.elapsed()
+                })
+                .collect();
+            runs.sort();
+            (runs[4], runs[0], runs[8], items)
+        };
+        let old = time(&|name, text| pulldown::extract(name, text, &s).len());
+        let tree = time(&|name, text| extract(name, text, &s).len());
+        println!(
+            "items_cost: {} notes, {} KiB; median (min-max) of 9:",
+            notes.len(),
+            bytes / 1024
+        );
+        for (what, t) in [("pulldown-cmark", old), ("the tree", tree)] {
+            println!("  {what}: {:?} ({:?}-{:?}), {} items", t.0, t.1, t.2, t.3);
+        }
     }
 }
