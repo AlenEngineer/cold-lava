@@ -56,6 +56,7 @@ cold-lava agenda ~/workspace --json      # dated tasks and daily notes, for othe
 cold-lava items ~/workspace task         # every task (or list, heading, block), one per line
 cold-lava search ~/workspace WORDS…      # full-text search
 cold-lava rename ~/workspace NOTE NEW    # rename or move a note or folder, updating every link
+cold-lava recipe ~/workspace rename-tag --from a --to b   # a whole-workspace change, as a diff
 cold-lava task toggle FILE:LINE          # tick / untick a task
 cold-lava item set FILE ID FIELD VALUE   # set one field of a typed item, checked by reading back
 cold-lava types ~/workspace              # the workspace's types, and what's wrong with them
@@ -413,6 +414,34 @@ everything in it goes along. With marks, the status line says how many and what 
   changed on disk since it was read.
 
 Marks follow the tree: a marked note that is renamed or deleted elsewhere drops out.
+
+### Recipes: changes to the whole workspace
+
+A recipe is a named change to every note at once, shown as a diff before anything is written.
+The first is `rename-tag`. In the app, run `recipe.run` from the palette (`:`): pick the recipe,
+fill its options (`Tab` moves between them), read every file's diff (`↑↓` scroll), then `⏎`
+applies it and `u` undoes all of it. From the command line:
+
+```bash
+cold-lava recipe --list                                                   # the recipes and their options
+cold-lava recipe ~/workspace rename-tag --from concept --to idea --dry-run # print the diff, write nothing
+cold-lava recipe ~/workspace rename-tag --from concept --to idea           # rename it
+cold-lava recipe ~/workspace rename-tag --from lava --to magma --dry-run --json
+```
+
+`rename-tag` renames `#from` everywhere, and the tags nested under it (`#from/child` becomes
+`#to/child`; `#fromage` stays):
+
+- `#tags` in the text, never in code blocks or inline code;
+- frontmatter `tags` (or `tag`) written as a `- item` list, as `[a, b]`, or as a string
+  (`tags: a, b`), with or without `#`, quoted or not, each kept as written;
+- tags in the Markdown that extensions read out of their files (a CSV's Markdown cells), through
+  the extension, as a rename's links are.
+
+Tags match whatever their case, as in Obsidian (`#Lava` is `#lava`), and the new name is written
+as you type it. Renaming into a tag that already exists merges the two: a frontmatter list that
+would name it twice keeps it once. The plan is checked again before writing: if a file changed
+since, nothing is written.
 
 ### Tidying a workspace
 

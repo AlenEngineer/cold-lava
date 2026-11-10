@@ -27,6 +27,7 @@ pub enum MenuAction {
     UndoDelete,
     Duplicate,
     Merge,
+    Recipe,
     Mark,
     Tag,
     ToggleBacklinks,
@@ -276,7 +277,7 @@ pub const MENU: &[Command<MenuAction>] = &[
         "note.undo-delete",
         Group::Note,
         "undo delete/merge",
-        "put the last deleted note or folder (or marked ones) back where it was, or undo the last merge",
+        "put the last deleted note or folder (or marked ones) back where it was, or undo the last merge or recipe",
         &["u"],
     ),
     cmd(
@@ -294,6 +295,14 @@ pub const MENU: &[Command<MenuAction>] = &[
         "merge into…",
         "merge the note into another: its text goes at the end, every link to it leads there, it goes to the trash",
         &["M"],
+    ),
+    cmd(
+        MenuAction::Recipe,
+        "recipe.run",
+        Group::Note,
+        "run a recipe…",
+        "change the whole workspace (rename a tag…), after seeing every file's diff",
+        &[],
     ),
     cmd(
         MenuAction::Mark,

@@ -18,6 +18,7 @@ mod looks;
 mod owned;
 mod previews;
 mod reader;
+mod recipe_view;
 mod scene;
 mod table;
 mod term;
@@ -28,8 +29,8 @@ mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, matcher,
-    merge, owner, paths, rename, resolver, search, tasks, templates, tidy, trash, types, workspace,
-    write,
+    merge, owner, paths, recipe, rename, resolver, search, tasks, templates, tidy, trash, types,
+    workspace, write,
 };
 
 use anyhow::Result;
@@ -56,6 +57,10 @@ Usage:
                                       set one field of a typed item (ID from items --json),
                                       refused unless the note reads back as asked
   cold-lava rename WORKSPACE NOTE NEW rename or move a note or folder, updating every link
+  cold-lava recipe WORKSPACE NAME     run a recipe, a named change to the whole workspace,
+                                      shown as a diff per file
+                                      (rename-tag --from TAG --to TAG);
+                                      cold-lava recipe --list names them and their options
   cold-lava table WORKSPACE TYPE      a type's items as the table view shows them
   cold-lava tidy WORKSPACE            orphan notes, unused attachments, empty folders and
                                       unresolved links (read-only)
@@ -74,14 +79,15 @@ Options:
   --braille            force braille rendering
   --pixels             force pixel rendering (Kitty graphics protocol)
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
+  --from / --to TAG    recipe rename-tag: the tag to rename, and its new name
   --json               machine-readable output (agenda, items, types, task toggle, item set,
-                       tidy, table: the view's own JSON)
+                       tidy, recipe, table: the view's own JSON)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --rev REV            item set: only if the item is still this version (its rev)
   --remove             item set: take the field's value out instead of setting one
   --path               daily: create the note if needed and print its path, no UI
   --limit N            search: matching lines shown per note (default 5)
-  --dry-run            rename, item set: show what would change, change nothing
+  --dry-run            rename, recipe, item set: show what would change, change nothing
   --sort FIELD         table: sort by FIELD (-FIELD: descending), as s and S do
   --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
   -V, --version        print the version
@@ -489,6 +495,36 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
+        Some("recipe") => {
+            if args.has("list") {
+                return print_recipes(json);
+            }
+            let (Some(root), Some(id)) = (args.word(1), args.word(2)) else {
+                anyhow::bail!(
+                    "usage: cold-lava recipe WORKSPACE NAME [--OPTION VALUE…] [--dry-run] [--json]\n\
+                     cold-lava recipe --list shows the recipes and their options"
+                );
+            };
+            let r = recipe::find(id).ok_or_else(|| {
+                anyhow::anyhow!("no recipe called {id}; cold-lava recipe --list shows them")
+            })?;
+            let options: recipe::Options = (r.options.iter())
+                .filter_map(|o| Some((o.name.to_string(), args.values.get(o.name)?.clone())))
+                .collect();
+            let mut core = owned::open(Path::new(root), &registry)?;
+            let mut owners = owned::Owners::new(&mut registry, &core);
+            owners.serve(&mut core, |c| !c.reading());
+            let mut plan = recipe::plan(&core.index, r, options)?;
+            let dry = args.has("dry-run");
+            if !dry && !plan.edits.is_empty() {
+                (owners.relink(&mut core, &mut plan.edits))
+                    .map_err(|e| anyhow::anyhow!("{e}; nothing was changed"))?;
+                recipe::apply(&plan)?;
+                core.relinked(&plan.edits, Path::to_path_buf);
+                core.poll();
+            }
+            print_recipe_plan(&plan, !dry, json)
+        }
         Some("daily") => {
             let root = workspace::find_workspace_root(&PathBuf::from(args.word(1).unwrap_or(".")));
             let date = daily::parse_cli_date(args.word(2).unwrap_or("today"))?;
@@ -653,6 +689,67 @@ fn drive() -> Result<()> {
         drive::parse(&src).map_err(|e| anyhow::anyhow!("{name}:{}: {}", e.line, e.message))?;
     if !drive::run(&name, &script, &std::env::current_exe()?, &theirs, home)? {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `cold-lava recipe --list`: each recipe with its options.
+fn print_recipes(json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(recipe::BUILT_IN)?);
+        return Ok(());
+    }
+    for r in recipe::BUILT_IN {
+        println!("{}  {}", r.id, r.about);
+        for o in r.options {
+            println!("  --{} VALUE  {}", o.name, o.about);
+        }
+    }
+    Ok(())
+}
+
+/// A recipe's plan: a diff per file, or with `json` the plan as JSON.
+fn print_recipe_plan(plan: &recipe::Plan, applied: bool, json: bool) -> Result<()> {
+    if json {
+        let files: Vec<_> = (plan.edits.iter())
+            .map(|e| {
+                serde_json::json!({
+                    "file": e.file,
+                    "changes": e.links,
+                    "owner": e.owned.as_ref().map(|o| &o.owner),
+                    "diff": recipe::unified(&recipe::file_diff(e, 1)),
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "recipe": plan.recipe.id,
+            "options": plan.options,
+            "applied": applied,
+            "changes": plan.changes(),
+            "files": files,
+            "warnings": plan.warnings,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    for e in &plan.edits {
+        match &e.owned {
+            Some(o) => println!("--- {} (through {})", e.file, o.owner),
+            None => println!("--- {}", e.file),
+        }
+        print!("{}", recipe::unified(&recipe::file_diff(e, 1)));
+    }
+    for w in &plan.warnings {
+        eprintln!("warning: {w}");
+    }
+    match (plan.edits.is_empty(), applied) {
+        (true, _) => println!("{}: nothing to change", plan.title()),
+        (false, true) => println!("{}: changed {}", plan.title(), plan.what()),
+        (false, false) => println!(
+            "{}: would change {} (dry run, nothing written)",
+            plan.title(),
+            plan.what()
+        ),
     }
     Ok(())
 }

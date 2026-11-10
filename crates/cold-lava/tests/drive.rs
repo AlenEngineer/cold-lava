@@ -238,6 +238,34 @@ fn duplicates_a_note_and_merges_one_into_another_keeping_links() {
 }
 
 #[test]
+fn a_recipe_renames_a_tag_from_the_palette_and_undoes_it() {
+    let dir = sandbox("recipe");
+    let home = dir.join("home");
+    let workspace = dir.join("example-workspace");
+    let before: Vec<_> = (files_ending(&workspace, ".md").into_iter())
+        .map(|p| (std::fs::read_to_string(&p).unwrap(), p))
+        .collect();
+    let out = drive_with("recipe.drive", &dir, &["--home".as_ref(), home.as_os_str()]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Applied, undone, then applied again: each note differs only in its tag.
+    let mut renamed = 0;
+    for (text, path) in before {
+        let now = std::fs::read_to_string(&path).unwrap();
+        if now != text {
+            renamed += 1;
+            assert_eq!(now, text.replacen("tags: [concept", "tags: [idea", 1));
+        }
+    }
+    assert_eq!(renamed, 13);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn tidy_lists_what_nothing_uses_and_deletes_it_undoably() {
     let dir = sandbox("tidy");
     let home = dir.join("home");

@@ -9,10 +9,10 @@
 
 use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
-use crate::rename::{self, FileEdit, Move};
+use crate::rename::{self, FileEdit, Move, Written};
 use crate::resolver::{Files, Rewriter};
 use crate::trash::{self, Bin, Contents, Trashed};
-use crate::write::{self, WriteError};
+use crate::write;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -83,8 +83,7 @@ pub struct Merged {
     pub source_path: PathBuf,
     pub target_path: PathBuf,
     pub trashed: Trashed,
-    /// Each file written: (path, what it held, what it holds now).
-    written: Vec<(PathBuf, String, String)>,
+    written: Written,
 }
 
 /// Work out merging note `source` into note `target`. Nothing is written.
@@ -334,27 +333,8 @@ pub fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
             m.source
         );
     }
-    for e in m.writes() {
-        let now =
-            std::fs::read_to_string(&e.path).with_context(|| format!("reading {}", e.file))?;
-        if now != e.old_text {
-            bail!(
-                "{} changed since the merge was planned; nothing was changed. Try again.",
-                e.file
-            );
-        }
-    }
-    let mut written = Vec::new();
-    for e in m.writes() {
-        if let Err(err) = write::replace(&e.path, e.old_text.as_bytes(), e.new_text.as_bytes()) {
-            let undone = put_back(&written);
-            return Err(err).with_context(|| match undone {
-                Ok(()) => format!("writing {}; nothing was changed", e.file),
-                Err(_) => format!("writing {}; some files couldn't be put back", e.file),
-            });
-        }
-        written.push((e.path.clone(), e.old_text.clone(), e.new_text.clone()));
-    }
+    rename::check_unchanged(m.writes(), "merge")?;
+    let written = Written::all(m.writes())?;
     let contents = Contents::File(m.source_text.clone().into_bytes());
     match trash::delete(&m.root, &m.source_path, &contents, system) {
         Ok(trashed) => Ok(Merged {
@@ -364,36 +344,18 @@ pub fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
             written,
         }),
         Err(err) => {
-            let _ = put_back(&written);
+            let _ = written.put_back();
             Err(err)
                 .with_context(|| format!("moving {} to the trash; nothing was changed", m.source))
         }
     }
 }
 
-/// Write back what each written file held, if it still holds what was written.
-fn put_back(written: &[(PathBuf, String, String)]) -> Result<(), WriteError> {
-    let mut result = Ok(());
-    for (path, before, after) in written.iter().rev() {
-        if let Err(e) = write::replace(path, after.as_bytes(), before.as_bytes()) {
-            result = Err(e);
-        }
-    }
-    result
-}
-
 /// Undo a merge: the source comes back from the trash and every file written goes back to what it
 /// held. Refused, with nothing changed, if one of them was edited since or the source's path is
 /// taken.
 pub fn undo(m: &Merged) -> Result<()> {
-    for (path, _, after) in &m.written {
-        if std::fs::read(path).ok().as_deref() != Some(after.as_bytes()) {
-            bail!(
-                "{} changed since the merge; the merge can't be undone",
-                path.display()
-            );
-        }
-    }
+    m.written.check("merge")?;
     if m.source_path.exists() {
         bail!(
             "{} exists again; the merge can't be undone",
@@ -401,7 +363,7 @@ pub fn undo(m: &Merged) -> Result<()> {
         );
     }
     trash::restore(&m.trashed, &m.source_path)?;
-    put_back(&m.written).context("putting the files back")?;
+    m.written.put_back().context("putting the files back")?;
     Ok(())
 }
 

@@ -39,7 +39,7 @@ pub struct FileEdit {
     pub old_text: String,
     #[serde(skip)]
     pub new_text: String,
-    /// Links rewritten in this file.
+    /// Links rewritten in this file (a recipe: what it changed there, such as tags renamed).
     pub links: usize,
     pub changes: Vec<Change>,
     /// For a file another owner reads, what to ask it. `new_text` is the owner's answer, empty
@@ -597,32 +597,113 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
         if links == 0 {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&f.path) else {
-            continue;
-        };
-        if f.rev.as_deref() != Some(crate::files::rev(text.as_bytes()).as_str()) {
-            warnings.push(format!(
-                "{} hasn't read {} as it is now, so its links there aren't updated",
-                f.owner, f.rel
-            ));
-            continue;
-        }
-        out.push(FileEdit {
-            file: f.rel.clone(),
-            path: f.path.clone(),
-            old_text: text,
-            new_text: String::new(),
-            links,
-            changes,
-            owned: Some(Through {
-                owner: f.owner.clone(),
-                changes: asks,
-                given: f.given.clone(),
-                after: None,
-            }),
-        });
+        let edit = owned_edit(f, asks, changes, links);
+        out.extend(
+            edit.map_err(|why| warnings.push(format!("{why}, so its links there aren't updated"))),
+        );
     }
     out
+}
+
+/// The edit of a file another owner reads that asks it for `asks`, its new text to come from
+/// the owner. Refused (with why) when the owner hasn't read the file as it is now.
+pub(crate) fn owned_edit(
+    f: &crate::workspace::Owned,
+    asks: Vec<Ask>,
+    changes: Vec<Change>,
+    links: usize,
+) -> Result<FileEdit, String> {
+    let text =
+        std::fs::read_to_string(&f.path).map_err(|e| format!("{} can't be read: {e}", f.rel))?;
+    if f.rev.as_deref() != Some(crate::files::rev(text.as_bytes()).as_str()) {
+        return Err(format!("{} hasn't read {} as it is now", f.owner, f.rel));
+    }
+    Ok(FileEdit {
+        file: f.rel.clone(),
+        path: f.path.clone(),
+        old_text: text,
+        new_text: String::new(),
+        links,
+        changes,
+        owned: Some(Through {
+            owner: f.owner.clone(),
+            changes: asks,
+            given: f.given.clone(),
+            after: None,
+        }),
+    })
+}
+
+/// Refuse when a file among `edits` isn't what it was when `what` (a rename, a merge) was
+/// planned.
+pub(crate) fn check_unchanged<'a>(
+    edits: impl IntoIterator<Item = &'a FileEdit>,
+    what: &str,
+) -> Result<()> {
+    for e in edits {
+        let now =
+            std::fs::read_to_string(&e.path).with_context(|| format!("reading {}", e.file))?;
+        if now != e.old_text {
+            bail!(
+                "{} changed since the {what} was planned; nothing was changed. Try again.",
+                e.file
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Files a merge or a recipe wrote, with what each held before and holds now, to put back.
+#[derive(Clone, Debug, Default)]
+pub struct Written(Vec<(PathBuf, String, String)>);
+
+impl Written {
+    /// Write each of `edits` with `write::replace`; if one fails, put back the ones written.
+    pub(crate) fn all<'a>(edits: impl IntoIterator<Item = &'a FileEdit>) -> Result<Written> {
+        let mut written = Written::default();
+        for e in edits {
+            let (old, new) = (e.old_text.as_bytes(), e.new_text.as_bytes());
+            if let Err(err) = crate::write::replace(&e.path, old, new) {
+                let undone = written.put_back();
+                return Err(err).with_context(|| match undone {
+                    Ok(()) => format!("writing {}; nothing was changed", e.file),
+                    Err(_) => format!("writing {}; some files couldn't be put back", e.file),
+                });
+            }
+            written
+                .0
+                .push((e.path.clone(), e.old_text.clone(), e.new_text.clone()));
+        }
+        Ok(written)
+    }
+
+    /// Refuse, naming `what` (a merge), if a written file was changed since.
+    pub(crate) fn check(&self, what: &str) -> Result<()> {
+        for (path, _, after) in &self.0 {
+            if std::fs::read(path).ok().as_deref() != Some(after.as_bytes()) {
+                bail!(
+                    "{} changed since the {what}; the {what} can't be undone",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Write back what each file held, if it still holds what was written.
+    pub(crate) fn put_back(&self) -> Result<(), crate::write::WriteError> {
+        let mut result = Ok(());
+        for (path, before, after) in self.0.iter().rev() {
+            if let Err(e) = crate::write::replace(path, after.as_bytes(), before.as_bytes()) {
+                result = Err(e);
+            }
+        }
+        result
+    }
+
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.0.iter().map(|(p, _, _)| p.as_path())
+    }
 }
 
 /// Carry out a plan: refuse if any file changed since it was made, or a file another owner reads
@@ -630,16 +711,7 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
 /// fails) and write each changed file atomically.
 pub fn apply(plan: &Plan) -> Result<()> {
     check_answered(&plan.edits)?;
-    for e in plan.edits.iter().chain(&plan.bookmarks) {
-        let now =
-            std::fs::read_to_string(&e.path).with_context(|| format!("reading {}", e.file))?;
-        if now != e.old_text {
-            bail!(
-                "{} changed since the rename was planned; nothing was changed. Try again.",
-                e.file
-            );
-        }
-    }
+    check_unchanged(plan.edits.iter().chain(&plan.bookmarks), "rename")?;
     for m in &plan.moves {
         if !m.from_path.exists() {
             bail!("{} no longer exists", m.from);
