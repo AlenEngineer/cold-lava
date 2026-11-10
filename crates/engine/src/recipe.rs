@@ -549,6 +549,19 @@ mod tests {
     }
 
     #[test]
+    fn merging_keeps_the_lists_order_and_drops_the_later_duplicate() {
+        // The renamed tag stays where the old one was; the existing one later in the list goes.
+        assert_eq!(
+            tag(
+                "---\ntags:\n  - lava\n  - \"#Lava/flow\"\n  - magma\n---\n",
+                "lava",
+                "magma"
+            ),
+            "---\ntags:\n  - magma\n  - \"#magma/flow\"\n---\n"
+        );
+    }
+
+    #[test]
     fn merging_into_a_tag_deduplicates_the_list() {
         assert_eq!(
             tag("---\ntags: [lava, magma, x]\n---\n", "lava", "magma"),

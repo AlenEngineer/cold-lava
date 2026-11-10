@@ -95,6 +95,13 @@ change commands, keys and file formats; patch versions only fix things.
 - Extensions can compute a region of a shape they ship, or handle a gesture on it
   (`extension = true`), answering `shape/region` with labels and `shape/gesture` with steps.
 
+### Fixed
+
+- `cold-lava item set` and `task toggle` find a note's workspace by a `.cold-lava` folder as well
+  as `.obsidian`, and then by the workspaces you've opened or Obsidian lists, before taking the
+  note's own folder. When they had to guess and something isn't found, they say so and why, since
+  ids from `cold-lava items` on another folder won't match.
+
 ## [0.4.0] - 2026-11-09
 
 The engine's other half: everything is reachable through the gateways, other kinds of file

@@ -348,24 +348,88 @@ pub(crate) fn clean_target(t: &str) -> Option<String> {
     }
 }
 
-/// Find the workspace for a path: the nearest ancestor containing `.obsidian`, else the folder itself.
-pub fn find_workspace_root(p: &Path) -> PathBuf {
+/// How [`locate_workspace`] found the workspace a path is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    /// A folder above it has `.obsidian` or `.cold-lava`.
+    Marked,
+    /// It is inside a workspace the user has opened or Obsidian lists.
+    Known,
+    /// Neither: its own folder was taken. Ids from `items` on another folder won't match there,
+    /// so a caller says so when something isn't found.
+    Guessed,
+}
+
+/// The workspace a path is in: the nearest folder above it (or itself) holding `.obsidian` or
+/// `.cold-lava`; else the deepest of `known` (the user's list of workspaces) that holds it;
+/// else the path's own folder.
+pub fn locate_workspace(p: &Path, known: &[PathBuf]) -> (PathBuf, Found) {
     let abs = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     let start = if abs.is_dir() {
         abs.clone()
     } else {
         abs.parent().map(Path::to_path_buf).unwrap_or(abs.clone())
     };
-    start
-        .ancestors()
-        .find(|a| a.join(".obsidian").is_dir())
-        .map(Path::to_path_buf)
-        .unwrap_or(start)
+    let marked = |a: &Path| a.join(".obsidian").is_dir() || a.join(".cold-lava").is_dir();
+    if let Some(a) = start.ancestors().find(|a| marked(a)) {
+        return (a.to_path_buf(), Found::Marked);
+    }
+    let known = known
+        .iter()
+        .filter_map(|k| k.canonicalize().ok())
+        .filter(|k| start.starts_with(k))
+        .max_by_key(|k| k.components().count());
+    match known {
+        Some(k) => (k, Found::Known),
+        None => (start, Found::Guessed),
+    }
+}
+
+/// The workspace a path is in, as [`locate_workspace`] finds it without a list of workspaces.
+pub fn find_workspace_root(p: &Path) -> PathBuf {
+    locate_workspace(p, &[]).0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_workspace_is_found_by_its_marker_then_the_list_then_guessed() {
+        let dir = std::env::temp_dir().join(format!("locate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let note = |ws: &str| {
+            let n = dir.join(ws).join("Notes/A.md");
+            std::fs::create_dir_all(n.parent().unwrap()).unwrap();
+            std::fs::write(&n, "x").unwrap();
+            n
+        };
+        let canon = |p: PathBuf| p.canonicalize().unwrap();
+        let obsidian = note("obsidian");
+        std::fs::create_dir_all(dir.join("obsidian/.obsidian")).unwrap();
+        let ours = note("ours");
+        std::fs::create_dir_all(dir.join("ours/.cold-lava")).unwrap();
+        let listed = note("listed");
+        let loose = note("loose");
+        let known = [dir.join("listed"), dir.join("elsewhere")];
+        assert_eq!(
+            locate_workspace(&obsidian, &known),
+            (canon(dir.join("obsidian")), Found::Marked)
+        );
+        assert_eq!(
+            locate_workspace(&ours, &known),
+            (canon(dir.join("ours")), Found::Marked)
+        );
+        assert_eq!(
+            locate_workspace(&listed, &known),
+            (canon(dir.join("listed")), Found::Known)
+        );
+        assert_eq!(
+            locate_workspace(&loose, &known),
+            (canon(dir.join("loose/Notes")), Found::Guessed)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn attachments_are_known_file_types_and_dotted_note_names_are_notes() {

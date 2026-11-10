@@ -715,7 +715,9 @@ fn run() -> Result<()> {
                 .word(2)
                 .ok_or_else(|| anyhow::anyhow!("usage: cold-lava task toggle FILE:LINE"))?;
             let (file, line) = tasks::locate(spec)?;
-            let result = tasks::toggle(
+            let (root, found) = locate_note_workspace(&file);
+            let result = tasks::toggle_in(
+                &root,
                 &file,
                 line,
                 args.values.get("id").map(String::as_str),
@@ -738,9 +740,17 @@ fn run() -> Result<()> {
                         "{}",
                         serde_json::json!({"error": format!("{e:#}"), "changed": changed})
                     );
+                    if let Some(n) = guessed_note(&root, found) {
+                        eprintln!("{n}");
+                    }
                     return Err(e);
                 }
-                (Err(e), false) => return Err(e),
+                (Err(e), false) => {
+                    if let Some(n) = guessed_note(&root, found) {
+                        eprintln!("{n}");
+                    }
+                    return Err(e);
+                }
             }
             Ok(())
         }
@@ -760,7 +770,7 @@ fn run() -> Result<()> {
             let path = Path::new(file)
                 .canonicalize()
                 .map_err(|e| anyhow::anyhow!("{file}: {e}"))?;
-            let root = workspace::find_workspace_root(&path);
+            let (root, found) = locate_note_workspace(&path);
             let note = path
                 .strip_prefix(&root)
                 .unwrap_or(&path)
@@ -800,9 +810,17 @@ fn run() -> Result<()> {
                         "{}",
                         serde_json::json!({"error": e.to_string(), "changed": changed})
                     );
+                    if let Some(n) = guessed_note(&root, found) {
+                        eprintln!("{n}");
+                    }
                     return Err(e.into());
                 }
-                (Err(e), false) => return Err(e.into()),
+                (Err(e), false) => {
+                    if let Some(n) = guessed_note(&root, found) {
+                        eprintln!("{n}");
+                    }
+                    return Err(e.into());
+                }
             }
             Ok(())
         }
@@ -1479,6 +1497,26 @@ fn look_label(l: &types::Look) -> String {
 }
 
 /// An item in a few words, for `cold-lava items`.
+/// Where a note's workspace is, for commands given a file: its marker, the workspace list, or
+/// (said out loud by [`guessed_note`] when something isn't found) its own folder.
+fn locate_note_workspace(path: &Path) -> (PathBuf, workspace::Found) {
+    let known: Vec<PathBuf> = home::discover(&[]).into_iter().map(|w| w.path).collect();
+    workspace::locate_workspace(path, &known)
+}
+
+/// What to add to an error when the workspace was only guessed.
+fn guessed_note(root: &Path, found: workspace::Found) -> Option<String> {
+    (found == workspace::Found::Guessed).then(|| {
+        format!(
+            "note: no .obsidian or .cold-lava folder was found above the note, and it isn't in \
+             a workspace you've opened, so {} was taken as its workspace; ids from \
+             `cold-lava items` on another folder won't match here. Add .obsidian (or .cold-lava) \
+             to the workspace's folder.",
+            root.display()
+        )
+    })
+}
+
 fn item_line(item: &items::Item) -> String {
     match &item.data {
         items::Data::Typed(t) if item.data.answers_to("task") => {
