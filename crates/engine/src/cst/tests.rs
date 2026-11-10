@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -33,25 +32,6 @@ fn texts(text: &str, gates: Gates, kind: Kind) -> Vec<String> {
             NodeOrToken::Token(t) => t.text().to_string(),
         })
         .collect()
-}
-
-/// Every Markdown file in the example workspace, the docs and the tests' fixtures.
-fn corpus() -> Vec<(String, String)> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut out = Vec::new();
-    for dir in ["example-workspace", "docs", "crates", "examples"] {
-        for e in walkdir::WalkDir::new(root.join(dir)).into_iter().flatten() {
-            let p = e.path();
-            if p.extension().is_some_and(|x| x == "md")
-                && !p.components().any(|c| c.as_os_str() == "target")
-                && let Ok(text) = std::fs::read_to_string(p)
-            {
-                out.push((p.display().to_string(), text));
-            }
-        }
-    }
-    assert!(out.len() > 50, "found {} notes", out.len());
-    out
 }
 
 const EDGES: &[&str] = &[

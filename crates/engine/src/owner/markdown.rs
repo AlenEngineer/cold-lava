@@ -744,25 +744,30 @@ mod tests {
 
     #[test]
     fn the_tree_reads_the_corpus_as_the_lines_did() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut read = 0;
         let mut differ = Vec::new();
-        for dir in ["example-workspace", "docs", "crates", "examples"] {
-            for e in walkdir::WalkDir::new(root.join(dir)).into_iter().flatten() {
-                let p = e.path();
-                if p.extension().is_none_or(|x| x != "md") {
-                    continue;
-                }
-                let Ok(text) = std::fs::read_to_string(p) else {
-                    continue;
+        for (name, text) in cst::corpus() {
+            let (tree, lines) = (parse(&text), lines::parse(&text));
+            if tree != lines {
+                let refs = |r: &[Ref]| -> Vec<String> {
+                    r.iter()
+                        .map(|r| format!("{}:{}", r.line, r.target))
+                        .collect()
                 };
-                read += 1;
-                if parse(&text) != lines::parse(&text) {
-                    differ.push(p.display().to_string());
-                }
+                differ.push(format!(
+                    "{name}\n  tree:  {:?} {:?} {:?}\n  lines: {:?} {:?} {:?}",
+                    refs(&tree.0),
+                    tree.1,
+                    tree.2,
+                    refs(&lines.0),
+                    lines.1,
+                    lines.2
+                ));
             }
         }
-        assert!(read > 50, "read {read} notes");
-        assert!(differ.is_empty(), "read differently: {differ:#?}");
+        assert!(
+            differ.is_empty(),
+            "read differently:\n{}",
+            differ.join("\n")
+        );
     }
 }

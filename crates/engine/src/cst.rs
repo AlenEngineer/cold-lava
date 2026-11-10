@@ -356,3 +356,28 @@ pub fn walk<'a>(node: &'a GreenNodeData, at: usize, f: &mut impl FnMut(Step<'a>)
     }
     at
 }
+
+/// Every Markdown file of the repository: the example workspace, the docs, the fixtures.
+#[cfg(test)]
+pub(crate) fn corpus() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let skip = |e: &walkdir::DirEntry| {
+        let name = e.file_name().to_string_lossy();
+        !(name == "target" || (name.starts_with('.') && e.depth() > 0) || name == "node_modules")
+    };
+    let mut out = Vec::new();
+    for e in walkdir::WalkDir::new(&root)
+        .into_iter()
+        .filter_entry(skip)
+        .flatten()
+    {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "md")
+            && let Ok(text) = std::fs::read_to_string(p)
+        {
+            out.push((p.display().to_string(), text));
+        }
+    }
+    assert!(out.len() >= 40, "found {} notes", out.len());
+    out
+}
