@@ -38,6 +38,10 @@ change commands, keys and file formats; patch versions only fix things.
   there. `task toggle FILE:LINE` on such a file refuses and says to use `item set`.
 - The whiteboard reads a card without `x`, `y`, `width` or `height` as at 0 instead of refusing
   the board.
+- A note's links and tags are read from its Markdown syntax tree (part of #140), so they follow
+  the Markdown the reader shows: a link to a heading of the same note (`[text](#heading)`) is no
+  longer the tag `heading`, and links and tags in indented code, in a ``` ``code`` ``` span, in an
+  HTML block or past a fence line that doesn't close the fence no longer count.
 
 ## [0.5.0] - 2026-11-10
 

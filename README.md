@@ -495,7 +495,8 @@ cold-lava recipe ~/workspace rename-tag --from lava --to magma --dry-run --json
 `rename-tag` renames `#from` everywhere, and the tags nested under it (`#from/child` becomes
 `#to/child`; `#fromage` stays):
 
-- `#tags` in the text, never in code blocks or inline code;
+- `#tags` in the text, never in code (blocks, indented or fenced, and spans), HTML blocks or a
+  link's destination (`[text](#heading)` is a link, not a tag);
 - frontmatter `tags` (or `tag`) written as a `- item` list, as `[a, b]`, or as a string
   (`tags: a, b`), with or without `#`, quoted or not, each kept as written;
 - tags in the Markdown that extensions read out of their files (a CSV's Markdown cells), through
