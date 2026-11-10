@@ -411,7 +411,7 @@ impl<'t> Parser<'t> {
                     }
                     return self.done(prefix, next);
                 }
-                Some(Leaf::Table) if !blank && !self.interrupts(pos, col, le) => {
+                Some(Leaf::Table) if !blank && !self.interrupts(pos, col, le, false) => {
                     self.emit_prefix(&prefix);
                     self.row(TableRow, pos, le, next);
                     return self.done(prefix, next);
@@ -426,7 +426,7 @@ impl<'t> Parser<'t> {
         }) = self.leaf
             && !blank
             && !sibling
-            && !self.interrupts(pos, col, le)
+            && !self.interrupts(pos, col, le, true)
         {
             // A lazy line: the paragraph goes on without its containers' markers.
             self.emit_prefix(&prefix);
@@ -562,8 +562,10 @@ impl<'t> Parser<'t> {
         (n >= 3 && (ch == b'~' || !t[fp + n..le].contains(&b'`'))).then_some((ch, n))
     }
 
-    /// Whether the line at `pos` starts a block that ends a paragraph or a table.
-    fn interrupts(&self, pos: usize, col: usize, le: usize) -> bool {
+    /// Whether the line at `pos` starts a block that ends a paragraph or a table. On a `lazy`
+    /// line, which the paragraph's containers don't go on to, any list item or lone HTML tag
+    /// does too: the line isn't read inside the paragraph's container.
+    fn interrupts(&self, pos: usize, col: usize, le: usize, lazy: bool) -> bool {
         let t = self.bytes();
         let (fp, fc) = self.skip_ws(pos, col, le);
         if fp == le || fc - col >= 4 {
@@ -573,10 +575,10 @@ impl<'t> Parser<'t> {
             || self.thematic(fp, le)
             || self
                 .item_start(pos, col, le)
-                .is_some_and(|i| i.can_interrupt)
+                .is_some_and(|i| lazy || i.can_interrupt)
             || self.atx(fp, le).is_some()
             || self.fence(fp, le).is_some()
-            || html_start(&self.text[fp..le], true).is_some()
+            || html_start(&self.text[fp..le], !lazy).is_some()
             || self.math_start(fp, le)
             || self.comment_start(fp, le)
     }

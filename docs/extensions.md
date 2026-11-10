@@ -405,7 +405,8 @@ style.minutes = { badge = true, icon = "⏱" }
 
 ### Matching, as built
 
-- **One pass.** `items::extract` reads a note once with pulldown-cmark. When types are loaded,
+- **One pass.** `items::extract` reads a note once, in one walk through its syntax tree
+  (`cst::read`). When types are loaded,
   the pass also collects the blocks some type reads (no table rows are collected when no type is
   on `table-row`, and so on), and tags and links only when a shape needs them. After the pass the
   note is gated once (folder, frontmatter properties, tags), and each collected block is checked

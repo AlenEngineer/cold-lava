@@ -111,7 +111,7 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
   reparses only the top-level blocks an edit can change; `cst::read` gives a reader the steps
   of a walk through the tree without making it (the scan uses it). The Markdown owner's `read`
-  and `tags_in` read links and tags this way; items still come from pulldown-cmark (#140).
+  and `tags_in` read links and tags this way, and `items::extract` reads items so (#140).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:
@@ -129,9 +129,12 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   `workspace::scan` reads canvases into `owned`, and rename relinks them through it. No
   extension may claim a built-in owner's kind.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
-  in one pulldown-cmark pass in the workspace's flavour; `Workspace::items()` caches them per note on
-  first use. Ids are stable (block id, heading path, or text hash under the parent), `rev`
-  hashes the item's lines. Read tasks through items, not by scanning lines.
+  in one walk through its tree (`cst::read`) in the workspace's flavour; `Workspace::items()`
+  caches them per note on first use. Ids are stable (block id, heading path, or text hash under
+  the parent), `rev` hashes the item's lines. The walk reads blocks as pulldown-cmark, which
+  read them before, did, so ids didn't move; `items/pulldown.rs` keeps that pass for a test
+  that compares the two on every note of the corpus. Read tasks through items, not by scanning
+  lines.
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an

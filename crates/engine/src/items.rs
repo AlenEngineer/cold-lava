@@ -396,9 +396,10 @@ struct Walk<'a> {
     link: bool,
     /// The last callout's `[!type]`.
     marker: Range<usize>,
-    /// A callout's title, which pulldown-cmark read as the first line of a paragraph that the
-    /// next line goes on: where the title ends, until the next block says whether it does.
-    title: Option<usize>,
+    /// The paragraph just read, which pulldown-cmark read on into a paragraph or `$$` math on
+    /// the next line: where it ends, until the next block says whether it goes on. A callout's
+    /// title starts one.
+    pending: Option<usize>,
     /// The table being read: how many rows it has had, where its header starts, its columns.
     rows: usize,
     head: usize,
@@ -428,7 +429,7 @@ impl<'a> Walk<'a> {
             wiki: None,
             link: false,
             marker: 0..0,
-            title: None,
+            pending: None,
             rows: 0,
             head: 0,
             cols: 0,
@@ -474,9 +475,12 @@ impl<'a> Walk<'a> {
     }
 
     fn enter(&mut self, kind: Kind, at: usize) {
-        if let Some(end) = self.title.take() {
-            let next = self.open.last().map_or(0, |o| o.line + 1);
-            if kind == Kind::Paragraph && self.lines.of(at) == next {
+        if kind == Kind::MathBlock {
+            self.code_at = at;
+        }
+        if let Some(end) = self.pending.take() {
+            let goes_on = matches!(kind, Kind::Paragraph | Kind::MathBlock);
+            if goes_on && self.lines.of(at) == self.lines.of(end) {
                 return;
             }
             self.paragraph(end);
@@ -533,18 +537,17 @@ impl<'a> Walk<'a> {
     }
 
     fn leave(&mut self, kind: Kind, at: usize) {
-        if let Some(end) = self.title.take() {
+        if let Some(end) = self.pending.take() {
             self.paragraph(end);
         }
         match kind {
-            Kind::Paragraph => self.paragraph(at),
-            // pulldown-cmark read `$$` math as a paragraph.
+            Kind::Paragraph => self.pending = Some(at),
+            // `$$` math was a paragraph's text to pulldown-cmark.
             Kind::MathBlock => {
                 if self.wants.typing {
-                    let start = self.open.last().map_or(at, |o| o.start);
-                    self.pass.code.push(start..at);
+                    self.pass.code.push(self.code_at..at);
                 }
-                self.paragraph(at);
+                self.pending = Some(at);
             }
             // A GitHub alert's `[!NOTE]` was no paragraph to pulldown-cmark; any other callout's
             // title was.
@@ -552,7 +555,7 @@ impl<'a> Walk<'a> {
                 if self.alert(at) {
                     self.open.pop();
                 } else {
-                    self.title = Some(at);
+                    self.pending = Some(at);
                 }
             }
             Kind::AtxHeading | Kind::SetextHeading => self.heading(at),
@@ -1628,7 +1631,13 @@ fields.w = { capture = "w" }
                 differ.extend(difference(&name, &text, &s));
             }
         }
-        let corpus = cst::corpus();
+        // The one way they differ: pulldown-cmark took a frontmatter whose first line is blank,
+        // as the Kanban plugin writes it, for a rule and Markdown. The tree reads frontmatter,
+        // as Obsidian does (`a_frontmatter_with_a_blank_first_line_is_frontmatter`).
+        let corpus: Vec<(String, String)> = cst::corpus()
+            .into_iter()
+            .filter(|(_, text)| !text.starts_with("---\n\n"))
+            .collect();
         for flavour in ["obsidian", "github", "commonmark"] {
             let s = every_type(flavour);
             for (name, text) in &corpus {
@@ -1643,6 +1652,16 @@ fields.w = { capture = "w" }
             "{} read differently:\n{}",
             differ.len(),
             differ.join("\n")
+        );
+    }
+
+    /// pulldown-cmark read it as a rule, then Markdown, so its YAML could hold items.
+    #[test]
+    fn a_frontmatter_with_a_blank_first_line_is_frontmatter() {
+        let text = "---\n\nkanban-plugin: basic\n- [ ] YAML\n\n---\n\n## To do\n\n- [ ] Pack\n";
+        assert_eq!(
+            summary(&items(text)),
+            [s("heading", 8, 8, "To do"), s("task", 10, 10, "[ ] Pack")]
         );
     }
 

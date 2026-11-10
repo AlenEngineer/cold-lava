@@ -15,17 +15,36 @@ use crate::markdown::Syntax as S;
 
 /// Build `events` into `b`, reading each line of text as it comes.
 pub(super) fn build<'t>(text: &'t str, events: &[Ev], gates: Gates, b: &mut impl Sink<'t>) {
-    for ev in events {
+    // A code span an earlier line of the paragraph opened: its closing backticks.
+    let mut code: Option<Range<usize>> = None;
+    for (k, ev) in events.iter().enumerate() {
         match *ev {
             Ev::Start(kind) => b.start(kind),
             Ev::Finish => b.finish(),
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
             Ev::Inline(a, z) => {
                 let line = Line::new(text, gates, a, z);
-                match line.line_field(a, z) {
-                    Some(end) => line.emit(b, LineField, a, end),
-                    None => line.run(b, a, z, false),
-                }
+                let from = match code.take() {
+                    Some(close) if close.start >= z => {
+                        token(b, CodeText, text, a, z);
+                        code = Some(close);
+                        continue;
+                    }
+                    Some(close) => {
+                        token(b, CodeText, text, a, close.start);
+                        token(b, Backticks, text, close.start, close.end);
+                        b.finish();
+                        close.end
+                    }
+                    None => match line.line_field(a, z) {
+                        Some(end) => {
+                            line.emit(b, LineField, a, end);
+                            continue;
+                        }
+                        None => a,
+                    },
+                };
+                code = line.run(b, from, z, false, &events[k + 1..]);
             }
             Ev::Yaml(a, z) => yaml(text, gates, b, a, z),
         }
@@ -100,8 +119,17 @@ impl<'t> Line<'t> {
         }
     }
 
-    /// Read `a..z`; `in_link` inside a link's text, where no other link starts.
-    fn run(&self, b: &mut impl Sink<'t>, a: usize, z: usize, in_link: bool) {
+    /// Read `a..z`; `in_link` inside a link's text, where no other link starts. A code span
+    /// that the line doesn't close may close on one of the block's `later` lines: then it is
+    /// left open at the line's end, and its closing backticks are what this returns.
+    fn run(
+        &self,
+        b: &mut impl Sink<'t>,
+        a: usize,
+        z: usize,
+        in_link: bool,
+        later: &[Ev],
+    ) -> Option<Range<usize>> {
         let t = self.text.as_bytes();
         let mut plain = a;
         let mut i = a;
@@ -109,12 +137,17 @@ impl<'t> Line<'t> {
             let found = match t[i] {
                 b'`' => {
                     let run = t[i..z].iter().take_while(|&&c| c == b'`').count();
-                    match self.code_span(i, run, z) {
-                        Some(end) => Some((CodeSpan, end)),
-                        None => {
-                            i += run;
-                            continue;
-                        }
+                    if let Some(end) = self.code_span(i, run, z) {
+                        Some((CodeSpan, end))
+                    } else if let Some(close) = self.closing(run, later) {
+                        token(b, Text, self.text, plain, i);
+                        b.start(CodeSpan);
+                        token(b, Backticks, self.text, i, i + run);
+                        token(b, CodeText, self.text, i + run, z);
+                        return Some(close);
+                    } else {
+                        i += run;
+                        continue;
                     }
                 }
                 b'!' if t.get(i + 1) == Some(&b'[') => {
@@ -155,6 +188,30 @@ impl<'t> Line<'t> {
             }
         }
         token(b, Text, self.text, plain, z);
+        None
+    }
+
+    /// The backticks closing a code span of `run` backticks on one of the block's `later`
+    /// lines, which end where it does.
+    fn closing(&self, run: usize, later: &[Ev]) -> Option<Range<usize>> {
+        let t = self.text.as_bytes();
+        for ev in later {
+            match *ev {
+                Ev::Inline(a, z) => {
+                    let mut i = a;
+                    while i < z {
+                        let n = t[i..z].iter().take_while(|&&c| c == b'`').count();
+                        if n == run {
+                            return Some(i..i + n);
+                        }
+                        i += n.max(1);
+                    }
+                }
+                Ev::Tok(..) => {}
+                _ => return None,
+            }
+        }
+        None
     }
 
     fn emit(&self, b: &mut impl Sink<'t>, kind: Kind, a: usize, z: usize) {
@@ -182,7 +239,7 @@ impl<'t> Line<'t> {
                 let opener = if kind == Image { ImageOpen } else { LBracket };
                 token(b, opener, text, a, open);
                 b.start(LinkText);
-                self.run(b, open, close, true);
+                self.run(b, open, close, true, &[]);
                 b.finish();
                 token(b, RBracket, text, close, close + 1);
                 token(b, LParen, text, close + 1, close + 2);
@@ -206,7 +263,7 @@ impl<'t> Line<'t> {
                 }
                 token(b, FieldKey, text, key, colons);
                 token(b, FieldColons, text, colons, colons + 2);
-                self.run(b, colons + 2, value_end, false);
+                self.run(b, colons + 2, value_end, false, &[]);
                 if inline {
                     let close = if text.as_bytes()[a] == b'[' {
                         RBracket

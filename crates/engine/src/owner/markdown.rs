@@ -763,11 +763,36 @@ mod tests {
         assert_eq!(tags, ["real", "also"]);
     }
 
+    /// `text` with each code span that goes on past its line blanked out, line breaks kept.
+    fn without_wrapped_code(text: &str) -> String {
+        let mut spans = Vec::new();
+        let mut from = 0;
+        cst::read(text, cst::Gates::INDEX, &mut |step| match step {
+            Step::Enter(Kind::CodeSpan, at) => from = at,
+            Step::Leave(Kind::CodeSpan, at) if text[from..at].contains('\n') => {
+                spans.push(from..at)
+            }
+            _ => {}
+        });
+        let mut out = text.to_string();
+        for span in spans.into_iter().rev() {
+            let blank: String = text[span.clone()]
+                .chars()
+                .map(|c| if c == '\n' { c } else { ' ' })
+                .collect();
+            out.replace_range(span, &blank);
+        }
+        out
+    }
+
     #[test]
     fn the_tree_reads_the_corpus_as_the_lines_did() {
         let mut differ = Vec::new();
         for (name, text) in cst::corpus() {
-            let (tree, mut lines) = (parse(&text), lines::parse(&text));
+            // The line reader read a code span that goes on past its line as text, a line at a
+            // time; the tree reads it as code, as the reader shows it. It is blanked out for the
+            // line reader.
+            let (tree, mut lines) = (parse(&text), lines::parse(&without_wrapped_code(&text)));
             // The one way they differ here: the line reader took a link to a heading of the
             // same note, `[text](#heading)`, for a tag. The tree reads it as a link.
             let anchor = |t: &String| text.to_lowercase().contains(&format!("](#{t})"));
