@@ -9,6 +9,13 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Recipes: named changes to the whole workspace, shown as a diff per file before anything is
+  written. `cold-lava recipe WORKSPACE rename-tag --from a --to b [--dry-run] [--json]` renames
+  a tag and the tags nested under it, in the text (never in code) and in frontmatter `tags` in
+  each form Obsidian reads, whatever their case, keeping the new name as typed; renaming into
+  an existing tag merges them. Tags in files extensions own are renamed through the extension.
+  The write is refused if a file changed since the plan. `cold-lava recipe --list` names the
+  recipes.
 - An image view. An extension can send `view/open` a picture, `{"kind": "image", "title",
   "path"}` with a workspace path or `"png"` with a PNG's bytes in base64 (at most 8 MB). In a
   terminal with Kitty graphics (Kitty, Ghostty, WezTerm) the PNG's pixels show under the

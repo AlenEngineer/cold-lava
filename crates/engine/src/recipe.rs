@@ -36,6 +36,8 @@ pub struct Recipe {
     pub id: &'static str,
     pub about: &'static str,
     pub options: &'static [Opt],
+    /// What it counts as it changes them: "tag".
+    pub counts: &'static str,
     /// Plans the change into the draft; reads only the index and what the draft already holds.
     #[serde(skip)]
     run: fn(&Index, &Options, &mut Draft) -> Result<()>,
@@ -56,6 +58,7 @@ pub const BUILT_IN: &[Recipe] = &[Recipe {
             about: "its new name, written as typed",
         },
     ],
+    counts: "tag",
     run: rename_tag,
 }];
 
@@ -78,6 +81,16 @@ impl Plan {
     /// How many things it changes in all (tags renamed, for `rename-tag`).
     pub fn changes(&self) -> usize {
         self.edits.iter().map(|e| e.links).sum()
+    }
+
+    /// What it changes, in words: "3 tags in 2 files".
+    pub fn what(&self) -> String {
+        let n = |n: usize, word: &str| match n {
+            1 => format!("1 {word}"),
+            n => format!("{n} {word}s"),
+        };
+        let files = n(self.edits.len(), "file");
+        format!("{} in {files}", n(self.changes(), self.recipe.counts))
     }
 
     /// One line naming the recipe and its options: `rename-tag from=a to=b`.

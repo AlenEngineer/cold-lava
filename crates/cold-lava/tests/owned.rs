@@ -177,3 +177,112 @@ ext.run()"#;
     );
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
+
+/// The example workspace's CSV with `#tag` in Krakatoa's Markdown cell.
+fn tag_the_csv(workspace: &Path, tag: &str) -> String {
+    let csv = workspace.join("Volcanoes/Eruptions.csv");
+    let text = std::fs::read_to_string(&csv).unwrap();
+    let tagged = text.replace("📅 2026-11-20", &format!("#{tag} 📅 2026-11-20"));
+    std::fs::write(&csv, &tagged).unwrap();
+    tagged
+}
+
+#[test]
+fn a_cli_recipe_changes_owned_files_through_their_owner() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let (workspace, home) = sandbox("cli-recipe", |main| main);
+    let before = tag_the_csv(&workspace, "eruption");
+    let ws = workspace.to_str().unwrap();
+    let args = [
+        "recipe",
+        ws,
+        "rename-tag",
+        "--from",
+        "eruption",
+        "--to",
+        "eruptions",
+    ];
+    let dry = cold_lava(&home, &[&args[..], &["--dry-run", "--json"]].concat());
+    let (out, err) = text(&dry);
+    assert!(dry.status.success(), "{out}{err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let csv = (json["files"].as_array().unwrap().iter())
+        .find(|f| f["file"] == "Volcanoes/Eruptions.csv")
+        .unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(csv["owner"], "csv-table");
+    assert_eq!(csv["changes"], 1);
+    let diff = csv["diff"].as_str().unwrap();
+    assert!(
+        diff.contains("+- [ ] Read the Royal Society report on [[Krakatoa]] #eruptions 📅"),
+        "{diff}"
+    );
+    assert_eq!(json["changes"], 5, "four notes and the CSV");
+    let csv_now = || std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv")).unwrap();
+    assert_eq!(csv_now(), before, "a dry run writes nothing");
+
+    let applied = cold_lava(&home, &args);
+    let (out, err) = text(&applied);
+    assert!(applied.status.success(), "{out}{err}");
+    assert!(
+        out.contains("--- Volcanoes/Eruptions.csv (through csv-table)"),
+        "{out}"
+    );
+    assert_eq!(csv_now(), before.replace("#eruption ", "#eruptions "));
+    let krakatoa = std::fs::read_to_string(workspace.join("Volcanoes/Krakatoa.md")).unwrap();
+    assert!(krakatoa.contains("\n#eruptions\n"), "{krakatoa}");
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
+#[test]
+fn a_cli_recipe_refuses_a_file_changed_while_it_waited_for_an_owner() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let (workspace, home) = sandbox("cli-recipe-refused", |main| main);
+    tag_the_csv(&workspace, "eruption");
+    // This owner edits a note behind the recipe's back before it answers.
+    let note = workspace.join("Volcanoes/Vesuvius.md");
+    let meddles = format!(
+        "_edit = file_edit\n\n\n@ext.on(\"file/edit\")\ndef meddle(params):\n    \
+         with open({:?}, \"a\") as f:\n        f.write(\"an outside change\\n\")\n    \
+         return _edit(params)\n\n\next.run()",
+        note.to_str().unwrap()
+    );
+    let installed = home.join(".config/cold-lava/extensions/csv-table/main.py");
+    let main = std::fs::read_to_string(&installed).unwrap();
+    std::fs::write(&installed, main.replace("ext.run()", &meddles)).unwrap();
+    let before = files_under(&workspace);
+    let ws = workspace.to_str().unwrap();
+    let args = [
+        "recipe",
+        ws,
+        "rename-tag",
+        "--from",
+        "eruption",
+        "--to",
+        "eruptions",
+    ];
+    let refused = cold_lava(&home, &args);
+    let (out, err) = text(&refused);
+    assert!(!refused.status.success(), "{out}");
+    assert!(
+        err.contains(
+            "Volcanoes/Vesuvius.md changed since the recipe was planned; nothing was changed"
+        ),
+        "{err}"
+    );
+    let vesuvius = std::fs::read_to_string(&note).unwrap();
+    assert!(vesuvius.ends_with("an outside change\n"), "{vesuvius}");
+    let others = |files: Vec<(PathBuf, Vec<u8>)>| -> Vec<_> {
+        files.into_iter().filter(|(p, _)| *p != note).collect()
+    };
+    assert!(
+        others(files_under(&workspace)) == others(before),
+        "every other file is as it was"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}

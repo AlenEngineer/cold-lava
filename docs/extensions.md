@@ -1377,6 +1377,18 @@ types and the resolver's links, so a recipe finds what it changes by meaning, no
 - **Diffs.** `recipe::diff` gives a file's changed lines with context, in hunks; `file_diff` is a
   note's whole-text diff, or an owned file's changed pieces; `unified` writes it as `@@ line N @@`
   then ` `, `-` and `+` lines.
+- **The command line.** `cold-lava recipe WORKSPACE NAME --OPTION VALUE… [--dry-run] [--json]`
+  (`main.rs`) takes each of the recipe's options as a flag and plans it on the workspace as a
+  core that knows the installed owners, starting them, as `rename` does, to read owned files
+  their cache lacks (`owned::Owners`). It prints a unified diff per file (`--- FILE`, or `---
+  FILE (through OWNER)`, then the hunks) and a last line, "rename-tag from=a to=b: would change
+  3 tags in 2 files (dry run, nothing written)", "changed …" or "nothing to change". Without
+  `--dry-run` it asks the owners first (`Owners::relink`), then `recipe::apply`; a refusal ends
+  it with the reason and "nothing was changed". `--json` is `{recipe, options, applied,
+  changes, files: [{file, changes, owner, diff}], warnings}`, with `diff` the unified text,
+  pinned by `tests/recipe.rs`. `cold-lava recipe --list [--json]` names the recipes with their
+  options. `tests/owned.rs` runs one through csv-table, and one whose owner edits a note while
+  it is asked, which is refused.
 - **Not yet:** composed recipes with options, more built-ins, `[[recipes]]` from extensions over
   the gateway with attribution, and text added in the workspace's style. Each has its place: a
   composed or extension recipe is another `Recipe` whose function fills the draft (an
