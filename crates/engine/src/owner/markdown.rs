@@ -763,6 +763,15 @@ mod tests {
         assert_eq!(tags, ["real", "also"]);
     }
 
+    /// A link's line as its `Ref` holds it.
+    fn context(line: &str) -> String {
+        let mut context: String = line.trim().chars().take(240).collect();
+        if line.trim().chars().count() > 240 {
+            context.push('…');
+        }
+        context
+    }
+
     /// `text` with each code span that goes on past its line blanked out, line breaks kept.
     fn without_wrapped_code(text: &str) -> String {
         let mut spans = Vec::new();
@@ -793,6 +802,10 @@ mod tests {
             // time; the tree reads it as code, as the reader shows it. It is blanked out for the
             // line reader.
             let (tree, mut lines) = (parse(&text), lines::parse(&without_wrapped_code(&text)));
+            let written: Vec<&str> = text.lines().collect();
+            for r in &mut lines.0 {
+                r.context = context(written[r.line - 1]);
+            }
             // The one way they differ here: the line reader took a link to a heading of the
             // same note, `[text](#heading)`, for a tag. The tree reads it as a link.
             let anchor = |t: &String| text.to_lowercase().contains(&format!("](#{t})"));

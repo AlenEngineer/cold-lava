@@ -17,12 +17,14 @@ use crate::tasks::{self, FNV_START, TasksSettings, fnv, fnv_from};
 use crate::templates;
 use crate::types::{self, On, Types};
 use crate::workspace::clean_target;
+use regex::Regex;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// Everything about a workspace that changes how its notes read as items.
 pub struct Settings {
@@ -330,9 +332,10 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let gates = cst::Gates::of(&s.flavour).set(Syntax::Comments, false);
     let source = s.flavour.source_with(text, |text| code_in(text, gates));
     let lines = Lines::new(&source.text);
-    let mut walk = Walk::new(&lines, &s.flavour, Wants::of(&s.matcher));
-    // A note's tags count whatever the flavour, as they always have.
-    cst::read(lines.src, gates.set(Syntax::Tags, true), &mut |step| {
+    let wants = Wants::of(&s.matcher);
+    let mut walk = Walk::new(&lines, &s.flavour, wants);
+    // When a type reads the note's tags, they count whatever the flavour, as they always have.
+    cst::read(lines.src, gates.set(Syntax::Tags, wants.tags), &mut |step| {
         walk.step(step)
     });
     finish(note, text, s, &source, &lines, walk.pass)
@@ -530,7 +533,7 @@ impl<'a> Walk<'a> {
             }
             Kind::CalloutTitle => self.begin(self.marker.start, None, false),
             Kind::CodeSpan | Kind::InlineMath => self.code_at = at,
-            Kind::WikiLink => self.wiki = Some(String::new()),
+            Kind::WikiLink if self.wants.links => self.wiki = Some(String::new()),
             Kind::Link | Kind::Image => self.link = kind == Kind::Link,
             _ => {}
         }
@@ -610,10 +613,7 @@ impl<'a> Walk<'a> {
             Kind::SetextUnderline => self.level = if text.starts_with('=') { 1 } else { 2 },
             Kind::CalloutMarker => self.marker = at..at + text.len(),
             Kind::Delimiter => self.cols += 1,
-            Kind::Tag if self.wants.tags => {
-                let tags = matcher::Note::tags_in(text).map(|(tag, _)| tag.to_string());
-                self.pass.tags.extend(tags);
-            }
+            Kind::Tag if self.wants.tags => self.pass.tags.push(text[1..].to_string()),
             Kind::Target | Kind::Anchor => {
                 if let Some(wiki) = &mut self.wiki {
                     wiki.push_str(text);
@@ -747,12 +747,30 @@ impl<'a> Walk<'a> {
 
     /// A paragraph ends at `end`; in a list item, it is part of the item.
     fn paragraph(&mut self, end: usize) {
-        let (block, before) = self.end();
+        let (mut block, before) = self.end();
         if self.open.last().is_some_and(|p| p.item.is_some()) {
             return;
         }
         let lines = self.lines;
         let src = lines.src;
+        // The link reference definitions it starts with were no paragraph to pulldown-cmark.
+        let footnotes = self.flavour.has(Syntax::Footnotes);
+        loop {
+            let first = src[block.start..lines.end(block.line)].trim_end();
+            if !definition(first, footnotes) {
+                break;
+            }
+            let next = lines.end(block.line) + 1;
+            let parent = self.open.last_mut().expect("the note holds every block");
+            if next >= end {
+                parent.prev_child = before;
+                return;
+            }
+            block.line += 1;
+            parent.prev_child = Some(block.line);
+            let rest = &src[next..];
+            block.start = next + rest.len() - rest.trim_start_matches([' ', '\t', '>']).len();
+        }
         let mut last = lines.of(end.saturating_sub(1)).max(block.line);
         while last > block.line && lines.blank(last) {
             last -= 1;
@@ -1133,6 +1151,22 @@ fn row_cells(src: &str, start: usize, cols: usize) -> Vec<Range<usize>> {
     cells.truncate(cols);
     cells.resize(cols, after..after);
     cells
+}
+
+/// Whether `line` is a link reference definition, `[label]: destination "title"`, which
+/// pulldown-cmark read as no paragraph's text. With footnotes, `[^label]:` starts a footnote.
+fn definition(line: &str, footnotes: bool) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r#"^\[((?:[^\[\]\\]|\\.)+)\]:[ \t]*(?:<[^<>\n]*>|[^\s<]\S*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^()]*\)))?[ \t]*$"#,
+        )
+        .unwrap()
+    });
+    let Some(c) = re.captures(line) else {
+        return false;
+    };
+    !c[1].trim().is_empty() && !(footnotes && c[1].starts_with('^'))
 }
 
 /// A table cell without its padding and pipes.
