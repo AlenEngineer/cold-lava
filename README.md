@@ -927,7 +927,7 @@ links, or stops with its reason and changes nothing.
 ## Limits
 
 - The layout pushes nodes apart through a Barnes–Hut quadtree (O(n log n) a step), so ten
-  thousand notes settle in about 20 s; each frame still draws every link in view.
+  thousand notes settle in under 20 s; each frame still draws every link in view.
 - Whiteboard: no freehand drawing, because JSON Canvas has no freehand shapes. Edge labels
   display but can't be edited yet. Excalidraw drawings aren't rendered.
 
