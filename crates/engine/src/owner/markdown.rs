@@ -743,10 +743,20 @@ mod tests {
     }
 
     #[test]
+    fn a_link_to_a_heading_is_not_a_tag() {
+        let (_, tags) = links_and_tags("See [the agenda](#agenda), (#real) and #also.");
+        assert_eq!(tags, ["real", "also"]);
+    }
+
+    #[test]
     fn the_tree_reads_the_corpus_as_the_lines_did() {
         let mut differ = Vec::new();
         for (name, text) in cst::corpus() {
-            let (tree, lines) = (parse(&text), lines::parse(&text));
+            let (tree, mut lines) = (parse(&text), lines::parse(&text));
+            // The one way they differ here: the line reader took a link to a heading of the
+            // same note, `[text](#heading)`, for a tag. The tree reads it as a link.
+            let anchor = |t: &String| text.to_lowercase().contains(&format!("](#{t})"));
+            lines.1.retain(|t| tree.1.contains(t) || !anchor(t));
             if tree != lines {
                 let refs = |r: &[Ref]| -> Vec<String> {
                     r.iter()
