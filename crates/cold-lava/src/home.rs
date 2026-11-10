@@ -1603,7 +1603,6 @@ impl Home {
         let here = self.here();
         self.mode = Mode::Normal;
         self.close_board();
-        self.reload_tree();
         match here.and_then(|here| self.left(here, exit)) {
             Some(place) => self.go(place),
             None => Ok(()),

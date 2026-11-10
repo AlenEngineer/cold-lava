@@ -1253,6 +1253,19 @@ fn extensions_are_answered_while_the_graph_is_open() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn a_whiteboard_opened_from_a_backlink_selects_the_card_that_links() {
+    let dir = sandbox("board-open");
+    let out = drive("board-open.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Needs python3, which CI's runners have.
 #[test]
 fn extensions_are_answered_while_a_whiteboard_is_open() {
