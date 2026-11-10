@@ -4,9 +4,9 @@
 //! or automatic grouping by top-level folder or by first tag.
 
 use crate::graph::{Graph, Kind, Node};
+use crate::links::ColorGroup;
 use ratatui::style::Color;
 use std::collections::HashMap;
-use std::path::Path;
 
 pub const PALETTE: [Color; 8] = [
     Color::Rgb(239, 98, 98),   // red
@@ -56,18 +56,6 @@ impl Assignment {
             groups: Vec::new(),
             of_node: vec![None; n],
         }
-    }
-
-    pub fn color(&self, i: usize) -> Option<Color> {
-        self.of_node
-            .get(i)
-            .copied()
-            .flatten()
-            .map(|g| self.groups[g].color)
-    }
-
-    pub fn count(&self, g: usize) -> usize {
-        self.of_node.iter().filter(|x| **x == Some(g)).count()
     }
 }
 
@@ -137,27 +125,13 @@ fn auto(graph: &Graph, key: impl Fn(&Node) -> Option<String>) -> Assignment {
     Assignment { groups, of_node }
 }
 
-/// Reads `colorGroups` from `.obsidian/graph.json`.
-pub fn load_obsidian(root: &Path) -> Vec<Group> {
-    let Ok(text) = std::fs::read_to_string(root.join(".obsidian/graph.json")) else {
-        return Vec::new();
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Vec::new();
-    };
-    let Some(list) = json.get("colorGroups").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    list.iter()
-        .filter_map(|g| {
-            let query = g.get("query")?.as_str()?.trim().to_string();
-            let rgb = g.get("color")?.get("rgb")?.as_u64()? as u32;
-            let color = Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
-            Some(Group {
-                label: query.clone(),
-                color,
-                query: Some(Query::parse(&query)),
-            })
+/// Obsidian's colour groups, as the gateway's `links/query` gives them (`.obsidian/graph.json`).
+pub fn obsidian(groups: &[ColorGroup]) -> Vec<Group> {
+    (groups.iter())
+        .map(|g| Group {
+            label: g.query.clone(),
+            color: crate::scene_view::parse_color(&g.color).unwrap_or(Color::Reset),
+            query: Some(Query::parse(&g.query)),
         })
         .collect()
 }
@@ -276,36 +250,13 @@ fn tokenize(q: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn node(rel: &str, tags: &[&str]) -> Node {
-        let v = crate::workspace::Workspace {
-            root: PathBuf::from("/v"),
-            name: "v".into(),
-            notes: vec![crate::workspace::Note {
-                rel: rel.into(),
-                name: rel.rsplit('/').next().unwrap().into(),
-                path: PathBuf::new(),
-                links: vec![],
-                refs: vec![],
-                aliases: vec![],
-                text: String::new(),
-                tags: tags.iter().map(|s| s.to_string()).collect(),
-                links_written: Default::default(),
-                style: Default::default(),
-                items: Default::default(),
-            }],
-            owned: Vec::new(),
-            item_settings: Default::default(),
-        };
-        let opts = crate::graph::BuildOpts {
-            unresolved: false,
-            tags: false,
-            orphans: true,
-        };
-        crate::graph::build(&v, opts, &Default::default())
-            .nodes
-            .remove(0)
+        let name = rel.rsplit('/').next().unwrap();
+        let mut n = Node::new(format!("n:{rel}"), name.into(), Kind::Note, (0.0, 0.0));
+        n.rel = Some(rel.into());
+        n.tags = tags.iter().map(|s| s.to_string()).collect();
+        n
     }
 
     fn m(q: &str, n: &Node) -> bool {
@@ -336,9 +287,8 @@ mod tests {
 
     #[test]
     fn reads_obsidian_graph_json() {
-        let g = load_obsidian(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
-        );
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        let g = obsidian(&crate::links::color_groups(&root));
         assert_eq!(g.len(), 4);
         assert_eq!(g[0].label, "path:Guide");
         assert_eq!(g[0].color, Color::Rgb(250, 214, 90));

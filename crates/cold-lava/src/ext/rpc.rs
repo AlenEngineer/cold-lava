@@ -202,6 +202,9 @@ pub const HOST_METHODS: &[&str] = &[
     "items/edit",
     "types/list",
     "workspace/style",
+    "links/query",
+    "links/subscribe",
+    "links/unsubscribe",
     "workspace/read",
     "workspace/write",
     "workspace/create",
@@ -227,6 +230,9 @@ const GATEWAY: &[&str] = &[
     "items/edit",
     "types/list",
     "workspace/style",
+    "links/query",
+    "links/subscribe",
+    "links/unsubscribe",
 ];
 
 const FILES: &[&str] = &[
@@ -294,6 +300,14 @@ fn serve_now(
             },
             Request::TypesList => answer(host.types()),
             Request::Style => answer(host.style()),
+            Request::Links => answer(host.query_links()),
+            Request::LinksSubscribe => answer(
+                host.subscribe_links()
+                    .map(|subscription| Subscribed { subscription }),
+            ),
+            Request::LinksUnsubscribe { subscription } => {
+                answer(host.unsubscribe_links(subscription))
+            }
         };
     }
     if FILES.contains(&method) {
@@ -476,6 +490,55 @@ mod tests {
         assert!(sub.unwrap()["subscription"].is_u64());
         let (types, _) = served(&mut core, &[ItemsRead], "types/list", json!({}));
         assert!(types.unwrap().as_array().is_some_and(|t| !t.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_link_graph_over_the_wire_and_news_when_it_changes() {
+        use Permission::ItemsRead;
+        let dir = workspace("links");
+        std::fs::write(dir.join("Plan.md"), "- [ ] Pay rent [[Rent]] [[Nowhere]]\n").unwrap();
+        std::fs::write(dir.join("Rent.md"), "#money\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let (none, _) = served(&mut core, &[], "links/query", json!(null));
+        assert_eq!(reason(&none.unwrap_err()), "forbidden");
+        let (graph, _) = served(&mut core, &[ItemsRead], "links/query", json!(null));
+        assert_eq!(
+            graph.unwrap(),
+            json!({
+                "files": [{"path": "Plan.md", "name": "Plan"},
+                          {"path": "Rent.md", "name": "Rent", "tags": ["money"]}],
+                "links": [{"from": "Plan.md", "to": "Rent.md"},
+                          {"from": "Plan.md", "target": "Nowhere"}],
+            })
+        );
+        let (sub, _) = served(&mut core, &[ItemsRead], "links/subscribe", json!(null));
+        let sub = sub.unwrap()["subscription"].as_u64().unwrap();
+        core.note_changed_now(&dir.join("Rent.md"));
+        assert!(core.take_item_news().is_empty(), "Rent didn't change");
+        std::fs::write(dir.join("Rent.md"), "#money [[Plan]]\n").unwrap();
+        core.note_changed_now(&dir.join("Rent.md"));
+        std::fs::write(dir.join("New.md"), "").unwrap();
+        core.note_changed_now(&dir.join("New.md"));
+        let news: Vec<Value> = (core.take_item_news().into_iter())
+            .map(|(who, n)| {
+                assert_eq!(who, "wc");
+                serde_json::to_value(n).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            news,
+            [
+                json!({"method": "links/changed", "params": {"subscription": sub}}),
+                json!({"method": "links/changed",
+                       "params": {"subscription": sub, "created": ["New.md"]}}),
+            ]
+        );
+        let params = json!({ "subscription": sub });
+        let (gone, _) = served(&mut core, &[ItemsRead], "links/unsubscribe", params);
+        assert!(gone.is_ok());
+        core.note_changed_now(&dir.join("New.md"));
+        assert!(core.take_item_news().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

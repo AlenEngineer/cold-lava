@@ -237,6 +237,14 @@ pub enum Request {
     /// writes new text itself (`style::Style`).
     #[serde(rename = "workspace/style")]
     Style,
+    /// The link graph: every file links come from and where each link leads (`links::graph`).
+    #[serde(rename = "links/query")]
+    Links,
+    /// From now on, `links/changed` whenever the link graph may have changed.
+    #[serde(rename = "links/subscribe")]
+    LinksSubscribe,
+    #[serde(rename = "links/unsubscribe")]
+    LinksUnsubscribe { subscription: SubId },
 }
 
 /// What a subscriber hears (host → extension), once per batch of changes the core reads.
@@ -254,12 +262,24 @@ pub enum News {
     /// The workspace was read again from scratch: query again.
     #[serde(rename = "items/reset")]
     Reset { subscription: SubId },
+    /// Files were read again, so the link graph may have changed: query it again. `created`
+    /// and `removed` name the notes and other files that came and went, if any.
+    #[serde(rename = "links/changed")]
+    LinksChanged {
+        subscription: SubId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        created: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<String>,
+    },
 }
 
 impl News {
     pub fn subscription(&self) -> SubId {
         match self {
-            News::Changed { subscription, .. } | News::Reset { subscription } => *subscription,
+            News::Changed { subscription, .. }
+            | News::Reset { subscription }
+            | News::LinksChanged { subscription, .. } => *subscription,
         }
     }
 }
@@ -522,6 +542,8 @@ pub fn query(workspace: &Workspace, q: &Query) -> Result<Found, Error> {
 pub struct Subscriptions {
     next: u64,
     subs: Vec<Sub>,
+    /// Who follows the link graph.
+    links: Vec<(SubId, String)>,
 }
 
 struct Sub {
@@ -571,9 +593,33 @@ impl Subscriptions {
 
     /// Whether `owner` had such a subscription.
     pub fn remove(&mut self, owner: &str, id: SubId) -> bool {
-        let before = self.subs.len();
+        let before = self.subs.len() + self.links.len();
         self.subs.retain(|s| s.id != id || s.owner != owner);
-        self.subs.len() != before
+        self.links.retain(|(s, o)| *s != id || o != owner);
+        self.subs.len() + self.links.len() != before
+    }
+
+    /// `links/subscribe` for `owner`.
+    pub fn add_links(&mut self, owner: &str) -> SubId {
+        self.next += 1;
+        let id = SubId(self.next);
+        self.links.push((id, owner.to_string()));
+        id
+    }
+
+    /// What each follower of the link graph hears after files were read again: `created` and
+    /// `removed` came and went (workspace-relative paths with their extension).
+    pub fn links_changed(&self, created: &[String], removed: &[String]) -> Vec<(String, News)> {
+        (self.links.iter())
+            .map(|(id, owner)| {
+                let news = News::LinksChanged {
+                    subscription: *id,
+                    created: created.to_vec(),
+                    removed: removed.to_vec(),
+                };
+                (owner.clone(), news)
+            })
+            .collect()
     }
 
     /// What each subscriber hears about these files having been read again (workspace-relative
@@ -1040,7 +1086,7 @@ fields.text = { rest = true }
                     removed,
                     ..
                 } => (added.len(), updated.len(), removed.len()),
-                News::Reset { .. } => (0, 0, 0),
+                News::Reset { .. } | News::LinksChanged { .. } => (0, 0, 0),
             })
             .collect()
     }

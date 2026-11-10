@@ -11,6 +11,7 @@ pub mod frontmatter;
 pub mod gateway;
 pub mod index;
 pub mod items;
+pub mod links;
 pub mod markdown;
 pub mod matcher;
 pub mod merge;

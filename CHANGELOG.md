@@ -7,8 +7,35 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Changed
+
+- The graph view runs in the menu's loop instead of its own. Extensions keep being answered
+  while it is open, and their part of the status line (`ui/status`) and their messages show in
+  the graph's. The graph is kept while the workspace is open: going back to it, or pressing
+  `g` again, finds the layout where it was instead of laying it out again. `cold-lava graph
+  WORKSPACE` opens the menu on the graph; `q` there still quits.
+- The graph is a built-in extension: it reads the link graph through the workspace gateway and
+  sends it as a scene through the view gateway, like the agenda and the table. `g` and the
+  graph's keys are the same. Enter on an unresolved link makes its note at the workspace's
+  root, as before; `note.edit` and `note.open-in-obsidian` now take a `note` from an extension.
+
 ### Added
 
+- A `scene` view on the view gateway: an extension sends nodes, edges between them by id,
+  colour groups and flags (`{"kind": "scene", ...}`), and cold-lava lays them out with its
+  force layout and draws them as it draws the graph, in braille or Kitty pixels, with the
+  graph's keys. At most 50,000 nodes.
+- `links/query` on the workspace gateway: every file links come from (notes and files other
+  owners read), where each link leads or the name it names when it leads nowhere yet, and
+  Obsidian's graph colour groups. `links/subscribe` sends `links/changed` when it may have
+  changed.
+- `cold-lava drive` drags and scrolls the mouse: `drag ROW COL ROW2 COL2` presses the left
+  button, moves through every cell on the way and releases, `scroll up|down ROW COL [N]` turns
+  the wheel, and `expect-in ROW COL ROW2 COL2 TEXT` checks that a part of the screen shows
+  TEXT. `graph.drive` and `board.drive` use them to pin the graph view and the whiteboard as
+  they are: selecting, dragging nodes and cards, panning, zooming, the local graph, search,
+  colour groups and filters, notes changed on disk, editing cards, and merging a canvas changed
+  outside while a card is being edited.
 - Shape definitions: `[[shapes]]` in TOML, built in, from extensions, in `config.toml` and in a
   workspace's `.cold-lava/shapes.toml`, loaded in the order types are, a broken one dropped with
   its error while the rest load. Parts (rect, circle, ellipse, line, arrow, path, text, other

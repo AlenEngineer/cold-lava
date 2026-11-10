@@ -1,0 +1,53 @@
+# The whiteboard on Inbox/Pin.canvas, which tests/drive.rs writes first: two cards, Alpha and
+# Bravo. A double-click edits Bravo; meanwhile another program adds Charlie, and saving merges
+# both. Dragging Alpha moves it, dragging empty space pans, the wheel zooms, n adds Delta, and u
+# and U undo and redo it. tests/drive.rs reads the file after.
+size 100x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type pin
+keys enter
+wait-for whiteboard Pin · 2 cards · 0 arrows
+expect 150%
+expect-in 12 13 12 42 │Alpha
+expect-in 12 57 12 86 │Bravo
+click 12 70
+click 12 70
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+expect Bravo▏
+type , checked
+write Inbox/Pin.canvas {"nodes":[\n{"id":"a","type":"text","text":"Alpha","x":0,"y":0,"width":200,"height":100},\n{"id":"b","type":"text","text":"Bravo","x":300,"y":0,"width":200,"height":100},\n{"id":"c","type":"text","text":"Charlie","x":0,"y":-200,"width":200,"height":100}\n],"edges":[]}\n
+wait 500ms
+keys esc
+wait-for merged changes made outside cold-lava
+expect whiteboard Pin · 3 cards · 0 arrows
+expect Bravo, checked
+# Dragging a card moves it.
+drag 12 20 20 20
+expect-in 20 13 21 42 Alpha
+# Dragging empty space pans.
+drag 2 50 4 60
+expect-in 22 20 24 50 │Alpha
+expect-in 13 64 15 100 │Bravo, checked
+# The wheel zooms out and back in.
+scroll down 15 50 2
+wait-for 113%
+scroll up 15 50 2
+wait-for 150%
+keys n
+wait-for editing · type text
+type Delta
+keys esc
+wait-for whiteboard Pin · 4 cards
+keys u
+wait-for whiteboard Pin · 3 cards
+expect-not Delta
+keys U
+wait-for whiteboard Pin · 4 cards
+expect Delta
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

@@ -1,0 +1,19 @@
+# The example extension open-tasks (installed in the empty home by tests/drive.rs) keeps a count
+# of open tasks in the status line, the graph's too. The graph runs in the menu's loop, so the
+# extension is answered while it is open: a task another program writes shows in the count at
+# once, without leaving the graph.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 7 open tasks
+keys g
+wait-for example-workspace · 36 nodes
+expect ☐ 7 open tasks
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 8 open tasks
+expect example-workspace · 37 nodes
+keys q
+wait-for cold-lava workspaces
+expect ☐ 8 open tasks
+keys q
+exits 0

@@ -1,0 +1,126 @@
+# The graph view in braille: keys, the mouse, the local graph, search, colour groups, filters,
+# changes on disk and opening a note. Space pauses the layout first, so nodes stay where the
+# keys and the mouse leave them; c centres the selection, so its label is under the middle.
+# VISUAL stands in for the editor: Enter hands it the note, and it adds a link to the note.
+size 100x30
+env COLD_LAVA_EDITOR=none
+env VISUAL=perl -0777 -i -pe $_.="\n[[Ghostnote]]\n"
+wait-for example-workspace
+keys g
+wait-for example-workspace · 35 nodes · 92 links
+expect obsidian groups · braille
+expect ● path:Volcanoes 9
+expect nothing selected — arrows/hjkl or Tab to pick a note, / to search, ? for help
+expect ↑↓←→ move  Tab links  Enter open  / search  , keys  ? help  q quit
+keys space
+wait-for obsidian groups · paused · braille
+keys tab
+wait-for ● Start Here  ←5 in  7→ out  Guide/Start Here  [path:Guide]
+keys c
+expect-in 15 40 17 62 Start Here
+# Dragging a node moves it, selected.
+drag 15 51 24 80
+expect-in 24 70 26 92 Start Here
+keys esc
+wait-for nothing selected
+click 24 80
+wait-for ● Start Here  ←5 in  7→ out
+# Scrolling zooms in and out at the pointer: in close, the notes in view have their labels.
+keys esc
+wait-for nothing selected
+expect-not Start Here
+scroll up 24 80 15
+expect-in 24 66 28 94 Start Here
+scroll down 24 80 15
+wait-gone Start Here
+# The local graph around the selection, one link deep, then two.
+click 24 80
+wait-for ● Start Here
+keys f
+wait-for example-workspace · 9 nodes · 15 links
+expect local·1 · obsidian groups · paused · braille
+keys ]
+wait-for local graph depth 2
+wait-for local·2
+keys [
+wait-for local graph depth 1
+# Dragging empty space pans the view.
+keys c
+expect-in 15 40 17 62 Start Here
+drag 2 2 9 19
+expect-in 22 57 24 79 Start Here
+keys esc
+wait-for 35 nodes · 92 links
+expect ● Start Here
+# Search: Enter selects the best match, n goes through the matches.
+keys /
+type kil
+wait-for /kil▏  1 matches  Kīlauea
+keys enter
+wait-for ● Kīlauea
+keys n
+wait-for match 1/1
+# Colour groups: Obsidian's, then by folder, by tag, none, and Obsidian's again.
+keys g
+wait-for colour groups: by folder (7 groups)
+expect ● Volcanoes 9
+keys g
+wait-for colour groups: by tag (8 groups)
+expect ● #volcano/shield 2
+keys g
+wait-for colour groups: off
+expect-not ● Volcanoes 9
+keys g
+wait-for colour groups: obsidian groups (4 groups)
+expect ● path:Volcanoes 9
+# Filters: tags, unresolved links, orphans.
+keys t
+wait-for tags shown
+expect #volcano/shield
+keys t
+wait-for tags hidden
+wait-for 35 nodes · 92 links
+keys u
+wait-for unresolved links shown
+expect example-workspace · 39 nodes
+keys O
+wait-for orphans hidden
+expect obsidian groups · unresolved · no orphans · paused · braille
+keys O
+wait-for orphans shown
+keys a
+wait-for labels: all
+keys a
+wait-for labels: selection only
+keys a
+wait-for labels: auto
+keys p
+wait-for pixel mode needs a terminal that reports its pixel size
+# Help and which key.
+keys ?
+wait-for keys · any key closes
+keys x
+wait-gone keys · any key closes
+keys ,
+wait-for keys · type one to run it · Esc closes
+expect O  orphans
+keys esc
+wait-gone keys · type one to run it
+# A note written by another program joins the graph.
+write Inbox/Pinned.md Pinned on [[Kīlauea]].
+wait-for workspace changed: +1 notes
+expect example-workspace · 40 nodes
+expect ● Kīlauea  ←7 in  5→ out
+expect Pinned
+# Enter opens the selected note in the editor; the graph follows what it changed.
+keys enter
+wait-for workspace changed: graph updated
+expect example-workspace · 41 nodes
+expect ● Kīlauea  ←7 in  6→ out
+expect Ghostnote
+keys r
+wait-for workspace changed
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

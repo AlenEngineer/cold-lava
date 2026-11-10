@@ -177,10 +177,11 @@ pub(crate) fn read_only() -> Vec<Permission> {
 /// The reader, a screen of the menu's built the way an extension will be: it reaches notes as
 /// data only through `Host`, under this name (`Registry::screen`), which edits are attributed to.
 pub const READER: &str = "reader";
-/// The built-in extensions' names: the agenda (`crate::agenda`) and the table
-/// (`crate::type_table`).
+/// The built-in extensions' names: the agenda (`crate::agenda`), the table
+/// (`crate::type_table`) and the graph (`crate::graph_ext`).
 pub const AGENDA: &str = "agenda";
 pub const TABLE: &str = "table";
+pub const GRAPH: &str = "graph";
 const SCREEN_PERMISSIONS: &[Permission] = &[Permission::ItemsRead, Permission::ItemsEdit];
 
 /// A command an extension registers. Its id is `<extension name>.<something>`.
@@ -628,6 +629,22 @@ impl Host<'_> {
         self.core(Permission::ItemsEdit)?.edit_item(name, edit)
     }
 
+    /// `links/query`
+    pub fn query_links(&mut self) -> Result<crate::links::LinkGraph, gateway::Error> {
+        Ok(self.core(Permission::ItemsRead)?.query_links())
+    }
+
+    /// `links/subscribe`: the extension's `items` hears `links/changed` for it from now on.
+    pub fn subscribe_links(&mut self) -> Result<SubId, gateway::Error> {
+        let name = self.name;
+        Ok(self.core(Permission::ItemsRead)?.subscribe_links(name))
+    }
+
+    /// `links/unsubscribe`, for one of its own subscriptions.
+    pub fn unsubscribe_links(&mut self, sub: SubId) -> Result<(), gateway::Error> {
+        self.unsubscribe_items(sub)
+    }
+
     /// `types/list`
     pub fn types(&mut self) -> Result<Vec<Type>, gateway::Error> {
         let core = self.core(Permission::ItemsRead)?;
@@ -746,6 +763,7 @@ impl Registry {
         }
         found.push(Box::new(crate::agenda::Agenda::default()));
         found.push(Box::new(crate::type_table::Tables::default()));
+        found.push(Box::new(crate::graph_ext::Graph::default()));
         let dir = installed::user_dir();
         let (on_disk, mistakes) = dir.as_deref().map(installed::load).unwrap_or_default();
         let processes = !on_disk.is_empty();

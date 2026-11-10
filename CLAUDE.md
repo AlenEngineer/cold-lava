@@ -61,8 +61,8 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
 - `core.rs`: `Core` = one live workspace. Owns the `Index`, is the only file watcher, re-reads only
-  changed notes and emits `Event`s (`poll()`, `subscribe()`). Screens share it: the menu lends
-  its core to the graph view and gets it back. Don't add another watcher or full rescan loop.
+  changed notes and emits `Event`s (`poll()`, `subscribe()`). The menu owns it, and the graph
+  runs in the menu's loop on it. Don't add another watcher or full rescan loop.
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read), `create`, `move_file`. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
@@ -120,6 +120,8 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   edit goes through `edit::set_field` or `tasks::toggle` (in a file another owner reads,
   through that owner: `owner/edits.rs`), is read again and emits
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
+- `links.rs`: the link graph for `links/query` (every file links come from, where each leads,
+  Obsidian's graph colour groups); `links/subscribe` news is queued with the items' news.
 - `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`,
   `workspace/write` refused unless the file is still that version, `workspace/create` where
   Obsidian puts a new file, `workspace/files`) and their pinned JSON; `resolve` keeps a path
@@ -184,8 +186,16 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (Neovim's come from `VIM_SCRIPT` in
   `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the
   extension that owns the pane.
-- `app.rs`, `graph.rs`, `scene.rs`, `kitty.rs`, `groups.rs`: graph view (force layout; braille
-  or Kitty-graphics pixels drawn under the text with `z=-1`; colour groups).
+- `scene_view.rs`: the scene view, a scene of nodes and links (`Scene`, the view gateway's
+  `scene` content) that the core lays out (`graph.rs`'s force layout, positions kept by node
+  id), draws (`scene.rs`'s `Frame`, in braille or Kitty-graphics pixels under the text with
+  `z=-1`, `kitty.rs`) and moves around in. It is one of `views.rs`'s views, ticked in the
+  menu's loop while in front, so extensions keep being answered; keys whose meaning is the
+  sender's go to it as `view/event`.
+- `graph_ext.rs`: the graph as a built-in extension (`g`, `graph.open`): `links/query` made
+  into a scene with its filters and colour groups (`graph::build`, `groups.rs`), sent with
+  `view/open`, followed with `links/subscribe`. `app.rs` is the palette. The whiteboard is still
+  a screen with its own loop (#92).
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
   cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
@@ -200,7 +210,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   `items/edit toggle` (`A`, `agenda.open`, a core command the menu hands to it).
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
-  with vt100, cursor-position queries answered.
+  with vt100, cursor-position queries answered, the mouse clicked, dragged and scrolled.
+  `graph.drive` and `board.drive` pin the graph and the whiteboard.
 
 ## Rules that keep it compatible with Obsidian
 
@@ -255,7 +266,7 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
-  it, and so do the agenda and the table (over the view gateway); the graph, canvas and the
-  menu should become extensions of the core too. Then
+  it, and so do the agenda, the table and the graph (over the view gateway); the canvas and
+  the menu should become extensions of the core too. Then
   performance for large workspaces (Barnes–Hut layout), a config file, light-terminal colours.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).

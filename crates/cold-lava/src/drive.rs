@@ -58,6 +58,25 @@ pub enum Action {
         row: u16,
         col: u16,
     },
+    /// Press the left button at `from`, move with it held to `to`, release there.
+    Drag {
+        from: (u16, u16),
+        to: (u16, u16),
+    },
+    /// Turn the wheel `count` notches at a cell.
+    Scroll {
+        up: bool,
+        at: (u16, u16),
+        count: u16,
+    },
+    /// The screen shows TEXT inside rows `top`..=`bottom`, columns `left`..=`right` (1-based).
+    ExpectIn {
+        top: u16,
+        left: u16,
+        bottom: u16,
+        right: u16,
+        text: String,
+    },
     /// Replace a file in the workspace, as another program (Obsidian, git) would.
     Write {
         file: PathBuf,
@@ -89,6 +108,11 @@ expect TEXT             the screen shows TEXT now
 expect-not TEXT         the screen doesn't show TEXT now
 screen                  print the screen
 click ROW COL           left click (1-based)
+drag ROW COL ROW2 COL2  press the left button at ROW COL, move to ROW2 COL2 with it held, release
+scroll up|down ROW COL [N]
+                        turn the mouse wheel N notches (default 1) over ROW COL
+expect-in ROW COL ROW2 COL2 TEXT
+                        the screen shows TEXT within rows ROW–ROW2 and columns COL–COL2 now
 write FILE TEXT         replace FILE in the workspace (the last argument) with TEXT, as another
                         program would; \\n in TEXT is a line break
 exits [10s] CODE        the program exits with CODE
@@ -182,6 +206,65 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
                     _ => return Err(err(format!("click wants ROW COL (from 1): {rest}"))),
                 }
             }
+            "drag" => match cells(rest).as_deref() {
+                Some(&[r1, c1, r2, c2]) => Some(Action::Drag {
+                    from: (r1, c1),
+                    to: (r2, c2),
+                }),
+                _ => {
+                    return Err(err(format!(
+                        "drag wants ROW COL ROW2 COL2 (from 1): {rest}"
+                    )));
+                }
+            },
+            "scroll" => {
+                let (dir, at) = rest.split_once(' ').unwrap_or((rest, ""));
+                let up = match dir {
+                    "up" => true,
+                    "down" => false,
+                    _ => return Err(err(format!("scroll wants up or down first: {rest}"))),
+                };
+                match cells(at).as_deref() {
+                    Some(&[row, col]) => Some(Action::Scroll {
+                        up,
+                        at: (row, col),
+                        count: 1,
+                    }),
+                    Some(&[row, col, count]) => Some(Action::Scroll {
+                        up,
+                        at: (row, col),
+                        count,
+                    }),
+                    _ => {
+                        return Err(err(format!(
+                            "scroll wants up|down ROW COL [N] (from 1): {rest}"
+                        )));
+                    }
+                }
+            }
+            "expect-in" => {
+                let mut words = rest.splitn(5, ' ');
+                let nums: Vec<&str> = words.by_ref().take(4).collect();
+                let text = words.next().unwrap_or("").trim();
+                match cells(&nums.join(" ")).as_deref() {
+                    Some(&[top, left, bottom, right])
+                        if !text.is_empty() && top <= bottom && left <= right =>
+                    {
+                        Some(Action::ExpectIn {
+                            top,
+                            left,
+                            bottom,
+                            right,
+                            text: text.to_string(),
+                        })
+                    }
+                    _ => {
+                        return Err(err(format!(
+                            "expect-in wants ROW COL ROW2 COL2 TEXT (from 1, top left first): {rest}"
+                        )));
+                    }
+                }
+            }
             "write" => match rest.split_once(' ') {
                 Some((file, text)) if Path::new(file).is_relative() => Some(Action::Write {
                     file: file.into(),
@@ -200,6 +283,13 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
         }
     }
     Ok(script)
+}
+
+/// "3 7" → [3, 7]: numbers from 1, as terminal cells are counted.
+fn cells(s: &str) -> Option<Vec<u16>> {
+    s.split_whitespace()
+        .map(|n| n.parse::<u16>().ok().filter(|&n| n > 0))
+        .collect()
 }
 
 /// "10s TEXT" → (10 s, "TEXT"); "TEXT" → (default, "TEXT").
@@ -422,6 +512,25 @@ impl Session {
         rows.join("\n")
     }
 
+    /// Rows `top`..=`bottom`, columns `left`..=`right` (1-based), one line each.
+    fn region(&self, top: u16, left: u16, bottom: u16, right: u16) -> String {
+        let rows = self.parser.screen().rows(left - 1, right - left + 1);
+        let rows: Vec<String> = rows
+            .skip(top as usize - 1)
+            .take((bottom - top) as usize + 1)
+            .collect();
+        rows.join("\n")
+    }
+
+    /// Send what `events` makes (SGR mouse reports), if the program listens to the mouse.
+    fn mouse(&mut self, step: &str, events: impl FnOnce() -> String) -> Option<String> {
+        if self.parser.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None {
+            return Some(format!("{step}: the program isn't listening to the mouse"));
+        }
+        self.send(events().as_bytes());
+        None
+    }
+
     fn shows(&self, text: &str) -> bool {
         self.text().contains(text)
     }
@@ -601,14 +710,30 @@ pub fn run(
                     .err()
                     .map(|e| format!("couldn't write {}: {e}", path.display()))
             }
-            Action::Click { row, col } => {
-                if s.parser.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None {
-                    Some("click: the program isn't listening to the mouse".to_string())
-                } else {
-                    let seq = format!("\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m");
-                    s.send(seq.as_bytes());
-                    None
-                }
+            Action::Click { row, col } => s.mouse("click", || {
+                format!("\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m")
+            }),
+            Action::Drag { from, to } => s.mouse("drag", || drag(*from, *to)),
+            Action::Scroll { up, at, count } => s.mouse("scroll", || {
+                let button = if *up { 64 } else { 65 };
+                format!("\x1b[<{button};{};{}M", at.1, at.0).repeat(*count as usize)
+            }),
+            Action::ExpectIn {
+                top,
+                left,
+                bottom,
+                right,
+                text,
+            } => {
+                s.settle();
+                (!s.region(*top, *left, *bottom, *right)
+                    .contains(text.as_str()))
+                .then(|| {
+                    format!(
+                        "expected {text:?} within rows {top}–{bottom}, columns {left}–{right}{}",
+                        s.exited()
+                    )
+                })
             }
         };
         if let Some(message) = failure {
@@ -620,6 +745,21 @@ pub fn run(
     }
     s.kill();
     Ok(true)
+}
+
+/// A left-button drag as SGR mouse reports: the press, a move through every cell on the way
+/// (as a hand would), the release.
+fn drag((r1, c1): (u16, u16), (r2, c2): (u16, u16)) -> String {
+    let steps = r1.abs_diff(r2).max(c1.abs_diff(c2)).max(1);
+    let at = |from: u16, to: u16, i: u16| {
+        let (from, to) = (from as i32, to as i32);
+        (from + (to - from) * i as i32 / steps as i32) as u16
+    };
+    let mut out = format!("\x1b[<0;{c1};{r1}M");
+    for i in 1..=steps {
+        out += &format!("\x1b[<32;{};{}M", at(c1, c2, i), at(r1, r2, i));
+    }
+    out + &format!("\x1b[<0;{c2};{r2}m")
 }
 
 fn describe(status: &ExitStatus) -> String {
@@ -717,6 +857,57 @@ mod tests {
         let lines: Vec<usize> = s.steps.iter().map(|s| s.line).collect();
         assert_eq!(lines, [5, 6, 7]);
         assert_eq!(s.steps[2].action, Action::Click { row: 3, col: 7 });
+    }
+
+    #[test]
+    fn mouse_steps() {
+        assert_eq!(
+            step("drag 3 7 5 8"),
+            Action::Drag {
+                from: (3, 7),
+                to: (5, 8)
+            }
+        );
+        assert_eq!(
+            step("scroll down 10 20 3"),
+            Action::Scroll {
+                up: false,
+                at: (10, 20),
+                count: 3
+            }
+        );
+        assert_eq!(
+            step("scroll up 10 20"),
+            Action::Scroll {
+                up: true,
+                at: (10, 20),
+                count: 1
+            }
+        );
+        assert_eq!(
+            drag((3, 7), (5, 8)),
+            "\x1b[<0;7;3M\x1b[<32;7;4M\x1b[<32;8;5M\x1b[<0;8;5m"
+        );
+        assert_eq!(
+            step("expect-in 2 3 20 80 Start  Here"),
+            Action::ExpectIn {
+                top: 2,
+                left: 3,
+                bottom: 20,
+                right: 80,
+                text: "Start  Here".into()
+            }
+        );
+        for bad in [
+            "drag 1 2 3",
+            "drag 0 1 2 3",
+            "scroll sideways 1 2",
+            "scroll up 1",
+            "expect-in 1 2 3 4",
+            "expect-in 5 1 2 4 x",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

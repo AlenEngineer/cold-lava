@@ -123,6 +123,7 @@ impl Feed {
                 removed,
                 ..
             } => (added, updated, removed),
+            News::LinksChanged { .. } => return Ok(()),
         };
         let mut updated: HashMap<String, Item> =
             (updated.into_iter()).map(|i| (i.id.clone(), i)).collect();

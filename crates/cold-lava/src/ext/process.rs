@@ -407,8 +407,10 @@ impl Extension for Process {
                         }
                     };
                     match (&answer, method.as_str()) {
-                        (Ok(made), "items/subscribe") => live.subscriptions.extend(sub(Some(made))),
-                        (Ok(_), "items/unsubscribe") => {
+                        (Ok(made), "items/subscribe" | "links/subscribe") => {
+                            live.subscriptions.extend(sub(Some(made)))
+                        }
+                        (Ok(_), "items/unsubscribe" | "links/unsubscribe") => {
                             live.subscriptions.retain(|s| Some(*s) != dropped)
                         }
                         _ => {}
