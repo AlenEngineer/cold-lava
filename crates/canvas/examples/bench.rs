@@ -1,8 +1,10 @@
 //! Times rasterizing a full-screen scene: 200 shapes on a 200×60 terminal, each region tinted by
-//! cell and each part outlined in braille, as the TUI would per frame.
+//! cell and each part outlined in braille, as the TUI would per frame; then the same with five
+//! labels fitted into every region.
 //!
 //! cargo run --release -p cold-lava-canvas --example bench
 
+use cold_lava_canvas::fit::{self, Align, Flow, Room};
 use cold_lava_canvas::{
     Grid, Kind, Mask, Part, Path, Placed, Placement, Point, Rect, Res, Segment, Shape, Style,
     Viewport,
@@ -101,7 +103,7 @@ fn scene(view: &Viewport) -> Vec<Placed> {
         .collect()
 }
 
-fn frame(view: &Viewport, scene: &[Placed]) -> Grid {
+fn frame(view: &Viewport, scene: &[Placed], labels: bool) -> Grid {
     let mut grid = Grid::new(view);
     for placed in scene {
         for (i, region) in placed.shape.regions().iter().enumerate() {
@@ -113,16 +115,23 @@ fn frame(view: &Viewport, scene: &[Placed]) -> Grid {
         for part in 0..placed.shape.parts().len() {
             grid.dots(&Mask::outline(placed, part, view, Res::BRAILLE), Style(9));
         }
+        if labels {
+            for region in placed.shape.regions() {
+                let room = Room::inside(&Mask::area(placed, &region.area, view, Res::BRAILLE));
+                let names = ["apple", "banana", "cherry", "grape", "lemon"];
+                fit::labels(&room, &names, Flow::Column, Align::Center).paint(&mut grid, Style(7));
+            }
+        }
     }
     grid
 }
 
 /// The median of `runs` frames.
-fn median(view: &Viewport, scene: &[Placed], runs: usize) -> Duration {
+fn median(view: &Viewport, scene: &[Placed], labels: bool, runs: usize) -> Duration {
     let mut times: Vec<Duration> = (0..runs)
         .map(|_| {
             let start = Instant::now();
-            std::hint::black_box(frame(view, std::hint::black_box(scene)));
+            std::hint::black_box(frame(view, std::hint::black_box(scene), labels));
             start.elapsed()
         })
         .collect();
@@ -136,12 +145,19 @@ fn main() {
     let runs = 50;
     println!(
         "rasterize 200 shapes on 200x60 cells: median of {runs} frames {:?}",
-        median(&view, &scene, runs)
+        median(&view, &scene, false, runs)
     );
     for (i, kind) in ["venn", "card", "arrow", "blob"].iter().enumerate() {
         let only: Vec<Placed> = scene.iter().skip(i).step_by(4).cloned().collect();
-        println!("  the 50 {kind}s alone: {:?}", median(&view, &only, runs));
+        println!(
+            "  the 50 {kind}s alone: {:?}",
+            median(&view, &only, false, runs)
+        );
     }
+    println!(
+        "  with five labels fitted into every region: {:?}",
+        median(&view, &scene, true, runs)
+    );
     let side = view.world_size().y;
     let venn = Placed::new(
         scene[0].shape.clone(),
@@ -149,6 +165,6 @@ fn main() {
     );
     println!(
         "one Venn filling the screen: {:?}",
-        median(&view, std::slice::from_ref(&venn), runs)
+        median(&view, std::slice::from_ref(&venn), false, runs)
     );
 }

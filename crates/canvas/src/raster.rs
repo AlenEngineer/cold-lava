@@ -282,6 +282,16 @@ impl Mask {
         edge
     }
 
+    /// The covered samples that are not on the outline.
+    pub fn interior(&self) -> Mask {
+        let edge = self.edge();
+        let mut inner = self.clone();
+        for (bit, on_edge) in inner.bits.iter_mut().zip(&edge.bits) {
+            *bit &= !on_edge;
+        }
+        inner
+    }
+
     /// The cells every one of whose samples is covered.
     pub fn whole_cells(&self) -> Vec<(u16, u16)> {
         let (rx, ry) = (i64::from(self.res.x), i64::from(self.res.y));

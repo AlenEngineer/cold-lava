@@ -1,9 +1,35 @@
 #![allow(dead_code)]
 
+use cold_lava_canvas::fit::{self, Align, Flow, Room};
 use cold_lava_canvas::{
     Grid, Kind, Mask, Part, Placed, Placement, Point, Res, Shape, Style, Viewport,
 };
 use std::sync::Arc;
+
+pub const LABELS: [&[&str]; 3] = [
+    &[
+        "apple", "banana", "cherry", "grape", "lemon", "mango", "pear",
+    ],
+    &["kiwi", "lime", "plum"],
+    &["olive", "peach", "quince", "fig"],
+];
+
+/// The Venn with each region's labels fitted in a column, and the circles' titles centred
+/// one row above their `top` anchors.
+pub fn paint_labelled_venn(grid: &mut Grid, venn: &Placed, view: &Viewport) {
+    paint_venn(grid, venn, view);
+    for (region, labels) in venn.shape.regions().iter().zip(LABELS) {
+        let room = Room::inside(&Mask::area(venn, &region.area, view, Res::BRAILLE));
+        fit::labels(&room, labels, Flow::Column, Align::Center).paint(grid, Style(7));
+    }
+    for (anchor, title) in [("left.top", "Fruit"), ("right.top", "Green")] {
+        let Some((col, row)) = venn.anchor(anchor).and_then(|p| view.cell_at(p)) else {
+            continue;
+        };
+        let start = col.saturating_sub(title.len() as u16 / 2);
+        grid.text(start, row.saturating_sub(1), title, Style(8));
+    }
+}
 
 /// Compares `actual` with `tests/snapshots/NAME.txt`; `UPDATE_SNAPSHOTS=1` rewrites it instead.
 pub fn snapshot(name: &str, actual: &str) {
