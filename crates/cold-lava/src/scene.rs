@@ -4,7 +4,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::widgets::canvas::{Circle, Context, Line as CLine, Points};
+use ratatui::widgets::canvas::{Circle, Context, Line as CLine, Painter, Shape};
 
 pub struct Edge {
     pub a: (f64, f64),
@@ -47,6 +47,34 @@ pub struct Frame {
     pub labels: Vec<Label>,
 }
 
+/// A filled disc in braille: every dot within about half a dot of it. The concentric circles
+/// it replaced took 360 points each, up to 12 of them per disc.
+struct Fill<'a> {
+    disc: &'a Disc,
+    /// Braille dots per world unit.
+    zoom: f64,
+}
+
+impl Shape for Fill<'_> {
+    fn draw(&self, painter: &mut Painter) {
+        let d = self.disc;
+        let reach = d.r * self.zoom + 0.6;
+        let n = reach.floor() as i32;
+        for j in -n..=n {
+            for i in -n..=n {
+                if f64::from(i * i + j * j) > reach * reach {
+                    continue;
+                }
+                let x = d.x + f64::from(i) / self.zoom;
+                let y = d.y + f64::from(j) / self.zoom;
+                if let Some((px, py)) = painter.get_point(x, y) {
+                    painter.paint(px, py, d.color);
+                }
+            }
+        }
+    }
+}
+
 impl Frame {
     pub fn paint_braille(&self, ctx: &mut Context) {
         for layer in &self.layers {
@@ -55,17 +83,10 @@ impl Frame {
             }
             ctx.layer();
             for d in &layer.discs {
-                // Filled disc: concentric rings spaced about one braille dot apart.
-                let rings = (d.r * self.zoom).ceil().clamp(1.0, 12.0) as usize;
-                for k in 1..=rings {
-                    ctx.draw(&Circle::new(
-                        d.x,
-                        d.y,
-                        d.r * k as f64 / rings as f64,
-                        d.color,
-                    ));
-                }
-                ctx.draw(&Points::new(&[(d.x, d.y)], d.color));
+                ctx.draw(&Fill {
+                    disc: d,
+                    zoom: self.zoom,
+                });
                 if let Some(c) = d.ring {
                     ctx.draw(&Circle::new(d.x, d.y, d.r + 2.5 / self.zoom, c));
                 }
