@@ -1627,6 +1627,28 @@ fields.w = { capture = "w" }
         "- [ ] \n- [x]\n- [ ]no space\n- [/] in progress\n  - [-] cancelled child\n- [  ] two spaces\n",
     ];
 
+    /// Markdown pulldown-cmark read otherwise than Obsidian shows it, or that the tree doesn't
+    /// read yet, where the items differ from the ones it gave.
+    const DIFFERENT: &[&str] = &[
+        // A frontmatter whose first line is blank, as the Kanban plugin writes it, was a rule
+        // and Markdown.
+        "---\n\nkanban-plugin: basic\n- [ ] YAML\n\n---\n\n- [ ] Pack\n",
+        // A `---` line after a blank line, with a `---` or `...` line below it, opened YAML in
+        // the middle of a note, hiding what was between.
+        "Intro\n\n---\n- [ ] between the rules\n---\n\n- [ ] after\n",
+        // A byte order mark made the first line text.
+        "\u{feff}- [ ] first\n- [ ] second\n",
+        // A table right under a callout's title was the title paragraph's text.
+        "> [!info] Stats\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+        // A reference link was a link; the tree has no reference links yet.
+        "See [the note][n].\n\n[n]: Note.md\n",
+        // A tag right after `**` or `_` was a tag, as in Obsidian; the tree needs a space or `(`
+        // before it, as the scan always has.
+        "Read **#bold** and _#slanted_.\n",
+        // `[[#Heading]]` held the tag `Heading`.
+        "See [[#Heading]].\n",
+    ];
+
     /// How the tree's items and pulldown-cmark's differ for one note, if they do.
     fn difference(name: &str, text: &str, s: &Settings) -> Option<String> {
         let (tree, old) = (extract(name, text, s), pulldown::extract(name, text, s));
@@ -1681,6 +1703,12 @@ fields.w = { capture = "w" }
             }
             for (k, text) in TRICKY.iter().enumerate() {
                 differ.extend(difference(&format!("Tricky {k}.md"), text, &s));
+            }
+        }
+        let s = every_type("obsidian");
+        for text in DIFFERENT {
+            if difference("Different.md", text, &s).is_none() {
+                differ.push(format!("reads alike now, so it isn't DIFFERENT: {text:?}"));
             }
         }
         assert!(
