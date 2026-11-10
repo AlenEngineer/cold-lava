@@ -7,6 +7,19 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- The shape editor (`S` on a whiteboard): draw a shape and it writes the same `[[shapes]]` TOML
+  into the workspace's `.cold-lava/shapes.toml`. Vertices are clicked into place and dragged;
+  a side's middle bends it into a `curve`; circles, ellipses and rectangles have their own tools.
+  Guides snap to 90°, 45°, 60° and 30°, equal sides, the next corner of a regular polygon, level
+  and plumb, and equal circles, and are never saved. A click inside an area names it as a region
+  (`left & right`, `left - right`), a click on a vertex or a point names an anchor; forms set the
+  inputs, what each region shows and behaviour, and a preview shows the shape bound to real data.
+  Editing a workspace shape rewrites only its block and keeps the rest of the file as text,
+  refused if the file changed since it was read. With a placed shape or a group selected, `S`
+  makes a new shape of them.
+
 ## [0.5.0] - 2026-11-10
 
 Shapes, usable end to end: a canvas engine draws any shape from its geometry, shapes are
