@@ -2,6 +2,7 @@
 //! re-reads just the notes that change, and tells subscribers what changed, whatever caused it
 //! (cold-lava, Obsidian, Neovim, git…).
 
+use crate::act::{Answered, Ask, ShapeAnswer};
 use crate::bookmarks::Bookmarks;
 use crate::files;
 use crate::gateway::{
@@ -107,6 +108,8 @@ pub struct Core {
     owners: Owners,
     /// Edits of their files waiting for them.
     edits: Edits,
+    /// Extensions' answers to `shape/region` and `shape/gesture`, for the frontend's bindings.
+    shape_answers: Vec<ShapeAnswer>,
 }
 
 impl Core {
@@ -131,6 +134,7 @@ impl Core {
             news: Vec::new(),
             owners: Owners::default(),
             edits: Edits::default(),
+            shape_answers: Vec::new(),
         })
     }
 
@@ -854,6 +858,32 @@ impl Core {
         }
     }
 
+    /// The answer of the extension named `by` to `ask` (`shape/region`, `shape/gesture`). Only
+    /// the extension that ships the shape may answer, and only in the form the ask has.
+    pub fn shape_answered(&mut self, by: &str, ask: &Ask, answer: Result<Answered, String>) {
+        if !ask.shape().starts_with(&format!("{by}.")) {
+            return;
+        }
+        let answer = answer.and_then(|a| match (ask, a) {
+            (Ask::Region { .. }, a @ Answered::Region { .. })
+            | (Ask::Gesture { .. }, a @ Answered::Gesture { .. }) => Ok(a),
+            (Ask::Region { .. }, _) => Err("it answered shape/region with steps".into()),
+            (Ask::Gesture { .. }, _) => Err("it answered shape/gesture with items".into()),
+        });
+        self.shape_answers.push(ShapeAnswer {
+            by: by.to_string(),
+            ask: ask.clone(),
+            answer,
+        });
+    }
+
+    /// The extensions' answers since the last call, in order: the frontend hands a region's to
+    /// its binding (`Binding::answered`) and runs a gesture's steps (`Binding::run`) through the
+    /// extension's gateway.
+    pub fn take_shape_answers(&mut self) -> Vec<ShapeAnswer> {
+        std::mem::take(&mut self.shape_answers)
+    }
+
     /// `workspace/read`
     pub fn read_file(&self, rel: &str) -> Result<files::Text, gateway::Error> {
         files::read(self.root(), rel)
@@ -877,6 +907,35 @@ impl Core {
         let created = files::create(&self.index, c)?;
         self.reread_note(&created.path);
         Ok(created)
+    }
+
+    /// A recipe planned and applied at once, its notes read again (their events come from the
+    /// next `poll`); its title. Refused when it would change a file another owner reads, which
+    /// needs that owner's answer first (`relink`): such a recipe runs from its own screen.
+    pub fn run_recipe(
+        &mut self,
+        id: &str,
+        options: crate::recipe::Options,
+    ) -> Result<String, gateway::Error> {
+        use crate::recipe;
+        let refused = |m: String| gateway::Error::new(Reason::Refused, m);
+        let r = recipe::find(id).ok_or_else(|| refused(format!("no recipe called {id}")))?;
+        let plan = recipe::plan(&self.index, r, options).map_err(|e| refused(e.to_string()))?;
+        if let Some(e) = plan.edits.iter().find(|e| e.owned.is_some()) {
+            let message = format!(
+                "{} would change {}, which another owner reads: run it from the recipe screen",
+                plan.title(),
+                e.file
+            );
+            return Err(refused(message));
+        }
+        let applied = recipe::apply(&plan)
+            .map_err(|e| gateway::Error::new(Reason::Changed, format!("{}: {e}", plan.title())))?;
+        let paths: Vec<PathBuf> = plan.edits.iter().map(|e| e.path.clone()).collect();
+        let events = self.refresh(&paths);
+        self.broadcast(&events);
+        self.unseen.extend(events);
+        Ok(applied.title)
     }
 
     /// `workspace/files`

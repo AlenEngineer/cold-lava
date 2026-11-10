@@ -220,6 +220,10 @@ pub struct RegionDef {
     pub area: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shows: Option<String>,
+    /// What it shows is computed by the extension that ships the shape (`shape/region`),
+    /// instead of `shows`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extension: bool,
 }
 
 /// One gesture or action and the steps it runs. Exactly one of `drop`, `click`, `key` and
@@ -246,6 +250,10 @@ pub struct Behaviour {
     pub edit: Option<EditStep>,
     #[serde(default, rename = "do", skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<Step>,
+    /// The extension that ships the shape decides the steps (`shape/gesture`), instead of
+    /// `do` or `edit`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extension: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -271,13 +279,19 @@ pub enum Step {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct EditStep {
-    pub item: String,
+    /// The item `set-field` and `toggle` change: `dropped`, `clicked`, or an input with one
+    /// member. A recipe changes the whole workspace and names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_field: Option<SetField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggle: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<String>,
+    /// A recipe's options, by name; placeholders are filled.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub options: IndexMap<String, String>,
 }
 
 /// `set-field`: exactly one of `value`, `add` and `remove`.
@@ -570,7 +584,17 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         for (id, parsed) in layer.definitions {
             let problems = match &parsed {
                 Err(e) => vec![e.clone()],
-                Ok(d) => check(&id, d),
+                Ok(d) => {
+                    let mut p = check(&id, d);
+                    let asks =
+                        d.regions.iter().any(|r| r.extension) || d.on.iter().any(|b| b.extension);
+                    if asks && !matches!(layer.origin, Origin::Extension { .. }) {
+                        p.push(
+                            "extension = true hands a region or a gesture to the extension that ships the shape, and this one comes from none".into(),
+                        );
+                    }
+                    p
+                }
             };
             match parsed {
                 Ok(d) if problems.is_empty() => {
@@ -926,6 +950,12 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
         {
             p.push(format!("region {}: shows {shows:?}: {e}", r.id));
         }
+        if r.extension && r.shows.is_some() {
+            p.push(format!(
+                "region {}: its extension computes what it shows, so it has no shows",
+                r.id
+            ));
+        }
     }
     let part_ids: HashSet<&str> = d.parts.iter().filter_map(PartDef::id).collect();
     let mut actions = HashSet::new();
@@ -962,9 +992,10 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
                 "{at}: action {a:?} must be a name, and only one action may have it"
             ));
         }
-        if b.edit.is_some() == !b.steps.is_empty() {
+        let ways = [b.edit.is_some(), !b.steps.is_empty(), b.extension];
+        if ways.iter().filter(|w| **w).count() != 1 {
             p.push(format!(
-                "{at}: give its steps as do = [ … ], or one edit = {{ … }}"
+                "{at}: give its steps as do = [ … ], or one edit = {{ … }}, or extension = true"
             ));
         }
         let edits = b.edit.iter().chain(b.steps.iter().filter_map(|s| match s {
@@ -981,6 +1012,18 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
                 p.push(format!(
                     "{at}: an edit is exactly one of set-field, toggle and recipe"
                 ));
+            }
+            match (&e.recipe, &e.item) {
+                (None, None) => p.push(format!(
+                    "{at}: say which item set-field or toggle changes, like item = \"dropped\""
+                )),
+                (Some(_), Some(_)) => p.push(format!(
+                    "{at}: a recipe changes the whole workspace, so it names no item"
+                )),
+                _ => {}
+            }
+            if e.recipe.is_none() && !e.options.is_empty() {
+                p.push(format!("{at}: options are a recipe's"));
             }
             if let Some(s) = &e.set_field {
                 let ways = [s.value.is_some(), s.add.is_some(), s.remove.is_some()];

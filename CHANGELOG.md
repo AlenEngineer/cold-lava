@@ -57,6 +57,14 @@ change commands, keys and file formats; patch versions only fix things.
   text, `and`, `or`, `not`), `sort by FIELD [desc]`, `limit N` and `label FIELD`, checked when
   the shape loads; a query input takes a `where` too (`type=volcano where vei >= 6`). The
   example workspace's `tallest` shape lists the five tallest of a collection.
+- Shape behaviour: a gesture (a drop between regions, a click, a key, a named action) runs the
+  shape's `on` steps through the workspace gateway: `edit` an item (`set-field`, `toggle`) or
+  run a recipe, `create` a note where Obsidian puts new notes, `rebind` the shape as another.
+  The user's shapes edit as `canvas`; an extension's shape edits as the extension, within its
+  permissions. The sticky's "make it a note" creates the note and becomes a card bound to it.
+  `cold-lava shapes WORKSPACE --render ID --bind … --do GESTURE` runs one from the command line.
+- Extensions can compute a region of a shape they ship, or handle a gesture on it
+  (`extension = true`), answering `shape/region` with labels and `shape/gesture` with steps.
 
 ## [0.4.0] - 2026-11-09
 

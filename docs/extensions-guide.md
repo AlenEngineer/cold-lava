@@ -426,6 +426,38 @@ regions = [{ id = "rows", area = "body", shows = "rows" }]
   in `cold-lava keys`, a definition that doesn't read is dropped with its error in `cold-lava
   shapes`, and your other shapes still load.
 
+### Computing a region or handling a gesture
+
+When the region language (`a & b where vei >= 6 sort by vei desc`) or the `on` steps can't say
+what you mean, say `extension = true` and answer it yourself:
+
+```toml
+[[shapes]]
+id = "csv-table.tally"
+inputs = ["rows"]
+parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
+regions = [{ id = "total", area = "box", extension = true }]   # you compute what it shows
+
+[[shapes.on]]
+click = "total"
+extension = true                                                # you decide what a click does
+```
+
+cold-lava then asks you, with the shape's inputs and their members:
+
+- `shape/region` (`placed`, `shape`, `region`, `inputs`): answer `{"items": [{"label": "12
+  rows"}]}`, what the region shows. You are asked again when an input changes.
+- `shape/gesture` (`placed`, `shape`, `gesture`, `inputs`): answer `{"do": [ … ]}`, steps in
+  the language of `on`, such as `{"edit": {"item": "clicked", "set-field": {"field": "status",
+  "value": "done"}}}`. They run as you, within your permissions: `items.edit` to edit an item,
+  `files.write` to create a note.
+
+Being asked needs `items.read`, since the inputs come with the question. Check yours without a
+canvas: `cold-lava shapes WORKSPACE --render csv-table.tally --bind rows='type=eruption'` asks
+for the region, and `--do click:total` asks for the click and runs your steps (on a copy of the
+workspace: they write). The messages and their JSON are in
+[extensions.md](extensions.md#shapes-as-built).
+
 ## Writing items back
 
 When an extension edits an item of one of your files (`items/edit`), or the user renames a note

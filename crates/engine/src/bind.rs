@@ -7,6 +7,7 @@
 //! placed shape; what follows from it (the members, the regions' labels, the filled text) is
 //! computed and never saved.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use cold_lava_canvas as canvas;
@@ -14,9 +15,10 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+use crate::act::{Ask, InputData, Inputs, MemberData, Rebind};
 use crate::core::{Core, Event};
 use crate::gateway::{Filter, News, Query, Select, SubId};
-use crate::shapes::{Loaded, Shapes, fill};
+use crate::shapes::{Loaded, Origin, Shapes, fill};
 use crate::shows::{Cond, Member, Shows};
 
 /// Whom a binding's subscriptions belong to: the canvas, not an extension. The frontend hands
@@ -250,7 +252,7 @@ impl Input {
 }
 
 /// The note at `path` as a member: its `title` and `name` (the file's stem), `path`, `tags`
-/// and `excerpt` (its first lines of text, after the frontmatter and a first heading).
+/// and `excerpt` (its first lines of text, after the frontmatter and a first heading or line that is its name).
 fn note(core: &Core, path: &str) -> Option<Member> {
     let rel = path.strip_suffix(".md").unwrap_or(path);
     let ws = &core.index.workspace;
@@ -267,7 +269,8 @@ fn note(core: &Core, path: &str) -> Option<Member> {
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .peekable();
-    if lines.peek().is_some_and(|l| l.starts_with("# ")) {
+    let titled = |l: &&str| l.starts_with("# ") || l.trim_start_matches('#').trim() == note.name;
+    if lines.peek().is_some_and(titled) {
         lines.next();
     }
     let excerpt: Vec<&str> = lines.take(3).collect();
@@ -294,6 +297,8 @@ pub struct Binding {
     inputs: IndexMap<String, Input>,
     /// Each region's `shows`, read, in the shape's order.
     regions: Vec<Option<Shows>>,
+    /// What the shape's extension answered for its regions with `extension = true`, by id.
+    computed: HashMap<String, Vec<Entry>>,
 }
 
 /// What a placed shape shows now: each region's members, and each text part's text.
@@ -311,8 +316,10 @@ pub struct RegionShown {
 }
 
 /// One member as a region shows it: what it is, and its label.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    /// A member's id; an extension may leave it out for a label of its own.
+    #[serde(default)]
     pub id: String,
     pub label: String,
 }
@@ -361,6 +368,7 @@ impl Binding {
             shape: loaded.clone(),
             inputs: IndexMap::new(),
             regions,
+            computed: HashMap::new(),
         };
         for name in &d.inputs {
             let Some(source) = sources.get(name) else {
@@ -463,14 +471,16 @@ impl Binding {
         let regions = (d.regions.iter().zip(&self.regions))
             .map(|(r, shows)| RegionShown {
                 id: r.id.clone(),
-                items: shows.as_ref().map_or(Vec::new(), |s| {
-                    (s.eval(&members, d.key.as_deref()).into_iter())
+                items: match (r.extension, shows) {
+                    (true, _) => self.computed.get(&r.id).cloned().unwrap_or_default(),
+                    (false, None) => Vec::new(),
+                    (false, Some(s)) => (s.eval(&members, d.key.as_deref()).into_iter())
                         .map(|m| Entry {
                             id: m.id.clone(),
                             label: s.label(m),
                         })
-                        .collect()
-                }),
+                        .collect(),
+                },
             })
             .collect();
         let canvas = self.canvas();
@@ -487,6 +497,77 @@ impl Binding {
             })
             .collect();
         Shown { regions, texts }
+    }
+
+    /// Becomes the shape `to.shape` bound to `to.inputs` (a `rebind` step's result): the old
+    /// subscriptions end once the new binding is made, and it stays as it was if that fails.
+    pub fn rebind(&mut self, core: &mut Core, shapes: &Shapes, to: &Rebind) -> Result<(), String> {
+        let new = Binding::new(core, shapes, &to.shape, to.inputs.clone())?;
+        self.close(core);
+        *self = new;
+        Ok(())
+    }
+
+    /// The extension that ships the shape: its gesture steps run as it, within its permissions,
+    /// and it answers for regions and gestures marked `extension = true`. `None` for the user's
+    /// shapes (built in, config, workspace), whose steps run as `canvas`.
+    pub fn extension(&self) -> Option<&str> {
+        match &self.shape.origin {
+            Origin::Extension { name } => Some(name),
+            _ => None,
+        }
+    }
+
+    /// `shape/region` for each region its extension computes, to ask after binding and again
+    /// whenever an input changes; `placed` names this placed shape in the answers.
+    pub fn region_asks(&self, placed: u64) -> Vec<Ask> {
+        (self.shape.definition.regions.iter())
+            .filter(|r| r.extension)
+            .map(|r| Ask::Region {
+                placed,
+                shape: self.shape.id.clone(),
+                region: r.id.clone(),
+                inputs: self.data(),
+            })
+            .collect()
+    }
+
+    /// The extension's answer for `region`: what it shows until the next one.
+    pub fn answered(&mut self, region: &str, items: Vec<Entry>) {
+        if (self.shape.definition.regions.iter()).any(|r| r.id == region && r.extension) {
+            self.computed.insert(region.to_string(), items);
+        }
+    }
+
+    /// The inputs as an extension is told them.
+    pub(crate) fn data(&self) -> Inputs {
+        (self.inputs.iter())
+            .map(|(name, i)| {
+                let members = i.members.iter().map(MemberData::from).collect();
+                let title = i.title(name);
+                (name.clone(), InputData { title, members })
+            })
+            .collect()
+    }
+
+    /// The member with id `id`, in any input.
+    pub(crate) fn member(&self, id: &str) -> Option<&Member> {
+        (self.inputs.values())
+            .flat_map(|i| &i.members)
+            .find(|m| m.id == id)
+    }
+
+    /// The one member of the input `name`.
+    pub(crate) fn only_member(&self, name: &str) -> Option<&Member> {
+        match &self.inputs.get(name)?.members[..] {
+            [one] => Some(one),
+            _ => None,
+        }
+    }
+
+    /// What the input `name` is bound to.
+    pub(crate) fn source(&self, name: &str) -> Option<&Source> {
+        self.inputs.get(name).map(|i| &i.source)
     }
 }
 

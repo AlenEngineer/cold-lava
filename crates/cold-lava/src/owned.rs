@@ -2,6 +2,7 @@
 //! come from what the owners gave before (their cache), and a rename starts the owners it needs
 //! and waits for them.
 
+use crate::act::{Answered, Ask};
 use crate::core::Core;
 use crate::ext::{Effect, ExtId, Registry};
 use crate::{paths, rename, workspace};
@@ -137,6 +138,42 @@ impl<'a> Owners<'a> {
                 bail!("the owners didn't answer in {} s", PATIENCE.as_secs())
             }
         }
+    }
+
+    /// Asks the extension `name` about a shape it ships (`shape/region`, `shape/gesture`),
+    /// starting it if it wasn't, and waits for its answer.
+    pub fn ask_shape(&mut self, core: &mut Core, name: &str, ask: Ask) -> Result<Answered> {
+        let ext = self
+            .start(name, core)
+            .ok_or_else(|| anyhow!("{name} isn't installed"))?;
+        let method = ask.method();
+        for effect in self.registry.ask_shape(ext, Some(core), ask) {
+            if let Effect::Notify { message } = effect {
+                eprintln!("{message}");
+            }
+        }
+        let mut answer = None;
+        self.serve(core, |c| {
+            answer = c.take_shape_answers().into_iter().next();
+            answer.is_some()
+        });
+        match answer {
+            Some(a) => a.answer.map_err(|why| anyhow!("{name}: {method}: {why}")),
+            None => bail!("{name} didn't answer {method} in {} s", PATIENCE.as_secs()),
+        }
+    }
+
+    /// Runs `f` with the gateway of the extension `name`: its permissions, its name on edits.
+    pub fn as_extension<T>(
+        &mut self,
+        core: &mut Core,
+        name: &str,
+        f: impl FnOnce(&mut crate::ext::Host<'_>) -> T,
+    ) -> Result<T> {
+        let ext = (self.registry.by_name(name)).ok_or_else(|| anyhow!("{name} isn't installed"))?;
+        let mut out = None;
+        self.call(ext, core, |_, host| out = Some(f(host)));
+        out.ok_or_else(|| anyhow!("{name} wasn't called"))
     }
 }
 

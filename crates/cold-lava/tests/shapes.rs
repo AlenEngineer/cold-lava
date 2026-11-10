@@ -220,6 +220,89 @@ fn bound_shapes_filter_sort_and_limit() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let dest = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+}
+
+/// `--do` on a copy of the example workspace: the sticky's "make it a note" creates the note
+/// and draws the card it became; a drop the workspace can't write is refused with nothing
+/// written; a gesture the shape doesn't answer is refused.
+#[test]
+fn gestures_run_the_shapes_steps() {
+    let dir = scratch("gestures");
+    let ws = dir.join("ws");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+        &ws,
+    );
+    let ws = ws.to_str().unwrap();
+    let sticky = "text=text:Ash masks\nTwo per person, for the Krakatoa trip.";
+    let out = stdout(&shapes(
+        &dir,
+        &[
+            ws,
+            "--render",
+            "sticky",
+            "--size",
+            "40x10",
+            "--bind",
+            sticky,
+            "--do",
+            "action:make-a-note",
+        ],
+    ));
+    golden("shape-sticky-made-a-note-40x10.txt", &out);
+    assert!(
+        out.starts_with("created Ash masks.md\nnow a card\n"),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(Path::new(ws).join("Ash masks.md")).unwrap(),
+        "Ash masks\nTwo per person, for the Krakatoa trip."
+    );
+
+    let venn = [ws, "--render", "venn2", "--bind", ERUPTED, "--bind", STRATO];
+    let shown: serde_json::Value =
+        serde_json::from_str(&stdout(&shapes(&dir, &[&venn[..], &["--json"]].concat()))).unwrap();
+    let krakatoa = shown["regions"][0]["items"][0]["id"].as_str().unwrap();
+    let before = std::fs::read_to_string(Path::new(ws).join("Volcanoes/Krakatoa.md")).unwrap();
+    let drop = format!("drop:only-a:both:{krakatoa}");
+    let out = shapes(&dir, &[&venn[..], &["--do", &drop]].concat());
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "--do: tags is read from the tags or links in the text, which can't be written"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(Path::new(ws).join("Volcanoes/Krakatoa.md")).unwrap(),
+        before,
+        "nothing written"
+    );
+
+    let out = shapes(&dir, &[&venn[..], &["--do", "key:z"]].concat());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--do: venn2 does nothing on the key z"),
+        "{stderr}"
+    );
+    let out = shapes(&dir, &[&venn[..], &["--do", "wave"]].concat());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("a gesture is action:NAME"), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn the_venn_titles_never_touch_at_40x12() {
     let dir = scratch("titles");

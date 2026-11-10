@@ -768,6 +768,15 @@ shows what its expression picks from them (`a & b`: what both have, matched on t
 `--json` prints it as data. A query input can take a `where` too
 (`--bind b='type=volcano where elevation >= 2500'`).
 
+A shape can also act: dropping, clicking or a key runs the steps its `on` declares, through
+the same safe edits as everything else, and a sticky's "make it a note" creates the note and
+becomes a card. `--do` runs one from the command line (on a copy of a workspace you care
+about, since it writes):
+
+```sh
+cold-lava shapes WORKSPACE --render sticky --bind 'text=text:Ash masks' --do action:make-a-note
+```
+
 Placing shapes on a canvas comes later; see [docs/shapes.md](docs/shapes.md).
 
 ### Extensions
