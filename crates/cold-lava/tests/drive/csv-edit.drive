@@ -52,7 +52,7 @@ expect ▤ Volcanoes/Eruptions.csv  2 links
 expect | [[Krakatau]] | 1883 | 7 |  |
 screen
 keys enter
-wait-for renamed to Volcanoes/Krakatau.md · 6 links updated in 5 files
+wait-for renamed to Volcanoes/Krakatau.md · 7 links updated in 6 files
 wait-for 12s ← Eruptions.csv  | Krakatau | 1883 | 7 |
 expect ← Eruptions.csv  ☑ Read the Royal Society report on Krakatau
 screen

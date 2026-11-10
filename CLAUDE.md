@@ -208,7 +208,10 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   into a scene with its filters and colour groups (`graph::build`, `groups.rs`), sent with
   `view/open`, followed with `links/subscribe`. `app.rs` is the palette. The whiteboard is still
   a screen with its own loop (#92).
-- `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files.
+- `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files, and placed shapes on it:
+  `board/placed.rs` is how a placed shape is stored on a node (the `cold-lava` field, which node
+  type it is, the guard against a save that drops the field), `board/live.rs` binds each one
+  through the core the menu lends the board and paints it with the canvas engine.
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
   cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
   `i` (`table.open`, a core command the menu hands to it) sends the types as a table to pick

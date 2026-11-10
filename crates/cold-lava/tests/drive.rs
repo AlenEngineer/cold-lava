@@ -504,6 +504,168 @@ fn the_whiteboard_moves_edits_and_merges_cards() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+fn placed(nodes: &serde_json::Value, id: &str) -> serde_json::Value {
+    (nodes.as_array().unwrap().iter())
+        .find(|n| n["id"] == id)
+        .unwrap_or_else(|| panic!("no node {id} in {nodes}"))
+        .clone()
+}
+
+#[test]
+fn placed_shapes_show_their_data_and_stretch_turn_and_move() {
+    let dir = sandbox("placed-shapes");
+    let workspace = dir.join("example-workspace");
+    let file = workspace.join("Inbox/Shapes.canvas");
+    std::fs::write(&file, include_str!("drive/placed-shapes.canvas")).unwrap();
+    let out = drive("placed-shapes.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    let canvas: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let venn = placed(&canvas["nodes"], "venn");
+    let field = &venn["cold-lava"];
+    assert_eq!(field["shape"], "venn2", "{text}");
+    assert_eq!(field["rotation"], 105.0, "{text}");
+    assert_eq!(
+        field["inputs"]["a"]["query"]["filter"]["tag"], "eruption",
+        "still bound: {text}"
+    );
+    assert!(venn["width"].as_i64().unwrap() < 600, "stretched: {text}");
+    assert!(venn["y"].as_i64().unwrap() > 0, "moved down: {text}");
+    let exact = field["exact"].as_array().expect("the fractions kept");
+    assert_eq!(
+        exact[2].as_f64().unwrap().round(),
+        venn["width"].as_f64().unwrap()
+    );
+    assert_eq!(
+        placed(&canvas["nodes"], "card")["file"],
+        "Volcanoes/Krakatoa.md"
+    );
+    assert_eq!(canvas["cold-lava-version"], 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn shapes_are_placed_bound_clicked_edited_and_made_into_notes() {
+    let dir = sandbox("placed-gestures");
+    let workspace = dir.join("example-workspace");
+    let file = workspace.join("Inbox/Gestures.canvas");
+    std::fs::write(&file, include_str!("drive/placed-gestures.canvas")).unwrap();
+    let season = workspace.join("Inbox/Field Season.md");
+    let before = std::fs::read_to_string(&season).unwrap();
+    let volcanoes: Vec<(PathBuf, String)> = files_ending(&workspace.join("Volcanoes"), ".md")
+        .into_iter()
+        .map(|p| (p.clone(), std::fs::read_to_string(p).unwrap()))
+        .collect();
+    let out = drive("placed-gestures.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = std::fs::read_to_string(&season).unwrap();
+    assert!(after.contains("- [x] Pack the gas masks ✅"), "{after}");
+    assert!(
+        after.contains("- [ ] Book the flight"),
+        "only the clicked task: {after}"
+    );
+    assert_eq!(before.lines().count(), after.lines().count());
+    for (path, text) in volcanoes {
+        let now = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            now,
+            text,
+            "the refused drop wrote nothing to {}",
+            path.display()
+        );
+    }
+    let notes = files_ending(&workspace, "Ash masks.md");
+    let [note] = &notes[..] else {
+        panic!("one note made from the sticky: {notes:?}")
+    };
+    let made = std::fs::read_to_string(note).unwrap();
+    assert!(made.contains("Two per person, for the trip"), "{made}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let canvas: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let card = placed(&canvas["nodes"], "sticky");
+    let rel = note.strip_prefix(&workspace).unwrap().to_string_lossy();
+    assert_eq!(card["type"], "file", "the sticky is a card now: {text}");
+    assert_eq!(card["file"], rel.as_ref());
+    assert_eq!(card["cold-lava"]["shape"], "card");
+    assert_eq!(
+        (card["x"].clone(), card["width"].clone()),
+        (700.into(), 300.into())
+    );
+    assert_eq!(
+        placed(&canvas["nodes"], "venn")["x"],
+        -100,
+        "the outside move"
+    );
+    let checklist = (canvas["nodes"].as_array().unwrap().iter())
+        .find(|n| n["cold-lava"]["shape"] == "checklist")
+        .unwrap_or_else(|| panic!("the placed checklist: {text}"));
+    assert_eq!(
+        checklist["cold-lava"]["inputs"]["tasks"]["query"]["filter"]["note"],
+        "Inbox/Field Season.md"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_showcase_drawing_is_embedded_in_a_note_and_drawn_bound_to_the_workspace() {
+    let dir = sandbox("placed-showcase");
+    let file = dir.join("example-workspace/Volcano Venn.canvas");
+    let before = std::fs::read_to_string(&file).unwrap();
+    let out = drive("placed-showcase.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(before, after, "looking at a drawing doesn't rewrite it");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn placed_shapes_survive_obsidians_saves_and_are_kept_when_a_save_drops_them() {
+    let dir = sandbox("placed-guard");
+    let workspace = dir.join("example-workspace");
+    std::fs::write(
+        workspace.join("Inbox/Shapes.canvas"),
+        "{\"nodes\":[\n\
+         {\"id\":\"venn\",\"type\":\"text\",\"text\":\"Simple Venn diagram\",\"x\":0.4,\"y\":0,\
+         \"width\":300.5,\"height\":300,\"cold-lava\":{\"shape\":\"venn2\",\"rotation\":15,\
+         \"exact\":[0.4,0,300.5,300]}},\n\
+         {\"id\":\"plain\",\"type\":\"text\",\"text\":\"Plain\",\"x\":400,\"y\":0,\"width\":200,\"height\":100}\n\
+         ],\"edges\":[],\"cold-lava-version\":1}\n",
+    )
+    .unwrap();
+    let out = drive("placed-guard.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(workspace.join("Inbox/Shapes.canvas")).unwrap();
+    let canvas: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let venn = (canvas["nodes"].as_array().unwrap().iter())
+        .find(|n| n["id"] == "venn")
+        .unwrap();
+    assert_eq!(venn["cold-lava"]["shape"], "venn2", "{text}");
+    assert_eq!(venn["cold-lava"]["rotation"], 15, "{text}");
+    assert_eq!(venn["x"], 50, "the outside move is kept: {text}");
+    assert_eq!(canvas["cold-lava-version"], 1, "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn opens_a_note_follows_a_link_and_quits() {
     let dir = sandbox("follow-link");

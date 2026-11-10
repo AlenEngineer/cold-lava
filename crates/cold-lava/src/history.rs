@@ -162,6 +162,8 @@ pub enum Exit {
     Quit,
     Back,
     Forward,
+    /// To a note: a card on it was opened.
+    Open(PathBuf),
 }
 
 #[cfg(test)]

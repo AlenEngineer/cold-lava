@@ -765,6 +765,14 @@ pub enum BoardAction {
     Connect,
     Edit,
     EditExternal,
+    /// Turn a placed shape 15° clockwise.
+    Turn,
+    /// Place a shape: pick one, then bind its inputs.
+    PlaceShape,
+    /// Bind the selected shape's inputs again.
+    Bind,
+    /// The selected shape's actions ("Make it a note").
+    ShapeActions,
     /// Obsidian's colour presets 1 to 6.
     Colour(u8),
     ColourClear,
@@ -840,6 +848,38 @@ pub const BOARD: &[Command<BoardAction>] = &[
         "edit in $EDITOR",
         "edit a text card in $EDITOR",
         &["E"],
+    ),
+    cmd(
+        BoardAction::Turn,
+        "board.turn",
+        Group::Cards,
+        "turn",
+        "turn a placed shape 15° clockwise (or drag its ↻ grip)",
+        &["r"],
+    ),
+    cmd(
+        BoardAction::PlaceShape,
+        "board.place-shape",
+        Group::Cards,
+        "place shape",
+        "place a shape (built in, the workspace's or an extension's) and bind its inputs",
+        &["s"],
+    ),
+    cmd(
+        BoardAction::Bind,
+        "board.bind",
+        Group::Cards,
+        "bind",
+        "bind the selected shape's inputs to other data",
+        &["b"],
+    ),
+    cmd(
+        BoardAction::ShapeActions,
+        "board.shape-actions",
+        Group::Cards,
+        "shape actions",
+        "what the selected shape can do (a sticky: make it a note)",
+        &["x"],
     ),
     cmd(
         BoardAction::Colour(1),
@@ -1696,7 +1736,7 @@ mod tests {
         assert_eq!(press(KeyCode::Char('z'), ctrl), Some(BoardAction::Undo));
         assert_eq!(press(KeyCode::Char('z'), none), Some(BoardAction::Fit));
         assert_eq!(press(KeyCode::Char('r'), ctrl), Some(BoardAction::Redo));
-        assert_eq!(press(KeyCode::Char('r'), none), None);
+        assert_eq!(press(KeyCode::Char('r'), none), Some(BoardAction::Turn));
         assert_eq!(
             press(KeyCode::Char('3'), none),
             Some(BoardAction::Colour(3))

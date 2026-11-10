@@ -248,7 +248,9 @@ change what it shows, never how it works.
   pixels, which the graph fakes with `z=-1`), redrawing only damaged regions for smooth large
   scenes, sub-cell placement, or synchronized output. The canvas engine plus that writer is then
   cold-lava's terminal graphics library, and can be published as a crate. Until then the canvas
-  engine stays free of UI crates, so the switch stays small.
+  engine stays free of UI crates, so the switch stays small. At #136 the buffer was still
+  enough: placed shapes paint the canvas engine's grid into it cell by cell, over the
+  whiteboard's dots and arrows, so the writer waits for a real need.
 - **Honest limits.** A terminal draws whiteboards, diagrams, boards and graphs well, with Kitty
   pixels where the terminal has them and braille elsewhere. It won't feel like a tablet.
 

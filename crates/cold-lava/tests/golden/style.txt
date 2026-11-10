@@ -1,5 +1,5 @@
 35 notes
-list marker        -           detected                       - 22, * 0, + 0
+list marker        -           detected                       - 23, * 0, + 0
 links              wikilink    detected                       wikilink 99, markdown 0
 link path          shortest    detected                       shortest 99, relative 0, absolute 0
 task fields        emoji       detected                       emoji 3, dataview 0

@@ -7,6 +7,27 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- Placed shapes on the whiteboard. A node with a `cold-lava` field is a placed shape: its
+  shape, what its inputs are bound to, its turn and the fractions Obsidian rounds away. The
+  whiteboard draws it with the canvas engine (a Venn shows which items fall in each region,
+  live as notes change), and it can be moved, stretched from any corner and turned (`r`, or
+  drag its `↻` grip). In Obsidian it stays a sensible node: a card is the note's `file` node, a
+  sticky a `text` node with its text, other shapes a `text` node with their title. When a
+  program saves the canvas without cold-lava's fields, the whiteboard keeps the shapes, saves
+  them back and says so.
+- Placing and using shapes on the whiteboard: `s` picks any loaded shape and a small form
+  binds its inputs (a query, a note, labels or text, in `--bind`'s short form); `b` binds the
+  selected one again. A click or a drop on a shape runs what its `on` declares, through the
+  workspace gateway; `x` lists its actions, and a sticky's "Make it a note" makes the note and
+  turns the sticky into a card on it. Enter edits a sticky's text in place, opens a card's
+  note (Back returns to the whiteboard), or binds any other shape again. The example
+  workspace has a `checklist` shape whose click ticks a task.
+- The example workspace's `Volcano Venn.canvas`, embedded from `Guide/Whiteboard`: a Venn
+  of the volcanoes that erupted and the stratovolcanoes, a card on Krakatoa, a sticky with a
+  task, an arrow and the field season's checklist, all placed shapes.
+
 ### Changed
 
 - The graph view runs in the menu's loop instead of its own. Extensions keep being answered

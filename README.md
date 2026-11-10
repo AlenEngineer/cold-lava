@@ -31,7 +31,8 @@ cargo install --path crates/cold-lava
 ## Try it
 
 The repo includes a small example workspace about volcanoes, built to show every feature: folders
-with Obsidian colour groups, tags, a few unresolved links, an orphan note, and two whiteboards.
+with Obsidian colour groups, tags, a few unresolved links, an orphan note, and three whiteboards
+(one of placed shapes: `Volcano Venn`, embedded from `Guide/Whiteboard`).
 
 ```bash
 git clone https://github.com/AlenEngineer/cold-lava
@@ -221,6 +222,9 @@ it finds the layout where you left it.
 | `c` | draw an arrow: pick the target, `Enter` (doing it again removes the arrow) |
 | `Enter` / `E` | edit inline / edit in `$EDITOR` (note cards open the note) |
 | `Shift+arrows`, drag | move · `Ctrl+arrows`, `[ ] { }`, drag `◢` to resize |
+| `r`, drag `↻` | turn a placed shape (drag a `◆` corner to stretch it) |
+| `s` / `b` | place a shape and bind its inputs / bind the selected shape again |
+| `x`, click, drag | a shape's actions (a sticky: make it a note) · what it does on a click or a drop |
 | `1`–`6` / `0` | Obsidian colour presets / clear |
 | `d`, `u` / `U` | delete, undo / redo |
 | `o` | open the note, or the board itself, in Obsidian |
@@ -777,7 +781,12 @@ about, since it writes):
 cold-lava shapes WORKSPACE --render sticky --bind 'text=text:Ash masks' --do action:make-a-note
 ```
 
-Placing shapes on a canvas comes later; see [docs/shapes.md](docs/shapes.md).
+Placed shapes live on whiteboards, as `.canvas` nodes with a `cold-lava` field that Obsidian
+keeps: the whiteboard draws them bound to their data and lets you move, stretch and turn them.
+On a whiteboard, `s` picks a shape and binds each input in the same short form as `--bind`;
+a click or a drop does what the shape declares (the example's `checklist` ticks the task you
+click), `x` lists its actions, and Enter edits a sticky's text or opens a card's note.
+See [docs/shapes.md](docs/shapes.md) ("Placed shapes, as built").
 
 ### Extensions
 

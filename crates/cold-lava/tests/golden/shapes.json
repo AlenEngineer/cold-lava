@@ -637,6 +637,55 @@
           "shows": "volcanoes where elevation sort by elevation desc limit 5"
         }
       ]
+    },
+    {
+      "id": "checklist",
+      "origin": {
+        "kind": "workspace",
+        "path": "example-workspace/.cold-lava/shapes.toml"
+      },
+      "title": "Checklist",
+      "inputs": [
+        "tasks"
+      ],
+      "aspect": 2.5,
+      "parts": [
+        {
+          "rect": {
+            "id": "box",
+            "from": [
+              0.0,
+              0.0
+            ],
+            "to": [
+              1.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "text": {
+            "value": "${tasks.title}",
+            "at": "box.top"
+          }
+        }
+      ],
+      "regions": [
+        {
+          "id": "open",
+          "area": "box",
+          "shows": "tasks where status_type != done"
+        }
+      ],
+      "on": [
+        {
+          "click": "open",
+          "edit": {
+            "item": "clicked",
+            "toggle": true
+          }
+        }
+      ]
     }
   ],
   "glyphs": [

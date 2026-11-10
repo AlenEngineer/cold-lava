@@ -1,0 +1,24 @@
+# Placed shapes in Inbox/Shapes.canvas, which tests/drive.rs writes first: a Venn (a text node
+# with cold-lava's field) and a plain card. Another program saves the file the way Obsidian
+# does, nodes sorted and positions rounded, and keeps the field: nothing is lost. Then one saves
+# it without the field: the whiteboard says so until a key, keeps the shape and saves it back.
+# tests/drive.rs reads the file after.
+size 100x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type shapes
+keys enter
+wait-for whiteboard Shapes · 2 cards · 0 arrows
+write Inbox/Shapes.canvas {"nodes":[\n{"id":"plain","type":"text","text":"Plain","x":400,"y":0,"width":200,"height":100},\n{"id":"venn","type":"text","text":"Simple Venn diagram","x":0,"y":0,"width":301,"height":300,"cold-lava":{"shape":"venn2","rotation":15,"exact":[0.4,0,300.5,300]}}\n],"edges":[],"cold-lava-version":1}\n
+wait-for merged changes made outside cold-lava
+expect-not lost cold-lava's fields
+write Inbox/Shapes.canvas {"nodes":[\n{"id":"plain","type":"text","text":"Plain","x":400,"y":0,"width":200,"height":100},\n{"id":"venn","type":"text","text":"Simple Venn diagram","x":50,"y":0,"width":301,"height":300}\n],"edges":[]}\n
+wait-for lost cold-lava's fields on 1 shape
+keys space
+wait-gone lost cold-lava's fields
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

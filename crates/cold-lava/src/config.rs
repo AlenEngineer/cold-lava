@@ -354,13 +354,13 @@ mod tests {
 
     #[test]
     fn same_key_in_two_screens_is_fine() {
-        let c = parse("[keys]\n\"graph.open\" = \"x\"\n\"board.fit\" = \"x\"\n");
+        let c = parse("[keys]\n\"graph.open\" = \"y\"\n\"board.fit\" = \"y\"\n");
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         assert_eq!(
             Keymap::with(&commands::entries(BOARD), &c.keys)
                 .0
                 .label("board.fit"),
-            "x"
+            "y"
         );
     }
 
