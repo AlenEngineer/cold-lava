@@ -449,6 +449,81 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_to_a_shape_bound_before_the_shapes_were_read_again_is_dropped() {
+        use crate::bind::Source;
+        use crate::shapes::{Layer, load};
+        let dir = std::env::temp_dir().join(format!("cold-lava-live-asks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let tally: toml::Table = toml::from_str(
+            r#"
+            inputs = ["a"]
+            parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
+            regions = [{ id = "count", area = "box", extension = true }]
+            "#,
+        )
+        .unwrap();
+        let shapes = || {
+            load([
+                Layer::built_in(),
+                Layer::extension("tally", [("tally.list".to_string(), tally.clone())]),
+            ])
+        };
+        let mut node: CNode = serde_json::from_value(serde_json::json!(
+            {"id": "n", "type": "text", "x": 0, "y": 0, "width": 1, "height": 1}
+        ))
+        .unwrap();
+        let sources: indexmap::IndexMap<String, Source> =
+            [("a".to_string(), Source::Items(vec!["Krakatoa".into()]))].into();
+        let at = Placement::new(Point::new(0.0, 0.0), Point::new(20.0, 10.0));
+        let inputs = ["a".to_string()];
+        super::super::placed::place(&mut node, "tally.list", &inputs, "Tally", &sources, at);
+        let nodes = [node];
+        let answer = |ask: &Ask, label: &str| ShapeAnswer {
+            by: "tally".into(),
+            ask: ask.clone(),
+            answer: Ok(Answered::Region {
+                items: vec![Entry {
+                    id: String::new(),
+                    label: label.into(),
+                }],
+            }),
+        };
+        let shown = |live: &Live| -> Vec<String> {
+            let b = live.binding("n").expect("bound");
+            (b.shown().regions[0].items.iter())
+                .map(|e| e.label.clone())
+                .collect()
+        };
+
+        let mut before = Live::new(shapes());
+        assert_eq!(before.sync(&mut core, &nodes), Vec::<String>::new());
+        let asks = before.take_asks();
+        let [(_, old)] = &asks[..] else {
+            panic!("one shape/region ask: {asks:?}")
+        };
+        before.close(&mut core);
+        let mut after = Live::new(shapes());
+        assert_eq!(after.sync(&mut core, &nodes), Vec::<String>::new());
+        let asks = after.take_asks();
+        let [(_, new)] = &asks[..] else {
+            panic!("one shape/region ask: {asks:?}")
+        };
+
+        after.answered(answer(old, "asked before"));
+        assert_eq!(
+            shown(&after),
+            Vec::<String>::new(),
+            "the answer was to a binding that is gone"
+        );
+        after.answered(answer(new, "asked now"));
+        assert_eq!(shown(&after), ["asked now"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn turning_follows_the_mouse_in_steps() {
         let p = Placement::new(Point::new(0.0, 0.0), Point::new(10.0, 10.0));
         assert_eq!(turn_towards(p, Point::new(5.0, -10.0), 15.0), 0.0);

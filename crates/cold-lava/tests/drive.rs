@@ -832,6 +832,19 @@ fn the_agenda_lists_tasks_by_day_and_ticks_them() {
 }
 
 #[test]
+fn a_rescan_tells_the_agenda_at_once() {
+    let dir = sandbox("rescan-news");
+    let out = drive("rescan-news.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn canvases_join_the_workspace_through_their_owner() {
     let dir = sandbox("canvas-owner");
     let workspace = dir.join("example-workspace");
