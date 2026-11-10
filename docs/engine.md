@@ -237,7 +237,9 @@ change what it shows, never how it works.
     paragraphs with lazy lines). A container's marker on a later line (`>`, an item's
     indentation) is a token of the innermost block that holds that line. A lazy line, which the
     paragraph's containers don't go on to, ends the paragraph at any block that starts there,
-    a list item of another kind (`1. a` then `2) b`) included.
+    a list item of another kind (`1. a` then `2) b`) included. A table whose header starts
+    with `|` ends the paragraph above it, as on GitHub; another table's header is a
+    paragraph's only line.
   - *Inlines* are read per line, left to right, the first to start winning: code spans,
     wikilinks and embeds (target, `#heading` or `^block`, `|alias`), Markdown links and images,
     Dataview fields (`[key:: value]`, `(key:: value)`, a `key:: value` line), `%%comments%%`,
@@ -281,8 +283,11 @@ change what it shows, never how it works.
     loose lists, indented code, HTML, block ids, callouts, tables, math, comments). They differ
     in one way, where pulldown-cmark wasn't Obsidian: a frontmatter whose first line is blank,
     as the Kanban plugin writes it, was a rule and Markdown to it, and is frontmatter now.
-    Reading 3,300 notes' items took ITEMS_TREE on a GitHub runner, against ITEMS_PULLDOWN
-    with pulldown-cmark.
+    Other cases where pulldown-cmark wasn't Obsidian, or where the tree doesn't read the
+    syntax yet, are kept in the test (`DIFFERENT`). On a GitHub runner, 3,300 notes' items took
+    160 ms with no type loaded, the walk and the ids alone, where pulldown-cmark's pass took
+    153 ms; with the bench workspace's types, 495 ms and 493 ms, the type matching being most
+    of it.
 - **A framework, extracted, not designed up front.** The frontend is built concrete and
   opinionated first. Once its parts have proven themselves (the view host, the document
   layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a

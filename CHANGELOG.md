@@ -30,6 +30,13 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- Items are read from the note's own syntax tree instead of a second Markdown parser (part of
+  #140): every task, list item, heading and block keeps its id, rev and fields, and
+  `cold-lava items`, `agenda` and `table` print the same, as fast (3,000 notes on a GitHub
+  runner). Two things read differently, as Obsidian shows them: a frontmatter whose first line
+  is blank, as the Kanban plugin writes it, is frontmatter, so nothing in it is an item; and a
+  code span that its line doesn't close goes on into the next lines of its paragraph, so the
+  links and tags inside it don't count for backlinks, the graph or `rename-tag`.
 - The whiteboard runs in the menu's loop instead of its own (closes #92). Extensions keep being
   answered while a drawing is open, and their status line words show in the whiteboard's.
   Opening a board from a task in the agenda or the table, or from a backlink, selects the node
