@@ -7,6 +7,16 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- `cold-lava drive` drags and scrolls the mouse: `drag ROW COL ROW2 COL2` presses the left
+  button, moves through every cell on the way and releases, `scroll up|down ROW COL [N]` turns
+  the wheel, and `expect-in ROW COL ROW2 COL2 TEXT` checks that a part of the screen shows
+  TEXT. `graph.drive` and `board.drive` use them to pin the graph view and the whiteboard as
+  they are: selecting, dragging nodes and cards, panning, zooming, the local graph, search,
+  colour groups and filters, notes changed on disk, editing cards, and merging a canvas changed
+  outside while a card is being edited.
+
 ## [0.4.0] - 2026-11-09
 
 The engine's other half: everything is reachable through the gateways, other kinds of file
@@ -26,13 +36,6 @@ join the workspace, and whole-workspace changes become previewable recipes.
 
 ### Added
 
-- `cold-lava drive` drags and scrolls the mouse: `drag ROW COL ROW2 COL2` presses the left
-  button, moves through every cell on the way and releases, `scroll up|down ROW COL [N]` turns
-  the wheel, and `expect-in ROW COL ROW2 COL2 TEXT` checks that a part of the screen shows
-  TEXT. `graph.drive` and `board.drive` use them to pin the graph view and the whiteboard as
-  they are: selecting, dragging nodes and cards, panning, zooming, the local graph, search,
-  colour groups and filters, notes changed on disk, editing cards, and merging a canvas changed
-  outside while a card is being edited.
 - Workspace style: cold-lava counts how the notes are written as it reads them (list markers,
   wikilinks or Markdown links and their paths, emoji or Dataview task fields, heading style,
   frontmatter lists, `#` in `tags`, the order of frontmatter keys, each field's date form) and
