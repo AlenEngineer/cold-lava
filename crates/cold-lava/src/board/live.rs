@@ -14,12 +14,17 @@ use cold_lava_canvas::{
     Grid, Handle, Hit, Mask, Placed, Placement, Point, Rect, Res, Style, Viewport, draw, hit,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The number for the next binding of a placed shape. Never reused while the program runs, so
+/// an extension's late answer to a binding that is gone (the shape editor's save binds every
+/// shape again, a closed board lets go of its own) names no binding and is dropped.
+static NEXT_PLACED: AtomicU64 = AtomicU64::new(1);
 
 /// The shapes of one canvas, by node id.
 pub struct Live {
     pub shapes: Shapes,
     nodes: HashMap<String, Shaped>,
-    next: u64,
     /// `shape/region` asks waiting to go to the extension that ships the shape.
     asks: Vec<(String, Ask)>,
 }
@@ -28,7 +33,7 @@ struct Shaped {
     /// The shape and its sources as saved: a change binds it again.
     key: String,
     binding: Result<Binding, String>,
-    /// Names this placed shape in an extension's answers.
+    /// Names this binding of the placed shape in an extension's answers.
     placed: u64,
     /// Bumped whenever what it shows may have changed.
     version: u64,
@@ -79,7 +84,6 @@ impl Live {
         Live {
             shapes,
             nodes: HashMap::new(),
-            next: 1,
             asks: Vec::new(),
         }
     }
@@ -117,8 +121,7 @@ impl Live {
             if let Err(e) = &binding {
                 problems.push(e.clone());
             }
-            let placed = self.next;
-            self.next += 1;
+            let placed = NEXT_PLACED.fetch_add(1, Ordering::Relaxed);
             let shaped = Shaped {
                 key,
                 binding,
@@ -220,7 +223,7 @@ impl Live {
         self.nodes.clear();
     }
 
-    /// The number that names the node's placed shape in an extension's answers.
+    /// The number that names the node's binding in an extension's answers.
     pub fn placed_id(&self, id: &str) -> Option<u64> {
         Some(self.nodes.get(id)?.placed)
     }

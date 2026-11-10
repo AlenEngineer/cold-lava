@@ -1894,9 +1894,11 @@ with two requests (host → extension; `crate::act::Ask` in the engine pins thei
   "inputs": {"a": {"title": "…", "members": […]}}}}
 ```
 
-- **`placed`** is the frontend's name for the placed shape; the answer goes back to it. Each
-  input comes with its title and its members as a region sees them (an item's id, `rev` and
-  fields; a note's or a label's id and fields).
+- **`placed`** is the frontend's name for this binding of the placed shape; the answer goes
+  back to it. It is never reused while cold-lava runs, so an answer that comes after the shape
+  was bound again (the shape editor saved, the board was closed) is dropped. Each input comes
+  with its title and its members as a region sees them (an item's id, `rev` and fields; a
+  note's or a label's id and fields).
 - **`shape/region`** is answered with `{"items": [{"id": "…", "label": "…"}]}`: what the region
   shows, in order (`id` may be left out for a label of its own). It is asked after the shape is
   bound and again when an input changes.
