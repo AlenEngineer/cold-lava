@@ -233,6 +233,10 @@ pub enum Request {
     /// Every loaded type with its definition, as `cold-lava types --json` lists them.
     #[serde(rename = "types/list")]
     TypesList,
+    /// How the workspace writes, as `cold-lava style --json` prints it: for an extension that
+    /// writes new text itself (`style::Style`).
+    #[serde(rename = "workspace/style")]
+    Style,
 }
 
 /// What a subscriber hears (host → extension), once per batch of changes the core reads.
@@ -1244,6 +1248,7 @@ fields.text = { rest = true }
             }}),
         );
         wire(Request::TypesList, json!({"method": "types/list"}));
+        wire(Request::Style, json!({"method": "workspace/style"}));
     }
 
     #[test]

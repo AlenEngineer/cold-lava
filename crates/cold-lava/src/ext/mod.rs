@@ -630,6 +630,12 @@ impl Host<'_> {
         Ok(core.index.workspace.item_settings().types.types.clone())
     }
 
+    /// `workspace/style`
+    pub fn style(&mut self) -> Result<crate::style::Style, gateway::Error> {
+        let core = self.core(Permission::ItemsRead)?;
+        Ok(core.index.workspace.style())
+    }
+
     /// The core, for a file message about files of `extension`: the owner of that kind may
     /// read and write them; any other file needs `files.read`, and `files.write` to change it.
     fn files_core(

@@ -22,6 +22,9 @@ change commands, keys and file formats; patch versions only fix things.
   a wikilink or a Markdown link as the workspace writes them; a new frontmatter key goes where
   the notes put it; a new `tags` or `aliases` list (adding a tag with `#`, merging notes) is
   written `  - a`, `- a` or `[a]`, with `#` on tags when the workspace's have one.
+- `workspace/style` on the workspace gateway: an extension (with `items.read`) asks how the
+  workspace writes and gets the same JSON as `cold-lava style --json`, to write new text the
+  same way. `cold_lava.py` has `style()`.
 - Recipes: named changes to the whole workspace, shown as a diff per file before anything is
   written. `cold-lava recipe WORKSPACE rename-tag --from a --to b [--dry-run] [--json]` renames
   a tag and the tags nested under it, in the text (never in code) and in frontmatter `tags` in

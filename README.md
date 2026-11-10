@@ -350,6 +350,8 @@ adds, a link set as a field's value, a new frontmatter key and where it goes, an
 or `aliases` list (adding a tag, merging notes). Text already in a note keeps its own way: a
 task whose line writes emoji fields gets an emoji done date in any workspace.
 
+Extensions ask for it with `workspace/style` and get the same JSON as `cold-lava style --json`.
+
 The style is the whole workspace's; a folder written differently follows the workspace.
 `cold-lava style` reports mistakes in either file and exits with 1.
 

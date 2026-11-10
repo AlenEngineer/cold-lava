@@ -205,6 +205,10 @@ then a query and a view, not a parser of its own.
   the permission gate is the same; news goes out as notifications ("Transport, as built").
 - **Files.** `workspace/read`, `workspace/write`, `workspace/create` and `workspace/files`
   read and write whole files ("File types, as built" below).
+- **The style.** `workspace/style` answers how the workspace writes, the same JSON as
+  `cold-lava style --json` (pinned in `rpc.rs`'s tests), for an extension that writes new text
+  with `workspace/write` or `workspace/create`. One that changes items with `items/edit` needs
+  none of it: the edit is spelled in the style already ("Workspace style, as built").
 - **Not yet:** the ops `set-status`, `set-date`, `set-property`,
   `set-cell`, `replace` and `insert-after`. `set-field` already sets a status, a date, a
   property or a cell of a typed item; the others wait until an extension needs one.
@@ -1276,8 +1280,7 @@ round trip per link is never acceptable.
 
 ## Workspace style
 
-*(design; detection, `cold-lava style`, the overrides and writing in the style are built:
-"Workspace style, as built" below)*
+*(design; built: "Workspace style, as built" below)*
 
 A workspace has a style, whether or not anyone wrote it down: `-` or `*` for list items, wikilinks
 or Markdown links, emoji (`📅 2026-11-12`) or Dataview (`[due:: 2026-11-12]`) task fields, a date
@@ -1368,6 +1371,9 @@ new text.**
     notes then (`Style::of_root`, about 300 ms on 3,000 notes against 14 ms for the edit
     alone), and replacing a value or ticking a line that writes its fields costs nothing more;
     the app and the gateway use the core's notes.
+- **For extensions.** `workspace/style` (permission `items.read`) answers the `Style` as JSON,
+  pinned by `rpc.rs`'s `the_workspaces_style_is_pinned_over_the_wire`; `cold_lava.py` has
+  `style()`. An extension that edits items through `items/edit` gets the style without asking.
 - **Not routed, and why.** A note behind an unresolved link, a daily note and a canvas start
   empty or from their template, so they add nothing to spell. A recurring task's next
   occurrence is a copy of its line. Renames, merges and recipes rewrite links and tags in the
@@ -1602,8 +1608,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
     when the program never started).
 - The extension calls the host: `workspace/notes`, `workspace/read`, `workspace/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
-  `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit` and `types/list` (see
-  "The workspace gateway, as built"), `view/open`, `view/update`, `view/close`, `view/show`
+  `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list` and
+  `workspace/style` (see "The workspace gateway, as built"), `view/open`, `view/update`, `view/close`, `view/show`
   and `workspace/open` (see "The view gateway, as built"), `ui/notify`, `events/subscribe`, and:
   - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
     core command or another extension's. Core commands ignore `args`, except
@@ -1628,9 +1634,10 @@ Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`):
 `editor/deleted`, `pane/message`, `pane/exited`, `items/changed`, `items/reset`, `view/event`,
 `view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
 `workspace/saved`, `workspace/open`, `pane/open`, `pane/input`, `items/query`,
-`items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/read`,
-`workspace/write`, `workspace/create`, `workspace/files`, `view/open`, `view/update`,
-`view/close` and `view/show` from the extension. The `items/*`, `types/list` and file requests are answered
+`items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/style`,
+`workspace/read`, `workspace/write`, `workspace/create`, `workspace/files`, `view/open`,
+`view/update`, `view/close` and `view/show` from the extension. The `items/*`, `types/list`,
+`workspace/style` and file requests are answered
 during the call, and `view/open` names its view at once; the rest are queued.
 
 ### Over the wire, as built
@@ -1647,7 +1654,8 @@ during the call, and `view/open` names its view at once; the rest are queued.
   `config.toml`'s keys are checked before any extension starts.
 - **Extension → host.** Requests, answered with a result or an error: the workspace gateway's
   (`items/query` with `{items, next}`, `items/subscribe` with `{subscription}`,
-  `items/unsubscribe` and `types/list`, `items/edit` with `{item, changed, next,
+  `items/unsubscribe`, `types/list` and `workspace/style` (as `cold-lava style --json`
+  prints it), `items/edit` with `{item, changed, next,
   warning}`, and the file messages of "File types, as built"), and `ui/notify` (`message`), `ui/status` (`text`, `null` to clear: the
   extension's own part of the first status line, kept until it sends another), `command/run`
   (`id`, `args`), `workspace/saved` and `editor/opened` (`note`), `pane/open` (`program`,
@@ -1738,7 +1746,7 @@ field, an extension may read. *(Exists: `ext::Permission`, checked by `Host`.)*
 
 | Permission | Allows |
 | --- | --- |
-| `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` |
+| `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`, `workspace/style` |
 | `items.edit` | `items/edit` |
 | `files.read` | `workspace/read` and `workspace/files` for kinds of file it doesn't own |
 | `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own |

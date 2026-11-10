@@ -201,6 +201,7 @@ pub const HOST_METHODS: &[&str] = &[
     "items/unsubscribe",
     "items/edit",
     "types/list",
+    "workspace/style",
     "workspace/read",
     "workspace/write",
     "workspace/create",
@@ -225,6 +226,7 @@ const GATEWAY: &[&str] = &[
     "items/unsubscribe",
     "items/edit",
     "types/list",
+    "workspace/style",
 ];
 
 const FILES: &[&str] = &[
@@ -291,6 +293,7 @@ fn serve_now(
                 Err(e) => Err(e.into()),
             },
             Request::TypesList => answer(host.types()),
+            Request::Style => answer(host.style()),
         };
     }
     if FILES.contains(&method) {
@@ -473,6 +476,91 @@ mod tests {
         assert!(sub.unwrap()["subscription"].is_u64());
         let (types, _) = served(&mut core, &[ItemsRead], "types/list", json!({}));
         assert!(types.unwrap().as_array().is_some_and(|t| !t.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_workspaces_style_is_pinned_over_the_wire() {
+        let dir = workspace("style");
+        std::fs::write(
+            dir.join("Plan.md"),
+            "---\ntitle: Plan\ntags: [\"#home\"]\nfrom: 31/10/2026\n---\n\
+             * [ ] Pay rent [due:: 2026-11-12]\n* See [Bills](Bills.md)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".obsidian/app.json"),
+            r#"{"newLinkFormat": "relative"}"#,
+        )
+        .unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let (style, _) = served(
+            &mut core,
+            &[Permission::ItemsRead],
+            "workspace/style",
+            json!({}),
+        );
+        let counts = |pairs: &[(&str, u32)]| {
+            Value::Object(
+                pairs
+                    .iter()
+                    .map(|(k, n)| (k.to_string(), json!(n)))
+                    .collect(),
+            )
+        };
+        let choice = |value: &str, from: &str, pairs: &[(&str, u32)]| json!({"value": value, "from": from, "counts": counts(pairs)});
+        assert_eq!(
+            style.unwrap(),
+            json!({
+                "notes": 1,
+                "list-marker": choice("*", "detected", &[("-", 0), ("*", 2), ("+", 0)]),
+                "links": choice("markdown", "detected", &[("wikilink", 0), ("markdown", 1)]),
+                "link-path": choice(
+                    "relative",
+                    "obsidian newLinkFormat",
+                    &[("shortest", 1), ("relative", 0), ("absolute", 0)],
+                ),
+                "task-fields": choice("dataview", "detected", &[("emoji", 0), ("dataview", 1)]),
+                "headings": choice("atx", "default", &[("atx", 0), ("setext", 0)]),
+                "frontmatter-lists": choice(
+                    "flow",
+                    "detected",
+                    &[("indented", 0), ("flush", 0), ("flow", 1)],
+                ),
+                "tags": choice("hash", "detected", &[("bare", 0), ("hash", 1)]),
+                "key-order": {
+                    "value": ["title", "tags", "from"],
+                    "from": "detected",
+                    "counts": {"from": 1, "tags": 1, "title": 1},
+                },
+                "dates": {
+                    "due": choice(
+                        "YYYY-MM-DD",
+                        "detected",
+                        &[
+                            ("YYYY-MM-DD", 1),
+                            ("YYYY/MM/DD", 0),
+                            ("DD/MM/YYYY", 0),
+                            ("MM/DD/YYYY", 0),
+                            ("DD.MM.YYYY", 0),
+                        ],
+                    ),
+                    "from": choice(
+                        "DD/MM/YYYY",
+                        "detected",
+                        &[
+                            ("YYYY-MM-DD", 0),
+                            ("YYYY/MM/DD", 0),
+                            ("DD/MM/YYYY", 1),
+                            ("MM/DD/YYYY", 0),
+                            ("DD.MM.YYYY", 0),
+                        ],
+                    ),
+                },
+            })
+        );
+        let (refused, _) = served(&mut core, &[], "workspace/style", json!({}));
+        assert_eq!(reason(&refused.unwrap_err()), "forbidden");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
