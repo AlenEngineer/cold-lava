@@ -225,6 +225,7 @@ it finds the layout where you left it.
 | `r`, drag `↻` | turn a placed shape (drag a `◆` corner to stretch it) |
 | `s` / `b` | place a shape and bind its inputs / bind the selected shape again |
 | `x`, click, drag | a shape's actions (a sticky: make it a note) · what it does on a click or a drop |
+| `S` | the shape editor: a new shape, one of the workspace's, or one made from the selected shape or group |
 | `1`–`6` / `0` | Obsidian colour presets / clear |
 | `d`, `u` / `U` | delete, undo / redo |
 | `o` | open the note, or the board itself, in Obsidian |
@@ -787,6 +788,30 @@ On a whiteboard, `s` picks a shape and binds each input in the same short form a
 a click or a drop does what the shape declares (the example's `checklist` ticks the task you
 click), `x` lists its actions, and Enter edits a sticky's text or opens a card's note.
 See [docs/shapes.md](docs/shapes.md) ("Placed shapes, as built").
+
+#### Making a shape
+
+You can draw a shape instead of writing it. On a whiteboard, `S` opens the **shape editor**: on a
+new shape, on one of the workspace's, or on the selected placed shape (a copy to make your own)
+or group (one shape of every placed shape in it). It writes the same `[[shapes]]` TOML into the
+workspace's `.cold-lava/shapes.toml`, so you can still edit the result by hand.
+
+- **Draw.** `p` places vertices one click at a time (click the first to close the shape, Enter to
+  leave it open), `c` draws a circle by dragging from its centre out, `e` an ellipse, `r` a
+  rectangle, `t` a label at a part's top or any point.
+- **Shape it.** With `v`, drag a vertex or grip to move it, a side's middle to bend it into a
+  curve (back to the middle makes it straight again), or a part to move it. Guides snap points to
+  90°, 45°, 60° and 30°, to equal sides, to the next corner of a regular polygon and level with
+  other points, and a circle to another's size. Nothing about angles is saved; `g` turns guides
+  off.
+- **Name it.** `a` and a click inside an area names a region: the editor sees which parts contain
+  the point and writes `left & right` or `left - right`. `n` and a click names a vertex or a point
+  as an anchor; `N` renames the selected part.
+- **Give it data.** `i` sets the id, title, inputs and key; `w` what each region shows (`a & b`,
+  `where`, `sort by`, `limit`); `o` adds a behaviour (a click, drop, key or action and its step);
+  `b` binds the preview on the right to real data, as `s` binds a placed shape.
+- **Save.** `Ctrl+s` writes only this shape's block and keeps the rest of the file, comments
+  included, as it was. If the file changed since the editor read it, nothing is written.
 
 ### Extensions
 

@@ -1,0 +1,27 @@
+# Free drawing becomes a shape: a group on the whiteboard (Inbox/Drawing.canvas, which
+# tests/drive.rs writes first) holds a placed circle and a rectangle turned 30°. With the group
+# selected, S opens the shape editor on one shape of both, each part where it was: the circle is
+# still round (an ellipse of the new box, which is wider than tall), the turned rectangle a closed
+# path of its four corners. Saved, it is the workspace's shape drawing1.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter
+type Drawing
+keys enter
+wait-for whiteboard Drawing
+keys tab
+wait-for group · Drawing
+keys S
+wait-for shape editor · drawing1 (new)
+expect circle: ellipse
+expect rect: path, 4 vertices, closed
+keys ctrl+s
+wait-for saved drawing1 in .cold-lava/shapes.toml
+keys q
+wait-for whiteboard Drawing
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

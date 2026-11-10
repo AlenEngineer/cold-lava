@@ -184,6 +184,11 @@ enum Mode {
         id: String,
         pos: usize,
     },
+    /// Which shape the shape editor opens on: a new one or one of the workspace's.
+    PickShape {
+        query: String,
+        pos: usize,
+    },
 }
 
 enum Drag {
@@ -871,6 +876,149 @@ impl<'a> Board<'a> {
                 (s.id.clone(), format!("{}{title}  · {}", s.id, s.origin))
             })
             .collect()
+    }
+
+    /// What the shape editor can open for `query`: a new shape, then the workspace's own (only
+    /// they are in the file it writes).
+    fn editable(&self, query: &str) -> Vec<(Option<String>, String)> {
+        let q = crate::workspace::search_key(query);
+        let own = (self.live.shapes.shapes.iter())
+            .filter(|s| matches!(s.origin, crate::shapes::Origin::Workspace { .. }))
+            .filter(|s| {
+                let words = format!("{} {}", s.id, s.definition.title);
+                crate::workspace::search_key(&words).contains(&q)
+            })
+            .map(|s| {
+                (
+                    Some(s.id.clone()),
+                    format!("edit {}  {}", s.id, s.definition.title),
+                )
+            });
+        let new = "+ a new shape".to_string();
+        let new = crate::workspace::search_key(&new)
+            .contains(&q)
+            .then_some((None, new));
+        new.into_iter().chain(own).collect()
+    }
+
+    /// The shape editor on the selected placed shape (a copy to make your own) or the placed
+    /// shapes in the selected group (one shape of all their parts), else a new or a workspace
+    /// shape to pick.
+    fn make_shape(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Some(sel) = self.sel.clone() else {
+            self.mode = Mode::PickShape {
+                query: String::new(),
+                pos: 0,
+            };
+            return Ok(());
+        };
+        let members: Vec<String> = (self.group_members(&sel).into_iter())
+            .filter(|id| self.live.is_shape(id))
+            .collect();
+        let loaded = crate::shapes::for_workspace(&self.workspace_root);
+        let taken = |id: &str| loaded.get(id).is_some();
+        let start = match members.as_slice() {
+            [] => {
+                self.mode = Mode::PickShape {
+                    query: String::new(),
+                    pos: 0,
+                };
+                return Ok(());
+            }
+            [one] if *one == sel => {
+                let Some(shape) = (self.node(one))
+                    .and_then(|n| Some(placed::Stored::of(n)?.ok()?.shape))
+                    .and_then(|s| self.live.shapes.get(&s))
+                else {
+                    self.flash("this shape didn't load, so there is nothing to start from");
+                    return Ok(());
+                };
+                let id = (1..)
+                    .map(|n| match n {
+                        1 => format!("{}-copy", shape.id),
+                        n => format!("{}-copy{n}", shape.id),
+                    })
+                    .find(|id| !taken(id))
+                    .expect("a free id");
+                let mut definition = shape.definition.clone();
+                definition.title = format!("{} (copy)", definition.title).trim().to_string();
+                crate::shape_editor::Start::From {
+                    id,
+                    definition: Box::new(definition),
+                }
+            }
+            ids => {
+                let mut built = Vec::new();
+                for id in ids {
+                    let Some(n) = self.node(id) else { continue };
+                    let Some(Ok(stored)) = placed::Stored::of(n) else {
+                        continue;
+                    };
+                    let Some(loaded) = self.live.shapes.get(&stored.shape) else {
+                        continue;
+                    };
+                    built.push((
+                        loaded.definition.clone(),
+                        loaded.shape.clone(),
+                        stored.placement(n),
+                    ));
+                }
+                let members: Vec<crate::shape_editor::Member> = (built.iter())
+                    .map(|(definition, shape, at)| crate::shape_editor::Member {
+                        definition,
+                        shape,
+                        at: *at,
+                    })
+                    .collect();
+                let (definition, left_out) = crate::shape_editor::merged(&members);
+                if !left_out.is_empty() {
+                    self.flash(format!("left out: {}", left_out.join("; ")));
+                }
+                let id = (1..)
+                    .map(|n| format!("drawing{n}"))
+                    .find(|id| !taken(id))
+                    .expect("a free id");
+                crate::shape_editor::Start::From {
+                    id,
+                    definition: Box::new(definition),
+                }
+            }
+        };
+        self.open_editor(terminal, start)
+    }
+
+    /// Runs the shape editor on the board's core; after it, the board's shapes are read again
+    /// and hear what the core said meanwhile.
+    fn open_editor(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        start: crate::shape_editor::Start,
+    ) -> Result<()> {
+        let left = match crate::shape_editor::run(terminal, &self.workspace_root, self.core, start)
+        {
+            Ok(left) => left,
+            Err(e) => {
+                self.flash(e.to_string());
+                return Ok(());
+            }
+        };
+        for e in &left.events {
+            self.live.noticed(self.core, e);
+        }
+        self.events.extend(left.events);
+        for (owner, news) in left.news {
+            match owner == crate::bind::OWNER {
+                true => self.live.heard(self.core, &news),
+                false => self.news.push((owner, news)),
+            }
+        }
+        if left.saved {
+            self.live.close(self.core);
+            self.live = Live::new(crate::shapes::for_workspace(&self.workspace_root));
+            self.flash("shapes read again: s places the one you made");
+        }
+        terminal.clear()?;
+        Ok(())
     }
 
     /// The selected shape's actions: each name and how its shape titles it.
@@ -1798,6 +1946,35 @@ impl<'a> Board<'a> {
                 }
                 return Ok(());
             }
+            Mode::PickShape { query, pos } => {
+                match k.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Up => *pos = pos.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Tab => *pos += 1,
+                    KeyCode::Backspace => {
+                        query.pop();
+                        *pos = 0;
+                    }
+                    KeyCode::Char(c) => {
+                        query.push(c);
+                        *pos = 0;
+                    }
+                    KeyCode::Enter => {
+                        let (q, p) = (query.clone(), *pos);
+                        let picks = self.editable(&q);
+                        self.mode = Mode::Normal;
+                        if let Some((id, _)) = picks.get(p.min(picks.len().saturating_sub(1))) {
+                            let start = match id {
+                                None => crate::shape_editor::Start::New,
+                                Some(id) => crate::shape_editor::Start::Edit(id.clone()),
+                            };
+                            self.open_editor(terminal, start)?;
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             Mode::Actions { id, pos } => {
                 let (id, p) = (id.clone(), *pos);
                 let actions = self.actions(&id);
@@ -2008,6 +2185,7 @@ impl<'a> Board<'a> {
                 Some(id) if self.live.is_shape(&id) => self.flash("this shape has no actions"),
                 _ => self.flash("select a placed shape first, then x for what it can do"),
             },
+            BoardAction::MakeShape => self.make_shape(terminal)?,
             BoardAction::Delete => self.delete_selected(),
             BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
             BoardAction::ColourClear => self.set_color(None),
@@ -2047,6 +2225,7 @@ impl<'a> Board<'a> {
                 | Mode::Palette { .. }
                 | Mode::Bind { .. }
                 | Mode::Actions { .. }
+                | Mode::PickShape { .. }
         ) {
             return;
         }
@@ -2354,6 +2533,11 @@ impl<'a> Board<'a> {
             Mode::Palette { query, pos } => {
                 let lines = self.palette(query).into_iter().map(|(_, l)| l).collect();
                 let title = " place a shape · type to filter · ⏎ pick · Esc cancel ";
+                draw_choices(f, main, title, Some(query), lines, *pos);
+            }
+            Mode::PickShape { query, pos } => {
+                let lines = self.editable(query).into_iter().map(|(_, l)| l).collect();
+                let title = " shape editor · type to filter · ⏎ open · Esc cancel ";
                 draw_choices(f, main, title, Some(query), lines, *pos);
             }
             Mode::Actions { id, pos } => {
@@ -2969,7 +3153,12 @@ fn merge_lists(base: &Value, ours: &Value, theirs: &Value, conflicts: &mut usize
 }
 
 /// A region's background: region `i` is `Token(i + 1)`, each a dim colour of its own.
-fn tint(t: Token) -> Color {
+/// Whether a cell's background is a region's tint.
+pub(crate) fn is_tint(t: Token) -> bool {
+    live::is_region_tint(t)
+}
+
+pub(crate) fn tint(t: Token) -> Color {
     const TINTS: [Color; 8] = [
         Color::Rgb(52, 40, 78),
         Color::Rgb(34, 62, 66),

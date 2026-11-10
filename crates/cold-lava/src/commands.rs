@@ -76,6 +76,10 @@ pub enum Group {
     Colour,
     View,
     Show,
+    /// The shape editor's tools.
+    Draw,
+    /// What a shape takes, shows and does.
+    Data,
     App,
     /// Commands extensions registered.
     Extension,
@@ -92,6 +96,8 @@ impl Group {
             Group::Colour => "colour",
             Group::View => "view",
             Group::Show => "show",
+            Group::Draw => "draw",
+            Group::Data => "data",
             Group::App => "app",
             Group::Extension => "extensions",
         }
@@ -773,6 +779,8 @@ pub enum BoardAction {
     Bind,
     /// The selected shape's actions ("Make it a note").
     ShapeActions,
+    /// The shape editor: on the selected shapes, or a new or workspace shape.
+    MakeShape,
     /// Obsidian's colour presets 1 to 6.
     Colour(u8),
     ColourClear,
@@ -880,6 +888,14 @@ pub const BOARD: &[Command<BoardAction>] = &[
         "shape actions",
         "what the selected shape can do (a sticky: make it a note)",
         &["x"],
+    ),
+    cmd(
+        BoardAction::MakeShape,
+        "board.make-shape",
+        Group::Cards,
+        "make a shape",
+        "the shape editor: a new shape, one of the workspace's, or one made from the selected shape or group",
+        &["S"],
     ),
     cmd(
         BoardAction::Colour(1),
@@ -1032,6 +1048,204 @@ pub const BOARD: &[Command<BoardAction>] = &[
         "quit",
         "leave the whiteboard",
         &["q", "ctrl+c"],
+    ),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShapeEditorAction {
+    /// Grab grips and parts: move vertices, bend sides, move parts.
+    Select,
+    Path,
+    Circle,
+    Ellipse,
+    Rect,
+    Text,
+    Region,
+    Anchor,
+    Rename,
+    Delete,
+    Guides,
+    Shape,
+    Shows,
+    On,
+    Bind,
+    Undo,
+    Save,
+    Finish,
+    Escape,
+    Keys,
+    Quit,
+}
+
+/// The shape editor's commands (docs/shapes.md, "The shape editor").
+pub const SHAPE_EDITOR: &[Command<ShapeEditorAction>] = &[
+    cmd(
+        ShapeEditorAction::Select,
+        "shape-editor.select",
+        Group::Draw,
+        "grab",
+        "grab: drag a vertex or a grip, a side's middle to bend it, a part to move it",
+        &["v"],
+    ),
+    cmd(
+        ShapeEditorAction::Path,
+        "shape-editor.path",
+        Group::Draw,
+        "vertices",
+        "vertices: click to place each, click the first to close the shape, enter to leave it open",
+        &["p"],
+    ),
+    cmd(
+        ShapeEditorAction::Circle,
+        "shape-editor.circle",
+        Group::Draw,
+        "circle",
+        "circle: drag from its centre out to its radius",
+        &["c"],
+    ),
+    cmd(
+        ShapeEditorAction::Ellipse,
+        "shape-editor.ellipse",
+        Group::Draw,
+        "ellipse",
+        "ellipse: drag from its centre out to a corner of its box",
+        &["e"],
+    ),
+    cmd(
+        ShapeEditorAction::Rect,
+        "shape-editor.rect",
+        Group::Draw,
+        "rectangle",
+        "rectangle: drag from one corner to the other",
+        &["r"],
+    ),
+    cmd(
+        ShapeEditorAction::Text,
+        "shape-editor.text",
+        Group::Draw,
+        "text",
+        "text: click an anchor (a part's top, a named point) or anywhere, then type it",
+        &["t"],
+    ),
+    cmd(
+        ShapeEditorAction::Region,
+        "shape-editor.region",
+        Group::Data,
+        "region",
+        "region: click inside an area and name it; the parts it is in say what it is",
+        &["a"],
+    ),
+    cmd(
+        ShapeEditorAction::Anchor,
+        "shape-editor.anchor",
+        Group::Data,
+        "anchor",
+        "anchor: click a vertex or a point and name it",
+        &["n"],
+    ),
+    cmd(
+        ShapeEditorAction::Rename,
+        "shape-editor.rename",
+        Group::Draw,
+        "rename part",
+        "rename the selected part, and what names it",
+        &["N"],
+    ),
+    cmd(
+        ShapeEditorAction::Delete,
+        "shape-editor.delete",
+        Group::Draw,
+        "delete",
+        "delete the selected part",
+        &["d", "delete"],
+    ),
+    cmd(
+        ShapeEditorAction::Guides,
+        "shape-editor.guides",
+        Group::Draw,
+        "guides",
+        "guides on or off: angles, equal sides and sizes, level and plumb",
+        &["g"],
+    ),
+    cmd(
+        ShapeEditorAction::Shape,
+        "shape-editor.shape",
+        Group::Data,
+        "id and inputs",
+        "the shape's id, title, inputs, key and aspect",
+        &["i"],
+    ),
+    cmd(
+        ShapeEditorAction::Shows,
+        "shape-editor.shows",
+        Group::Data,
+        "shows",
+        "what each region shows: sets of the inputs, where, sort by, limit",
+        &["w"],
+    ),
+    cmd(
+        ShapeEditorAction::On,
+        "shape-editor.on",
+        Group::Data,
+        "behaviour",
+        "behaviour: a gesture and the step it runs",
+        &["o"],
+    ),
+    cmd(
+        ShapeEditorAction::Bind,
+        "shape-editor.bind",
+        Group::Data,
+        "preview data",
+        "bind the preview's inputs to data, as the whiteboard binds a placed shape",
+        &["b"],
+    ),
+    cmd(
+        ShapeEditorAction::Undo,
+        "shape-editor.undo",
+        Group::App,
+        "undo",
+        "undo",
+        &["u", "ctrl+z"],
+    ),
+    cmd(
+        ShapeEditorAction::Save,
+        "shape-editor.save",
+        Group::App,
+        "save",
+        "save into the workspace's .cold-lava/shapes.toml",
+        &["ctrl+s"],
+    ),
+    cmd(
+        ShapeEditorAction::Finish,
+        "shape-editor.finish",
+        Group::Draw,
+        "finish",
+        "finish the open path being drawn",
+        &["enter"],
+    ),
+    cmd(
+        ShapeEditorAction::Escape,
+        "shape-editor.escape",
+        Group::App,
+        "cancel",
+        "drop the path being drawn, or the selection",
+        &["esc"],
+    ),
+    cmd(
+        ShapeEditorAction::Keys,
+        "shape-editor.keys",
+        Group::App,
+        "keys",
+        "which key: the editor's commands by group; type one's key to run it",
+        &[","],
+    ),
+    cmd(
+        ShapeEditorAction::Quit,
+        "shape-editor.quit",
+        Group::App,
+        "leave",
+        "leave the editor (twice when there are unsaved changes)",
+        &["q"],
     ),
 ];
 
@@ -1193,6 +1407,7 @@ pub fn ids() -> impl Iterator<Item = &'static str> {
         .chain(BOARD.iter().map(|c| c.id))
         .chain(READER.iter().map(|c| c.id))
         .chain(PANE.iter().map(|c| c.id))
+        .chain(SHAPE_EDITOR.iter().map(|c| c.id))
 }
 
 /// The history commands' keys for a screen of its own (the graph, the whiteboard): the
@@ -1646,6 +1861,7 @@ mod tests {
         assert_keys_parse_and_are_bound_once(BOARD);
         assert_keys_parse_and_are_bound_once(READER);
         assert_keys_parse_and_are_bound_once(PANE);
+        assert_keys_parse_and_are_bound_once(SHAPE_EDITOR);
     }
 
     #[test]
@@ -1654,7 +1870,8 @@ mod tests {
         let names = names
             .chain(GRAPH.iter().map(|c| (c.id, c.name, c.title)))
             .chain(BOARD.iter().map(|c| (c.id, c.name, c.title)))
-            .chain(READER.iter().map(|c| (c.id, c.name, c.title)));
+            .chain(READER.iter().map(|c| (c.id, c.name, c.title)))
+            .chain(SHAPE_EDITOR.iter().map(|c| (c.id, c.name, c.title)));
         for (id, name, title) in names {
             assert!(!name.is_empty() && name.len() <= 20, "{id}: {name:?}");
             assert!(name.len() <= title.len(), "{id}: the name is the short one");

@@ -236,8 +236,9 @@ $ cold-lava shapes example-workspace --render speech --size 60x18 --bind 'text=t
 ```
 
 It is an example rather than a built-in: the built-ins are the primitives and the kinds of node a
-JSON Canvas file has, and a bubble is neither, so it stays one workspace's until the shape editor
-(#153), which bends sides into these curves, makes drawing your own the usual way.
+JSON Canvas file has, and a bubble is neither, so it stays one workspace's. The shape editor
+("The shape editor, as built") draws one like it: vertices clicked into place, sides bent into
+curves.
 
 ### Bindings, as built
 
@@ -543,6 +544,108 @@ groups, sharing its undo, selection, camera and Obsidian-safe saving. A separate
 shapes would be a second editor of the same files until #92 moved the whiteboard onto it; with
 one, #92 moves one screen, cards and shapes together, into the menu's loop.
 
+### The shape editor, as built
+
+The shape editor makes a shape by drawing it and writes the same `[[shapes]]` TOML people write
+by hand into the workspace's `.cold-lava/shapes.toml`. There is no other format: what it shows
+is the definition it will save, the file stays editable by hand, and an extension could ship the
+result as it is. `S` on the whiteboard opens it:
+
+- with nothing selected, on a new shape or one of the workspace's own (`edit venn3`; only those
+  are in the file it writes);
+- with a placed shape selected, on a copy of its definition (`venn2-copy`), to make your own;
+- with a group selected, on one new shape of every placed shape in the group (`drawing1`), each
+  part where it was: the group's box becomes the shape's box and `aspect`, curves stay curves
+  (an affine map keeps a Bézier one), a turned rectangle becomes a closed path of its corners, a
+  turned ellipse four curves, ends and labels at anchors go where the anchors were, and regions
+  keep their areas. Inputs, what regions show and behaviour are each shape's own and are left
+  out, with a line saying so. The whiteboard has no freehand strokes (JSON Canvas has none), so
+  placed shapes are what is drawn freely there.
+
+**Where it lives, and why.** It is a screen of the core, in the binary
+(`crates/cold-lava/src/shape_editor.rs`), opened by the whiteboard, which lends it the core.
+An extension can't be one: extensions never see keystrokes or draw, and the view gateway carries
+lists and tables, not a canvas with handles under the mouse. Nothing in it knows one shape from
+another, though, and it is split so the parts a second frontend needs carry no drawing:
+
+- the shape being edited is its `Definition` and nothing else; `shape_editor/draft.rs` is the
+  editing on it (where each part's grips are and what dragging one does, making parts, naming
+  regions, anchors and parts, a selection made into one shape), with no ratatui;
+- the guides are geometry, in the canvas crate (`snap.rs`);
+- writing one block back into the file as text is the engine's (`shapes/file.rs`), beside the
+  loader, and goes through its safe writes; `shapes::with_draft` loads the draft as the
+  workspace's shape, so it is checked, drawn and bound exactly as a saved one is.
+
+**Drawing.** The shape's box is drawn as large as fits in its `aspect` (a new shape is square),
+its parts painted by the canvas engine and its grips on top: `●` a vertex, `◦` the middle of a
+side, `+` a centre, `◆` a radius, a corner or an end.
+
+| Key | Tool or command |
+| --- | --- |
+| `v` | grab: drag a grip, a side's middle to bend it, a part to move it; a click selects a part |
+| `p` | vertices: a click places each; a click on the first closes the path, `Enter` leaves it open |
+| `c` / `e` / `r` | a circle (drag from its centre out) / an ellipse (centre to a corner) / a rectangle |
+| `t` | a label: click an anchor (a part's `top`, `left`, …, or a named point) or a point, then type it |
+| `a` | a region: click inside an area, then name it |
+| `n` | an anchor: click a vertex or a point, then name it |
+| `N` / `d` | rename the selected part (and what names it) / delete it |
+| `i` / `w` / `o` / `b` | the id, title, inputs, key and aspect / what each region shows / a behaviour / preview data |
+| `g` / `u` / `Ctrl+s` / `q` | guides on or off / undo / save / leave (twice with unsaved changes) |
+
+- **Vertices are the handles.** A path is written as a `start` and `segments` (one written as
+  `points` becomes that when it is first changed). Moving a vertex takes the control points of a
+  curve next to it along, so a bent side keeps its bend.
+- **Sides bend.** Dragging a side's middle makes it a cubic `curve` whose middle passes through
+  the pointer (the quadratic through it, raised to the cubic it equals); dragging it back within
+  a cell of the straight middle makes it a `line` again. A closed path's closing side is written
+  out as a segment ending on the start when it bends, and dropped again when it is straight.
+- **Circles, ellipses and rectangles** are their own tools, not curves point by point. In a box
+  that isn't square, the circle tool writes the `ellipse` that looks round.
+- **Guides, never data.** Placing or dragging a point asks `snap::vertex`, in world units (a
+  cell is 1×2, so angles are the ones the eye sees), in order: onto a point already there (the
+  first vertex closes the path), the next corner of a regular polygon (the last side again,
+  turned as the last corner was), the side's angle to a multiple of 15° (90°, 45°, 60°, 30°)
+  and, within a cell, the previous side's length, then level or plumb with another point. A
+  circle's radius snaps to another circle's (`snap::size`). The status line says which guide
+  placed the point (`⊹ 60° · = side`, `⊹ regular`); a grip is dragged by where it was grabbed,
+  so a straight drag stays straight. Only where points end up is saved (to four places).
+- **Regions by clicking.** `draft::area_at` asks each area part whether it contains the clicked
+  point (the canvas engine's exact tests): the ones that do are joined with `&`, and the ones
+  that don't, where their boxes could overlap, are taken away with `-` (`left & right`,
+  `right - left`, `left & right - low`). The form says which parts the point is in and asks
+  only for the name. Naming an area that already has a region renames it.
+- **Anchors by clicking.** A vertex a segment ends at gets the segment's `id` (the anchor
+  `<path>.<id>`); a path's start, or any other point (snapped to a grip), goes in `anchors`.
+- **Data by form.** `i`: the id, `title`, `inputs` (`a, b`), `key` and `aspect`. `w`: per
+  region, its sets (`a & b`), `where`, `sort by` and `limit`, put together as `shows` and read
+  by the region language before they are kept. `o`: a gesture (`click`, `drop`, `key`,
+  `action`, picked with ← →), what it is on, and one step (`toggle`, `set-field` with `value`,
+  `add` or `remove`, `create a note`, `rebind`); one the loader would refuse is not added, and
+  the form says why. Every mistake the loader finds in the draft is listed in the panel, worded
+  as `cold-lava shapes` words it, and saving waits until there are none.
+- **The preview** on the right is the draft bound to data as a placed shape is (`Binding`, the
+  core's queries followed live): `b` takes each input as `s` does on the whiteboard
+  (`type=volcano tag=eruption`, `note:…`, `items:…`, `text:…`), and each region fits what it
+  shows.
+- **Saving** (`shapes::file::save`) writes the shape as a block in the file's usual form (`parts`
+  and `regions` one to a line, a path's `segments` one to a line, `[[shapes.on]]` tables), in
+  place of the block it was read from, or appended to the file (made with `version = 1` when
+  there is none). A block is its `[[shapes]]` line up to the next table that isn't its own
+  (`[[shapes.on]]` is), less the comments and blank lines just before that table, which are the
+  next one's; table headers are found outside strings and values. Everything outside the block
+  stays byte for byte, comments included; comments inside a rewritten block are not kept.
+  Before writing, the new text is read back: every other shape, the glyphs and the version must
+  read as before, and the shape as its definition, or nothing is written. The write is
+  `write::replace` against the bytes the editor read, so a file changed elsewhere since (by hand,
+  or by Obsidian syncing it) is refused, with the shape still in the editor. An id another shape
+  in the file has is refused too. After a save, the whiteboard reads its shapes again, so `s`
+  places the new one.
+
+The drive scripts `tests/drive/shape-hexagon.drive` and `shape-venn.drive` make a regular
+hexagon with a curved side and a two-circle Venn this way, without typing TOML;
+`shape-edit.drive` edits `venn3` and checks that only its block changed, and
+`shape-from-drawing.drive` makes a shape of a group.
+
 ## The canvas engine
 
 A headless crate (like `cold-lava-editor`: nothing drawn), shared by every frontend. It is
@@ -594,6 +697,10 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
   glyph per cell, and wins over dots. `Pixels` is a buffer of style tokens; the frontend picks
   colours and encodes the image (`kitty.rs`). Style tokens are numbers a frontend maps to its
   own colours.
+- **Guides** *(as built)*: where a point placed by hand should go, so coarse clicks make a clean
+  square, a regular hexagon or two circles of one size. `snap.rs`: onto a point, the next corner
+  of a regular polygon, an angle in 15° steps and the previous side's length, level and plumb,
+  and equal sizes, in world units. They place points and are never saved.
 - **Hit testing** *(as built)*: what is under a point, for clicks, drags and handles. `hit.rs`
   answers with the topmost placed shape there and, within it, the handle (four corners and a
   rotate grip above the top edge, only on the selected shape), the topmost part (inside an area,
@@ -627,6 +734,8 @@ engine/frontend split again: the model is general, each frontend draws it as wel
    and a checklist. Still to come: the document view drawing an embedded drawing in place
    (the reader shows its name, #138), and the drawing's file joining the workspace through an
    owner, so a sticky's task is a `task` and a card a backlink.)*
+6. The shape editor: shapes made by drawing them, saved as the TOML they are written in. *(as
+   built: "The shape editor, as built" above, #153.)*
 
 ## The notebook
 

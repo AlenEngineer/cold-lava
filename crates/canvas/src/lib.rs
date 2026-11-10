@@ -15,6 +15,7 @@ pub mod hit;
 pub mod part;
 pub mod raster;
 pub mod shape;
+pub mod snap;
 
 pub use area::{Area, AreaError};
 pub use fit::{Align, Fitted, Flow, Line, Room, Run};
