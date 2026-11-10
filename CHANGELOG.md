@@ -7,6 +7,22 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
+Shapes, usable end to end: a canvas engine draws any shape from its geometry, shapes are
+defined in TOML like types (built in, in a workspace, or shipped by extensions), bound to live
+data with a small region language, and placed on the whiteboard, where they stay safe alongside
+Obsidian. The graph now runs inside the menu, as an extension.
+
+- **Shapes**: `[[shapes]]` definitions with parts, regions, curved paths and anchors; bindings
+  to queries, notes or text, kept live; regions that show set expressions (`a & b`, `where`,
+  `sort by`, `limit`); behaviour that turns clicks and drops into checked edits; cards, stickies
+  and "make it a note". `cold-lava shapes --render --bind` draws one from the command line.
+- **Placed shapes**: on the whiteboard, saved in `.canvas` as JSON Canvas nodes Obsidian keeps;
+  move, stretch, rotate, bind; the example workspace's `Volcano Venn.canvas`.
+- **Scenes**: the graph runs in the menu's loop and is a built-in extension; `links/query` and
+  the `scene` view kind on the gateways.
+
 ### Added
 
 - Curved paths in shapes. A `path` can be a `start` and `segments`: `line`s, cubic `curve`s and
@@ -36,19 +52,6 @@ change commands, keys and file formats; patch versions only fix things.
   of the volcanoes that erupted and the stratovolcanoes, a card on Krakatoa, a sticky with a
   task, an arrow and the field season's checklist, all placed shapes.
 
-### Changed
-
-- The graph view runs in the menu's loop instead of its own. Extensions keep being answered
-  while it is open, and their part of the status line (`ui/status`) and their messages show in
-  the graph's. The graph is kept while the workspace is open: going back to it, or pressing
-  `g` again, finds the layout where it was instead of laying it out again. `cold-lava graph
-  WORKSPACE` opens the menu on the graph; `q` there still quits.
-- The graph is a built-in extension: it reads the link graph through the workspace gateway and
-  sends it as a scene through the view gateway, like the agenda and the table. `g` and the
-  graph's keys are the same. Enter on an unresolved link makes its note at the workspace's
-  root, as before; `note.edit` and `note.open-in-obsidian` now take a `note` from an extension.
-
-### Added
 
 - A `scene` view on the view gateway: an extension sends nodes, edges between them by id,
   colour groups and flags (`{"kind": "scene", ...}`), and cold-lava lays them out with its
@@ -94,6 +97,18 @@ change commands, keys and file formats; patch versions only fix things.
   `cold-lava shapes WORKSPACE --render ID --bind … --do GESTURE` runs one from the command line.
 - Extensions can compute a region of a shape they ship, or handle a gesture on it
   (`extension = true`), answering `shape/region` with labels and `shape/gesture` with steps.
+
+### Changed
+
+- The graph view runs in the menu's loop instead of its own. Extensions keep being answered
+  while it is open, and their part of the status line (`ui/status`) and their messages show in
+  the graph's. The graph is kept while the workspace is open: going back to it, or pressing
+  `g` again, finds the layout where it was instead of laying it out again. `cold-lava graph
+  WORKSPACE` opens the menu on the graph; `q` there still quits.
+- The graph is a built-in extension: it reads the link graph through the workspace gateway and
+  sends it as a scene through the view gateway, like the agenda and the table. `g` and the
+  graph's keys are the same. Enter on an unresolved link makes its note at the workspace's
+  root, as before; `note.edit` and `note.open-in-obsidian` now take a `note` from an extension.
 
 ### Fixed
 
@@ -725,7 +740,8 @@ The first release.
 - Live updates when notes change on disk, accent-insensitive matching everywhere, and an example
   vault that shows every feature.
 
-[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.1.0...v0.2.0
