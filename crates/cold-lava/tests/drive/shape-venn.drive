@@ -1,0 +1,124 @@
+# A two-circle Venn made in the shape editor without typing TOML. The editor's box is 80×40
+# cells from row 3, column 9. i names the shape and its inputs a and b; the circle tool draws a
+# circle by dragging from its centre out; the second one's centre is put level with the first's
+# and its radius made equal by the guides. Clicking each circle and N renames it; a and a click
+# inside an area names it as a region (the editor reads which circles contain the point); t and
+# a click on a circle's top puts a label there; n names a point; w says what each region shows,
+# o adds the drop the built-in Venn has, b binds the preview to two volcano queries.
+# tests/drive.rs reads the saved .cold-lava/shapes.toml after and renders it bound.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter
+type Editor
+keys enter
+wait-for whiteboard Editor
+keys S
+wait-for shape editor · type to filter
+type new
+keys enter
+wait-for shape editor · shape1 (new)
+keys i
+wait-for the shape
+keys backspace backspace backspace backspace backspace backspace
+type venn-mine
+keys tab
+type My Venn
+keys tab
+type a, b
+keys tab
+type name
+keys enter
+wait-for inputs: a, b
+keys c
+drag 23 39 23 63
+wait-for circle1: circle
+drag 23 59 23 82
+wait-for circle2: circle
+expect ⊹ = size
+keys v
+click 23 25
+keys N
+wait-for rename the part
+keys backspace backspace backspace backspace backspace backspace backspace
+type left
+keys enter
+wait-for left: circle
+click 23 75
+keys N
+wait-for rename the part
+keys backspace backspace backspace backspace backspace backspace backspace
+type right
+keys enter
+wait-for right: circle
+keys a
+click 23 25
+wait-for in left: left - right
+type only-a
+keys enter
+click 23 49
+wait-for in left and right: left & right
+type both
+keys enter
+click 23 75
+wait-for in right: right - left
+type only-b
+keys enter
+wait-for only-b = right - left
+keys t
+click 11 39
+wait-for at left.top
+type ${a.title}
+keys enter
+click 11 59
+wait-for at right.top
+type ${b.title}
+keys enter
+expect-in 9 30 10 50 a.title
+expect-in 9 50 10 70 b.title
+keys n
+click 23 39
+wait-for name the anchor
+type hub
+keys enter
+wait-for anchor hub
+keys w
+wait-for what each region shows
+type a - b
+keys tab tab tab tab
+type a & b
+keys tab tab tab tab
+type b - a
+keys enter
+wait-for shows b - a
+keys o
+wait-for behaviour
+keys right
+keys tab
+type only-a
+keys tab
+type both
+keys tab right right tab tab
+type tags
+keys tab
+type ${b.tag}
+keys enter
+wait-for drop only-a → both
+keys b
+wait-for preview data
+type type=volcano tag=eruption title=Erupted
+keys tab
+type type=volcano tag=volcano/strato title=Stratovolcanoes
+keys enter
+wait-for preview · bound
+expect-in 26 97 43 140 Stratovolcanoes
+keys ctrl+s
+wait-for saved venn-mine in .cold-lava/shapes.toml
+screen
+keys q
+wait-for whiteboard Editor
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

@@ -1783,3 +1783,204 @@ fn ext_list_prints_what_each_extension_may_do() {
     assert_eq!(out.status.code(), Some(1));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `cold-lava shapes WORKSPACE --render ID ARGS` with an empty home, so no config.toml is read.
+fn render_shape(dir: &Path, id: &str, args: &[&str]) -> String {
+    let home = dir.join("render-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .arg("shapes")
+        .arg(dir.join("example-workspace"))
+        .args(["--render", id])
+        .args(args)
+        .env("XDG_CONFIG_HOME", &home)
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    text
+}
+
+/// The workspace's shape `id` as saved: its `[[shapes]]` table.
+fn saved_shape(workspace: &Path, id: &str) -> toml::Table {
+    let text = std::fs::read_to_string(workspace.join(".cold-lava/shapes.toml")).unwrap();
+    let file: toml::Table = toml::from_str(&text).unwrap();
+    (file["shapes"].as_array().unwrap().iter())
+        .find(|s| s["id"].as_str() == Some(id))
+        .unwrap_or_else(|| panic!("no shape {id} in\n{text}"))
+        .as_table()
+        .unwrap()
+        .clone()
+}
+
+fn xy(v: &toml::Value) -> (f64, f64) {
+    let a = v.as_array().unwrap();
+    (a[0].as_float().unwrap(), a[1].as_float().unwrap())
+}
+
+#[test]
+fn the_shape_editor_makes_a_regular_hexagon_with_a_curved_side() {
+    let dir = sandbox("shape-hexagon");
+    let out = drive("shape-hexagon.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let hexagon = saved_shape(&dir.join("example-workspace"), "hexagon");
+    assert_eq!(hexagon["inputs"].as_array().unwrap().len(), 1);
+    let path = &hexagon["parts"].as_array().unwrap()[0]["path"];
+    assert_eq!(path["id"].as_str(), Some("hex"));
+    assert_eq!(path["closed"].as_bool(), Some(true));
+    let segments = path["segments"].as_array().unwrap();
+    let mut corners = vec![xy(&path["start"])];
+    for s in segments {
+        let (kind, seg) = s.as_table().unwrap().iter().next().unwrap();
+        corners.push(match (kind.as_str(), seg) {
+            ("curve", c) => xy(&c["to"]),
+            ("line", toml::Value::Array(_)) => xy(seg),
+            (k, other) => panic!("a {k}: {other}"),
+        });
+    }
+    assert_eq!(corners.len(), 6);
+    let first = segments[0]
+        .get("curve")
+        .expect("the top side bent into a curve");
+    assert_eq!(first["id"].as_str(), Some("corner"), "a named vertex");
+    for i in 0..6 {
+        let ((ax, ay), (bx, by)) = (corners[i], corners[(i + 1) % 6]);
+        let side = (bx - ax).hypot(by - ay);
+        assert!(
+            (side - 0.375).abs() < 0.001,
+            "side {i} is {side}: {corners:?}"
+        );
+    }
+    let regions = hexagon["regions"].as_array().unwrap();
+    assert_eq!(regions[0]["area"].as_str(), Some("hex"));
+    let bind = ["--size", "40x14", "--bind", "items=items:Fuji, Krakatoa"];
+    let drawn = render_shape(&dir, "hexagon", &bind);
+    assert!(drawn.contains("Krakatoa"), "{drawn}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_shape_editor_makes_a_two_circle_venn_that_loads_like_a_written_one() {
+    let dir = sandbox("shape-venn");
+    let out = drive("shape-venn.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let venn = saved_shape(&dir.join("example-workspace"), "venn-mine");
+    let parts = venn["parts"].as_array().unwrap();
+    let (left, right) = (&parts[0]["circle"], &parts[1]["circle"]);
+    assert_eq!(left["id"].as_str(), Some("left"));
+    assert_eq!(right["id"].as_str(), Some("right"));
+    assert_eq!(xy(&left["center"]).1, xy(&right["center"]).1, "level");
+    assert_eq!(left["radius"], right["radius"], "equal");
+    let areas: Vec<(&str, &str, &str)> = (venn["regions"].as_array().unwrap().iter())
+        .map(|r| {
+            let s = |k: &str| r[k].as_str().unwrap();
+            (s("id"), s("area"), s("shows"))
+        })
+        .collect();
+    assert_eq!(
+        areas,
+        [
+            ("only-a", "left - right", "a - b"),
+            ("both", "left & right", "a & b"),
+            ("only-b", "right - left", "b - a"),
+        ]
+    );
+    assert_eq!(parts[2]["text"]["at"].as_str(), Some("left.top"));
+    assert!(venn["anchors"].get("hub").is_some());
+    assert_eq!(venn["on"][0]["drop"]["to"].as_str(), Some("both"));
+    let drawn = render_shape(
+        &dir,
+        "venn-mine",
+        &[
+            "--size",
+            "60x18",
+            "--bind",
+            "a=type=volcano tag=eruption title=Erupted",
+            "--bind",
+            "b=type=volcano tag=volcano/strato title=Stratovolcanoes",
+        ],
+    );
+    assert!(drawn.contains("Stratovolcanoes"), "{drawn}");
+    assert!(
+        drawn.contains("Vesuvius"),
+        "both erupted and strato: {drawn}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn editing_a_shape_rewrites_only_its_block() {
+    use cold_lava_engine::shapes::file::blocks;
+    let dir = sandbox("shape-edit");
+    let file = dir.join("example-workspace/.cold-lava/shapes.toml");
+    let before = std::fs::read_to_string(&file).unwrap();
+    let out = drive("shape-edit.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = std::fs::read_to_string(&file).unwrap();
+    let block = |text: &str| {
+        (blocks(text).into_iter())
+            .find(|b| b.id.as_deref() == Some("venn3"))
+            .unwrap()
+            .span
+    };
+    let (old, new) = (block(&before), block(&after));
+    assert_eq!(
+        after[..new.start],
+        before[..old.start],
+        "the text before it"
+    );
+    assert_eq!(after[new.end..], before[old.end..], "the text after it");
+    assert_ne!(after[new.clone()], before[old]);
+    let low = "{ circle = { id = \"low\", center = [0.5, 0.695], radius = 0.27 } }";
+    assert!(after[new].contains(low), "{after}");
+    render_shape(&dir, "venn3", &[]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn placed_shapes_in_a_group_become_one_shape() {
+    let dir = sandbox("shape-from-drawing");
+    let workspace = dir.join("example-workspace");
+    std::fs::write(
+        workspace.join("Inbox/Drawing.canvas"),
+        include_str!("drive/shape-from-drawing.canvas"),
+    )
+    .unwrap();
+    let out = drive("shape-from-drawing.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let drawing = saved_shape(&workspace, "drawing1");
+    let parts = drawing["parts"].as_array().unwrap();
+    let radii = xy(&parts[0]["ellipse"]["radii"]);
+    let aspect = drawing["aspect"].as_float().unwrap();
+    let round = (radii.0 * aspect - radii.1).abs() < 0.01;
+    assert!(round, "round in the world: {radii:?} at {aspect}");
+    let corners = parts[1]["path"]["points"].as_array().unwrap();
+    assert_eq!(corners.len(), 4);
+    render_shape(&dir, "drawing1", &[]);
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -22,6 +22,7 @@ mod reader;
 mod recipe_view;
 mod scene;
 mod scene_view;
+mod shape_editor;
 mod table;
 mod term;
 mod tidy_view;
@@ -306,6 +307,7 @@ fn run() -> Result<()> {
             print_keys("whiteboard", &commands::entries(commands::BOARD));
             print_keys("reader", &commands::entries(commands::READER));
             print_keys("pane", &commands::entries(commands::PANE));
+            print_keys("shape editor", &commands::entries(commands::SHAPE_EDITOR));
             let errors = &config::get().errors;
             let warnings = &config::get().warnings;
             if !errors.is_empty() || !warnings.is_empty() {

@@ -1,0 +1,11 @@
+{
+	"nodes":[
+		{"id":"drawing","type":"group","label":"Drawing","x":-40,"y":-60,"width":1080,"height":560},
+		{"id":"ring","type":"text","text":"Circle","x":0,"y":0,"width":400,"height":400,
+		 "cold-lava":{"shape":"circle"}},
+		{"id":"slab","type":"text","text":"Rectangle","x":540,"y":100,"width":400,"height":200,
+		 "cold-lava":{"shape":"rect","rotation":30}}
+	],
+	"edges":[],
+	"cold-lava-version":1
+}

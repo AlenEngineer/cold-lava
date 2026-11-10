@@ -1,0 +1,87 @@
+# A regular hexagon made in the shape editor without typing TOML. The editor's box is 80×40
+# cells from row 3, column 9 (a square in world units). Six clicks place the vertices, a cell or
+# so off where a regular hexagon's corners are: the guides snap the second to 0°, the third to
+# 60° and the first side's length, and the rest to the next corner of a regular polygon; the
+# last click, on the first vertex, closes it. Dragging the top side's middle up bends it into a
+# curve. N renames the path, n names a vertex, a names the area inside by clicking it, i gives
+# the shape its id and input, w says what the region shows, b binds the preview to two volcanoes.
+# tests/drive.rs reads the saved .cold-lava/shapes.toml after and renders it.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter
+type Editor
+keys enter
+wait-for whiteboard Editor
+keys S
+wait-for shape editor · type to filter
+type new
+keys enter
+wait-for shape editor · shape1 (new) · vertices
+click 10 34
+click 10 64
+wait-for ⊹ 0°
+click 23 79
+wait-for ⊹ 60° · = side
+click 36 64
+wait-for ⊹ regular: same side, same angle
+click 36 34
+click 23 19
+click 10 34
+wait-for closed path of 6 vertices
+expect path1: path, 6 vertices, closed
+expect-in 10 34 10 34 ●
+expect-in 36 64 36 64 ●
+keys v
+drag 10 49 6 49
+wait-for path1: path, 6 vertices, 1 curved, closed
+expect-in 6 49 6 49 ◦
+keys N
+wait-for rename the part
+keys backspace backspace backspace backspace backspace
+type hex
+keys enter
+wait-for hex: path
+keys n
+click 10 64
+wait-for name the anchor
+type corner
+keys enter
+wait-for anchor hex.corner
+keys a
+click 23 49
+wait-for in hex: hex
+type inside
+keys enter
+wait-for inside = hex
+keys i
+wait-for the shape
+keys backspace backspace backspace backspace backspace backspace
+type hexagon
+keys tab
+type Hexagon
+keys tab
+type items
+keys enter
+wait-for inputs: items
+keys w
+wait-for what each region shows
+type items
+keys enter
+wait-for shows items
+keys b
+wait-for preview data
+type items:Fuji, Krakatoa
+keys enter
+wait-for preview · bound
+expect-in 26 97 43 140 Krakatoa
+keys ctrl+s
+wait-for saved hexagon in .cold-lava/shapes.toml
+screen
+keys q
+wait-for whiteboard Editor
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

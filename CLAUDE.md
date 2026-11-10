@@ -45,7 +45,9 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   point by point (`area.rs`). Built on that: rasterizing to plain data (`raster.rs`: a `Mask` of
   covered samples at 1×1, braille 2×4 or pixels per cell; a `Grid` of glyph and style tokens;
   `Pixels`), fitting text and labels into a region's `Room` with "+N more" (`fit.rs`), and hit
-  testing (`hit.rs`: the shape, handle, part and region under a point). `tests/snapshots/` holds
+  testing (`hit.rs`: the shape, handle, part and region under a point), and the shape editor's
+  guides (`snap.rs`: angles, equal sides, regular polygons, level, equal sizes; never saved).
+  `tests/snapshots/` holds
   rasterized Venns (`UPDATE_SNAPSHOTS=1` rewrites them); `cargo run --release -p
   cold-lava-canvas --example bench` times a full screen. Its own crate, not `views`: it is pure
   geometry every frontend computes the same way, not a frontend piece, and it must stay free of
@@ -144,6 +146,8 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   each is built into a `cold_lava_canvas::Shape` (nested shapes flattened, anchors resolved,
   glyphs looked up). Built-ins are TOML: add a shape by writing it there, never a match arm;
   extend the format when it can't say something. `cold-lava shapes` lists and `--render`s them.
+  `shapes/file.rs` writes one shape back as its `[[shapes]]` block, keeping the rest of the file
+  as text and refusing a file changed since it was read; `with_draft` loads an unsaved one.
 - `bind.rs`, `shows.rs`: bindings (docs/shapes.md, "Bindings, as built"). A `Binding` is a
   placed shape's inputs bound to `Source`s (a gateway query, a note, labels, text), followed
   with `items/subscribe` as `canvas` (`heard`, `noticed`), and answers what it shows now
@@ -231,6 +235,12 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   table). `agenda.rs` is the agenda as a built-in extension: it follows tasks with
   `items/query` and `items/subscribe`, sends its list with `view/open` and ticks with
   `items/edit toggle` (`A`, `agenda.open`, a core command the menu hands to it).
+- `shape_editor.rs`: the shape editor (`S` on the whiteboard, which lends it the core): draws a
+  shape and saves the same `[[shapes]]` TOML into the workspace's `.cold-lava/shapes.toml`.
+  `shape_editor/draft.rs` is the editing on the `Definition` itself (grips, bending sides into
+  `curve`s, regions read from what contains a click, anchors, a selection made into one shape),
+  with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
+  everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
   with vt100, cursor-position queries answered, the mouse clicked, dragged and scrolled.
