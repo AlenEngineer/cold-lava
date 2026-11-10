@@ -446,6 +446,65 @@ fn today() -> String {
 }
 
 #[test]
+fn the_graph_answers_keys_and_the_mouse_and_follows_the_workspace() {
+    let dir = sandbox("graph");
+    let out = drive("graph.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let workspace = dir.join("example-workspace");
+    let kilauea = std::fs::read_to_string(workspace.join("Volcanoes/Kīlauea.md")).unwrap();
+    assert!(
+        kilauea.ends_with("\n[[Ghostnote]]\n"),
+        "the editor got the selected note"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_whiteboard_moves_edits_and_merges_cards() {
+    let dir = sandbox("board");
+    let workspace = dir.join("example-workspace");
+    std::fs::write(
+        workspace.join("Inbox/Pin.canvas"),
+        "{\"nodes\":[\n\
+         {\"id\":\"a\",\"type\":\"text\",\"text\":\"Alpha\",\"x\":0,\"y\":0,\"width\":200,\"height\":100},\n\
+         {\"id\":\"b\",\"type\":\"text\",\"text\":\"Bravo\",\"x\":300,\"y\":0,\"width\":200,\"height\":100}\n\
+         ],\"edges\":[]}\n",
+    )
+    .unwrap();
+    let out = drive("board.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(workspace.join("Inbox/Pin.canvas")).unwrap();
+    let canvas: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let nodes = canvas["nodes"].as_array().unwrap();
+    let node = |text: &str| {
+        (nodes.iter())
+            .find(|n| n["text"] == text)
+            .unwrap_or_else(|| panic!("no {text:?} card in {text}"))
+    };
+    assert_eq!(nodes.len(), 4, "{text}");
+    assert_eq!(node("Alpha")["x"], 0);
+    assert!(node("Alpha")["y"].as_f64().unwrap() > 0.0, "dragged down");
+    assert_eq!(node("Bravo, checked")["id"], "b", "edited in place");
+    assert_eq!(node("Charlie")["id"], "c", "the outside change merged");
+    assert_eq!(node("Delta")["type"], "text");
+    assert!(
+        text.starts_with("{\n\t\"nodes\": ["),
+        "saved as cold-lava saves"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn opens_a_note_follows_a_link_and_quits() {
     let dir = sandbox("follow-link");
     let out = drive("follow-link.drive", &dir);
@@ -853,7 +912,7 @@ fn scripts_wait_after_esc_before_the_next_key() {
                     after_esc = words.last() == Some(&"esc");
                     in_step || next
                 }
-                Some(&("type" | "click")) => std::mem::take(&mut after_esc),
+                Some(&("type" | "click" | "drag" | "scroll")) => std::mem::take(&mut after_esc),
                 Some(&("wait-for" | "wait-gone" | "wait" | "exits")) => {
                     after_esc = false;
                     false

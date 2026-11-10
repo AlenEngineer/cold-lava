@@ -178,7 +178,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   `items/edit toggle` (`A`, `agenda.open`, a core command the menu hands to it).
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
-  with vt100, cursor-position queries answered.
+  with vt100, cursor-position queries answered, the mouse clicked, dragged and scrolled.
+  `graph.drive` and `board.drive` pin the graph and the whiteboard.
 
 ## Rules that keep it compatible with Obsidian
 

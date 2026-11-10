@@ -1993,8 +1993,9 @@ after its call returns, so it never holds the menu's state.
       resolver's first step, Obsidian's rules in one module for both directions ("Link
       resolver"), and owners on top of Markdown, notes an extension shows (`[[shows]]`); next
       is the whiteboard)*
-   7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard. The
-      scene view is extracted from the graph, runs in the menu's loop, and the graph becomes an
+   7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard
+      *(done: `drag`, `scroll` and `expect-in`; `graph.drive` and `board.drive`)*. The scene
+      view is extracted from the graph, runs in the menu's loop, and the graph becomes an
       extension. Then the whiteboard.
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
