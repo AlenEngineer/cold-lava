@@ -150,6 +150,76 @@ fn bound_shapes_show_their_data() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The region language over the example workspace: an input's `where`, and a region that
+/// filters, sorts and limits.
+#[test]
+fn bound_shapes_filter_sort_and_limit() {
+    let dir = scratch("language");
+    let ws = "example-workspace";
+    let tall = "b=type=volcano title=\"Over 2500 m\" where elevation >= 2500";
+    let venn = [
+        "--render", "venn2", "--size", "80x24", "--bind", ERUPTED, "--bind", tall,
+    ];
+    let json = stdout(&shapes(&dir, &[&[ws][..], &venn, &["--json"]].concat()));
+    let shown: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let labels = |shown: &serde_json::Value, region: usize| -> Vec<String> {
+        (shown["regions"][region]["items"].as_array().unwrap().iter())
+            .map(|e| e["label"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        labels(&shown, 0),
+        ["Eyjafjallajökull", "Krakatoa", "Vesuvius"]
+    );
+    assert_eq!(labels(&shown, 1), ["Mount St. Helens"]);
+    assert_eq!(labels(&shown, 2), ["Mauna Loa", "Mount Fuji", "Parícutin"]);
+    golden(
+        "shape-venn2-tall-80x24.txt",
+        &stdout(&shapes(&dir, &[&[ws][..], &venn].concat())),
+    );
+
+    let tallest = [ws, "--render", "tallest", "--size", "40x14"];
+    let bind = [
+        "--bind",
+        "volcanoes=type=volcano title=\"Tallest volcanoes\"",
+    ];
+    let json = stdout(&shapes(&dir, &[&tallest[..], &bind, &["--json"]].concat()));
+    let shown: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        labels(&shown, 0),
+        [
+            "Mauna Loa",
+            "Mount Fuji",
+            "Parícutin",
+            "Mount St. Helens",
+            "Eyjafjallajökull"
+        ],
+        "where elevation, sort by elevation desc, limit 5"
+    );
+    golden(
+        "shape-tallest-40x14.txt",
+        &stdout(&shapes(&dir, &[&tallest[..], &bind].concat())),
+    );
+
+    let out = shapes(
+        &dir,
+        &[
+            ws,
+            "--render",
+            "venn2",
+            "--bind",
+            "a=type=volcano where >= 3",
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--bind a: where >= 3: expected a field, found `>=`"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn the_venn_titles_never_touch_at_40x12() {
     let dir = scratch("titles");

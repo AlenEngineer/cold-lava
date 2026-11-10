@@ -750,8 +750,8 @@ takes and what it does when you drop or click. They are written in TOML like typ
 (`text`, `rect`, `circle`, `line`, `arrow`, `card`, `sticky`, `table`, `venn2`), in an extension,
 under `[[shapes]]` in `~/.config/cold-lava/config.toml`, or in `.cold-lava/shapes.toml` in a
 workspace, each replacing the one before it by id. A `[glyphs]` table names symbols that draw like
-letters anywhere text goes (`:check:` is ✓). The example workspace has a three-circle Venn and a
-timeline.
+letters anywhere text goes (`:check:` is ✓). The example workspace has a three-circle Venn, a
+list of the tallest and a timeline.
 
 ```sh
 cold-lava shapes example-workspace                     # every shape, where it comes from, errors
@@ -764,7 +764,9 @@ cold-lava shapes example-workspace --render venn2 \
 A placed shape's inputs are bound to data: a query (`type=volcano tag=eruption`), a note
 (`note:Volcanoes/Krakatoa`), labels (`items:Fuji, Krakatoa`) or text (`text:…`). Each region
 shows what its expression picks from them (`a & b`: what both have, matched on the shape's
-`key`), and stays up to date as notes change; `--json` prints it as data.
+`key`; `a where vei >= 6 sort by vei desc limit 5`), and stays up to date as notes change;
+`--json` prints it as data. A query input can take a `where` too
+(`--bind b='type=volcano where elevation >= 2500'`).
 
 Placing shapes on a canvas comes later; see [docs/shapes.md](docs/shapes.md).
 

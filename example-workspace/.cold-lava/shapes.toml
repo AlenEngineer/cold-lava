@@ -51,5 +51,19 @@ parts = [
   { text = { at = "then.mark.top", value = "${eruptions.title}" } },
 ]
 
+# The tallest of a collection, highest first, in a box with the collection's title above it.
+[[shapes]]
+id = "tallest"
+title = "Tallest first"
+inputs = ["volcanoes"]
+aspect = 1.5
+parts = [
+  { rect = { id = "box", from = [0, 0], to = [1, 1] } },
+  { text = { at = "box.top", value = "${volcanoes.title}" } },
+]
+regions = [
+  { id = "list", area = "box", shows = "volcanoes where elevation sort by elevation desc limit 5" },
+]
+
 [glyphs]
 eruption = "▲"

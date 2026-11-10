@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use canvas::{Area, Kind, Part, Point, Rect, Side};
+use canvas::{Kind, Part, Point, Rect, Side};
 use cold_lava_canvas as canvas;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -918,26 +918,13 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
             p.push(format!("{at}: id {id:?} is not a name"));
         }
     }
-    // Set expressions over the inputs read like areas over parts, so the area parser checks them.
-    let stand_ins: Vec<Part> = (d.inputs.iter())
-        .map(|i| Part::new(Some(i), Kind::Rect(Rect::UNIT)))
-        .collect();
     let mut regions = HashSet::new();
     for r in &d.regions {
         regions.insert(r.id.as_str());
-        if let Some(shows) = &r.shows {
-            let sets = shows
-                .split([' ', '\t'])
-                .take_while(|w| !matches!(*w, "where" | "sort" | "limit"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if let Err(e) = Area::parse(&sets, &stand_ins) {
-                let e = match e {
-                    canvas::AreaError::UnknownPart(n) => format!("{n} is not one of its inputs"),
-                    e => e.to_string(),
-                };
-                p.push(format!("region {}: shows {shows:?}: {e}", r.id));
-            }
+        if let Some(shows) = &r.shows
+            && let Err(e) = crate::shows::Shows::parse(shows, &d.inputs)
+        {
+            p.push(format!("region {}: shows {shows:?}: {e}", r.id));
         }
     }
     let part_ids: HashSet<&str> = d.parts.iter().filter_map(PartDef::id).collect();
@@ -1196,6 +1183,10 @@ mod tests {
             (
                 "inputs = [\"a\"]\nparts = [{ circle = { id = \"c\", center = [0.5, 0.5], radius = 0.4 } }]\nregions = [{ id = \"r\", area = \"c\", shows = \"a & b where done = true\" }]",
                 "region r: shows \"a & b where done = true\": b is not one of its inputs",
+            ),
+            (
+                "inputs = [\"a\"]\nparts = [{ circle = { id = \"c\", center = [0.5, 0.5], radius = 0.4 } }]\nregions = [{ id = \"r\", area = \"c\", shows = \"a limit 3 sort by name\" }]",
+                "region r: shows \"a limit 3 sort by name\": unexpected `sort`: after the sets come where, sort by, limit and label, each once and in that order",
             ),
             (
                 "parts = [{ circle = { center = [0.5, 0.5], radius = 0 } }]",

@@ -17,7 +17,7 @@ use serde_json::Value as Json;
 use crate::core::{Core, Event};
 use crate::gateway::{Filter, News, Query, Select, SubId};
 use crate::shapes::{Loaded, Shapes, fill};
-use crate::shows::{Member, Shows};
+use crate::shows::{Cond, Member, Shows};
 
 /// Whom a binding's subscriptions belong to: the canvas, not an extension. The frontend hands
 /// news for this owner to its bindings (`Binding::heard`).
@@ -28,7 +28,7 @@ pub const OWNER: &str = "canvas";
 #[serde(rename_all = "kebab-case")]
 pub enum Source {
     /// The items of an `items/query`, kept live with `items/subscribe`.
-    Query(Bound),
+    Query(Box<Bound>),
     /// One note, workspace-relative with `.md`: a card's.
     Note(String),
     /// Labels written out.
@@ -45,6 +45,10 @@ pub struct Bound {
     /// Its name on the shape (`${a.title}`); by default the query read out (`volcano #eruption`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// A condition on the items' fields, in the language of a region's `where`
+    /// (`vei >= 6 and country = Japan`): what the gateway's filter can't say.
+    #[serde(rename = "where", default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
 }
 
 impl Bound {
@@ -64,6 +68,7 @@ impl Bound {
         }
         out.extend(f.property.as_ref().map(|p| format!("with {p}")));
         out.extend(f.text.as_ref().map(|t| format!("{t:?}")));
+        out.extend(self.condition.as_ref().map(|c| format!("where {c}")));
         out.join(" ")
     }
 }
@@ -71,8 +76,9 @@ impl Bound {
 impl Source {
     /// Reads the short form `cold-lava shapes --bind` takes, or JSON (`{"note": "…"}`):
     ///
-    /// - `type=volcano tag=eruption folder=Volcanoes title="Erupted"`: a query (`kind` for
-    ///   `type`, `tags` for `tag`; also `note`, `status` (comma-separated), `property`, `text`);
+    /// - `type=volcano tag=eruption folder=Volcanoes title="Erupted" where vei >= 6`: a query
+    ///   (`kind` for `type`, `tags` for `tag`; also `note`, `status` (comma-separated),
+    ///   `property`, `text`), and after `where` a condition on its items' fields;
     /// - `note:Volcanoes/Krakatoa.md`: one note (`.md` added when it has no extension);
     /// - `items:Mount Fuji, Krakatoa`: labels, comma-separated;
     /// - `text:…`: text.
@@ -97,6 +103,17 @@ impl Source {
             return Ok(Source::Text(text.to_string()));
         }
         let mut bound = Bound::default();
+        let (s, condition) = match s.strip_prefix("where ") {
+            Some(c) => ("", Some(c)),
+            None => match s.split_once(" where ") {
+                Some((q, c)) => (q, Some(c)),
+                None => (s, None),
+            },
+        };
+        if let Some(c) = condition {
+            Cond::parse(c).map_err(|e| format!("where {c}: {e}"))?;
+            bound.condition = Some(c.trim().to_string());
+        }
         for word in words(s)? {
             let Some((key, value)) = word.split_once('=') else {
                 return Err(format!(
@@ -124,7 +141,7 @@ impl Source {
         if bound.select.kind.is_empty() {
             return Err("a query needs type=…, the kind or type of its items".into());
         }
-        Ok(Source::Query(bound))
+        Ok(Source::Query(Box::new(bound)))
     }
 }
 
@@ -216,7 +233,13 @@ impl Input {
                     page: Default::default(),
                 };
                 let found = core.query_items(&q).map_err(|e| e.message)?;
-                found.items.iter().map(Member::of_item).collect()
+                let condition = (b.condition.as_deref().map(Cond::parse))
+                    .transpose()
+                    .map_err(|e| format!("where: {e}"))?;
+                (found.items.iter())
+                    .map(Member::of_item)
+                    .filter(|m| condition.as_ref().is_none_or(|c| c.holds(m)))
+                    .collect()
             }
             Source::Note(path) => note(core, path).into_iter().collect(),
             Source::Items(items) => items.iter().map(|i| Member::label(i)).collect(),
@@ -444,7 +467,7 @@ impl Binding {
                     (s.eval(&members, d.key.as_deref()).into_iter())
                         .map(|m| Entry {
                             id: m.id.clone(),
-                            label: m.default_label(),
+                            label: s.label(m),
                         })
                         .collect()
                 }),
@@ -613,6 +636,34 @@ mod tests {
     }
 
     #[test]
+    fn ring_of_fire_against_vei_6_and_up() {
+        let dir = workspace("vei");
+        let mut core = Core::open(&dir).unwrap();
+        let shapes = built_in();
+        let bound = sources(&[
+            ("a", "type=volcano tag=ring-of-fire"),
+            ("b", "type=volcano where vei >= 6"),
+        ]);
+        let mut b = Binding::new(&mut core, &shapes, "venn2", bound).unwrap();
+        let shown = b.shown();
+        assert_eq!(labels(&shown, "only-a"), ["Mount Fuji"]);
+        assert_eq!(labels(&shown, "both"), ["Krakatoa"]);
+        assert_eq!(labels(&shown, "only-b"), ["Yellowstone"]);
+        assert_eq!(b.value("b.title"), "volcano where vei >= 6");
+
+        // Vesuvius's VEI is raised to 6: the condition is applied again as the item changes.
+        let path = dir.join("Vesuvius.md");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("vei: 5", "vei: 6")).unwrap();
+        core.note_changed_now(&path);
+        for (_, n) in core.take_item_news() {
+            b.heard(&core, &n);
+        }
+        assert_eq!(labels(&b.shown(), "only-b"), ["Vesuvius", "Yellowstone"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn placeholders_name_the_input_and_its_field() {
         let dir = workspace("fill");
         let mut core = Core::open(&dir).unwrap();
@@ -659,6 +710,10 @@ mod tests {
         );
         assert!(Source::parse("type=volcano colour=red").is_err());
         assert!(Source::parse("tag=x").is_err(), "a query needs a type");
+        assert_eq!(
+            Source::parse("type=volcano where vei >=").unwrap_err(),
+            "where vei >=: expected a value after vei >="
+        );
         assert_eq!(
             Source::parse(r#"{"note": "A.md"}"#).unwrap(),
             Source::Note("A.md".into())

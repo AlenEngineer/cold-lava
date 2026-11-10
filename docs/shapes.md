@@ -148,8 +148,8 @@ loader builds each definition into a `cold_lava_canvas::Shape`, and the canvas c
 - **Checked at load,** one line each, naming the file and the shape: a definition that doesn't
   read (an unknown part kind or field), no id, no parts, a bad area (an unknown or stroke part,
   a stray operator), an anchor no earlier part has, two parts or anchors with one id, a
-  placeholder that isn't an input, a `shows` naming something not an input (its set expression,
-  before `where`, `sort` or `limit`, goes through the area parser with the inputs as names), a
+  placeholder that isn't an input, a `shows` that doesn't read or names something not an input
+  ("The region language" below; its sets go through the area parser with the inputs as names), a
   gesture count other than one, a `drop` between regions that don't exist, an edit with no or
   two kinds, a `rebind` or a nested shape naming a shape that didn't load, and a cycle of nested
   shapes. The shape is dropped; its siblings, and shapes in other files, load.
@@ -181,7 +181,9 @@ hands it the core's item news and events, and asks it what to draw.
 - **Sources.** Each input is bound to one `Source`, saved with the placed shape as the user
   chose it:
   - a **query**: an `items/query` selection (`kind` and the gateway's `filter`: `tag`,
-    `folder`, `note`, `status`, `property`, `text`, `date`), and an optional `title`;
+    `folder`, `note`, `status`, `property`, `text`, `date`), an optional `where` (a condition
+    in the region language below, for what the gateway's filter can't say: `vei >= 6`), and
+    an optional `title`;
   - a **note** (`Volcanoes/Krakatoa.md`): one member with its `title` and `name` (the file's
     stem), `path`, `tags` and `excerpt` (its first three lines of text, after the frontmatter
     and a first heading). This is a card's input;
@@ -214,7 +216,47 @@ hands it the core's item news and events, and asks it what to draw.
   shape with its text filled, to draw. `cold-lava shapes WORKSPACE --render ID --bind
   INPUT=SOURCE…` draws it with each region's labels fitted inside it (a centred column, "+N
   more" when they don't fit); with `--json` it prints `shown`. `--bind` takes a query as words
-  (`type=volcano tag=eruption title="Erupted"`), `note:PATH`, `items:A, B`, `text:…`, or JSON.
+  (`type=volcano tag=eruption title="Erupted" where vei >= 6`), `note:PATH`, `items:A, B`,
+  `text:…`, or JSON.
+
+#### The region language
+
+A region's `shows` is read when the shape loads (a mistake drops the shape with one line naming
+it) and evaluated each time `shown` is asked, so a changed input shows at once. It is a small
+language, not a programming language (`shows.rs`):
+
+```text
+shows   = sets [ "where" cond ] [ "sort" "by" FIELD [ "asc" | "desc" ] ] [ "limit" N ]
+          [ "label" FIELD ]
+sets    = input names with & | - and ( ), read as an area is over parts
+cond    = all { "or" all }
+all     = one { "and" one }
+one     = "not" one | "(" cond ")" | FIELD [ op value ]
+op      = "=" | "!=" | "<" | "<=" | ">" | ">="
+value   = "quoted text" | a word: 6, 2.5, 2026-11-10, ring-of-fire, #strato
+```
+
+- **Sets.** `&` binds tighter than `|` and `-`, which go left to right, as in areas. Members
+  are matched on the shape's `key`: `a & b` is each member of `a` whose key `b` has too, `a - b`
+  each one it doesn't, `a | b` the members of `a`, then those of `b` it doesn't have. A member
+  keeps its input's order, and comes from the left side.
+- **`where`** keeps the members the condition holds for. `FIELD` alone holds when the field has
+  a value. A comparison reads its value as a number when both sides are numbers, as a date when
+  both are `YYYY-MM-DD`, else as text folded with `search_key` (and a tag's `#` aside), so
+  `name = paricutin` finds Parícutin. On a list field (`tags`), `=` and the orderings hold when
+  one of its values does, and `!=` when none is equal. A member with no value for the field
+  never meets a comparison, `!=` included. `and` binds tighter than `or`; `not` and brackets
+  as usual.
+- **`sort by FIELD [desc]`** orders them, stably: numbers before text, a list by its first
+  value, members without the field last either way.
+- **`limit N`** keeps the first `N`.
+- **`label FIELD`** is what the region calls each member; its default label without a value.
+- The clauses come in that order, each at most once. The words `where`, `sort`, `limit`,
+  `label`, `and`, `or`, `not`, `by`, `asc` and `desc` are the language's, so a field can't be
+  called one.
+
+The example workspace's `tallest` shape lists the five tallest of what it is bound to:
+`shows = "volcanoes where elevation sort by elevation desc limit 5"`.
 
 ```console
 $ cold-lava shapes example-workspace --render venn2 --size 80x24 \
@@ -241,10 +283,10 @@ $ cold-lava shapes example-workspace --render venn2 --size 80x24 \
 The built-in `card`'s region `note` has no `shows`: the card's text already shows its note, and
 the region is there to be clicked.
 
-The example workspace has a three-circle Venn, a timeline that nests a `tick` three times, and
-a glyph of its own (`:eruption:`) in `.cold-lava/shapes.toml`. `venn2` is built in rather than
-the example's, as the docs' example and the showcase of step 5: a placed Venn works in every
-workspace.
+The example workspace has a three-circle Venn, a `tallest` list ("The region language"), a
+timeline that nests a `tick` three times, and a glyph of its own (`:eruption:`) in
+`.cold-lava/shapes.toml`. `venn2` is built in rather than the example's, as the docs' example and
+the showcase of step 5: a placed Venn works in every workspace.
 
 ### Glyphs are shapes too
 

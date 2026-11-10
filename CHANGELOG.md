@@ -53,6 +53,10 @@ change commands, keys and file formats; patch versions only fix things.
   `a | b`, `a - b`, matched on the shape's `key` with accents and case folded), and
   `${a.title}` shows the input's title. `cold-lava shapes WORKSPACE --render ID --bind
   INPUT=SOURCE` draws a shape bound to data, and `--json` prints what each region shows.
+- The region language: after a region's sets, `where` (comparisons on numbers, dates and folded
+  text, `and`, `or`, `not`), `sort by FIELD [desc]`, `limit N` and `label FIELD`, checked when
+  the shape loads; a query input takes a `where` too (`type=volcano where vei >= 6`). The
+  example workspace's `tallest` shape lists the five tallest of a collection.
 
 ## [0.4.0] - 2026-11-09
 
