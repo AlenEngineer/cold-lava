@@ -215,6 +215,12 @@ impl Gates {
     pub fn has(self, syntax: Syntax) -> bool {
         self.0 & (1 << syntax as u32) != 0
     }
+
+    /// These gates with `syntax` on or off.
+    pub(crate) fn set(self, syntax: Syntax, on: bool) -> Gates {
+        let bit = 1 << syntax as u32;
+        Gates(if on { self.0 | bit } else { self.0 & !bit })
+    }
 }
 
 /// A note's syntax tree.
