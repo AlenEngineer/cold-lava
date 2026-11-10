@@ -129,8 +129,17 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
   it gives up exact vector outlines of a region, which a GUI can still get by sampling finely.
   Shapes are made in code for now; their TOML definitions are step 3.
 - **Fitting:** text and region content laid out inside areas, overflow counted.
-- **Rasterizing:** areas and strokes to terminal cells, braille dots (2×4 per cell) and, where the
-  terminal has Kitty graphics, pixels; a GUI would draw the same geometry exactly.
+- **Rasterizing** *(as built)*: areas and strokes to terminal cells, braille dots (2×4 per cell)
+  and, where the terminal has Kitty graphics, pixels; a GUI would draw the same geometry exactly.
+  `raster.rs` does all three with one step, a `Mask`: the samples of a `Viewport`'s grid an area
+  or a stroke covers, at 1×1, 2×4 or a cell's pixels per cell. An area's samples ask the region
+  tree about their centres, only inside the area's box; strokes are walked in half-sample steps;
+  an area's outline is its covered samples next to an uncovered one, so outlines sit just inside
+  fills and follow rotation and stretching. A `Grid` holds a glyph and two style tokens (`fg`,
+  `bg`) per cell; region tints go to `bg`, braille dots merge into `fg`, text is upright, one
+  glyph per cell, and wins over dots. `Pixels` is a buffer of style tokens; the frontend picks
+  colours and encodes the image (`kitty.rs`). Style tokens are numbers a frontend maps to its
+  own colours.
 - **Hit testing:** what is under a point, for clicks, drags and handles.
 - **Bindings:** inputs run as gateway queries and stay live (`items/subscribe`); region
   expressions are evaluated when an input changes; gestures become gateway edits.

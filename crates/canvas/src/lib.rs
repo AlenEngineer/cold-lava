@@ -10,9 +10,11 @@
 pub mod area;
 pub mod geom;
 pub mod part;
+pub mod raster;
 pub mod shape;
 
 pub use area::{Area, AreaError};
 pub use geom::{Handle, Placement, Point, Rect, Transform};
 pub use part::{Kind, Part, Path, Segment};
+pub use raster::{Cell, Grid, Mask, Pixels, Res, Style, Viewport};
 pub use shape::{Placed, Region, Shape, ShapeError};

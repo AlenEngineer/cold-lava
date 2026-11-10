@@ -1,6 +1,58 @@
 #![allow(dead_code)]
 
-use cold_lava_canvas::{Kind, Part, Point, Shape};
+use cold_lava_canvas::{
+    Grid, Kind, Mask, Part, Placed, Placement, Point, Res, Shape, Style, Viewport,
+};
+use std::sync::Arc;
+
+/// Compares `actual` with `tests/snapshots/NAME.txt`; `UPDATE_SNAPSHOTS=1` rewrites it instead.
+pub fn snapshot(name: &str, actual: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots")
+        .join(format!("{name}.txt"));
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        std::fs::write(&path, actual).expect("write the snapshot");
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!(
+            "no snapshot {}; run with UPDATE_SNAPSHOTS=1",
+            path.display()
+        )
+    });
+    assert!(
+        expected == actual,
+        "snapshot {name} differs\n--- expected\n{expected}--- actual\n{actual}"
+    );
+}
+
+/// The Venn in the largest square (in world units) that fits the grid, centred.
+pub fn venn_on(view: &Viewport, rotation: f64) -> Placed {
+    let world = view.world_size();
+    let side = world.x.min(world.y);
+    let at = Point::new((world.x - side) / 2.0, (world.y - side) / 2.0);
+    Placed::new(
+        Arc::new(venn2()),
+        Placement::new(at, Point::new(side, side)).rotated(rotation),
+    )
+}
+
+pub const OUTLINE: Style = Style(9);
+
+/// Regions tinted 1, 2, 3 by cell; circles outlined in braille.
+pub fn paint_venn(grid: &mut Grid, venn: &Placed, view: &Viewport) {
+    for (i, region) in venn.shape.regions().iter().enumerate() {
+        let mask = Mask::area(venn, &region.area, view, Res::CELLS);
+        grid.fill(&mask, Style(i as u16 + 1));
+    }
+    for part in 0..venn.shape.parts().len() {
+        grid.dots(&Mask::outline(venn, part, view, Res::BRAILLE), OUTLINE);
+    }
+}
+
+pub fn render(grid: &Grid) -> String {
+    format!("{}--- backgrounds\n{}", grid.to_text(), grid.backgrounds())
+}
 
 /// The two-circle Venn of `docs/shapes.md`.
 pub fn venn2() -> Shape {

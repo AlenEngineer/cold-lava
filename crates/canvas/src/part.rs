@@ -47,6 +47,10 @@ pub enum Kind {
 pub struct Path {
     closed: bool,
     points: Vec<Point>,
+    bounds: Rect,
+    /// The bounds cut into horizontal bands, each listing the edges (by their end point's index)
+    /// that reach into it, so a membership test only looks at edges near its row.
+    bands: Vec<Vec<u32>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,11 +80,40 @@ impl Path {
                 })),
             }
         }
-        Path { closed, points }
+        Path::polyline(points, closed)
     }
 
     pub fn polyline(points: Vec<Point>, closed: bool) -> Path {
-        Path { closed, points }
+        let bounds = Rect::around(points.iter().copied())
+            .unwrap_or(Rect::new(Point::default(), Point::default()));
+        let n = points.len();
+        let mut bands = vec![Vec::new(); (n / 2).clamp(1, 64)];
+        let height = bounds.max.y - bounds.min.y;
+        let band = |y: f64| {
+            let k = if height > 0.0 {
+                (y - bounds.min.y) / height
+            } else {
+                0.0
+            };
+            ((k * bands.len() as f64) as usize).min(bands.len() - 1)
+        };
+        let ranges: Vec<_> = (0..n)
+            .map(|i| {
+                let (a, b) = (points[i], points[(i + n - 1) % n]);
+                band(a.y.min(b.y))..=band(a.y.max(b.y))
+            })
+            .collect();
+        for (i, range) in ranges.into_iter().enumerate() {
+            for k in range {
+                bands[k].push(i as u32);
+            }
+        }
+        Path {
+            closed,
+            points,
+            bounds,
+            bands,
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -94,15 +127,25 @@ impl Path {
 
     /// Even-odd rule, so a self-crossing freehand loop has holes where it crosses itself.
     fn contains(&self, p: Point) -> bool {
+        if !self.bounds.contains(p) {
+            return false;
+        }
         let pts = &self.points;
+        let n = pts.len();
+        let height = self.bounds.max.y - self.bounds.min.y;
+        let k = if height > 0.0 {
+            (p.y - self.bounds.min.y) / height
+        } else {
+            0.0
+        };
+        let band = &self.bands[((k * self.bands.len() as f64) as usize).min(self.bands.len() - 1)];
         let mut inside = false;
-        let mut j = pts.len().wrapping_sub(1);
-        for i in 0..pts.len() {
-            let (a, b) = (pts[i], pts[j]);
+        for &i in band {
+            let i = i as usize;
+            let (a, b) = (pts[i], pts[(i + n - 1) % n]);
             if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
                 inside = !inside;
             }
-            j = i;
         }
         inside
     }
@@ -154,8 +197,7 @@ impl Part {
             Kind::Line { from, to } | Kind::Arrow { from, to } => {
                 Rect::around([*from, *to]).expect("two points")
             }
-            Kind::Path(path) => Rect::around(path.points.iter().copied())
-                .unwrap_or(Rect::new(Point::default(), Point::default())),
+            Kind::Path(path) => path.bounds,
         }
     }
 

@@ -41,7 +41,10 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `crates/canvas`: `cold-lava-canvas`, the canvas engine of `docs/shapes.md`, headless and with
   no dependencies: shapes made of parts in their own unit box, placements (move, stretch,
   rotate), anchors, and regions (`&`, `|`, `-` over parts' insides, kept as expressions and
-  answered point by point). Its own crate, not `views`, because it is pure geometry every
+  answered point by point), and rasterizing to plain data (`raster.rs`: a `Mask` of covered
+  samples at 1×1, braille 2×4 or pixels per cell; a `Grid` of glyph + style tokens; `Pixels`).
+  `tests/snapshots/` holds rasterized Venns (`UPDATE_SNAPSHOTS=1` rewrites them);
+  `cargo run --release -p cold-lava-canvas --example bench` times a full screen. Its own crate, not `views`, because it is pure geometry every
   frontend computes the same way, not a frontend piece; no UI crate (`cargo tree -p
   cold-lava-canvas`). Nothing uses it yet; placed shapes come after scenes (#91).
 - `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
