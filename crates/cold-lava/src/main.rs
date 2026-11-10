@@ -29,8 +29,8 @@ mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, matcher,
-    merge, owner, paths, recipe, rename, resolver, search, tasks, templates, tidy, trash, types,
-    workspace, write,
+    merge, owner, paths, recipe, rename, resolver, search, style, tasks, templates, tidy, trash,
+    types, workspace, write,
 };
 
 use anyhow::Result;
@@ -64,6 +64,9 @@ Usage:
   cold-lava table WORKSPACE TYPE      a type's items as the table view shows them
   cold-lava tidy WORKSPACE            orphan notes, unused attachments, empty folders and
                                       unresolved links (read-only)
+  cold-lava style WORKSPACE           how the workspace's notes are written, which new text
+                                      follows, with the counts behind each choice;
+                                      checks [style] in config.toml and .cold-lava/style.toml
   cold-lava keys                      every command and its keys; checks config.toml
   cold-lava ext list [WORKSPACE]      installed extensions, what each may do, and why any
                                       didn't load
@@ -81,7 +84,7 @@ Options:
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
   --from / --to TAG    recipe rename-tag: the tag to rename, and its new name
   --json               machine-readable output (agenda, items, types, task toggle, item set,
-                       tidy, recipe, table: the view's own JSON)
+                       tidy, recipe, style, table: the view's own JSON)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --rev REV            item set: only if the item is still this version (its rev)
   --remove             item set: take the field's value out instead of setting one
@@ -142,6 +145,49 @@ impl Args {
 
     fn has(&self, s: &str) -> bool {
         self.switches.contains(s)
+    }
+}
+
+/// `cold-lava style`: one line per choice, with where it came from and the counts behind it.
+fn print_style(s: &style::Style) {
+    fn line<T>(name: &str, c: &style::Choice<T>, value: &str) {
+        let counts: Vec<String> = c.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
+        println!(
+            "{name:<18} {value:<11} {:<30} {}",
+            c.from.to_string(),
+            counts.join(", ")
+        );
+    }
+    println!("{} notes", s.notes);
+    line("list marker", &s.list_marker, s.list_marker.value.name());
+    line("links", &s.links, s.links.value.name());
+    line("link path", &s.link_path, s.link_path.value.name());
+    line("task fields", &s.task_fields, s.task_fields.value.name());
+    line("headings", &s.headings, s.headings.value.name());
+    line(
+        "frontmatter lists",
+        &s.frontmatter_lists,
+        s.frontmatter_lists.value.name(),
+    );
+    line("tags", &s.tags, s.tags.value.name());
+    let k = &s.key_order;
+    let keys = match k.value.is_empty() {
+        true => "(none)".to_string(),
+        false => k.value.join(", "),
+    };
+    println!("{:<18} {keys}  ({})", "key order", k.from);
+    for (field, d) in &s.dates {
+        let counts: Vec<String> = (d.counts.iter())
+            .filter(|(_, n)| **n > 0)
+            .map(|(f, n)| format!("{f} {n}"))
+            .collect();
+        println!(
+            "{:<18} {:<11} {:<30} {}",
+            format!("date {field}"),
+            d.value,
+            d.from.to_string(),
+            counts.join(", ")
+        );
     }
 }
 
@@ -524,6 +570,24 @@ fn run() -> Result<()> {
                 core.poll();
             }
             print_recipe_plan(&plan, !dry, json)
+        }
+        Some("style") => {
+            let root = PathBuf::from(args.word(1).unwrap_or("."));
+            let found = workspace::scan(&root)?.style();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&found)?);
+            } else {
+                print_style(&found);
+            }
+            let config = (config::get().errors.iter()).filter(|e| e.starts_with("[style]"));
+            let config: Vec<String> = config.map(|e| format!("config.toml {e}")).collect();
+            for e in found.errors.iter().chain(&config) {
+                eprintln!("{e}");
+            }
+            if !found.errors.is_empty() || !config.is_empty() {
+                std::process::exit(1);
+            }
+            Ok(())
         }
         Some("daily") => {
             let root = workspace::find_workspace_root(&PathBuf::from(args.word(1).unwrap_or(".")));

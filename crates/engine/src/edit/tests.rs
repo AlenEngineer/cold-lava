@@ -23,6 +23,15 @@ fn settings(toml: &str) -> Settings {
 }
 
 /// Sets `field` of the `kind` item on `line` of `Note.md`, at its current rev.
+/// Obsidian's style, with the Tasks plugin's format from `s` as the workspace would have it.
+fn style_of(s: &Settings) -> Style {
+    let mut style = Style::default();
+    if s.tasks.dataview {
+        style.task_fields.value = TaskFields::Dataview;
+    }
+    style
+}
+
 fn set(
     s: &Settings,
     text: &str,
@@ -40,6 +49,7 @@ fn set(
         "Note.md",
         text,
         s,
+        &style_of(s).into(),
         &SetField {
             id: &item.id,
             rev: Some(&item.rev),
@@ -377,6 +387,7 @@ fn a_stale_rev_or_a_gone_item_is_changed() {
             "Note.md",
             text,
             &s,
+            &Style::default().into(),
             &SetField {
                 id,
                 rev: Some(rev),
@@ -607,6 +618,7 @@ fields.status = { inline = "status" }
             "Places/Hekla.md",
             t,
             &s,
+            &Style::default().into(),
             &SetField {
                 id,
                 rev: None,

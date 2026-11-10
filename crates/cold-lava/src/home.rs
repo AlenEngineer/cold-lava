@@ -3788,6 +3788,10 @@ impl Home {
             return self.flash("only notes have tags: mark some notes");
         }
         self.save_editor();
+        let style = match self.core.as_ref() {
+            Some(core) => core.index.workspace.style(),
+            None => crate::style::Style::of_root(&root),
+        };
         let (mut changed, mut unchanged, mut refused) = (Vec::new(), 0, Vec::new());
         for rel in &notes {
             let path = root.join(rel);
@@ -3798,12 +3802,14 @@ impl Home {
                 .trim_end_matches(".md");
             let result = std::fs::read_to_string(&path)
                 .map_err(|e| e.to_string())
-                .and_then(|text| match frontmatter::edit_tag(&text, tag, edit)? {
-                    Some(new) => crate::write::replace(&path, text.as_bytes(), new.as_bytes())
-                        .map(|()| true)
-                        .map_err(|e| e.to_string()),
-                    None => Ok(false),
-                });
+                .and_then(
+                    |text| match frontmatter::edit_tag(&text, tag, edit, &style)? {
+                        Some(new) => crate::write::replace(&path, text.as_bytes(), new.as_bytes())
+                            .map(|()| true)
+                            .map_err(|e| e.to_string()),
+                        None => Ok(false),
+                    },
+                );
             match result {
                 Ok(true) => changed.push(path),
                 Ok(false) => unchanged += 1,

@@ -8,6 +8,7 @@ use crate::frontmatter::{self, Value};
 use crate::gateway::{Edit, Error, Op, Reason};
 use crate::items::{self, Item, Settings};
 use crate::rename::Change;
+use crate::style::{self, Lazy};
 use crate::tasks;
 use crate::workspace::{Ref, attachment_kind, clean_target};
 use chrono::NaiveDate;
@@ -22,15 +23,18 @@ pub struct Read {
     pub tags: Vec<String>,
     /// Frontmatter `aliases:` (other names the quick switcher finds the note by).
     pub aliases: Vec<String>,
+    /// How its body's links are written, for the workspace's style.
+    pub written: style::Links,
 }
 
 /// Read a note's links, tags and aliases.
 pub fn read(text: &str) -> Read {
-    let (refs, tags, aliases) = parse(text, parsers());
+    let (refs, tags, aliases, written) = parse(text, parsers());
     Read {
         refs,
         tags,
         aliases,
+        written,
     }
 }
 
@@ -59,11 +63,13 @@ pub enum After {
 }
 
 /// Make `edit` on `item` of the note at workspace-relative `note` whose text is `text`: through
-/// `edit::plan` for `set-field`, `tasks::toggle_text` for `toggle`. Nothing is written.
+/// `edit::plan` for `set-field`, `tasks::toggle_text` for `toggle`, adding text in `style`.
+/// Nothing is written.
 pub fn edit(
     note: &str,
     text: &str,
     s: &Settings,
+    style: &Lazy,
     item: &Item,
     req: &Edit,
     today: NaiveDate,
@@ -76,7 +82,7 @@ pub fn edit(
                 field,
                 value: value.clone(),
             };
-            let set = edit::plan(note, text, s, &set)?;
+            let set = edit::plan(note, text, s, style, &set)?;
             let removed = value.is_null() || value.as_str().is_some_and(|v| v.trim().is_empty());
             let what = match removed {
                 true => format!("removed {field}"),
@@ -95,7 +101,8 @@ pub fn edit(
                 let message = format!("{} is a {}, not a task", req.id, item.data.kind());
                 return Err(Error::new(Reason::Refused, message));
             }
-            let t = tasks::toggle_text(note, note, text, s, item.line, Some(&req.rev), today)
+            let line = item.line;
+            let t = tasks::toggle_text(note, note, text, s, style, line, Some(&req.rev), today)
                 .map_err(|e| {
                     let reason = match e.downcast_ref::<tasks::Changed>() {
                         Some(_) => Reason::Changed,
@@ -256,7 +263,8 @@ fn parsers() -> &'static Parsers {
     P.get_or_init(Parsers::new)
 }
 
-fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
+fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
+    let mut written = style::Links::default();
     let mut refs = Vec::new();
     let mut tags = Vec::new();
     let mut aliases: Vec<String> = Vec::new();
@@ -321,11 +329,11 @@ fn parse(text: &str, p: &Parsers) -> (Vec<Ref>, Vec<String>, Vec<String>) {
         if in_fence {
             continue;
         }
-        for target in line_links(raw) {
+        for target in links_in(raw, Some(&mut written)) {
             add(&mut refs, Some(target), n, raw);
         }
     }
-    (refs, tags, aliases)
+    (refs, tags, aliases, written)
 }
 
 /// A tag as written in a note: the bytes of its name (no `#`), and for one in the frontmatter's
@@ -473,15 +481,29 @@ fn is_number(name: &str) -> bool {
 
 /// The link targets on one line outside inline code: wikilinks, then Markdown links.
 pub fn line_links(line: &str) -> Vec<String> {
+    links_in(line, None)
+}
+
+/// `line_links`, counting how each link is written into `written`.
+fn links_in(line: &str, mut written: Option<&mut style::Links>) -> Vec<String> {
     // Without code to take out, a link needs `[[` or `](`; most lines have neither.
     if !line.contains('`') && !line.contains("[[") && !line.contains("](") {
         return Vec::new();
     }
     let p = parsers();
     let line = p.inline_code.replace_all(line, "");
-    let wiki = p.wikilink.captures_iter(&line);
-    let md = p.mdlink.captures_iter(&line);
-    wiki.chain(md).filter_map(|c| clean_target(&c[1])).collect()
+    let wiki = p.wikilink.captures_iter(&line).map(|c| (false, c));
+    let md = p.mdlink.captures_iter(&line).map(|c| (true, c));
+    let mut out = Vec::new();
+    for (md, c) in wiki.chain(md) {
+        if let Some(target) = clean_target(&c[1]) {
+            if let Some(w) = written.as_deref_mut() {
+                w.add(md, &c[1]);
+            }
+            out.push(target);
+        }
+    }
+    out
 }
 
 fn clean_alias(raw: &str) -> Option<String> {
@@ -508,13 +530,13 @@ mod tests {
     use super::*;
 
     fn links_and_tags(text: &str) -> (Vec<String>, Vec<String>) {
-        let (refs, tags, _) = parse(text, parsers());
+        let (refs, tags, _, _) = parse(text, parsers());
         (refs.into_iter().map(|r| r.target).collect(), tags)
     }
 
     #[test]
     fn link_positions() {
-        let (refs, _, _) = parse(
+        let (refs, _, _, _) = parse(
             "---\nup: \"[[Parent]]\"\n---\n\nSee [[A]] and\n[[B|bee]] here",
             &Parsers::new(),
         );
@@ -575,12 +597,12 @@ mod tests {
 
     #[test]
     fn frontmatter_aliases() {
-        let (_, _, a) = parse(
+        let (_, _, a, _) = parse(
             "---\naliases: [Big Island, \"Hawaiʻi\"]\ntags: x\n---\n",
             &Parsers::new(),
         );
         assert_eq!(a, ["Big Island", "Hawaiʻi"]);
-        let (_, t, a) = parse(
+        let (_, t, a, _) = parse(
             "---\naliases:\n  - One\n  - 'Two'\ntags:\n  - t\n---\n",
             &Parsers::new(),
         );

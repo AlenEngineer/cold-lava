@@ -205,7 +205,7 @@ fn duplicates_a_note_and_merges_one_into_another_keeping_links() {
     assert!(!workspace.join("Concepts/Pāhoehoe.md").exists());
     assert_eq!(
         read("Concepts/Lava.md"),
-        "---\ntags: [concept, lava]\naliases:\n  - Pāhoehoe\n---\n# Lava\n\n\
+        "---\ntags: [concept, lava]\naliases: [Pāhoehoe]\n---\n# Lava\n\n\
          Molten rock that reaches the surface. Below ground it's called magma.\n\n\
          ## Temperature\nBasaltic lava, the runny kind at a [[Shield Volcano]], erupts at roughly \
          1,100–1,200 °C.\n\n## Textures\nWhen it cools, basaltic lava usually becomes either \
@@ -386,8 +386,8 @@ fn moves_tags_and_deletes_marked_notes() {
     );
     let loose = read(workspace.join("Inbox/Loose thought.md"));
     assert!(
-        loose.starts_with("---\ntags:\n  - review\n  - person\n---\nIs there a volcano on Mars"),
-        "{loose}"
+        loose.starts_with("---\ntags: [review, person]\n---\nIs there a volcano on Mars"),
+        "a new tags list is written as the workspace's are: {loose}"
     );
     assert!(
         files_ending(&system_trash(&home), "").is_empty(),
@@ -479,6 +479,57 @@ fn follows_a_relative_link_to_the_note_its_path_names() {
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn new_text_in_the_app_follows_the_workspaces_style() {
+    let dir =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("drive-style-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let workspace = dir.join("dataview-notes");
+    for (rel, text) in [
+        (
+            "Lava.md",
+            "---\ntitle: Lava\ntags:\n- \"#rock\"\ncreated: 08/11/2026\n---\n\
+             * [ ] Sample the flow [due:: 2026-11-12]\n* See [Basalt](Basalt.md)\n",
+        ),
+        (
+            "Basalt.md",
+            "---\ntitle: Basalt\ntags:\n- \"#rock\"\ncreated: 31/10/2026\n---\n\
+             * [x] Name it [completion:: 2026-11-01]\n* Back to [Lava](Lava.md)\n",
+        ),
+        ("Inbox.md", "* [ ] Call the lab\n* [ ] Wash the samples\n"),
+        (
+            "Pumice.md",
+            "---\ntitle: Pumice\ncreated: 03/11/2026\n---\nLight.\n",
+        ),
+    ] {
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join(rel), text).unwrap();
+    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive/style.drive");
+    let out = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .args(["drive".as_ref(), script.as_os_str(), "--".as_ref()])
+        .arg(&workspace)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let read = |rel: &str| std::fs::read_to_string(workspace.join(rel)).unwrap();
+    assert_eq!(
+        read("Inbox.md"),
+        "* [x] Call the lab [completion:: 2026-11-09]\n\
+         * [ ] Wash the samples [due:: 2026-12-01]\n"
+    );
+    assert_eq!(
+        read("Pumice.md"),
+        "---\ntitle: Pumice\ntags:\n- \"#rock\"\ncreated: 03/11/2026\n---\nLight.\n"
     );
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -26,6 +26,8 @@ pub struct TasksSettings {
     pub set_cancelled_date: bool,
     pub recurrence_below: bool,
     pub dataview: bool,
+    /// Whether the plugin's settings name a `taskFormat` (else `dataview` is its default).
+    pub format_set: bool,
     /// What each status symbol means: the defaults, then the plugin's `statusSettings`.
     pub statuses: BTreeMap<char, StatusType>,
     /// The symbol each status's toggle goes to, where the plugin's `statusSettings` say.
@@ -94,6 +96,7 @@ impl TasksSettings {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             dataview: json.get("taskFormat").and_then(|v| v.as_str()) == Some("dataview"),
+            format_set: json.get("taskFormat").is_some_and(|v| v.is_string()),
             statuses,
             next,
         }
@@ -497,6 +500,7 @@ pub fn toggle(
         .with_context(|| format!("no such file: {}", path.display()))?;
     let root = crate::workspace::find_workspace_root(&path);
     let item_settings = items::Settings::load(&root);
+    let style = crate::style::Lazy::new(|| crate::style::Style::of_root(&root));
     let rel = path
         .strip_prefix(&root)
         .unwrap_or(&path)
@@ -504,7 +508,16 @@ pub fn toggle(
         .replace('\\', "/");
     let text = std::fs::read_to_string(&path)?;
     let shown = path.to_string_lossy();
-    let t = toggle_text(&shown, &rel, &text, &item_settings, line, expect_id, today)?;
+    let t = toggle_text(
+        &shown,
+        &rel,
+        &text,
+        &item_settings,
+        &style,
+        line,
+        expect_id,
+        today,
+    )?;
     match crate::write::replace(&path, text.as_bytes(), t.text.as_bytes()) {
         Err(crate::write::WriteError::Changed(_)) => {
             return Err(Changed(format!(
@@ -521,12 +534,15 @@ pub fn toggle(
 /// Toggle the task at `line` (1-based) of `text`, the note at workspace-relative `rel` (named
 /// `shown` in messages), like Obsidian Tasks does: to the status's next symbol, with a done date
 /// and the next occurrence of a recurring task when that is done, and without its done and
-/// cancelled dates when it isn't. Nothing is written: `Toggled::text` is the note's new text.
+/// cancelled dates when it isn't. A date is added in the format the line writes its fields in,
+/// else the workspace's (`style`). Nothing is written: `Toggled::text` is the note's new text.
+#[allow(clippy::too_many_arguments)]
 pub fn toggle_text(
     shown: &str,
     rel: &str,
     text: &str,
     item_settings: &items::Settings,
+    style: &crate::style::Lazy,
     line: usize,
     expect_id: Option<&str>,
     today: NaiveDate,
@@ -557,7 +573,10 @@ pub fn toggle_text(
     let Some((_, task)) = item else {
         bail!("line {line} of {shown} is not a task");
     };
-    let dataview = settings.dataview || old.contains("::");
+    let dataview = || {
+        crate::style::fields_of(&old).unwrap_or_else(|| style.get().task_fields.value)
+            == crate::style::TaskFields::Dataview
+    };
     let (quote, rest) = split_quote(&old);
     let caps = re()
         .task
@@ -577,7 +596,7 @@ pub fn toggle_text(
         StatusType::Done => {
             let mut b = without(&body, "❌", "cancelled");
             if settings.set_done_date {
-                b = add_field(&b, "✅", "completion", today, dataview);
+                b = add_field(&b, "✅", "completion", today, dataview());
             }
             if let Some(rule) = &task.recurrence {
                 match next_occurrence(&task, rule, today) {
@@ -601,7 +620,7 @@ pub fn toggle_text(
         StatusType::Cancelled => {
             let b = without(&body, "✅", "completion");
             match settings.set_cancelled_date {
-                true => add_field(&b, "❌", "cancelled", today, dataview),
+                true => add_field(&b, "❌", "cancelled", today, dataview()),
                 false => b,
             }
         }
@@ -973,6 +992,34 @@ mod tests {
         );
         assert_eq!(r.id, line_id("> - [x] Pack boots ✅ 2026-11-05"));
         let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
+    fn a_done_date_is_written_as_the_line_writes_fields_else_as_the_workspace() {
+        let s = settings(serde_json::json!({}), "");
+        let mut dataview = crate::style::Style::default();
+        dataview.task_fields.value = crate::style::TaskFields::Dataview;
+        let tick = |text: &str, style: &crate::style::Style| {
+            let style = style.clone().into();
+            toggle_text("N.md", "N.md", text, &s, &style, 1, None, d("2026-11-09"))
+                .unwrap()
+                .text
+        };
+        assert_eq!(
+            tick("* [ ] Wash\n", &dataview),
+            "* [x] Wash [completion:: 2026-11-09]\n"
+        );
+        assert_eq!(
+            tick("* [ ] Wash 📅 2026-11-10\n", &dataview),
+            "* [x] Wash 📅 2026-11-10 ✅ 2026-11-09\n",
+            "the line's own emoji first"
+        );
+        let emoji = crate::style::Style::default();
+        assert_eq!(
+            tick("* [ ] Wash [due:: 2026-11-10]\n", &emoji),
+            "* [x] Wash [due:: 2026-11-10] [completion:: 2026-11-09]\n"
+        );
+        assert_eq!(tick("* [ ] Wash\n", &emoji), "* [x] Wash ✅ 2026-11-09\n");
     }
 
     #[test]

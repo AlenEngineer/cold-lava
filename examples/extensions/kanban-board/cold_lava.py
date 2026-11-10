@@ -147,6 +147,11 @@ class Extension:
         """Every file in the workspace whose name ends in `.extension`."""
         return self.request("workspace/files", {"extension": extension})["files"]
 
+    def style(self):
+        """How the workspace writes (list marker, links, task fields, ...), each as
+        {"value", "from", "counts"}: for text the extension writes itself."""
+        return self.request("workspace/style")
+
     def open_view(self, content, select=None, file=None):
         """Show a list or a table ({"kind": "list", ...}) in cold-lava, which draws it and owns
         its keys, at the row `select`; when it shows a workspace `file`, cold-lava lists who

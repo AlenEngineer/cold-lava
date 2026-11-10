@@ -205,6 +205,10 @@ then a query and a view, not a parser of its own.
   the permission gate is the same; news goes out as notifications ("Transport, as built").
 - **Files.** `workspace/read`, `workspace/write`, `workspace/create` and `workspace/files`
   read and write whole files ("File types, as built" below).
+- **The style.** `workspace/style` answers how the workspace writes, the same JSON as
+  `cold-lava style --json` (pinned in `rpc.rs`'s tests), for an extension that writes new text
+  with `workspace/write` or `workspace/create`. One that changes items with `items/edit` needs
+  none of it: the edit is spelled in the style already ("Workspace style, as built").
 - **Not yet:** the ops `set-status`, `set-date`, `set-property`,
   `set-cell`, `replace` and `insert-after`. `set-field` already sets a status, a date, a
   property or a cell of a typed item; the others wait until an extension needs one.
@@ -488,7 +492,8 @@ style.minutes = { badge = true, icon = "⏱" }
   `status`), and `agenda` and `task toggle` read through it. Toggling stays native code
   (`tasks.toggle`): the status goes to its next symbol (the plugin's `nextStatusSymbol`, else
   done for an open task and todo for a closed one); to a done status it adds the done date
-  (`✅` or `[completion:: …]`, as the line writes its fields) and, for a recurring task, the next
+  (`✅` or `[completion:: …]`, as the line writes its fields, else as the workspace's style
+  does: "Workspace style, as built") and, for a recurring task, the next
   occurrence with its dates moved; to a cancelled status it adds the cancelled date (`❌` or
   `[cancelled:: …]`, unless the plugin's `setCancelledDate` is off) and takes the done date
   out; otherwise it takes the done and cancelled dates out. `tasks::today()` is the local date,
@@ -526,8 +531,9 @@ style.minutes = { badge = true, icon = "⏱" }
   read-back check. `item set` changes only the field; ticking with dates and recurrence is
   `task toggle`. A date the task doesn't have is added through a writable source of a kind the
   line already writes its other fields with (a marker beside `⏳ …`, a Dataview field beside
-  `[scheduled:: …]`), else a Dataview field when the workspace's Tasks plugin writes Dataview or the
-  line has a `::`, as `task toggle` decides, else a marker (`📅 …`). This is the rule for any
+  `[scheduled:: …]`), else a Dataview field when the workspace's style writes task fields so
+  (the Tasks plugin's format where it is set, else the notes' majority) or the line has a `::`,
+  else a marker (`📅 …`). This is the rule for any
   type's missing field, so it holds for subtypes of the task and for a type of one's own with
   both kinds of source.
 - **Cost,** on a generated 3,000-note workspace with 30,000 tasks in both formats (release, median
@@ -562,9 +568,10 @@ style.minutes = { badge = true, icon = "⏱" }
   link's target) or as a string the field's type reads (`1h30m`, `[[Lava]]`, an enum's written
   form); `null` or `""` removes. It is written by its value type: a date in the field's
   `format` (ISO without one), a datetime with `T` or a space as the old value had, a number as
-  JSON writes it, `yes`/`no` when the old value was written so, a link as `[[target]]` unless the
-  old value was a bare name or a Markdown link, a tag with `#` in text and without in a
-  property, an enum in the old value's form, else the form the note's other items of the type
+  JSON writes it, `yes`/`no` when the old value was written so, a link as the old value was (a
+  bare name, a Markdown link, else `[[target]]`) and a new one in the workspace's link syntax
+  (always `[[target]]` in a property, the only link Obsidian reads there), a tag as the old
+  value was, else with `#` in text and in a property as the workspace's `tags` are, an enum in the old value's form, else the form the note's other items of the type
   use, else the first, a duration as `1h30m` (minutes alone, `90m`, when the old value was).
   A datetime with a `format` is refused, as it doesn't read yet.
 - **Sources.** Replacing changes only the value's span. Adding and removing:
@@ -582,7 +589,8 @@ style.minutes = { badge = true, icon = "⏱" }
     for. Removing blanks the cell, keeping its width.
   - `property`: a scalar or a one-item list's value is replaced inside its quotes, or quoted
     when YAML needs it; `key:` with nothing gets the value on its line; a missing key is a new
-    line before the closing `---`, with new frontmatter when the note has none. Removing deletes
+    line where the workspace writes that key (before the first key its order puts after it,
+    else before the closing `---`), with new frontmatter when the note has none. Removing deletes
     the property's lines. Nested YAML and lists of several values are refused.
   - `capture` and `pattern`: replaced only. A pattern says where a value is read, not where one
     goes, so a missing value is refused, and so is removing one (it would leave the text around
@@ -1272,7 +1280,7 @@ round trip per link is never acceptable.
 
 ## Workspace style
 
-*(design)*
+*(design; built: "Workspace style, as built" below)*
 
 A workspace has a style, whether or not anyone wrote it down: `-` or `*` for list items, wikilinks
 or Markdown links, emoji (`📅 2026-11-12`) or Dataview (`[due:: 2026-11-12]`) task fields, a date
@@ -1299,6 +1307,82 @@ new text.**
 - **Through the gateway.** Extensions that insert text ask for the style (`workspace/style`) or,
   better, insert through item messages that apply it, so they write in the workspace's style
   without knowing it.
+
+### Workspace style, as built
+
+- **Counted per note.** The Markdown owner counts how a note's body links are written as it
+  finds them in the scan (`Read::written`: wikilink or Markdown; `./` or `../` is relative, a
+  target with a `/` absolute, else shortest), so links are matched once. The rest is
+  `style::count_with`, one pass over the note's lines the first time the workspace's style is
+  asked for, kept on the `Note` (`OnceLock`, as its items are): list markers (`-`, `*`, `+`; a
+  rule such as `* * *` is none), task fields (a task with a `::` is Dataview, else one with a
+  Tasks glyph is emoji, else neither), headings (`#` or a line of `=` or `-` under text),
+  frontmatter lists (the first item's line: indented `  - a`, flush `- a`, or `[a, b]`), `tags`
+  values with or without `#`, the frontmatter's top-level keys in order, and the date form of
+  each property and Dataview field holding one (`YYYY-MM-DD`, `YYYY/MM/DD`, `DD/MM/YYYY`,
+  `MM/DD/YYYY`, `DD.MM.YYYY`; a date that could be `DD/MM` or `MM/DD` counts for both). Fenced
+  code is skipped.
+- **Added up on demand.** `Workspace::style()` adds the notes' counts (`Tally`) each time it is
+  asked; a note read again is a new `Note`, counted again, so the style follows the notes with
+  no cache to keep in step. A command that writes one note without scanning (`item set`, `task
+  toggle`) reads and counts the notes for it (`Style::of_root`).
+- **The rule.** Occurrences are counted, not notes. The option with the most wins; a tie, or no
+  occurrences, goes to the first option in its list, which is what Obsidian writes (`-`,
+  wikilink, shortest, emoji, `#` headings, indented lists, tags without `#`), and says
+  `"from": "default"`. Keys are ordered by their mean place in the notes that have two keys or
+  more (first 0, last 1000, integer division), then by how many notes have them, then by name.
+- **Then the settings, then the overrides,** each later one winning: Obsidian's settings where
+  the workspace has them (`useMarkdownLinks` and `newLinkFormat` in `.obsidian/app.json`, the
+  Tasks plugin's `taskFormat`); `[style]` in config.toml, which the binary reads and hands over
+  (`style::set_configured`, as `[markdown]`); the workspace's `.cold-lava/style.toml`. Each
+  choice says where it came from. An unknown key or value in either file is reported (`cold-lava
+  style` exits with 1, `cold-lava keys` lists config.toml's) and skipped.
+- **`cold-lava style WORKSPACE [--json]`** prints each choice with its value, where it came from
+  and its counts; `--json` is `{notes, list-marker, links, link-path, task-fields, headings,
+  frontmatter-lists, tags, key-order, dates}`, each `{value, from, counts}`. The example
+  workspace's is pinned (`tests/golden/style.json`, `style.txt`).
+- **Workspace-wide.** The counts are per note, so a folder's style is a sum away, but nothing
+  writes per folder yet: a folder written differently gets the workspace's style.
+- **Cost.** Counting every note in the scan cost 160 ms on the 3,000-note workspace of
+  `scripts/bench-items.py` at first (a second pass of the link patterns, and a regex for
+  Dataview dates); counting links in the owner's pass, finding dates by hand and counting the
+  rest only when the style is asked for leave the scan within noise (see the PR for the table).
+  The lazy count itself is about 22 ms for those 3,000 notes (13 MB).
+- **Writing in the style.** `Style` spells what the engine adds (`link`, `tag`, `new_list`,
+  `key_before`, `task_fields`), and every path that adds text asks it; what is already written
+  keeps its own spelling, decided first by the caller (an old value's form, the line's own
+  task fields, a list's own `#`). The paths:
+  - `item set` and `items/edit set-field` (`edit::plan`): a missing task field is a Dataview
+    field or a marker as the style says, unless the line writes its fields one way; a new link
+    value is `[[target]]` or `[name](target.md)` (in a property always `[[target]]`); a new tag
+    in a property has `#` when the workspace's `tags` do; a new property goes where the key
+    order puts it (`frontmatter::new_key_at`).
+  - `task toggle`, `items/edit toggle`, `x` in the reader and the agenda (`tasks::toggle_text`):
+    the done and cancelled dates are written as the line writes its fields (a `::` is Dataview,
+    a Tasks glyph emoji), else in the style's format.
+  - Adding a tag (`#` in the menu, `frontmatter::edit_tag`) and a merge's tags and aliases
+    (`frontmatter::edit_list`): a new `tags` or `aliases` list is written in the style's list
+    form (`  - a`, `- a` or `[a]`) where the key order puts it, and a tag has `#` when the
+    list's own tags do, else when the style's do.
+  - A merge's properties the target lacks (`merge::add_lines`) go where the key order puts
+    them, written as the source had them.
+  - The style is asked for only when an edit adds text that needs it (`style::Lazy`): the
+    commands that write one note without a scan (`item set`, `task toggle`) read and count the
+    notes then (`Style::of_root`, about 300 ms on 3,000 notes against 14 ms for the edit
+    alone), and replacing a value or ticking a line that writes its fields costs nothing more;
+    the app and the gateway use the core's notes.
+- **For extensions.** `workspace/style` (permission `items.read`) answers the `Style` as JSON,
+  pinned by `rpc.rs`'s `the_workspaces_style_is_pinned_over_the_wire`; `cold_lava.py` has
+  `style()`. An extension that edits items through `items/edit` gets the style without asking.
+- **Not routed, and why.** A note behind an unresolved link, a daily note and a canvas start
+  empty or from their template, so they add nothing to spell. A recurring task's next
+  occurrence is a copy of its line. Renames, merges and recipes rewrite links and tags in the
+  style they were written in, which is the rule for existing text. No path inserts a list item
+  or a heading yet, so the list marker and heading style are only reported (and given to
+  extensions). Dates: a field's date is written in the format its type reads (`format`, ISO
+  without one), since one written otherwise would not read back; the detected forms show where
+  a type's `format` and the notes disagree. The link path (`newLinkFormat`) is reported but not
+  applied: `set-field` writes the target as given, as the resolver isn't consulted there.
 
 ## Recipes
 
@@ -1524,8 +1608,8 @@ JSON-RPC 2.0. Both sides can send requests and notifications.
     when the program never started).
 - The extension calls the host: `workspace/notes`, `workspace/read`, `workspace/write` (through the safe
   write path, with the expected previous content), `links/backlinks`, `search/text`,
-  `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit` and `types/list` (see
-  "The workspace gateway, as built"), `view/open`, `view/update`, `view/close`, `view/show`
+  `items/query`, `items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list` and
+  `workspace/style` (see "The workspace gateway, as built"), `view/open`, `view/update`, `view/close`, `view/show`
   and `workspace/open` (see "The view gateway, as built"), `ui/notify`, `events/subscribe`, and:
   - `command/run`: run any command in the menu's table by `id` with `args`, as a key would: a
     core command or another extension's. Core commands ignore `args`, except
@@ -1550,9 +1634,10 @@ Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`):
 `editor/deleted`, `pane/message`, `pane/exited`, `items/changed`, `items/reset`, `view/event`,
 `view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
 `workspace/saved`, `workspace/open`, `pane/open`, `pane/input`, `items/query`,
-`items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/read`,
-`workspace/write`, `workspace/create`, `workspace/files`, `view/open`, `view/update`,
-`view/close` and `view/show` from the extension. The `items/*`, `types/list` and file requests are answered
+`items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/style`,
+`workspace/read`, `workspace/write`, `workspace/create`, `workspace/files`, `view/open`,
+`view/update`, `view/close` and `view/show` from the extension. The `items/*`, `types/list`,
+`workspace/style` and file requests are answered
 during the call, and `view/open` names its view at once; the rest are queued.
 
 ### Over the wire, as built
@@ -1569,7 +1654,8 @@ during the call, and `view/open` names its view at once; the rest are queued.
   `config.toml`'s keys are checked before any extension starts.
 - **Extension → host.** Requests, answered with a result or an error: the workspace gateway's
   (`items/query` with `{items, next}`, `items/subscribe` with `{subscription}`,
-  `items/unsubscribe` and `types/list`, `items/edit` with `{item, changed, next,
+  `items/unsubscribe`, `types/list` and `workspace/style` (as `cold-lava style --json`
+  prints it), `items/edit` with `{item, changed, next,
   warning}`, and the file messages of "File types, as built"), and `ui/notify` (`message`), `ui/status` (`text`, `null` to clear: the
   extension's own part of the first status line, kept until it sends another), `command/run`
   (`id`, `args`), `workspace/saved` and `editor/opened` (`note`), `pane/open` (`program`,
@@ -1660,7 +1746,7 @@ field, an extension may read. *(Exists: `ext::Permission`, checked by `Host`.)*
 
 | Permission | Allows |
 | --- | --- |
-| `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` |
+| `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`, `workspace/style` |
 | `items.edit` | `items/edit` |
 | `files.read` | `workspace/read` and `workspace/files` for kinds of file it doesn't own |
 | `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own |

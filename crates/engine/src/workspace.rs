@@ -38,6 +38,11 @@ pub struct Note {
     pub aliases: Vec<String>,
     /// The note's full text, for full-text search.
     pub text: String,
+    /// How its links are written, counted as they are read.
+    pub links_written: crate::style::Links,
+    /// How it is written, for the workspace's style: counted the first time it is asked for
+    /// (`Workspace::style`), so a scan that writes nothing doesn't pay for it.
+    pub style: OnceLock<crate::style::Counts>,
     /// Its items, read on first use (`Workspace::items`). A refreshed note is a new `Note`.
     pub items: OnceLock<Vec<Item>>,
 }
@@ -134,6 +139,7 @@ pub fn read_note(root: &Path, path: &Path) -> Option<Note> {
         refs,
         tags,
         aliases,
+        written,
     } = markdown::read(&text);
     let links = refs.iter().map(|r| r.target.clone()).collect();
     Some(Note {
@@ -144,9 +150,25 @@ pub fn read_note(root: &Path, path: &Path) -> Option<Note> {
         refs,
         tags,
         aliases,
+        links_written: written,
+        style: OnceLock::new(),
         text,
         items: OnceLock::new(),
     })
+}
+
+/// The notes under `root`, outside hidden folders, in no particular order.
+pub fn note_paths(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
+        let n = e.file_name().to_string_lossy();
+        // Skip .obsidian, .trash, .git and friends.
+        e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
+    });
+    walker
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(move |e| e.path().strip_prefix(root).is_ok_and(is_note_path))
+        .map(|e| e.into_path())
 }
 
 pub fn scan(root: &Path) -> Result<Workspace> {
@@ -157,15 +179,8 @@ pub fn scan(root: &Path) -> Result<Workspace> {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "workspace".into());
-    let walker = WalkDir::new(&root).into_iter().filter_entry(|e| {
-        let n = e.file_name().to_string_lossy();
-        // Skip .obsidian, .trash, .git and friends.
-        e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
-    });
-    let mut notes: Vec<Note> = walker
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| read_note(&root, e.path()))
+    let mut notes: Vec<Note> = note_paths(&root)
+        .filter_map(|p| read_note(&root, &p))
         .collect();
     notes.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(Workspace {
@@ -189,6 +204,15 @@ impl Workspace {
     pub fn item_settings(&self) -> &items::Settings {
         self.item_settings
             .get_or_init(|| items::Settings::load(&self.root))
+    }
+
+    /// How the workspace is written: its notes' majority, then Obsidian's settings and the
+    /// overrides (`style::Style::of`). Added up again on each call, so it follows the notes; a
+    /// note is counted once, the first time.
+    pub fn style(&self) -> crate::style::Style {
+        let counts = (self.notes.iter())
+            .map(|n| (n.style).get_or_init(|| crate::style::count_with(&n.text, n.links_written)));
+        crate::style::Style::of(&self.root, counts)
     }
 
     /// The note's items, read the first time they're asked for.

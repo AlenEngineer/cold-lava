@@ -1,0 +1,47 @@
+# New text in a workspace written with * lists, Markdown links and Dataview fields, which
+# tests/drive.rs writes and reads back: a task ticked in the reader gets a Dataview done date,
+# a tag added to a note goes in a `- "#tag"` list where the workspace writes `tags`, and a due
+# date set in the table view is a Dataview field.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-09
+wait-for dataview-notes
+keys p
+type Inbox
+wait-for 1 note
+keys enter
+wait-for Inbox  reading
+keys x
+wait-for done: Call the lab
+keys esc
+wait-gone reading · Esc / q back
+keys p
+type Pumice
+wait-for 1 note
+keys enter
+wait-for Pumice  reading
+keys esc
+wait-gone reading · Esc / q back
+keys #
+wait-for -tag removes
+type rock
+keys enter
+wait-for tagged 1 note #rock
+keys i
+wait-for Table of…
+type task
+wait-for /task
+keys enter
+wait-for rows
+keys /
+type Wash
+keys enter
+wait-for 1 of 4 rows · /Wash
+keys l l l e
+wait-for due: ▏
+type 2026-12-01
+keys enter
+wait-for due set to 2026-12-01
+screen
+keys q q
+exits 0

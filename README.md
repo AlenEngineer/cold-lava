@@ -60,6 +60,7 @@ cold-lava recipe ~/workspace rename-tag --from a --to b   # a whole-workspace ch
 cold-lava task toggle FILE:LINE          # tick / untick a task
 cold-lava item set FILE ID FIELD VALUE   # set one field of a typed item, checked by reading back
 cold-lava types ~/workspace              # the workspace's types, and what's wrong with them
+cold-lava style ~/workspace              # how the notes are written, which new text follows
 cold-lava table ~/workspace volcano      # a type's items as a table (--sort FIELD, --json)
 ```
 
@@ -309,6 +310,50 @@ The syntax names are `tables`, `task-lists`, `strikethrough`, `footnotes`, `aler
 `> [!NOTE]`), `wikilinks`, `embeds`, `callouts`, `highlights`, `comments`, `tags`, `block-ids`,
 `math` and `frontmatter`. Mistakes are reported by `cold-lava keys` and fall back to the
 default.
+
+### Workspace style
+
+cold-lava writes new text the way the workspace's notes are already written. It counts, as it
+reads the notes, which list marker they use (`-`, `*` or `+`), wikilinks or Markdown links and
+how links name their target (the name alone, `./` relative or a path from the root), emoji
+(`📅 2026-11-12`) or Dataview (`[due:: 2026-11-12]`) task fields, `#` or underlined headings, how
+frontmatter lists are written (`  - item`, `- item` or `[a, b]`), whether `tags` are written with
+`#`, the order of frontmatter keys, and the date form each field uses. The majority wins; a tie,
+or no notes that say, goes to what Obsidian writes. Obsidian's own settings win over the counts
+where it has one (`useMarkdownLinks` and `newLinkFormat` in `.obsidian/app.json`, the Tasks
+plugin's task format). See what was found, and the counts behind it:
+
+```bash
+cold-lava style ~/workspace          # one line per choice: value, where it came from, counts
+cold-lava style ~/workspace --json
+```
+
+Set any of it yourself under `[style]` in `config.toml` (every workspace) or in the workspace's
+`.cold-lava/style.toml`, which wins over both:
+
+```toml
+list-marker = "*"            # "-", "*", "+"
+links = "markdown"           # "wikilink", "markdown"
+link-path = "relative"       # "shortest", "relative", "absolute"
+task-fields = "dataview"     # "emoji", "dataview"
+headings = "atx"             # "atx", "setext"
+frontmatter-lists = "flow"   # "indented", "flush", "flow"
+tags = "hash"                # "bare", "hash"
+key-order = ["title", "aliases", "tags", "created"]
+
+[dates]                      # a field's date form, as a moment.js format
+created = "DD/MM/YYYY"
+```
+
+New text follows it: a field added to a task (`item set`, the table view), the date a tick
+adds, a link set as a field's value, a new frontmatter key and where it goes, and a new `tags`
+or `aliases` list (adding a tag, merging notes). Text already in a note keeps its own way: a
+task whose line writes emoji fields gets an emoji done date in any workspace.
+
+Extensions ask for it with `workspace/style` and get the same JSON as `cold-lava style --json`.
+
+The style is the whole workspace's; a folder written differently follows the workspace.
+`cold-lava style` reports mistakes in either file and exits with 1.
 
 ### New notes and templates
 
