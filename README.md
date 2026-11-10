@@ -31,7 +31,8 @@ cargo install --path crates/cold-lava
 ## Try it
 
 The repo includes a small example workspace about volcanoes, built to show every feature: folders
-with Obsidian colour groups, tags, a few unresolved links, an orphan note, and two whiteboards.
+with Obsidian colour groups, tags, a few unresolved links, an orphan note, and three whiteboards
+(one of placed shapes: `Volcano Venn`, embedded from `Guide/Whiteboard`).
 
 ```bash
 git clone https://github.com/AlenEngineer/cold-lava

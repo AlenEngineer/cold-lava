@@ -1,0 +1,100 @@
+{
+	"nodes": [
+		{
+			"id": "venn",
+			"type": "text",
+			"text": "Simple Venn diagram",
+			"x": 0,
+			"y": 0,
+			"width": 600,
+			"height": 600,
+			"cold-lava": {
+				"shape": "venn2",
+				"inputs": {
+					"a": {
+						"query": {
+							"kind": "volcano",
+							"filter": {
+								"tag": "eruption"
+							},
+							"title": "Erupted"
+						}
+					},
+					"b": {
+						"query": {
+							"kind": "volcano",
+							"filter": {
+								"tag": "volcano/strato"
+							},
+							"title": "Stratovolcanoes"
+						}
+					}
+				}
+			}
+		},
+		{
+			"id": "arrow",
+			"type": "text",
+			"text": "Arrow",
+			"x": 600,
+			"y": 40,
+			"width": 80,
+			"height": 80,
+			"cold-lava": {
+				"shape": "arrow",
+				"rotation": 315.0
+			}
+		},
+		{
+			"id": "krakatoa",
+			"type": "file",
+			"file": "Volcanoes/Krakatoa.md",
+			"x": 720,
+			"y": 0,
+			"width": 300,
+			"height": 140,
+			"cold-lava": {
+				"shape": "card",
+				"node": "note"
+			}
+		},
+		{
+			"id": "masks",
+			"type": "text",
+			"text": "Ash masks\n- [ ] Two per person, for the trip",
+			"x": 720,
+			"y": 220,
+			"width": 300,
+			"height": 140,
+			"cold-lava": {
+				"shape": "sticky",
+				"node": "text"
+			}
+		},
+		{
+			"id": "season",
+			"type": "text",
+			"text": "Checklist",
+			"x": 720,
+			"y": 440,
+			"width": 400,
+			"height": 160,
+			"cold-lava": {
+				"shape": "checklist",
+				"inputs": {
+					"tasks": {
+						"query": {
+							"kind": "task",
+							"filter": {
+								"note": "Inbox/Field Season.md"
+							},
+							"title": "Field season"
+						}
+					}
+				}
+			}
+		}
+	],
+	"edges": [],
+	"cold-lava-version": 1
+}

@@ -1,0 +1,33 @@
+# The example workspace's showcase drawing: Guide/Whiteboard embeds Volcano Venn.canvas, and the
+# whiteboard draws its placed shapes bound to the workspace's notes: a Venn of the volcanoes
+# that erupted and the stratovolcanoes, a card on Krakatoa, a sticky with a task, an arrow, and
+# the field season's checklist.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys p whitebo
+wait-for Whiteboard
+keys enter
+wait-for Volcano Venn: placed shapes
+expect ⧉ Volcano Venn.canvas
+keys esc
+wait-gone reading · Esc / q back
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type venn
+keys enter
+wait-for whiteboard Volcano Venn · 5 cards · 0 arrows
+wait-for Stratovolcanoes
+expect-in 10 20 10 60 Erupted
+expect-in 22 5 22 30 Krakatoa
+expect-in 22 30 22 55 Mount St. Helens
+expect-in 22 55 22 75 Mount Fuji
+expect-in 7 87 7 120 Krakatoa
+expect-in 10 87 10 125 A volcanic island in Indonesia
+expect-in 20 87 20 125 Ash masks - [ ] Two per
+expect-in 28 87 28 135 Field season
+expect-in 32 87 36 135 Pack the gas masks
+keys q
+wait-for ? help  q quit
+keys q
+exits 0

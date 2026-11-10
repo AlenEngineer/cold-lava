@@ -24,6 +24,9 @@ change commands, keys and file formats; patch versions only fix things.
   turns the sticky into a card on it. Enter edits a sticky's text in place, opens a card's
   note (Back returns to the whiteboard), or binds any other shape again. The example
   workspace has a `checklist` shape whose click ticks a task.
+- The example workspace's `Volcano Venn.canvas`, embedded from `Guide/Whiteboard`: a Venn
+  of the volcanoes that erupted and the stratovolcanoes, a card on Krakatoa, a sticky with a
+  task, an arrow and the field season's checklist, all placed shapes.
 
 ### Changed
 

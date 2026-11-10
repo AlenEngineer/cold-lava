@@ -617,6 +617,23 @@ fn shapes_are_placed_bound_clicked_edited_and_made_into_notes() {
 }
 
 #[test]
+fn the_showcase_drawing_is_embedded_in_a_note_and_drawn_bound_to_the_workspace() {
+    let dir = sandbox("placed-showcase");
+    let file = dir.join("example-workspace/Volcano Venn.canvas");
+    let before = std::fs::read_to_string(&file).unwrap();
+    let out = drive("placed-showcase.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(before, after, "looking at a drawing doesn't rewrite it");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn placed_shapes_survive_obsidians_saves_and_are_kept_when_a_save_drops_them() {
     let dir = sandbox("placed-guard");
     let workspace = dir.join("example-workspace");

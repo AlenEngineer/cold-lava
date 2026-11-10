@@ -372,7 +372,9 @@ like letters anywhere text goes.
   it doesn't know when it saves a canvas, at node, edge and top level (#132), but sorts the
   nodes and rounds `x`, `y`, `width` and `height` to integers.
 - **The drawing's file joins the workspace** through its owner: text on a shape is Markdown,
-  so a task written on a sticky note is a `task`, and a link on a card is a backlink.
+  so a task written on a sticky note is a `task`, and a link on a card is a backlink. *(Not
+  yet: canvases aren't read into the index, so a card's note shows no backlink from the
+  drawing and a sticky's task isn't an item. Renames and tidy already read canvas cards.)*
 
 ### Placed shapes, as built
 
@@ -553,7 +555,12 @@ engine/frontend split again: the model is general, each frontend draws it as wel
    *(as built: `bind.rs`, `shows.rs` and `act.rs` in the engine, #135; "Bindings, as built" above.)*
 5. Placed shapes in the scene view (after scenes, #91): place, move, stretch and rotate; the
    Venn diagram in the example workspace as the showcase; then the whiteboard (#92) built on
-   shapes, and shapes in the document view through `![[…]]`.
+   shapes, and shapes in the document view through `![[…]]`. *(as built, on the whiteboard:
+   "Placed shapes, as built" above, #136. The example workspace's `Volcano Venn.canvas`,
+   embedded from `Guide/Whiteboard`, has a bound Venn, a card, a sticky with a task, an arrow
+   and a checklist. Still to come: the document view drawing an embedded drawing in place
+   (the reader shows its name, #138), and the drawing's file joining the workspace through an
+   owner, so a sticky's task is a `task` and a card a backlink.)*
 
 ## The notebook
 
