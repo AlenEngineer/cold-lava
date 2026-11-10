@@ -749,17 +749,17 @@ type may take it).
 ### Shapes
 
 A **shape** says how something is drawn on the canvas: parts (rectangles, circles, lines, arrows,
-paths, text, other shapes) in a box, named regions made from them (`left & right`), the data it
+paths of lines and curves, text, other shapes) in a box, named regions made from them (`left & right`), the data it
 takes and what it does when you drop or click. They are written in TOML like types: built in
 (`text`, `rect`, `circle`, `line`, `arrow`, `card`, `sticky`, `table`, `venn2`), in an extension,
 under `[[shapes]]` in `~/.config/cold-lava/config.toml`, or in `.cold-lava/shapes.toml` in a
 workspace, each replacing the one before it by id. A `[glyphs]` table names symbols that draw like
 letters anywhere text goes (`:check:` is ✓). The example workspace has a three-circle Venn, a
-list of the tallest and a timeline.
+list of the tallest, a timeline and a speech bubble.
 
 ```sh
 cold-lava shapes example-workspace                     # every shape, where it comes from, errors
-cold-lava shapes example-workspace --render venn3      # draw one as text (--size 60x18)
+cold-lava shapes example-workspace --render venn3      # draw one as text (--size 60x18, --rotate 30)
 cold-lava shapes example-workspace --render venn2 \
   --bind a='type=volcano tag=eruption title=Erupted' \
   --bind b='type=volcano tag=volcano/strato title=Stratovolcanoes'   # its inputs bound to data

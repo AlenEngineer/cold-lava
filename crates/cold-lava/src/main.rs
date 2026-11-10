@@ -78,7 +78,7 @@ Usage:
   cold-lava shapes [WORKSPACE]        every shape and glyph: where it comes from, its parts,
                                       regions, inputs and behaviour; checks [[shapes]] in
                                       config.toml and .cold-lava/shapes.toml
-  cold-lava shapes [WORKSPACE] --render ID [--size WxH] [--bind INPUT=SOURCE…]
+  cold-lava shapes [WORKSPACE] --render ID [--size WxH] [--rotate DEG] [--bind INPUT=SOURCE…]
                                       draw a shape as text (braille, labels, then its regions),
                                       its inputs bound to data and its regions filled; with
                                       --json, what it shows as data
@@ -104,6 +104,7 @@ Options:
   --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
   --render ID          shapes: draw this shape, unbound (${a.title} shows as a.title)
   --size WxH           shapes --render: the terminal it is drawn on (default 60x18)
+  --rotate DEG         shapes --render: turn it DEG degrees clockwise about its centre
   --bind INPUT=SOURCE  shapes --render, repeatable: bind an input to a query
                        ('type=volcano tag=eruption title=Erupted where vei >= 6'), a note
                        (note:PATH), labels (items:A, B) or text (text:…)
@@ -129,7 +130,7 @@ struct Args {
 impl Args {
     fn parse() -> Result<Args> {
         const WITH_VALUE: &[&str] = &[
-            "from", "to", "id", "limit", "rev", "sort", "render", "size", "do",
+            "from", "to", "id", "limit", "rev", "sort", "render", "size", "rotate", "do",
         ];
         let mut a = Args {
             words: Vec::new(),
@@ -374,6 +375,12 @@ fn run() -> Result<()> {
                     .and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?)))
                     .filter(|&(w, h)| w > 0 && h > 0)
                     .ok_or_else(|| anyhow::anyhow!("--size is WxH in cells, like 60x18"))?;
+                let rotation = match args.values.get("rotate") {
+                    None => 0.0,
+                    Some(deg) => (deg.parse::<f64>().ok())
+                        .filter(|d| d.is_finite())
+                        .ok_or_else(|| anyhow::anyhow!("--rotate is degrees clockwise, like 30"))?,
+                };
                 let (drawn, contents, aspect) = match args.binds.is_empty() {
                     true => {
                         let aspect = shape.definition.aspect;
@@ -386,7 +393,7 @@ fn run() -> Result<()> {
                 };
                 print!(
                     "{}",
-                    cold_lava_canvas::draw::preview(drawn, cols, rows, aspect, &contents)
+                    cold_lava_canvas::draw::preview(drawn, cols, rows, aspect, rotation, &contents)
                 );
                 return Ok(());
             }

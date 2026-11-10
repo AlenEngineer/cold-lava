@@ -125,7 +125,7 @@ loader builds each definition into a `cold_lava_canvas::Shape`, and the canvas c
   earlier one, goes last, and says so in a note.
 - **Parts**, each one key: `rect` (`from`, `to`: two corners), `circle` (`center`, `radius`),
   `ellipse` (`center`, `radii`), `line` and `arrow` (`from`, `to`: a point, or an anchor of a
-  part before it, like `frame.left`), `path` (`points`, `closed`), `text` (`value`, and either
+  part before it, like `frame.left`), `path` (lines and curves, `closed`: "Paths" below), `text` (`value`, and either
   `at` a point or anchor, a label, or `from` and `to`, a box it wraps in), and `shape` (`id`,
   `use` another shape's id, `from`, `to`: its box). Each can have an `id`.
 - **Text at an anchor** is a `label`: it sits on the side its anchor faces (the row above
@@ -148,7 +148,9 @@ loader builds each definition into a `cold_lava_canvas::Shape`, and the canvas c
   `name`), and `rebind` (`shape`, `inputs`). They run as "Behaviour, as built" says. A region
   can say `extension = true` instead of `shows`, for its extension to compute.
 - **Checked at load,** one line each, naming the file and the shape: a definition that doesn't
-  read (an unknown part kind or field), no id, no parts, a bad area (an unknown or stroke part,
+  read (an unknown part kind or field, a segment with no `to`), no id, no parts, a path with
+  both `points` and `segments`, segments with no `start`, fewer than two points or over the size
+  limit ("Paths" below), a bad area (an unknown or stroke part,
   a stray operator), an anchor no earlier part has, two parts or anchors with one id, a
   placeholder that isn't an input, a `shows` that doesn't read or names something not an input
   ("The region language" below; its sets go through the area parser with the inputs as names), a
@@ -157,8 +159,9 @@ loader builds each definition into a `cold_lava_canvas::Shape`, and the canvas c
   shapes. The shape is dropped; its siblings, and shapes in other files, load.
 - **`cold-lava shapes [WORKSPACE]`** lists every shape with its origin, inputs, parts, regions
   and behaviour, then the glyphs; notes and errors go to stderr, and errors exit 1. `--json` is
-  the loaded set as data. `--render ID [--size WxH]` draws one, unbound, in a WxH terminal
-  (default 60×18): braille outlines, text and labels, then its regions' tints by number.
+  the loaded set as data. `--render ID [--size WxH] [--rotate DEG]` draws one, unbound, in a
+  WxH terminal (default 60×18), turned DEG degrees clockwise: braille outlines, text and labels,
+  then its regions' tints by number.
 
 ```console
 $ cold-lava shapes example-workspace --render venn2 --size 40x12
@@ -173,6 +176,68 @@ $ cold-lava shapes example-workspace --render venn2 --size 40x12
              ⠑⠤⣀ ⠈⠢⣄⣠⠔⠁ ⣀⠤⠊
                 ⠉⠉⠉  ⠉⠉⠉
 ```
+
+#### Paths
+
+A `path` is straight lines between `points`, or a `start` and `segments` that go on from it, each
+a `line`, a cubic Bézier `curve` (two control points) or a quadratic `quad` (one, turned into the
+cubic it equals). `closed = true` joins the end back to the start and makes it an area, so a
+region can name it; an open path is a stroke.
+
+```toml
+parts = [
+  { path = { id = "zigzag", points = [[0, 0], [0.5, 1], [1, 0]] } },
+  { path = { id = "bubble", closed = true, start = [0.12, 0.02], segments = [
+    { line = [0.88, 0.02] },
+    { curve = { c1 = [0.935, 0.02], c2 = [0.98, 0.11], to = [0.98, 0.22] } },
+    { quad = { c = [0.32, 0.86], to = [0.16, 0.98], id = "tip" } },
+  ] } },
+]
+```
+
+- **Anchors.** A path has `start` and `end` (`zigzag.end`), and a segment can name the vertex it
+  ends at with an `id`, as parts are named: `{ line = { to = [x, y], id = "tip" } }` (a line
+  given just as `[x, y]` has none). The vertex is the anchor `<path>.<id>` (`bubble.tip`), so the
+  path needs an id too; `start` and `end` are taken. Later parts can start at it, and a nested
+  shape's are `<nest>.<path>.<id>`.
+- **Size.** A path may have at most 2048 points once its curves are flattened: each of `points`,
+  the `start` and each `line` is one, each `curve` and `quad` is 24 (the canvas draws a curve as
+  24 short lines). A path over it is refused at load, wherever it comes from (an extension's
+  manifest too), with its size: simplify it or split it. The number comes from the canvas bench
+  (`cargo run --release -p cold-lava-canvas --example bench`): its full-screen scene, 200
+  shapes on a 200×60 terminal, takes about 11 ms; with its 50 blobs swapped for paths of 2048
+  points it took 16 ms closed and 12 ms open, within a 60 Hz frame (16.7 ms), and with 4096
+  points 18 and 19 ms, over it. To get there, a closed path's row bands (which edges a point
+  inside it is tested against) went from at most 64 to at most 1024: with 64, one path of
+  1024 points filling the screen took 13.5 ms against a Venn's 1.6 ms, and 7 ms with 1024.
+  Open paths cost more per point (each line is walked), and they set the limit.
+- **No formulas.** A spiral, a wave or a gear is computed by whoever ships it, as points or
+  curves, and written as a path ([extensions-guide.md](extensions-guide.md#curves-and-spirals)).
+
+The example workspace's `speech` is a speech bubble drawn this way, with its inside as a region:
+
+```console
+$ cold-lava shapes example-workspace --render speech --size 60x18 --bind 'text=text:Krakatoa erupted again this morning'
+
+    ⡠⠔⠊⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠑⠢⢄
+  ⢀⠎                                                    ⠱⡀
+  ⡜                                                      ⢣
+  ⡇                                                      ⢸
+  ⡇                                                      ⢸
+  ⡇   Krakatoa erupted again this morning                ⢸
+  ⡇                                                      ⢸
+  ⢇                                                      ⡸
+  ⠘⡄                                                    ⢠⠃
+   ⠈⠢⢄⡀                                              ⢀⡠⠔⠁
+      ⠈⠉⠉⠉⠉⠉⠉⠉⠉⠉⡆     ⡠⠒⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠁
+               ⡜  ⢀⡠⠒⠉
+             ⡠⢊⡠⠔⠊⠁
+           ⠤⠚⠉⠁
+```
+
+It is an example rather than a built-in: the built-ins are the primitives and the kinds of node a
+JSON Canvas file has, and a bubble is neither, so it stays one workspace's until the shape editor
+(#153), which bends sides into these curves, makes drawing your own the usual way.
 
 ### Bindings, as built
 
@@ -484,11 +549,12 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
 `cold-lava-canvas` in `crates/canvas`, with no dependencies, built up in the order below.
 
 - **Geometry** *(as built)*: parts in a shape's unit box (`part.rs`: `rect`, `circle`,
-  `ellipse`, `line`, `arrow`, `path` as a polyline or cubic Béziers flattened once, `text` as the
+  `ellipse`, `line`, `arrow`, `path` as a polyline or cubic Béziers flattened once (24 lines a
+  curve; its rows banded, up to 1024 bands, so testing a point looks at few edges), `text` as the
   box its text will fill, `label` as one line of text beside a point); a `Placement` (what is saved: top-left corner, size, rotation in
   degrees clockwise about the centre) composed into one affine `Transform`; anchors
   (`left.top`, a part's id for its centre, the box's own `center`, `top-left`, …, `start`
-  and `end` of strokes, and named points of the shape's own; a part's id may hold dots, as a
+  and `end` of strokes, a path's named vertices, and named points of the shape's own; a part's id may hold dots, as a
   nested shape's parts do: `card.frame.top`). A part is an area (it has an inside) or a stroke (a line, an arrow, an
   open path); an arrow's head keeps its size in world units when the shape is stretched.
 - **Regions** *(as built)*: boolean operations on areas (`&`, `|`, `-`). `area.rs` parses the

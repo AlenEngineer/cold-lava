@@ -1,6 +1,7 @@
 //! Times rasterizing a full-screen scene: 200 shapes on a 200×60 terminal, each region tinted by
 //! cell and each part outlined in braille, as the TUI would per frame; then the same with five
-//! labels fitted into every region.
+//! labels fitted into every region; then 200 paths of a given size, closed with a region and
+//! open, to size the limit on a path's points (docs/shapes.md, "Path size").
 //!
 //! cargo run --release -p cold-lava-canvas --example bench
 
@@ -82,9 +83,31 @@ fn shapes() -> Vec<Arc<Shape>> {
         .collect()
 }
 
+/// A wavy ring of `n` points, closed with a region over it, or an open spiral of `n` points:
+/// every point a vertex, as a path at the limit would be.
+fn path_of(n: usize, closed: bool) -> Arc<Shape> {
+    let points = (0..n)
+        .map(|i| {
+            let t = i as f64 / n as f64 * std::f64::consts::TAU;
+            let r = match closed {
+                true => 0.4 + 0.08 * (t * 12.0).sin(),
+                false => 0.5 * i as f64 / n as f64,
+            };
+            let t = if closed { t } else { t * 6.0 };
+            Point::new(0.5 + r * t.cos(), 0.5 + r * t.sin())
+        })
+        .collect();
+    let part = Part::new(Some("p"), Kind::Path(Path::polyline(points, closed)));
+    let regions: &[(&str, &str)] = if closed { &[("inside", "p")] } else { &[] };
+    Arc::new(Shape::new(vec![part], regions).expect("valid"))
+}
+
 /// 200 shapes spread over the screen, overlapping, at assorted sizes and angles.
 fn scene(view: &Viewport) -> Vec<Placed> {
-    let shapes = shapes();
+    scene_of(view, &shapes())
+}
+
+fn scene_of(view: &Viewport, shapes: &[Arc<Shape>]) -> Vec<Placed> {
     let world = view.world_size();
     let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
     let mut rand = move || {
@@ -167,4 +190,24 @@ fn main() {
         "one Venn filling the screen: {:?}",
         median(&view, std::slice::from_ref(&venn), false, runs)
     );
+    for n in [1024, 2048, 4096, 8192, 16384, 65536] {
+        let mut mixed = shapes();
+        mixed[3] = path_of(n, true);
+        let open = {
+            let mut s = shapes();
+            s[3] = path_of(n, false);
+            s
+        };
+        let filling = Placed::new(
+            path_of(n, true),
+            Placement::new(Point::new(0.0, 0.0), Point::new(side * 1.6, side)),
+        );
+        println!(
+            "paths of {n} points: the scene with its 50 blobs such paths {:?} (open {:?}); \
+             one filling the screen {:?}",
+            median(&view, &scene_of(&view, &mixed), false, 15),
+            median(&view, &scene_of(&view, &open), false, 15),
+            median(&view, std::slice::from_ref(&filling), false, 15),
+        );
+    }
 }

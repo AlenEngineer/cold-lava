@@ -81,5 +81,31 @@ regions = [{ id = "open", area = "box", shows = "tasks where status_type != done
 click = "open"
 edit = { item = "clicked", toggle = true }
 
+# What someone said, in a speech bubble: a closed path of lines and curves (the rounded corners
+# are cubic `curve`s, the tail two `quad`s), its inside a region. The tail's point is the
+# vertex `tip`, so an arrow or a label can start at `bubble.tip`.
+[[shapes]]
+id = "speech"
+title = "Speech bubble"
+inputs = ["text"]
+aspect = 2.0
+parts = [
+  { path = { id = "bubble", closed = true, start = [0.12, 0.02], segments = [
+    { line = [0.88, 0.02] },
+    { curve = { c1 = [0.935, 0.02], c2 = [0.98, 0.11], to = [0.98, 0.22] } },
+    { line = [0.98, 0.52] },
+    { curve = { c1 = [0.98, 0.63], c2 = [0.935, 0.72], to = [0.88, 0.72] } },
+    { line = [0.4, 0.72] },
+    { quad = { c = [0.32, 0.86], to = [0.16, 0.98], id = "tip" } },
+    { quad = { c = [0.26, 0.84], to = [0.26, 0.72] } },
+    { line = [0.12, 0.72] },
+    { curve = { c1 = [0.065, 0.72], c2 = [0.02, 0.63], to = [0.02, 0.52] } },
+    { line = [0.02, 0.22] },
+    { curve = { c1 = [0.02, 0.11], c2 = [0.065, 0.02], to = [0.12, 0.02] } },
+  ] } },
+  { text = { id = "said", from = [0.08, 0.14], to = [0.92, 0.62], value = "${text}" } },
+]
+regions = [{ id = "inside", area = "bubble - said" }]
+
 [glyphs]
 eruption = "▲"
