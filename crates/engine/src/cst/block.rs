@@ -43,11 +43,11 @@ pub(super) fn blocks(
     from: usize,
     gates: Gates,
     stop: impl Fn(usize) -> bool,
-) -> (Vec<rowan::GreenElement>, usize) {
+) -> (Vec<NodeOrToken<GreenNode, rowan::GreenToken>>, usize) {
     let mut p = Parser::new(text, gates);
     let end = p.run(from, stop);
     let doc = build(text, &p.events, gates);
-    let children = doc.children().map(NodeOrToken::to_owned).collect();
+    let children = doc.children().map(|c| c.to_owned()).collect();
     (children, end)
 }
 

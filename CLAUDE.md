@@ -103,6 +103,11 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
   the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
   are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
+- `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
+  (every byte a token; printing it gives the note back), blocks found line by line as
+  CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
+  reparses only the top-level blocks an edit can change. The Markdown owner's `read` and
+  `tags_in` read links and tags from it; items still come from pulldown-cmark (#140).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:

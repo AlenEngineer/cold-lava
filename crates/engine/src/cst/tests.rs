@@ -340,7 +340,9 @@ fn an_edit_keeps_the_blocks_it_cannot_change() {
     assert!(shared >= total - 4, "{shared} of {total} kept");
 }
 
-fn same(a: &rowan::GreenElementRef<'_>, b: &rowan::GreenElementRef<'_>) -> bool {
+type Green<'a> = NodeOrToken<&'a rowan::GreenNodeData, &'a rowan::GreenTokenData>;
+
+fn same(a: &Green<'_>, b: &Green<'_>) -> bool {
     match (a, b) {
         (NodeOrToken::Node(a), NodeOrToken::Node(b)) => std::ptr::eq(*a, *b),
         _ => false,
