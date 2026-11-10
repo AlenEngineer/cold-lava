@@ -1272,7 +1272,8 @@ round trip per link is never acceptable.
 
 ## Workspace style
 
-*(design)*
+*(design; detection, `cold-lava style` and the overrides are built: "Workspace style, as built"
+below)*
 
 A workspace has a style, whether or not anyone wrote it down: `-` or `*` for list items, wikilinks
 or Markdown links, emoji (`📅 2026-11-12`) or Dataview (`[due:: 2026-11-12]`) task fields, a date
@@ -1299,6 +1300,47 @@ new text.**
 - **Through the gateway.** Extensions that insert text ask for the style (`workspace/style`) or,
   better, insert through item messages that apply it, so they write in the workspace's style
   without knowing it.
+
+### Workspace style, as built
+
+- **Counted per note.** The Markdown owner counts how a note's body links are written as it
+  finds them in the scan (`Read::written`: wikilink or Markdown; `./` or `../` is relative, a
+  target with a `/` absolute, else shortest), so links are matched once. The rest is
+  `style::count_with`, one pass over the note's lines the first time the workspace's style is
+  asked for, kept on the `Note` (`OnceLock`, as its items are): list markers (`-`, `*`, `+`; a
+  rule such as `* * *` is none), task fields (a task with a `::` is Dataview, else one with a
+  Tasks glyph is emoji, else neither), headings (`#` or a line of `=` or `-` under text),
+  frontmatter lists (the first item's line: indented `  - a`, flush `- a`, or `[a, b]`), `tags`
+  values with or without `#`, the frontmatter's top-level keys in order, and the date form of
+  each property and Dataview field holding one (`YYYY-MM-DD`, `YYYY/MM/DD`, `DD/MM/YYYY`,
+  `MM/DD/YYYY`, `DD.MM.YYYY`; a date that could be `DD/MM` or `MM/DD` counts for both). Fenced
+  code is skipped.
+- **Added up on demand.** `Workspace::style()` adds the notes' counts (`Tally`) each time it is
+  asked; a note read again is a new `Note`, counted again, so the style follows the notes with
+  no cache to keep in step. A command that writes one note without scanning (`item set`, `task
+  toggle`) reads and counts the notes for it (`Style::of_root`).
+- **The rule.** Occurrences are counted, not notes. The option with the most wins; a tie, or no
+  occurrences, goes to the first option in its list, which is what Obsidian writes (`-`,
+  wikilink, shortest, emoji, `#` headings, indented lists, tags without `#`), and says
+  `"from": "default"`. Keys are ordered by their mean place in the notes that have two keys or
+  more (first 0, last 1000, integer division), then by how many notes have them, then by name.
+- **Then the settings, then the overrides,** each later one winning: Obsidian's settings where
+  the workspace has them (`useMarkdownLinks` and `newLinkFormat` in `.obsidian/app.json`, the
+  Tasks plugin's `taskFormat`); `[style]` in config.toml, which the binary reads and hands over
+  (`style::set_configured`, as `[markdown]`); the workspace's `.cold-lava/style.toml`. Each
+  choice says where it came from. An unknown key or value in either file is reported (`cold-lava
+  style` exits with 1, `cold-lava keys` lists config.toml's) and skipped.
+- **`cold-lava style WORKSPACE [--json]`** prints each choice with its value, where it came from
+  and its counts; `--json` is `{notes, list-marker, links, link-path, task-fields, headings,
+  frontmatter-lists, tags, key-order, dates}`, each `{value, from, counts}`. The example
+  workspace's is pinned (`tests/golden/style.json`, `style.txt`).
+- **Workspace-wide.** The counts are per note, so a folder's style is a sum away, but nothing
+  writes per folder yet: a folder written differently gets the workspace's style.
+- **Cost.** Counting every note in the scan cost 160 ms on the 3,000-note workspace of
+  `scripts/bench-items.py` at first (a second pass of the link patterns, and a regex for
+  Dataview dates); counting links in the owner's pass, finding dates by hand and counting the
+  rest only when the style is asked for leave the scan within noise (see the PR for the table).
+  The lazy count itself is about 22 ms for those 3,000 notes (13 MB).
 
 ## Recipes
 

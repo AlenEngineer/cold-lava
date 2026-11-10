@@ -9,6 +9,13 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Workspace style: cold-lava counts how the notes are written as it reads them (list markers,
+  wikilinks or Markdown links and their paths, emoji or Dataview task fields, heading style,
+  frontmatter lists, `#` in `tags`, the order of frontmatter keys, each field's date form) and
+  keeps the majority, with Obsidian's own settings winning where it has one (`useMarkdownLinks`,
+  `newLinkFormat`, the Tasks plugin's format). `cold-lava style WORKSPACE [--json]` shows what
+  was found and the counts behind it; `[style]` in `config.toml` and `.cold-lava/style.toml` in
+  the workspace override any of it.
 - Recipes: named changes to the whole workspace, shown as a diff per file before anything is
   written. `cold-lava recipe WORKSPACE rename-tag --from a --to b [--dry-run] [--json]` renames
   a tag and the tags nested under it, in the text (never in code) and in frontmatter `tags` in

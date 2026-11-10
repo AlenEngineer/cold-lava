@@ -1,0 +1,79 @@
+{
+  "notes": 35,
+  "list-marker": {
+    "value": "-",
+    "from": "detected",
+    "counts": {
+      "-": 22,
+      "*": 0,
+      "+": 0
+    }
+  },
+  "links": {
+    "value": "wikilink",
+    "from": "detected",
+    "counts": {
+      "wikilink": 99,
+      "markdown": 0
+    }
+  },
+  "link-path": {
+    "value": "shortest",
+    "from": "detected",
+    "counts": {
+      "shortest": 99,
+      "relative": 0,
+      "absolute": 0
+    }
+  },
+  "task-fields": {
+    "value": "emoji",
+    "from": "detected",
+    "counts": {
+      "emoji": 3,
+      "dataview": 0
+    }
+  },
+  "headings": {
+    "value": "atx",
+    "from": "detected",
+    "counts": {
+      "atx": 43,
+      "setext": 0
+    }
+  },
+  "frontmatter-lists": {
+    "value": "flow",
+    "from": "detected",
+    "counts": {
+      "indented": 0,
+      "flush": 0,
+      "flow": 33
+    }
+  },
+  "tags": {
+    "value": "bare",
+    "from": "detected",
+    "counts": {
+      "bare": 40,
+      "hash": 0
+    }
+  },
+  "key-order": {
+    "value": [
+      "tags",
+      "country",
+      "elevation_m",
+      "added"
+    ],
+    "from": "detected",
+    "counts": {
+      "added": 1,
+      "country": 10,
+      "elevation_m": 8,
+      "kanban-plugin": 1,
+      "tags": 33
+    }
+  },
+  "dates": {}
+}

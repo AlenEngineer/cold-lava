@@ -334,6 +334,8 @@ mod tests {
             aliases: vec![],
             text: String::new(),
             tags: tags.iter().map(|s| s.to_string()).collect(),
+            links_written: Default::default(),
+            style: Default::default(),
             items: Default::default(),
         }
     }

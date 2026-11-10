@@ -62,6 +62,11 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   index's), `Files::resolve`, `split_link`, `attachment`, `file`. Write: `Files::write` in a
   `Style`, `Rewriter` (renames and merges), `new_note_path`/`new_file_path`. Don't write another
   link resolver: ask this one (docs/extensions.md, "Link resolver").
+- `style.rs`: the workspace's style (how its notes are written). The Markdown owner counts link
+  syntax as it reads (`Read::written`); `count_with()` counts the rest of a note the first time
+  the style is asked for (`Note::style`); `Workspace::style()` adds them up into a `Style`, the majority,
+  then Obsidian's settings, then `[style]` from config.toml (`style::set_configured`, from
+  `config.rs`), then `.cold-lava/style.toml`. `cold-lava style` prints it.
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs`: rename/move with every link updated;
   `plan()` then `apply()`. Its `FileEdit` (a file's planned new text, or what to ask its owner),

@@ -26,6 +26,8 @@ pub struct TasksSettings {
     pub set_cancelled_date: bool,
     pub recurrence_below: bool,
     pub dataview: bool,
+    /// Whether the plugin's settings name a `taskFormat` (else `dataview` is its default).
+    pub format_set: bool,
     /// What each status symbol means: the defaults, then the plugin's `statusSettings`.
     pub statuses: BTreeMap<char, StatusType>,
     /// The symbol each status's toggle goes to, where the plugin's `statusSettings` say.
@@ -94,6 +96,7 @@ impl TasksSettings {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             dataview: json.get("taskFormat").and_then(|v| v.as_str()) == Some("dataview"),
+            format_set: json.get("taskFormat").is_some_and(|v| v.is_string()),
             statuses,
             next,
         }

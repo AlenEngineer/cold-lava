@@ -1,0 +1,9 @@
+35 notes
+list marker        -           detected                       - 22, * 0, + 0
+links              wikilink    detected                       wikilink 99, markdown 0
+link path          shortest    detected                       shortest 99, relative 0, absolute 0
+task fields        emoji       detected                       emoji 3, dataview 0
+headings           atx         detected                       atx 43, setext 0
+frontmatter lists  flow        detected                       indented 0, flush 0, flow 33
+tags               bare        detected                       bare 40, hash 0
+key order          tags, country, elevation_m, added  (detected)
