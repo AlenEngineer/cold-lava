@@ -38,28 +38,35 @@ Each layer only talks to the one below it, so any one of them can be replaced on
 - **Events.** `note.created`, `note.changed`, `note.removed`, `note.renamed`, emitted once per
   change, whatever caused it (cold-lava, Obsidian, Neovim, git). Anything can subscribe.
 
-## Reading is core, editing is an extension
+## Reading is core, writing is cold-lava's own
 
-Reading a workspace and moving through it by links is the product, so it works with nothing else
-installed. Editing is left to the editor each person already uses: a text editor good enough to
-live in is a project of its own, and it would be worse than the one they have.
+Reading a workspace and moving through it by links works with nothing else installed. Writing is
+cold-lava's own too: the experience it aims for is a notebook and a pencil, where you write, start
+a drawing right there, and map the concept you are writing about, on one page, without switching
+tools (docs/engine.md, "The notebook"). Other editors connect through the gateway instead of being
+the main way to write.
 
 - **The reader (core).** A Markdown view of the note: headings, lists, tasks and code blocks
-  styled, links highlighted and followed from the keyboard, backlinks beside it. It replaces the
-  plain-text preview the menu shows when no Vim is installed.
-- **The editor (an extension slot).** An editor extension provides `note.edit`. There are three
-  levels, and an editor can stop at any of them:
+  styled, links highlighted and followed from the keyboard, backlinks beside it. *(Exists.)*
+- **The editor (core, the main writing surface)** *(design)*. The note, rendered as you type,
+  with the raw syntax showing only on the line you are on; plain writing keys by default and a
+  Vim mode as an option; drawings created and edited in place between paragraphs. Built on
+  `cold-lava-editor` (headless text, cursors, undo) over a lossless Markdown tree, saving through
+  the engine's safe writes, so the file stays plain Markdown that Obsidian and git read as before.
+- **Other editors are extensions.** Neovim, Helix or any editor connects through the workspace
+  gateway (links, backlinks, items, renames) as a plugin or extension, the way a language server
+  serves many editors. The three levels below stay available for them:
 
   | Level | What you get | Provided by |
   | --- | --- | --- |
   | Full screen | The editor takes over the terminal until it quits | Built in, for any `$EDITOR` |
   | In a pane | The editor runs beside the tree, as Neovim does today | Any TUI editor, through the "program in a pane" view |
-  | Bridged | Follow links and open backlinks from inside the editor | One extension per editor |
+  | Bridged | Follow links and open backlinks from inside the editor | One extension per editor, over the gateway |
 
-- **Neovim is the first editor extension.** It keeps the Vim script and the meaning of the
-  private OSC messages (`ESC ] 5379 ; kind ; payload BEL`) that make link following work inside
-  it. The core keeps only the pane (`embed.rs`), which third-party views need as well. Without
-  the Neovim-only checks, Helix, Kakoune or micro embed in the pane too, without the bridge.
+- **Neovim is today's editor extension, and stays one.** It keeps the Vim script and the meaning
+  of the private OSC messages (`ESC ] 5379 ; kind ; payload BEL`) that make link following work
+  inside it. The core keeps only the pane (`embed.rs`), which third-party views need as well.
+  Until cold-lava's editor exists, Neovim in the pane is how notes are edited in the app.
   (Exists: `crates/cold-lava/src/ext/nvim.rs`.)
 - **Saves need no cooperation.** The core's file watcher sees every save, so an editor only has
   to write the file. Telling the core about a save is a hint that makes it show up sooner.

@@ -134,3 +134,11 @@ engine/frontend split again: the model is general, each frontend draws it as wel
 5. Placed shapes in the scene view (after scenes, #91): place, move, stretch and rotate; the
    Venn diagram in the example workspace as the showcase; then the whiteboard (#92) built on
    shapes, and shapes in the document view through `![[…]]`.
+
+## The notebook
+
+Shapes are what make the notebook (docs/engine.md, "The notebook") possible: the pencil moment is
+a drawing created at the cursor and edited in place, and "map this note" is a drawing whose shapes
+are bound to the note's headings, links and tags, kept in sync both ways (an arrow drawn on the
+map can add the link in the text, through the gateway). Writing never feels like operating a
+drawing program: the shape machinery shows only when you draw or look at a drawing.

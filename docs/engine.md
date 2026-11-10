@@ -205,10 +205,25 @@ change what it shows, never how it works.
 - **Making things where you are.** "Insert a whiteboard here" creates `….canvas` through
   `workspace/create`, puts `![[…]]` at the cursor, and opens it in place. Same for a diagram or any
   file type whose owner declares a `new` command. You write, drop in a board, keep writing.
-- **Text is still typed in your editor.** A text editor good enough to live in is a project of
-  its own, so Neovim (or yours) keeps typing; cold-lava inserts references and edits items for
-  you. A light block editor for quick, one-paragraph edits may come later, never a full editor.
-- **A lossless Markdown tree when editing moves in place.** Today a note is parsed whole and
+- **The notebook.** *(design; this replaces "text is still typed in your editor")* The
+  experience is a notebook and a pencil: you write, start a drawing right there, and make a
+  mental map of the concept you're writing about, on one page, without switching tools. So
+  cold-lava has its own writing surface:
+  - **The page is the note,** rendered as you type, the raw syntax showing only on the line you
+    are on; plain Markdown on disk, so Obsidian and git see a normal file. Plain writing keys by
+    default, a Vim mode as an option.
+  - **The pencil moment.** Anywhere in the text, "draw here" creates a drawing's file, puts
+    `![[…]]` at the cursor and opens it in place; Esc is back to writing below it. The drawing
+    lives in its own file (docs/shapes.md), so the note stays clean text.
+  - **The mental map.** "Map this note" makes a drawing bound to the note's structure (its
+    headings, the concepts it links, its tags), not a copy: as you write, the map follows, and
+    an arrow drawn between two concepts on the map can add the link in the text.
+  - **In a terminal there is no pencil:** freehand with the mouse works in braille but is coarse,
+    so the quick path is placing shapes, typing labels and connecting them by keyboard. Pencil
+    and stylus belong to the GUI, on the same canvas engine and the same files.
+  - **Other editors are extensions** over the gateway (Neovim today, in a pane), for people who
+    want to keep theirs.
+- **A lossless Markdown tree for the editor.** Today a note is parsed whole and
   edited by byte ranges (a value's span, a link's text), checked by reading it back: that is
   already lossless and gives the smallest diff. Once `cold-lava-editor` edits in place, reparsing
   a whole note per keystroke stops being cheap; then the note becomes a concrete syntax tree of
