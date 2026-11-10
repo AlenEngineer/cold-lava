@@ -29,6 +29,15 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
+mod live;
+mod placed;
+
+use crate::core::{Core, Event as CoreEvent};
+use crate::ext::{ExtId, Registry};
+use crate::gateway::News;
+use cold_lava_canvas::{Cell as GridCell, Handle, Point, Style as Token, Viewport, draw as ink};
+use live::Live;
+
 // ---------- JSON Canvas model (unknown fields are preserved) ----------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -167,13 +176,37 @@ enum Drag {
         grab: (f64, f64),
         moved: bool,
     },
+    /// Stretching a card from its corner, or a shape from one of its corners.
     Resize {
+        id: String,
+        handle: Handle,
+        moved: bool,
+    },
+    /// Turning a shape by its grip.
+    Turn {
         id: String,
         moved: bool,
     },
 }
 
-struct Board {
+/// What a click grabbed on a card or shape.
+#[derive(Clone, Copy, PartialEq)]
+enum Grab {
+    Body,
+    Corner(Handle),
+    Turn,
+}
+
+struct Board<'a> {
+    /// The workspace's core, lent by the menu: placed shapes' bindings follow it.
+    core: &'a mut Core,
+    registry: &'a mut Registry,
+    live: Live,
+    /// The core's events and other owners' item news seen here, for the menu to have after.
+    events: Vec<CoreEvent>,
+    news: Vec<(String, News)>,
+    /// Extensions asked about their shapes, polled until they answer.
+    asking: Vec<ExtId>,
     path: PathBuf,
     workspace_root: PathBuf,
     workspace_name: String,
@@ -187,6 +220,8 @@ struct Board {
     undo: Vec<Doc>,
     redo: Vec<Doc>,
     msg: Option<(String, Instant)>,
+    /// Something the user must see, shown until the next key.
+    alert: Option<String>,
     quit: bool,
     /// The last save was refused (the file on disk changed and doesn't parse): quitting now
     /// would lose edits, so `q` warns once first.
@@ -215,7 +250,7 @@ pub fn launch(
     terminal: &mut DefaultTerminal,
     workspace_root: &Path,
     file: Option<PathBuf>,
-    _pixels: bool,
+    registry: &mut Registry,
 ) -> Result<()> {
     let path = match file {
         Some(p) => p,
@@ -224,8 +259,16 @@ pub fn launch(
             None => return Ok(()),
         },
     };
-    open(terminal, workspace_root, path, None)?;
+    let mut core = crate::owned::open(workspace_root, registry)?;
+    open(terminal, workspace_root, path, None, &mut core, registry)?;
     Ok(())
+}
+
+/// How a board was left, and what the core said meanwhile that the menu should hear.
+pub struct Left {
+    pub exit: Exit,
+    pub events: Vec<CoreEvent>,
+    pub news: Vec<(String, News)>,
 }
 
 /// Runs the board at `path` (created if missing) until it is left. With `nav`, from the main
@@ -235,12 +278,20 @@ pub fn open(
     workspace_root: &Path,
     path: PathBuf,
     nav: Option<Nav>,
-) -> Result<Exit> {
+    core: &mut Core,
+    registry: &mut Registry,
+) -> Result<Left> {
     crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
-    let mut b = Board::open(path, workspace_root)?;
+    let mut b = Board::open(path, workspace_root, core, registry)?;
     b.nav = nav.map(|nav| (nav, commands::history_keys(&b.keys)));
-    b.run(terminal)?;
-    Ok(b.exit)
+    let ran = b.run(terminal);
+    b.live.close(b.core);
+    ran?;
+    Ok(Left {
+        exit: b.exit,
+        events: b.events,
+        news: b.news,
+    })
 }
 
 pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<PathBuf>> {
@@ -343,8 +394,13 @@ pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<
     }
 }
 
-impl Board {
-    fn open(path: PathBuf, workspace_root: &Path) -> Result<Board> {
+impl<'a> Board<'a> {
+    fn open(
+        path: PathBuf,
+        workspace_root: &Path,
+        core: &'a mut Core,
+        registry: &'a mut Registry,
+    ) -> Result<Board<'a>> {
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let doc = parse(&disk, &path)?;
         let base = doc.clone();
@@ -368,7 +424,14 @@ impl Board {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let live = Live::new(crate::shapes::for_workspace(&workspace_root));
         let mut b = Board {
+            core,
+            registry,
+            live,
+            events: Vec::new(),
+            news: Vec::new(),
+            asking: Vec::new(),
             path,
             workspace_root,
             workspace_name,
@@ -382,6 +445,7 @@ impl Board {
             undo: Vec::new(),
             redo: Vec::new(),
             msg: None,
+            alert: None,
             quit: false,
             unsaved: false,
             last_click: None,
@@ -403,6 +467,7 @@ impl Board {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut first = true;
         while !self.quit {
+            self.tick();
             terminal.draw(|f| self.draw(f))?;
             if first {
                 // Area is known only after the first draw.
@@ -420,6 +485,43 @@ impl Board {
             self.watch_disk();
         }
         Ok(())
+    }
+
+    // ---------- placed shapes, kept up with the workspace ----------
+
+    /// Binds shapes that are new or changed, and hands them what the core and the extensions
+    /// that ship them said.
+    fn tick(&mut self) {
+        for problem in self.live.sync(self.core, &self.doc.nodes) {
+            self.flash(problem);
+        }
+        let events = self.core.poll();
+        for e in &events {
+            self.live.noticed(self.core, e);
+        }
+        self.events.extend(events);
+        for (owner, news) in self.core.take_item_news() {
+            match owner == crate::bind::OWNER {
+                true => self.live.heard(self.core, &news),
+                false => self.news.push((owner, news)),
+            }
+        }
+        for (name, ask) in self.live.take_asks() {
+            let Some(ext) = self.registry.by_name(&name) else {
+                continue;
+            };
+            self.registry.ask_shape(ext, Some(self.core), ask);
+            if !self.asking.contains(&ext) {
+                self.asking.push(ext);
+            }
+        }
+        for ext in self.asking.clone() {
+            self.registry
+                .call(ext, Some(self.core), |e, host| e.poll(host));
+        }
+        for answer in self.core.take_shape_answers() {
+            self.live.answered(answer);
+        }
     }
 
     // ---------- live sync with the file on disk ----------
@@ -465,7 +567,11 @@ impl Board {
         if t == b {
             return false; // same content, just rewritten
         }
-        let (merged, conflicts) = merge3(&b, &o, &t);
+        let (mut merged, conflicts) = merge3(&b, &o, &t);
+        // A program that rewrote the file without cold-lava's fields would turn placed shapes
+        // into plain cards: keep ours, and say so where it can't be missed.
+        let lost = placed::lost(&b, &t);
+        placed::restore(&mut merged, &o, &lost);
         self.base = theirs;
         match serde_json::from_value::<Doc>(merged) {
             Ok(d) => self.doc = d,
@@ -489,6 +595,14 @@ impl Board {
         } else {
             "merged changes made outside cold-lava".to_string()
         });
+        if !lost.is_empty() {
+            let n = lost.len();
+            let s = if n == 1 { "" } else { "s" };
+            self.alert = Some(format!(
+                "⚠ the canvas changed outside and lost cold-lava's fields on {n} shape{s}; \
+                 they are kept here and saved back (any key to dismiss)"
+            ));
+        }
         true
     }
 
@@ -501,6 +615,7 @@ impl Board {
     }
 
     fn write_file(&mut self) {
+        placed::mark_version(&mut self.doc.extra, &self.doc.nodes);
         let mut buf = Vec::new();
         let fmt = serde_json::ser::PrettyFormatter::with_indent(b"\t");
         let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
@@ -686,30 +801,76 @@ impl Board {
         self.cam.1 += dr * PX_ROW / self.zoom;
     }
 
-    /// Topmost card under a cell. Groups only respond on their frame, like Obsidian.
-    fn hit(&self, col: u16, row: u16) -> Option<(String, bool)> {
+    /// Topmost card under a cell, and what of it. Groups only respond on their frame, like
+    /// Obsidian; a placed shape where its parts, regions or box are, and its grips once selected.
+    fn hit(&self, col: u16, row: u16) -> Option<(String, Grab)> {
         let (c, r) = (col as i32, row as i32);
         let inside = |n: &CNode| {
             let (c0, r0, c1, r1) = self.cell_rect(n);
             (c >= c0 && c < c1 && r >= r0 && r < r1).then_some((c0, r0, c1, r1))
         };
+        let corner = |c1: i32, r1: i32| match c == c1 - 1 && r == r1 - 1 {
+            true => Grab::Corner(Handle::BottomRight),
+            false => Grab::Body,
+        };
+        let world = self.to_world(col, row);
+        let tolerance = PX_ROW / self.zoom / placed::UNIT;
         for n in self.draw_order().into_iter().rev() {
             if n.kind == "group" {
                 continue;
             }
+            if self.live.is_shape(&n.id) {
+                let selected = self.sel.as_deref() == Some(n.id.as_str());
+                if let Some(h) = self.live.hit(n, world, tolerance, selected) {
+                    let grab = match h.handle {
+                        Some(Handle::Rotate) => Grab::Turn,
+                        Some(handle) => Grab::Corner(handle),
+                        None => Grab::Body,
+                    };
+                    return Some((n.id.clone(), grab));
+                }
+                continue;
+            }
             if let Some((_, _, c1, r1)) = inside(n) {
-                return Some((n.id.clone(), c == c1 - 1 && r == r1 - 1));
+                return Some((n.id.clone(), corner(c1, r1)));
             }
         }
         for n in self.doc.nodes.iter().rev().filter(|n| n.kind == "group") {
             if let Some((c0, r0, c1, r1)) = inside(n) {
                 let on_frame = r == r0 || r == r1 - 1 || c == c0 || c == c1 - 1;
                 if on_frame {
-                    return Some((n.id.clone(), c == c1 - 1 && r == r1 - 1));
+                    return Some((n.id.clone(), corner(c1, r1)));
                 }
             }
         }
         None
+    }
+
+    /// The board's area in the canvas engine's world units, for painting shapes.
+    fn view(&self) -> Viewport {
+        let a = self.area;
+        let cell = Point::new(PX_COL / self.zoom, PX_ROW / self.zoom) * (1.0 / placed::UNIT);
+        let half = Point::new(f64::from(a.width) * cell.x, f64::from(a.height) * cell.y) * 0.5;
+        Viewport {
+            cols: a.width,
+            rows: a.height,
+            origin: Point::new(self.cam.0, self.cam.1) * (1.0 / placed::UNIT) - half,
+            cell,
+        }
+    }
+
+    /// Turns the selected shape `by` degrees clockwise.
+    fn turn_selected(&mut self, by: f64) {
+        let Some(id) = self.sel.clone() else { return };
+        let Some(Some(Ok(stored))) = self.node(&id).map(placed::Stored::of) else {
+            return self.flash("only a placed shape turns");
+        };
+        self.checkpoint();
+        if let Some(n) = self.node_mut(&id) {
+            let p = stored.placement(n);
+            placed::replace(n, p.rotated(p.rotation + by));
+        }
+        self.commit();
     }
 
     /// Groups first, then other cards in file order, with the selection on top.
@@ -1069,7 +1230,9 @@ impl Board {
                 "link" => n.url = Some(buf),
                 _ => {
                     n.text = Some(buf);
-                    grow_to_fit(n);
+                    if !n.extra.contains_key(placed::FIELD) {
+                        grow_to_fit(n);
+                    }
                 }
             }
         }
@@ -1155,6 +1318,9 @@ impl Board {
     // ---------- input ----------
 
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        if self.alert.take().is_some() {
+            return Ok(());
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         if matches!(self.mode, Mode::Keys) {
@@ -1355,6 +1521,7 @@ impl Board {
                     }
                 }
             }
+            BoardAction::Turn => self.turn_selected(15.0),
             BoardAction::Delete => self.delete_selected(),
             BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
             BoardAction::ColourClear => self.set_color(None),
@@ -1421,7 +1588,7 @@ impl Board {
                     return;
                 }
                 match hit {
-                    Some((id, corner)) => {
+                    Some((id, grab)) => {
                         self.sel = Some(id.clone());
                         if double {
                             let kind = self.node(&id).map(|n| n.kind.clone()).unwrap_or_default();
@@ -1443,8 +1610,14 @@ impl Board {
                             return;
                         }
                         self.checkpoint();
-                        if corner {
-                            self.drag = Some(Drag::Resize { id, moved: false });
+                        if let Grab::Corner(handle) = grab {
+                            self.drag = Some(Drag::Resize {
+                                id,
+                                handle,
+                                moved: false,
+                            });
+                        } else if grab == Grab::Turn {
+                            self.drag = Some(Drag::Turn { id, moved: false });
                         } else {
                             let offsets = self
                                 .group_members(&id)
@@ -1493,26 +1666,51 @@ impl Board {
                         }
                     }
                 }
-                Some(Drag::Resize { id, moved }) => {
+                Some(Drag::Resize { id, handle, moved }) => {
+                    *moved = true;
+                    let (id, handle) = (id.clone(), *handle);
+                    let to = Point::new(world.0, world.1) * (1.0 / placed::UNIT);
+                    if let Some(n) = self.node_mut(&id) {
+                        match placed::Stored::of(n) {
+                            Some(Ok(stored)) => {
+                                let min = Point::new(4.0, 2.0);
+                                let p = live::stretch(stored.placement(n), handle, to, min);
+                                placed::replace(n, p);
+                            }
+                            _ => {
+                                n.width = snap(world.0 - n.x).max(60.0);
+                                n.height = snap(world.1 - n.y).max(40.0);
+                            }
+                        }
+                    }
+                }
+                Some(Drag::Turn { id, moved }) => {
                     *moved = true;
                     let id = id.clone();
-                    if let Some(n) = self.node_mut(&id) {
-                        n.width = snap(world.0 - n.x).max(60.0);
-                        n.height = snap(world.1 - n.y).max(40.0);
+                    let to = Point::new(world.0, world.1) * (1.0 / placed::UNIT);
+                    if let Some(n) = self.node_mut(&id)
+                        && let Some(Ok(stored)) = placed::Stored::of(n)
+                    {
+                        let p = stored.placement(n);
+                        placed::replace(n, p.rotated(live::turn_towards(p, to, 15.0)));
                     }
                 }
                 None => {}
             },
-            MouseEventKind::Up(_) => match self.drag.take() {
-                Some(Drag::Move { moved, .. }) | Some(Drag::Resize { moved, .. }) => {
+            MouseEventKind::Up(_) => {
+                if let Some(
+                    Drag::Move { moved, .. }
+                    | Drag::Resize { moved, .. }
+                    | Drag::Turn { moved, .. },
+                ) = self.drag.take()
+                {
                     if moved {
                         self.commit();
                     } else {
                         self.undo.pop(); // nothing changed: drop the snapshot
                     }
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -1574,7 +1772,11 @@ impl Board {
             .cloned()
             .collect();
         for n in &order {
-            self.draw_card(f, n, area);
+            let editing = matches!(&self.mode, Mode::Edit { id, .. } if *id == n.id);
+            match self.live.is_shape(&n.id) && !editing {
+                true => self.draw_shape(f, n),
+                false => self.draw_card(f, n, area),
+            }
         }
         if self.doc.nodes.is_empty() {
             let hint = Paragraph::new(vec![
@@ -1713,6 +1915,65 @@ impl Board {
             let len = text.chars().count() as i32;
             let (c, r) = (c.round() as i32 - len / 2, r.round() as i32);
             put_str(f, a, c, r, &format!(" {text} "), Style::new().fg(MUTED));
+        }
+    }
+
+    /// A placed shape, as the canvas engine paints it: outlines in braille, regions tinted,
+    /// text, labels and what each region shows; its grips when selected.
+    fn draw_shape(&mut self, f: &mut Frame, n: &CNode) {
+        let view = self.view();
+        let selected = self.sel.as_deref() == Some(n.id.as_str());
+        let outline = match selected {
+            true => ACCENT,
+            false => canvas_color(&n.color).unwrap_or(CARD_BORDER),
+        };
+        let a = self.area;
+        let Some(p) = self.live.paint(n, &view) else {
+            return;
+        };
+        let buf = f.buffer_mut();
+        for row in 0..p.grid.rows() {
+            for col in 0..p.grid.cols() {
+                let c = p.grid.cell(col, row);
+                if c == GridCell::default() {
+                    continue;
+                }
+                let at = (a.x + p.col as u16 + col, a.y + p.row as u16 + row);
+                let cell = &mut buf[at];
+                if c.ch != ' ' || c.fg != Token::NONE {
+                    cell.set_char(c.ch);
+                    cell.set_fg(match c.fg {
+                        ink::TEXT => NOTE,
+                        ink::LABEL => ACCENT_SOFT,
+                        _ => outline,
+                    });
+                }
+                if live::is_region_tint(c.bg) {
+                    cell.set_bg(tint(c.bg));
+                }
+            }
+        }
+        if selected && let Some(placed) = self.live.placed(n) {
+            for (handle, at) in placed
+                .placement
+                .handles(cold_lava_canvas::hit::ROTATE_REACH)
+            {
+                let at = at * placed::UNIT;
+                let (c, r) = self.to_screen(at.x, at.y);
+                let glyph = if handle == Handle::Rotate {
+                    "↻"
+                } else {
+                    "◆"
+                };
+                put_str(
+                    f,
+                    a,
+                    c.floor() as i32,
+                    r.floor() as i32,
+                    glyph,
+                    Style::new().fg(ACCENT),
+                );
+            }
         }
     }
 
@@ -1903,7 +2164,16 @@ impl Board {
                     .iter()
                     .filter(|e| e.from_node == n.id || e.to_node == n.id)
                     .count();
+                let shape = self.live.binding(&n.id).map(|b| b.shape());
+                let turned = match placed::Stored::of(n) {
+                    Some(Ok(s)) if s.rotation != 0.0 => format!("  turned {}°", s.rotation),
+                    _ => String::new(),
+                };
                 let what = match n.kind.as_str() {
+                    _ if let Some(shape) = shape => {
+                        format!("shape {} · {}", shape.id, shape.definition.title)
+                    }
+                    _ if let Some(why) = self.live.problem(&n.id) => format!("shape · {why}"),
                     "file" => format!("note card · {}", n.file.clone().unwrap_or_default()),
                     "group" => format!("group · {}", n.label.clone().unwrap_or_default()),
                     "link" => format!("link card · {}", n.url.clone().unwrap_or_default()),
@@ -1916,7 +2186,10 @@ impl Board {
                     ),
                     Span::styled(what, Style::new().fg(NOTE).add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        format!("  {}×{}  {} arrows", n.width as i64, n.height as i64, links),
+                        format!(
+                            "  {}×{}{turned}  {} arrows",
+                            n.width as i64, n.height as i64, links
+                        ),
                         Style::new().fg(MUTED),
                     ),
                 ])
@@ -1946,6 +2219,10 @@ impl Board {
                 info.spans
                     .push(Span::styled(format!("   {hint}"), Style::new().fg(MUTED)));
             }
+        }
+        if let Some(alert) = &self.alert {
+            let line = Line::styled(format!(" {alert}"), Style::new().fg(Color::Black).bg(HIT));
+            return f.render_widget(Paragraph::new(vec![info, line]), area);
         }
         let second = match (&self.mode, &self.msg) {
             (Mode::Edit { .. }, _) => Line::styled(
@@ -2120,6 +2397,21 @@ fn merge_lists(base: &Value, ours: &Value, theirs: &Value, conflicts: &mut usize
         out.extend(merged);
     }
     out
+}
+
+/// A region's background: region `i` is `Token(i + 1)`, each a dim colour of its own.
+fn tint(t: Token) -> Color {
+    const TINTS: [Color; 8] = [
+        Color::Rgb(52, 40, 78),
+        Color::Rgb(34, 62, 66),
+        Color::Rgb(74, 52, 36),
+        Color::Rgb(40, 66, 44),
+        Color::Rgb(72, 38, 52),
+        Color::Rgb(38, 48, 78),
+        Color::Rgb(66, 64, 34),
+        Color::Rgb(56, 56, 64),
+    ];
+    TINTS[usize::from(t.0.saturating_sub(1)) % TINTS.len()]
 }
 
 fn snap(v: f64) -> f64 {
@@ -2413,7 +2705,9 @@ mod tests {
         let path = dir.join("B.canvas");
         let canvas = |nodes: Vec<Value>| json!({"nodes": nodes, "edges": []}).to_string();
         std::fs::write(&path, canvas(vec![card("a", 0, "A")])).unwrap();
-        let mut b = Board::open(path.clone(), &dir).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let mut registry = Registry::empty();
+        let mut b = Board::open(path.clone(), &dir, &mut core, &mut registry).unwrap();
 
         // Our edit, while someone else is halfway through writing the file.
         let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);

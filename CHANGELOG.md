@@ -7,6 +7,17 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- Placed shapes on the whiteboard. A node with a `cold-lava` field is a placed shape: its
+  shape, what its inputs are bound to, its turn and the fractions Obsidian rounds away. The
+  whiteboard draws it with the canvas engine (a Venn shows which items fall in each region,
+  live as notes change), and it can be moved, stretched from any corner and turned (`r`, or
+  drag its `↻` grip). In Obsidian it stays a sensible node: a card is the note's `file` node, a
+  sticky a `text` node with its text, other shapes a `text` node with their title. When a
+  program saves the canvas without cold-lava's fields, the whiteboard keeps the shapes, saves
+  them back and says so.
+
 ### Changed
 
 - The graph view runs in the menu's loop instead of its own. Extensions keep being answered

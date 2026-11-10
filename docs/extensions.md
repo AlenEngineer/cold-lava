@@ -1832,8 +1832,9 @@ with two requests (host → extension; `crate::act::Ask` in the engine pins thei
   or in the wrong form, isn't taken.
 
 *(Exists: `Extension::shape`, `Registry::ask_shape`, `Process` over JSON-RPC, and `cold-lava
-shapes --render ID --bind … [--do GESTURE]` asking an installed extension. Placed shapes on
-screen, which ask from the menu, are #136.)*
+shapes --render ID --bind … [--do GESTURE]` asking an installed extension, and the whiteboard,
+which asks `shape/region` for each placed shape of an extension's while the board is open and
+polls the extension until it answers: docs/shapes.md, "Placed shapes, as built".)*
 
 ## Views
 

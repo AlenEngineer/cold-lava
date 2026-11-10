@@ -1702,7 +1702,12 @@ impl Home {
         let Some(core) = self.core.as_mut() else {
             return;
         };
-        for (owner, news) in core.take_item_news() {
+        let news = core.take_item_news();
+        self.deliver_news(news);
+    }
+
+    fn deliver_news(&mut self, news: Vec<(String, crate::gateway::News)>) {
+        for (owner, news) in news {
             let Some(core) = self.core.as_mut() else {
                 return;
             };
@@ -5566,10 +5571,17 @@ impl Home {
             return Ok(None);
         };
         self.hide_picture()?;
-        let exit = board::open(terminal, &root, path.clone(), Some(Nav::of(&self.history)))?;
+        let nav = Some(Nav::of(&self.history));
+        if self.core.is_none() {
+            self.core = Some(Core::open(&root)?);
+        }
+        let core = self.core.as_mut().expect("opened above");
+        let left = board::open(terminal, &root, path.clone(), nav, core, &mut self.registry)?;
         terminal.clear()?;
         self.reload_tree();
-        Ok(self.left(Place::Board { path }, exit))
+        self.sync_with_core(&left.events);
+        self.deliver_news(left.news);
+        Ok(self.left(Place::Board { path }, left.exit))
     }
 
     fn edit_fullscreen(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {

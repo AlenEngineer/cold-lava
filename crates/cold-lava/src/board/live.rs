@@ -1,0 +1,383 @@
+//! The placed shapes of the open canvas, live: each shaped node's binding (its inputs followed
+//! through the core), what it paints at the current view, and what is under the mouse. Nothing
+//! here is saved; it all follows from the nodes (`placed`) and the workspace.
+
+use super::CNode;
+use super::placed::{Stored, UNIT};
+use crate::act::{Answered, Ask, ShapeAnswer};
+use crate::bind::Binding;
+use crate::core::{Core, Event};
+use crate::gateway::News;
+use crate::shapes::Shapes;
+use cold_lava_canvas::{
+    Grid, Handle, Hit, Placed, Placement, Point, Rect, Style, Viewport, draw, hit,
+};
+use std::collections::HashMap;
+
+/// The shapes of one canvas, by node id.
+pub struct Live {
+    pub shapes: Shapes,
+    nodes: HashMap<String, Shaped>,
+    next: u64,
+    /// `shape/region` asks waiting to go to the extension that ships the shape.
+    asks: Vec<(String, Ask)>,
+}
+
+struct Shaped {
+    /// The shape and its sources as saved: a change binds it again.
+    key: String,
+    binding: Result<Binding, String>,
+    /// Names this placed shape in an extension's answers.
+    placed: u64,
+    /// Bumped whenever what it shows may have changed.
+    version: u64,
+    painted: Option<Painted>,
+}
+
+/// One shape painted at one view: its cells from `(col, row)` of the board's area.
+pub struct Painted {
+    key: PaintKey,
+    pub col: i32,
+    pub row: i32,
+    pub grid: Grid,
+}
+
+#[derive(PartialEq)]
+struct PaintKey {
+    version: u64,
+    /// The placement relative to the grid's top-left corner, so panning by whole cells reuses it.
+    at: (i64, i64, i64, i64, i64),
+    cell: (i64, i64),
+    size: (u16, u16),
+}
+
+fn q(v: f64) -> i64 {
+    (v * 1000.0).round() as i64
+}
+
+impl Live {
+    pub fn new(shapes: Shapes) -> Live {
+        Live {
+            shapes,
+            nodes: HashMap::new(),
+            next: 1,
+            asks: Vec::new(),
+        }
+    }
+
+    /// Bind each shaped node whose shape or sources changed, and let go of nodes that are gone
+    /// or no longer shapes. Returns what couldn't be bound, once per change.
+    pub fn sync(&mut self, core: &mut Core, nodes: &[CNode]) -> Vec<String> {
+        let mut problems = Vec::new();
+        let mut seen = Vec::new();
+        for node in nodes {
+            let Some(stored) = Stored::of(node) else {
+                continue;
+            };
+            seen.push(node.id.clone());
+            let (key, made) = match stored {
+                Ok(s) => {
+                    let sources = s.sources(node);
+                    let key = format!("{}{}", s.shape, serde_json::json!(sources));
+                    (key, Some((s.shape, sources)))
+                }
+                Err(e) => (format!("error {e}"), None),
+            };
+            if self.nodes.get(&node.id).is_some_and(|s| s.key == key) {
+                continue;
+            }
+            if let Some(mut old) = self.nodes.remove(&node.id)
+                && let Ok(b) = &mut old.binding
+            {
+                b.close(core);
+            }
+            let binding = match made {
+                Some((shape, sources)) => Binding::new(core, &self.shapes, &shape, sources),
+                None => Err(format!("a placed shape doesn't read: {key}")),
+            };
+            if let Err(e) = &binding {
+                problems.push(e.clone());
+            }
+            let placed = self.next;
+            self.next += 1;
+            let shaped = Shaped {
+                key,
+                binding,
+                placed,
+                version: 0,
+                painted: None,
+            };
+            self.ask_regions(&shaped);
+            self.nodes.insert(node.id.clone(), shaped);
+        }
+        let gone: Vec<String> = (self.nodes.keys())
+            .filter(|id| !seen.contains(id))
+            .cloned()
+            .collect();
+        for id in gone {
+            if let Some(Shaped {
+                binding: Ok(mut b), ..
+            }) = self.nodes.remove(&id)
+            {
+                b.close(core);
+            }
+        }
+        problems
+    }
+
+    fn ask_regions(&mut self, shaped: &Shaped) {
+        if let Ok(b) = &shaped.binding
+            && let Some(ext) = b.extension()
+        {
+            let asks = b.region_asks(shaped.placed);
+            self.asks
+                .extend(asks.into_iter().map(|a| (ext.to_string(), a)));
+        }
+    }
+
+    /// `shape/region` asks for the extensions that ship shapes on this canvas.
+    pub fn take_asks(&mut self) -> Vec<(String, Ask)> {
+        std::mem::take(&mut self.asks)
+    }
+
+    /// An extension's answer about one of these shapes.
+    pub fn answered(&mut self, answer: ShapeAnswer) {
+        let placed = answer.ask.placed();
+        let Some(shaped) = self.nodes.values_mut().find(|s| s.placed == placed) else {
+            return;
+        };
+        if let (Ask::Region { region, .. }, Ok(Answered::Region { items }), Ok(b)) =
+            (&answer.ask, answer.answer, &mut shaped.binding)
+        {
+            b.answered(region, items);
+            shaped.version += 1;
+        }
+    }
+
+    /// News for the canvas's subscriptions: the binding it is for reads its input again.
+    pub fn heard(&mut self, core: &Core, news: &News) {
+        let mut again = Vec::new();
+        for (id, s) in &mut self.nodes {
+            if let Ok(b) = &mut s.binding
+                && b.heard(core, news)
+            {
+                s.version += 1;
+                again.push(id.clone());
+            }
+        }
+        self.ask_again(&again);
+    }
+
+    /// A core event: bindings of notes that changed read them again.
+    pub fn noticed(&mut self, core: &Core, event: &Event) {
+        let mut again = Vec::new();
+        for (id, s) in &mut self.nodes {
+            if let Ok(b) = &mut s.binding
+                && b.noticed(core, event)
+            {
+                s.version += 1;
+                again.push(id.clone());
+            }
+        }
+        self.ask_again(&again);
+    }
+
+    fn ask_again(&mut self, ids: &[String]) {
+        for id in ids {
+            if let Some(s) = self.nodes.remove(id) {
+                self.ask_regions(&s);
+                self.nodes.insert(id.clone(), s);
+            }
+        }
+    }
+
+    /// Ends every binding's subscriptions.
+    pub fn close(&mut self, core: &mut Core) {
+        for s in self.nodes.values_mut() {
+            if let Ok(b) = &mut s.binding {
+                b.close(core);
+            }
+        }
+        self.nodes.clear();
+    }
+
+    pub fn is_shape(&self, id: &str) -> bool {
+        self.nodes.contains_key(id)
+    }
+
+    pub fn binding(&self, id: &str) -> Option<&Binding> {
+        self.nodes.get(id)?.binding.as_ref().ok()
+    }
+
+    /// What couldn't be bound, for a node that is a shape.
+    pub fn problem(&self, id: &str) -> Option<&str> {
+        self.nodes
+            .get(id)?
+            .binding
+            .as_ref()
+            .err()
+            .map(String::as_str)
+    }
+
+    /// The node as a placed shape, in world units: the bound shape, or the unbound one when its
+    /// binding failed.
+    pub fn placed(&self, node: &CNode) -> Option<Placed> {
+        let stored = Stored::of(node)?.ok()?;
+        let shape = match self.binding(&node.id) {
+            Some(b) => b.canvas(),
+            None => std::sync::Arc::new(self.shapes.get(&stored.shape)?.unbound()),
+        };
+        Some(Placed::new(shape, stored.placement(node)))
+    }
+
+    /// What is under world point `p` (canvas pixels) on the shaped node, within `tolerance`
+    /// world units; handles only when it is `selected`.
+    pub fn hit(&self, node: &CNode, p: (f64, f64), tolerance: f64, selected: bool) -> Option<Hit> {
+        let placed = self.placed(node)?;
+        let p = Point::new(p.0 / UNIT, p.1 / UNIT);
+        hit(&[placed], p, tolerance, selected.then_some(0))
+    }
+
+    /// The node painted at `view` (the board's area, in world units), clipped to it: from the
+    /// cache when neither the shape, what it shows, nor the view changed.
+    pub fn paint(&mut self, node: &CNode, view: &Viewport) -> Option<&Painted> {
+        let placed = self.placed(node)?;
+        let shaped = self.nodes.get_mut(&node.id)?;
+        let b = placed.placement.world_bounds(&Rect::UNIT);
+        // Room for labels beside the box and the rotate grip above it.
+        let cell = view.cell;
+        let margin = Point::new(cell.x * 3.0, cell.y * 2.0);
+        let (min, max) = (b.min - margin, b.max + margin);
+        let col = |x: f64| ((x - view.origin.x) / cell.x).floor() as i64;
+        let row = |y: f64| ((y - view.origin.y) / cell.y).floor() as i64;
+        let (c0, r0) = (col(min.x).max(0), row(min.y).max(0));
+        let (c1, r1) = (
+            (col(max.x) + 1).min(i64::from(view.cols)),
+            (row(max.y) + 1).min(i64::from(view.rows)),
+        );
+        if c1 <= c0 || r1 <= r0 {
+            return None;
+        }
+        let local = Viewport {
+            cols: (c1 - c0) as u16,
+            rows: (r1 - r0) as u16,
+            origin: view.origin + Point::new(c0 as f64 * cell.x, r0 as f64 * cell.y),
+            cell,
+        };
+        let p = &placed.placement;
+        let key = PaintKey {
+            version: shaped.version,
+            at: (
+                q(p.at.x - local.origin.x),
+                q(p.at.y - local.origin.y),
+                q(p.size.x),
+                q(p.size.y),
+                q(p.rotation),
+            ),
+            cell: (q(cell.x), q(cell.y)),
+            size: (local.cols, local.rows),
+        };
+        let fresh = shaped.painted.as_ref().is_some_and(|p| p.key == key);
+        if !fresh {
+            let mut grid = Grid::new(&local);
+            draw::paint(&mut grid, &placed, &local);
+            if let Ok(b) = &shaped.binding {
+                draw::paint_contents(&mut grid, &placed, &local, &b.shown().contents());
+            }
+            shaped.painted = Some(Painted {
+                key,
+                col: c0 as i32,
+                row: r0 as i32,
+                grid,
+            });
+        }
+        shaped.painted.as_ref()
+    }
+}
+
+/// The placement `p` with its corner `handle` dragged to world point `to`, the opposite corner
+/// staying where it is, in the shape's own turned frame. Never smaller than `min` on a side.
+pub fn stretch(p: Placement, handle: Handle, to: Point, min: Point) -> Placement {
+    let (hx, hy) = match handle {
+        Handle::TopLeft => (0.0, 0.0),
+        Handle::TopRight => (1.0, 0.0),
+        Handle::BottomRight => (1.0, 1.0),
+        Handle::BottomLeft | Handle::Rotate => (0.0, 1.0),
+    };
+    let t = p.transform();
+    let fixed = t.apply(Point::new(1.0 - hx, 1.0 - hy));
+    let turn = |v: Point, deg: f64| cold_lava_canvas::Transform::rotate(deg).apply(v);
+    let d = turn(to - fixed, -p.rotation);
+    let (sx, sy) = (2.0 * hx - 1.0, 2.0 * hy - 1.0);
+    let (w, h) = ((d.x * sx).max(min.x), (d.y * sy).max(min.y));
+    let centre = fixed + turn(Point::new(sx * w / 2.0, sy * h / 2.0), p.rotation);
+    Placement::new(centre - Point::new(w / 2.0, h / 2.0), Point::new(w, h)).rotated(p.rotation)
+}
+
+/// The turn that points the rotate grip of `p` at world point `to`, in steps of `step` degrees.
+pub fn turn_towards(p: Placement, to: Point, step: f64) -> f64 {
+    let c = p.at + p.size * 0.5;
+    let d = to - c;
+    let deg = d.x.atan2(-d.y).to_degrees();
+    ((deg / step).round() * step).rem_euclid(360.0)
+}
+
+/// Whether a style token is a region's tint (regions are `Style(1)` up to the outline's).
+pub fn is_region_tint(s: Style) -> bool {
+    s != Style::NONE && s.0 < draw::OUTLINE.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: Point, b: Point) -> bool {
+        (a - b).length() < 1e-6
+    }
+
+    #[test]
+    fn stretching_keeps_the_opposite_corner() {
+        let p = Placement::new(Point::new(10.0, 10.0), Point::new(20.0, 10.0));
+        let s = stretch(
+            p,
+            Handle::BottomRight,
+            Point::new(40.0, 30.0),
+            Point::new(1.0, 1.0),
+        );
+        assert!(close(s.at, Point::new(10.0, 10.0)));
+        assert!(close(s.size, Point::new(30.0, 20.0)));
+        let s = stretch(
+            p,
+            Handle::TopLeft,
+            Point::new(0.0, 5.0),
+            Point::new(1.0, 1.0),
+        );
+        assert!(close(s.at, Point::new(0.0, 5.0)));
+        assert!(close(s.size, Point::new(30.0, 15.0)));
+    }
+
+    #[test]
+    fn stretching_a_turned_shape_works_in_its_frame() {
+        let p = Placement::new(Point::new(0.0, 0.0), Point::new(20.0, 10.0)).rotated(90.0);
+        let fixed = p.transform().apply(Point::new(0.0, 0.0));
+        let corner = p.transform().apply(Point::new(1.0, 1.0));
+        let s = stretch(p, Handle::BottomRight, corner, Point::new(1.0, 1.0));
+        assert!(close(s.size, p.size) && close(s.at, p.at), "{s:?}");
+        let s = stretch(
+            p,
+            Handle::BottomRight,
+            corner + Point::new(0.0, 10.0),
+            Point::new(1.0, 1.0),
+        );
+        assert!(close(s.size, Point::new(30.0, 10.0)), "{s:?}");
+        assert!(close(s.transform().apply(Point::new(0.0, 0.0)), fixed));
+    }
+
+    #[test]
+    fn turning_follows_the_mouse_in_steps() {
+        let p = Placement::new(Point::new(0.0, 0.0), Point::new(10.0, 10.0));
+        assert_eq!(turn_towards(p, Point::new(5.0, -10.0), 15.0), 0.0);
+        assert_eq!(turn_towards(p, Point::new(20.0, 5.0), 15.0), 90.0);
+        assert_eq!(turn_towards(p, Point::new(-10.0, 4.0), 15.0), 270.0);
+    }
+}

@@ -368,12 +368,82 @@ like letters anywhere text goes.
   (`![[Ring of Fire.canvas]]`), so any other tool sees a plain link, and the document view draws
   the drawing in place.
 - **The file is JSON Canvas** (Obsidian's `.canvas`), each placed shape a node with extra fields
-  (shape id, inputs, transform), so Obsidian opens it as a canvas. *Open question, to test in
-  Obsidian first:* whether Obsidian keeps fields it doesn't know when it saves a canvas. If it
-  drops them, placed shapes live in a file type of cold-lava's own, owned like any other
-  (still embedded by link), so editing a canvas in Obsidian can never erase them.
+  (shape id, inputs, transform), so Obsidian opens it as a canvas. Obsidian 1.15 keeps fields
+  it doesn't know when it saves a canvas, at node, edge and top level (#132), but sorts the
+  nodes and rounds `x`, `y`, `width` and `height` to integers.
 - **The drawing's file joins the workspace** through its owner: text on a shape is Markdown,
   so a task written on a sticky note is a `task`, and a link on a card is a backlink.
+
+### Placed shapes, as built
+
+Placed shapes live on the whiteboard (`board.rs`), in the `.canvas` file it already reads,
+writes and merges. A placed shape is a node with a `cold-lava` field (`board/placed.rs`); the
+file has `"cold-lava-version": 1` at its top level while it has one.
+
+```json
+{
+  "id": "venn", "type": "text", "text": "Simple Venn diagram",
+  "x": 0, "y": 0, "width": 495, "height": 489,
+  "cold-lava": {
+    "shape": "venn2",
+    "inputs": {
+      "a": {"query": {"kind": "volcano", "filter": {"tag": "eruption"}, "title": "Erupted"}},
+      "b": {"query": {"kind": "volcano", "filter": {"tag": "volcano/strato"}}}
+    },
+    "rotation": 105.0,
+    "exact": [0.0, 0.0, 495.4, 489.2]
+  }
+}
+```
+
+- **The field** holds what the user placed and nothing derived: `shape` (its id), `inputs`
+  (each input's `Source`, as `--bind` takes it in JSON), `node` (the input the node itself holds,
+  below), `rotation` (degrees clockwise about the centre) and `exact` (the box in canvas pixels,
+  only when a side isn't a whole number). Members, region contents, outlines and cells are
+  computed and never saved.
+- **The node is the placement.** Its own `x`, `y`, `width` and `height` are the shape's box, so
+  Obsidian shows the node where the shape is and moving it in Obsidian moves the shape. `exact`
+  counts only while it rounds to the node's box: after Obsidian moves the node, the node wins.
+  A canvas pixel is a tenth of the canvas engine's world unit (a terminal cell's width at zoom 1).
+- **The node's type** is chosen so Obsidian shows something that means the same:
+
+  | The shape has | Node | Obsidian shows | `node` |
+  | --- | --- | --- | --- |
+  | an input bound to a note (a card) | `file`, `file` = the note | the note | that input |
+  | else an input bound to text (a sticky) | `text`, `text` = the text | the text, editable | that input |
+  | neither (a Venn, an arrow) | `text`, `text` = the shape's title | the title | none |
+
+  The input in `node` isn't repeated in `inputs`: the note is the node's `file` (so a rename
+  moves it, here and in Obsidian) and a sticky's text is the node's `text` (so editing it in
+  Obsidian edits the sticky). The rule looks only at the sources, not at the shape's id, so it
+  holds for any shape.
+- **Order doesn't matter.** Nodes are found by id, so Obsidian sorting them changes nothing;
+  stacking follows the file's order, as for every card.
+- **Edits on both sides merge** as the whiteboard's always have (`merge3`: nodes by id, field by
+  field; the `cold-lava` field is one value). Unknown fields are kept.
+- **The guard.** When the file changes outside and a node that had the field still exists
+  without it, a program saved the canvas without cold-lava's fields. The whiteboard puts them
+  back from its own copy, keeps the outside change to everything else, saves, and says so in the
+  status line until a key is pressed, instead of the shape silently becoming a plain card.
+  A node deleted outside is a deletion, as for any card.
+
+**On the whiteboard.** Each placed shape is bound while the board is open (`board/live.rs`):
+the menu lends the board its core, query inputs are subscribed as `canvas` and their news goes
+to the bindings, core events reach `Binding::noticed`, and the extension that ships a shape is
+asked `shape/region` for the regions it computes and answers through
+`Core::take_shape_answers`. The canvas engine paints each shape into a grid (braille outlines,
+region tints, text, labels, and what each region shows), cached per shape until its placement,
+the zoom, the view's sub-cell offset or what it shows changes, so panning by whole cells
+repaints nothing. A click selects a shape where its parts, regions or box are
+(`cold_lava_canvas::hit`); a selected shape shows its four corner grips (`◆`, drag to stretch in
+its own turned frame) and its turn grip (`↻`, drag to turn in 15° steps; `r` turns 15°).
+Dragging it moves it. Kitty pixels aren't used for shapes yet; braille is.
+
+Why the whiteboard and not a second canvas view: the whiteboard is already the one place that
+reads, writes, merges and watches `.canvas` files. Shapes on it are nodes among cards, edges and
+groups, sharing its undo, selection, camera and Obsidian-safe saving. A separate scene view for
+shapes would be a second editor of the same files until #92 moved the whiteboard onto it; with
+one, #92 moves one screen, cards and shapes together, into the menu's loop.
 
 ## The canvas engine
 

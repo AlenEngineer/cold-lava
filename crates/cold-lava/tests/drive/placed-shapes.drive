@@ -1,0 +1,40 @@
+# Placed shapes on the whiteboard, in Inbox/Shapes.canvas, which tests/drive.rs writes first: a
+# Venn bound to two volcano queries, a card on Krakatoa, a sticky and an arrow. The Venn shows
+# which volcanoes fall in each region; clicking it shows its grips. Its corner stretches it and
+# the regions fit again, r turns it, its grip turns it more, and dragging it moves it.
+# tests/drive.rs reads the file after.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type shapes
+keys enter
+wait-for whiteboard Shapes · 4 cards · 0 arrows
+wait-for Stratovolcanoes
+expect-in 20 15 24 82 Mount St. Helens
+expect-in 20 15 24 50 Krakatoa
+expect-in 20 60 24 82 Mount Fuji
+expect-in 2 90 12 125 Krakatoa
+expect - [ ] Pack ash masks
+click 24 26
+wait-for shape venn2 · Simple Venn diagram  600×600  0 arrows
+expect-in 4 48 4 48 ↻
+expect-in 38 82 38 82 ◆
+# The bottom-right corner, dragged up and left: smaller, and the regions fit again.
+drag 38 82 32 70
+wait-for shape venn2 · Simple Venn diagram  495×489  0 arrows
+expect-in 17 15 22 70 Mount St. Helens
+expect-in 4 42 4 42 ↻
+# The grip, dragged to the right of the centre: a quarter turn.
+drag 4 42 18 75
+wait-for 495×489  turned 90°  0 arrows
+keys r
+wait-for 495×489  turned 105°  0 arrows
+# The body, dragged down: it moves.
+drag 20 42 24 42
+wait-for shape venn2
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

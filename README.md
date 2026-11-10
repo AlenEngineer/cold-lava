@@ -221,6 +221,7 @@ it finds the layout where you left it.
 | `c` | draw an arrow: pick the target, `Enter` (doing it again removes the arrow) |
 | `Enter` / `E` | edit inline / edit in `$EDITOR` (note cards open the note) |
 | `Shift+arrows`, drag | move · `Ctrl+arrows`, `[ ] { }`, drag `◢` to resize |
+| `r`, drag `↻` | turn a placed shape (drag a `◆` corner to stretch it) |
 | `1`–`6` / `0` | Obsidian colour presets / clear |
 | `d`, `u` / `U` | delete, undo / redo |
 | `o` | open the note, or the board itself, in Obsidian |
@@ -777,7 +778,9 @@ about, since it writes):
 cold-lava shapes WORKSPACE --render sticky --bind 'text=text:Ash masks' --do action:make-a-note
 ```
 
-Placing shapes on a canvas comes later; see [docs/shapes.md](docs/shapes.md).
+Placed shapes live on whiteboards, as `.canvas` nodes with a `cold-lava` field that Obsidian
+keeps: the whiteboard draws them bound to their data and lets you move, stretch and turn them.
+See [docs/shapes.md](docs/shapes.md) ("Placed shapes, as built").
 
 ### Extensions
 

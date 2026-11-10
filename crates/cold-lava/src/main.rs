@@ -412,7 +412,7 @@ fn run() -> Result<()> {
             let target = PathBuf::from(args.word(1).unwrap_or("."));
             let root = workspace::find_workspace_root(&target);
             let file = (target.extension().is_some_and(|e| e == "canvas")).then_some(target);
-            with_terminal(|t| board::launch(t, &root, file, false))
+            with_terminal(|t| board::launch(t, &root, file, &mut registry))
         }
         Some("graph") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));

@@ -1,0 +1,16 @@
+{
+	"nodes":[
+		{"id":"venn","type":"text","text":"Simple Venn diagram","x":0,"y":0,"width":600,"height":600,
+		 "cold-lava":{"shape":"venn2","inputs":{
+			"a":{"query":{"kind":"volcano","filter":{"tag":"eruption"},"title":"Erupted"}},
+			"b":{"query":{"kind":"volcano","filter":{"tag":"volcano/strato"},"title":"Stratovolcanoes"}}}}},
+		{"id":"card","type":"file","file":"Volcanoes/Krakatoa.md","x":700,"y":0,"width":300,"height":120,
+		 "cold-lava":{"shape":"card","node":"note"}},
+		{"id":"sticky","type":"text","text":"- [ ] Pack ash masks","x":700,"y":200,"width":300,"height":140,
+		 "cold-lava":{"shape":"sticky","node":"text"}},
+		{"id":"arrow","type":"text","text":"Arrow","x":620,"y":380,"width":200,"height":100,
+		 "cold-lava":{"shape":"arrow","rotation":0}}
+	],
+	"edges":[],
+	"cold-lava-version":1
+}
