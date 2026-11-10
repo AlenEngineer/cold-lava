@@ -416,6 +416,12 @@ pub fn walk<'a>(node: &'a GreenNodeData, at: usize, f: &mut impl FnMut(Step<'a>)
     at
 }
 
+/// How many block events `text` makes, for timing the block pass alone.
+#[cfg(test)]
+pub(crate) fn block_events(text: &str, gates: Gates) -> usize {
+    block::events(text, gates).len()
+}
+
 /// Every Markdown file of the repository: the example workspace, the docs, the fixtures.
 #[cfg(test)]
 pub(crate) fn corpus() -> Vec<(String, String)> {

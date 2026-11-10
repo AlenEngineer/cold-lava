@@ -655,7 +655,8 @@ mod tests {
 
         pub fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
             let p = parsers();
-            let tag = Regex::new(crate::markdown::TAG).unwrap();
+            static TAG: OnceLock<Regex> = OnceLock::new();
+            let tag = TAG.get_or_init(|| Regex::new(crate::markdown::TAG).unwrap());
             let mut written = style::Links::default();
             let mut refs = Vec::new();
             let mut tags = Vec::new();
@@ -821,23 +822,30 @@ mod tests {
         let read = time(&|n| {
             std::hint::black_box(super::read(n));
         });
+        let steps = time(&|n| {
+            let mut k = 0usize;
+            cst::read(n, cst::Gates::INDEX, &mut |_| k += 1);
+            std::hint::black_box(k);
+        });
+        let blocks = time(&|n| {
+            std::hint::black_box(cst::block_events(n, cst::Gates::INDEX));
+        });
         let tree = time(&|n| {
             std::hint::black_box(cst::Tree::with(n, cst::Gates::INDEX));
         });
         println!(
-            "read_cost: {} notes, {} KiB; median (min-max) of 9: line reader {:?} ({:?}-{:?}), \
-             read {:?} ({:?}-{:?}), making the trees {:?} ({:?}-{:?})",
+            "read_cost: {} notes, {} KiB; median (min-max) of 9:",
             notes.len(),
-            bytes / 1024,
-            lines.0,
-            lines.1,
-            lines.2,
-            read.0,
-            read.1,
-            read.2,
-            tree.0,
-            tree.1,
-            tree.2
+            bytes / 1024
         );
+        for (what, t) in [
+            ("line reader", lines),
+            ("read", read),
+            ("the parse's steps alone", steps),
+            ("blocks alone", blocks),
+            ("making the trees", tree),
+        ] {
+            println!("  {what}: {:?} ({:?}-{:?})", t.0, t.1, t.2);
+        }
     }
 }
