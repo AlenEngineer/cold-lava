@@ -1625,6 +1625,8 @@ fields.w = { capture = "w" }
         "> a\n> > b ^n1\n> c\n\n> - [ ] task in a quote\n>   - nested\n> lazy\n",
         "- a\n---\n* * *\n- b\n",
         "- [ ] \n- [x]\n- [ ]no space\n- [/] in progress\n  - [-] cancelled child\n- [  ] two spaces\n",
+        // A table that starts with `|` ends the paragraph above it; one that doesn't, doesn't.
+        "Caption line\n| a | b |\n|---|---|\n| 1 | the 2 |\n\n> quoted caption\n> | q | r |\n> |---|---|\n> | 3 | 4 |\n\n- item\n| x | y |\n|---|---|\n| 5 | 6 |\n\nNot heavy\nc | d\n---|---\n7 | 8\n\n> [!info] Stats\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
     ];
 
     /// Markdown pulldown-cmark read otherwise than Obsidian shows it, or that the tree doesn't
@@ -1638,8 +1640,6 @@ fields.w = { capture = "w" }
         "Intro\n\n---\n- [ ] between the rules\n---\n\n- [ ] after\n",
         // A byte order mark made the first line text.
         "\u{feff}- [ ] first\n- [ ] second\n",
-        // A table right under a callout's title was the title paragraph's text.
-        "> [!info] Stats\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
         // A reference link was a link; the tree has no reference links yet.
         "See [the note][n].\n\n[n]: Note.md\n",
         // A tag right after `**` or `_` was a tag, as in Obsidian; the tree needs a space or `(`

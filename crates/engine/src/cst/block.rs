@@ -92,8 +92,8 @@ enum Leaf {
         /// The index of its `Start`, for a setext heading or a table to rewrite.
         start: usize,
         lines: usize,
-        /// Its first line: where its indentation starts, its text, its line ending.
-        first: (usize, usize, usize, usize),
+        /// Its last line, which may be a table's header.
+        last_line: ParaLine,
     },
     Fence {
         ch: u8,
@@ -107,6 +107,20 @@ enum Leaf {
     Math,
     Comment,
     Table,
+}
+
+/// A paragraph's line.
+#[derive(Clone, Copy, Debug)]
+struct ParaLine {
+    /// The index of its first event, and how many of its events from there are its
+    /// containers' markers.
+    ev: usize,
+    markers: usize,
+    /// Where its indentation starts, its text starts, its line ending, the next line.
+    pos: usize,
+    fp: usize,
+    le: usize,
+    next: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -419,24 +433,22 @@ impl<'t> Parser<'t> {
                 Some(Leaf::Para { .. }) | None => {}
                 Some(_) => self.close_leaf(),
             }
-        } else if let Some(Leaf::Para {
-            start,
-            lines,
-            first,
-        }) = self.leaf
+        } else if let Some(Leaf::Para { start, lines, .. }) = self.leaf
             && !blank
             && !sibling
             && !self.interrupts(pos, col, le, true)
+            && !self.heavy_table(fp, le, next)
         {
             // A lazy line: the paragraph goes on without its containers' markers.
             self.emit_prefix(&prefix);
+            let last_line = self.para_line(pos, fp, le, next);
             self.tok(Whitespace, pos, fp);
             self.push(Ev::Inline(fp, le));
             self.newline(le, next);
             self.leaf = Some(Leaf::Para {
                 start,
                 lines: lines + 1,
-                first,
+                last_line,
             });
             return self.done(prefix, next);
         }
@@ -456,6 +468,18 @@ impl<'t> Parser<'t> {
     fn done(&mut self, prefix: Vec<(usize, usize, Kind)>, next: usize) -> usize {
         self.prefix = prefix;
         next
+    }
+
+    /// A paragraph's line from `pos`, its containers' markers just read.
+    fn para_line(&self, pos: usize, fp: usize, le: usize, next: usize) -> ParaLine {
+        ParaLine {
+            ev: self.events.len() - self.pending,
+            markers: self.pending,
+            pos,
+            fp,
+            le,
+            next,
+        }
     }
 
     /// This line's container markers, which a block closed next goes before.
@@ -563,8 +587,8 @@ impl<'t> Parser<'t> {
     }
 
     /// Whether the line at `pos` starts a block that ends a paragraph or a table. On a `lazy`
-    /// line, which the paragraph's containers don't go on to, any list item or lone HTML tag
-    /// does too: the line isn't read inside the paragraph's container.
+    /// line, which the paragraph's containers don't go on to, any list item does too: the line
+    /// isn't read inside the paragraph's container.
     fn interrupts(&self, pos: usize, col: usize, le: usize, lazy: bool) -> bool {
         let t = self.bytes();
         let (fp, fc) = self.skip_ws(pos, col, le);
@@ -578,9 +602,21 @@ impl<'t> Parser<'t> {
                 .is_some_and(|i| lazy || i.can_interrupt)
             || self.atx(fp, le).is_some()
             || self.fence(fp, le).is_some()
-            || html_start(&self.text[fp..le], !lazy).is_some()
+            || html_start(&self.text[fp..le], true).is_some()
             || self.math_start(fp, le)
             || self.comment_start(fp, le)
+    }
+
+    /// Whether the line with its text at `fp` is the header of a table that starts with `|`,
+    /// by the delimiter row on the next line: such a table ends a paragraph.
+    fn heavy_table(&self, fp: usize, le: usize, next: usize) -> bool {
+        let t = self.bytes();
+        if !self.g.has(S::Tables) || t.get(fp) != Some(&b'|') || next >= t.len() {
+            return false;
+        }
+        let (row_end, _) = self.line_at(next);
+        let row = self.text[next..row_end].trim_start_matches([' ', '\t', '>']);
+        delimiter_cells(row).is_some_and(|n| n == self.header_cells(fp, le))
     }
 
     fn math_start(&self, fp: usize, le: usize) -> bool {
@@ -619,8 +655,8 @@ impl<'t> Parser<'t> {
                 Some(Leaf::Para {
                     start,
                     lines,
-                    first,
-                }) => Some((start, lines, first)),
+                    last_line,
+                }) => Some((start, lines, last_line)),
                 _ => None,
             };
             if fp == le {
@@ -646,7 +682,7 @@ impl<'t> Parser<'t> {
                     return;
                 }
             } else {
-                if let Some((start, lines, first)) = para {
+                if let Some((start, lines, last)) = para {
                     let line = self.text[fp..le].trim_end();
                     if !line.is_empty()
                         && (line.bytes().all(|b| b == b'=') || line.bytes().all(|b| b == b'-'))
@@ -659,15 +695,26 @@ impl<'t> Parser<'t> {
                         self.close_leaf();
                         return;
                     }
-                    if lines == 1 && self.g.has(S::Tables) {
-                        let (fws, fa, fle, fnext) = first;
-                        let header = self.header_cells(fa, fle);
+                    // A table's header is a paragraph's only line, or its last when it starts
+                    // with `|`: such a table ends the paragraph before it, as pulldown-cmark
+                    // and GitHub read it.
+                    let heavy = t[last.fp] == b'|';
+                    if self.g.has(S::Tables) && (lines == 1 || heavy) {
+                        let header = self.header_cells(last.fp, last.le);
                         if delimiter_cells(&self.text[fp..le]).is_some_and(|n| n == header) {
                             // This line's markers came after the paragraph's line; keep them.
                             let markers = self.events.split_off(self.events.len() - self.pending);
-                            self.events.truncate(start);
+                            if lines == 1 {
+                                self.events.truncate(start);
+                            } else {
+                                // The header line's markers go after the paragraph's end.
+                                let mut head = self.events.split_off(last.ev);
+                                head.truncate(last.markers);
+                                self.finish();
+                                self.events.extend(head);
+                            }
                             self.start(Table);
-                            self.row(TableRow, fws, fle, fnext);
+                            self.row(TableRow, last.pos, last.le, last.next);
                             self.events.extend(markers);
                             self.row(TableDelimiterRow, pos, le, next);
                             self.leaf = Some(Leaf::Table);
@@ -823,15 +870,16 @@ impl<'t> Parser<'t> {
                 }
             }
             // A paragraph's line.
+            let last_line = self.para_line(pos, fp, le, next);
             match para {
-                Some((start, lines, first)) => {
+                Some((start, lines, _)) => {
                     self.tok(Whitespace, pos, fp);
                     self.push(Ev::Inline(fp, le));
                     self.newline(le, next);
                     self.leaf = Some(Leaf::Para {
                         start,
                         lines: lines + 1,
-                        first,
+                        last_line,
                     });
                 }
                 None => {
@@ -843,7 +891,7 @@ impl<'t> Parser<'t> {
                     self.leaf = Some(Leaf::Para {
                         start,
                         lines: 1,
-                        first: (pos, fp, le, next),
+                        last_line,
                     });
                 }
             }
