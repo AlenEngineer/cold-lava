@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 pub use crate::types::Origin;
 use crate::types::is_name;
 
+pub mod file;
+
 /// The only `version` a shapes file can have today.
 pub const VERSION: i64 = 1;
 
@@ -685,6 +687,23 @@ pub fn for_workspace(root: &Path) -> Shapes {
         std::iter::once(Layer::built_in())
             .chain(configured)
             .chain(Layer::workspace(root)),
+    )
+}
+
+/// The shapes a workspace draws with, and `d` as the workspace's shape `id`, last: what the shape
+/// editor draws, binds and checks before it saves. Its mistakes are the errors that name
+/// `shape {id}:`.
+pub fn with_draft(root: &Path, id: &str, d: &Definition) -> Shapes {
+    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+    let mut draft = Layer::empty(Origin::Workspace {
+        path: root.join(WORKSPACE_FILE),
+    });
+    draft.definitions.push((id.to_string(), Ok(d.clone())));
+    load(
+        std::iter::once(Layer::built_in())
+            .chain(configured)
+            .chain(Layer::workspace(root))
+            .chain(std::iter::once(draft)),
     )
 }
 
