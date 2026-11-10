@@ -35,7 +35,8 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   work in the binary.
 - `crates/views`: `cold-lava-views`, the frontend framework, empty on purpose: pieces move into it
   from `crates/cold-lava` once a second frontend needs them (`docs/engine.md`, "The frontend").
-- `crates/editor`: `cold-lava-editor`, the small text editor, headless (text, cursors, edits,
+- `crates/editor`: `cold-lava-editor`, cold-lava's own text editor (the main writing surface to come,
+  docs/engine.md "The notebook"; other editors are extensions), headless (text, cursors, edits,
   undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
   in place. Saves go through the engine's safe writes.
 - `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
