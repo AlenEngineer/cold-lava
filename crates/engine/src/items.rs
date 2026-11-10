@@ -1625,7 +1625,8 @@ fields.w = { capture = "w" }
         "> a\n> > b ^n1\n> c\n\n> - [ ] task in a quote\n>   - nested\n> lazy\n",
         "- a\n---\n* * *\n- b\n",
         "- [ ] \n- [x]\n- [ ]no space\n- [/] in progress\n  - [-] cancelled child\n- [  ] two spaces\n",
-        // A table that starts with `|` ends the paragraph above it; one that doesn't, doesn't.
+        // A table that starts with `|` ends the paragraph above it, not a lazy one after a list
+        // item; one that doesn't start with `|` doesn't.
         "Caption line\n| a | b |\n|---|---|\n| 1 | the 2 |\n\n> quoted caption\n> | q | r |\n> |---|---|\n> | 3 | 4 |\n\n- item\n| x | y |\n|---|---|\n| 5 | 6 |\n\nNot heavy\nc | d\n---|---\n7 | 8\n\n> [!info] Stats\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
     ];
 

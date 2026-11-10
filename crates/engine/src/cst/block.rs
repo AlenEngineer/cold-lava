@@ -437,7 +437,6 @@ impl<'t> Parser<'t> {
             && !blank
             && !sibling
             && !self.interrupts(pos, col, le, true)
-            && !self.heavy_table(fp, le, next)
         {
             // A lazy line: the paragraph goes on without its containers' markers.
             self.emit_prefix(&prefix);
@@ -605,18 +604,6 @@ impl<'t> Parser<'t> {
             || html_start(&self.text[fp..le], true).is_some()
             || self.math_start(fp, le)
             || self.comment_start(fp, le)
-    }
-
-    /// Whether the line with its text at `fp` is the header of a table that starts with `|`,
-    /// by the delimiter row on the next line: such a table ends a paragraph.
-    fn heavy_table(&self, fp: usize, le: usize, next: usize) -> bool {
-        let t = self.bytes();
-        if !self.g.has(S::Tables) || t.get(fp) != Some(&b'|') || next >= t.len() {
-            return false;
-        }
-        let (row_end, _) = self.line_at(next);
-        let row = self.text[next..row_end].trim_start_matches([' ', '\t', '>']);
-        delimiter_cells(row).is_some_and(|n| n == self.header_cells(fp, le))
     }
 
     fn math_start(&self, fp: usize, le: usize) -> bool {
