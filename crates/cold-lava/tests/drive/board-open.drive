@@ -16,7 +16,7 @@ wait-for whiteboard Volcano Venn
 wait-for shape card · Card (a note)
 expect Ctrl-o ⟵ Krakatoa
 keys ctrl+o
-wait-for Volcanoes/Krakatoa  reader
+wait-for Volcanoes/Krakatoa  reading
 wait-for Alt-→ ⟶ Volcano Venn
 keys alt+right
 wait-for whiteboard Volcano Venn
