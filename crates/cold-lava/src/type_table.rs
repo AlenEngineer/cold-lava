@@ -307,6 +307,7 @@ impl Extension for Tables {
             hints: Vec::new(),
             commands: Vec::new(),
             types: Default::default(),
+            shapes: Vec::new(),
             permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
             file_types: Vec::new(),
             shows: Vec::new(),

@@ -211,11 +211,11 @@ impl Mask {
     }
 
     /// What drawing a part inks: an area's outline (the edge of its inside), a stroke's line,
-    /// nothing for a text box (its text is fitted, not drawn as a shape).
+    /// nothing for a text box or a label (their text is fitted, not drawn as a shape).
     pub fn outline(placed: &Placed, part: usize, view: &Viewport, res: Res) -> Mask {
         let p = &placed.shape.parts()[part];
         match p.kind {
-            Kind::Text { .. } => Mask::empty(view, res),
+            Kind::Text { .. } | Kind::Label { .. } => Mask::empty(view, res),
             _ if p.is_area() => Mask::area(placed, &Area::Part(part), view, res).edge(),
             _ => Mask::strokes(
                 &p.world_strokes(&placed.placement.transform(), ARROW_HEAD),

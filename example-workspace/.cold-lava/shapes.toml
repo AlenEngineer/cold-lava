@@ -1,0 +1,55 @@
+# This workspace's own shapes: how its data is drawn on a canvas, for cold-lava. Obsidian ignores
+# this folder. Run `cold-lava shapes example-workspace` to list them with the built-in ones, and
+# `cold-lava shapes example-workspace --render venn3` to see one.
+version = 1
+
+# Three overlapping circles: volcanoes by what three lists share.
+[[shapes]]
+id = "venn3"
+title = "Three-way Venn diagram"
+inputs = ["a", "b", "c"]
+key = "name"
+aspect = 1.0
+parts = [
+  { circle = { id = "left", center = [0.37, 0.4], radius = 0.27 } },
+  { circle = { id = "right", center = [0.63, 0.4], radius = 0.27 } },
+  { circle = { id = "low", center = [0.5, 0.62], radius = 0.27 } },
+  { text = { at = "left.top", value = "${a.title}" } },
+  { text = { at = "right.top", value = "${b.title}" } },
+  { text = { at = "low.bottom", value = "${c.title}" } },
+]
+regions = [
+  { id = "only-a", area = "left - right - low", shows = "a - b - c" },
+  { id = "only-b", area = "right - left - low", shows = "b - a - c" },
+  { id = "only-c", area = "low - left - right", shows = "c - a - b" },
+  { id = "a-and-b", area = "left & right - low", shows = "a & b - c" },
+  { id = "a-and-c", area = "left & low - right", shows = "a & c - b" },
+  { id = "b-and-c", area = "right & low - left", shows = "b & c - a" },
+  { id = "all", area = "left & right & low", shows = "a & b & c" },
+]
+
+# One mark on a timeline; the timeline below nests three.
+[[shapes]]
+id = "tick"
+title = "Timeline tick"
+parts = [{ line = { id = "mark", from = [0.5, 0.3], to = [0.5, 0.7] } }]
+
+# Eruptions along a time axis, with the workspace's own glyph for an eruption.
+[[shapes]]
+id = "timeline"
+title = "Eruption timeline"
+inputs = ["eruptions"]
+aspect = 5.0
+parts = [
+  { arrow = { id = "axis", from = [0.02, 0.5], to = [0.98, 0.5] } },
+  { shape = { id = "past", use = "tick", from = [0.08, 0.2], to = [0.18, 0.8] } },
+  { shape = { id = "then", use = "tick", from = [0.45, 0.2], to = [0.55, 0.8] } },
+  { shape = { id = "now", use = "tick", from = [0.82, 0.2], to = [0.92, 0.8] } },
+  { text = { at = "past.mark.bottom", value = "1800" } },
+  { text = { at = "then.mark.bottom", value = "1900" } },
+  { text = { at = "now.mark.bottom", value = ":eruption: now" } },
+  { text = { at = "then.mark.top", value = "${eruptions.title}" } },
+]
+
+[glyphs]
+eruption = "▲"

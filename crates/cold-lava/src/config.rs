@@ -19,6 +19,9 @@ pub struct Config {
     pub flavour: Option<Flavour>,
     /// `[types]` as written, for the engine to check (`types::Layer::config`).
     pub types: toml::Table,
+    /// `[[shapes]]` and `[glyphs]` as written, for the engine to check (`shapes::Layer::config`).
+    pub shapes: Vec<toml::Table>,
+    pub glyphs: toml::Table,
     /// `[style]`, for the engine (`style::set_configured`).
     pub style: crate::style::Overrides,
     /// One human-readable line per problem in the file.
@@ -36,6 +39,10 @@ struct File {
     markdown: toml::Table,
     #[serde(default)]
     types: toml::Table,
+    #[serde(default)]
+    shapes: Vec<toml::Table>,
+    #[serde(default)]
+    glyphs: toml::Table,
     #[serde(default)]
     style: toml::Table,
 }
@@ -131,6 +138,8 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     }
     config.flavour = markdown(file.markdown, &mut config.errors);
     config.types = file.types;
+    config.shapes = file.shapes;
+    config.glyphs = file.glyphs;
     match crate::style::Overrides::from_table(file.style) {
         Ok(o) => config.style = o,
         Err(e) => config.errors.push(format!("[style] {e}")),

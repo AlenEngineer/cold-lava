@@ -3,7 +3,7 @@
 
 use crate::area::{Area, AreaError};
 use crate::geom::{Placement, Point, Transform};
-use crate::part::Part;
+use crate::part::{Kind, Part};
 use std::fmt;
 use std::sync::Arc;
 
@@ -11,6 +11,8 @@ use std::sync::Arc;
 pub struct Shape {
     parts: Vec<Part>,
     regions: Vec<Region>,
+    /// Named points that aren't a part's: `tip`, or a nested shape's box (`card`, `card.top`).
+    anchors: Vec<(String, Point)>,
 }
 
 /// A named area of a shape (`both` = `left & right`).
@@ -23,14 +25,22 @@ pub struct Region {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShapeError {
     DuplicatePart(String),
+    /// A named anchor called like a part or another anchor.
+    DuplicateAnchor(String),
     DuplicateRegion(String),
-    Region { id: String, error: AreaError },
+    Region {
+        id: String,
+        error: AreaError,
+    },
 }
 
 impl fmt::Display for ShapeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ShapeError::DuplicatePart(id) => write!(f, "two parts are called `{id}`"),
+            ShapeError::DuplicateAnchor(id) => {
+                write!(f, "`{id}` names an anchor and another anchor or part")
+            }
             ShapeError::DuplicateRegion(id) => write!(f, "two regions are called `{id}`"),
             ShapeError::Region { id, error } => write!(f, "region `{id}`: {error}"),
         }
@@ -66,7 +76,35 @@ impl Shape {
         Ok(Shape {
             parts,
             regions: built,
+            anchors: Vec::new(),
         })
+    }
+
+    /// The shape with named points of its own, besides its parts' anchors.
+    pub fn with_anchors(mut self, anchors: Vec<(String, Point)>) -> Result<Shape, ShapeError> {
+        for (i, (name, _)) in anchors.iter().enumerate() {
+            if self.part(name).is_some() || anchors[..i].iter().any(|(n, _)| n == name) {
+                return Err(ShapeError::DuplicateAnchor(name.clone()));
+            }
+        }
+        self.anchors = anchors;
+        Ok(self)
+    }
+
+    /// The same shape with each text and label's value passed through `f` (inputs filled in,
+    /// glyphs looked up).
+    pub fn map_text(&self, f: impl Fn(&str) -> String) -> Shape {
+        let mut shape = self.clone();
+        for part in &mut shape.parts {
+            if let Kind::Text { value, .. } | Kind::Label { value, .. } = &mut part.kind {
+                *value = f(value);
+            }
+        }
+        shape
+    }
+
+    pub fn anchors(&self) -> &[(String, Point)] {
+        &self.anchors
     }
 
     pub fn parts(&self) -> &[Part] {
@@ -85,18 +123,28 @@ impl Shape {
         self.regions.iter().position(|r| r.id == id)
     }
 
-    /// A named point in the unit box: `part.anchor` (`left.top`), a part's id alone (its
-    /// centre), or one of the box's own anchors (`center`, `top-left`, …). A part's id wins over
-    /// a box anchor of the same name.
+    /// A named point in the unit box: see [`anchor_in`].
     pub fn anchor(&self, name: &str) -> Option<Point> {
-        if let Some((part, anchor)) = name.split_once('.') {
-            return self.parts[self.part(part)?].anchor(anchor);
-        }
-        match self.part(name) {
-            Some(i) => self.parts[i].anchor("center"),
-            None => crate::geom::Rect::UNIT.anchor(name),
-        }
+        anchor_in(&self.parts, &self.anchors, name)
     }
+}
+
+/// A named point among `parts` and named `anchors`, in this order: a named anchor; a part's id
+/// alone (its centre); `part.anchor` (`left.top`, where the part's id may itself hold dots, as
+/// `card.frame.top`); one of the box's own anchors (`center`, `top-left`, …). So a part's id
+/// wins over a box anchor of the same name.
+pub fn anchor_in(parts: &[Part], anchors: &[(String, Point)], name: &str) -> Option<Point> {
+    let part = |id: &str| parts.iter().find(|p| p.id.as_deref() == Some(id));
+    if let Some((_, p)) = anchors.iter().find(|(n, _)| n == name) {
+        return Some(*p);
+    }
+    if let Some(p) = part(name) {
+        return p.anchor("center");
+    }
+    if let Some((id, anchor)) = name.rsplit_once('.') {
+        return part(id)?.anchor(anchor);
+    }
+    crate::geom::Rect::UNIT.anchor(name)
 }
 
 /// A shape where the user put it. Shapes are shared (`Arc`): a hundred placed Venns hold one.
@@ -147,6 +195,26 @@ mod tests {
         assert_eq!(shape.anchor("top"), Some(Point::new(0.62, 0.5)));
         assert_eq!(shape.anchor("left.nowhere"), None);
         assert_eq!(shape.anchor("nowhere.top"), None);
+    }
+
+    #[test]
+    fn named_anchors_and_dotted_part_ids() {
+        let shape = Shape::new(vec![circle("card.left", 0.38)], &[])
+            .unwrap()
+            .with_anchors(vec![("tip".into(), Point::new(0.9, 0.1))])
+            .unwrap();
+        assert_eq!(shape.anchor("tip"), Some(Point::new(0.9, 0.1)));
+        assert_eq!(shape.anchor("tip.top"), None);
+        assert_eq!(shape.anchor("card.left"), Some(Point::new(0.38, 0.5)));
+        let top = shape.anchor("card.left.top").unwrap();
+        assert!((top.y - 0.18).abs() < 1e-9);
+        let clash = Shape::new(vec![circle("tip", 0.38)], &[])
+            .unwrap()
+            .with_anchors(vec![("tip".into(), Point::new(0.0, 0.0))]);
+        assert_eq!(
+            clash.unwrap_err(),
+            ShapeError::DuplicateAnchor("tip".into())
+        );
     }
 
     #[test]

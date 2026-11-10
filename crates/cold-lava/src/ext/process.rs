@@ -529,6 +529,7 @@ mod tests {
             hints: Vec::new(),
             commands: Vec::new(),
             types: Default::default(),
+            shapes: Vec::new(),
             permissions: crate::ext::read_only(),
             file_types: Vec::new(),
             shows: Vec::new(),

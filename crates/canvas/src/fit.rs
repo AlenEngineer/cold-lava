@@ -3,9 +3,11 @@
 //! A region's [`Room`] is, per row, the widest run of cells wholly inside it and clear of its
 //! outline, so fitting works the same for a rectangle, a crescent or a turned lens. Text stays
 //! upright, one glyph per cell. What doesn't fit is counted: a list ends with "+N more", text
-//! ends with "…".
+//! ends with "…". A shape's labels go beside their anchors and never overlap ([`anchored`]).
 
-use crate::raster::{Grid, Mask, Style};
+use crate::part::{Kind, Side};
+use crate::raster::{Grid, Mask, Style, Viewport};
+use crate::shape::Placed;
 
 /// Where text can go in a region, row by row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,9 +28,19 @@ impl Room {
     /// covered and none is on the area's outline. Braille masks keep text off outlines drawn
     /// in dots.
     pub fn inside(mask: &Mask) -> Room {
+        Room::of_cells(mask.interior().whole_cells())
+    }
+
+    /// Every whole cell of the mask, its outline's too: the room in a text box, which has no
+    /// outline drawn.
+    pub fn covered(mask: &Mask) -> Room {
+        Room::of_cells(mask.whole_cells())
+    }
+
+    fn of_cells(cells: Vec<(u16, u16)>) -> Room {
         let mut runs: Vec<Run> = Vec::new();
         let mut current: Option<Run> = None;
-        for (col, row) in mask.interior().whole_cells() {
+        for (col, row) in cells {
             match &mut current {
                 Some(run) if run.row == row && run.col + run.width == col => run.width += 1,
                 _ => {
@@ -263,6 +275,92 @@ pub fn text(room: &Room, text: &str, align: Align) -> Fitted {
     finish(runs, lines, count, words.len(), align)
 }
 
+/// Blank cells kept between two labels on a row, so "Fruit" and "Green" never read as one word.
+const LABEL_GAP: i64 = 2;
+
+/// How far, in cells, a label may slide off its anchor's column and still name it.
+const LABEL_REACH: i64 = 2;
+
+/// A shape's labels, each on its side of its anchor, upright, one glyph per cell. They never
+/// overlap: labels are placed in the order of the shape's parts, the first one first, and a
+/// later label that would touch an earlier one (closer than two blank cells on its row) slides
+/// along its row to the nearest place that is clear, as long as it stays within two cells of its
+/// anchor's column; failing that it is cut with "…" (not below four cells) and tried again; a
+/// label that still finds no place is left out and counted in `hidden`. Labels stay on the grid.
+pub fn anchored(placed: &Placed, view: &Viewport) -> Fitted {
+    let to_world = placed.placement.transform();
+    let cols = i64::from(view.cols);
+    let mut taken: Vec<(i64, i64, i64)> = Vec::new();
+    let mut lines = Vec::new();
+    let (mut shown, mut hidden) = (0, 0);
+    for part in placed.shape.parts() {
+        let Kind::Label { at, side, value } = &part.kind else {
+            continue;
+        };
+        let full = width(value);
+        if full == 0 {
+            continue;
+        }
+        let p = to_world.apply(*at);
+        let col = ((p.x - view.origin.x) / view.cell.x).floor() as i64;
+        let row = ((p.y - view.origin.y) / view.cell.y).floor() as i64
+            + match side {
+                Side::Above => -1,
+                Side::Below => 1,
+                _ => 0,
+            };
+        let clear = |s: i64, w: i64| {
+            let reach = if col < s {
+                s - col
+            } else {
+                (col - (s + w - 1)).max(0)
+            };
+            s >= 0
+                && s + w <= cols
+                && reach <= LABEL_REACH
+                && taken
+                    .iter()
+                    .all(|&(r, a, b)| r != row || s + w + LABEL_GAP <= a || s >= b + LABEL_GAP)
+        };
+        let place = (0..i64::from(view.rows)).contains(&row).then(|| {
+            (MIN_CUT.min(full)..=full).rev().find_map(|w| {
+                let w = w as i64;
+                let ideal = match side {
+                    Side::Left => col - w,
+                    Side::Right => col + 1,
+                    _ => col - w / 2,
+                };
+                let s = (0..=w + 2 * LABEL_REACH)
+                    .flat_map(|d| [ideal + d, ideal - d])
+                    .find(|&s| clear(s, w))?;
+                Some((s, w))
+            })
+        });
+        match place.flatten() {
+            Some((s, w)) => {
+                let text = if w as usize == full {
+                    value.clone()
+                } else {
+                    cut(value, w as usize)
+                };
+                taken.push((row, s, s + w));
+                lines.push(Line {
+                    col: s as u16,
+                    row: row as u16,
+                    text,
+                });
+                shown += 1;
+            }
+            None => hidden += 1,
+        }
+    }
+    Fitted {
+        lines,
+        shown,
+        hidden,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +501,106 @@ mod tests {
                 }
             ]
         );
+    }
+
+    /// Labels at unit points of a shape that covers the whole `cols`×`rows` grid, so `(x, y)`
+    /// is cell `(x·cols, y·rows)`.
+    fn labels_on(cols: u16, rows: u16, labels: &[(f64, f64, Side, &str)]) -> Fitted {
+        use crate::geom::{Placement, Point};
+        use crate::part::Part;
+        use crate::shape::{Placed, Shape};
+        use std::sync::Arc;
+        let parts = (labels.iter())
+            .map(|&(x, y, side, value)| {
+                let at = Point::new(x, y);
+                let value = value.to_string();
+                Part::new(None, Kind::Label { at, side, value })
+            })
+            .collect();
+        let view = Viewport::terminal(cols, rows);
+        let placed = Placed::new(
+            Arc::new(Shape::new(parts, &[]).unwrap()),
+            Placement::new(Point::new(0.0, 0.0), view.world_size()),
+        );
+        anchored(&placed, &view)
+    }
+
+    fn spans(f: &Fitted) -> Vec<(u16, u16, &str)> {
+        (f.lines.iter())
+            .map(|l| (l.row, l.col, l.text.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn labels_sit_on_their_side_of_the_anchor() {
+        let f = labels_on(
+            30,
+            10,
+            &[
+                (0.5, 0.5, Side::Above, "up"),
+                (0.5, 0.5, Side::Below, "down"),
+                (0.2, 0.2, Side::Left, "l"),
+                (0.2, 0.2, Side::Right, "r"),
+            ],
+        );
+        assert_eq!(
+            spans(&f),
+            [(4, 14, "up"), (6, 13, "down"), (2, 5, "l"), (2, 8, "r")]
+        );
+    }
+
+    #[test]
+    fn a_later_label_slides_clear_of_an_earlier_one() {
+        // Anchors at columns 10 and 13: centred, "Fruit" takes 8..13 and "Green" 11..16, so
+        // "Green" slides right to keep two blank cells, still within two cells of column 13.
+        let f = labels_on(
+            30,
+            4,
+            &[
+                (10.0 / 30.0, 0.5, Side::Above, "Fruit"),
+                (13.0 / 30.0, 0.5, Side::Above, "Green"),
+            ],
+        );
+        assert_eq!(spans(&f), [(1, 8, "Fruit"), (1, 15, "Green")]);
+        assert_eq!((f.shown, f.hidden), (2, 0));
+    }
+
+    #[test]
+    fn a_label_with_no_room_near_its_anchor_is_left_out() {
+        let f = labels_on(
+            30,
+            4,
+            &[
+                (10.0 / 30.0, 0.5, Side::Center, "abcdef"),
+                (10.0 / 30.0, 0.5, Side::Center, "ghijkl"),
+            ],
+        );
+        assert_eq!(spans(&f), [(2, 7, "abcdef")]);
+        assert_eq!((f.shown, f.hidden), (1, 1));
+    }
+
+    #[test]
+    fn labels_stay_on_the_grid_cut_if_they_must() {
+        let f = labels_on(
+            6,
+            4,
+            &[
+                (0.0, 0.5, Side::Center, "abcdefghij"),
+                (0.5, 0.0, Side::Above, "off the top"),
+            ],
+        );
+        assert_eq!(spans(&f), [(2, 0, "abcde…")]);
+        assert_eq!(f.hidden, 1);
+    }
+
+    #[test]
+    fn the_side_outside_an_anchor() {
+        assert_eq!(Side::outside("left.top"), Side::Above);
+        assert_eq!(Side::outside("top-right"), Side::Above);
+        assert_eq!(Side::outside("card.frame.bottom"), Side::Below);
+        assert_eq!(Side::outside("box.left"), Side::Left);
+        assert_eq!(Side::outside("right"), Side::Right);
+        assert_eq!(Side::outside("center"), Side::Center);
+        assert_eq!(Side::outside("tip"), Side::Center);
     }
 }
