@@ -171,7 +171,8 @@ chosen Markdown flavour). Frontends sit beside the engine:
      │         └─ cold-lava lsp: links, backlinks, completion and renames in any editor
      ├─ cold-lava (the terminal UI, the main frontend)
      └─ cold-lava-gui (a Tauri window, crates/gui)      both draw from cold-lava-views,
-                                                        and render cold-lava-editor (headless)
+                                                        and render cold-lava-editor and
+                                                        cold-lava-canvas (both headless)
 ```
 
 A frontend asks the engine and draws; the engine never knows which frontend is asking. That's

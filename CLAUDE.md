@@ -25,7 +25,7 @@ required checks on `main`.
 
 ## Architecture
 
-A Cargo workspace of four crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
+A Cargo workspace of five crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
 `[workspace.package]`; `example-workspace/`, `docs/` and `scripts/` stay at the root.
 
 - `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
@@ -39,6 +39,18 @@ A Cargo workspace of four crates, plus the GUI beside it. The version lives in t
   docs/engine.md "The notebook"; other editors are extensions), headless (text, cursors, edits,
   undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
   in place. Saves go through the engine's safe writes.
+- `crates/canvas`: `cold-lava-canvas`, the canvas engine of `docs/shapes.md`, headless and with
+  no dependencies. Shapes are parts in their own unit box, placed by the user (move, stretch,
+  rotate), with anchors; regions (`&`, `|`, `-` over parts' insides) stay expressions answered
+  point by point (`area.rs`). Built on that: rasterizing to plain data (`raster.rs`: a `Mask` of
+  covered samples at 1×1, braille 2×4 or pixels per cell; a `Grid` of glyph and style tokens;
+  `Pixels`), fitting text and labels into a region's `Room` with "+N more" (`fit.rs`), and hit
+  testing (`hit.rs`: the shape, handle, part and region under a point). `tests/snapshots/` holds
+  rasterized Venns (`UPDATE_SNAPSHOTS=1` rewrites them); `cargo run --release -p
+  cold-lava-canvas --example bench` times a full screen. Its own crate, not `views`: it is pure
+  geometry every frontend computes the same way, not a frontend piece, and it must stay free of
+  UI crates (`cargo tree -p cold-lava-canvas`). Nothing uses it yet; placed shapes come after
+  scenes (#91).
 - `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
   workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
   a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs

@@ -109,14 +109,48 @@ like letters anywhere text goes.
 
 ## The canvas engine
 
-A headless crate (like `cold-lava-editor`: nothing drawn), shared by every frontend:
+A headless crate (like `cold-lava-editor`: nothing drawn), shared by every frontend. It is
+`cold-lava-canvas` in `crates/canvas`, with no dependencies, built up in the order below.
 
-- **Geometry:** vector parts in a shape's box, transforms (move, stretch, rotate), anchors.
-- **Regions:** boolean operations on areas (`&`, `|`, `-`).
-- **Fitting:** text and region content laid out inside areas, overflow counted.
-- **Rasterizing:** areas and strokes to terminal cells, braille dots (2×4 per cell) and, where the
-  terminal has Kitty graphics, pixels; a GUI would draw the same geometry exactly.
-- **Hit testing:** what is under a point, for clicks, drags and handles.
+- **Geometry** *(as built)*: parts in a shape's unit box (`part.rs`: `rect`, `circle`,
+  `ellipse`, `line`, `arrow`, `path` as a polyline or cubic Béziers flattened once, `text` as the
+  box its text will fill); a `Placement` (what is saved: top-left corner, size, rotation in
+  degrees clockwise about the centre) composed into one affine `Transform`; anchors
+  (`left.top`, a part's id for its centre, the box's own `center`, `top-left`, …, and `start`
+  and `end` of strokes). A part is an area (it has an inside) or a stroke (a line, an arrow, an
+  open path); an arrow's head keeps its size in world units when the shape is stretched.
+- **Regions** *(as built)*: boolean operations on areas (`&`, `|`, `-`). `area.rs` parses the
+  expression (`&` binds tighter than `|` and `-`, brackets group, `only-a` is one name so the
+  operator is written `a - b`) and keeps it as a tree that answers *is this point inside?*
+  from the parts' exact implicit forms (a circle is `|p − c| ≤ r`; a closed path, even-odd).
+  Nothing is clipped into a new outline: rasterizing samples the tree at the resolution it
+  draws at, hit testing asks it about one point, and a rotated or stretched shape maps the
+  point back into its unit box first. That has no slivers, tangent cases or precision drift;
+  it gives up exact vector outlines of a region, which a GUI can still get by sampling finely.
+  Shapes are made in code for now; their TOML definitions are step 3.
+- **Fitting** *(as built)*: text and region content laid out inside areas, overflow counted.
+  `fit.rs` takes a region's `Room` (per row, the widest run of cells wholly inside it and clear
+  of its outline) and lays out text (wrapped at spaces, "…" when cut short) or a list of labels
+  (a column, or wrapped two spaces apart; "+N more", or "+N" where only that fits, with labels
+  making way for it), starting from whichever row shows the most and centres best. A label wider
+  than its row is cut with "…" in rows of four cells or more; narrower rows are skipped. Text is
+  upright, one glyph per cell, at any rotation of the shape.
+- **Rasterizing** *(as built)*: areas and strokes to terminal cells, braille dots (2×4 per cell)
+  and, where the terminal has Kitty graphics, pixels; a GUI would draw the same geometry exactly.
+  `raster.rs` does all three with one step, a `Mask`: the samples of a `Viewport`'s grid an area
+  or a stroke covers, at 1×1, 2×4 or a cell's pixels per cell. An area's samples ask the region
+  tree about their centres, only inside the area's box; strokes are walked in half-sample steps;
+  an area's outline is its covered samples next to an uncovered one, so outlines sit just inside
+  fills and follow rotation and stretching. A `Grid` holds a glyph and two style tokens (`fg`,
+  `bg`) per cell; region tints go to `bg`, braille dots merge into `fg`, text is upright, one
+  glyph per cell, and wins over dots. `Pixels` is a buffer of style tokens; the frontend picks
+  colours and encodes the image (`kitty.rs`). Style tokens are numbers a frontend maps to its
+  own colours.
+- **Hit testing** *(as built)*: what is under a point, for clicks, drags and handles. `hit.rs`
+  answers with the topmost placed shape there and, within it, the handle (four corners and a
+  rotate grip above the top edge, only on the selected shape), the topmost part (inside an area,
+  or within a tolerance of a stroke) and the region. Blank space inside a shape's box still hits
+  the shape.
 - **Bindings:** inputs run as gateway queries and stay live (`items/subscribe`); region
   expressions are evaluated when an input changes; gestures become gateway edits.
 
@@ -128,7 +162,9 @@ engine/frontend split again: the model is general, each frontend draws it as wel
 
 1. This design, and the Obsidian test for unknown canvas fields.
 2. The canvas engine crate: geometry, regions, fitting, rasterizing, hit testing, all pure and
-   tested without a terminal.
+   tested without a terminal. *(as built: `crates/canvas`, #133; snapshots of the Venn with its
+   regions labelled, at three sizes and turned, in `crates/canvas/tests/snapshots/`. Nothing
+   draws with it yet: the TUI paints its grids once placed shapes reach the scene view.)*
 3. Shape definitions: loaded like types, with built-ins, `cold-lava shapes WORKSPACE`.
 4. Bindings: inputs as live queries, the region expression language, behaviour as edits.
 5. Placed shapes in the scene view (after scenes, #91): place, move, stretch and rotate; the
