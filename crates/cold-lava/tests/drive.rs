@@ -1550,6 +1550,9 @@ fn ext_list_prints_what_each_extension_may_do() {
          table  built in\n\
          \x20 A type's items as a table\n\
          \x20 permissions: items.read, items.edit\n\
+         graph  built in\n\
+         \x20 The workspace's notes and the links between them\n\
+         \x20 permissions: items.read\n\
          open-tasks 0.1.0  {}\n\
          \x20 Counts the workspace's open tasks in the status line, moves overdue ones to today, \
          and lists them by note\n\

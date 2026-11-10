@@ -240,6 +240,10 @@ impl SceneView {
         self.sel = id.and_then(|key| self.graph.find(key));
     }
 
+    pub fn title(&self) -> &str {
+        &self.scene.title
+    }
+
     pub fn selected(&self) -> Option<&Node> {
         self.sel.map(|i| &self.scene.nodes[i])
     }

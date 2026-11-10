@@ -205,6 +205,19 @@ then a query and a view, not a parser of its own.
   the permission gate is the same; news goes out as notifications ("Transport, as built").
 - **Files.** `workspace/read`, `workspace/write`, `workspace/create` and `workspace/files`
   read and write whole files ("File types, as built" below).
+- **The link graph.** `links/query` (no params, `items.read`) answers every file links come
+  from and where each link leads, whatever owns the file (`crates/engine/src/links.rs`, pinned
+  there): `{"files": [{"path": "Volcanoes/Kīlauea.md", "name": "Kīlauea", "tags":
+  ["volcano/shield"]}], "links": [{"from": "Volcanoes/Kīlauea.md", "to": "Concepts/Lava.md"},
+  {"from": "Volcanoes/Kīlauea.md", "target": "Pele"}], "groups": [{"query": "path:Guide",
+  "color": "#fad65a"}]}`. Files are the notes, then the files other owners read, with their
+  extension; each file's links come in its order, once per place they lead, resolved with
+  Obsidian's rules (`to`), or the name written when they lead nowhere yet (`target`). `groups`
+  are Obsidian's graph colour groups from `.obsidian/graph.json`, which no extension can read
+  itself. `links/subscribe` answers `{subscription}`; from then on, each batch of files the core
+  reads again (notes, files other owners read, a rescan, the graph settings) sends
+  `links/changed {subscription, created, removed}`, naming the files that came and went, and
+  the subscriber queries again. `links/unsubscribe {subscription}` stops it.
 - **The style.** `workspace/style` answers how the workspace writes, the same JSON as
   `cold-lava style --json` (pinned in `rpc.rs`'s tests), for an extension that writes new text
   with `workspace/write` or `workspace/create`. One that changes items with `items/edit` needs
@@ -1856,8 +1869,8 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   menu (`open-tasks-list.drive`).
 - **The built-in table** is one too ("The table view, as built"): `type_table.rs` sends a type's
   items as a table and turns a cell's edit into `items/edit set-field`.
-- **Not yet:** Markdown and tree views, a view beside the tree rather than over it, and `scene`
-  (below).
+- **Not yet:** Markdown and tree views, and a view beside the tree rather than over it. The
+  `scene` is built ("Scenes, as built").
 
 ### The image view, as built
 
@@ -1928,30 +1941,42 @@ zooming wait.
 
 ### Scenes, as built
 
-- **The scene view** (`crates/cold-lava/src/scene_view.rs`) draws a `Scene`: a title, nodes
-  (`id`, `label`, a `look` of `note`, `ghost` or `tag`, a colour `group`, the `file` it stands
-  for and a `detail` for the status line), edges between node ids, colour groups (`label`,
-  `color` as `#rrggbb`) for the legend, and `flags` for the frame's top right. It owns the force
-  layout (`graph.rs`; positions kept by node id across updates, and an update that changes only
-  looks keeps the layout still), the camera, selection by arrow and along links, the local
-  graph, search over labels and files, labels, dragging nodes, and drawing in braille or Kitty
-  pixels (`scene.rs`'s `Frame`, `kitty.rs`).
-- **In the menu's loop.** The scene view is a place in the menu (`Mode::Graph`,
-  `Place::Graph` with the selected node's id), not a screen with its own loop: the menu ticks
-  it once a frame (a layout step, the camera easing), waits for input no longer than it needs,
-  and keeps answering extensions meanwhile. The menu owns the `Core`; nothing is lent. Back and
-  Forward leave it and come back to it as it was; `q` goes to the menu, which Back returns
-  from. Extensions' `ui/status` text and `ui/notify` messages show in its status line
+- **The content.** `view/open` and `view/update` take `{"kind": "scene", "title", "nodes",
+  "edges", "groups", "flags"}` (`scene_view::Scene`, pinned in `ext/view.rs`): nodes with an
+  `id`, a `label`, a `look` (`note`, the default, `ghost` for a link to nothing yet, or `tag`), a
+  colour `group` (its place in `groups`), the workspace `file` it stands for and a `detail` for
+  the status line; edges `{from, to}` by node id (unknown ids, links to themselves and repeats
+  are left out); `groups` `{label, color}` with `#rrggbb` for the legend; `flags`, words for the
+  frame's top right. No positions: the core lays the scene out, so an extension sends data, not
+  pixels. **Bounds:** at most 50,000 nodes (`MAX_ROWS`), four edges per node allowed, 64 groups
+  and 8 flags, else refused.
+- **The scene view** (`crates/cold-lava/src/scene_view.rs`, one of `views.rs`'s views) owns the
+  force layout (`graph.rs`; positions kept by node id across updates, and an update that
+  changes only looks keeps the layout still), the camera, selection by arrow and along links,
+  the local graph, search over labels and files, labels, dragging nodes, and drawing in braille
+  or Kitty pixels (`scene.rs`'s `Frame`, `kitty.rs`).
+- **In the menu's loop.** A scene is a view like a list (`Mode::View`, `Place::View`), drawn
+  over the whole screen: the menu ticks the one in front once a frame (a layout step, the
+  camera easing), waits for input no longer than it needs, and keeps answering extensions
+  meanwhile. Updates wait while a node is dragged. Back and Forward leave it and come back to it
+  as it was; `q` goes to the menu, which Back returns from; `Esc` clears the selection and never
+  closes it. Extensions' `ui/status` text and `ui/notify` messages show in its status line
   (`graph-extensions.drive` checks it with the `open-tasks` example).
 - **Keys** are the graph's table (`graph.*`, configurable), owned by the core. The view handles
-  navigation, the camera, search, the local graph, labels and pixels itself; the commands whose
-  meaning is the sender's (`graph.open-note`, `graph.toggle-tags`, `graph.groups`, …) come back
-  as `Action::Command` with the selection.
-- **The graph** (`app.rs`, `GraphScreen`) builds its scene from the core's index
-  (`graph::build`, `groups::assign`) and follows the core's events. `graph.drive` and
-  `history-screens.drive`, written before the move, pass unchanged.
-- **Not yet:** the scene on the view gateway (the graph as an extension), fixed layouts,
-  cards and the whiteboard (#92), and a scene beside the tree.
+  navigation, the camera, search, the local graph, labels and pixels itself, and `w` picks a
+  whiteboard. Enter is `view/event activated {row}` with the selected node's id; the rest of
+  the table (`graph.toggle-tags`, `graph.groups`, `graph.open-in-obsidian`, `graph.rescan`, …)
+  is `view/event command {command, row}` with the command's id and the selection.
+- **The graph** (`graph_ext.rs`) is a built-in extension on this path, as the agenda is: `g`
+  (`graph.open`, a core command the menu hands to it) makes a scene of `links/query` with its
+  filters and colour groups (`graph::build`, `groups::assign`) and sends it with `view/open`;
+  `links/changed` makes it query again and send `view/update`, and say what changed with
+  `ui/notify`. Enter runs `note.edit` with the node's `note` (an unresolved link's note is
+  made first), and `o` runs `note.open-in-obsidian`, both core commands that take a `note`.
+  `graph.drive` and `history-screens.drive`, written before the move, pass unchanged.
+- **Not yet:** a scene's own keys (an extension's scene gets the graph's), fixed layouts,
+  `scene/update` deltas, cards, and a scene beside the tree. The whiteboard is still a screen
+  with its own loop; moving it is #92.
 
 The graph moves first: it's read-only, already draws through a backend-neutral `Frame`, and is
 where the performance risk is (a 5k-note workspace is about 1.3 MB of `view/open`, sent once). The
@@ -2022,8 +2047,9 @@ after its call returns, so it never holds the menu's state.
       is the whiteboard)*
    7. Scenes: `drive` learns drag and scroll, and scripts pin today's graph and whiteboard
       *(done: `drag`, `scroll` and `expect-in`; `graph.drive` and `board.drive`)*. The scene
-      view is extracted from the graph and runs in the menu's loop *(done: `scene_view.rs`,
-      "Scenes, as built")*, and the graph becomes an extension. Then the whiteboard.
+      view is extracted from the graph and runs in the menu's loop, and the graph becomes an
+      extension *(done: `scene_view.rs`, `links/query` and `graph_ext.rs`, "Scenes, as
+      built")*. Then the whiteboard (#92).
 4. Transports (stdio first), JSON-RPC, manifests; an example extension in Python and docs.
    Extension authors test their extension's UI with `cold-lava drive` scripts (snapshot tests).
    *(in progress: the stdio transport, JSON-RPC, manifests in `~/.config/cold-lava/extensions`,

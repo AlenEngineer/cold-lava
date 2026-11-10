@@ -522,6 +522,11 @@ pub enum GraphAction {
     Quit,
 }
 
+/// The id of a graph command: `graph.toggle-tags`.
+pub fn graph_id(a: GraphAction) -> &'static str {
+    GRAPH.iter().find(|c| c.action == a).map_or("", |c| c.id)
+}
+
 /// The graph view's commands, in the order the help screen lists them. Moving the selection
 /// and panning are plain keys, not commands.
 pub const GRAPH: &[Command<GraphAction>] = &[

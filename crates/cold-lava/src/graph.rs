@@ -1,6 +1,7 @@
-//! Builds the link graph from a workspace and runs a force-directed layout on it.
+//! The graph of the workspace's files and links, and the force-directed layout the scene
+//! view runs on it.
 
-use crate::workspace::Workspace;
+use crate::links::{Link, LinkGraph};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -81,111 +82,66 @@ const MAX_SPEED: f64 = 25.0;
 const ALPHA_DECAY: f64 = 0.0228;
 pub const ALPHA_MIN: f64 = 0.002;
 
-pub fn build(v: &Workspace, o: BuildOpts, prev: &HashMap<String, (f64, f64)>) -> Graph {
+/// The graph of `links` (the gateway's `links/query`): a node per file, and per unresolved
+/// link's name and per tag when `o` shows them, in the order they come, with the links between
+/// them once each.
+pub fn build(links: &LinkGraph, o: BuildOpts) -> Graph {
     let mut nodes: Vec<Node> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
-    let mut add = |nodes: &mut Vec<Node>, key: String, label: String, kind, path, rel| -> usize {
+    let mut add = |nodes: &mut Vec<Node>, key: String, label: String, kind| -> usize {
         if let Some(&i) = index.get(&key) {
             return i;
         }
         let i = nodes.len();
-        let at = prev.get(&key).copied().unwrap_or_else(|| start(i));
-        let mut node = Node::new(key.clone(), label, kind, at);
-        (node.path, node.rel) = (path, rel);
-        nodes.push(node);
+        nodes.push(Node::new(key.clone(), label, kind, start(i)));
         index.insert(key, i);
         i
     };
-
-    let resolver = crate::resolver::Resolver::new(v);
-    let note_node: Vec<usize> = v
-        .notes
-        .iter()
-        .map(|n| {
-            let key = format!("n:{}", n.rel.to_lowercase());
-            add(
-                &mut nodes,
-                key,
-                n.name.clone(),
-                Kind::Note,
-                Some(n.path.clone()),
-                Some(n.rel.clone()),
-            )
-        })
-        .collect();
-    for (ni, n) in v.notes.iter().enumerate() {
-        nodes[note_node[ni]].tags = n.tags.clone();
+    let mut file_node: HashMap<&str, usize> = HashMap::new();
+    for f in &links.files {
+        let (key, rel) = match f.path.strip_suffix(".md") {
+            Some(rel) => (format!("n:{}", rel.to_lowercase()), rel),
+            None => (format!("f:{}", f.path.to_lowercase()), f.path.as_str()),
+        };
+        let i = add(&mut nodes, key, f.name.clone(), Kind::Note);
+        nodes[i].path = Some(PathBuf::from(&f.path));
+        nodes[i].rel = Some(rel.to_string());
+        nodes[i].tags = f.tags.clone();
+        file_node.insert(&f.path, i);
     }
-    // Files other owners read are nodes too, with their links (docs/extensions.md, "Owners and
-    // types").
-    let owned_node: Vec<usize> = (v.owned.iter())
-        .map(|f| {
-            let name = f.rel.rsplit('/').next().unwrap_or(&f.rel).to_string();
-            let key = format!("f:{}", f.rel.to_lowercase());
-            let (path, rel) = (Some(f.path.clone()), Some(f.rel.clone()));
-            add(&mut nodes, key, name, Kind::Note, path, rel)
-        })
-        .collect();
+    let mut by_file: HashMap<&str, Vec<&Link>> = HashMap::new();
+    for l in &links.links {
+        by_file.entry(l.from.as_str()).or_default().push(l);
+    }
 
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
     let mut edges = Vec::new();
-    for (ni, n) in v.notes.iter().enumerate() {
-        let from = note_node[ni];
-        let dir = crate::resolver::dir_of(&n.rel);
-        for t in &n.links {
-            let tl = t.to_lowercase();
-            let tl = tl.trim_start_matches("./").trim_start_matches('/');
-            let to = match (resolver.resolve(dir, t), resolver.resolve_owned(dir, t)) {
-                (Some(target), _) => note_node[target],
-                (None, Some(file)) => owned_node[file],
-                (None, None) if o.unresolved => {
+    for f in &links.files {
+        let from = file_node[f.path.as_str()];
+        for l in by_file.get(f.path.as_str()).into_iter().flatten() {
+            let to = match (&l.to, &l.target) {
+                (Some(to), _) => match file_node.get(to.as_str()) {
+                    Some(&to) => to,
+                    None => continue,
+                },
+                (None, Some(t)) if o.unresolved => {
+                    let tl = t.to_lowercase();
+                    let tl = tl.trim_start_matches("./").trim_start_matches('/');
                     let label = t.rsplit('/').next().unwrap_or(t).to_string();
-                    add(
-                        &mut nodes,
-                        format!("u:{tl}"),
-                        label,
-                        Kind::Unresolved,
-                        None,
-                        None,
-                    )
+                    add(&mut nodes, format!("u:{tl}"), label, Kind::Unresolved)
                 }
-                (None, None) => continue,
+                _ => continue,
             };
             if to != from && edge_set.insert((from, to)) {
                 edges.push((from, to));
             }
         }
         if o.tags {
-            for tag in &n.tags {
-                let to = add(
-                    &mut nodes,
-                    format!("t:{tag}"),
-                    format!("#{tag}"),
-                    Kind::Tag,
-                    None,
-                    None,
-                );
+            for tag in &f.tags {
+                let to = add(&mut nodes, format!("t:{tag}"), format!("#{tag}"), Kind::Tag);
                 if edge_set.insert((from, to)) {
                     edges.push((from, to));
                 }
-            }
-        }
-    }
-
-    for (fi, f) in v.owned.iter().enumerate() {
-        let from = owned_node[fi];
-        let dir = crate::resolver::dir_of(&f.rel);
-        for (r, _) in &f.links {
-            let to = match (
-                resolver.resolve(dir, &r.target),
-                resolver.resolve_owned(dir, &r.target),
-            ) {
-                (Some(target), _) => note_node[target],
-                (None, Some(file)) => owned_node[file],
-                (None, None) => continue,
-            };
-            if to != from && edge_set.insert((from, to)) {
-                edges.push((from, to));
             }
         }
     }
@@ -332,7 +288,13 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Note;
+    use crate::index::Index;
+    use crate::workspace::{Note, Workspace};
+
+    /// The graph of `v`, as the gateway would give its links.
+    fn of(v: Workspace, o: BuildOpts) -> Graph {
+        build(&crate::links::graph(&Index::build(v)), o)
+    }
 
     fn note(rel: &str, links: &[&str], tags: &[&str]) -> Note {
         Note {
@@ -377,14 +339,13 @@ mod tests {
             note("B", &["A"], &[]),
             note("deep/C", &[], &[]),
         ]);
-        let g = build(
-            &v,
+        let g = of(
+            v,
             BuildOpts {
                 unresolved: false,
                 tags: false,
                 orphans: true,
             },
-            &HashMap::new(),
         );
         assert_eq!(g.nodes.len(), 3);
         assert_eq!(g.edges.len(), 3); // A→B, A→C, B→A
@@ -415,7 +376,7 @@ mod tests {
             )],
             given: Default::default(),
         });
-        let g = build(&v, ALL, &HashMap::new());
+        let g = of(v, ALL);
         let mut l = labels(&g);
         l.sort();
         assert_eq!(
@@ -429,11 +390,13 @@ mod tests {
 
     #[test]
     fn unresolved_tags_and_orphans() {
-        let v = workspace(vec![
-            note("A", &["Ghost", "A"], &["topic"]),
-            note("Lonely", &[], &[]),
-        ]);
-        let g = build(&v, ALL, &HashMap::new());
+        let v = || {
+            workspace(vec![
+                note("A", &["Ghost", "A"], &["topic"]),
+                note("Lonely", &[], &[]),
+            ])
+        };
+        let g = of(v(), ALL);
         let mut l = labels(&g);
         l.sort();
         assert_eq!(l, ["#topic", "A", "Ghost", "Lonely"]);
@@ -444,7 +407,7 @@ mod tests {
             orphans: false,
             ..ALL
         };
-        assert!(!labels(&build(&v, no_orphans, &HashMap::new())).contains(&"Lonely"));
+        assert!(!labels(&of(v(), no_orphans)).contains(&"Lonely"));
     }
 
     #[test]
@@ -454,7 +417,7 @@ mod tests {
             note("Dup", &[], &[]),
             note("A", &["Dup"], &[]),
         ]);
-        let g = build(&v, ALL, &HashMap::new());
+        let g = of(v, ALL);
         let a = g.find("n:a").unwrap();
         let target = g.edges.iter().find(|e| e.0 == a).unwrap().1;
         assert_eq!(g.nodes[target].rel.as_deref(), Some("Dup"));
@@ -489,7 +452,8 @@ mod tests {
             std::fs::write(dir.join(rel), text).unwrap();
         }
         let ix = Index::build(crate::workspace::scan(&dir).unwrap());
-        let g = build(&ix.workspace, ALL, &HashMap::new());
+        let links = crate::links::graph(&ix);
+        let g = build(&links, ALL);
         let node = |rel: &str| g.find(&format!("n:{}", rel.to_lowercase())).unwrap();
         for (rel, _, to) in linking {
             let (from, target) = (
@@ -540,16 +504,12 @@ mod tests {
                 .map(|i| note(&format!("N{i}"), &[&format!("N{}", (i + 1) % 20)], &[]))
                 .collect(),
         );
-        let mut g = build(&v, ALL, &HashMap::new());
+        let mut g = of(v, ALL);
         let active = vec![true; g.nodes.len()];
         for _ in 0..400 {
             g.step(&active);
         }
         assert!(g.settled());
         assert!(g.nodes.iter().all(|n| n.x.is_finite() && n.y.is_finite()));
-        // Rebuilding with previous positions keeps nodes where they were.
-        let prev = g.positions();
-        let g2 = build(&v, ALL, &prev);
-        assert_eq!((g2.nodes[3].x, g2.nodes[3].y), prev[&g2.nodes[3].key]);
     }
 }

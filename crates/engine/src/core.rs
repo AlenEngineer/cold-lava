@@ -381,6 +381,29 @@ impl Core {
     fn broadcast(&mut self, events: &[Event]) {
         self.subscribers
             .retain(|s| events.iter().all(|e| s.send(e.clone()).is_ok()));
+        self.links_news(events);
+    }
+
+    /// `links/changed` for the link graph's followers, when `events` may have changed it.
+    fn links_news(&mut self, events: &[Event]) {
+        let (mut created, mut removed) = (Vec::new(), Vec::new());
+        let mut any = false;
+        for e in events {
+            match e {
+                Event::NoteCreated(r) => created.push(format!("{r}.md")),
+                Event::NoteRemoved(r) => removed.push(format!("{r}.md")),
+                Event::NoteChanged(_)
+                | Event::OwnedChanged(_)
+                | Event::Rescanned
+                | Event::GraphSettingsChanged => {}
+                _ => continue,
+            }
+            any = true;
+        }
+        if any {
+            let news = self.items.links_changed(&created, &removed);
+            self.news.extend(news);
+        }
     }
 
     /// `items/query`
@@ -403,8 +426,19 @@ impl Core {
         self.items.remove(owner, sub)
     }
 
-    /// `items/changed` and `items/reset` since the last call, each with its subscription's
-    /// owner, in order.
+    /// `links/query`
+    pub fn query_links(&self) -> crate::links::LinkGraph {
+        crate::links::graph(&self.index)
+    }
+
+    /// `links/subscribe` for the extension named `owner`: `take_item_news` has `links/changed`
+    /// for it whenever files were read again.
+    pub fn subscribe_links(&mut self, owner: &str) -> SubId {
+        self.items.add_links(owner)
+    }
+
+    /// `items/changed`, `items/reset` and `links/changed` since the last call, each with its
+    /// subscription's owner, in order.
     pub fn take_item_news(&mut self) -> Vec<(String, News)> {
         std::mem::take(&mut self.news)
     }

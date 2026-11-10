@@ -2,7 +2,7 @@
 //! selected note on the right, in the reader or in the editor extension's pane (a real,
 //! embedded Neovim when it's installed).
 
-use crate::app::{ACCENT, ACCENT_SOFT, DIM, GraphScreen, HIT, MUTED, NOTE, Render, Then};
+use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
 use crate::bookmarks::{self, Entry as Bookmark, Target};
 use crate::commands::{
     self, Entry, HistoryAction, Key, KeyHint, Keymap, MenuAction, MenuCommand, PaneAction,
@@ -12,8 +12,8 @@ use crate::core::{Core, Event as CoreEvent, Jump};
 use crate::embed::Embedded;
 use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
-    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, FileNews, FilePreview, Host,
-    Manifest, PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
+    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, FileNews, FilePreview, GRAPH,
+    Host, Manifest, PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
@@ -27,12 +27,11 @@ use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
 use crate::resolver::dir_of;
-use crate::scene_view;
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Trashed, Went};
 use crate::type_table;
 use crate::views::{self, Views};
-use crate::{agenda, board, files, items, templates, term, whichkey, workspace};
+use crate::{agenda, board, files, graph_ext, items, templates, term, whichkey, workspace};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -454,8 +453,6 @@ enum Mode {
     Tidy(Box<TidyView>),
     /// `recipe.run`: picking a recipe, filling its options, or looking at its plan.
     Recipe(Box<RecipeView>),
-    /// The graph view, `Home::graph`, over the whole screen.
-    Graph,
     /// A view an extension opened, kept in `Home::views`. `backlinks`: keys go to the backlinks
     /// pane under it, the backlinks of the file it shows, instead of to the view.
     View {
@@ -561,7 +558,6 @@ enum SearchRow {
 }
 
 pub struct Home {
-    render: Render,
     workspaces: Vec<WorkspaceEntry>,
     vsel: usize,
     // The open workspace
@@ -603,10 +599,8 @@ pub struct Home {
     statuses: Vec<(ExtId, String)>,
     /// The views extensions opened and haven't closed, shown or not.
     views: Views,
-    /// The workspace's graph, once opened: kept while the workspace is, shown or not.
-    graph: Option<GraphScreen>,
-    /// The graph showed in the last frame (its pixels go when it stops showing).
-    graph_shown: bool,
+    /// The scene view in front in the last frame (its pixels go when it stops being there).
+    scene_shown: Option<(ExtId, ViewId)>,
     /// Opened as `cold-lava graph`: leaving the graph quits.
     graph_alone: bool,
     /// What owners answered to `file/preview`, for the embeds the reader draws.
@@ -666,7 +660,6 @@ impl Home {
         }
         let workspaces = discover(&extra);
         let mut h = Home {
-            render,
             workspaces,
             vsel: 0,
             root: None,
@@ -701,8 +694,7 @@ impl Home {
                 Render::Pixels => true,
             }),
             previews: Previews::default(),
-            graph: None,
-            graph_shown: false,
+            scene_shown: None,
             graph_alone: false,
             picture: None,
             picture_wanted: None,
@@ -817,12 +809,12 @@ impl Home {
                 self.bsel = 0;
                 self.refresh_backlinks();
             }
-            let graph_wait = self.tick_graph();
+            let scene_wait = self.tick_scene();
             self.picture_wanted = None;
             terminal.draw(|f| self.draw(f))?;
             self.place_picture()?;
-            if let Some(g) = self.graph.as_mut().filter(|_| self.graph_shown) {
-                term::write_raw(&g.view.take_image());
+            if let Some(s) = self.front_scene_mut() {
+                term::write_raw(&s.take_image());
             }
             let ms = if self.pane.is_some() || self.pending.is_some() {
                 15
@@ -831,7 +823,7 @@ impl Home {
             } else {
                 250
             };
-            let wait = graph_wait.map_or(Duration::from_millis(ms), |w| {
+            let wait = scene_wait.map_or(Duration::from_millis(ms), |w| {
                 w.min(Duration::from_millis(ms))
             });
             if event::poll(wait)? {
@@ -841,11 +833,7 @@ impl Home {
                             self.on_key(k, terminal)?
                         }
                         Event::Mouse(m) => self.on_mouse(m),
-                        Event::Resize(..) => {
-                            if let Some(g) = self.graph.as_mut() {
-                                g.view.resized();
-                            }
-                        }
+                        Event::Resize(..) => self.views.resized(),
                         _ => {}
                     }
                     if self.quit || !event::poll(Duration::ZERO)? {
@@ -855,34 +843,47 @@ impl Home {
             }
         }
         self.hide_picture()?;
-        self.hide_graph();
+        self.hide_scene();
         self.save_editor();
         self.registry.shutdown();
         Ok(())
     }
 
-    /// The graph's frame, when it is in front: where Back leads, a step of its layout. How long
-    /// it may wait for input. Its pixels go when it stops being in front.
-    fn tick_graph(&mut self) -> Option<Duration> {
-        let shown = matches!(self.mode, Mode::Graph);
-        if self.graph_shown && !shown {
-            self.hide_graph();
+    /// The scene view in front's frame, when one is: where Back leads, a step of its layout.
+    /// How long it may wait for input. A scene's pixels go when it stops being in front.
+    fn tick_scene(&mut self) -> Option<Duration> {
+        let front = self.front_scene();
+        if self.scene_shown.is_some() && self.scene_shown != front {
+            self.hide_scene();
         }
-        self.graph_shown = shown;
-        let (Some(g), Some(core)) = (self.graph.as_mut(), self.core.as_ref()) else {
-            return None;
-        };
-        if !shown {
-            return None;
-        }
-        g.view.navigate(Nav::of(&self.history));
-        Some(g.tick(core))
+        self.scene_shown = front;
+        let nav = Nav::of(&self.history);
+        let s = self.front_scene_mut()?;
+        s.navigate(nav);
+        Some(s.tick())
     }
 
-    /// Remove the graph's pixels, before something else takes the terminal.
-    fn hide_graph(&mut self) {
-        if let Some(g) = self.graph.as_mut() {
-            term::write_raw(&g.view.hide());
+    /// The view in front, when it is a scene: drawn over the whole screen.
+    fn front_scene(&self) -> Option<(ExtId, ViewId)> {
+        let Mode::View { owner, view, .. } = self.mode else {
+            return None;
+        };
+        self.views.get(owner, view)?.scene()?;
+        Some((owner, view))
+    }
+
+    fn front_scene_mut(&mut self) -> Option<&mut crate::scene_view::SceneView> {
+        let (owner, view) = self.front_scene()?;
+        self.views.get_mut(owner, view)?.scene_mut()
+    }
+
+    /// Remove the pixels of the scene that showed last, before something else takes the
+    /// terminal.
+    fn hide_scene(&mut self) {
+        let shown = self.scene_shown;
+        let scene = shown.and_then(|(o, v)| self.views.get_mut(o, v)?.scene_mut());
+        if let Some(s) = scene {
+            term::write_raw(&s.hide());
         }
     }
 
@@ -1076,11 +1077,22 @@ impl Home {
         if let Some(here) = self.here() {
             self.history.visit(here);
         }
-        if self.focus == Focus::Pane {
+        self.front_view(ext, view);
+    }
+
+    /// The view in front, in place of what showed. A list or a table takes the keys from the
+    /// pane; a scene covers the whole screen and leaves the focus where it was, for when it is
+    /// left.
+    fn front_view(&mut self, owner: ExtId, view: ViewId) {
+        let scene = self
+            .views
+            .get(owner, view)
+            .is_some_and(|v| v.scene().is_some());
+        if self.focus == Focus::Pane && !scene {
             self.focus = Focus::Notes;
         }
         self.mode = Mode::View {
-            owner: ext,
+            owner,
             view,
             backlinks: false,
         };
@@ -1172,7 +1184,9 @@ impl Home {
     }
 
     /// A command an extension asked to run, found in the menu's table like a key's. Only
-    /// `note.follow-link`, which needs its `args`, isn't in it; `search.open` takes a `query`.
+    /// `note.follow-link`, which needs its `args`, isn't in it; `search.open` takes a `query`,
+    /// and `note.edit` and `note.open-in-obsidian` a `note` (workspace-relative) instead of the
+    /// selected one: the graph's Enter and `o`.
     fn run_command(
         &mut self,
         from: ExtId,
@@ -1189,6 +1203,10 @@ impl Home {
         struct Search {
             query: String,
         }
+        #[derive(Deserialize)]
+        struct Note {
+            note: String,
+        }
         let found = self.registry.commands().iter().find(|c| c.id == id);
         let done = match found.map(|c| c.action) {
             _ if id == "note.follow-link" => serde_json::from_value(args)
@@ -1201,6 +1219,18 @@ impl Home {
                     .map(|Search { query }| self.search_for(query))
                     .map_err(|e| e.to_string())
             }
+            Some(MenuCommand::Core(
+                a @ (MenuAction::EditFullscreen | MenuAction::OpenInObsidian),
+            )) if !args.is_null() => match serde_json::from_value(args) {
+                Ok(Note { note }) if a == MenuAction::EditFullscreen => {
+                    self.edit_note_fullscreen(&note, terminal)
+                }
+                Ok(Note { note }) => {
+                    self.open_note_in_obsidian(&note);
+                    Ok(())
+                }
+                Err(e) => Err(e.to_string()),
+            },
             Some(c) => return self.run_menu_command(c, args, terminal),
         };
         if let Err(e) = done {
@@ -1247,7 +1277,6 @@ impl Home {
         self.nsel = 0;
         self.nscroll = 0;
         self.core = None; // a different workspace: start a fresh core
-        self.graph = None;
         self.history.clear();
         self.reload_tree();
         // Start with top-level folders open if the workspace is small enough to take in at once.
@@ -1430,10 +1459,6 @@ impl Home {
             let label = self.registry.manifest(owner).name.clone();
             return Some(Place::View { owner, view, label });
         }
-        if let (Mode::Graph, Some(g)) = (&self.mode, &self.graph) {
-            let selected = g.view.selected().map(|n| n.id.clone());
-            return Some(Place::Graph { selected });
-        }
         Some(Place::Note {
             path: self.shown.clone()?,
             spot: self.reader.as_ref().map(Reader::spot),
@@ -1485,24 +1510,13 @@ impl Home {
                     }
                     None
                 }
-                Place::Graph { selected } => {
-                    self.show_graph(selected)?;
-                    None
-                }
                 Place::Board { path } => {
                     self.mode = Mode::Normal;
                     self.run_board(terminal, path)?
                 }
                 Place::View { owner, view, .. } => {
                     if self.views.has(owner, view) {
-                        if self.focus == Focus::Pane {
-                            self.focus = Focus::Notes;
-                        }
-                        self.mode = Mode::View {
-                            owner,
-                            view,
-                            backlinks: false,
-                        };
+                        self.front_view(owner, view);
                     }
                     None
                 }
@@ -1705,9 +1719,6 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
-        if let Some(g) = self.graph.as_mut() {
-            g.follow(events, &root);
-        }
         let tree_changed = events.iter().any(|e| match e {
             CoreEvent::FileChanged(rel) => self.registry.owner_of(rel).is_some(),
             CoreEvent::NoteChanged(_)
@@ -2018,8 +2029,8 @@ impl Home {
 
     fn flash(&mut self, s: impl Into<String>) {
         let s = s.into();
-        if let (Mode::Graph, Some(g)) = (&self.mode, self.graph.as_mut()) {
-            g.view.flash(s.clone());
+        if let Some(scene) = self.front_scene_mut() {
+            scene.flash(s.clone());
         }
         self.msg = Some((s, Instant::now()));
     }
@@ -2027,8 +2038,8 @@ impl Home {
     // ---------- input ----------
 
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
-        if matches!(self.mode, Mode::Graph) {
-            return self.graph_key(k, terminal);
+        if let Some((owner, view)) = self.front_scene() {
+            return self.scene_key(owner, view, k, terminal);
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Keys go straight to the pane's program, except pane.leave (back to the menu).
@@ -2256,7 +2267,6 @@ impl Home {
             | Mode::Tidy(_)
             | Mode::Recipe(_)
             | Mode::View { .. }
-            | Mode::Graph
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
         }
@@ -2738,7 +2748,7 @@ impl Home {
             MenuAction::Mark => self.toggle_mark(),
             MenuAction::Tag => self.start_tag(),
             MenuAction::Zoom => self.zoom = !self.zoom,
-            MenuAction::Graph => self.go_from_here(Place::Graph { selected: None }, terminal)?,
+            MenuAction::Graph => self.hand_to(GRAPH, graph_ext::OPEN),
             MenuAction::Boards => self.open_boards(terminal, None)?,
             MenuAction::History(a) => self.travel(a, terminal)?,
             MenuAction::NewNote => {
@@ -3322,7 +3332,7 @@ impl Home {
                 }
                 self.search_for(query);
             }
-            Target::Graph => self.go_to = Some(Place::Graph { selected: None }),
+            Target::Graph => self.hand_to(GRAPH, graph_ext::OPEN),
             Target::Url(url) => {
                 if !term::open_url(&url) {
                     self.flash(format!("couldn't open {url}"));
@@ -4816,6 +4826,8 @@ impl Home {
                 let news = ViewNews::Event(Happened { view, event });
                 self.call(owner, |e, host| e.view(news, host));
             }
+            // Only a scene's keys lead out of it, and scenes have `scene_key`.
+            views::Action::Leave | views::Action::History(_) | views::Action::Boards => {}
         }
         Ok(())
     }
@@ -5387,8 +5399,8 @@ impl Home {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
-        if let (Mode::Graph, Some(g)) = (&self.mode, self.graph.as_mut()) {
-            return g.view.mouse(m);
+        if let Some(scene) = self.front_scene_mut() {
+            return scene.mouse(m);
         }
         if let Mode::Peek { view, .. } = &mut self.mode {
             match (m.kind, &mut *view) {
@@ -5482,72 +5494,51 @@ impl Home {
 
     // ---------- actions ----------
 
-    /// The graph in front, with `selected` selected (the node's id), made the first time.
-    fn show_graph(&mut self, selected: Option<String>) -> Result<()> {
-        if (self.core.as_ref()).is_none_or(|c| c.index.workspace.notes.is_empty()) {
-            self.flash("this workspace has no notes yet");
-            return Ok(());
-        }
-        self.hide_picture()?;
-        let Some(core) = self.core.as_ref() else {
-            return Ok(());
-        };
-        let render = self.render;
-        let g = self
-            .graph
-            .get_or_insert_with(|| GraphScreen::new(core, render));
-        g.view.select_id(selected.as_deref());
-        self.mode = Mode::Graph;
-        Ok(())
+    /// `cold-lava graph`: the graph in front, and leaving it quits.
+    pub fn open_graph_alone(&mut self) {
+        self.graph_alone = true;
+        self.hand_to(GRAPH, graph_ext::OPEN);
     }
 
-    /// A key in the graph: the view's own, else what its command means here.
-    fn graph_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Some(g) = self.graph.as_mut() else {
-            self.mode = Mode::Normal;
+    /// A key in a scene view: its own, else what its command means. What the user did with a
+    /// node goes to the extension as `view/event`.
+    fn scene_key(
+        &mut self,
+        owner: ExtId,
+        view: ViewId,
+        k: KeyEvent,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        let Some(open) = self.views.get_mut(owner, view) else {
             return Ok(());
         };
-        match g.view.key(k) {
-            scene_view::Action::Stay => {}
-            scene_view::Action::Leave if self.graph_alone => self.quit = true,
-            scene_view::Action::Leave => {
+        match open.key(k) {
+            views::Action::Stay | views::Action::Close => {}
+            views::Action::Say(s) => self.flash(s),
+            views::Action::Send(event) => {
+                let news = ViewNews::Event(Happened { view, event });
+                self.call(owner, |e, host| e.view(news, host));
+            }
+            views::Action::Leave if self.graph_alone => self.quit = true,
+            views::Action::Leave => {
                 if let Some(here) = self.here() {
                     self.history.visit(here);
                 }
                 self.mode = Mode::Normal;
             }
-            scene_view::Action::History(h) => self.travel(h, terminal)?,
-            scene_view::Action::Command(a) => {
-                let Some(core) = self.core.as_mut() else {
+            views::Action::History(h) => self.travel(h, terminal)?,
+            views::Action::Boards => {
+                self.hide_scene();
+                let Some(root) = self.root.clone() else {
                     return Ok(());
                 };
-                match g.command(a, core)? {
-                    Then::Nothing => {}
-                    Then::Edit(path) => {
-                        term::write_raw(&g.view.hide());
-                        match term::edit_file(terminal, &path, core.root())? {
-                            None => core.note_changed(&path), // its links may have changed
-                            Some(err) => g.view.flash(err),
-                        }
-                    }
-                    Then::Boards => {
-                        term::write_raw(&g.view.hide());
-                        let root = core.root().to_path_buf();
-                        match board::pick_board(terminal, &root)? {
-                            Some(path) => self.go_from_here(Place::Board { path }, terminal)?,
-                            None => terminal.clear()?,
-                        }
-                    }
+                match board::pick_board(terminal, &root)? {
+                    Some(path) => self.go_from_here(Place::Board { path }, terminal)?,
+                    None => terminal.clear()?,
                 }
             }
         }
         Ok(())
-    }
-
-    /// `cold-lava graph`: the graph in front, and leaving it quits.
-    pub fn open_graph_alone(&mut self) -> Result<()> {
-        self.graph_alone = true;
-        self.show_graph(None)
     }
 
     /// A board, the picked one when `file` is `None`.
@@ -5598,6 +5589,46 @@ impl Home {
             }
         }
         Ok(())
+    }
+
+    /// `note.edit` of a note an extension names: in `$EDITOR`, full screen. One that isn't
+    /// there yet is made first, as following a link to it in Obsidian does.
+    fn edit_note_fullscreen(
+        &mut self,
+        note: &str,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<(), String> {
+        let root = self.root.clone().ok_or("no workspace is open")?;
+        let path = files::resolve(&root, note).map_err(|e| e.message)?;
+        if path.extension().is_none_or(|x| x != "md") {
+            return Err(format!("{note} isn't a note"));
+        }
+        self.hide_scene();
+        let _ = self.hide_picture();
+        let edited = crate::write::create_if_missing(&path, b"")
+            .map_err(|e| e.to_string())
+            .and_then(|_| term::edit_file(terminal, &path, &root).map_err(|e| e.to_string()))?;
+        if let Some(err) = edited {
+            self.flash(err);
+        }
+        if let Some(core) = self.core.as_mut() {
+            core.note_changed(&path); // its links may have changed
+        }
+        Ok(())
+    }
+
+    /// `note.open-in-obsidian` of a note an extension names.
+    fn open_note_in_obsidian(&mut self, note: &str) {
+        let Some(v) = self.workspaces.get(self.vsel) else {
+            return;
+        };
+        let rel = note.strip_suffix(".md").unwrap_or(note);
+        let ok = term::open_in_obsidian(&v.name, rel);
+        self.flash(if ok {
+            "opened in Obsidian"
+        } else {
+            "couldn't launch Obsidian"
+        });
     }
 
     fn open_in_obsidian(&mut self) {
@@ -5772,9 +5803,9 @@ impl Home {
     }
 
     fn draw(&mut self, f: &mut Frame) {
-        if let (Mode::Graph, Some(g)) = (&self.mode, self.graph.as_mut()) {
-            let statuses: Vec<String> = self.statuses.iter().map(|(_, t)| t.clone()).collect();
-            return g.view.draw(f, f.area(), &statuses);
+        let statuses: Vec<String> = self.statuses.iter().map(|(_, t)| t.clone()).collect();
+        if let Some(scene) = self.front_scene_mut() {
+            return scene.draw(f, f.area(), &statuses);
         }
         let [main, status] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(2)]).areas(f.area());

@@ -11,14 +11,15 @@ use crate::{list, table};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ViewId(pub u32);
 
-/// What a view shows: `{"kind": "list", ...}` with a `list::List`, or `{"kind": "table", ...}`
-/// with a `table::Table`.
+/// What a view shows: `{"kind": "list", ...}` with a `list::List`, `{"kind": "table", ...}`
+/// with a `table::Table`, an image, or `{"kind": "scene", ...}` with a `scene_view::Scene`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Content {
     List(list::List),
     Table(table::Table),
     Image(crate::image::Image),
+    Scene(crate::scene_view::Scene),
 }
 
 /// The most rows (a list's groups count too) and columns one view may have, and the most keys
@@ -26,6 +27,11 @@ pub enum Content {
 pub const MAX_ROWS: usize = 50_000;
 pub const MAX_COLUMNS: usize = 64;
 pub const MAX_KEYS: usize = 32;
+/// A scene's nodes count as rows; it may have this many links per row allowed, colour groups
+/// and flags.
+pub const MAX_EDGES_PER_ROW: usize = 4;
+pub const MAX_GROUPS: usize = 64;
+pub const MAX_FLAGS: usize = 8;
 
 impl Content {
     /// Refused (with why) when it is over the limits.
@@ -48,6 +54,19 @@ impl Content {
                 t.rows.len()
             }
             Content::Image(i) => return i.check(),
+            Content::Scene(s) => {
+                if s.edges.len() > MAX_EDGES_PER_ROW * MAX_ROWS {
+                    let most = MAX_EDGES_PER_ROW * MAX_ROWS;
+                    return Err(format!("a scene has at most {most} edges"));
+                }
+                if s.groups.len() > MAX_GROUPS || s.flags.len() > MAX_FLAGS {
+                    let why = format!(
+                        "a scene has at most {MAX_GROUPS} colour groups and {MAX_FLAGS} flags"
+                    );
+                    return Err(why);
+                }
+                s.nodes.len()
+            }
         };
         match rows > MAX_ROWS {
             true => Err(format!(
@@ -67,6 +86,7 @@ impl Content {
             }
             Content::Table(t) => t.rows.len(),
             Content::Image(_) => 0,
+            Content::Scene(s) => s.nodes.len(),
         };
         match rows > super::PREVIEW_ROWS {
             true => Err(format!(
@@ -293,5 +313,65 @@ mod tests {
             filter: Default::default(),
         };
         assert!(Content::Table(wide).check().is_err());
+    }
+
+    #[test]
+    fn a_scene_is_its_nodes_edges_and_groups_and_is_bounded() {
+        use crate::scene_view::{Edge, Group, Look, Node, Scene};
+        let node = |id: &str, look| Node {
+            id: id.into(),
+            label: id.rsplit([':', '/']).next().unwrap().into(),
+            look,
+            group: None,
+            file: None,
+            detail: None,
+        };
+        let mut lava = node("n:concepts/lava", Look::Note);
+        lava.group = Some(0);
+        lava.file = Some("Concepts/Lava.md".into());
+        lava.detail = Some("Concepts/Lava".into());
+        let scene = Scene {
+            title: "example-workspace".into(),
+            nodes: vec![
+                lava,
+                node("u:pele", Look::Ghost),
+                node("t:volcano", Look::Tag),
+            ],
+            edges: vec![Edge {
+                from: "n:concepts/lava".into(),
+                to: "u:pele".into(),
+            }],
+            groups: vec![Group {
+                label: "path:Concepts".into(),
+                color: "#fad65a".into(),
+            }],
+            flags: vec!["obsidian groups".into()],
+        };
+        wire(
+            Content::Scene(scene.clone()),
+            json!({
+                "kind": "scene",
+                "title": "example-workspace",
+                "nodes": [
+                    {"id": "n:concepts/lava", "label": "lava", "group": 0,
+                     "file": "Concepts/Lava.md", "detail": "Concepts/Lava"},
+                    {"id": "u:pele", "label": "pele", "look": "ghost"},
+                    {"id": "t:volcano", "label": "volcano", "look": "tag"},
+                ],
+                "edges": [{"from": "n:concepts/lava", "to": "u:pele"}],
+                "groups": [{"label": "path:Concepts", "color": "#fad65a"}],
+                "flags": ["obsidian groups"],
+            }),
+        );
+        assert_eq!(Content::Scene(scene.clone()).check(), Ok(()));
+        let mut big = scene.clone();
+        big.nodes = vec![node("x", Look::Note); MAX_ROWS + 1];
+        assert!(Content::Scene(big).check().is_err());
+        let mut links = scene.clone();
+        links.edges = vec![links.edges[0].clone(); MAX_EDGES_PER_ROW * MAX_ROWS + 1];
+        assert!(Content::Scene(links).check().is_err());
+        let mut groups = scene;
+        groups.groups = vec![groups.groups[0].clone(); MAX_GROUPS + 1];
+        assert!(Content::Scene(groups).check().is_err());
     }
 }

@@ -1,17 +1,21 @@
 //! The views extensions opened through the view gateway (`ext::view`), as the menu keeps them.
-//! Each is drawn by the list or table view and keeps its selection, folds, sort and filter
-//! while it is out of sight, so Back returns to it as it was. Updates wait for the frame and
-//! only the last one is drawn; an extension has at most `PER_EXTENSION` views open.
+//! Each is drawn by the list, table, picture or scene view and keeps its selection, folds, sort
+//! and filter (a scene its layout and camera) while it is out of sight, so Back returns to it
+//! as it was. Updates wait for the frame and only the last one is drawn; an extension has at
+//! most `PER_EXTENSION` views open.
 
 use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::Line;
 
+use crate::app::Render;
+use crate::commands::{self, GraphAction, HistoryAction};
 use crate::ext::ExtId;
 use crate::ext::view::{Content, Event, ViewId};
 use crate::image::Picture;
 use crate::list::{self, Filter, ListView};
+use crate::scene_view::{self, SceneView};
 use crate::table::{self, TableView};
 
 /// Opening one more closes the extension's oldest.
@@ -49,6 +53,7 @@ enum Drawn {
     List(ListView),
     Table(TableView),
     Picture(PictureView),
+    Scene(Box<SceneView>),
 }
 
 /// Where views find what they draw.
@@ -65,6 +70,11 @@ pub enum Action {
     Close,
     Say(String),
     Send(Event),
+    /// Go to the menu, the view kept open for Back to return to (a scene's `q`).
+    Leave,
+    History(HistoryAction),
+    /// Pick a whiteboard to open (a scene's `w`).
+    Boards,
 }
 
 impl Drawn {
@@ -77,6 +87,14 @@ impl Drawn {
                 title: i.title,
                 pixels: cx.pixels,
             }),
+            Content::Scene(s) => {
+                let render = if cx.pixels {
+                    Render::Pixels
+                } else {
+                    Render::Braille
+                };
+                Drawn::Scene(Box::new(SceneView::new(s, render)))
+            }
         }
     }
 
@@ -84,6 +102,7 @@ impl Drawn {
         match (&mut *self, content) {
             (Drawn::List(v), Content::List(l)) => v.update(l),
             (Drawn::Table(v), Content::Table(t)) => v.update(t),
+            (Drawn::Scene(v), Content::Scene(s)) => v.update(s),
             (_, other) => *self = Drawn::new(other, cx),
         }
         self.select(select);
@@ -93,6 +112,7 @@ impl Drawn {
         match (self, select) {
             (Drawn::List(v), Some(id)) => v.select(&id),
             (Drawn::Table(v), Some(id)) => v.select(&id),
+            (Drawn::Scene(v), Some(id)) => v.select_id(Some(&id)),
             _ => {}
         }
     }
@@ -115,6 +135,7 @@ pub fn preview(
         Drawn::List(v) => v.lines(width, height),
         Drawn::Table(mut v) => v.lines(width, height),
         Drawn::Picture(v) => return v.picture.lines(width, height, false),
+        Drawn::Scene(_) => return Vec::new(),
     };
     for line in &mut lines {
         line.style.bg = None;
@@ -211,15 +232,28 @@ impl Views {
         }
     }
 
-    /// Before drawing: each view takes its last update.
+    /// Before drawing: each view takes its last update, except a scene while a node is
+    /// dragged, which shouldn't change under the mouse.
     pub fn settle(&mut self) {
         let cx = Context {
             root: self.root.as_deref(),
             pixels: self.pixels,
         };
         for v in &mut self.open {
+            if v.scene().is_some_and(|s| s.dragging()) {
+                continue;
+            }
             if let Some((content, select)) = v.pending.take() {
                 v.drawn.update(content, select, cx);
+            }
+        }
+    }
+
+    /// Every scene view: the terminal changed size.
+    pub fn resized(&mut self) {
+        for v in &mut self.open {
+            if let Some(s) = v.scene_mut() {
+                s.resized();
             }
         }
     }
@@ -231,6 +265,22 @@ impl Open {
             Drawn::List(v) => v.title(),
             Drawn::Table(v) => v.title(),
             Drawn::Picture(v) => &v.title,
+            Drawn::Scene(v) => v.title(),
+        }
+    }
+
+    /// The scene it shows, when it shows one: drawn over the whole screen, ticked once a frame.
+    pub fn scene(&self) -> Option<&SceneView> {
+        match &self.drawn {
+            Drawn::Scene(v) => Some(&**v),
+            _ => None,
+        }
+    }
+
+    pub fn scene_mut(&mut self) -> Option<&mut SceneView> {
+        match &mut self.drawn {
+            Drawn::Scene(v) => Some(&mut **v),
+            _ => None,
         }
     }
 
@@ -248,7 +298,7 @@ impl Open {
         match &self.drawn {
             Drawn::List(v) => v.typing() || v.filters().takes(k),
             Drawn::Table(v) => v.typing() || v.filters().takes(k),
-            Drawn::Picture(_) => false,
+            Drawn::Picture(_) | Drawn::Scene(_) => false,
         }
     }
 
@@ -268,6 +318,27 @@ impl Open {
             Drawn::Picture(_) => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') => Action::Close,
                 _ => Action::Stay,
+            },
+            Drawn::Scene(v) => match v.key(k) {
+                scene_view::Action::Stay => Action::Stay,
+                scene_view::Action::Leave => Action::Leave,
+                scene_view::Action::History(h) => Action::History(h),
+                scene_view::Action::Command(GraphAction::Boards) => Action::Boards,
+                scene_view::Action::Command(a) => {
+                    let row = v.selected().map(|n| n.id.clone());
+                    match (a, row) {
+                        (GraphAction::OpenNote, Some(row)) => {
+                            Action::Send(Event::Activated { row })
+                        }
+                        (GraphAction::OpenNote, None) => {
+                            Action::Say("select a note first (arrows, Tab, / or click)".into())
+                        }
+                        (a, row) => Action::Send(Event::Command {
+                            command: commands::graph_id(a).to_string(),
+                            row,
+                        }),
+                    }
+                }
             },
         }
     }
@@ -291,6 +362,7 @@ impl Open {
                 " ←→↑↓ move · s/S sort · / filter · e edit · ⏎ open · Esc close ".into()
             }
             Drawn::Picture(_) => " Esc close ".into(),
+            Drawn::Scene(_) => String::new(),
         }
     }
 
@@ -299,6 +371,7 @@ impl Open {
             Drawn::List(v) => v.lines(width, height),
             Drawn::Table(v) => v.lines(width, height),
             Drawn::Picture(v) => v.picture.lines(width, height, v.pixels),
+            Drawn::Scene(_) => Vec::new(),
         }
     }
 
@@ -306,7 +379,7 @@ impl Open {
         match &self.drawn {
             Drawn::List(v) => v.status(),
             Drawn::Table(v) => v.status(),
-            Drawn::Picture(_) => Line::default(),
+            Drawn::Picture(_) | Drawn::Scene(_) => Line::default(),
         }
     }
 
@@ -316,6 +389,7 @@ impl Open {
             Drawn::List(v) => v.selected().map(|r| r.id.clone()),
             Drawn::Table(v) => v.selected().map(|r| r.id.clone()),
             Drawn::Picture(_) => None,
+            Drawn::Scene(v) => v.selected().map(|n| n.id.clone()),
         }
     }
 }

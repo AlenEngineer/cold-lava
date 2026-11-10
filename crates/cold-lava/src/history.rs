@@ -20,10 +20,6 @@ pub enum Place {
         query: String,
         sel: usize,
     },
-    /// The graph view and the key of its selected node.
-    Graph {
-        selected: Option<String>,
-    },
     Board {
         path: PathBuf,
     },
@@ -47,7 +43,6 @@ impl Place {
         match self {
             Place::Note { path, .. } | Place::Board { path } => stem(path),
             Place::Search { query, .. } => format!("search “{query}”"),
-            Place::Graph { .. } => "graph".to_string(),
             Place::View { label, .. } => label.clone(),
         }
     }

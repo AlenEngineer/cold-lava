@@ -62,7 +62,7 @@ keys = ["R"]                     # optional default keys; config.toml can change
 
 | Field | Meaning |
 | --- | --- |
-| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe` and `types/list`; `items.edit` for `items/edit`; `files.read` and `files.write` to read and write files of kinds it doesn't own. A request without its permission is refused as `forbidden`. |
+| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` and `links/query`, `links/subscribe`, `links/unsubscribe`; `items.edit` for `items/edit`; `files.read` and `files.write` to read and write files of kinds it doesn't own. A request without its permission is refused as `forbidden`. |
 | `[[file-types]]` | Kinds of file it opens: `extension`, `title`, and `new`, one of its commands that makes one ([Owning a kind of file](#owning-a-kind-of-file)). |
 | `transport` | How cold-lava talks to it. Only `stdio` exists, and it is the default. |
 | `api` | The protocol version it was written for. Only `1` exists, and it is the default. |
@@ -130,8 +130,12 @@ is one of `changed`, `refused`, `read-back`, `io`, `forbidden`, `no-workspace` o
 
 An extension shows something bigger than a status line by sending a **view**: a list (groups of
 rows, each with text, an optional checkbox and a right side), a table (typed columns, rows of
-cells) or an image (`{"kind": "image", "title": …, "path": "…png"}`, or `"png"` with base64
-bytes; pixels in Kitty-graphics terminals, else half blocks), as JSON. cold-lava draws it over
+cells), an image (`{"kind": "image", "title": …, "path": "…png"}`, or `"png"` with base64
+bytes; pixels in Kitty-graphics terminals, else half blocks) or a scene (`{"kind": "scene",
+"title": …, "nodes": [{"id", "label"}], "edges": [{"from", "to"}]}`: nodes and links that
+cold-lava lays out and draws like the graph, with the graph's keys; Enter is `activated` with
+the node's id, and the graph's other commands come as `command`), as JSON. `links/query`
+gives every file and where its links lead, to make one of. cold-lava draws it over
 the main area and owns everything you do in it: moving,
 folding, filtering, sorting. The extension hears what you did to which row, by the row's id.
 The example's *list the open tasks by note* (`open-tasks.list`) is one:

@@ -7,6 +7,7 @@ mod drive;
 mod embed;
 mod ext;
 mod graph;
+mod graph_ext;
 mod groups;
 mod hints;
 mod history;
@@ -29,9 +30,9 @@ mod views;
 mod whichkey;
 
 use cold_lava_engine::{
-    bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, matcher,
-    merge, owner, paths, recipe, rename, resolver, search, style, tasks, templates, tidy, trash,
-    types, workspace, write,
+    bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, links, markdown,
+    matcher, merge, owner, paths, recipe, rename, resolver, search, style, tasks, templates, tidy,
+    trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -326,7 +327,7 @@ fn run() -> Result<()> {
             }
             drop(core);
             let mut home = home::Home::new(render, Some(root), registry);
-            home.open_graph_alone()?;
+            home.open_graph_alone();
             with_terminal(|t| home.run(t))
         }
         Some("agenda") => {
