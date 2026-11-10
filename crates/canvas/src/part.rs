@@ -91,7 +91,9 @@ pub struct Path {
     points: Vec<Point>,
     bounds: Rect,
     /// The bounds cut into horizontal bands, each listing the edges (by their end point's index)
-    /// that reach into it, so a membership test only looks at edges near its row.
+    /// that reach into it, so a membership test only looks at edges near its row. One band per
+    /// two edges, up to 1024: fewer let a test's cost grow with the path's size (the bench's
+    /// "paths of N points").
     bands: Vec<Vec<u32>>,
 }
 
@@ -103,7 +105,7 @@ pub enum Segment {
 
 /// Line pieces per cubic. Parts live in a unit box, so a fixed count is smooth at any size a
 /// terminal or a window reaches.
-const CUBIC_STEPS: usize = 24;
+pub const CUBIC_STEPS: usize = 24;
 
 impl Path {
     pub fn new(start: Point, segments: &[Segment], closed: bool) -> Path {
@@ -129,7 +131,7 @@ impl Path {
         let bounds = Rect::around(points.iter().copied())
             .unwrap_or(Rect::new(Point::default(), Point::default()));
         let n = points.len();
-        let mut bands = vec![Vec::new(); (n / 2).clamp(1, 64)];
+        let mut bands = vec![Vec::new(); (n / 2).clamp(1, 1024)];
         let height = bounds.max.y - bounds.min.y;
         let band = |y: f64| {
             let k = if height > 0.0 {

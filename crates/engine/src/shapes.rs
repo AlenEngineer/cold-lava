@@ -144,14 +144,157 @@ pub struct StrokeDef {
     pub to: Pos,
 }
 
+/// A path: `points` joined by straight lines, or a `start` and `segments` (lines and curves).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<Xy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<Xy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<SegmentDef>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closed: bool,
+}
+
+/// The most points a path may have once its curves are flattened (each `curve` and `quad` is
+/// `canvas::part::CUBIC_STEPS` points, each `line` and each of `points` one). Sized with the
+/// canvas bench: a full-screen scene of 200 shapes, 50 of them paths this size, draws within a
+/// 60 Hz frame (docs/shapes.md, "Path size").
+pub const PATH_LIMIT: usize = 2048;
+
+/// One step of a path from where the last one ended.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SegmentDef {
+    /// `{ line = [x, y] }`, or `{ line = { to = [x, y], id = "tip" } }` to name its end.
+    Line(LineDef),
+    /// A cubic Bézier: `{ curve = { c1 = [x, y], c2 = [x, y], to = [x, y] } }`.
+    Curve(CurveDef),
+    /// A quadratic Bézier, drawn as the cubic it equals: `{ quad = { c = [x, y], to = [x, y] } }`.
+    Quad(QuadDef),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    untagged,
+    expecting = "a line is a point, line = [x, y], or line = { to = [x, y], id = \"name\" }"
+)]
+pub enum LineDef {
+    To(Xy),
+    Named(Vertex),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Vertex {
+    pub to: Xy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurveDef {
+    pub c1: Xy,
+    pub c2: Xy,
+    pub to: Xy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuadDef {
+    pub c: Xy,
+    pub to: Xy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+impl SegmentDef {
+    /// Where it ends, and the name given to that vertex.
+    fn end(&self) -> (Xy, Option<&str>) {
+        match self {
+            SegmentDef::Line(LineDef::To(to)) => (*to, None),
+            SegmentDef::Line(LineDef::Named(v)) => (v.to, v.id.as_deref()),
+            SegmentDef::Curve(c) => (c.to, c.id.as_deref()),
+            SegmentDef::Quad(q) => (q.to, q.id.as_deref()),
+        }
+    }
+
+    /// The canvas segment, starting at `from` (a quadratic's control point becomes two).
+    fn canvas(&self, from: Point) -> canvas::Segment {
+        match self {
+            SegmentDef::Line(_) => canvas::Segment::Line(point(self.end().0)),
+            SegmentDef::Curve(c) => canvas::Segment::Cubic {
+                c1: point(c.c1),
+                c2: point(c.c2),
+                to: point(c.to),
+            },
+            SegmentDef::Quad(q) => {
+                let (c, to) = (point(q.c), point(q.to));
+                canvas::Segment::Cubic {
+                    c1: from + (c - from) * (2.0 / 3.0),
+                    c2: to + (c - to) * (2.0 / 3.0),
+                    to,
+                }
+            }
+        }
+    }
+
+    /// Points it adds once flattened.
+    fn size(&self) -> usize {
+        match self {
+            SegmentDef::Line(_) => 1,
+            SegmentDef::Curve(_) | SegmentDef::Quad(_) => canvas::part::CUBIC_STEPS,
+        }
+    }
+}
+
+impl PathDef {
+    /// Its vertices as written: the start or the points, then each segment's end.
+    fn vertices(&self) -> usize {
+        self.points.len() + usize::from(self.start.is_some()) + self.segments.len()
+    }
+
+    /// Its points once flattened.
+    fn size(&self) -> usize {
+        self.points.len()
+            + usize::from(self.start.is_some())
+            + self.segments.iter().map(SegmentDef::size).sum::<usize>()
+    }
+
+    /// The vertices given an `id`, with where they are.
+    fn named(&self) -> impl Iterator<Item = (&str, Xy)> {
+        (self.segments.iter()).filter_map(|s| match s.end() {
+            (to, Some(id)) => Some((id, to)),
+            _ => None,
+        })
+    }
+
+    fn build(&self) -> canvas::Path {
+        match self.start {
+            None => canvas::Path::polyline(
+                self.points.iter().copied().map(point).collect(),
+                self.closed,
+            ),
+            Some(start) => {
+                let mut from = point(start);
+                let segments: Vec<canvas::Segment> = (self.segments.iter())
+                    .map(|s| {
+                        let seg = s.canvas(from);
+                        from = point(s.end().0);
+                        seg
+                    })
+                    .collect();
+                canvas::Path::new(point(start), &segments, self.closed)
+            }
+        }
+    }
 }
 
 /// Text: a label beside a point (`at`), or a box it is wrapped in (`from`, `to`).
@@ -746,11 +889,10 @@ fn assemble(
                 parts.push(new(&s.id, kind));
             }
             PartDef::Path(p) => {
-                let points = p.points.iter().copied().map(point).collect();
-                parts.push(new(
-                    &p.id,
-                    Kind::Path(canvas::Path::polyline(points, p.closed)),
-                ));
+                parts.push(new(&p.id, Kind::Path(p.build())));
+                if let Some(path) = &p.id {
+                    anchors.extend(p.named().map(|(v, xy)| (format!("{path}.{v}"), point(xy))));
+                }
             }
             PartDef::Text(t) => {
                 let value = t.value.clone();
@@ -906,9 +1048,7 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
             PartDef::Ellipse(e) if !(positive(e.radii[0]) && positive(e.radii[1])) => {
                 p.push(format!("{at}: an ellipse's radii are above 0"))
             }
-            PartDef::Path(path) if path.points.len() < 2 => {
-                p.push(format!("{at}: a path needs two points or more"))
-            }
+            PartDef::Path(path) => p.extend(check_path(path).map(|e| format!("{at}: {e}"))),
             PartDef::Text(t) => {
                 if !matches!(
                     (&t.at, t.from, t.to),
@@ -1036,6 +1176,42 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
         }
     }
     p
+}
+
+/// What a path gets wrong: its form, its size and the names of its vertices.
+fn check_path(path: &PathDef) -> impl Iterator<Item = String> {
+    let mut p = Vec::new();
+    match (path.points.is_empty(), path.start, path.segments.is_empty()) {
+        (false, Some(_), _) | (false, _, false) => p.push(
+            "a path is points = [ … ], or a start and segments = [ … ], not both".to_string(),
+        ),
+        (_, None, false) => {
+            p.push("a path's segments go on from a start = [x, y]: give it one".into())
+        }
+        _ if path.vertices() < 2 => p.push("a path needs two points or more".into()),
+        _ => {}
+    }
+    let size = path.size();
+    if size > PATH_LIMIT {
+        p.push(format!(
+            "this path is {size} points once its curves are flattened (a curve is {}), and a path may be at most {PATH_LIMIT}, so a screen of shapes still draws within a frame: simplify it or split it into several paths",
+            canvas::part::CUBIC_STEPS
+        ));
+    }
+    let mut seen = HashSet::new();
+    for (name, _) in path.named() {
+        if !is_name(name, false) {
+            p.push(format!("vertex id {name:?} is not a name"));
+        } else if name == "start" || name == "end" || !seen.insert(name) {
+            p.push(format!(
+                "two vertices are called {name} (start and end are the path's own)"
+            ));
+        }
+    }
+    if !seen.is_empty() && path.id.is_none() {
+        p.push("its vertices have ids but the path has none: give it an id, and a vertex `tip` is the anchor `<path>.tip`".into());
+    }
+    p.into_iter()
 }
 
 /// Above 0, and not NaN.
@@ -1255,6 +1431,42 @@ mod tests {
                 "parts = [{ shape = { id = \"n\", use = \"nowhere\", from = [0, 0], to = [1, 1] } }]",
                 "it nests shape nowhere, which isn't loaded",
             ),
+            (
+                "parts = [{ path = { points = [[0, 0]] } }]",
+                "part 1: a path needs two points or more",
+            ),
+            (
+                "parts = [{ path = { start = [0, 0], segments = [] } }]",
+                "part 1: a path needs two points or more",
+            ),
+            (
+                "parts = [{ path = { points = [[0, 0], [1, 1]], start = [0, 0], segments = [{ line = [1, 0] }] } }]",
+                "part 1: a path is points = [ … ], or a start and segments = [ … ], not both",
+            ),
+            (
+                "parts = [{ path = { segments = [{ line = [1, 0] }] } }]",
+                "part 1: a path's segments go on from a start = [x, y]: give it one",
+            ),
+            (
+                "parts = [{ path = { start = [0, 0], segments = [{ curve = { c1 = [0, 1], c2 = [1, 1] } }] } }]",
+                "missing field `to`",
+            ),
+            (
+                "parts = [{ path = { start = [0, 0], segments = [{ line = { id = \"tip\" } }] } }]",
+                "a line is a point, line = [x, y], or line = { to = [x, y], id = \"name\" }",
+            ),
+            (
+                "parts = [{ path = { start = [0, 0], segments = [{ arc = [1, 0] }] } }]",
+                "unknown variant `arc`, expected one of `line`, `curve`, `quad`",
+            ),
+            (
+                "parts = [{ path = { start = [0, 0], segments = [{ line = { to = [1, 0], id = \"tip\" } }] } }]",
+                "part 1: its vertices have ids but the path has none",
+            ),
+            (
+                "parts = [{ path = { id = \"p\", start = [0, 0], segments = [{ line = { to = [1, 0], id = \"end\" } }] } }]",
+                "part 1: two vertices are called end (start and end are the path's own)",
+            ),
         ];
         for (shape, expected) in cases {
             let text = format!(
@@ -1280,6 +1492,97 @@ mod tests {
                 "a broken shape's siblings load: {shape}"
             );
         }
+    }
+
+    /// A bubble written with every kind of segment: its curves bend, its named tip is an anchor
+    /// later parts use, and a region over it is its curved inside.
+    #[test]
+    fn curved_paths_load_with_their_anchors_and_regions() {
+        let shapes = load([
+            Layer::built_in(),
+            workspace(
+                "version = 1\n[[shapes]]\nid = \"bubble\"\nparts = [\n\
+                 { path = { id = \"b\", closed = true, start = [0.5, 0], segments = [\n\
+                   { curve = { c1 = [1, 0], c2 = [1, 0.8], to = [0.5, 0.8] } },\n\
+                   { line = { to = [0.2, 1], id = \"tip\" } },\n\
+                   { quad = { c = [0, 0], to = [0.5, 0] } },\n\
+                 ] } },\n\
+                 { text = { at = \"b.tip\", value = \"hi\" } },\n\
+                 ]\nregions = [{ id = \"inside\", area = \"b\" }]\n",
+            ),
+        ]);
+        assert_eq!(shapes.errors, Vec::<String>::new());
+        let bubble = &shapes.get("bubble").unwrap().shape;
+        let p = Point::new;
+        assert_eq!(bubble.anchor("b.tip"), Some(p(0.2, 1.0)));
+        assert_eq!(bubble.anchor("b.start"), Some(p(0.5, 0.0)));
+        assert_eq!(bubble.anchor("b.end"), Some(p(0.5, 0.0)));
+        let Kind::Path(path) = &bubble.parts()[0].kind else {
+            panic!("a path")
+        };
+        let steps = canvas::part::CUBIC_STEPS;
+        assert_eq!(path.points().len(), 1 + steps + 1 + steps);
+        // The curve bulges right to x = 0.875 at its middle; a straight side would stay at 0.5.
+        let mid = path.points()[steps / 2];
+        assert!((mid.x - 0.875).abs() < 1e-9, "{mid:?}");
+        // The quad from the tip back to the start equals its cubic: halfway it is at
+        // (0.2/4 + 0 + 0.5/4, 1/4 + 0 + 0) = (0.175, 0.25).
+        let half = path.points()[steps + 1 + steps / 2];
+        assert!(
+            (half.x - 0.175).abs() < 1e-9 && (half.y - 0.25).abs() < 1e-9,
+            "{half:?}"
+        );
+        let Kind::Label { at, .. } = &bubble.parts()[1].kind else {
+            panic!("a label")
+        };
+        assert_eq!(*at, p(0.2, 1.0));
+        let inside = &bubble.regions()[0].area;
+        assert!(
+            inside.contains(bubble.parts(), p(0.8, 0.4)),
+            "inside the curve"
+        );
+        assert!(
+            !inside.contains(bubble.parts(), p(0.95, 0.1)),
+            "outside the curve's corner"
+        );
+    }
+
+    #[test]
+    fn a_path_over_the_limit_is_refused_wherever_it_comes_from() {
+        let line = "{ line = [0.5, 0.5] }, ";
+        let curve = "{ curve = { c1 = [0, 1], c2 = [1, 1], to = [1, 0] } }, ";
+        let steps = canvas::part::CUBIC_STEPS;
+        let fits = format!("{}{curve}", line.repeat(PATH_LIMIT - 1 - steps));
+        let over = format!("{fits}{line}");
+        let shape = |segments: &str| -> toml::Table {
+            toml::from_str(&format!(
+                "parts = [{{ path = {{ start = [0, 0], segments = [{segments}] }} }}]"
+            ))
+            .unwrap()
+        };
+        let s = load([Layer::extension(
+            "big",
+            [
+                ("big.fits".to_string(), shape(&fits)),
+                ("big.over".to_string(), shape(&over)),
+            ],
+        )]);
+        assert_eq!(
+            s.errors,
+            [format!(
+                "extension big: shape big.over: part 1: this path is {} points once its curves are flattened (a curve is {steps}), and a path may be at most {PATH_LIMIT}, so a screen of shapes still draws within a frame: simplify it or split it into several paths",
+                PATH_LIMIT + 1
+            )]
+        );
+        assert!(s.get("big.fits").is_some());
+        let points = vec!["[0, 0]"; PATH_LIMIT + 1].join(", ");
+        let errors = errors_of(&format!(
+            "[[shapes]]\nid = \"dots\"\nparts = [{{ path = {{ points = [{points}] }} }}]"
+        ));
+        assert!(
+            errors[0].contains(&format!("this path is {} points", PATH_LIMIT + 1)),
+            "{errors:?}"
+        );
     }
 
     #[test]

@@ -68,4 +68,9 @@ checklist  workspace example-workspace/.cold-lava/shapes.toml  Checklist
   region open: box, shows tasks where status_type != done
   on click open: edit
 
+speech  workspace example-workspace/.cold-lava/shapes.toml  Speech bubble
+  inputs text · aspect 2
+  parts path bubble, text said
+  region inside: bubble - said
+
 glyphs  ✓ check  ✗ cross  • dot  ★ star  ◆ diamond  → arrow  ▲ eruption

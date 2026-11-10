@@ -426,6 +426,63 @@ regions = [{ id = "rows", area = "body", shows = "rows" }]
   in `cold-lava keys`, a definition that doesn't read is dropped with its error in `cold-lava
   shapes`, and your other shapes still load.
 
+### Curves and spirals
+
+A shape has no formulas: a spiral, a wave or a gear is computed by you, once, and shipped as a
+`path` of `line`s and `curve`s ([shapes.md](shapes.md#paths)). This Python prints an Archimedean
+spiral of three turns as twelve cubic curves, a quarter turn each, with each curve's control
+points a third of the way along its tangents:
+
+```python
+import math
+
+def spiral(turns=3, per_turn=4, r=0.48):
+    """An Archimedean spiral from the centre out to radius r, as cubic curves."""
+    k = r / (2 * math.pi * turns)  # how far it moves out per radian
+    step = 2 * math.pi / per_turn
+    def at(t):
+        return (0.5 + k * t * math.cos(t), 0.5 + k * t * math.sin(t))
+    def lean(t):  # its direction at t, a third of a step long: where a control point goes
+        return (k * (math.cos(t) - t * math.sin(t)) * step / 3,
+                k * (math.sin(t) + t * math.cos(t)) * step / 3)
+    curves = []
+    for i in range(turns * per_turn):
+        (x0, y0), (x1, y1) = at(i * step), at((i + 1) * step)
+        (a, b), (c, d) = lean(i * step), lean((i + 1) * step)
+        curves.append(((x0 + a, y0 + b), (x1 - c, y1 - d), (x1, y1)))
+    return at(0), curves
+
+def xy(p):
+    return f"[{p[0]:.4f}, {p[1]:.4f}]"
+
+start, curves = spiral()
+print('[[shapes]]\nid = "spirals.spiral"\ntitle = "Spiral"\naspect = 1.0')
+print(f'parts = [{{ path = {{ id = "coil", start = {xy(start)}, segments = [')
+for c1, c2, to in curves:
+    print(f"  {{ curve = {{ c1 = {xy(c1)}, c2 = {xy(c2)}, to = {xy(to)} }} }},")
+print("] } }]")
+```
+
+Paste what it prints into your manifest:
+
+```toml
+[[shapes]]
+id = "spirals.spiral"
+title = "Spiral"
+aspect = 1.0
+parts = [{ path = { id = "coil", start = [0.5000, 0.5000], segments = [
+  { curve = { c1 = [0.5133, 0.5000], c2 = [0.5209, 0.5267], to = [0.5000, 0.5400] } },
+  { curve = { c1 = [0.4791, 0.5533], c2 = [0.4333, 0.5419], to = [0.4200, 0.5000] } },
+  # … ten more
+] } }]
+```
+
+`cold-lava shapes WORKSPACE --render spirals.spiral --size 40x20` draws it (`--rotate 45` turns
+it). Twelve curves are 289 points once flattened; a path may have at most 2048, and one over
+that is refused when your manifest loads, with its size. Fewer, longer curves draw as smoothly
+as more, shorter ones (each is drawn as 24 lines), so use as few as keep the shape true. The
+cold-lava tests draw this exact output (`crates/cold-lava/tests/curves`).
+
 ### Computing a region or handling a gesture
 
 When the region language (`a & b where vei >= 6 sort by vei desc`) or the `on` steps can't say

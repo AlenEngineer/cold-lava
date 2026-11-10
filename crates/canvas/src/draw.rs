@@ -62,13 +62,14 @@ pub fn paint_contents(
 /// `shape` alone on a `cols`×`rows` terminal, as text: in the largest box of `aspect` (width over
 /// height in world units, where a cell is 1×2) centred on the grid a cell in from its edges, or
 /// that whole space without one, each region showing its `contents` (`paint_contents`; empty for
-/// a shape with nothing bound). The glyphs, then each region's tint by row (`.` for none, else
-/// the region's number).
+/// a shape with nothing bound), turned `rotation` degrees clockwise about its centre. The glyphs,
+/// then each region's tint by row (`.` for none, else the region's number).
 pub fn preview(
     shape: Arc<Shape>,
     cols: u16,
     rows: u16,
     aspect: Option<f64>,
+    rotation: f64,
     contents: &[Vec<String>],
 ) -> String {
     let view = Viewport::terminal(cols, rows);
@@ -83,7 +84,7 @@ pub fn preview(
         _ => world,
     };
     let at = margin + Point::new((world.x - size.x) / 2.0, (world.y - size.y) / 2.0);
-    let placed = Placed::new(shape, Placement::new(at, size));
+    let placed = Placed::new(shape, Placement::new(at, size).rotated(rotation));
     let mut grid = Grid::new(&view);
     let left_out = paint(&mut grid, &placed, &view);
     paint_contents(&mut grid, &placed, &view, contents);

@@ -9,6 +9,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Curved paths in shapes. A `path` can be a `start` and `segments`: `line`s, cubic `curve`s and
+  `quad`s, besides `points`. A segment can name the vertex it ends at (`id = "tip"`), an anchor
+  later parts use (`bubble.tip`), as are `start` and `end`. A path may have at most 2048 points
+  once its curves are flattened, so a screen of shapes still draws within a frame; a bigger one,
+  from a file or an extension, is refused with its size. The example workspace has a speech
+  bubble, and the extensions guide shows an extension shipping a spiral it computes.
+  `cold-lava shapes --render` takes `--rotate DEG`.
+
 - Placed shapes on the whiteboard. A node with a `cold-lava` field is a placed shape: its
   shape, what its inputs are bound to, its turn and the fractions Obsidian rounds away. The
   whiteboard draws it with the canvas engine (a Venn shows which items fall in each region,

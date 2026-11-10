@@ -83,6 +83,102 @@ fn shapes_render_as_text() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Curved paths drawn straight and turned: the example's speech bubble (a region over a closed
+/// path of curves) and the spiral an extension computes (`tests/curves`, the extensions guide's
+/// snippet's output).
+#[test]
+fn curved_paths_render_straight_and_turned() {
+    let dir = scratch("curves");
+    for (ws, id, size, rotate, name) in [
+        (
+            "example-workspace",
+            "speech",
+            "60x18",
+            "0",
+            "shape-speech-60x18.txt",
+        ),
+        (
+            "example-workspace",
+            "speech",
+            "60x18",
+            "20",
+            "shape-speech-60x18-turned-20.txt",
+        ),
+        (
+            "crates/cold-lava/tests/curves",
+            "spirals.spiral",
+            "40x20",
+            "0",
+            "shape-spiral-40x20.txt",
+        ),
+        (
+            "crates/cold-lava/tests/curves",
+            "spirals.spiral",
+            "40x20",
+            "45",
+            "shape-spiral-40x20-turned-45.txt",
+        ),
+    ] {
+        let args = [ws, "--render", id, "--size", size, "--rotate", rotate];
+        golden(name, &stdout(&shapes(&dir, &args)));
+    }
+    let guide = include_str!("../../../docs/extensions-guide.md");
+    let fixture = include_str!("curves/.cold-lava/shapes.toml");
+    let shown = &guide[guide.find("[[shapes]]\nid = \"spirals.spiral\"").unwrap()..];
+    for line in shown.lines().take_while(|l| !l.starts_with("```")) {
+        assert!(
+            line.starts_with("  # …") || fixture.contains(line),
+            "the guide's spiral is the fixture's: {line}"
+        );
+    }
+    let out = shapes(
+        &dir,
+        &[
+            "example-workspace",
+            "--render",
+            "speech",
+            "--rotate",
+            "a bit",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--rotate is degrees clockwise"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A path bigger than the limit is refused at load with its size and the limit; the shapes
+/// beside it load.
+#[test]
+fn an_oversized_path_is_refused() {
+    let dir = scratch("oversized");
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(workspace.join(".cold-lava")).unwrap();
+    let curve = "{ curve = { c1 = [0, 1], c2 = [1, 1], to = [1, 0] } }, ";
+    std::fs::write(
+        workspace.join(".cold-lava/shapes.toml"),
+        format!(
+            "version = 1\n[[shapes]]\nid = \"scribble\"\nparts = [{{ path = {{ start = [0, 0], segments = [{}] }} }}]\n\
+             [[shapes]]\nid = \"fine\"\nparts = [{{ path = {{ start = [0, 0], segments = [{curve}] }} }}]\n",
+            curve.repeat(100)
+        ),
+    )
+    .unwrap();
+    let out = shapes(&dir, &[workspace.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let listing = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(listing.contains("\nfine  workspace "), "{listing}");
+    assert!(!listing.contains("\nscribble "), "{listing}");
+    assert!(
+        stderr.contains(&format!(
+            "{}: shape scribble: part 1: this path is 2401 points once its curves are flattened (a curve is 24), and a path may be at most 2048",
+            workspace.join(".cold-lava/shapes.toml").display()
+        )),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The two-circle Venn bound to two queries over the example workspace: volcanoes with an
 /// `#eruption` against stratovolcanoes, matched on their names.
 const ERUPTED: &str = "a=type=volcano tag=eruption title=Erupted";
