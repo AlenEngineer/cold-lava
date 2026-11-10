@@ -40,6 +40,23 @@ expect 16 rows
 # Another program changes Trip.canvas while the agenda shows it: the agenda follows, and a
 # tick keeps what the other program wrote.
 write Inbox/Trip.canvas {"nodes":[{"id":"t","type":"text","text":"- [ ] Pack the hard hats","x":0,"y":0,"width":200,"height":80,"color":"2"},{"id":"o","type":"text","text":"- [ ] Charge the radios","x":0,"y":100,"width":200,"height":80}],"edges":[],"theirs":true}\n
+wait 2s
+keys /
+type two per
+keys enter
+wait 1s
+screen
+keys /
+type hard
+keys enter
+wait 1s
+screen
+keys /
+type radios
+keys enter
+wait 1s
+screen
+exits 9
 wait-for 17 rows
 keys /
 type charge
