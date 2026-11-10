@@ -1973,7 +1973,7 @@ zooming wait.
   dragging and resizing, edges attached to card sides, label placement, dimming around the
   selection, the local-graph neighbourhood, search over labels, help and the status line, and
   drawing in braille or Kitty pixels. Layouts: `fixed` (positions are the extension's data) and
-  `force` (the core simulates; Barnes–Hut belongs here).
+  `force` (the core simulates, with Barnes–Hut repulsion).
 - **The extension:** which nodes and edges exist, their shapes (`dot`, `card`, `group`), labels,
   colours, a card's Markdown or the note it shows, the legend; the document, saving and merging
   it; what its commands mean.
@@ -2006,7 +2006,8 @@ zooming wait.
   pixels. **Bounds:** at most 50,000 nodes (`MAX_ROWS`), four edges per node allowed, 64 groups
   and 8 flags, else refused.
 - **The scene view** (`crates/cold-lava/src/scene_view.rs`, one of `views.rs`'s views) owns the
-  force layout (`graph.rs`; positions kept by node id across updates, and an update that
+  force layout (`graph.rs`; repulsion through a Barnes–Hut quadtree, positions kept by node id
+  across updates, and an update that
   changes only looks keeps the layout still), the camera, selection by arrow and along links,
   the local graph, search over labels and files, labels, dragging nodes, and drawing in braille
   or Kitty pixels (`scene.rs`'s `Frame`, `kitty.rs`).

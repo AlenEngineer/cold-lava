@@ -909,7 +909,8 @@ links, or stops with its reason and changes nothing.
 
 ## Limits
 
-- The layout is O(n²): workspaces of a few thousand notes are fine; for more, the next step would be Barnes–Hut.
+- The layout pushes nodes apart through a Barnes–Hut quadtree (O(n log n) a step), so it settles
+  ten thousand notes; each frame still draws every link in view.
 - Whiteboard: no freehand drawing, because JSON Canvas has no freehand shapes. Edge labels
   display but can't be edited yet. Excalidraw drawings aren't rendered.
 

@@ -203,8 +203,8 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the
   extension that owns the pane.
 - `scene_view.rs`: the scene view, a scene of nodes and links (`Scene`, the view gateway's
-  `scene` content) that the core lays out (`graph.rs`'s force layout, positions kept by node
-  id), draws (`scene.rs`'s `Frame`, in braille or Kitty-graphics pixels under the text with
+  `scene` content) that the core lays out (`graph.rs`'s force layout, its repulsion through a
+  Barnes–Hut quadtree, positions kept by node id), draws (`scene.rs`'s `Frame`, in braille or Kitty-graphics pixels under the text with
   `z=-1`, `kitty.rs`) and moves around in. It is one of `views.rs`'s views, ticked in the
   menu's loop while in front, so extensions keep being answered; keys whose meaning is the
   sender's go to it as `view/event`.
@@ -293,5 +293,5 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 - In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
   it, and so do the agenda, the table and the graph (over the view gateway); the canvas and
   the menu should become extensions of the core too. Then
-  performance for large workspaces (Barnes–Hut layout), a config file, light-terminal colours.
+  the rest of #97 (smaller items, a cache of parsed notes), a config file, light-terminal colours.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).

@@ -81,6 +81,12 @@ const VELOCITY_KEEP: f64 = 0.6;
 const MAX_SPEED: f64 = 25.0;
 const ALPHA_DECAY: f64 = 0.0228;
 pub const ALPHA_MIN: f64 = 0.002;
+/// Nodes farther apart than this (squared) don't push each other.
+const REACH2: f64 = 250_000.0;
+/// The Barnes–Hut opening criterion: a cell of side `s` at distance `d` from a node pushes it
+/// as one body at the cell's centre of mass when `s / d < THETA`. 0 is exact; higher is faster
+/// and coarser. It stays under √2, so a node is never pushed by a whole cell it is inside.
+const THETA: f64 = 0.8;
 
 /// The graph of `links` (the gateway's `links/query`): a node per file, and per unresolved
 /// link's name and per tag when `o` shows them, in the order they come, with the links between
@@ -229,24 +235,13 @@ impl Graph {
         let mut fy = vec![0.0; n];
         let idx: Vec<usize> = (0..n).filter(|&i| active[i]).collect();
 
-        // Repulsion between every pair (O(n²); fine for a few thousand notes).
-        for (k, &i) in idx.iter().enumerate() {
-            let (xi, yi) = (self.nodes[i].x, self.nodes[i].y);
-            for &j in &idx[k + 1..] {
-                let dx = xi - self.nodes[j].x;
-                let dy = yi - self.nodes[j].y;
-                let d2 = (dx * dx + dy * dy).max(1.0);
-                if d2 > 250_000.0 {
-                    continue; // far apart: negligible
-                }
-                let f = REPULSION / d2;
-                let d = d2.sqrt();
-                let (ux, uy) = (dx / d * f, dy / d * f);
-                fx[i] += ux;
-                fy[i] += uy;
-                fx[j] -= ux;
-                fy[j] -= uy;
-            }
+        // Repulsion, through a quadtree of the active nodes: O(n log n), not every pair.
+        let tree = Quadtree::new(&self.nodes, &idx);
+        let mut stack = Vec::new();
+        for &i in &idx {
+            let (ux, uy) = tree.push(i, &mut stack, THETA);
+            fx[i] += ux;
+            fy[i] += uy;
         }
         // Springs along edges.
         for &(a, b) in &self.edges {
@@ -282,6 +277,149 @@ impl Graph {
             node.y += node.vy;
         }
         self.alpha += (0.0 - self.alpha) * ALPHA_DECAY;
+    }
+}
+
+/// A Barnes–Hut quadtree of node positions, built for one step: each cell knows how many nodes
+/// it holds and their centre of mass, so a far cell pushes as one body.
+struct Quadtree<'a> {
+    nodes: &'a [Node],
+    /// The root is `cells[0]`; a split cell's four children are consecutive from its `first`.
+    cells: Vec<Cell>,
+}
+
+#[derive(Clone, Copy)]
+struct Cell {
+    /// Centre and half the side of the square.
+    x: f64,
+    y: f64,
+    half: f64,
+    mass: f64,
+    /// Sum of the positions in it; over `mass`, the centre of mass.
+    sx: f64,
+    sy: f64,
+    /// A leaf's node (the first one, when nodes at one place share a leaf at `MAX_DEPTH`).
+    body: usize,
+    /// The first child's index; 0 for a leaf.
+    first: usize,
+}
+
+/// Deeper than this, nodes at (nearly) the same place share a leaf.
+const MAX_DEPTH: usize = 48;
+
+impl Cell {
+    fn new(x: f64, y: f64, half: f64) -> Cell {
+        Cell {
+            x,
+            y,
+            half,
+            mass: 0.0,
+            sx: 0.0,
+            sy: 0.0,
+            body: usize::MAX,
+            first: 0,
+        }
+    }
+
+    fn child(&self, x: f64, y: f64) -> usize {
+        self.first + (usize::from(x >= self.x) | (usize::from(y >= self.y) << 1))
+    }
+}
+
+impl<'a> Quadtree<'a> {
+    fn new(nodes: &'a [Node], idx: &[usize]) -> Quadtree<'a> {
+        let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+        for &i in idx {
+            x0 = x0.min(nodes[i].x);
+            x1 = x1.max(nodes[i].x);
+            y0 = y0.min(nodes[i].y);
+            y1 = y1.max(nodes[i].y);
+        }
+        let half = ((x1 - x0).max(y1 - y0) / 2.0).max(1.0) * 1.001;
+        let mut t = Quadtree {
+            nodes,
+            cells: Vec::with_capacity(idx.len() * 3 + 1),
+        };
+        t.cells
+            .push(Cell::new((x0 + x1) / 2.0, (y0 + y1) / 2.0, half));
+        for &i in idx {
+            t.insert(i);
+        }
+        t
+    }
+
+    fn insert(&mut self, i: usize) {
+        let (x, y) = (self.nodes[i].x, self.nodes[i].y);
+        let mut c = 0;
+        for depth in 0.. {
+            let cell = &mut self.cells[c];
+            cell.mass += 1.0;
+            cell.sx += x;
+            cell.sy += y;
+            if cell.first != 0 {
+                c = cell.child(x, y);
+                continue;
+            }
+            if cell.mass == 1.0 {
+                cell.body = i;
+                return;
+            }
+            if depth >= MAX_DEPTH {
+                return;
+            }
+            // A leaf with one node already: split it and move that node down a level.
+            let (cx, cy, h) = (cell.x, cell.y, cell.half / 2.0);
+            let old = std::mem::replace(&mut cell.body, usize::MAX);
+            let first = self.cells.len();
+            self.cells[c].first = first;
+            for (dx, dy) in [(-h, -h), (h, -h), (-h, h), (h, h)] {
+                self.cells.push(Cell::new(cx + dx, cy + dy, h));
+            }
+            let (ox, oy) = (self.nodes[old].x, self.nodes[old].y);
+            let to = self.cells[c].child(ox, oy);
+            let moved = &mut self.cells[to];
+            moved.mass = 1.0;
+            moved.sx = ox;
+            moved.sy = oy;
+            moved.body = old;
+            c = self.cells[c].child(x, y);
+        }
+    }
+
+    /// The push on node `i` from all the others. A pair farther apart than `REACH2` allows is
+    /// left out, and so is a cell all of whose nodes are.
+    fn push(&self, i: usize, stack: &mut Vec<usize>, theta: f64) -> (f64, f64) {
+        let (x, y) = (self.nodes[i].x, self.nodes[i].y);
+        let (mut fx, mut fy) = (0.0, 0.0);
+        stack.clear();
+        stack.push(0);
+        while let Some(c) = stack.pop() {
+            let cell = &self.cells[c];
+            if cell.mass == 0.0 || (cell.first == 0 && cell.body == i) {
+                continue;
+            }
+            let gx = ((x - cell.x).abs() - cell.half).max(0.0);
+            let gy = ((y - cell.y).abs() - cell.half).max(0.0);
+            if gx * gx + gy * gy > REACH2 {
+                continue;
+            }
+            let (dx, dy) = (x - cell.sx / cell.mass, y - cell.sy / cell.mass);
+            let d2 = dx * dx + dy * dy;
+            let side = 2.0 * cell.half;
+            if cell.first != 0 && side * side >= theta * theta * d2 {
+                stack.extend(cell.first..cell.first + 4);
+                continue;
+            }
+            if d2 > REACH2 {
+                continue;
+            }
+            let d2 = d2.max(1.0);
+            let f = REPULSION * cell.mass / d2;
+            let d = d2.sqrt();
+            fx += dx / d * f;
+            fy += dy / d * f;
+        }
+        (fx, fy)
     }
 }
 
@@ -495,6 +633,61 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The push on each node of a scattered cloud with a few nodes on one spot, summed over
+    /// every pair.
+    fn cloud_and_exact_push() -> (Vec<Node>, Vec<(f64, f64)>) {
+        let mut nodes: Vec<Node> = (0..600)
+            .map(|i| Node::new(format!("{i}"), String::new(), Kind::Note, start(i)))
+            .collect();
+        for k in 0..3 {
+            nodes.push(Node::new(
+                format!("c{k}"),
+                String::new(),
+                Kind::Note,
+                (5.0, 5.0),
+            ));
+        }
+        let exact = (nodes.iter())
+            .map(|a| {
+                (nodes.iter()).fold((0.0, 0.0), |(fx, fy), b| {
+                    let (dx, dy) = (a.x - b.x, a.y - b.y);
+                    let d2 = dx * dx + dy * dy;
+                    if d2 == 0.0 || d2 > REACH2 {
+                        return (fx, fy);
+                    }
+                    let d2 = d2.max(1.0);
+                    let f = REPULSION / d2 / d2.sqrt();
+                    (fx + dx * f, fy + dy * f)
+                })
+            })
+            .collect();
+        (nodes, exact)
+    }
+
+    #[test]
+    fn the_quadtree_pushes_like_every_pair() {
+        let (nodes, exact) = cloud_and_exact_push();
+        let idx: Vec<usize> = (0..nodes.len()).collect();
+        let tree = Quadtree::new(&nodes, &idx);
+        let mut stack = Vec::new();
+        let (mut err, mut total) = (0.0, 0.0);
+        for (i, &(ex, ey)) in exact.iter().enumerate() {
+            let (x, y) = tree.push(i, &mut stack, 0.0);
+            assert!(
+                (x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6,
+                "θ = 0 is exact"
+            );
+            let (x, y) = tree.push(i, &mut stack, THETA);
+            err += ((x - ex).powi(2) + (y - ey).powi(2)).sqrt();
+            total += (ex * ex + ey * ey).sqrt();
+        }
+        assert!(
+            err / total < 0.08,
+            "θ = {THETA} is off by {:.3}",
+            err / total
+        );
     }
 
     #[test]

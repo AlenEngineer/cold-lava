@@ -1,0 +1,74 @@
+name: bench graph (temporary)
+
+on:
+  push:
+    branches: [graph-barnes-hut]
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the branch and main
+        run: |
+          mkdir -p ~/bins
+          cargo build --release -p cold-lava
+          cp target/release/cold-lava ~/bins/branch
+          git worktree add ../main origin/main
+          (cd ../main && cargo build --release -p cold-lava && cp target/release/cold-lava ~/bins/main)
+      - name: Graph screens
+        run: |
+          cat > /tmp/screen.drive <<'EOF'
+          size 160x44
+          env COLD_LAVA_EDITOR=none
+          wait-for example-workspace
+          keys g
+          wait-for example-workspace · 35 nodes
+          wait 12s
+          screen
+          keys tab
+          wait-for ● Start Here
+          keys f
+          wait-for local·1
+          wait 6s
+          screen
+          keys /
+          type kil
+          wait-for 1 matches
+          wait 1s
+          screen
+          keys esc
+          keys esc
+          keys q
+          wait-for cold-lava workspaces
+          keys q
+          exits 0
+          EOF
+          for b in main branch; do
+            rm -rf /tmp/ws && cp -r example-workspace /tmp/ws
+            echo "== $b"
+            ~/bins/$b drive /tmp/screen.drive -- /tmp/ws | tee screens-$b.txt
+          done
+      - name: Bench 2000 notes
+        run: python3 scripts/bench-graph.py --runs 5 --notes 2000 --seconds 150 ~/bins/main ~/bins/branch | tee bench-2000.txt
+      - name: Bench 5000 notes
+        run: python3 scripts/bench-graph.py --runs 3 --notes 5000 --seconds 300 ~/bins/main ~/bins/branch | tee bench-5000.txt
+      - name: Bench 10000 notes
+        run: python3 scripts/bench-graph.py --runs 3 --notes 10000 --seconds 420 ~/bins/main ~/bins/branch | tee bench-10000.txt
+      - name: Summary
+        if: always()
+        run: |
+          nproc; uptime
+          for f in bench-*.txt; do echo '```'; cat "$f"; echo '```'; done >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-graph
+          path: |
+            bench-*.txt
+            screens-*.txt
