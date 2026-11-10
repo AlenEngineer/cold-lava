@@ -308,7 +308,11 @@ impl<'a> Lines<'a> {
 
     /// Whether line `n` holds nothing but quote markers.
     fn blank(&self, n: usize) -> bool {
-        self.line(n).trim().trim_start_matches('>').trim().is_empty()
+        self.line(n)
+            .trim()
+            .trim_start_matches('>')
+            .trim()
+            .is_empty()
     }
 
     /// Where line `n` ends, before its line break.
@@ -328,7 +332,9 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let lines = Lines::new(&source.text);
     let mut walk = Walk::new(&lines, &s.flavour, Wants::of(&s.matcher));
     // A note's tags count whatever the flavour, as they always have.
-    cst::read(lines.src, gates.set(Syntax::Tags, true), &mut |step| walk.step(step));
+    cst::read(lines.src, gates.set(Syntax::Tags, true), &mut |step| {
+        walk.step(step)
+    });
     finish(note, text, s, &source, &lines, walk.pass)
 }
 
@@ -1090,7 +1096,9 @@ fn heading_range(src: &str, range: Range<usize>) -> Range<usize> {
 /// cells after the row's line break.
 fn row_cells(src: &str, start: usize, cols: usize) -> Vec<Range<usize>> {
     let b = src.as_bytes();
-    let eol = src[start..].find(['\n', '\r']).map_or(src.len(), |i| start + i);
+    let eol = src[start..]
+        .find(['\n', '\r'])
+        .map_or(src.len(), |i| start + i);
     let after = match &b[eol..] {
         [b'\r', b'\n', ..] => eol + 2,
         [_, ..] => eol + 1,
@@ -1595,7 +1603,11 @@ fields.w = { capture = "w" }
         );
         let n = tree.len().max(old.len());
         for k in (0..n).filter(|&k| tree.get(k) != old.get(k)).take(3) {
-            out += &format!("\n  tree: {}\n  then: {}", short(tree.get(k)), short(old.get(k)));
+            out += &format!(
+                "\n  tree: {}\n  then: {}",
+                short(tree.get(k)),
+                short(old.get(k))
+            );
         }
         Some(out)
     }
