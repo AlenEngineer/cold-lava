@@ -20,7 +20,6 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::canvas::{Canvas, Line as CLine};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
-use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -40,70 +39,9 @@ use crate::gateway::News;
 use cold_lava_canvas::{Cell as GridCell, Handle, Point, Style as Token, Viewport, draw as ink};
 use live::Live;
 
-// ---------- JSON Canvas model (unknown fields are preserved) ----------
-
-#[derive(Serialize, Deserialize, Clone, Default)]
-struct Doc {
-    #[serde(default)]
-    nodes: Vec<CNode>,
-    #[serde(default)]
-    edges: Vec<CEdge>,
-    #[serde(flatten)]
-    extra: Map<String, Value>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct CNode {
-    id: String,
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    label: Option<String>,
-    #[serde(serialize_with = "round")]
-    x: f64,
-    #[serde(serialize_with = "round")]
-    y: f64,
-    #[serde(serialize_with = "round")]
-    width: f64,
-    #[serde(serialize_with = "round")]
-    height: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    color: Option<String>,
-    #[serde(flatten)]
-    extra: Map<String, Value>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct CEdge {
-    id: String,
-    from_node: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    from_side: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    from_end: Option<String>,
-    to_node: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    to_side: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    to_end: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    color: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    label: Option<String>,
-    #[serde(flatten)]
-    extra: Map<String, Value>,
-}
-
-fn round<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_i64(v.round() as i64)
-}
+// The JSON Canvas model (unknown fields are preserved) is the engine's, shared with the
+// canvas owner.
+use crate::json_canvas::{CEdge, CNode, Doc};
 
 fn new_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -983,13 +921,10 @@ impl<'a> Board<'a> {
 
     fn write_file(&mut self) {
         placed::mark_version(&mut self.doc.extra, &self.doc.nodes);
-        let mut buf = Vec::new();
-        let fmt = serde_json::ser::PrettyFormatter::with_indent(b"\t");
-        let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
-        if let Err(e) = self.doc.serialize(&mut ser) {
-            return self.flash(format!("save failed: {e}"));
-        }
-        buf.push(b'\n');
+        let buf = match crate::json_canvas::to_bytes(&self.doc) {
+            Ok(buf) => buf,
+            Err(e) => return self.flash(format!("save failed: {e}")),
+        };
         if buf == self.disk {
             return;
         }
@@ -2827,10 +2762,7 @@ impl<'a> Board<'a> {
 // ---------- helpers ----------
 
 fn parse(bytes: &[u8], path: &Path) -> Result<Doc> {
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(Doc::default());
-    }
-    serde_json::from_slice(bytes)
+    crate::json_canvas::parse(bytes)
         .with_context(|| format!("{} is not a valid canvas file", path.display()))
 }
 

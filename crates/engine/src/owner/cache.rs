@@ -88,8 +88,12 @@ impl Owners {
         &self.kinds
     }
 
-    /// The owner of the file at `rel`, by its extension.
+    /// The owner of the file at `rel`, by its extension: a built-in one (`owner::BUILT_IN`), or
+    /// an extension.
     pub fn owner_of(&self, rel: &str) -> Option<&str> {
+        if let Some(owner) = crate::owner::built_in(rel) {
+            return Some(owner);
+        }
         let x = crate::files::extension_of(rel)?;
         let k = self.kinds.iter().find(|k| k.extension == x)?;
         Some(&k.owner)

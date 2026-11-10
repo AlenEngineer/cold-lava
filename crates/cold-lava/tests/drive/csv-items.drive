@@ -12,11 +12,11 @@ keys enter
 # Krakatoa's backlinks list the CSV twice: the link in the task, and the one in the row.
 wait-for ← Eruptions.csv  ☐ Read the Royal Society report on Krakatoa
 expect ← Eruptions.csv  | Krakatoa | 1883 | 6 |
-expect ←5 in
+expect ←7 in
 # Enter on one opens the table at the row the link is in.
-click 24 80
+click 23 80
 wait-for backlinks · ↑↓ choose
-click 24 80
+click 23 80
 wait-for Volcanoes/Eruptions.csv
 keys e
 wait-for Volcano: [[Krakatoa]]▏

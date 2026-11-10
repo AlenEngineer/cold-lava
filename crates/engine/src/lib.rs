@@ -13,6 +13,7 @@ pub mod frontmatter;
 pub mod gateway;
 pub mod index;
 pub mod items;
+pub mod json_canvas;
 pub mod links;
 pub mod markdown;
 pub mod matcher;

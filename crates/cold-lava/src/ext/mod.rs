@@ -139,9 +139,11 @@ impl Shows {
     }
 }
 
-/// Extensions nobody can own: notes are the engine's own, and whiteboards the core's until the
-/// whiteboard is an extension.
-pub const UNOWNED: &[&str] = &["md", "canvas"];
+/// Whether an extension may claim files with extension `x`: not notes, the engine's own, nor a
+/// kind one of the engine's built-in owners reads (`owner::BUILT_IN`: canvases).
+fn claimable(x: &str) -> bool {
+    x != "md" && !crate::owner::BUILT_IN.iter().any(|(b, _)| *b == x)
+}
 
 /// A part of the workspace gateway an extension may use, named in its manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -850,7 +852,7 @@ impl Registry {
         for (i, (_, m)) in loaded.iter().enumerate() {
             for t in &m.file_types {
                 let x = &t.extension;
-                if UNOWNED.contains(&x.as_str()) {
+                if !claimable(x) {
                     let why = format!("{} can't open .{x} files: cold-lava does", m.name);
                     refused.push(why);
                 } else if let Some((_, first)) = owners.iter().find(|(o, _)| o == x) {

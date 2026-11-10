@@ -1,0 +1,82 @@
+# A whiteboard's file joins the workspace through the engine's canvas owner (docs/extensions.md,
+# "The canvas owner, as built"). tests/drive.rs links Volcano Venn.canvas's sticky to Krakatoa,
+# whose card is on the same canvas, adds Inbox/Trip.canvas, and reads both canvases after.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for example-workspace
+keys /
+type krakatoa
+wait-for Krakatoa
+keys enter
+# The card and the sticky's link make the drawing a backlink, twice.
+wait-for ← Volcano Venn.canvas  Volcanoes/Krakatoa.md
+expect ← Volcano Venn.canvas  ☐ Two per person, for the trip to Krakatoa
+expect ← Eruptions Timeline.canvas  Volcanoes/Krakatoa.md
+expect ←6 in
+screen
+# The agenda lists the sticky's task with the notes' tasks, and ticks it in the canvas.
+keys left A
+wait-for ↑↓ move · x tick · ⏎ open
+keys /
+type two per
+wait-for / two per▏
+keys enter
+wait-for 1 of 16 rows · /two per
+keys j x
+wait-for done: Two per person, for the trip to Krakatoa
+expect ☑ Two per person
+# Enter opens the drawing in the whiteboard, and Ctrl-o comes back.
+keys enter
+wait-for whiteboard Volcano Venn
+keys ctrl+o
+wait-for 1 of 16 rows · /two per
+# Another program changes Trip.canvas while the agenda shows it: the agenda follows, and a
+# tick keeps what the other program wrote.
+write Inbox/Trip.canvas {"nodes":[{"id":"t","type":"text","text":"- [ ] Pack the hard hats","x":0,"y":0,"width":200,"height":80,"color":"2"},{"id":"o","type":"text","text":"- [ ] Charge the radios","x":0,"y":100,"width":200,"height":80}],"edges":[],"theirs":true}\n
+keys esc
+wait-for 16 rows
+keys /
+type charge
+wait-for / charge▏
+keys enter
+wait-for 1 of 17 rows · /charge
+keys esc
+wait-for 17 rows
+keys /
+type hard hats
+wait-for / hard hats▏
+keys enter
+wait-for 1 of 17 rows · /hard hats
+keys j x
+wait-for done: Pack the hard hats
+keys esc
+wait-for 17 rows
+keys esc
+wait-for cold-lava workspaces
+# Renaming Krakatoa rewrites the card's path and the sticky's link in the canvas.
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Krakatau
+keys enter
+wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Krakatau.md
+expect ▤ Volcano Venn.canvas  2 links
+expect ▤ Eruptions Timeline.canvas  1 link
+screen
+keys enter
+wait-for renamed to Volcanoes/Krakatau.md
+wait-for ← Volcano Venn.canvas  Volcanoes/Krakatau.md
+# The graph draws the canvas and its edge to the card's note.
+keys g
+wait-for nodes ·
+keys /
+type venn
+wait-for 1 matches  Volcano Venn.canvas
+keys enter
+wait-for ● Volcano Venn.canvas  ←0 in  1→ out
+screen
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

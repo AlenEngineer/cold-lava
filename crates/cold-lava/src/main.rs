@@ -30,9 +30,9 @@ mod views;
 mod whichkey;
 
 use cold_lava_engine::{
-    act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, links,
-    markdown, matcher, merge, owner, paths, recipe, rename, resolver, search, shapes, style, tasks,
-    templates, tidy, trash, types, workspace, write,
+    act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
+    json_canvas, links, markdown, matcher, merge, owner, paths, recipe, rename, resolver, search,
+    shapes, style, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;

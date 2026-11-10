@@ -1150,7 +1150,9 @@ mod tests {
         };
         let tasks = found(&core, "task");
         assert_eq!(tasks.len(), 1);
-        let places = &core.index.workspace.owned[0].places;
+        let owned = &core.index.workspace.owned;
+        let csv = owned.iter().find(|f| f.rel == "Volcanoes/Eruptions.csv");
+        let places = &csv.unwrap().places;
         let place = places.get(&tasks[0].id).map(String::as_str);
         assert_eq!(place, Some("[[Krakatoa]]#Notes"));
         let rows = found(&core, "eruption");
@@ -1167,7 +1169,11 @@ mod tests {
             ]
         );
         let krakatoa = core.index.by_rel("Volcanoes/Krakatoa").unwrap();
-        assert_eq!(core.index.backlinks(krakatoa).len(), 5, "two from the CSV");
+        assert_eq!(
+            core.index.backlinks(krakatoa).len(),
+            7,
+            "two from the CSV, two from canvas cards"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("csv-table.log")).unwrap(),
             ""

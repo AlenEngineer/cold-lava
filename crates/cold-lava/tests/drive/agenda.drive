@@ -16,9 +16,9 @@ expect ☐ Pay the observatory bill  ⏫
 expect ▾ Mon 9 Nov  1
 expect Review the eruption timeline board 🔁
 expect ▾ Thu 12 Nov  1
-expect ▸ Undated  4
+expect ▸ Undated  13
 expect-not Sort the rock photos
-expect 8 rows
+expect 17 rows
 screen
 keys j x
 wait-for done: Write a note on lahars (Lahar is still unresolved)
@@ -27,16 +27,16 @@ keys j j j j x
 wait-for done: Review the eruption timeline board · next occurrence added
 wait-for ▾ Later  1
 expect Mon 16 Nov  2026-11-05
-expect 9 rows
+expect 18 rows
 keys G l
 wait-for Sort the rock photos
 keys /
 type photos
 wait-for / photos▏
 keys enter
-wait-for 1 of 9 rows · /photos
+wait-for 1 of 18 rows · /photos
 keys esc
-wait-for 9 rows
+wait-for 18 rows
 screen
 keys g j enter
 wait-for Journal/2026-11-05  reading

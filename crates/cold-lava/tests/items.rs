@@ -92,6 +92,15 @@ Journal/2026-11-05.md:7  [ ] Write a note on lahars ([[Lahar]] is still unresolv
 Journal/2026-11-05.md:8  [x] Add the [[Volcanic Explosivity Index]] table
 Journal/2026-11-05.md:9  [ ] Look up the 2022 eruption of [[Mauna Loa]]  due 2026-11-12
 Journal/2026-11-05.md:10  [ ] Review the eruption timeline board  scheduled 2026-11-09
+Volcano Venn.canvas:2  [ ] Two per person, for the trip
+Welcome.canvas:2  [ ] `Tab` to select a card
+Welcome.canvas:3  [ ] `Shift+arrows` to move it
+Welcome.canvas:4  [ ] `a` to add a linked card
+Welcome.canvas:5  [ ] `c` to connect two cards
+Welcome.canvas:6  [ ] `1`–`6` to colour a card
+Welcome.canvas:7  [ ] `Enter` to edit text
+Welcome.canvas:8  [ ] `u` to undo
+Welcome.canvas:9  [ ] `n` or double-click for a new card
 "
     );
     let journal: String = (run(&workspace, &["items", v, "task", "--json"]).lines())

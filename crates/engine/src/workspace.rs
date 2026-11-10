@@ -63,7 +63,7 @@ pub struct Owned {
     /// Workspace-relative, with its extension.
     pub rel: String,
     pub path: PathBuf,
-    /// The extension that owns its kind.
+    /// What owns its kind: an extension, or a built-in owner (`owner::BUILT_IN`).
     pub owner: String,
     /// The version its items and links were read from; `None` until the owner answers.
     pub rev: Option<String>,
@@ -77,11 +77,44 @@ pub struct Owned {
     pub given: crate::owner::given::Given,
 }
 
+impl Owned {
+    /// The file at `rel` (`path` on disk), owned by `owner`, before its owner has read it.
+    pub fn new(rel: String, path: PathBuf, owner: &str) -> Owned {
+        Owned {
+            rel,
+            path,
+            owner: owner.to_string(),
+            rev: None,
+            items: Vec::new(),
+            places: HashMap::new(),
+            links: Vec::new(),
+            given: Default::default(),
+        }
+    }
+
+    /// Take what its owner gave for version `rev`, and its items and links read from it
+    /// (`given::read`). Returns what didn't read, one line each.
+    pub fn take(
+        &mut self,
+        rev: String,
+        given: crate::owner::given::Given,
+        read: crate::owner::given::Read,
+    ) -> Vec<String> {
+        self.rev = Some(rev);
+        self.items = read.items;
+        self.places = read.places;
+        self.links = read.links;
+        self.given = given;
+        read.problems
+    }
+}
+
 pub struct Workspace {
     pub root: PathBuf,
     pub name: String,
     pub notes: Vec<Note>,
-    /// Files other owners read, by `rel`. The core keeps them (`Core::set_owners`).
+    /// Files other owners read, by `rel`: canvases from the scan (the engine's own owner), the
+    /// extensions' kinds once the core knows them (`Core::set_owners`).
     pub owned: Vec<Owned>,
     /// What items depend on (flavour, Tasks and daily-note settings), read on first use.
     pub item_settings: OnceLock<items::Settings>,
@@ -183,13 +216,43 @@ pub fn scan(root: &Path) -> Result<Workspace> {
         .filter_map(|p| read_note(&root, &p))
         .collect();
     notes.sort_by(|a, b| a.rel.cmp(&b.rel));
-    Ok(Workspace {
+    let mut workspace = Workspace {
         root,
         name,
         notes,
         owned: Vec::new(),
         item_settings: OnceLock::new(),
-    })
+    };
+    workspace.owned = built_in_owned(&workspace);
+    Ok(workspace)
+}
+
+/// The files the engine's own owners read besides notes (`owner::BUILT_IN`: canvases), each
+/// with what its owner gave. One that doesn't read is there with nothing (`rev` `None`), and
+/// the core says why when it reads it again.
+fn built_in_owned(v: &Workspace) -> Vec<Owned> {
+    let walker = WalkDir::new(&v.root).into_iter().filter_entry(|e| {
+        let n = e.file_name().to_string_lossy();
+        e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
+    });
+    let mut out: Vec<Owned> = (walker.filter_map(|e| e.ok()))
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            let rel = e.path().strip_prefix(&v.root).ok()?;
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let owner = crate::owner::built_in(&rel)?;
+            let mut file = Owned::new(rel, e.path().to_path_buf(), owner);
+            let bytes = fs::read(e.path()).ok()?;
+            let text = std::str::from_utf8(&bytes).ok();
+            if let Some(Some(Ok(given))) = text.map(|t| crate::owner::give(owner, &file.rel, t)) {
+                let read = crate::owner::given::read(&file.rel, &given, v.item_settings());
+                file.take(crate::files::rev(&bytes), given, read);
+            }
+            Some(file)
+        })
+        .collect();
+    out.sort_by(|a, b| a.rel.cmp(&b.rel));
+    out
 }
 
 /// What happened to a note when the workspace was told a path changed.

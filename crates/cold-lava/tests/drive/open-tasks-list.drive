@@ -6,7 +6,7 @@
 size 140x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
-wait-for ☐ 7 open tasks
+wait-for ☐ 16 open tasks
 keys :
 type list the open
 wait-for list the open tasks by note
@@ -20,10 +20,10 @@ expect 2026-11-01
 expect ▾ Journal/2026-11-05  3
 screen
 keys j j j j j x
-wait-for 6 rows
-expect ☐ 6 open tasks
+wait-for 15 rows
+expect ☐ 15 open tasks
 expect-not Check the seismograph
-keys G enter
+keys g j j j j j enter
 wait-for Journal/2026-11-05  reading
 wait-for Ctrl-o ⟵ open-tasks
 keys ctrl+o

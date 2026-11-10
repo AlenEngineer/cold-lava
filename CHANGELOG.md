@@ -7,6 +7,25 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- Whiteboards join the workspace (part of #92). A `.canvas` file is read by the engine's own
+  canvas owner: a task on a sticky or a text card is a task in the agenda, the type table,
+  `cold-lava items` and `items/query`, and its links and tags count; a note card is a link from
+  the board, so the note's backlinks list the board, the graph draws the edge and tidy doesn't
+  call the note an orphan. Ticking a board's task in the agenda changes that card's text in the
+  file and nothing else; `Enter` on it, or on the board's backlink, opens the whiteboard. In the
+  example workspace, `Volcano Venn.canvas`'s sticky task and `Welcome.canvas`'s checklist are in
+  the agenda, and Krakatoa lists both canvases with its card.
+
+### Changed
+
+- Renames rewrite a board's note cards and the links in its text cards through the canvas
+  owner, only in nodes' `file` and `text`. The delete warning says "files link to them", since
+  a board can be one.
+- The whiteboard reads a card without `x`, `y`, `width` or `height` as at 0 instead of refusing
+  the board.
+
 ## [0.5.0] - 2026-11-10
 
 Shapes, usable end to end: a canvas engine draws any shape from its geometry, shapes are
