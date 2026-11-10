@@ -5,6 +5,7 @@
 use crate::act::{Answered, Ask};
 use crate::core::Core;
 use crate::ext::{Effect, ExtId, Registry};
+use crate::gateway::{Answer, Edit, Edited, Error, Op, Reason};
 use crate::{paths, rename, workspace};
 use anyhow::{Result, anyhow, bail};
 use std::path::{Path, PathBuf};
@@ -38,6 +39,71 @@ pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspac
     }
     Ok(core.index.workspace)
 }
+
+/// The owner of the file at workspace-relative `rel`, when it isn't a note: the engine's
+/// built-in one (a canvas) or an installed extension.
+pub fn owner_of(registry: &Registry, rel: &str) -> Option<String> {
+    let built_in = crate::owner::built_in(rel).map(String::from);
+    built_in.or_else(|| {
+        let (ext, _) = registry.owner_of(rel)?;
+        Some(registry.manifest(ext).name.clone())
+    })
+}
+
+/// `item set` on a file another owner reads: the same edit the agenda makes (`Core::edit_item`),
+/// so the owner writes it, it is read back before it is written, and it is refused if the file
+/// changed since its owner read it. An extension owner is started to answer.
+pub fn set_field(
+    root: &Path,
+    registry: &mut Registry,
+    rel: &str,
+    id: &str,
+    rev: Option<&str>,
+    field: &str,
+    value: serde_json::Value,
+) -> Result<Edited, Error> {
+    let refused = |m: String| Error::new(Reason::Refused, m);
+    let mut core = open(root, registry).map_err(|e| refused(format!("{e:#}")))?;
+    let file = (core.index.workspace.owned.iter()).find(|f| f.rel == rel);
+    let Some(file) = file.filter(|f| f.rev.is_some()) else {
+        let owner = owner_of(registry, rel).unwrap_or_default();
+        return Err(refused(format!(
+            "{rel} is left out: {owner} hasn't read it as it is now (open the workspace in \
+             cold-lava, and {owner} reads it)"
+        )));
+    };
+    let item = (file.items.iter()).find(|i| i.id == id).ok_or_else(|| {
+        let message = format!("{rel} has no item {id}: read it again");
+        Error::new(Reason::Changed, message)
+    })?;
+    let edit = Edit {
+        id: id.to_string(),
+        rev: rev.unwrap_or(&item.rev).to_string(),
+        op: Op::SetField {
+            field: field.to_string(),
+            value,
+        },
+    };
+    let ticket = match core.edit_item(BY, &edit)? {
+        Answer::Now(edited) => return Ok(*edited),
+        Answer::Later(ticket) => ticket,
+    };
+    let mut answer = None;
+    let mut take = |c: &mut Core| {
+        answer = (c.take_edited().into_iter()).find_map(|(_, t, a)| (t == ticket).then_some(a));
+        answer.is_some()
+    };
+    if !take(&mut core) {
+        Owners::new(registry, &core).serve(&mut core, take);
+    }
+    answer.unwrap_or_else(|| {
+        let message = format!("{rel}'s owner didn't answer in {} s", PATIENCE.as_secs());
+        Err(refused(message))
+    })
+}
+
+/// Who `item set` edits as.
+const BY: &str = "cold-lava";
 
 /// The owners a command line run started, to answer what the core asks them.
 pub struct Owners<'a> {

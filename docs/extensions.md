@@ -1200,9 +1200,15 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   kept, another program's change to a canvas while the agenda shows it, kept by the next tick,
   Enter opening the whiteboard and Back, a rename rewriting the card and the sticky, and the
   graph's edge; `tests/drive.rs` reads the canvases after. `core.rs` tests a refused edit.
-- **Not yet:** `task toggle FILE:LINE` on the command line takes a note's line, so it doesn't
-  tick a canvas's task (`item set` and the menu do); the whiteboard doesn't select the node at
-  the place it was opened for.
+- **The command line.** `cold-lava item set FILE ID FIELD VALUE` on a canvas (or on any file
+  an owner reads) takes the agenda's path, `Core::edit_item` through `owned::set_field`: the
+  owner writes the node's text, it is read back before it is written, and a stale `--rev` or a
+  file changed since it was read is refused with exit code 3. An extension owner is started to
+  answer, and a file its owner hasn't read as it is now is refused, naming the owner.
+  `--dry-run` is refused there, since an owner makes the text only for a real edit. `task toggle
+  FILE:LINE` refuses a file an owner reads, since a line doesn't name a task in it, and says to
+  use `item set FILE ID status x`. `tests/items.rs` ticks the Venn sticky's task this way.
+- **Not yet:** the whiteboard doesn't select the node at the place it was opened for.
 
 ### Owners on top of Markdown, as built
 

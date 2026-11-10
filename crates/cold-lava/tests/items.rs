@@ -274,6 +274,58 @@ fn item_set_writes_one_cell_and_refuses_a_stale_rev() {
 }
 
 #[test]
+fn item_set_ticks_a_canvas_task_through_its_owner() {
+    let workspace = sandbox("set-canvas");
+    let v = workspace.to_str().unwrap();
+    let file = format!("{v}/Volcano Venn.canvas");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let task = run(&workspace, &["items", v, "task", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|i| i["note"] == "Volcano Venn.canvas")
+        .unwrap();
+    let id = task["id"].as_str().unwrap();
+
+    let dry = cold_lava(&workspace)
+        .args(["item", "set", &file, id, "status", "x", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!dry.status.success(), "a dry run isn't asked of an owner");
+    let set = run(&workspace, &["item", "set", &file, id, "status", "x"]);
+    assert!(
+        set.starts_with("set Volcano Venn.canvas:2  [x] Two per person"),
+        "{set}"
+    );
+    let now = std::fs::read_to_string(&file).unwrap();
+    let old = "\"Ash masks\\n- [ ] Two per person, for the trip\"";
+    let (head, tail) = original.split_once(old).unwrap();
+    let text = now.strip_prefix(head).and_then(|r| r.strip_suffix(tail));
+    assert_eq!(
+        text,
+        Some("\"Ash masks\\n- [x] Two per person, for the trip\""),
+        "only the sticky's text changed: {now}"
+    );
+
+    let stale = cold_lava(&workspace)
+        .args(["item", "set", &file, id, "status", " ", "--rev", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(stale.status.code(), Some(3), "a stale rev is refused");
+    let toggle = cold_lava(&workspace)
+        .args(["task", "toggle", &format!("{file}:2")])
+        .output()
+        .unwrap();
+    assert!(!toggle.status.success());
+    assert!(
+        String::from_utf8_lossy(&toggle.stderr).contains("is read by canvas, not as a note"),
+        "{}",
+        String::from_utf8_lossy(&toggle.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), now);
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
+#[test]
 fn table_prints_a_types_rows_sorted() {
     let workspace = sandbox("table");
     let v = workspace.to_str().unwrap();

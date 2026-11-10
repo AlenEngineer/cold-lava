@@ -33,6 +33,9 @@ change commands, keys and file formats; patch versions only fix things.
 - Renames rewrite a board's note cards and the links in its text cards through the canvas
   owner, only in nodes' `file` and `text`. The delete warning says "files link to them", since
   a board can be one.
+- `cold-lava item set` on a whiteboard (or a file an extension owns) edits the item through its
+  owner, as the agenda does, instead of reading the file as a note; `--dry-run` is refused
+  there. `task toggle FILE:LINE` on such a file refuses and says to use `item set`.
 - The whiteboard reads a card without `x`, `y`, `width` or `height` as at 0 instead of refusing
   the board.
 

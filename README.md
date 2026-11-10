@@ -610,6 +610,11 @@ and `x` in the reader ticks a task the same way. Custom statuses whose next stat
 cancelled one get the cancelled date (`❌`, or `[cancelled:: …]`) unless the plugin's "set
 cancelled date" is off.
 
+A task on a whiteboard (or in a file an extension owns) has no line of its own in the file, so
+`task toggle` refuses it; set its status with `cold-lava item set FILE ID status x`, the id
+from `cold-lava items WORKSPACE task --json`. The edit goes through the file's owner, as the
+agenda's does, and only that card's text changes.
+
 `COLD_LAVA_TODAY=2026-11-07` makes every command and the menu take that date as today (the
 agenda, done and cancelled dates, recurrence), so scripted runs and their tests read the same on
 any day.
