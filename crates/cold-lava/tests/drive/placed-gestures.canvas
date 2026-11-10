@@ -1,0 +1,12 @@
+{
+	"nodes":[
+		{"id":"venn","type":"text","text":"Simple Venn diagram","x":0,"y":0,"width":600,"height":600,
+		 "cold-lava":{"shape":"venn2","inputs":{
+			"a":{"query":{"kind":"volcano","filter":{"tag":"eruption"},"title":"Erupted"}},
+			"b":{"query":{"kind":"volcano","filter":{"tag":"volcano/strato"},"title":"Stratovolcanoes"}}}}},
+		{"id":"sticky","type":"text","text":"Ash masks\nTwo per person","x":700,"y":0,"width":300,"height":140,
+		 "cold-lava":{"shape":"sticky","node":"text"}}
+	],
+	"edges":[],
+	"cold-lava-version":1
+}

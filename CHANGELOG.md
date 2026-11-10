@@ -17,6 +17,13 @@ change commands, keys and file formats; patch versions only fix things.
   sticky a `text` node with its text, other shapes a `text` node with their title. When a
   program saves the canvas without cold-lava's fields, the whiteboard keeps the shapes, saves
   them back and says so.
+- Placing and using shapes on the whiteboard: `s` picks any loaded shape and a small form
+  binds its inputs (a query, a note, labels or text, in `--bind`'s short form); `b` binds the
+  selected one again. A click or a drop on a shape runs what its `on` declares, through the
+  workspace gateway; `x` lists its actions, and a sticky's "Make it a note" makes the note and
+  turns the sticky into a card on it. Enter edits a sticky's text in place, opens a card's
+  note (Back returns to the whiteboard), or binds any other shape again. The example
+  workspace has a `checklist` shape whose click ticks a task.
 
 ### Changed
 

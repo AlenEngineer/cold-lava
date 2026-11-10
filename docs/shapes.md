@@ -439,6 +439,37 @@ repaints nothing. A click selects a shape where its parts, regions or box are
 its own turned frame) and its turn grip (`↻`, drag to turn in 15° steps; `r` turns 15°).
 Dragging it moves it. Kitty pixels aren't used for shapes yet; braille is.
 
+**Placing and using them** (the whiteboard's keys and mouse):
+
+- **`s` places a shape**: a palette of every loaded shape (built in, the workspace's, config's
+  and extensions', each with its origin), then a form with a line per input, each a source in
+  the short form `--bind` takes (`type=volcano tag=eruption title="Erupted" where vei >= 6`,
+  `note:Volcanoes/Krakatoa`, `items:Fuji, Krakatoa`, `text:…`; empty leaves it unbound). It is
+  bound before it is placed, so a mistake (`no item kind or type called vulcano`) shows in the
+  form. The shape goes beside the selection, else right of everything, at about 1200 square
+  world units in its own `aspect`. **`b`** opens the same form on the selected shape, filled in
+  with its sources (`Source::short`).
+- **A click** runs the `click` its shape declares for what is under it: the region member (its
+  label, as the region painted it), else the region, else the part. The workspace's
+  `checklist` ticks a task this way, through `items/edit toggle`, attributed to `canvas`.
+- **Dragging a member** out of a region a `drop` starts from, into another region of the same
+  shape, is that drop; dragging anything else moves the shape.
+- **A key** that the selected shape declares in `on` is its gesture, before the whiteboard's
+  own keys.
+- **`x`** lists the selected shape's actions by title; Enter runs one. The sticky's "Make it a
+  note" creates the note where Obsidian puts new notes and turns the node into a card on it,
+  same place and size: the step's `rebind` becomes the node's new shape and sources, and the
+  live binding follows the node.
+- **Enter** (or a double-click) on a shape opens what it holds: a sticky's text is edited in
+  place on the node (Esc saves, merging with outside changes as a card's text does); a card
+  opens its note in the menu, and Back returns to the whiteboard; any other shape opens `b`'s
+  form.
+- Each step goes through the gateway as "Behaviour, as built" says: the core for the user's
+  shapes, the shipping extension's `Host` (its permissions, its name on the edits) for an
+  extension's, whose `extension = true` gestures are asked `shape/gesture` and run when it
+  answers. A refused step says why in the status line and writes nothing; the built-in Venn's
+  drop is refused this way in the example workspace.
+
 Why the whiteboard and not a second canvas view: the whiteboard is already the one place that
 reads, writes, merges and watches `.canvas` files. Shapes on it are nodes among cards, edges and
 groups, sharing its undo, selection, camera and Obsidian-safe saving. A separate scene view for

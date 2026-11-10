@@ -147,6 +147,55 @@ impl Source {
     }
 }
 
+impl Source {
+    /// The short form `parse` reads back, as a form shows it to be edited: words for a query
+    /// (`type=volcano tag=eruption title="Erupted" where vei >= 6`), `note:…`, `items:…`,
+    /// `text:…`, or JSON for what the words can't say (a date range, a quote in a value, a comma
+    /// in a label, a line break in text).
+    pub fn short(&self) -> String {
+        let json = || serde_json::to_string(self).unwrap_or_default();
+        match self {
+            Source::Note(path) => format!("note:{path}"),
+            Source::Items(labels) if labels.iter().any(|l| l.contains(',')) => json(),
+            Source::Items(labels) => format!("items:{}", labels.join(", ")),
+            Source::Text(text) if text.contains('\n') => json(),
+            Source::Text(text) => format!("text:{text}"),
+            Source::Query(b) => {
+                let f = &b.select.filter;
+                let status = (!f.status.is_empty()).then(|| f.status.join(","));
+                let pairs = [
+                    ("type", Some(&b.select.kind)),
+                    ("tag", f.tag.as_ref()),
+                    ("folder", f.folder.as_ref()),
+                    ("note", f.note.as_ref()),
+                    ("status", status.as_ref()),
+                    ("property", f.property.as_ref()),
+                    ("text", f.text.as_ref()),
+                    ("title", b.title.as_ref()),
+                ];
+                let values = || pairs.iter().filter_map(|(_, v)| *v);
+                let quoted = |v: &str| v.contains('"') || v.contains(" where ");
+                if f.date.is_some() || values().any(|v| quoted(v)) {
+                    return json();
+                }
+                let mut words: Vec<String> = (pairs.iter())
+                    .filter_map(|(k, v)| {
+                        let v = (*v)?;
+                        Some(match v.contains(char::is_whitespace) || v.is_empty() {
+                            true => format!("{k}=\"{v}\""),
+                            false => format!("{k}={v}"),
+                        })
+                    })
+                    .collect();
+                if let Some(c) = &b.condition {
+                    words.push(format!("where {c}"));
+                }
+                words.join(" ")
+            }
+        }
+    }
+}
+
 /// Words split at spaces, a `"…"` keeping its spaces (the quotes dropped).
 fn words(s: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
@@ -800,6 +849,30 @@ mod tests {
             Source::Note("A.md".into())
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_short_form_reads_back_as_the_same_source() {
+        for short in [
+            "type=volcano tag=eruption title=Erupted",
+            "type=volcano tag=volcano/strato folder=Volcanoes title=\"Strato volcanoes\" where vei >= 6",
+            "type=task status=todo,in_progress",
+            "note:Volcanoes/Krakatoa.md",
+            "items:Mount Fuji, Krakatoa",
+            "text:Pack ash masks",
+        ] {
+            let source = Source::parse(short).unwrap();
+            assert_eq!(source.short(), short);
+            assert_eq!(Source::parse(&source.short()).unwrap(), source);
+        }
+        for odd in [
+            Source::Text("two\nlines".into()),
+            Source::Items(vec!["a, b".into()]),
+            Source::parse(r#"{"query": {"kind": "volcano", "title": "say \"hi\""}}"#).unwrap(),
+        ] {
+            assert!(odd.short().starts_with('{'), "{}", odd.short());
+            assert_eq!(Source::parse(&odd.short()).unwrap(), odd);
+        }
     }
 
     #[test]

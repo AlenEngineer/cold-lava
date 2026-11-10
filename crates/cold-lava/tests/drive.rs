@@ -550,6 +550,73 @@ fn placed_shapes_show_their_data_and_stretch_turn_and_move() {
 }
 
 #[test]
+fn shapes_are_placed_bound_clicked_edited_and_made_into_notes() {
+    let dir = sandbox("placed-gestures");
+    let workspace = dir.join("example-workspace");
+    let file = workspace.join("Inbox/Gestures.canvas");
+    std::fs::write(&file, include_str!("drive/placed-gestures.canvas")).unwrap();
+    let season = workspace.join("Inbox/Field Season.md");
+    let before = std::fs::read_to_string(&season).unwrap();
+    let volcanoes: Vec<(PathBuf, String)> = files_ending(&workspace.join("Volcanoes"), ".md")
+        .into_iter()
+        .map(|p| (p.clone(), std::fs::read_to_string(p).unwrap()))
+        .collect();
+    let out = drive("placed-gestures.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = std::fs::read_to_string(&season).unwrap();
+    assert!(after.contains("- [x] Pack the gas masks ✅"), "{after}");
+    assert!(
+        after.contains("- [ ] Book the flight"),
+        "only the clicked task: {after}"
+    );
+    assert_eq!(before.lines().count(), after.lines().count());
+    for (path, text) in volcanoes {
+        let now = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            now,
+            text,
+            "the refused drop wrote nothing to {}",
+            path.display()
+        );
+    }
+    let notes = files_ending(&workspace, "Ash masks.md");
+    let [note] = &notes[..] else {
+        panic!("one note made from the sticky: {notes:?}")
+    };
+    let made = std::fs::read_to_string(note).unwrap();
+    assert!(made.contains("Two per person, for the trip"), "{made}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let canvas: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let card = placed(&canvas["nodes"], "sticky");
+    let rel = note.strip_prefix(&workspace).unwrap().to_string_lossy();
+    assert_eq!(card["type"], "file", "the sticky is a card now: {text}");
+    assert_eq!(card["file"], rel.as_ref());
+    assert_eq!(card["cold-lava"]["shape"], "card");
+    assert_eq!(
+        (card["x"].clone(), card["width"].clone()),
+        (700.into(), 300.into())
+    );
+    assert_eq!(
+        placed(&canvas["nodes"], "venn")["x"],
+        -100,
+        "the outside move"
+    );
+    let checklist = (canvas["nodes"].as_array().unwrap().iter())
+        .find(|n| n["cold-lava"]["shape"] == "checklist")
+        .unwrap_or_else(|| panic!("the placed checklist: {text}"));
+    assert_eq!(
+        checklist["cold-lava"]["inputs"]["tasks"]["query"]["filter"]["note"],
+        "Inbox/Field Season.md"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn placed_shapes_survive_obsidians_saves_and_are_kept_when_a_save_drops_them() {
     let dir = sandbox("placed-guard");
     let workspace = dir.join("example-workspace");

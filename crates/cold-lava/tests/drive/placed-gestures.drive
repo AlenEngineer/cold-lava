@@ -1,0 +1,72 @@
+# Placing and using shapes, on Inbox/Gestures.canvas, which tests/drive.rs writes first: a Venn
+# bound to two volcano queries and a sticky. `s` places the workspace's checklist bound to the
+# tasks of Inbox/Field Season; a click on a task ticks it through the gateway and it leaves the
+# box. The sticky's text is edited in place while another program moves the Venn: both are
+# kept. "Make it a note" turns the sticky into a note and a card on it; Enter on the card opens
+# the note, and Back returns. Dropping a volcano into the Venn's lens is refused (its tags are
+# read from the text, which a field edit can't write). tests/drive.rs reads the files after.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type gestures
+keys enter
+wait-for whiteboard Gestures · 2 cards · 0 arrows
+wait-for Stratovolcanoes
+# The sticky, edited in place while the Venn is moved outside.
+click 9 100
+wait-for shape sticky · Sticky note
+keys enter
+wait-for editing · type text
+type , for the trip
+write Inbox/Gestures.canvas {"nodes":[\n{"id":"venn","type":"text","text":"Simple Venn diagram","x":-100,"y":0,"width":600,"height":600,"cold-lava":{"shape":"venn2","inputs":{"a":{"query":{"kind":"volcano","filter":{"tag":"eruption"},"title":"Erupted"}},"b":{"query":{"kind":"volcano","filter":{"tag":"volcano/strato"},"title":"Stratovolcanoes"}}}}},\n{"id":"sticky","type":"text","text":"Ash masks\u000aTwo per person","x":700,"y":0,"width":300,"height":140,"cold-lava":{"shape":"sticky","node":"text"}}\n],"edges":[],"cold-lava-version":1}\n
+wait 500ms
+keys esc
+wait-for merged changes made outside cold-lava
+wait-for the trip
+keys esc
+wait-for  Inbox/Gestures.canvas
+keys s
+wait-for place a shape · type to filter
+type check
+expect checklist  Checklist  · workspace
+keys enter
+wait-for bind checklist
+type type=task note="Inbox/Field Season.md" title="Field season"
+keys enter
+wait-for shape checklist · Checklist  550×220  0 arrows
+expect-in 14 50 14 90 Field season
+expect-in 22 40 22 100 Pack the gas masks
+click 22 68
+wait-for canvas: ticked on Field Season
+wait-gone Pack the gas masks
+expect Book the flight to Kīlauea
+# Make it a note: the sticky becomes a note, and a card on it in the same place.
+click 20 5
+wait-for shape sticky · Sticky note
+keys x
+wait-for what the shape does
+expect Make it a note
+keys enter
+wait-for created Ash masks.md · now a card
+wait-for shape card · Card (a note)  300×140
+keys z
+wait-for 75%
+# A volcano dropped from only "Erupted" into the lens: refused, nothing written.
+drag 22 10 22 25
+wait-for can't be written
+# Enter on the card opens its note in the menu; Back comes back.
+click 11 70
+wait-for shape card
+keys enter
+wait-for Two per person, for the trip
+wait-gone whiteboard Gestures
+keys ctrl+o
+wait-for whiteboard Gestures · 3 cards
+keys q
+wait-for reading · j
+keys q
+wait-for ? help  q quit
+keys q
+exits 0

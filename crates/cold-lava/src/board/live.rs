@@ -5,12 +5,13 @@
 use super::CNode;
 use super::placed::{Stored, UNIT};
 use crate::act::{Answered, Ask, ShapeAnswer};
-use crate::bind::Binding;
+use crate::bind::{Binding, Entry};
 use crate::core::{Core, Event};
 use crate::gateway::News;
 use crate::shapes::Shapes;
+use cold_lava_canvas::fit::{self, Align, Flow, Room};
 use cold_lava_canvas::{
-    Grid, Handle, Hit, Placed, Placement, Point, Rect, Style, Viewport, draw, hit,
+    Grid, Handle, Hit, Mask, Placed, Placement, Point, Rect, Res, Style, Viewport, draw, hit,
 };
 use std::collections::HashMap;
 
@@ -34,12 +35,14 @@ struct Shaped {
     painted: Option<Painted>,
 }
 
-/// One shape painted at one view: its cells from `(col, row)` of the board's area.
+/// One shape painted at one view: its cells from `(col, row)` of the board's area, and where
+/// each region's members were put.
 pub struct Painted {
     key: PaintKey,
     pub col: i32,
     pub row: i32,
     pub grid: Grid,
+    spots: Vec<Spot>,
 }
 
 #[derive(PartialEq)]
@@ -49,6 +52,22 @@ struct PaintKey {
     at: (i64, i64, i64, i64, i64),
     cell: (i64, i64),
     size: (u16, u16),
+}
+
+/// A member's label where it was painted: region `region`'s entry `entry`, on `row` of the
+/// shape's grid from `col`, `width` cells.
+struct Spot {
+    region: usize,
+    entry: usize,
+    row: u16,
+    col: u16,
+    width: u16,
+}
+
+/// A member of a region under the mouse: the region's id and the member's id.
+pub struct Member {
+    pub region: String,
+    pub item: String,
 }
 
 fn q(v: f64) -> i64 {
@@ -201,6 +220,11 @@ impl Live {
         self.nodes.clear();
     }
 
+    /// The number that names the node's placed shape in an extension's answers.
+    pub fn placed_id(&self, id: &str) -> Option<u64> {
+        Some(self.nodes.get(id)?.placed)
+    }
+
     pub fn is_shape(&self, id: &str) -> bool {
         self.nodes.contains_key(id)
     }
@@ -281,18 +305,69 @@ impl Live {
         if !fresh {
             let mut grid = Grid::new(&local);
             draw::paint(&mut grid, &placed, &local);
-            if let Ok(b) = &shaped.binding {
-                draw::paint_contents(&mut grid, &placed, &local, &b.shown().contents());
-            }
+            let contents: Vec<Vec<Entry>> = match &shaped.binding {
+                Ok(b) => b.shown().regions.into_iter().map(|r| r.items).collect(),
+                Err(_) => Vec::new(),
+            };
+            let spots = paint_members(&mut grid, &placed, &local, &contents);
             shaped.painted = Some(Painted {
                 key,
                 col: c0 as i32,
                 row: r0 as i32,
                 grid,
+                spots,
             });
         }
         shaped.painted.as_ref()
     }
+
+    /// The region member painted at `(col, row)` of the board's area, as last painted.
+    pub fn member_at(&self, id: &str, col: i32, row: i32) -> Option<Member> {
+        let s = self.nodes.get(id)?;
+        let painted = s.painted.as_ref()?;
+        let (c, r) = (col - painted.col, row - painted.row);
+        let spot = painted.spots.iter().find(|sp| {
+            i32::from(sp.row) == r && (i32::from(sp.col)..i32::from(sp.col + sp.width)).contains(&c)
+        })?;
+        let b = s.binding.as_ref().ok()?;
+        let region = b.shape().definition.regions.get(spot.region)?;
+        let shown = b.shown();
+        let entry = shown.regions.get(spot.region)?.items.get(spot.entry)?;
+        Some(Member {
+            region: region.id.clone(),
+            item: entry.id.clone(),
+        })
+    }
+}
+
+/// What each region shows, fitted inside it as `draw::paint_contents` does, remembering where
+/// each member went.
+fn paint_members(
+    grid: &mut Grid,
+    placed: &Placed,
+    view: &Viewport,
+    contents: &[Vec<Entry>],
+) -> Vec<Spot> {
+    let mut spots = Vec::new();
+    for (region, (r, entries)) in placed.shape.regions().iter().zip(contents).enumerate() {
+        if entries.is_empty() {
+            continue;
+        }
+        let room = Room::inside(&Mask::area(placed, &r.area, view, Res::BRAILLE));
+        let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+        let fitted = fit::labels(&room, &labels, Flow::Column, Align::Center);
+        fitted.paint(grid, draw::TEXT);
+        for (entry, line) in fitted.lines.iter().take(fitted.shown).enumerate() {
+            spots.push(Spot {
+                region,
+                entry,
+                row: line.row,
+                col: line.col,
+                width: line.text.chars().count() as u16,
+            });
+        }
+    }
+    spots
 }
 
 /// The placement `p` with its corner `handle` dragged to world point `to`, the opposite corner

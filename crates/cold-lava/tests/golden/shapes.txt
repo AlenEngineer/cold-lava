@@ -62,4 +62,10 @@ tallest  workspace example-workspace/.cold-lava/shapes.toml  Tallest first
   parts rect box, text at box.top
   region list: box, shows volcanoes where elevation sort by elevation desc limit 5
 
+checklist  workspace example-workspace/.cold-lava/shapes.toml  Checklist
+  inputs tasks · aspect 2.5
+  parts rect box, text at box.top
+  region open: box, shows tasks where status_type != done
+  on click open: edit
+
 glyphs  ✓ check  ✗ cross  • dot  ★ star  ◆ diamond  → arrow  ▲ eruption

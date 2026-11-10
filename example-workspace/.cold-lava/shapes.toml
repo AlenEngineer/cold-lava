@@ -65,5 +65,21 @@ regions = [
   { id = "list", area = "box", shows = "volcanoes where elevation sort by elevation desc limit 5" },
 ]
 
+# Open tasks in a box: a click on one ticks it, as the Tasks plugin does, and it leaves the box.
+[[shapes]]
+id = "checklist"
+title = "Checklist"
+inputs = ["tasks"]
+aspect = 2.5
+parts = [
+  { rect = { id = "box", from = [0, 0], to = [1, 1] } },
+  { text = { at = "box.top", value = "${tasks.title}" } },
+]
+regions = [{ id = "open", area = "box", shows = "tasks where status_type != done" }]
+
+[[shapes.on]]
+click = "open"
+edit = { item = "clicked", toggle = true }
+
 [glyphs]
 eruption = "▲"

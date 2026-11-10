@@ -1534,6 +1534,10 @@ impl Home {
             }
             Exit::Back => self.history.back(Some(here)),
             Exit::Forward => self.history.forward(Some(here)),
+            Exit::Open(path) => {
+                self.history.visit(here);
+                Some(Place::Note { path, spot: None })
+            }
         }
     }
 

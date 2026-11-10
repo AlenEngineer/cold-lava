@@ -32,6 +32,8 @@ use walkdir::WalkDir;
 mod live;
 mod placed;
 
+use crate::act::{self, Acted, Answered, Done, Gesture};
+use crate::bind::{Binding, Source};
 use crate::core::{Core, Event as CoreEvent};
 use crate::ext::{ExtId, Registry};
 use crate::gateway::News;
@@ -163,6 +165,25 @@ enum Mode {
     Help,
     /// Which key: the whiteboard's commands by group, until a key is typed.
     Keys,
+    /// Picking a shape to place.
+    Palette {
+        query: String,
+        pos: usize,
+    },
+    /// Binding a shape's inputs, each a source in the short form (`type=volcano tag=x`,
+    /// `note:…`, `items:…`, `text:…`): a new shape when `node` is `None`.
+    Bind {
+        node: Option<String>,
+        shape: String,
+        fields: Vec<(String, String)>,
+        pos: usize,
+        error: Option<String>,
+    },
+    /// The selected shape's actions.
+    Actions {
+        id: String,
+        pos: usize,
+    },
 }
 
 enum Drag {
@@ -187,6 +208,13 @@ enum Drag {
         id: String,
         moved: bool,
     },
+    /// A member dragged out of a region of a shape that takes drops from it.
+    Member {
+        id: String,
+        from: String,
+        item: String,
+        moved: bool,
+    },
 }
 
 /// What a click grabbed on a card or shape.
@@ -207,6 +235,10 @@ struct Board<'a> {
     news: Vec<(String, News)>,
     /// Extensions asked about their shapes, polled until they answer.
     asking: Vec<ExtId>,
+    /// A gesture handed to the extension that ships its shape: the node, and the gesture.
+    gesturing: Option<(String, Gesture)>,
+    /// Where the mouse went down on a shape, for a click when it comes up without moving.
+    press: Option<(String, u16, u16)>,
     path: PathBuf,
     workspace_root: PathBuf,
     workspace_name: String,
@@ -432,6 +464,8 @@ impl<'a> Board<'a> {
             events: Vec::new(),
             news: Vec::new(),
             asking: Vec::new(),
+            gesturing: None,
+            press: None,
             path,
             workspace_root,
             workspace_name,
@@ -498,6 +532,10 @@ impl<'a> Board<'a> {
         let events = self.core.poll();
         for e in &events {
             self.live.noticed(self.core, e);
+            if let CoreEvent::ItemEdited { note, by, what, .. } = e {
+                let name = note.rsplit('/').next().unwrap_or(note);
+                self.flash(format!("{by}: {what} on {name}"));
+            }
         }
         self.events.extend(events);
         for (owner, news) in self.core.take_item_news() {
@@ -520,8 +558,337 @@ impl<'a> Board<'a> {
                 .call(ext, Some(self.core), |e, host| e.poll(host));
         }
         for answer in self.core.take_shape_answers() {
-            self.live.answered(answer);
+            let placed = answer.ask.placed();
+            let mine = (self.gesturing.as_ref())
+                .is_some_and(|(id, _)| self.live.placed_id(id) == Some(placed));
+            match (mine, answer.answer) {
+                (true, Ok(Answered::Gesture { steps })) => {
+                    let (id, gesture) = self.gesturing.take().expect("checked");
+                    self.run_steps(&id, &gesture, &steps);
+                }
+                (true, Err(why)) => {
+                    self.gesturing = None;
+                    self.flash(format!("{}: {why}", answer.by));
+                }
+                (_, a) => self.live.answered(crate::act::ShapeAnswer {
+                    answer: a,
+                    ..answer
+                }),
+            }
         }
+    }
+
+    /// Runs `gesture` on the shaped node `id`: its steps go through the workspace gateway, as
+    /// the canvas for the user's shapes and as the extension that ships the shape for its own.
+    fn gesture(&mut self, id: &str, gesture: Gesture) {
+        let (Some(binding), Some(placed)) = (self.live.binding(id), self.live.placed_id(id)) else {
+            return;
+        };
+        let acted = match binding.extension() {
+            None => binding.act(&mut act::Direct::user(self.core), &gesture, placed),
+            Some(name) => match self.registry.by_name(name) {
+                Some(ext) => {
+                    let mut out = None;
+                    let gw = |_: &mut dyn crate::ext::Extension,
+                              host: &mut crate::ext::Host<'_>| {
+                        out = Some(binding.act(host, &gesture, placed))
+                    };
+                    self.registry.call(ext, Some(self.core), gw);
+                    out.expect("called")
+                }
+                None => return self.flash(format!("{name} isn't installed")),
+            },
+        };
+        match acted {
+            Ok(Acted::Ran(done)) => self.done(id, done),
+            Ok(Acted::Ask(ask)) => {
+                let Some(ext) = binding.extension().and_then(|n| self.registry.by_name(n)) else {
+                    return;
+                };
+                self.registry.ask_shape(ext, Some(self.core), ask);
+                if !self.asking.contains(&ext) {
+                    self.asking.push(ext);
+                }
+                self.gesturing = Some((id.to_string(), gesture));
+            }
+            Err(e) => self.flash(e.to_string()),
+        }
+    }
+
+    /// The steps an extension answered for a gesture on its shape, run as that extension.
+    fn run_steps(&mut self, id: &str, gesture: &Gesture, steps: &[crate::shapes::Step]) {
+        let Some(binding) = self.live.binding(id) else {
+            return;
+        };
+        let Some(ext) = binding.extension().and_then(|n| self.registry.by_name(n)) else {
+            return;
+        };
+        let mut out = None;
+        self.registry.call(ext, Some(self.core), |_, host| {
+            out = Some(binding.run(host, gesture, steps))
+        });
+        match out.expect("called") {
+            Ok(done) => self.done(id, done),
+            Err(e) => self.flash(e.to_string()),
+        }
+    }
+
+    /// What a gesture's steps did: notes made are said, and a rebind makes the node the new
+    /// shape with the new inputs, in the same place and size.
+    fn done(&mut self, id: &str, done: Done) {
+        let mut said: Vec<String> = (done.steps.iter())
+            .filter_map(|d| match d {
+                act::Did::Created { path } => Some(format!("created {path}")),
+                act::Did::Recipe { title } => Some(format!("ran {title}")),
+                act::Did::Edited { .. } => None,
+            })
+            .collect();
+        if let Some(to) = done.rebind {
+            let Some(shape) = self.live.shapes.get(&to.shape) else {
+                return self.flash(format!("no shape is called {}", to.shape));
+            };
+            let (inputs, title) = (
+                shape.definition.inputs.clone(),
+                shape.definition.title.clone(),
+            );
+            self.checkpoint();
+            if let Some(n) = self.node_mut(id)
+                && let Some(Ok(stored)) = placed::Stored::of(n)
+            {
+                let at = stored.placement(n);
+                placed::place(n, &to.shape, &inputs, &title, &to.inputs, at);
+            }
+            self.commit();
+            said.push(format!("now a {}", to.shape));
+        }
+        if !said.is_empty() {
+            self.flash(said.join(" · "));
+        }
+    }
+
+    /// A click at a cell of the shaped node `id`: the click its shape declares for the member,
+    /// region or part there, if any.
+    fn click(&mut self, id: &str, col: u16, row: u16) {
+        let Some(binding) = self.live.binding(id) else {
+            return;
+        };
+        let a = self.area;
+        let member = (self.live).member_at(
+            id,
+            i32::from(col) - i32::from(a.x),
+            i32::from(row) - i32::from(a.y),
+        );
+        let world = self.to_world(col, row);
+        let tolerance = PX_COL / self.zoom / placed::UNIT;
+        let hit = self
+            .node(id)
+            .and_then(|n| self.live.hit(n, world, tolerance, false));
+        let placed = self.node(id).and_then(|n| self.live.placed(n));
+        let d = &binding.shape().definition;
+        let mut on: Vec<(String, Option<String>)> = Vec::new();
+        if let Some(m) = &member {
+            on.push((m.region.clone(), Some(m.item.clone())));
+        }
+        if let Some(r) = hit.and_then(|h| d.regions.get(h.region?)) {
+            on.push((r.id.clone(), None));
+        }
+        if let (Some(p), Some(h)) = (&placed, hit)
+            && let Some(part) = h.part.and_then(|i| p.shape.parts()[i].id.clone())
+        {
+            on.push((part, None));
+        }
+        let found =
+            (on.into_iter()).find(|(o, _)| d.on.iter().any(|b| b.click.as_ref() == Some(o)));
+        if let Some((on, item)) = found {
+            self.gesture(id, Gesture::Click { on, item });
+        }
+    }
+
+    /// The member under a cell of the shaped node `id`, when its region is where a drop starts.
+    fn draggable(&self, id: &str, col: u16, row: u16) -> Option<live::Member> {
+        let a = self.area;
+        let m = (self.live).member_at(
+            id,
+            i32::from(col) - i32::from(a.x),
+            i32::from(row) - i32::from(a.y),
+        )?;
+        let d = &self.live.binding(id)?.shape().definition;
+        let starts =
+            |b: &crate::shapes::Behaviour| b.drop.as_ref().is_some_and(|d| d.from == m.region);
+        d.on.iter().any(starts).then_some(m)
+    }
+
+    /// Enter or a double-click on a shaped node: a sticky's text is edited in place, a card
+    /// opens its note, any other shape's inputs are bound again.
+    fn open_shape(&mut self, id: &str) -> bool {
+        let Some(n) = self.node(id) else { return false };
+        let Some(Ok(stored)) = placed::Stored::of(n) else {
+            return false;
+        };
+        match (n.kind.as_str(), &stored.node) {
+            ("text", Some(_)) => {
+                let buf = n.text.clone().unwrap_or_default();
+                let id = id.to_string();
+                self.mode = Mode::Edit {
+                    id,
+                    buf,
+                    is_new: false,
+                };
+            }
+            ("file", Some(_)) if self.nav.is_some() => {
+                let path = self.workspace_root.join(n.file.clone().unwrap_or_default());
+                self.request_quit();
+                if self.quit {
+                    self.exit = Exit::Open(path);
+                }
+            }
+            ("file", Some(_)) => return false,
+            _ => self.bind_form(Some(id.to_string()), stored.shape.clone()),
+        }
+        true
+    }
+
+    /// The form that binds `shape`'s inputs: filled in from the node's sources when it has one.
+    fn bind_form(&mut self, node: Option<String>, shape: String) {
+        let Some(loaded) = self.live.shapes.get(&shape) else {
+            return self.flash(format!("no shape is called {shape}"));
+        };
+        let sources = (node.as_ref())
+            .and_then(|id| self.node(id))
+            .and_then(|n| Some(placed::Stored::of(n)?.ok()?.sources(n)))
+            .unwrap_or_default();
+        let fields = (loaded.definition.inputs.iter())
+            .map(|i| {
+                (
+                    i.clone(),
+                    sources.get(i).map(Source::short).unwrap_or_default(),
+                )
+            })
+            .collect();
+        self.mode = Mode::Bind {
+            node,
+            shape,
+            fields,
+            pos: 0,
+            error: None,
+        };
+    }
+
+    /// Places or binds again what the form says, or says what's wrong with it.
+    fn submit_bind(&mut self) {
+        let Mode::Bind {
+            node,
+            shape,
+            fields,
+            ..
+        } = &self.mode
+        else {
+            return;
+        };
+        let (node, shape) = (node.clone(), shape.clone());
+        let mut sources = indexmap::IndexMap::new();
+        let mut wrong = None;
+        for (input, text) in fields {
+            if text.trim().is_empty() {
+                continue;
+            }
+            match Source::parse(text) {
+                Ok(s) => drop(sources.insert(input.clone(), s)),
+                Err(e) => wrong = Some(format!("{input}: {e}")),
+            }
+        }
+        let tried = match wrong {
+            Some(e) => Err(e),
+            None => Binding::new(self.core, &self.live.shapes, &shape, sources.clone()),
+        };
+        let error = match tried {
+            Ok(mut b) => {
+                b.close(self.core);
+                None
+            }
+            Err(e) => Some(e),
+        };
+        if let Some(e) = error {
+            if let Mode::Bind { error, .. } = &mut self.mode {
+                *error = Some(e);
+            }
+            return;
+        }
+        self.mode = Mode::Normal;
+        let Some(loaded) = self.live.shapes.get(&shape) else {
+            return;
+        };
+        let (inputs, title) = (
+            loaded.definition.inputs.clone(),
+            loaded.definition.title.clone(),
+        );
+        let aspect = loaded.definition.aspect.unwrap_or(1.5);
+        let id = match node {
+            Some(id) => {
+                self.checkpoint();
+                id
+            }
+            None => {
+                // About 1200 square world units, the shape's own width over height.
+                let (w, h) = ((1200.0 * aspect).sqrt(), (1200.0 / aspect).sqrt());
+                let (w, h) = (snap(w * placed::UNIT), snap(h * placed::UNIT));
+                // Beside the selection, else right of everything, so it covers nothing.
+                let at = match (&self.sel, self.bounds()) {
+                    (None, Some((_, y0, x1, _))) => Some((x1 + 80.0, y0)),
+                    _ => None,
+                };
+                self.add_node("text", at, w, h)
+            }
+        };
+        if let Some(n) = self.node_mut(&id) {
+            let at = match placed::Stored::of(n) {
+                Some(Ok(stored)) => stored.placement(n),
+                _ => cold_lava_canvas::Placement::new(
+                    Point::new(n.x, n.y) * (1.0 / placed::UNIT),
+                    Point::new(n.width, n.height) * (1.0 / placed::UNIT),
+                ),
+            };
+            placed::place(n, &shape, &inputs, &title, &sources, at);
+        }
+        self.commit();
+        self.sel = Some(id.clone());
+        self.ensure_visible(&id);
+    }
+
+    /// The shapes the palette lists for `query`: id, title and where each comes from.
+    fn palette(&self, query: &str) -> Vec<(String, String)> {
+        let q = crate::workspace::search_key(query);
+        (self.live.shapes.shapes.iter())
+            .filter(|s| {
+                let words = format!("{} {}", s.id, s.definition.title);
+                crate::workspace::search_key(&words).contains(&q)
+            })
+            .map(|s| {
+                let title = match s.definition.title.is_empty() {
+                    true => String::new(),
+                    false => format!("  {}", s.definition.title),
+                };
+                (s.id.clone(), format!("{}{title}  · {}", s.id, s.origin))
+            })
+            .collect()
+    }
+
+    /// The selected shape's actions: each name and how its shape titles it.
+    fn actions(&self, id: &str) -> Vec<(String, String)> {
+        let Some(b) = self.live.binding(id) else {
+            return Vec::new();
+        };
+        (b.shape().definition.on.iter())
+            .filter_map(|o| {
+                let name = o.action.clone()?;
+                let title = if o.title.is_empty() {
+                    name.clone()
+                } else {
+                    o.title.clone()
+                };
+                Some((name, title))
+            })
+            .collect()
     }
 
     // ---------- live sync with the file on disk ----------
@@ -1140,6 +1507,9 @@ impl<'a> Board<'a> {
         let Some(id) = self.sel.clone() else {
             return Ok(());
         };
+        if self.open_shape(&id) {
+            return Ok(());
+        }
         let Some(n) = self.node(&id) else {
             return Ok(());
         };
@@ -1373,6 +1743,86 @@ impl<'a> Board<'a> {
                 }
                 return Ok(());
             }
+            Mode::Palette { query, pos } => {
+                match k.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Up => *pos = pos.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Tab => *pos += 1,
+                    KeyCode::Backspace => {
+                        query.pop();
+                        *pos = 0;
+                    }
+                    KeyCode::Char(c) => {
+                        query.push(c);
+                        *pos = 0;
+                    }
+                    KeyCode::Enter => {
+                        let (q, p) = (query.clone(), *pos);
+                        let hits = self.palette(&q);
+                        self.mode = Mode::Normal;
+                        if let Some((id, _)) = hits.get(p.min(hits.len().saturating_sub(1))) {
+                            self.bind_form(None, id.clone());
+                            if let Mode::Bind { fields, .. } = &self.mode
+                                && fields.is_empty()
+                            {
+                                self.submit_bind();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            Mode::Bind {
+                fields, pos, error, ..
+            } => {
+                let field = fields.get_mut(*pos).map(|(_, text)| text);
+                match k.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Up | KeyCode::BackTab => *pos = pos.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Tab => {
+                        *pos = (*pos + 1).min(fields.len().saturating_sub(1))
+                    }
+                    KeyCode::Backspace => {
+                        field.map(String::pop);
+                        *error = None;
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(f) = field {
+                            f.push(c);
+                        }
+                        *error = None;
+                    }
+                    KeyCode::Enter => self.submit_bind(),
+                    _ => {}
+                }
+                return Ok(());
+            }
+            Mode::Actions { id, pos } => {
+                let (id, p) = (id.clone(), *pos);
+                let actions = self.actions(&id);
+                match k.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Up => {
+                        self.mode = Mode::Actions {
+                            id,
+                            pos: p.saturating_sub(1),
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        let pos = (p + 1).min(actions.len().saturating_sub(1));
+                        self.mode = Mode::Actions { id, pos };
+                    }
+                    KeyCode::Enter => {
+                        self.mode = Mode::Normal;
+                        if let Some((name, _)) = actions.get(p) {
+                            self.gesture(&id, Gesture::Action { name: name.clone() });
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             Mode::Connect { from } => {
                 let from = from.clone();
                 match k.code {
@@ -1399,6 +1849,19 @@ impl<'a> Board<'a> {
             Mode::Normal | Mode::Keys => {}
         }
 
+        if let Some(id) = self.sel.clone()
+            && let Some(b) = self.live.binding(&id)
+        {
+            let key = Key::from(k);
+            let declared = (b.shape().definition.on.iter())
+                .filter_map(|o| o.key.as_deref())
+                .find(|s| Key::parse(s) == Some(key))
+                .map(String::from);
+            if let Some(key) = declared {
+                self.gesture(&id, Gesture::Key { key });
+                return Ok(());
+            }
+        }
         if let Some(a) = self.keys.get(k) {
             return self.run_action(a, terminal);
         }
@@ -1522,6 +1985,29 @@ impl<'a> Board<'a> {
                 }
             }
             BoardAction::Turn => self.turn_selected(15.0),
+            BoardAction::PlaceShape => {
+                self.mode = Mode::Palette {
+                    query: String::new(),
+                    pos: 0,
+                }
+            }
+            BoardAction::Bind => match self.sel.clone() {
+                Some(id) if self.live.is_shape(&id) => {
+                    let shape =
+                        (self.node(&id)).and_then(|n| Some(placed::Stored::of(n)?.ok()?.shape));
+                    if let Some(shape) = shape {
+                        self.bind_form(Some(id), shape);
+                    }
+                }
+                _ => self.flash("select a placed shape first, then b to bind it"),
+            },
+            BoardAction::ShapeActions => match self.sel.clone() {
+                Some(id) if !self.actions(&id).is_empty() => {
+                    self.mode = Mode::Actions { id, pos: 0 }
+                }
+                Some(id) if self.live.is_shape(&id) => self.flash("this shape has no actions"),
+                _ => self.flash("select a placed shape first, then x for what it can do"),
+            },
             BoardAction::Delete => self.delete_selected(),
             BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
             BoardAction::ColourClear => self.set_color(None),
@@ -1553,7 +2039,15 @@ impl<'a> Board<'a> {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
-        if matches!(self.mode, Mode::Help | Mode::Keys | Mode::PickFile { .. }) {
+        if matches!(
+            self.mode,
+            Mode::Help
+                | Mode::Keys
+                | Mode::PickFile { .. }
+                | Mode::Palette { .. }
+                | Mode::Bind { .. }
+                | Mode::Actions { .. }
+        ) {
             return;
         }
         if matches!(self.mode, Mode::Edit { .. }) {
@@ -1590,6 +2084,11 @@ impl<'a> Board<'a> {
                 match hit {
                     Some((id, grab)) => {
                         self.sel = Some(id.clone());
+                        if double && self.live.is_shape(&id) {
+                            self.drag = None;
+                            self.open_shape(&id);
+                            return;
+                        }
                         if double {
                             let kind = self.node(&id).map(|n| n.kind.clone()).unwrap_or_default();
                             if kind != "file" {
@@ -1618,7 +2117,17 @@ impl<'a> Board<'a> {
                             });
                         } else if grab == Grab::Turn {
                             self.drag = Some(Drag::Turn { id, moved: false });
+                        } else if let Some(m) = self.draggable(&id, m.column, m.row) {
+                            self.drag = Some(Drag::Member {
+                                id,
+                                from: m.region,
+                                item: m.item,
+                                moved: false,
+                            });
                         } else {
+                            if self.live.is_shape(&id) {
+                                self.press = Some((id.clone(), m.column, m.row));
+                            }
                             let offsets = self
                                 .group_members(&id)
                                 .into_iter()
@@ -1684,6 +2193,7 @@ impl<'a> Board<'a> {
                         }
                     }
                 }
+                Some(Drag::Member { moved, .. }) => *moved = true,
                 Some(Drag::Turn { id, moved }) => {
                     *moved = true;
                     let id = id.clone();
@@ -1698,6 +2208,43 @@ impl<'a> Board<'a> {
                 None => {}
             },
             MouseEventKind::Up(_) => {
+                let press = self.press.take();
+                if let Some(Drag::Member {
+                    id,
+                    from,
+                    item,
+                    moved,
+                }) = &self.drag
+                {
+                    let (id, from, item, moved) = (id.clone(), from.clone(), item.clone(), *moved);
+                    self.drag = None;
+                    self.undo.pop();
+                    if !moved {
+                        return self.click(&id, m.column, m.row);
+                    }
+                    let tolerance = PX_COL / self.zoom / placed::UNIT;
+                    let hit = self
+                        .node(&id)
+                        .and_then(|n| self.live.hit(n, world, tolerance, false));
+                    let to = (self.live.binding(&id))
+                        .zip(hit.and_then(|h| h.region))
+                        .and_then(|(b, r)| b.shape().definition.regions.get(r))
+                        .map(|r| r.id.clone());
+                    match to {
+                        Some(to) if to != from => {
+                            self.gesture(&id, Gesture::Drop { from, to, item })
+                        }
+                        _ => self.flash("dropped outside another region: nothing to do"),
+                    }
+                    return;
+                }
+                if let Some(Drag::Move { moved: false, .. }) = &self.drag
+                    && let Some((id, col, row)) = press
+                {
+                    self.drag = None;
+                    self.undo.pop();
+                    return self.click(&id, col, row);
+                }
                 if let Some(
                     Drag::Move { moved, .. }
                     | Drag::Resize { moved, .. }
@@ -1804,6 +2351,23 @@ impl<'a> Board<'a> {
                 let (q, p) = (query.clone(), *pos);
                 self.draw_picker(f, main, &q, p);
             }
+            Mode::Palette { query, pos } => {
+                let lines = self.palette(query).into_iter().map(|(_, l)| l).collect();
+                let title = " place a shape · type to filter · ⏎ pick · Esc cancel ";
+                draw_choices(f, main, title, Some(query), lines, *pos);
+            }
+            Mode::Actions { id, pos } => {
+                let lines = self.actions(id).into_iter().map(|(_, t)| t).collect();
+                let title = " what the shape does · ⏎ do it · Esc cancel ";
+                draw_choices(f, main, title, None, lines, *pos);
+            }
+            Mode::Bind {
+                shape,
+                fields,
+                pos,
+                error,
+                ..
+            } => draw_bind(f, main, shape, fields, *pos, error.as_deref()),
             _ => {}
         }
     }
@@ -1960,19 +2524,20 @@ impl<'a> Board<'a> {
             {
                 let at = at * placed::UNIT;
                 let (c, r) = self.to_screen(at.x, at.y);
+                let (c, r) = (c.floor() as i32, r.floor() as i32);
+                // A grip over a label leaves the label readable; it still answers the mouse.
+                let under = (c >= 0 && r >= 0)
+                    .then(|| f.buffer_mut().cell((c as u16, r as u16)))
+                    .flatten();
+                if under.is_some_and(|cell| cell.symbol().chars().any(char::is_alphanumeric)) {
+                    continue;
+                }
                 let glyph = if handle == Handle::Rotate {
                     "↻"
                 } else {
                     "◆"
                 };
-                put_str(
-                    f,
-                    a,
-                    c.floor() as i32,
-                    r.floor() as i32,
-                    glyph,
-                    Style::new().fg(ACCENT),
-                );
+                put_str(f, a, c, r, glyph, Style::new().fg(ACCENT));
             }
         }
     }
@@ -2227,6 +2792,10 @@ impl<'a> Board<'a> {
         let second = match (&self.mode, &self.msg) {
             (Mode::Edit { .. }, _) => Line::styled(
                 " editing · type text · ⏎ new line · Esc done (saves)",
+                Style::new().fg(HIT),
+            ),
+            (Mode::Bind { .. }, _) => Line::styled(
+                " bind · type a source for each input · Tab next · ⏎ place · Esc cancel",
                 Style::new().fg(HIT),
             ),
             (Mode::Connect { .. }, _) => Line::styled(
@@ -2626,6 +3195,94 @@ fn put_str(f: &mut Frame, area: Rect, col: i32, row: i32, s: &str, style: Style)
             cell.set_style(style);
         }
     }
+}
+
+/// A popup list to pick from, with what is typed to filter it on top when there is a `query`.
+fn draw_choices(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    query: Option<&str>,
+    items: Vec<String>,
+    pos: usize,
+) {
+    let h = 16.min(area.height.saturating_sub(2));
+    let r = centered(area, 72, h);
+    let rows = h.saturating_sub(4) as usize;
+    let pos = pos.min(items.len().saturating_sub(1));
+    let start = pos.saturating_sub(rows.saturating_sub(1));
+    let mut lines = Vec::new();
+    if let Some(q) = query {
+        lines.push(Line::from(vec![
+            Span::styled(" ▸ ", Style::new().fg(HIT)),
+            Span::styled(format!("{q}▏"), Style::new().fg(NOTE)),
+        ]));
+        lines.push(Line::raw(""));
+    }
+    for (i, item) in items.iter().enumerate().skip(start).take(rows) {
+        let st = match i == pos {
+            true => Style::new().fg(Color::Black).bg(ACCENT),
+            false => Style::new().fg(NOTE),
+        };
+        lines.push(Line::styled(format!("  {item}  "), st));
+    }
+    if items.is_empty() {
+        lines.push(Line::styled("  nothing here", Style::new().fg(MUTED)));
+    }
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(title.to_string());
+    f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// The form that binds a shape's inputs: one line per input, the one being typed in marked.
+fn draw_bind(
+    f: &mut Frame,
+    area: Rect,
+    shape: &str,
+    fields: &[(String, String)],
+    pos: usize,
+    error: Option<&str>,
+) {
+    let h = (fields.len() as u16 + 8).min(area.height.saturating_sub(2));
+    let r = centered(area, 90, h);
+    let mut lines = vec![Line::styled(
+        " a query: type=volcano tag=eruption folder=Volcanoes title=\"…\" where vei >= 6",
+        Style::new().fg(MUTED),
+    )];
+    lines.push(Line::styled(
+        " or note:Volcanoes/Krakatoa · items:Fuji, Krakatoa · text:… · empty leaves it unbound",
+        Style::new().fg(MUTED),
+    ));
+    lines.push(Line::raw(""));
+    for (i, (input, text)) in fields.iter().enumerate() {
+        let here = i == pos;
+        let mark = if here { "▸ " } else { "  " };
+        let cursor = if here { "▏" } else { "" };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {mark}{input}: "), Style::new().fg(ACCENT)),
+            Span::styled(format!("{text}{cursor}"), Style::new().fg(NOTE)),
+        ]));
+    }
+    if let Some(e) = error {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(format!(" {e}"), Style::new().fg(HIT)));
+    }
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(format!(
+            " bind {shape} · Tab next input · ⏎ done · Esc cancel "
+        ));
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block),
+        r,
+    );
 }
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
