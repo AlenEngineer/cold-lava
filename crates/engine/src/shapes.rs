@@ -1,0 +1,1357 @@
+//! Shape definitions: `[[shapes]]` tables that say how something is drawn on the canvas, declared
+//! in TOML by cold-lava, an extension, you or a workspace (docs/shapes.md, "Shape definitions").
+//! This module reads and checks them, and builds each into a `cold_lava_canvas::Shape`.
+//!
+//! The built-in shapes are written in the same language (`shapes/built-in.toml`) and loaded first,
+//! so nothing here knows about a card or a Venn: only the primitives, anchors, nesting and the
+//! checks. Origins load in the order types do (built in < extension < config < workspace); a later
+//! definition of an id replaces the earlier one, and a broken one is dropped with its error while
+//! the rest load.
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
+
+use canvas::{Area, Kind, Part, Point, Rect, Side};
+use cold_lava_canvas as canvas;
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+
+pub use crate::types::Origin;
+use crate::types::is_name;
+
+/// The only `version` a shapes file can have today.
+pub const VERSION: i64 = 1;
+
+/// Where a workspace keeps its own shapes.
+pub const WORKSPACE_FILE: &str = ".cold-lava/shapes.toml";
+
+/// The shapes and glyphs cold-lava ships, in the language anyone's shapes are written in.
+pub const BUILT_IN: &str = include_str!("../shapes/built-in.toml");
+
+/// A point in the shape's unit box, `[x, y]`, 0..1 on each axis.
+pub type Xy = [f64; 2];
+
+fn point([x, y]: Xy) -> Point {
+    Point::new(x, y)
+}
+
+/// One `[[shapes]]` entry, its `id` aside.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Definition {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// The collections a placed shape is bound to (step 4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+    /// What makes two items the same across inputs; the item itself without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Width over height, in world units (a terminal cell is 1×2), when first placed or previewed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect: Option<f64>,
+    pub parts: Vec<PartDef>,
+    /// Named points of its own: `tip = [0.9, 0.5]`.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub anchors: IndexMap<String, Xy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<RegionDef>,
+    /// Behaviour: gestures and actions, each a list of gateway steps (run in step 4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on: Vec<Behaviour>,
+}
+
+/// A part as written: `{ circle = { id = "left", center = [0.38, 0.5], radius = 0.32 } }`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PartDef {
+    Rect(RectDef),
+    Circle(CircleDef),
+    Ellipse(EllipseDef),
+    Line(StrokeDef),
+    Arrow(StrokeDef),
+    Path(PathDef),
+    Text(TextDef),
+    /// Another shape, by id, drawn in the box `from`..`to`; its parts are `<id>.<part>`.
+    Shape(NestedDef),
+}
+
+impl PartDef {
+    /// The id a part gives itself; a nested shape's parts are `<its id>.<part>`.
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            PartDef::Rect(RectDef { id, .. })
+            | PartDef::Circle(CircleDef { id, .. })
+            | PartDef::Ellipse(EllipseDef { id, .. })
+            | PartDef::Line(StrokeDef { id, .. })
+            | PartDef::Arrow(StrokeDef { id, .. })
+            | PartDef::Path(PathDef { id, .. })
+            | PartDef::Text(TextDef { id, .. }) => id.as_deref(),
+            PartDef::Shape(_) => None,
+        }
+    }
+
+    /// What it is, as written: `circle`, `text`, `shape`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PartDef::Rect(_) => "rect",
+            PartDef::Circle(_) => "circle",
+            PartDef::Ellipse(_) => "ellipse",
+            PartDef::Line(_) => "line",
+            PartDef::Arrow(_) => "arrow",
+            PartDef::Path(_) => "path",
+            PartDef::Text(_) => "text",
+            PartDef::Shape(_) => "shape",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RectDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub from: Xy,
+    pub to: Xy,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CircleDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub center: Xy,
+    pub radius: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EllipseDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub center: Xy,
+    pub radii: Xy,
+}
+
+/// A line or an arrow; each end a point or an anchor of an earlier part (`left.right`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StrokeDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub from: Pos,
+    pub to: Pos,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub points: Vec<Xy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
+}
+
+/// Text: a label beside a point (`at`), or a box it is wrapped in (`from`, `to`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Pos>,
+    /// Which side of `at`; by default the side its anchor faces (`left.top`: above).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<SideDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Xy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<Xy>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SideDef {
+    Above,
+    Below,
+    Left,
+    Right,
+    Center,
+}
+
+impl From<SideDef> for Side {
+    fn from(s: SideDef) -> Side {
+        match s {
+            SideDef::Above => Side::Above,
+            SideDef::Below => Side::Below,
+            SideDef::Left => Side::Left,
+            SideDef::Right => Side::Right,
+            SideDef::Center => Side::Center,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NestedDef {
+    pub id: String,
+    #[serde(rename = "use")]
+    pub shape: String,
+    pub from: Xy,
+    pub to: Xy,
+}
+
+/// A point, or the name of an anchor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Pos {
+    Point(Xy),
+    Anchor(String),
+}
+
+/// A named area (`area`, over the parts) and what it shows (`shows`, over the inputs).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegionDef {
+    pub id: String,
+    pub area: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shows: Option<String>,
+}
+
+/// One gesture or action and the steps it runs. Exactly one of `drop`, `click`, `key` and
+/// `action`; the steps are `do`, or `edit` alone as its shorthand.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Behaviour {
+    /// An item dragged from one region to another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop: Option<DropDef>,
+    /// A click on a region or a part, by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click: Option<String>,
+    /// A key pressed while the shape is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// A named action the shape offers (in its menu and the palette): `make-a-note`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// How menus name the action.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<EditStep>,
+    #[serde(default, rename = "do", skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Step>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DropDef {
+    pub from: String,
+    pub to: String,
+}
+
+/// A generic step on the workspace gateway; nothing in it is particular to one shape.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Step {
+    /// `items/edit` on an item (`dropped`, `clicked`).
+    Edit(EditStep),
+    /// `workspace/create`: a new note with `text`, where Obsidian puts new notes; it is `created`
+    /// in later steps.
+    Create(CreateStep),
+    /// This placed shape becomes another shape, same place and size, with these inputs.
+    Rebind(RebindStep),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct EditStep {
+    pub item: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_field: Option<SetField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toggle: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<String>,
+}
+
+/// `set-field`: exactly one of `value`, `add` and `remove`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetField {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateStep {
+    pub text: String,
+    /// The new note's name; by default its text's first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RebindStep {
+    pub shape: String,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub inputs: IndexMap<String, String>,
+}
+
+/// A loaded shape: its definition as written and the canvas shape built from it.
+#[derive(Clone, Debug, Serialize)]
+pub struct Loaded {
+    pub id: String,
+    pub origin: Origin,
+    #[serde(flatten)]
+    pub definition: Definition,
+    #[serde(skip)]
+    pub shape: Arc<canvas::Shape>,
+}
+
+impl Loaded {
+    /// The shape with nothing bound: `${a.title}` shows as `a.title`.
+    pub fn unbound(&self) -> canvas::Shape {
+        self.shape.map_text(|v| fill(v, |name| name.to_string()))
+    }
+}
+
+/// A named symbol that draws like a letter: `:check:` in any text is `✓`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Glyph {
+    pub name: String,
+    pub symbol: char,
+    pub origin: Origin,
+}
+
+/// Every loaded shape and glyph, and what was wrong with the rest.
+#[derive(Debug, Default, Serialize)]
+pub struct Shapes {
+    /// In load order; one replaced by a later origin takes the later one's place.
+    pub shapes: Vec<Loaded>,
+    pub glyphs: Vec<Glyph>,
+    /// One line per mistake: where, which shape, what. The shape is dropped.
+    pub errors: Vec<String>,
+    /// Things worth knowing that aren't mistakes, such as a shape replacing an earlier one.
+    pub notes: Vec<String>,
+}
+
+impl Shapes {
+    pub fn get(&self, id: &str) -> Option<&Loaded> {
+        self.shapes.iter().find(|s| s.id == id)
+    }
+}
+
+/// Definitions and glyphs from one origin, read but not yet checked.
+#[derive(Clone, Debug)]
+pub struct Layer {
+    origin: Origin,
+    definitions: Vec<(String, Result<Definition, String>)>,
+    glyphs: Vec<(String, Result<char, String>)>,
+    /// Problems with the file as a whole, or with an entry that has no id.
+    errors: Vec<String>,
+}
+
+impl Layer {
+    /// An extension's `[[shapes]]`, each by its id (`<extension>.<name>`; the frontend leaves out
+    /// the ones outside its namespace) and the rest of its table.
+    pub fn extension(name: &str, shapes: impl IntoIterator<Item = (String, toml::Table)>) -> Layer {
+        Layer {
+            origin: Origin::Extension {
+                name: name.to_string(),
+            },
+            definitions: (shapes.into_iter())
+                .map(|(id, table)| (id, parse(toml::Value::Table(table))))
+                .collect(),
+            glyphs: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// config.toml's `[[shapes]]` and `[glyphs]`, which the frontend reads and hands over.
+    pub fn config(path: &Path, shapes: Vec<toml::Table>, glyphs: toml::Table) -> Layer {
+        let mut layer = Layer::empty(Origin::Config {
+            path: path.to_path_buf(),
+        });
+        layer.read(shapes, glyphs);
+        layer
+    }
+
+    /// The workspace's `.cold-lava/shapes.toml`; `None` when it has none.
+    pub fn workspace(root: &Path) -> Option<Layer> {
+        let path = root.join(WORKSPACE_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            r => r.map_err(|e| e.to_string()),
+        };
+        Some(Layer::from_file(Origin::Workspace { path }, text))
+    }
+
+    pub fn built_in() -> Layer {
+        Layer::from_file(Origin::BuiltIn, Ok(BUILT_IN.to_string()))
+    }
+
+    fn empty(origin: Origin) -> Layer {
+        Layer {
+            origin,
+            definitions: Vec::new(),
+            glyphs: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// A shapes file: `version = 1`, then `[[shapes]]` tables and a `[glyphs]` table.
+    fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
+        let place = origin.place();
+        let mut layer = Layer::empty(origin);
+        let mut file: toml::Table = match text.and_then(|t| toml::from_str(&t).map_err(one_line)) {
+            Ok(f) => f,
+            Err(e) => {
+                layer.errors.push(format!("{place}: can't read it: {e}"));
+                return layer;
+            }
+        };
+        match file.remove("version") {
+            Some(toml::Value::Integer(VERSION)) => {}
+            Some(v) => {
+                layer.errors.push(format!(
+                    "{place}: version = {v} is not one this cold-lava reads (it reads version = {VERSION}); the file is skipped"
+                ));
+                return layer;
+            }
+            None => {
+                layer.errors.push(format!(
+                    "{place}: no version: start the file with version = {VERSION}; the file is skipped"
+                ));
+                return layer;
+            }
+        }
+        let shapes = match file.remove("shapes") {
+            None => Vec::new(),
+            Some(toml::Value::Array(entries)) => (entries.into_iter())
+                .filter_map(|e| match e {
+                    toml::Value::Table(t) => Some(t),
+                    _ => {
+                        layer
+                            .errors
+                            .push(format!("{place}: shapes: each entry is a [[shapes]] table"));
+                        None
+                    }
+                })
+                .collect(),
+            Some(_) => {
+                layer.errors.push(format!(
+                    "{place}: shapes: write each shape as a [[shapes]] table with its id"
+                ));
+                Vec::new()
+            }
+        };
+        let glyphs = match file.remove("glyphs") {
+            None => toml::Table::new(),
+            Some(toml::Value::Table(t)) => t,
+            Some(_) => {
+                layer.errors.push(format!(
+                    "{place}: glyphs: expected a [glyphs] table of name = \"symbol\""
+                ));
+                toml::Table::new()
+            }
+        };
+        for key in file.keys() {
+            layer.errors.push(format!(
+                "{place}: {key:?} is not a setting (only version, [[shapes]] and [glyphs])"
+            ));
+        }
+        layer.read(shapes, glyphs);
+        layer
+    }
+
+    fn read(&mut self, shapes: Vec<toml::Table>, glyphs: toml::Table) {
+        let place = self.origin.place();
+        for (i, mut table) in shapes.into_iter().enumerate() {
+            match table.remove("id") {
+                Some(toml::Value::String(id)) => {
+                    self.definitions
+                        .push((id, parse(toml::Value::Table(table))));
+                }
+                _ => self.errors.push(format!(
+                    "{place}: shape {} has no id: give it one, like id = \"lane\"",
+                    i + 1
+                )),
+            }
+        }
+        for (name, symbol) in glyphs {
+            let parsed = match symbol.as_str().map(|s| (s, s.chars().count())) {
+                Some((s, 1)) if !s.chars().any(char::is_control) => {
+                    Ok(s.chars().next().expect("one char"))
+                }
+                _ => Err(format!(
+                    "a glyph is one symbol in quotes, like {name} = \"✓\"; got {symbol}"
+                )),
+            };
+            self.glyphs.push((name, parsed));
+        }
+    }
+}
+
+fn one_line(e: impl std::fmt::Display) -> String {
+    e.to_string().replace('\n', " ").trim().to_string()
+}
+
+fn parse(value: toml::Value) -> Result<Definition, String> {
+    value.try_into::<Definition>().map_err(one_line)
+}
+
+static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
+
+/// The layers every workspace gets after the built-in one: extensions' shapes and config.toml's,
+/// which the frontend reads and sets once at startup.
+pub fn set_configured(layers: Vec<Layer>) {
+    let _ = CONFIGURED.set(layers);
+}
+
+/// The shapes a workspace draws with: built in, the configured layers, then its own file.
+pub fn for_workspace(root: &Path) -> Shapes {
+    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+    load(
+        std::iter::once(Layer::built_in())
+            .chain(configured)
+            .chain(Layer::workspace(root)),
+    )
+}
+
+/// Loads layers in order. A later definition of an id or a glyph replaces an earlier one, and
+/// says so in a note. Broken definitions are dropped, and so are the shapes that need them (by
+/// nesting or `rebind`), until every kept shape builds.
+pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
+    let mut errors = Vec::new();
+    let mut notes = Vec::new();
+    let mut kept: IndexMap<String, (Origin, Definition)> = IndexMap::new();
+    let mut glyphs: IndexMap<String, Glyph> = IndexMap::new();
+    for layer in layers {
+        errors.extend(layer.errors);
+        let place = layer.origin.place();
+        for (name, parsed) in layer.glyphs {
+            match parsed {
+                Err(e) => errors.push(format!("{place}: [glyphs] {name}: {e}")),
+                Ok(_) if !is_name(&name, false) => errors.push(format!(
+                    "{place}: [glyphs] {name:?}: a glyph's name is letters, digits, - and _"
+                )),
+                Ok(symbol) => {
+                    if let Some(old) = glyphs.shift_remove(&name) {
+                        notes.push(format!(
+                            "{place}: glyph {name} replaces the one from {}",
+                            old.origin
+                        ));
+                    }
+                    let origin = layer.origin.clone();
+                    glyphs.insert(
+                        name.clone(),
+                        Glyph {
+                            name,
+                            symbol,
+                            origin,
+                        },
+                    );
+                }
+            }
+        }
+        for (id, parsed) in layer.definitions {
+            let problems = match &parsed {
+                Err(e) => vec![e.clone()],
+                Ok(d) => check(&id, d),
+            };
+            match parsed {
+                Ok(d) if problems.is_empty() => {
+                    if let Some((old, _)) = kept.shift_remove(&id) {
+                        notes.push(format!("{place}: shape {id} replaces the one from {old}"));
+                    }
+                    kept.insert(id, (layer.origin.clone(), d));
+                }
+                _ => errors.extend(problems.iter().map(|p| format!("{place}: shape {id}: {p}"))),
+            }
+        }
+    }
+    let symbols: HashMap<&str, char> = glyphs
+        .values()
+        .map(|g| (g.name.as_str(), g.symbol))
+        .collect();
+    // Build every kept shape; drop the ones that fail and build again, as a shape that nests or
+    // rebinds to a dropped one fails too.
+    let built = loop {
+        let mut built: HashMap<String, Result<Arc<canvas::Shape>, String>> = HashMap::new();
+        for id in kept.keys() {
+            build(id, &kept, &symbols, &mut built, &mut Vec::new());
+        }
+        let mut failed: Vec<(String, String)> = Vec::new();
+        for (id, (_, d)) in &kept {
+            let problem = match &built[id] {
+                Err(e) => Some(e.clone()),
+                Ok(_) => rebinds(d)
+                    .find(|to| !kept.contains_key(*to))
+                    .map(|to| format!("its rebind names shape {to}, which isn't loaded")),
+            };
+            failed.extend(problem.map(|p| (id.clone(), p)));
+        }
+        if failed.is_empty() {
+            break built;
+        }
+        for (id, problem) in failed {
+            if let Some((origin, _)) = kept.shift_remove(&id) {
+                errors.push(format!("{}: shape {id}: {problem}", origin.place()));
+            }
+        }
+    };
+    let shapes = (kept.into_iter())
+        .map(|(id, (origin, definition))| {
+            let shape = built[&id].clone().expect("only shapes that built are kept");
+            Loaded {
+                id,
+                origin,
+                definition,
+                shape,
+            }
+        })
+        .collect();
+    Shapes {
+        shapes,
+        glyphs: glyphs.into_values().collect(),
+        errors,
+        notes,
+    }
+}
+
+fn rebinds(d: &Definition) -> impl Iterator<Item = &str> {
+    (d.on.iter())
+        .flat_map(|b| &b.steps)
+        .filter_map(|s| match s {
+            Step::Rebind(r) => Some(r.shape.as_str()),
+            _ => None,
+        })
+}
+
+/// Builds `id` (and first the shapes it nests) into `built`. `path` is the nesting being built,
+/// to catch a cycle.
+fn build(
+    id: &str,
+    kept: &IndexMap<String, (Origin, Definition)>,
+    glyphs: &HashMap<&str, char>,
+    built: &mut HashMap<String, Result<Arc<canvas::Shape>, String>>,
+    path: &mut Vec<String>,
+) {
+    if built.contains_key(id) {
+        return;
+    }
+    let (_, d) = &kept[id];
+    path.push(id.to_string());
+    for nested in d.parts.iter().filter_map(|p| match p {
+        PartDef::Shape(n) => Some(n.shape.as_str()),
+        _ => None,
+    }) {
+        if let Some(at) = path.iter().position(|p| p == nested) {
+            let mut cycle = path[at..].to_vec();
+            cycle.push(nested.to_string());
+            let e = format!("nested shapes make a cycle: {}", cycle.join(" → "));
+            for member in &path[at..] {
+                built.insert(member.clone(), Err(e.clone()));
+            }
+        } else if kept.contains_key(nested) {
+            build(nested, kept, glyphs, built, path);
+        }
+    }
+    path.pop();
+    if built.contains_key(id) {
+        return;
+    }
+    let result =
+        assemble(d, built).map(|shape| Arc::new(shape.map_text(|v| with_glyphs(v, glyphs))));
+    built.insert(id.to_string(), result);
+}
+
+/// The canvas shape of a definition whose nested shapes are built.
+fn assemble(
+    d: &Definition,
+    built: &HashMap<String, Result<Arc<canvas::Shape>, String>>,
+) -> Result<canvas::Shape, String> {
+    let mut parts: Vec<Part> = Vec::new();
+    let mut anchors: Vec<(String, Point)> = (d.anchors.iter())
+        .map(|(name, xy)| (name.clone(), point(*xy)))
+        .collect();
+    let resolve = |parts: &[Part], anchors: &[(String, Point)], pos: &Pos| match pos {
+        Pos::Point(xy) => Ok(point(*xy)),
+        Pos::Anchor(name) => canvas::anchor_in(parts, anchors, name).ok_or_else(|| {
+            format!("no anchor is called `{name}` (parts can only name the parts before them)")
+        }),
+    };
+    for part in &d.parts {
+        let new = |id: &Option<String>, kind| Part::new(id.as_deref(), kind);
+        match part {
+            PartDef::Rect(r) => parts.push(new(&r.id, Kind::Rect(rect(r.from, r.to)))),
+            PartDef::Circle(c) => parts.push(new(
+                &c.id,
+                Kind::Circle {
+                    center: point(c.center),
+                    radius: c.radius,
+                },
+            )),
+            PartDef::Ellipse(e) => parts.push(new(
+                &e.id,
+                Kind::Ellipse {
+                    center: point(e.center),
+                    radii: point(e.radii),
+                },
+            )),
+            PartDef::Line(s) | PartDef::Arrow(s) => {
+                let from = resolve(&parts, &anchors, &s.from)?;
+                let to = resolve(&parts, &anchors, &s.to)?;
+                let kind = match part {
+                    PartDef::Line(_) => Kind::Line { from, to },
+                    _ => Kind::Arrow { from, to },
+                };
+                parts.push(new(&s.id, kind));
+            }
+            PartDef::Path(p) => {
+                let points = p.points.iter().copied().map(point).collect();
+                parts.push(new(
+                    &p.id,
+                    Kind::Path(canvas::Path::polyline(points, p.closed)),
+                ));
+            }
+            PartDef::Text(t) => {
+                let value = t.value.clone();
+                let kind = match (&t.at, t.from, t.to) {
+                    (Some(at), None, None) => Kind::Label {
+                        at: resolve(&parts, &anchors, at)?,
+                        side: match (t.side, at) {
+                            (Some(s), _) => s.into(),
+                            (None, Pos::Anchor(name)) => Side::outside(name),
+                            (None, Pos::Point(_)) => Side::Center,
+                        },
+                        value,
+                    },
+                    (None, Some(from), Some(to)) => Kind::Text {
+                        bounds: rect(from, to),
+                        value,
+                    },
+                    _ => unreachable!("check() lets through only `at`, or `from` and `to`"),
+                };
+                parts.push(new(&t.id, kind));
+            }
+            PartDef::Shape(n) => {
+                let inner = match built.get(&n.shape) {
+                    Some(Ok(s)) => s,
+                    Some(Err(_)) => {
+                        return Err(format!("it nests shape {}, which didn't load", n.shape));
+                    }
+                    None => return Err(format!("it nests shape {}, which isn't loaded", n.shape)),
+                };
+                let (from, to) = (point(n.from), point(n.to));
+                let map = |p: Point| {
+                    Point::new(
+                        from.x + p.x * (to.x - from.x),
+                        from.y + p.y * (to.y - from.y),
+                    )
+                };
+                let (sx, sy) = ((to.x - from.x).abs(), (to.y - from.y).abs());
+                for p in inner.parts() {
+                    let kind = match &p.kind {
+                        Kind::Rect(r) => Kind::Rect(rect_of(map(r.min), map(r.max))),
+                        Kind::Circle { center, radius } if (sx - sy).abs() < 1e-12 => {
+                            Kind::Circle {
+                                center: map(*center),
+                                radius: radius * sx,
+                            }
+                        }
+                        Kind::Circle { center, radius } => Kind::Ellipse {
+                            center: map(*center),
+                            radii: Point::new(radius * sx, radius * sy),
+                        },
+                        Kind::Ellipse { center, radii } => Kind::Ellipse {
+                            center: map(*center),
+                            radii: Point::new(radii.x * sx, radii.y * sy),
+                        },
+                        Kind::Line { from, to } => Kind::Line {
+                            from: map(*from),
+                            to: map(*to),
+                        },
+                        Kind::Arrow { from, to } => Kind::Arrow {
+                            from: map(*from),
+                            to: map(*to),
+                        },
+                        Kind::Path(path) => Kind::Path(canvas::Path::polyline(
+                            path.points().iter().copied().map(map).collect(),
+                            path.is_closed(),
+                        )),
+                        Kind::Text { bounds, value } => Kind::Text {
+                            bounds: rect_of(map(bounds.min), map(bounds.max)),
+                            value: value.clone(),
+                        },
+                        Kind::Label { at, side, value } => Kind::Label {
+                            at: map(*at),
+                            side: *side,
+                            value: value.clone(),
+                        },
+                    };
+                    let id = p.id.as_ref().map(|inner| format!("{}.{inner}", n.id));
+                    parts.push(Part { id, kind });
+                }
+                anchors.extend(
+                    (inner.anchors().iter()).map(|(name, p)| (format!("{}.{name}", n.id), map(*p))),
+                );
+                let unit = rect_of(from, to);
+                anchors.push((n.id.clone(), unit.anchor("center").expect("a box anchor")));
+                for name in BOX_ANCHORS {
+                    let at = unit.anchor(name).expect("a box anchor");
+                    anchors.push((format!("{}.{name}", n.id), at));
+                }
+            }
+        }
+    }
+    let regions: Vec<(&str, &str)> = (d.regions.iter())
+        .map(|r| (r.id.as_str(), r.area.as_str()))
+        .collect();
+    canvas::Shape::new(parts, &regions)
+        .and_then(|s| s.with_anchors(anchors))
+        .map_err(|e| e.to_string())
+}
+
+const BOX_ANCHORS: [&str; 9] = [
+    "center",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+];
+
+fn rect(a: Xy, b: Xy) -> Rect {
+    rect_of(point(a), point(b))
+}
+
+fn rect_of(a: Point, b: Point) -> Rect {
+    Rect::around([a, b]).expect("two points")
+}
+
+/// What a definition gets wrong on its own, without the other shapes: one line each.
+fn check(id: &str, d: &Definition) -> Vec<String> {
+    let mut p = Vec::new();
+    if !is_name(id, true) {
+        p.push(format!(
+            "{id:?} is not an id: letters, digits, -, _ and ., starting with a letter"
+        ));
+    }
+    if d.parts.is_empty() {
+        p.push("it has no parts".into());
+    }
+    if let Some(a) = d.aspect
+        && !(a.is_finite() && a > 0.0)
+    {
+        p.push(format!("aspect = {a}: it is width over height, above 0"));
+    }
+    if d.key.as_deref() == Some("") {
+        p.push("key is empty: name a field, or leave it out".into());
+    }
+    let mut inputs = HashSet::new();
+    for input in &d.inputs {
+        if !is_name(input, false) {
+            p.push(format!("input {input:?} is not a name"));
+        } else if !inputs.insert(input.as_str()) {
+            p.push(format!("two inputs are called {input}"));
+        }
+    }
+    for (i, part) in d.parts.iter().enumerate() {
+        let at = format!("part {}", i + 1);
+        match part {
+            PartDef::Circle(c) if !positive(c.radius) => {
+                p.push(format!("{at}: a circle's radius is above 0"))
+            }
+            PartDef::Ellipse(e) if !(positive(e.radii[0]) && positive(e.radii[1])) => {
+                p.push(format!("{at}: an ellipse's radii are above 0"))
+            }
+            PartDef::Path(path) if path.points.len() < 2 => {
+                p.push(format!("{at}: a path needs two points or more"))
+            }
+            PartDef::Text(t) => {
+                if !matches!(
+                    (&t.at, t.from, t.to),
+                    (Some(_), None, None) | (None, Some(_), Some(_))
+                ) {
+                    p.push(format!(
+                        "{at}: a text has `at` (a label beside a point) or `from` and `to` (a box), not both"
+                    ));
+                }
+                if t.side.is_some() && t.at.is_none() {
+                    p.push(format!("{at}: `side` is for a text `at` a point"));
+                }
+                for name in placeholders(&t.value) {
+                    let input = name.split('.').next().unwrap_or(name);
+                    if !inputs.contains(input) {
+                        p.push(format!(
+                            "{at}: `${{{name}}}`: {input} is not one of its inputs"
+                        ));
+                    }
+                }
+            }
+            PartDef::Shape(n) if !is_name(&n.id, false) => p.push(format!(
+                "{at}: a nested shape's id {:?} is not a name",
+                n.id
+            )),
+            _ => {}
+        }
+        if let Some(id) = part.id()
+            && !is_name(id, false)
+        {
+            p.push(format!("{at}: id {id:?} is not a name"));
+        }
+    }
+    // Set expressions over the inputs read like areas over parts, so the area parser checks them.
+    let stand_ins: Vec<Part> = (d.inputs.iter())
+        .map(|i| Part::new(Some(i), Kind::Rect(Rect::UNIT)))
+        .collect();
+    let mut regions = HashSet::new();
+    for r in &d.regions {
+        regions.insert(r.id.as_str());
+        if let Some(shows) = &r.shows {
+            let sets = shows
+                .split([' ', '\t'])
+                .take_while(|w| !matches!(*w, "where" | "sort" | "limit"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if let Err(e) = Area::parse(&sets, &stand_ins) {
+                let e = match e {
+                    canvas::AreaError::UnknownPart(n) => format!("{n} is not one of its inputs"),
+                    e => e.to_string(),
+                };
+                p.push(format!("region {}: shows {shows:?}: {e}", r.id));
+            }
+        }
+    }
+    let part_ids: HashSet<&str> = d.parts.iter().filter_map(PartDef::id).collect();
+    let mut actions = HashSet::new();
+    for (i, b) in d.on.iter().enumerate() {
+        let at = format!("on {}", i + 1);
+        let gestures = [
+            b.drop.is_some(),
+            b.click.is_some(),
+            b.key.is_some(),
+            b.action.is_some(),
+        ];
+        if gestures.iter().filter(|g| **g).count() != 1 {
+            p.push(format!(
+                "{at}: say what starts it with exactly one of drop, click, key and action"
+            ));
+        }
+        if let Some(drop) = &b.drop {
+            for r in [&drop.from, &drop.to] {
+                if !regions.contains(r.as_str()) {
+                    p.push(format!("{at}: drop: no region is called {r}"));
+                }
+            }
+        }
+        if let Some(c) = &b.click
+            && !regions.contains(c.as_str())
+            && !part_ids.contains(c.as_str())
+        {
+            p.push(format!("{at}: click: no region or part is called {c}"));
+        }
+        if let Some(a) = &b.action
+            && (!is_name(a, false) || !actions.insert(a.as_str()))
+        {
+            p.push(format!(
+                "{at}: action {a:?} must be a name, and only one action may have it"
+            ));
+        }
+        if b.edit.is_some() == !b.steps.is_empty() {
+            p.push(format!(
+                "{at}: give its steps as do = [ … ], or one edit = {{ … }}"
+            ));
+        }
+        let edits = b.edit.iter().chain(b.steps.iter().filter_map(|s| match s {
+            Step::Edit(e) => Some(e),
+            _ => None,
+        }));
+        for e in edits {
+            let kinds = [
+                e.set_field.is_some(),
+                e.toggle.is_some(),
+                e.recipe.is_some(),
+            ];
+            if kinds.iter().filter(|k| **k).count() != 1 {
+                p.push(format!(
+                    "{at}: an edit is exactly one of set-field, toggle and recipe"
+                ));
+            }
+            if let Some(s) = &e.set_field {
+                let ways = [s.value.is_some(), s.add.is_some(), s.remove.is_some()];
+                if ways.iter().filter(|w| **w).count() != 1 {
+                    p.push(format!(
+                        "{at}: set-field takes exactly one of value, add and remove"
+                    ));
+                }
+            }
+        }
+    }
+    p
+}
+
+/// Above 0, and not NaN.
+fn positive(x: f64) -> bool {
+    x > 0.0
+}
+
+/// The names in `${…}`.
+fn placeholders(text: &str) -> impl Iterator<Item = &str> {
+    text.split("${")
+        .skip(1)
+        .filter_map(|s| s.split_once('}').map(|(n, _)| n))
+}
+
+/// `text` with each `${name}` replaced by `value(name)`.
+pub fn fill(text: &str, value: impl Fn(&str) -> String) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let Some(len) = rest[start..].find('}') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(&value(&rest[start + 2..start + len]));
+        rest = &rest[start + len + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `text` with each `:name:` of a known glyph replaced by its symbol; other colons stay.
+fn with_glyphs(text: &str, glyphs: &HashMap<&str, char>) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(':') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after
+            .find(':')
+            .and_then(|end| Some((end, glyphs.get(&after[..end])?)))
+        {
+            Some((end, symbol)) => {
+                out.push(*symbol);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push(':');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn workspace(text: &str) -> Layer {
+        let path = PathBuf::from("/w/.cold-lava/shapes.toml");
+        Layer::from_file(Origin::Workspace { path }, Ok(text.to_string()))
+    }
+
+    fn config(text: &str) -> Layer {
+        let mut file: toml::Table = toml::from_str(text).unwrap();
+        let shapes = match file.remove("shapes") {
+            Some(toml::Value::Array(a)) => a
+                .into_iter()
+                .map(|v| v.as_table().unwrap().clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let glyphs = match file.remove("glyphs") {
+            Some(toml::Value::Table(t)) => t,
+            _ => toml::Table::new(),
+        };
+        Layer::config(Path::new("/c/config.toml"), shapes, glyphs)
+    }
+
+    /// The errors of a workspace file holding `shapes`, after the built-in layer.
+    fn errors_of(shapes: &str) -> Vec<String> {
+        let text = format!("version = 1\n{shapes}");
+        load([Layer::built_in(), workspace(&text)]).errors
+    }
+
+    fn ids(s: &Shapes) -> Vec<&str> {
+        s.shapes.iter().map(|l| l.id.as_str()).collect()
+    }
+
+    #[test]
+    fn built_ins_load_from_their_own_toml() {
+        let s = load([Layer::built_in()]);
+        assert_eq!(s.errors, Vec::<String>::new());
+        assert_eq!(
+            ids(&s),
+            [
+                "text", "rect", "circle", "line", "arrow", "card", "sticky", "table", "venn2"
+            ]
+        );
+        let glyphs: String = s.glyphs.iter().map(|g| g.symbol).collect();
+        assert_eq!(glyphs, "✓✗•★◆→");
+        let venn = s.get("venn2").unwrap();
+        assert_eq!(venn.shape.regions().len(), 3);
+        assert_eq!(venn.origin, Origin::BuiltIn);
+        let sticky = s.get("sticky").unwrap();
+        assert_eq!(
+            sticky.definition.on[0].action.as_deref(),
+            Some("make-a-note")
+        );
+    }
+
+    #[test]
+    fn later_origins_replace_earlier_ones_and_say_so() {
+        let ext = Layer::extension(
+            "lanes",
+            [(
+                "lanes.lane".to_string(),
+                toml::from_str("parts = [{ rect = { from = [0, 0], to = [1, 1] } }]").unwrap(),
+            )],
+        );
+        let config = config(
+            "[[shapes]]\nid = \"lanes.lane\"\nparts = [{ circle = { center = [0.5, 0.5], radius = 0.5 } }]\n\
+             [glyphs]\ncheck = \"√\"",
+        );
+        let ws = workspace(
+            "version = 1\n[[shapes]]\nid = \"rect\"\ntitle = \"Mine\"\nparts = [{ rect = { from = [0, 0], to = [1, 0.5] } }]",
+        );
+        let s = load([Layer::built_in(), ext, config, ws]);
+        assert_eq!(s.errors, Vec::<String>::new());
+        let lane = s.get("lanes.lane").unwrap();
+        assert_eq!(
+            lane.origin,
+            Origin::Config {
+                path: "/c/config.toml".into()
+            }
+        );
+        assert_eq!(s.get("rect").unwrap().definition.title, "Mine");
+        assert_eq!(
+            s.notes,
+            [
+                "/c/config.toml: glyph check replaces the one from built in",
+                "/c/config.toml: shape lanes.lane replaces the one from extension lanes",
+                "/w/.cold-lava/shapes.toml: shape rect replaces the one from built in",
+            ]
+        );
+        assert_eq!(*ids(&s).last().unwrap(), "rect", "a replacement goes last");
+        assert_eq!(s.glyphs.last().unwrap().symbol, '√');
+    }
+
+    #[test]
+    fn each_mistake_drops_its_shape_with_a_clear_error() {
+        let cases = [
+            (
+                "parts = [{ hexagon = { center = [0.5, 0.5] } }]",
+                "unknown variant `hexagon`, expected one of `rect`, `circle`, `ellipse`, `line`, `arrow`, `path`, `text`, `shape`",
+            ),
+            (
+                "parts = [{ circle = { id = \"a\", center = [0.5, 0.5], radius = 0.4 } }]\nregions = [{ id = \"r\", area = \"a & b\" }]",
+                "region `r`: no part is called `b`",
+            ),
+            (
+                "parts = [{ circle = { id = \"a\", center = [0.5, 0.5], radius = 0.4 } }]\nregions = [{ id = \"r\", area = \"a &\" }]",
+                "region `r`: the area expression ends early (at 3)",
+            ),
+            (
+                "parts = [{ line = { from = \"a.top\", to = [1, 1] } }]",
+                "no anchor is called `a.top` (parts can only name the parts before them)",
+            ),
+            (
+                "parts = [{ rect = { id = \"a\", from = [0, 0], to = [1, 1] } }, { rect = { id = \"a\", from = [0, 0], to = [1, 1] } }]",
+                "two parts are called `a`",
+            ),
+            (
+                "anchors = { a = [0.5, 0.5] }\nparts = [{ rect = { id = \"a\", from = [0, 0], to = [1, 1] } }]",
+                "`a` names an anchor and another anchor or part",
+            ),
+            ("parts = []", "it has no parts"),
+            (
+                "parts = [{ text = { value = \"hi\", at = \"center\", from = [0, 0], to = [1, 1] } }]",
+                "part 1: a text has `at` (a label beside a point) or `from` and `to` (a box), not both",
+            ),
+            (
+                "inputs = [\"a\"]\nparts = [{ text = { value = \"${b.title}\", at = \"center\" } }]",
+                "part 1: `${b.title}`: b is not one of its inputs",
+            ),
+            (
+                "inputs = [\"a\"]\nparts = [{ circle = { id = \"c\", center = [0.5, 0.5], radius = 0.4 } }]\nregions = [{ id = \"r\", area = \"c\", shows = \"a & b where done = true\" }]",
+                "region r: shows \"a & b where done = true\": b is not one of its inputs",
+            ),
+            (
+                "parts = [{ circle = { center = [0.5, 0.5], radius = 0 } }]",
+                "part 1: a circle's radius is above 0",
+            ),
+            (
+                "parts = [{ circle = { id = \"c\", center = [0.5, 0.5], radius = 0.4 } }]\n[[shapes.on]]\nclick = \"c\"\nkey = \"x\"\nedit = { item = \"clicked\", toggle = true }",
+                "on 1: say what starts it with exactly one of drop, click, key and action",
+            ),
+            (
+                "parts = [{ circle = { id = \"c\", center = [0.5, 0.5], radius = 0.4 } }]\n[[shapes.on]]\ndrop = { from = \"c\", to = \"nowhere\" }\nedit = { item = \"dropped\", toggle = true }",
+                "on 1: drop: no region is called c",
+            ),
+            (
+                "parts = [{ circle = { id = \"c\", center = [0.5, 0.5], radius = 0.4 } }]\n[[shapes.on]]\naction = \"go\"\ndo = [{ edit = { item = \"x\", toggle = true, recipe = \"r\" } }]",
+                "on 1: an edit is exactly one of set-field, toggle and recipe",
+            ),
+            (
+                "parts = [{ rect = { from = [0, 0], to = [1, 1] } }]\n[[shapes.on]]\naction = \"go\"\ndo = [{ rebind = { shape = \"nowhere\" } }]",
+                "its rebind names shape nowhere, which isn't loaded",
+            ),
+            (
+                "parts = [{ shape = { id = \"n\", use = \"nowhere\", from = [0, 0], to = [1, 1] } }]",
+                "it nests shape nowhere, which isn't loaded",
+            ),
+        ];
+        for (shape, expected) in cases {
+            let text = format!(
+                "[[shapes]]\nid = \"bad\"\n{shape}\n\n[[shapes]]\nid = \"fine\"\nparts = [{{ rect = {{ from = [0, 0], to = [1, 1] }} }}]\n"
+            );
+            let s = load([
+                Layer::built_in(),
+                workspace(&format!("version = 1\n{text}")),
+            ]);
+            let errors: Vec<&str> = (s.errors.iter())
+                .map(|e| {
+                    e.strip_prefix("/w/.cold-lava/shapes.toml: shape bad: ")
+                        .unwrap_or(e)
+                })
+                .collect();
+            assert!(
+                errors.iter().any(|e| e.contains(expected)),
+                "{shape}\nwanted: {expected}\ngot: {errors:?}"
+            );
+            assert!(s.get("bad").is_none(), "{shape}");
+            assert!(
+                s.get("fine").is_some(),
+                "a broken shape's siblings load: {shape}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_shapes_cycle_is_an_error_for_each_member() {
+        let errors = errors_of(
+            "[[shapes]]\nid = \"a\"\nparts = [{ shape = { id = \"x\", use = \"b\", from = [0, 0], to = [1, 1] } }]\n\
+             [[shapes]]\nid = \"b\"\nparts = [{ shape = { id = \"y\", use = \"a\", from = [0, 0], to = [1, 1] } }]\n\
+             [[shapes]]\nid = \"c\"\nparts = [{ shape = { id = \"z\", use = \"a\", from = [0, 0], to = [1, 1] } }]",
+        );
+        assert_eq!(
+            errors,
+            [
+                "/w/.cold-lava/shapes.toml: shape a: nested shapes make a cycle: a → b → a",
+                "/w/.cold-lava/shapes.toml: shape b: nested shapes make a cycle: a → b → a",
+                "/w/.cold-lava/shapes.toml: shape c: it nests shape a, which didn't load",
+            ]
+        );
+    }
+
+    #[test]
+    fn file_and_entry_mistakes() {
+        let skipped = load([workspace("[[shapes]]\nid = \"a\"")]);
+        assert_eq!(
+            skipped.errors,
+            [
+                "/w/.cold-lava/shapes.toml: no version: start the file with version = 1; the file is skipped"
+            ]
+        );
+        let errors = errors_of("[[shapes]]\ntitle = \"x\"\n[glyphs]\nwide = \"ab\"\n[colours]");
+        assert_eq!(
+            errors,
+            [
+                "/w/.cold-lava/shapes.toml: \"colours\" is not a setting (only version, [[shapes]] and [glyphs])",
+                "/w/.cold-lava/shapes.toml: shape 1 has no id: give it one, like id = \"lane\"",
+                "/w/.cold-lava/shapes.toml: [glyphs] wide: a glyph is one symbol in quotes, like wide = \"✓\"; got \"ab\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_parts_are_named_under_the_nest_and_follow_its_box() {
+        let s = load([
+            Layer::built_in(),
+            workspace(
+                "version = 1\n[[shapes]]\nid = \"pair\"\nparts = [\n\
+                 { shape = { id = \"l\", use = \"circle\", from = [0, 0], to = [0.5, 1] } },\n\
+                 { arrow = { from = \"l.right\", to = [1, 0.5] } },\n\
+                 { text = { at = \"l.top\", value = \":star: top\" } },\n]\n\
+                 regions = [{ id = \"inside\", area = \"l.circle\" }]",
+            ),
+        ]);
+        assert_eq!(s.errors, Vec::<String>::new());
+        let pair = &s.get("pair").unwrap().shape;
+        let parts = pair.parts();
+        assert_eq!(parts[0].id.as_deref(), Some("l.circle"));
+        assert_eq!(
+            parts[0].kind,
+            Kind::Ellipse {
+                center: Point::new(0.25, 0.5),
+                radii: Point::new(0.25, 0.5)
+            },
+            "a circle in a box twice as tall is an ellipse"
+        );
+        assert_eq!(
+            parts[1].kind,
+            Kind::Arrow {
+                from: Point::new(0.5, 0.5),
+                to: Point::new(1.0, 0.5)
+            }
+        );
+        assert_eq!(
+            parts[2].kind,
+            Kind::Label {
+                at: Point::new(0.25, 0.0),
+                side: Side::Above,
+                value: "★ top".into()
+            },
+            "the glyph is looked up, the side follows the anchor"
+        );
+        assert_eq!(pair.anchor("l"), Some(Point::new(0.25, 0.5)));
+    }
+
+    #[test]
+    fn the_guides_example_shape_loads() {
+        let guide = include_str!("../../../docs/extensions-guide.md");
+        let start = guide.find("[[shapes]]\nid = \"csv-table.sheet\"").unwrap();
+        let toml = &guide[start..start + guide[start..].find("```").unwrap()];
+        let s = load([Layer::built_in(), config(toml)]);
+        assert_eq!(s.errors, Vec::<String>::new());
+        assert_eq!(
+            s.get("csv-table.sheet").unwrap().shape.regions()[0].id,
+            "rows"
+        );
+    }
+
+    #[test]
+    fn placeholders_and_glyphs() {
+        assert_eq!(
+            fill("${a.title} and ${b}", |n| n.to_uppercase()),
+            "A.TITLE and B"
+        );
+        assert_eq!(fill("no ${end", |_| "x".into()), "no ${end");
+        let glyphs = HashMap::from([("check", '✓')]);
+        assert_eq!(
+            with_glyphs("done :check: at 10:30 :nope:", &glyphs),
+            "done ✓ at 10:30 :nope:"
+        );
+    }
+}

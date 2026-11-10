@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::transport::{self, Launch};
-use super::{CommandSpec, FileType, Manifest, Permission, Shows, TypeSpec, read_only, rpc};
+use super::{CommandSpec, FileType, Manifest, Permission, Shows, Spec, read_only, rpc};
 
 /// Names an installed extension can't take: the built-in ones and the menu's screens, which edits
 /// are attributed to.
@@ -43,7 +43,9 @@ struct File {
     #[serde(default)]
     commands: Vec<CommandSpec>,
     #[serde(default)]
-    types: Vec<TypeSpec>,
+    types: Vec<Spec>,
+    #[serde(default)]
+    shapes: Vec<Spec>,
     #[serde(default, rename = "file-types")]
     file_types: Vec<FileType>,
     #[serde(default)]
@@ -167,6 +169,7 @@ fn read(folder: &Path, path: &Path) -> Result<Installed, String> {
         hints: Vec::new(),
         commands: file.commands,
         types: file.types,
+        shapes: file.shapes,
         permissions: file.permissions,
         file_types,
         shows: file.shows,

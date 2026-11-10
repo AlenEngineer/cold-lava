@@ -53,8 +53,9 @@ impl Area {
     /// Parses an `area` expression over the parts' ids.
     ///
     /// `&` binds tighter than `|` and `-`, which go left to right: `a | b - c` is `(a | b) - c`,
-    /// and `a - b & c` is `a - (b & c)`. Brackets group. A part id is letters, digits, `_` and
-    /// `-` inside a word, so `only-a` is one name and the operator is written `a - b`.
+    /// and `a - b & c` is `a - (b & c)`. Brackets group. A part id is letters, digits, `_`, and
+    /// `-` or `.` inside a word, so `only-a` and `card.frame` (a part of a nested shape) are one
+    /// name each and the operator is written `a - b`.
     pub fn parse(expr: &str, parts: &[Part]) -> Result<Area, AreaError> {
         let mut parser = Parser {
             tokens: tokenize(expr)?,
@@ -133,9 +134,9 @@ fn tokenize(expr: &str) -> Result<Vec<(usize, Token)>, AreaError> {
             c if is_word(c) => {
                 let mut end = at + c.len_utf8();
                 while let Some(&(i, next)) = chars.peek() {
-                    let hyphen_in_word =
-                        next == '-' && expr[i + 1..].chars().next().is_some_and(is_word);
-                    if !(is_word(next) || hyphen_in_word) {
+                    let joins_words = (next == '-' || next == '.')
+                        && expr[i + 1..].chars().next().is_some_and(is_word);
+                    if !(is_word(next) || joins_words) {
                         break;
                     }
                     chars.next();
@@ -281,6 +282,17 @@ mod tests {
         assert_eq!(
             Area::parse("left - (right | only-x)", &parts).unwrap(),
             Area::Minus(part(0), Box::new(Area::Or(part(1), part(2))))
+        );
+        let mut nested = parts;
+        nested[0].id = Some("card.frame".into());
+        assert_eq!(
+            Area::parse("card.frame-right", &nested).unwrap_err(),
+            AreaError::UnknownPart("card.frame-right".into()),
+            "`.` and `-` join words"
+        );
+        assert_eq!(
+            Area::parse("card.frame - right", &nested).unwrap(),
+            Area::Minus(part(0), part(1))
         );
     }
 

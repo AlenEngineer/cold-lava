@@ -49,8 +49,10 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   rasterized Venns (`UPDATE_SNAPSHOTS=1` rewrites them); `cargo run --release -p
   cold-lava-canvas --example bench` times a full screen. Its own crate, not `views`: it is pure
   geometry every frontend computes the same way, not a frontend piece, and it must stay free of
-  UI crates (`cargo tree -p cold-lava-canvas`). Nothing uses it yet; placed shapes come after
-  scenes (#91).
+  UI crates (`cargo tree -p cold-lava-canvas`). Labels (`label` parts, text at a point) are
+  placed by `fit::anchored` so they never overlap; `draw.rs` paints a whole placed shape and
+  previews it as text. Shape definitions are read by the engine (`shapes.rs`), not here, so the
+  crate keeps no dependencies. Nothing places shapes yet; that comes after scenes (#91).
 - `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
   workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
   a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
@@ -126,6 +128,13 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
   `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
   notes settings, moment.js date formats.
+- `shapes.rs`: shape definitions (docs/shapes.md): `[[shapes]]` and `[glyphs]` from the
+  built-in file (`shapes/built-in.toml`: text, rect, circle, line, arrow, card, sticky, table,
+  venn2, the glyphs), extensions' manifests, config.toml and `.cold-lava/shapes.toml`, in the
+  order types load (`Origin` is types'). Checked at load, a broken one dropped with its error;
+  each is built into a `cold_lava_canvas::Shape` (nested shapes flattened, anchors resolved,
+  glyphs looked up). Built-ins are TOML: add a shape by writing it there, never a match arm;
+  extend the format when it can't say something. `cold-lava shapes` lists and `--render`s them.
 - `paths.rs`: the user's home and config folders.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine

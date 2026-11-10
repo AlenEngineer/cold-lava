@@ -37,7 +37,7 @@ from the other.
 
 ## Shape definitions
 
-Defined like types: in `.cold-lava/shapes.toml` in a workspace, in `~/.config/cold-lava/`, built
+Defined like types: in `.cold-lava/shapes.toml` in a workspace, in `~/.config/cold-lava/config.toml`, built
 in, and in extensions' manifests (`[[shapes]]`, ids `<extension>.<name>`), with the same origin
 order (built in < extension < config < workspace).
 
@@ -83,8 +83,99 @@ edit = { item = "dropped", set-field = { field = "tags", add = "${b.tag}" } }
   handles a gesture, in any language over the gateway, the way extensions extend types and
   recipes today.
 - **Built in:** `text` (a block of Markdown, laid out as glyphs), `rect`, `circle`, `line`,
-  `arrow`, `card` (a note), `table` (a type's rows, cells editable through `set-field`), and the
-  glyph set.
+  `arrow`, `card` (a note), `sticky` (text of the drawing's own), `table` (a type's rows, cells
+  editable through `set-field`), `venn2`, and the glyph set. They are written in this same
+  language, in a file the engine ships, and nothing in the code knows one of them by name.
+
+### Card, sticky, and "make it a note"
+
+- **`card`** is a placed shape bound to a note (a JSON Canvas `file` node): it shows the note's
+  title and first lines, and opening it opens the note. It is a link, so the note gets a backlink
+  from the drawing and the graph shows it.
+- **`sticky`** is text that lives in the drawing's file itself (a JSON Canvas `text` node), with no
+  file of its own. Its Markdown still joins the workspace through the drawing's owner: a task on a
+  sticky is a `task`, `[[Lava]]` on it a backlink.
+- **"Make it a note"** is an action any shape can declare in `on`, made of generic gateway steps:
+  create a note with the shape's text where Obsidian puts new notes, then rebind this shape to it
+  as a card, same place and size. Obsidian's canvas has the same move ("Convert to file"). The
+  built-in `sticky` declares it, so the format shows it can say it:
+
+  ```toml
+  [[shapes.on]]
+  action = "make-a-note"
+  title = "Make it a note"
+  do = [
+    { create = { text = "${text}" } },
+    { rebind = { shape = "card", inputs = { note = "created" } } },
+  ]
+  ```
+
+### Shape definitions, as built
+
+The format and the loader are in the engine (`crates/engine/src/shapes.rs`), beside types: the
+engine already owns definitions, their origins, the order they load in and the way a broken one is
+reported, and it reads TOML; the canvas crate stays pure geometry with no dependencies. The
+loader builds each definition into a `cold_lava_canvas::Shape`, and the canvas crate draws it.
+
+- **Where from.** `[[shapes]]` and `[glyphs]` in the built-in file
+  (`crates/engine/shapes/built-in.toml`), then each extension's manifest (`[[shapes]]`, ids
+  `<extension>.<name>`, left out with a line in `cold-lava keys` when outside the namespace or
+  given twice, as types are), then `config.toml`, then the workspace's `.cold-lava/shapes.toml`
+  (`version = 1` first, as `types.toml`). A later definition of an id or a glyph replaces the
+  earlier one, goes last, and says so in a note.
+- **Parts**, each one key: `rect` (`from`, `to`: two corners), `circle` (`center`, `radius`),
+  `ellipse` (`center`, `radii`), `line` and `arrow` (`from`, `to`: a point, or an anchor of a
+  part before it, like `frame.left`), `path` (`points`, `closed`), `text` (`value`, and either
+  `at` a point or anchor, a label, or `from` and `to`, a box it wraps in), and `shape` (`id`,
+  `use` another shape's id, `from`, `to`: its box). Each can have an `id`.
+- **Text at an anchor** is a `label`: it sits on the side its anchor faces (the row above
+  `left.top`, below a `bottom`, beside `left` and `right`), or the `side` given (`above`,
+  `below`, `left`, `right`, `center`), and labels never overlap ("Fitting" below has the rule).
+- **Nesting.** A nested shape's parts are copied into its box and named `<id>.<part>` (a circle
+  in a box that isn't square becomes an ellipse); its box's anchors are `<id>`, `<id>.top`, …,
+  so `past.mark.bottom` is the bottom of the part `mark` of the nested `past`. Its regions stay
+  its own: name its parts in a region of yours (`l.circle`).
+- **`anchors`** names points of the shape's own (`tip = [0.9, 0.5]`); **`aspect`** is its width
+  over height in world units, used when it is first placed and by `--render`.
+- **Placeholders.** `${a.title}` in text names an input and its field; until bindings fill
+  them (step 4), `--render` shows them as `a.title`. **Glyphs**: `:check:` in text is the
+  glyph's symbol, one character that draws like a letter; an unknown `:name:` stays as written.
+- **`on`.** Each entry is one gesture or action (`drop = { from, to }` between regions,
+  `click` on a region or part, `key`, or a named `action` with a `title`) and its steps: `do = [
+  … ]`, or one `edit` alone. Steps are `edit` (`item`, and one of `set-field` with one of
+  `value`, `add`, `remove`; `toggle`; `recipe`), `create` (a note: `text`, `name`), and `rebind`
+  (`shape`, `inputs`). They are stored and checked now, and run in step 4.
+- **Checked at load,** one line each, naming the file and the shape: a definition that doesn't
+  read (an unknown part kind or field), no id, no parts, a bad area (an unknown or stroke part,
+  a stray operator), an anchor no earlier part has, two parts or anchors with one id, a
+  placeholder that isn't an input, a `shows` naming something not an input (its set expression,
+  before `where`, `sort` or `limit`, goes through the area parser with the inputs as names), a
+  gesture count other than one, a `drop` between regions that don't exist, an edit with no or
+  two kinds, a `rebind` or a nested shape naming a shape that didn't load, and a cycle of nested
+  shapes. The shape is dropped; its siblings, and shapes in other files, load.
+- **`cold-lava shapes [WORKSPACE]`** lists every shape with its origin, inputs, parts, regions
+  and behaviour, then the glyphs; notes and errors go to stderr, and errors exit 1. `--json` is
+  the loaded set as data. `--render ID [--size WxH]` draws one, unbound, in a WxH terminal
+  (default 60×18): braille outlines, text and labels, then its regions' tints by number.
+
+```console
+$ cold-lava shapes example-workspace --render venn2 --size 40x12
+
+              a.title  b.title
+                ⣀⣀⣀  ⣀⣀⣀
+             ⡠⠒⠉ ⢀⠔⠋⠙⠢⡀ ⠉⠒⢄
+           ⢀⠎   ⢠⠃    ⠘⡄   ⠱⡀
+           ⡜    ⡇      ⢸    ⢣
+           ⢣    ⡇      ⢸    ⡜
+           ⠈⢆   ⠘⡄    ⢠⠃   ⡰⠁
+             ⠑⠤⣀ ⠈⠢⣄⣠⠔⠁ ⣀⠤⠊
+                ⠉⠉⠉  ⠉⠉⠉
+```
+
+The example workspace has a three-circle Venn, a timeline that nests a `tick` three times, and
+a glyph of its own (`:eruption:`) in `.cold-lava/shapes.toml`. `venn2` is built in rather than
+the example's, as the docs' example and the showcase of step 5: a placed Venn works in every
+workspace.
 
 ### Glyphs are shapes too
 
@@ -114,10 +205,11 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
 
 - **Geometry** *(as built)*: parts in a shape's unit box (`part.rs`: `rect`, `circle`,
   `ellipse`, `line`, `arrow`, `path` as a polyline or cubic Béziers flattened once, `text` as the
-  box its text will fill); a `Placement` (what is saved: top-left corner, size, rotation in
+  box its text will fill, `label` as one line of text beside a point); a `Placement` (what is saved: top-left corner, size, rotation in
   degrees clockwise about the centre) composed into one affine `Transform`; anchors
-  (`left.top`, a part's id for its centre, the box's own `center`, `top-left`, …, and `start`
-  and `end` of strokes). A part is an area (it has an inside) or a stroke (a line, an arrow, an
+  (`left.top`, a part's id for its centre, the box's own `center`, `top-left`, …, `start`
+  and `end` of strokes, and named points of the shape's own; a part's id may hold dots, as a
+  nested shape's parts do: `card.frame.top`). A part is an area (it has an inside) or a stroke (a line, an arrow, an
   open path); an arrow's head keeps its size in world units when the shape is stretched.
 - **Regions** *(as built)*: boolean operations on areas (`&`, `|`, `-`). `area.rs` parses the
   expression (`&` binds tighter than `|` and `-`, brackets group, `only-a` is one name so the
@@ -127,7 +219,7 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
   draws at, hit testing asks it about one point, and a rotated or stretched shape maps the
   point back into its unit box first. That has no slivers, tangent cases or precision drift;
   it gives up exact vector outlines of a region, which a GUI can still get by sampling finely.
-  Shapes are made in code for now; their TOML definitions are step 3.
+  Shapes are made from their TOML definitions ("Shape definitions, as built").
 - **Fitting** *(as built)*: text and region content laid out inside areas, overflow counted.
   `fit.rs` takes a region's `Room` (per row, the widest run of cells wholly inside it and clear
   of its outline) and lays out text (wrapped at spaces, "…" when cut short) or a list of labels
@@ -135,6 +227,16 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
   making way for it), starting from whichever row shows the most and centres best. A label wider
   than its row is cut with "…" in rows of four cells or more; narrower rows are skipped. Text is
   upright, one glyph per cell, at any rotation of the shape.
+  **Labels** (`fit::anchored`) sit on their side of their anchor: the row above a `top`
+  anchor, below a `bottom` one, beside `left` and `right`, on anything else (`Side::outside`).
+  They never overlap. They are placed in the order of the shape's parts, so the first is the
+  most important; a later label that would come closer than two blank cells to an earlier one on
+  its row slides along the row to the nearest clear place within two cells of its anchor's
+  column; failing that it is cut with "…" (not below four cells) and tried again; failing that
+  it is left out and counted. At 40×12 the Venn's titles, five columns apart, come out
+  `Fruit  Green` instead of touching (`tests/snapshots/labelled_venn_40x12.txt`). `draw.rs`
+  paints a whole placed shape this way (regions tinted, outlines, text boxes, labels), which is
+  what `cold-lava shapes --render` prints.
 - **Rasterizing** *(as built)*: areas and strokes to terminal cells, braille dots (2×4 per cell)
   and, where the terminal has Kitty graphics, pixels; a GUI would draw the same geometry exactly.
   `raster.rs` does all three with one step, a `Mask`: the samples of a `Viewport`'s grid an area
@@ -165,7 +267,8 @@ engine/frontend split again: the model is general, each frontend draws it as wel
    tested without a terminal. *(as built: `crates/canvas`, #133; snapshots of the Venn with its
    regions labelled, at three sizes and turned, in `crates/canvas/tests/snapshots/`. Nothing
    draws with it yet: the TUI paints its grids once placed shapes reach the scene view.)*
-3. Shape definitions: loaded like types, with built-ins, `cold-lava shapes WORKSPACE`.
+3. Shape definitions: loaded like types, with built-ins, `cold-lava shapes WORKSPACE`. *(as
+   built: `crates/engine/src/shapes.rs`, #134; "Shape definitions, as built" above.)*
 4. Bindings: inputs as live queries, the region expression language, behaviour as edits.
 5. Placed shapes in the scene view (after scenes, #91): place, move, stretch and rotate; the
    Venn diagram in the example workspace as the showcase; then the whiteboard (#92) built on

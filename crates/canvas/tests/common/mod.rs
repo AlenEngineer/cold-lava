@@ -2,7 +2,7 @@
 
 use cold_lava_canvas::fit::{self, Align, Flow, Room};
 use cold_lava_canvas::{
-    Grid, Kind, Mask, Part, Placed, Placement, Point, Res, Shape, Style, Viewport,
+    Grid, Kind, Mask, Part, Placed, Placement, Point, Res, Shape, Side, Style, Viewport, draw,
 };
 use std::sync::Arc;
 
@@ -14,20 +14,14 @@ pub const LABELS: [&[&str]; 3] = [
     &["olive", "peach", "quince", "fig"],
 ];
 
-/// The Venn with each region's labels fitted in a column, and the circles' titles centred
-/// one row above their `top` anchors.
+/// The Venn titled "Fruit" and "Green" at its circles' tops, each region's labels fitted in a
+/// column.
 pub fn paint_labelled_venn(grid: &mut Grid, venn: &Placed, view: &Viewport) {
-    paint_venn(grid, venn, view);
-    for (region, labels) in venn.shape.regions().iter().zip(LABELS) {
-        let room = Room::inside(&Mask::area(venn, &region.area, view, Res::BRAILLE));
+    let titled = Placed::new(Arc::new(titled_venn2()), venn.placement);
+    draw::paint(grid, &titled, view);
+    for (region, labels) in titled.shape.regions().iter().zip(LABELS) {
+        let room = Room::inside(&Mask::area(&titled, &region.area, view, Res::BRAILLE));
         fit::labels(&room, labels, Flow::Column, Align::Center).paint(grid, Style(7));
-    }
-    for (anchor, title) in [("left.top", "Fruit"), ("right.top", "Green")] {
-        let Some((col, row)) = venn.anchor(anchor).and_then(|p| view.cell_at(p)) else {
-            continue;
-        };
-        let start = col.saturating_sub(title.len() as u16 / 2);
-        grid.text(start, row.saturating_sub(1), title, Style(8));
     }
 }
 
@@ -63,25 +57,39 @@ pub fn venn_on(view: &Viewport, rotation: f64) -> Placed {
     )
 }
 
-pub const OUTLINE: Style = Style(9);
-
 /// Regions tinted 1, 2, 3 by cell; circles outlined in braille.
 pub fn paint_venn(grid: &mut Grid, venn: &Placed, view: &Viewport) {
-    for (i, region) in venn.shape.regions().iter().enumerate() {
-        let mask = Mask::area(venn, &region.area, view, Res::CELLS);
-        grid.fill(&mask, Style(i as u16 + 1));
-    }
-    for part in 0..venn.shape.parts().len() {
-        grid.dots(&Mask::outline(venn, part, view, Res::BRAILLE), OUTLINE);
-    }
+    draw::paint(grid, venn, view);
 }
 
 pub fn render(grid: &Grid) -> String {
     format!("{}--- backgrounds\n{}", grid.to_text(), grid.backgrounds())
 }
 
-/// The two-circle Venn of `docs/shapes.md`.
+/// The two-circle Venn of `docs/shapes.md`, untitled.
 pub fn venn2() -> Shape {
+    venn2_with(Vec::new())
+}
+
+/// The Venn with its circles' titles at their `top` anchors, above them.
+pub fn titled_venn2() -> Shape {
+    let title = |anchor: &str, value: &str| {
+        Part::new(
+            None,
+            Kind::Label {
+                at: venn2().anchor(anchor).expect("a circle's top"),
+                side: Side::outside(anchor),
+                value: value.into(),
+            },
+        )
+    };
+    venn2_with(vec![
+        title("left.top", "Fruit"),
+        title("right.top", "Green"),
+    ])
+}
+
+fn venn2_with(labels: Vec<Part>) -> Shape {
     let circle = |id, x| {
         Part::new(
             Some(id),
@@ -91,8 +99,10 @@ pub fn venn2() -> Shape {
             },
         )
     };
+    let mut parts = vec![circle("left", 0.38), circle("right", 0.62)];
+    parts.extend(labels);
     Shape::new(
-        vec![circle("left", 0.38), circle("right", 0.62)],
+        parts,
         &[
             ("only-a", "left - right"),
             ("both", "left & right"),

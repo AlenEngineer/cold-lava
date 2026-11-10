@@ -1,0 +1,115 @@
+# The shapes cold-lava ships, written in the same language as anyone's (docs/shapes.md, "Shape
+# definitions"). They load first, so config.toml, a workspace or an extension can replace any of
+# them by defining the same id, or build on them by nesting one in a shape of its own.
+version = 1
+
+# A block of Markdown, laid out as glyphs.
+[[shapes]]
+id = "text"
+title = "Text"
+inputs = ["text"]
+aspect = 3.0
+parts = [{ text = { id = "body", from = [0, 0], to = [1, 1], value = "${text}" } }]
+
+[[shapes]]
+id = "rect"
+title = "Rectangle"
+aspect = 2.0
+parts = [{ rect = { id = "rect", from = [0, 0], to = [1, 1] } }]
+
+[[shapes]]
+id = "circle"
+title = "Circle"
+aspect = 1.0
+parts = [{ circle = { id = "circle", center = [0.5, 0.5], radius = 0.5 } }]
+
+[[shapes]]
+id = "line"
+title = "Line"
+parts = [{ line = { id = "line", from = [0, 0], to = [1, 1] } }]
+
+[[shapes]]
+id = "arrow"
+title = "Arrow"
+parts = [{ arrow = { id = "arrow", from = [0, 0], to = [1, 1] } }]
+
+# A note on the canvas (a JSON Canvas `file` node): its title and first lines. It is a link, so
+# the note gets a backlink from the drawing.
+[[shapes]]
+id = "card"
+title = "Card (a note)"
+inputs = ["note"]
+aspect = 2.5
+parts = [
+  { rect = { id = "frame", from = [0, 0], to = [1, 1] } },
+  { text = { id = "title", from = [0.04, 0.1], to = [0.96, 0.3], value = "${note.title}" } },
+  { line = { from = "frame.left", to = "frame.right" } },
+  { text = { id = "excerpt", from = [0.04, 0.55], to = [0.96, 0.95], value = "${note.excerpt}" } },
+]
+regions = [{ id = "note", area = "frame", shows = "note" }]
+
+# Text that lives in the drawing's file (a JSON Canvas `text` node), with no file of its own.
+[[shapes]]
+id = "sticky"
+title = "Sticky note"
+inputs = ["text"]
+aspect = 2.0
+parts = [
+  { rect = { id = "paper", from = [0, 0], to = [1, 1] } },
+  { text = { id = "body", from = [0.06, 0.12], to = [0.94, 0.88], value = "${text}" } },
+]
+
+# "Convert to file", as Obsidian's canvas has it: the sticky's text becomes a new note where
+# Obsidian puts new notes, and the sticky becomes a card bound to it, same place and size.
+[[shapes.on]]
+action = "make-a-note"
+title = "Make it a note"
+do = [
+  { create = { text = "${text}" } },
+  { rebind = { shape = "card", inputs = { note = "created" } } },
+]
+
+# A type's rows: a header and the rows under it (the data comes with bindings).
+[[shapes]]
+id = "table"
+title = "Table (a type's rows)"
+inputs = ["rows"]
+aspect = 3.0
+parts = [
+  { rect = { id = "header", from = [0, 0], to = [1, 0.3] } },
+  { text = { id = "heading", from = [0.02, 0.05], to = [0.98, 0.25], value = "${rows.type}" } },
+  { rect = { id = "body", from = [0, 0.3], to = [1, 1] } },
+]
+regions = [{ id = "rows", area = "body", shows = "rows" }]
+
+# Two overlapping circles whose regions show what two collections share and don't.
+[[shapes]]
+id = "venn2"
+title = "Simple Venn diagram"
+inputs = ["a", "b"]
+key = "name"
+aspect = 1.0
+parts = [
+  { circle = { id = "left", center = [0.38, 0.5], radius = 0.32 } },
+  { circle = { id = "right", center = [0.62, 0.5], radius = 0.32 } },
+  { text = { at = "left.top", value = "${a.title}" } },
+  { text = { at = "right.top", value = "${b.title}" } },
+]
+regions = [
+  { id = "only-a", area = "left - right", shows = "a - b" },
+  { id = "both", area = "left & right", shows = "a & b" },
+  { id = "only-b", area = "right - left", shows = "b - a" },
+]
+
+[[shapes.on]]
+drop = { from = "only-a", to = "both" }
+edit = { item = "dropped", set-field = { field = "tags", add = "${b.tag}" } }
+
+# The glyph set: symbols that draw like letters wherever text goes, written `:name:`.
+[glyphs]
+check = "✓"
+cross = "✗"
+dot = "•"
+star = "★"
+diamond = "◆"
+arrow = "→"
