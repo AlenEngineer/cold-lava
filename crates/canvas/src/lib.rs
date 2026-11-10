@@ -8,6 +8,7 @@
 //! crossterm, portable-pty, vt100).
 
 pub mod area;
+pub mod draw;
 pub mod fit;
 pub mod geom;
 pub mod hit;
@@ -19,6 +20,6 @@ pub use area::{Area, AreaError};
 pub use fit::{Align, Fitted, Flow, Line, Room, Run};
 pub use geom::{Handle, Placement, Point, Rect, Transform};
 pub use hit::{Hit, hit};
-pub use part::{Kind, Part, Path, Segment};
+pub use part::{Kind, Part, Path, Segment, Side};
 pub use raster::{Cell, Grid, Mask, Pixels, Res, Style, Viewport};
-pub use shape::{Placed, Region, Shape, ShapeError};
+pub use shape::{Placed, Region, Shape, ShapeError, anchor_in};

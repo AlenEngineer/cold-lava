@@ -114,10 +114,11 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
 
 - **Geometry** *(as built)*: parts in a shape's unit box (`part.rs`: `rect`, `circle`,
   `ellipse`, `line`, `arrow`, `path` as a polyline or cubic Béziers flattened once, `text` as the
-  box its text will fill); a `Placement` (what is saved: top-left corner, size, rotation in
+  box its text will fill, `label` as one line of text beside a point); a `Placement` (what is saved: top-left corner, size, rotation in
   degrees clockwise about the centre) composed into one affine `Transform`; anchors
-  (`left.top`, a part's id for its centre, the box's own `center`, `top-left`, …, and `start`
-  and `end` of strokes). A part is an area (it has an inside) or a stroke (a line, an arrow, an
+  (`left.top`, a part's id for its centre, the box's own `center`, `top-left`, …, `start`
+  and `end` of strokes, and named points of the shape's own; a part's id may hold dots, as a
+  nested shape's parts do: `card.frame.top`). A part is an area (it has an inside) or a stroke (a line, an arrow, an
   open path); an arrow's head keeps its size in world units when the shape is stretched.
 - **Regions** *(as built)*: boolean operations on areas (`&`, `|`, `-`). `area.rs` parses the
   expression (`&` binds tighter than `|` and `-`, brackets group, `only-a` is one name so the
@@ -135,6 +136,16 @@ A headless crate (like `cold-lava-editor`: nothing drawn), shared by every front
   making way for it), starting from whichever row shows the most and centres best. A label wider
   than its row is cut with "…" in rows of four cells or more; narrower rows are skipped. Text is
   upright, one glyph per cell, at any rotation of the shape.
+  **Labels** (`fit::anchored`) sit on their side of their anchor: the row above a `top`
+  anchor, below a `bottom` one, beside `left` and `right`, on anything else (`Side::outside`).
+  They never overlap. They are placed in the order of the shape's parts, so the first is the
+  most important; a later label that would come closer than two blank cells to an earlier one on
+  its row slides along the row to the nearest clear place within two cells of its anchor's
+  column; failing that it is cut with "…" (not below four cells) and tried again; failing that
+  it is left out and counted. At 40×12 the Venn's titles, five columns apart, come out
+  `Fruit  Green` instead of touching (`tests/snapshots/labelled_venn_40x12.txt`). `draw.rs`
+  paints a whole placed shape this way (regions tinted, outlines, text boxes, labels), which is
+  what `cold-lava shapes --render` prints.
 - **Rasterizing** *(as built)*: areas and strokes to terminal cells, braille dots (2×4 per cell)
   and, where the terminal has Kitty graphics, pixels; a GUI would draw the same geometry exactly.
   `raster.rs` does all three with one step, a `Mask`: the samples of a `Viewport`'s grid an area
