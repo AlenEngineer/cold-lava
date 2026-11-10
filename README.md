@@ -495,8 +495,9 @@ cold-lava recipe ~/workspace rename-tag --from lava --to magma --dry-run --json
 `rename-tag` renames `#from` everywhere, and the tags nested under it (`#from/child` becomes
 `#to/child`; `#fromage` stays):
 
-- `#tags` in the text, never in code (blocks, indented or fenced, and spans), HTML blocks or a
-  link's destination (`[text](#heading)` is a link, not a tag);
+- `#tags` in the text, never in code (blocks, indented or fenced, and spans, a span that goes on
+  to the next line too), HTML blocks or a link's destination (`[text](#heading)` is a link, not
+  a tag);
 - frontmatter `tags` (or `tag`) written as a `- item` list, as `[a, b]`, or as a string
   (`tags: a, b`), with or without `#`, quoted or not, each kept as written;
 - tags in the Markdown that extensions read out of their files (a CSV's Markdown cells), through
@@ -599,7 +600,8 @@ Each item has an `id` that stays the same when a task is ticked, re-dated, re-in
 down by lines added above it (an author's `^block-id` keeps it even when the words change), the
 `section` (headings) it sits under, its `parent` list item, and a `rev` that changes whenever its
 lines do. Items are read in the workspace's Markdown flavour: tasks in callouts count, tasks in code
-blocks and `%%comments%%` don't, a date in a code span (`` `📅 2026-11-12` ``) is words, and
+blocks, `%%comments%%` and the frontmatter don't (a frontmatter whose first line is blank, as the
+Kanban plugin writes it, too), a date in a code span (`` `📅 2026-11-12` ``) is words, and
 custom statuses follow the Tasks plugin's settings.
 
 `task toggle` works like Obsidian Tasks: it moves the status to its next one (the Tasks plugin's

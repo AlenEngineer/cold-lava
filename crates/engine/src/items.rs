@@ -1781,10 +1781,7 @@ fields.w = { capture = "w" }
             runs[k].sort();
             println!(
                 "  {what}: {:?} ({:?}-{:?}), {} items",
-                runs[k][4],
-                runs[k][0],
-                runs[k][8],
-                items[k]
+                runs[k][4], runs[k][0], runs[k][8], items[k]
             );
         }
     }

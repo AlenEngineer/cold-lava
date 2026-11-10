@@ -235,14 +235,17 @@ change what it shows, never how it works.
     then opens new blocks (frontmatter, ATX and setext headings, thematic breaks, fenced and
     indented code, HTML blocks as opaque text, tables, `$$` math and `%%` comment blocks,
     paragraphs with lazy lines). A container's marker on a later line (`>`, an item's
-    indentation) is a token of the innermost block that holds that line.
+    indentation) is a token of the innermost block that holds that line. A lazy line, which the
+    paragraph's containers don't go on to, ends the paragraph at any block that starts there,
+    a list item of another kind (`1. a` then `2) b`) included.
   - *Inlines* are read per line, left to right, the first to start winning: code spans,
     wikilinks and embeds (target, `#heading` or `^block`, `|alias`), Markdown links and images,
     Dataview fields (`[key:: value]`, `(key:: value)`, a `key:: value` line), `%%comments%%`,
-    `$math$`, tags and block ids. A task's checkbox is a token of its list item. Emphasis,
-    highlights and footnotes stay text, and so do the Tasks plugin's emoji fields, which the
-    `task` type reads (its markers are data, not syntax). Every one of these is gated by the
-    flavour's `Syntax`.
+    `$math$`, tags and block ids. A code span its line doesn't close goes on into the next
+    lines of its paragraph when one of them closes it, as CommonMark has it. A task's checkbox
+    is a token of its list item. Emphasis, highlights and footnotes stay text, and so do the
+    Tasks plugin's emoji fields, which the `task` type reads (its markers are data, not
+    syntax). Every one of these is gated by the flavour's `Syntax`.
   - *Incremental reparsing:* `Tree::edit` parses again from the top-level block before the edit
     (a block's end depends on the first line after it that isn't blank) until the parse is
     back on a line where nothing is open and an old block starts, then splices the new blocks
@@ -261,10 +264,25 @@ change what it shows, never how it works.
     (`Gates::INDEX`: wikilinks, embeds and tags count; links in comments and math do too). A
     test keeps the old line reader and checks both read every note of the corpus alike. Where
     they differ, the tree follows the Markdown the reader shows: links in indented code, in a
-    ```` ``code`` ```` span, inside an HTML block or a fence that a shorter fence line didn't
-    close don't count; a tag needs to be text, not inside a link's destination or a wikilink.
-    Items still come from pulldown-cmark (`items::extract`), and `relink` and the matcher's
-    `line_links` still read lines; moving them onto the tree is #140's next step.
+    ```` ``code`` ```` span or one that goes on past its line, inside an HTML block or a fence
+    that a shorter fence line didn't close don't count; a tag needs to be text, not inside a
+    link's destination or a wikilink. `relink` and the matcher's `line_links` still read
+    lines; moving them onto the tree is #140's next step.
+  - *Items:* `items::extract` walks the tree with `cst::read`, in the workspace's flavour, over
+    the note without its `%%comments%%` (the code a `%%` is in comes from the tree too), where
+    it read pulldown-cmark's events before. Ids, revs and spans hang on the blocks, so the walk
+    reads them as pulldown-cmark had them: a paragraph, a table row or a fence starts at its
+    first character; a callout's title is the first line of a paragraph that the next line
+    goes on (a GitHub alert's `[!NOTE]` is none); `$$` math is a paragraph's text; a
+    paragraph's leading link reference definitions are no paragraph; a table row's cells are
+    split at every `|` not escaped and cut or filled to the table's columns. A test keeps the
+    pulldown-cmark pass and checks both give the same items on every note of the corpus, with
+    types that read every kind of block, in three flavours, and on tricky notes (lazy lines,
+    loose lists, indented code, HTML, block ids, callouts, tables, math, comments). They differ
+    in one way, where pulldown-cmark wasn't Obsidian: a frontmatter whose first line is blank,
+    as the Kanban plugin writes it, was a rule and Markdown to it, and is frontmatter now.
+    Reading 3,300 notes' items took ITEMS_TREE on a GitHub runner, against ITEMS_PULLDOWN
+    with pulldown-cmark.
 - **A framework, extracted, not designed up front.** The frontend is built concrete and
   opinionated first. Once its parts have proven themselves (the view host, the document
   layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a
