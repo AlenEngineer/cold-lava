@@ -1,0 +1,32 @@
+# Editing a shape the workspace already has: S on the whiteboard with nothing selected lists the
+# workspace's shapes; venn3 opens from its block in .cold-lava/shapes.toml. Its lower circle's
+# centre is dragged down and saved. tests/drive.rs checks that only venn3's block changed, byte
+# for byte, and that the file still loads.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter
+type Editor
+keys enter
+wait-for whiteboard Editor
+keys S
+wait-for shape editor · type to filter
+type venn3
+wait-for edit venn3
+keys enter
+wait-for shape editor · venn3 (saved)
+expect low: circle
+expect only-a = left - right - low
+# The centre of low, at [0.5, 0.62] of the box: its grip.
+expect-in 27 49 27 49 +
+drag 27 49 30 49
+wait-for shape editor · venn3 (changed)
+keys ctrl+s
+wait-for saved venn3 in .cold-lava/shapes.toml
+keys q
+wait-for whiteboard Editor
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

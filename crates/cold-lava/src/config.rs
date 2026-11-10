@@ -159,6 +159,9 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
         .errors
         .extend(Keymap::with(&commands::entries(PANE), keys).1);
     config
+        .errors
+        .extend(Keymap::with(&commands::entries(commands::SHAPE_EDITOR), keys).1);
+    config
 }
 
 fn markdown(mut section: toml::Table, errors: &mut Vec<String>) -> Option<Flavour> {
