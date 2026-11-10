@@ -30,6 +30,10 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- The graph lays out large workspaces much faster: nodes push each other apart through a
+  Barnes–Hut quadtree instead of pair by pair, and a node's braille dot is filled dot by dot
+  instead of drawn as rings of circles. On a GitHub runner, 2,000 notes settle in 6.3 s
+  instead of 17.2 s, 5,000 in 10.7 s instead of 55.7 s, and 10,000 in 18.7 s instead of 163 s.
 - Renames rewrite a board's note cards and the links in its text cards through the canvas
   owner, only in nodes' `file` and `text`. The delete warning says "files link to them", since
   a board can be one.

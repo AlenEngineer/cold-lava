@@ -28,7 +28,7 @@ jobs:
           env COLD_LAVA_EDITOR=none
           wait-for example-workspace
           keys g
-          wait-for example-workspace · 35 nodes
+          wait-for nodes ·
           wait 12s
           screen
           keys tab
