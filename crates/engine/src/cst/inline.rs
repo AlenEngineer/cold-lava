@@ -21,7 +21,7 @@ pub(super) fn build<'t>(text: &'t str, events: &[Ev], gates: Gates, b: &mut impl
             Ev::Finish => b.finish(),
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
             Ev::Inline(a, z) => {
-                let line = Line::new(text, gates, a);
+                let line = Line::new(text, gates, a, z);
                 match line.line_field(a, z) {
                     Some(end) => line.emit(b, LineField, a, end),
                     None => line.run(b, a, z, false),
@@ -44,6 +44,7 @@ fn yaml<'t>(text: &'t str, gates: Gates, b: &mut impl Sink<'t>, a: usize, z: usi
         text,
         g: gates,
         tags: Vec::new(),
+        colons: false,
     };
     let mut plain = a;
     let mut i = a;
@@ -67,6 +68,8 @@ struct Line<'t> {
     /// The tags on this line, from their `#` to their end, found as they always were: by the
     /// tag pattern over the whole line, the markers before it included.
     tags: Vec<Range<usize>>,
+    /// Whether the line has a `::`, without which it has no Dataview field.
+    colons: bool,
 }
 
 fn tag_pattern() -> &'static Regex {
@@ -75,22 +78,26 @@ fn tag_pattern() -> &'static Regex {
 }
 
 impl<'t> Line<'t> {
-    fn new(text: &'t str, g: Gates, at: usize) -> Self {
+    /// The line holding `at..z`, the text read.
+    fn new(text: &'t str, g: Gates, at: usize, z: usize) -> Self {
         let mut tags = Vec::new();
-        if g.has(S::Tags) {
+        if g.has(S::Tags) && text[at..z].contains('#') {
             let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
             let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-            let line = &text[start..end];
-            if line.contains('#') {
-                for c in tag_pattern().captures_iter(line) {
-                    let name = c.get(1).expect("the pattern has a name");
-                    if !name.as_str().bytes().all(|b| b.is_ascii_digit()) {
-                        tags.push(start + name.start() - 1..start + name.end());
-                    }
+            for c in tag_pattern().captures_iter(&text[start..end]) {
+                let name = c.get(1).expect("the pattern has a name");
+                if !name.as_str().bytes().all(|b| b.is_ascii_digit()) {
+                    tags.push(start + name.start() - 1..start + name.end());
                 }
             }
         }
-        Line { text, g, tags }
+        let colons = text[at..z].contains("::");
+        Line {
+            text,
+            g,
+            tags,
+            colons,
+        }
     }
 
     /// Read `a..z`; `in_link` inside a link's text, where no other link starts.
@@ -337,6 +344,9 @@ impl<'t> Line<'t> {
 
     /// A field's key from `a`: where its `::` is. A key is words, not brackets or code.
     fn key(&self, a: usize, z: usize) -> Option<usize> {
+        if !self.colons {
+            return None;
+        }
         let rest = &self.text[a..z];
         let k = rest.find("::")?;
         let key = &rest[..k];

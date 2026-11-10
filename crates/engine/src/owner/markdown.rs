@@ -283,6 +283,10 @@ fn md_target(dest: &str) -> Option<&str> {
     re.captures(dest).and_then(|c| c.get(1)).map(|m| m.as_str())
 }
 
+fn newlines(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| b == b'\n').count()
+}
+
 /// A link as the tree holds it: where it is, whether a Markdown link, and its target as
 /// written.
 struct Written<'t> {
@@ -296,17 +300,14 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
     let mut refs = Vec::new();
     let mut tags = Vec::new();
     let mut aliases: Vec<String> = Vec::new();
-    let starts: Vec<usize> = std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
-    let line_of = |at: usize| starts.partition_point(|&s| s <= at) - 1;
-    let line_text = |n: usize| {
-        let end = starts.get(n + 1).map_or(text.len(), |&s| s - 1);
-        &text[starts[n]..end]
+    let line_text = |at: usize| {
+        let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+        let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+        &text[start..end]
     };
-    let add = |refs: &mut Vec<Ref>, target: Option<String>, n: usize| {
+    let add = |refs: &mut Vec<Ref>, target: Option<String>, n: usize, at: usize| {
         if let Some(target) = target {
-            let line = line_text(n);
+            let line = line_text(at);
             let mut context: String = line.trim().chars().take(240).collect();
             if line.trim().chars().count() > 240 {
                 context.push('…');
@@ -374,18 +375,24 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
     }
     // Wikilinks inside frontmatter properties count too, like in Obsidian. In the body, each
     // line's wikilinks come before its Markdown links.
-    let (front, mut body): (Vec<_>, Vec<_>) =
-        links.into_iter().partition(|w| w.at < frontmatter_end);
-    body.sort_by_key(|w| (line_of(w.at), w.md));
-    for w in front {
-        add(&mut refs, clean_target(w.target), line_of(w.at));
-    }
-    for w in body {
+    links.sort_by_key(|w| w.at);
+    let (mut line, mut counted) = (0, 0);
+    let mut numbered: Vec<(usize, Written)> = links
+        .into_iter()
+        .map(|w| {
+            line += newlines(&text.as_bytes()[counted..w.at]);
+            counted = w.at;
+            (line, w)
+        })
+        .collect();
+    let body = numbered.partition_point(|(_, w)| w.at < frontmatter_end);
+    numbered[body..].sort_by_key(|(n, w)| (*n, w.md));
+    for (k, (n, w)) in numbered.into_iter().enumerate() {
         let target = clean_target(w.target);
-        if target.is_some() {
+        if k >= body && target.is_some() {
             written.add(w.md, w.target);
         }
-        add(&mut refs, target, line_of(w.at));
+        add(&mut refs, target, n, w.at);
     }
     (refs, tags, aliases, written)
 }
