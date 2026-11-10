@@ -106,8 +106,9 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
   (every byte a token; printing it gives the note back), blocks found line by line as
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
-  reparses only the top-level blocks an edit can change. The Markdown owner's `read` and
-  `tags_in` read links and tags from it; items still come from pulldown-cmark (#140).
+  reparses only the top-level blocks an edit can change; `cst::read` gives a reader the steps
+  of a walk through the tree without making it (the scan uses it). The Markdown owner's `read`
+  and `tags_in` read links and tags this way; items still come from pulldown-cmark (#140).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:

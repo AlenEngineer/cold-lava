@@ -250,6 +250,12 @@ change what it shows, never how it works.
     line 1 decides the frontmatter. A test makes thousands of random edits and checks each
     against a full parse. A long list is one top-level block, so an edit inside it reparses
     the whole list.
+  - *One parse, two sinks:* the parse writes to rowan's builder for a tree, or through
+    `cst::read`, which hands a reader the same steps a walk through the tree takes, without
+    making it. The workspace's scan reads every note once and drops it, so it uses `read`. On a
+    GitHub runner, 3,300 notes took 76 ms to make into trees and 54 ms to read so, where the
+    line reader before it took 58 ms. A test checks both give the same steps on every note of
+    the corpus.
   - *What reads it:* the Markdown owner's `read` (links, aliases, how links are written) and
     `tags_in`. They read in the same syntax whatever the flavour, as they always have
     (`Gates::INDEX`: wikilinks, embeds and tags count; links in comments and math do too). A
