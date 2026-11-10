@@ -195,25 +195,25 @@ pub struct Gates(u32);
 
 impl Gates {
     pub fn of(flavour: &Flavour) -> Gates {
-        Gates(flavour.syntax.iter().fold(0, |g, s| g | 1 << *s as u32))
+        Gates(flavour.syntax.iter().fold(0, |g, s| g | (1 << *s as u32)))
     }
 
     /// What reading a note's links and tags sees, whatever the workspace's flavour, as it
     /// always has: wikilinks, embeds and tags, outside code and the frontmatter's text. Links in
     /// comments and math still count.
     pub(crate) const INDEX: Gates = Gates(
-        1 << Syntax::Frontmatter as u32
-            | 1 << Syntax::WikiLinks as u32
-            | 1 << Syntax::Embeds as u32
-            | 1 << Syntax::Tags as u32
-            | 1 << Syntax::Tables as u32
-            | 1 << Syntax::TaskLists as u32
-            | 1 << Syntax::Callouts as u32
-            | 1 << Syntax::BlockIds as u32,
+        (1 << Syntax::Frontmatter as u32)
+            | (1 << Syntax::WikiLinks as u32)
+            | (1 << Syntax::Embeds as u32)
+            | (1 << Syntax::Tags as u32)
+            | (1 << Syntax::Tables as u32)
+            | (1 << Syntax::TaskLists as u32)
+            | (1 << Syntax::Callouts as u32)
+            | (1 << Syntax::BlockIds as u32),
     );
 
     pub fn has(self, syntax: Syntax) -> bool {
-        self.0 & 1 << syntax as u32 != 0
+        self.0 & (1 << syntax as u32) != 0
     }
 }
 

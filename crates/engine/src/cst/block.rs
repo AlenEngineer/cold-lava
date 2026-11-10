@@ -733,12 +733,13 @@ impl<'t> Parser<'t> {
                     self.tok(Whitespace, mz, item.content);
                     pos = item.content;
                     col = item.col;
-                    if !item.empty && self.g.has(S::TaskLists) {
-                        if let Some(end) = task_marker(&self.text[pos..le]) {
-                            self.tok(TaskMarker, pos, pos + end);
-                            col = self.cols(pos, pos + end, col);
-                            pos += end;
-                        }
+                    if !item.empty
+                        && self.g.has(S::TaskLists)
+                        && let Some(end) = task_marker(&self.text[pos..le])
+                    {
+                        self.tok(TaskMarker, pos, pos + end);
+                        col = self.cols(pos, pos + end, col);
+                        pos += end;
                     }
                     self.stack.push(Open::Item {
                         col: item.col,

@@ -44,10 +44,9 @@ fn corpus() -> Vec<(String, String)> {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "md")
                 && !p.components().any(|c| c.as_os_str() == "target")
+                && let Ok(text) = std::fs::read_to_string(p)
             {
-                if let Ok(text) = std::fs::read_to_string(p) {
-                    out.push((p.display().to_string(), text));
-                }
+                out.push((p.display().to_string(), text));
             }
         }
     }
@@ -172,7 +171,7 @@ fn code_and_html_hold_no_links() {
 
 #[test]
 fn the_flavour_gates_syntax() {
-    let text = "[[A]] %%c%% $x$ #t ^id\n> [!note]\n";
+    let text = "[[A]] %%c%% $x$ #t ^id\n> [!custom]\n";
     let gh = kinds(text, github());
     for missing in [
         Kind::WikiLink,

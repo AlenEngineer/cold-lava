@@ -124,11 +124,9 @@ impl<'t> Line<'t> {
                     true => self.wikilink(i, z).map(|e| (WikiLink, e)),
                     false => None,
                 },
-                b'[' => (self.field(i, z).map(|e| (InlineField, e))).or_else(|| {
-                    (!in_link)
-                        .then(|| self.link(i, z))
-                        .flatten()
-                        .map(|e| (Link, e))
+                b'[' => (self.field(i, z).map(|e| (InlineField, e))).or_else(|| match in_link {
+                    true => None,
+                    false => self.link(i, z).map(|e| (Link, e)),
                 }),
                 b'(' => self.field(i, z).map(|e| (InlineField, e)),
                 b'%' if self.g.has(S::Comments) && t.get(i + 1) == Some(&b'%') => {
