@@ -20,8 +20,10 @@ pub enum Place {
         query: String,
         sel: usize,
     },
+    /// A whiteboard; `node` is the one selected there, selected again on the way back.
     Board {
         path: PathBuf,
+        node: Option<String>,
     },
     /// A view an extension opened (`ext::view`), which keeps how it was while it is open;
     /// `label` is the extension's name.
@@ -41,7 +43,7 @@ impl Place {
                 .unwrap_or_default()
         };
         match self {
-            Place::Note { path, .. } | Place::Board { path } => stem(path),
+            Place::Note { path, .. } | Place::Board { path, .. } => stem(path),
             Place::Search { query, .. } => format!("search “{query}”"),
             Place::View { label, .. } => label.clone(),
         }
@@ -88,7 +90,7 @@ impl History {
     /// Drop the places that show the note or board at `path`, or anything in the folder at
     /// `path` (it was deleted).
     pub fn forget(&mut self, path: &Path) {
-        let keep = |p: &Place| !matches!(p, Place::Note { path: q, .. } | Place::Board { path: q } if q.starts_with(path));
+        let keep = |p: &Place| !matches!(p, Place::Note { path: q, .. } | Place::Board { path: q, .. } if q.starts_with(path));
         self.back.retain(keep);
         self.forward.retain(keep);
     }
@@ -96,7 +98,7 @@ impl History {
     /// The note, board or folder at `from` is at `to` now: so are the places that show it.
     pub fn moved(&mut self, from: &Path, to: &Path) {
         for place in self.back.iter_mut().chain(self.forward.iter_mut()) {
-            if let Place::Note { path, .. } | Place::Board { path } = place
+            if let Place::Note { path, .. } | Place::Board { path, .. } = place
                 && let Ok(rest) = path.strip_prefix(from)
             {
                 *path = match rest.as_os_str().is_empty() {
@@ -128,7 +130,7 @@ fn step(from: &mut Vec<Place>, to: &mut Vec<Place>, here: Option<Place>) -> Opti
     Some(next)
 }
 
-/// Where Back and Forward lead from a screen of its own (the graph, a board).
+/// Where Back and Forward lead, for what draws its own status line (a scene, a board).
 #[derive(Clone, Default)]
 pub struct Nav {
     pub back: Option<String>,

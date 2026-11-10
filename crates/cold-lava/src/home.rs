@@ -460,6 +460,8 @@ enum Mode {
         view: ViewId,
         backlinks: bool,
     },
+    /// The whiteboard (`Home::board`), over the whole screen.
+    Board,
 }
 
 /// A note, board or folder about to go to the trash, as the user was shown it.
@@ -603,6 +605,8 @@ pub struct Home {
     scene_shown: Option<(ExtId, ViewId)>,
     /// Opened as `cold-lava graph`: leaving the graph quits.
     graph_alone: bool,
+    /// The whiteboard, open while it is in front (`Mode::Board`).
+    board: Option<board::Board>,
     /// What owners answered to `file/preview`, for the embeds the reader draws.
     previews: Previews,
     /// The picture placed with Kitty graphics: its view and the cells it covers. And the one
@@ -696,6 +700,7 @@ impl Home {
             previews: Previews::default(),
             scene_shown: None,
             graph_alone: false,
+            board: None,
             picture: None,
             picture_wanted: None,
             catching_up: false,
@@ -799,10 +804,12 @@ impl Home {
             self.pump_pane();
             self.run_requested(terminal)?;
             if let Some(place) = self.go_to.take() {
-                self.go_from_here(place, terminal)?;
+                self.go_from_here(place)?;
             }
             self.load_pending();
             self.check_disk();
+            self.board_left()?;
+            self.tick_board();
             self.views.settle();
             self.ask_previews();
             if self.backlinks_target() != self.backs_of {
@@ -844,6 +851,7 @@ impl Home {
         }
         self.hide_picture()?;
         self.hide_scene();
+        self.close_board();
         self.save_editor();
         self.registry.shutdown();
         Ok(())
@@ -1112,7 +1120,7 @@ impl Home {
         if let Some(f) = owned {
             let place = item.and_then(|id| f.places.get(&id).cloned());
             let path = f.path.clone();
-            // The whiteboard is a screen of its own: Back from it returns to where you were.
+            // The whiteboard comes in front of the view, which Back returns to.
             if workspace::attachment_kind(&f.rel) != Some("whiteboard") {
                 self.mode = Mode::Normal;
             }
@@ -1435,7 +1443,7 @@ impl Home {
             Destination::Attachment {
                 path: Some(path), ..
             } if workspace::attachment_kind(&path.to_string_lossy()) == Some("whiteboard") => {
-                self.go_to = Some(Place::Board { path })
+                self.go_to = Some(Place::Board { path, node: None })
             }
             Destination::Attachment {
                 name,
@@ -1462,6 +1470,12 @@ impl Home {
             let label = self.registry.manifest(owner).name.clone();
             return Some(Place::View { owner, view, label });
         }
+        if let (Mode::Board, Some(b)) = (&self.mode, &self.board) {
+            return Some(Place::Board {
+                path: b.path().to_path_buf(),
+                node: b.selected().map(String::from),
+            });
+        }
         Some(Place::Note {
             path: self.shown.clone()?,
             spot: self.reader.as_ref().map(Reader::spot),
@@ -1477,55 +1491,123 @@ impl Home {
         }
     }
 
-    fn travel(&mut self, a: HistoryAction, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn travel(&mut self, a: HistoryAction) -> Result<()> {
         let here = self.here();
         let to = match a {
             HistoryAction::Back => self.history.back(here),
             HistoryAction::Forward => self.history.forward(here),
         };
         match to {
-            Some(place) => self.go(place, terminal),
+            Some(place) => self.go(place),
             None => Ok(()),
         }
     }
 
     /// Go to the graph or a board from here, which becomes the way back.
-    fn go_from_here(&mut self, to: Place, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn go_from_here(&mut self, to: Place) -> Result<()> {
         if let Some(here) = self.here() {
             self.history.visit(here);
         }
-        self.go(to, terminal)
+        self.go(to)
     }
 
-    /// Go to `place`. The graph and boards run until they are left, maybe for another place.
-    fn go(&mut self, place: Place, terminal: &mut DefaultTerminal) -> Result<()> {
-        let mut next = Some(place);
-        while let Some(place) = next.take() {
-            next = match place {
-                Place::Note { path, spot } => {
-                    self.return_to_note(&path, spot);
-                    None
+    /// Go to `place`.
+    fn go(&mut self, place: Place) -> Result<()> {
+        match place {
+            Place::Note { path, spot } => self.return_to_note(&path, spot),
+            Place::Search { query, sel } => {
+                self.search_for(query);
+                if let Mode::Search { sel: s, .. } = &mut self.mode {
+                    *s = sel.min(self.result_rows.len().saturating_sub(1));
                 }
-                Place::Search { query, sel } => {
-                    self.search_for(query);
-                    if let Mode::Search { sel: s, .. } = &mut self.mode {
-                        *s = sel.min(self.result_rows.len().saturating_sub(1));
-                    }
-                    None
+            }
+            Place::Board { path, node } => {
+                self.mode = Mode::Normal;
+                self.open_board(path, node)?;
+            }
+            Place::View { owner, view, .. } => {
+                if self.views.has(owner, view) {
+                    self.front_view(owner, view);
                 }
-                Place::Board { path } => {
-                    self.mode = Mode::Normal;
-                    self.run_board(terminal, path)?
-                }
-                Place::View { owner, view, .. } => {
-                    if self.views.has(owner, view) {
-                        self.front_view(owner, view);
-                    }
-                    None
-                }
-            };
+            }
         }
         Ok(())
+    }
+
+    /// The whiteboard at `path` in front, with `node` selected when it is one of its nodes.
+    fn open_board(&mut self, path: PathBuf, node: Option<String>) -> Result<()> {
+        let Some(root) = self.root.clone() else {
+            return Ok(());
+        };
+        self.close_board();
+        if self.core.is_none() {
+            self.core = Some(Core::open(&root)?);
+        }
+        match board::Board::open(&root, path, node) {
+            Ok(b) => {
+                self.board = Some(b);
+                self.mode = Mode::Board;
+            }
+            Err(e) => self.flash(format!("{e:#}")),
+        }
+        Ok(())
+    }
+
+    /// The whiteboard stops following the workspace.
+    fn close_board(&mut self) {
+        if let (Some(b), Some(core)) = (self.board.take(), self.core.as_mut()) {
+            b.close(core);
+        }
+    }
+
+    /// Once a frame: the whiteboard in front learns where Back leads and keeps its placed
+    /// shapes and its file up to date. One that isn't in front any more is closed.
+    fn tick_board(&mut self) {
+        if !matches!(self.mode, Mode::Board) {
+            return self.close_board();
+        }
+        let nav = Nav::of(&self.history);
+        if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
+            b.navigate(nav);
+            b.tick(core, &mut self.registry);
+        }
+        self.board_heard();
+    }
+
+    /// What the core said while the whiteboard's shape editor ran: the menu hears it now.
+    fn board_heard(&mut self) {
+        let Some(b) = self.board.as_mut() else {
+            return;
+        };
+        let (events, news) = b.take_heard();
+        if !events.is_empty() {
+            self.sync_with_core(&events);
+        }
+        self.deliver_news(news);
+    }
+
+    /// A key for the whiteboard in front.
+    fn board_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
+            b.on_key(k, terminal, core, &mut self.registry)?;
+        }
+        self.board_heard();
+        self.board_left()
+    }
+
+    /// When the whiteboard in front was left (Back, Forward, `q`, a card's note), go there.
+    fn board_left(&mut self) -> Result<()> {
+        let Some(exit) = self.board.as_ref().and_then(board::Board::left) else {
+            return Ok(());
+        };
+        let here = self.here();
+        self.mode = Mode::Normal;
+        self.close_board();
+        self.reload_tree();
+        match here.and_then(|here| self.left(here, exit)) {
+            Some(place) => self.go(place),
+            None => Ok(()),
+        }
     }
 
     /// Where leaving a board leads. Quitting goes to the menu, so Back comes back.
@@ -1718,6 +1800,11 @@ impl Home {
             let Some(core) = self.core.as_mut() else {
                 return;
             };
+            if let Some(b) = self.board.as_mut()
+                && b.heard(core, &owner, &news)
+            {
+                continue;
+            }
             let sub = news.subscription();
             match self.registry.by_name(&owner) {
                 Some(ext) => self.call(ext, |e, host| e.items(news, host)),
@@ -1743,6 +1830,9 @@ impl Home {
         });
         if tree_changed {
             self.set_items(self.scan_tree(&root));
+        }
+        if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
+            b.noticed(core, events);
         }
         self.links.clear();
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
@@ -1936,6 +2026,7 @@ impl Home {
         if workspace::attachment_kind(&rel) == Some("whiteboard") {
             self.go_to = Some(Place::Board {
                 path: path.to_path_buf(),
+                node: place,
             });
             return;
         }
@@ -2050,6 +2141,9 @@ impl Home {
         if let Some(scene) = self.front_scene_mut() {
             scene.flash(s.clone());
         }
+        if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
+            b.flash(s.clone());
+        }
         self.msg = Some((s, Instant::now()));
     }
 
@@ -2058,6 +2152,9 @@ impl Home {
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         if let Some((owner, view)) = self.front_scene() {
             return self.scene_key(owner, view, k, terminal);
+        }
+        if matches!(self.mode, Mode::Board) {
+            return self.board_key(k, terminal);
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Keys go straight to the pane's program, except pane.leave (back to the menu).
@@ -2285,6 +2382,7 @@ impl Home {
             | Mode::Tidy(_)
             | Mode::Recipe(_)
             | Mode::View { .. }
+            | Mode::Board
             | Mode::Peek { .. } => return Ok(()),
             Mode::Normal | Mode::Keys => {}
         }
@@ -2768,7 +2866,7 @@ impl Home {
             MenuAction::Zoom => self.zoom = !self.zoom,
             MenuAction::Graph => self.hand_to(GRAPH, graph_ext::OPEN),
             MenuAction::Boards => self.open_boards(terminal, None)?,
-            MenuAction::History(a) => self.travel(a, terminal)?,
+            MenuAction::History(a) => self.travel(a)?,
             MenuAction::NewNote => {
                 self.mode = Mode::NewNote {
                     name: String::new(),
@@ -3331,7 +3429,12 @@ impl Home {
                 let p = root.join(&path);
                 match workspace::attachment_kind(&path) {
                     None => self.open_found(from, &p, subpath.as_deref().and_then(bookmarks::jump)),
-                    Some("whiteboard") => self.go_to = Some(Place::Board { path: p }),
+                    Some("whiteboard") => {
+                        self.go_to = Some(Place::Board {
+                            path: p,
+                            node: None,
+                        })
+                    }
                     Some(_) if term::open_url(&p.to_string_lossy()) => {
                         self.flash(format!("opened {path}"))
                     }
@@ -4795,7 +4898,7 @@ impl Home {
                 };
                 if let Some(place) = to {
                     self.mode = Mode::Normal;
-                    self.go(place, terminal)?;
+                    self.go(place)?;
                 }
                 true
             }
@@ -5420,6 +5523,12 @@ impl Home {
         if let Some(scene) = self.front_scene_mut() {
             return scene.mouse(m);
         }
+        if matches!(self.mode, Mode::Board) {
+            if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
+                b.on_mouse(m, core, &mut self.registry);
+            }
+            return;
+        }
         if let Mode::Peek { view, .. } = &mut self.mode {
             match (m.kind, &mut *view) {
                 (MouseEventKind::ScrollDown, Peek::Note { reader, .. }) => reader.scroll_by(3),
@@ -5544,14 +5653,14 @@ impl Home {
                 }
                 self.mode = Mode::Normal;
             }
-            views::Action::History(h) => self.travel(h, terminal)?,
+            views::Action::History(h) => self.travel(h)?,
             views::Action::Boards => {
                 self.hide_scene();
                 let Some(root) = self.root.clone() else {
                     return Ok(());
                 };
                 match board::pick_board(terminal, &root)? {
-                    Some(path) => self.go_from_here(Place::Board { path }, terminal)?,
+                    Some(path) => self.go_from_here(Place::Board { path, node: None })?,
                     None => terminal.clear()?,
                 }
             }
@@ -5569,32 +5678,9 @@ impl Home {
             None => board::pick_board(terminal, &root)?,
         };
         match path {
-            Some(path) => self.go_from_here(Place::Board { path }, terminal),
+            Some(path) => self.go_from_here(Place::Board { path, node: None }),
             None => Ok(terminal.clear()?),
         }
-    }
-
-    /// The board at `path` until it is left; then where to go next.
-    fn run_board(
-        &mut self,
-        terminal: &mut DefaultTerminal,
-        path: PathBuf,
-    ) -> Result<Option<Place>> {
-        let Some(root) = self.root.clone() else {
-            return Ok(None);
-        };
-        self.hide_picture()?;
-        let nav = Some(Nav::of(&self.history));
-        if self.core.is_none() {
-            self.core = Some(Core::open(&root)?);
-        }
-        let core = self.core.as_mut().expect("opened above");
-        let left = board::open(terminal, &root, path.clone(), nav, core, &mut self.registry)?;
-        terminal.clear()?;
-        self.reload_tree();
-        self.sync_with_core(&left.events);
-        self.deliver_news(left.news);
-        Ok(self.left(Place::Board { path }, left.exit))
     }
 
     fn edit_fullscreen(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -5831,6 +5917,9 @@ impl Home {
         let statuses: Vec<String> = self.statuses.iter().map(|(_, t)| t.clone()).collect();
         if let Some(scene) = self.front_scene_mut() {
             return scene.draw(f, f.area(), &statuses);
+        }
+        if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
+            return b.draw(f, &statuses);
         }
         let [main, status] =
             Layout::vertical([Constraint::Min(5), Constraint::Length(2)]).areas(f.area());

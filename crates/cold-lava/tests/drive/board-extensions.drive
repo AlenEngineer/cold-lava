@@ -1,0 +1,29 @@
+# The example extension open-tasks (installed in the empty home by tests/drive.rs) keeps a count
+# of open tasks in the status line, the whiteboard's too. The whiteboard runs in the menu's loop,
+# so the extension is answered while a drawing is open: a task another program writes shows in
+# the count at once, and so does one typed on a sticky, without leaving the drawing.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type venn
+keys enter
+wait-for whiteboard Volcano Venn
+expect ☐ 16 open tasks
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+expect whiteboard Volcano Venn
+# A new card with a task on it: the canvas owner reads it, and the extension hears of it.
+keys n
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type - [ ] Count the masks
+keys esc
+wait-for ☐ 18 open tasks
+expect whiteboard Volcano Venn
+keys q
+wait-for cold-lava workspaces
+expect ☐ 18 open tasks
+keys q
+exits 0

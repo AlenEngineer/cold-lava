@@ -168,15 +168,15 @@ enum Grab {
     Turn,
 }
 
-struct Board<'a> {
-    /// The workspace's core, lent by the menu: placed shapes' bindings follow it.
-    core: &'a mut Core,
-    registry: &'a mut Registry,
+/// An open whiteboard. The workspace's core and the extensions stay the menu's, handed to each
+/// call that needs them: placed shapes' bindings follow the core.
+pub struct Board {
     live: Live,
-    /// The core's events and other owners' item news seen here, for the menu to have after.
+    /// What the core said while the shape editor ran, for the menu to hear after.
     events: Vec<CoreEvent>,
     news: Vec<(String, News)>,
-    /// Extensions asked about their shapes, polled until they answer.
+    /// Extensions asked about their shapes. On its own the board polls them; in the menu, the
+    /// menu polls every extension.
     asking: Vec<ExtId>,
     /// A gesture handed to the extension that ships its shape: the node, and the gesture.
     gesturing: Option<(String, Gesture)>,
@@ -197,7 +197,11 @@ struct Board<'a> {
     msg: Option<(String, Instant)>,
     /// Something the user must see, shown until the next key.
     alert: Option<String>,
+    /// Left, and how: `exit` says where to.
     quit: bool,
+    exit: Exit,
+    /// The area is known only after the first draw, which fits the board to it.
+    fitted: bool,
     /// The last save was refused (the file on disk changed and doesn't parse): quitting now
     /// would lose edits, so `q` warns once first.
     unsaved: bool,
@@ -215,7 +219,6 @@ struct Board<'a> {
     keys: Keymap<BoardAction>,
     /// Inside the main menu: where Back and Forward lead, and their keys.
     nav: Option<(Nav, Keymap<HistoryAction>)>,
-    exit: Exit,
 }
 
 // ---------- entry points ----------
@@ -235,38 +238,10 @@ pub fn launch(
         },
     };
     let mut core = crate::owned::open(workspace_root, registry)?;
-    open(terminal, workspace_root, path, None, &mut core, registry)?;
-    Ok(())
-}
-
-/// How a board was left, and what the core said meanwhile that the menu should hear.
-pub struct Left {
-    pub exit: Exit,
-    pub events: Vec<CoreEvent>,
-    pub news: Vec<(String, News)>,
-}
-
-/// Runs the board at `path` (created if missing) until it is left. With `nav`, from the main
-/// menu, the history keys leave it too.
-pub fn open(
-    terminal: &mut DefaultTerminal,
-    workspace_root: &Path,
-    path: PathBuf,
-    nav: Option<Nav>,
-    core: &mut Core,
-    registry: &mut Registry,
-) -> Result<Left> {
-    crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
-    let mut b = Board::open(path, workspace_root, core, registry)?;
-    b.nav = nav.map(|nav| (nav, commands::history_keys(&b.keys)));
-    let ran = b.run(terminal);
-    b.live.close(b.core);
-    ran?;
-    Ok(Left {
-        exit: b.exit,
-        events: b.events,
-        news: b.news,
-    })
+    let mut b = Board::open(workspace_root, path, None)?;
+    let ran = b.run(terminal, &mut core, registry);
+    b.close(&mut core);
+    ran
 }
 
 pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<PathBuf>> {
@@ -369,13 +344,11 @@ pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<
     }
 }
 
-impl<'a> Board<'a> {
-    fn open(
-        path: PathBuf,
-        workspace_root: &Path,
-        core: &'a mut Core,
-        registry: &'a mut Registry,
-    ) -> Result<Board<'a>> {
+impl Board {
+    /// The board at `path`, created if missing, with `node` selected and in view when it is
+    /// one of its nodes.
+    pub fn open(workspace_root: &Path, path: PathBuf, node: Option<String>) -> Result<Board> {
+        crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let doc = parse(&disk, &path)?;
         let base = doc.clone();
@@ -400,9 +373,8 @@ impl<'a> Board<'a> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let live = Live::new(crate::shapes::for_workspace(&workspace_root));
-        let mut b = Board {
-            core,
-            registry,
+        let sel = node.filter(|id| doc.nodes.iter().any(|n| n.id == *id));
+        Ok(Board {
             live,
             events: Vec::new(),
             news: Vec::new(),
@@ -416,7 +388,7 @@ impl<'a> Board<'a> {
             cam: (0.0, 0.0),
             zoom: 1.0,
             area: Rect::default(),
-            sel: None,
+            sel,
             mode: Mode::Normal,
             drag: None,
             undo: Vec::new(),
@@ -424,6 +396,8 @@ impl<'a> Board<'a> {
             msg: None,
             alert: None,
             quit: false,
+            exit: Exit::Quit,
+            fitted: false,
             unsaved: false,
             last_click: None,
             notes: None,
@@ -435,79 +409,122 @@ impl<'a> Board<'a> {
             _watcher: watcher,
             keys: Keymap::new(commands::BOARD),
             nav: None,
-            exit: Exit::Quit,
-        };
-        b.fit_pending();
-        Ok(b)
+        })
     }
 
-    fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let mut first = true;
+    /// Runs the board on its own (`cold-lava board`) until it is left: its own loop, which
+    /// polls the core and the extensions that ship its shapes.
+    fn run(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        core: &mut Core,
+        registry: &mut Registry,
+    ) -> Result<()> {
         while !self.quit {
-            self.tick();
-            terminal.draw(|f| self.draw(f))?;
-            if first {
-                // Area is known only after the first draw.
-                self.fit();
-                first = false;
-                continue;
+            let (mut events, mut news) = self.take_heard();
+            events.extend(core.poll());
+            news.extend(core.take_item_news());
+            self.noticed(core, &events);
+            for (owner, news) in &news {
+                self.heard(core, owner, news);
             }
+            for ext in self.asking.clone() {
+                registry.call(ext, Some(&mut *core), |e, host| e.poll(host));
+            }
+            self.tick(core, registry);
+            terminal.draw(|f| self.draw(f, &[]))?;
             if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
-                    Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k, terminal)?,
-                    Event::Mouse(m) => self.on_mouse(m),
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
+                        self.on_key(k, terminal, core, registry)?
+                    }
+                    Event::Mouse(m) => self.on_mouse(m, core, registry),
                     _ => {}
                 }
             }
-            self.watch_disk();
         }
         Ok(())
     }
 
+    /// Stops following the workspace: the placed shapes' subscriptions end.
+    pub fn close(mut self, core: &mut Core) {
+        self.live.close(core);
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The selected node's id.
+    pub fn selected(&self) -> Option<&str> {
+        self.sel.as_deref()
+    }
+
+    /// Where Back and Forward lead from here, for the history keys and the status line.
+    pub fn navigate(&mut self, nav: Nav) {
+        self.nav = Some((nav, commands::history_keys(&self.keys)));
+    }
+
+    /// How the board was left, once it was: the history keys, `q`, or a card's note.
+    pub fn left(&self) -> Option<Exit> {
+        self.quit.then(|| self.exit.clone())
+    }
+
+    /// What the core said while the shape editor ran, for the screen under the board.
+    pub fn take_heard(&mut self) -> (Vec<CoreEvent>, Vec<(String, News)>) {
+        (
+            std::mem::take(&mut self.events),
+            std::mem::take(&mut self.news),
+        )
+    }
+
     // ---------- placed shapes, kept up with the workspace ----------
 
-    /// Binds shapes that are new or changed, and hands them what the core and the extensions
-    /// that ship them said.
-    fn tick(&mut self) {
-        for problem in self.live.sync(self.core, &self.doc.nodes) {
-            self.flash(problem);
-        }
-        let events = self.core.poll();
-        for e in &events {
-            self.live.noticed(self.core, e);
+    /// The core's events, for the placed shapes' bindings.
+    pub fn noticed(&mut self, core: &Core, events: &[CoreEvent]) {
+        for e in events {
+            self.live.noticed(core, e);
             if let CoreEvent::ItemEdited { note, by, what, .. } = e {
                 let name = note.rsplit('/').next().unwrap_or(note);
                 self.flash(format!("{by}: {what} on {name}"));
             }
         }
-        self.events.extend(events);
-        for (owner, news) in self.core.take_item_news() {
-            match owner == crate::bind::OWNER {
-                true => self.live.heard(self.core, &news),
-                false => self.news.push((owner, news)),
-            }
+    }
+
+    /// Item news for `owner`'s subscriptions: true when it was the placed shapes', which are
+    /// subscribed as the canvas.
+    pub fn heard(&mut self, core: &Core, owner: &str, news: &News) -> bool {
+        let mine = owner == crate::bind::OWNER;
+        if mine {
+            self.live.heard(core, news);
+        }
+        mine
+    }
+
+    /// Once a frame: binds shapes that are new or changed, asks the extensions that ship
+    /// shapes what they show and hands their answers over, and picks up outside changes to the
+    /// file.
+    pub fn tick(&mut self, core: &mut Core, registry: &mut Registry) {
+        for problem in self.live.sync(core, &self.doc.nodes) {
+            self.flash(problem);
         }
         for (name, ask) in self.live.take_asks() {
-            let Some(ext) = self.registry.by_name(&name) else {
+            let Some(ext) = registry.by_name(&name) else {
                 continue;
             };
-            self.registry.ask_shape(ext, Some(self.core), ask);
+            registry.ask_shape(ext, Some(&mut *core), ask);
             if !self.asking.contains(&ext) {
                 self.asking.push(ext);
             }
         }
-        for ext in self.asking.clone() {
-            self.registry
-                .call(ext, Some(self.core), |e, host| e.poll(host));
-        }
-        for answer in self.core.take_shape_answers() {
+        for answer in core.take_shape_answers() {
             let placed = answer.ask.placed();
             let mine = (self.gesturing.as_ref())
                 .is_some_and(|(id, _)| self.live.placed_id(id) == Some(placed));
             match (mine, answer.answer) {
                 (true, Ok(Answered::Gesture { steps })) => {
                     let (id, gesture) = self.gesturing.take().expect("checked");
-                    self.run_steps(&id, &gesture, &steps);
+                    self.run_steps(&id, &gesture, &steps, core, registry);
                 }
                 (true, Err(why)) => {
                     self.gesturing = None;
@@ -519,24 +536,25 @@ impl<'a> Board<'a> {
                 }),
             }
         }
+        self.watch_disk();
     }
 
     /// Runs `gesture` on the shaped node `id`: its steps go through the workspace gateway, as
     /// the canvas for the user's shapes and as the extension that ships the shape for its own.
-    fn gesture(&mut self, id: &str, gesture: Gesture) {
+    fn gesture(&mut self, id: &str, gesture: Gesture, core: &mut Core, registry: &mut Registry) {
         let (Some(binding), Some(placed)) = (self.live.binding(id), self.live.placed_id(id)) else {
             return;
         };
         let acted = match binding.extension() {
-            None => binding.act(&mut act::Direct::user(self.core), &gesture, placed),
-            Some(name) => match self.registry.by_name(name) {
+            None => binding.act(&mut act::Direct::user(core), &gesture, placed),
+            Some(name) => match registry.by_name(name) {
                 Some(ext) => {
                     let mut out = None;
                     let gw = |_: &mut dyn crate::ext::Extension,
                               host: &mut crate::ext::Host<'_>| {
                         out = Some(binding.act(host, &gesture, placed))
                     };
-                    self.registry.call(ext, Some(self.core), gw);
+                    registry.call(ext, Some(&mut *core), gw);
                     out.expect("called")
                 }
                 None => return self.flash(format!("{name} isn't installed")),
@@ -545,10 +563,10 @@ impl<'a> Board<'a> {
         match acted {
             Ok(Acted::Ran(done)) => self.done(id, done),
             Ok(Acted::Ask(ask)) => {
-                let Some(ext) = binding.extension().and_then(|n| self.registry.by_name(n)) else {
+                let Some(ext) = binding.extension().and_then(|n| registry.by_name(n)) else {
                     return;
                 };
-                self.registry.ask_shape(ext, Some(self.core), ask);
+                registry.ask_shape(ext, Some(&mut *core), ask);
                 if !self.asking.contains(&ext) {
                     self.asking.push(ext);
                 }
@@ -559,15 +577,22 @@ impl<'a> Board<'a> {
     }
 
     /// The steps an extension answered for a gesture on its shape, run as that extension.
-    fn run_steps(&mut self, id: &str, gesture: &Gesture, steps: &[crate::shapes::Step]) {
+    fn run_steps(
+        &mut self,
+        id: &str,
+        gesture: &Gesture,
+        steps: &[crate::shapes::Step],
+        core: &mut Core,
+        registry: &mut Registry,
+    ) {
         let Some(binding) = self.live.binding(id) else {
             return;
         };
-        let Some(ext) = binding.extension().and_then(|n| self.registry.by_name(n)) else {
+        let Some(ext) = binding.extension().and_then(|n| registry.by_name(n)) else {
             return;
         };
         let mut out = None;
-        self.registry.call(ext, Some(self.core), |_, host| {
+        registry.call(ext, Some(&mut *core), |_, host| {
             out = Some(binding.run(host, gesture, steps))
         });
         match out.expect("called") {
@@ -611,7 +636,7 @@ impl<'a> Board<'a> {
 
     /// A click at a cell of the shaped node `id`: the click its shape declares for the member,
     /// region or part there, if any.
-    fn click(&mut self, id: &str, col: u16, row: u16) {
+    fn click(&mut self, id: &str, col: u16, row: u16, core: &mut Core, registry: &mut Registry) {
         let Some(binding) = self.live.binding(id) else {
             return;
         };
@@ -643,7 +668,7 @@ impl<'a> Board<'a> {
         let found =
             (on.into_iter()).find(|(o, _)| d.on.iter().any(|b| b.click.as_ref() == Some(o)));
         if let Some((on, item)) = found {
-            self.gesture(id, Gesture::Click { on, item });
+            self.gesture(id, Gesture::Click { on, item }, core, registry);
         }
     }
 
@@ -718,7 +743,7 @@ impl<'a> Board<'a> {
     }
 
     /// Places or binds again what the form says, or says what's wrong with it.
-    fn submit_bind(&mut self) {
+    fn submit_bind(&mut self, core: &mut Core) {
         let Mode::Bind {
             node,
             shape,
@@ -742,11 +767,11 @@ impl<'a> Board<'a> {
         }
         let tried = match wrong {
             Some(e) => Err(e),
-            None => Binding::new(self.core, &self.live.shapes, &shape, sources.clone()),
+            None => Binding::new(core, &self.live.shapes, &shape, sources.clone()),
         };
         let error = match tried {
             Ok(mut b) => {
-                b.close(self.core);
+                b.close(core);
                 None
             }
             Err(e) => Some(e),
@@ -842,7 +867,7 @@ impl<'a> Board<'a> {
     /// The shape editor on the selected placed shape (a copy to make your own) or the placed
     /// shapes in the selected group (one shape of all their parts), else a new or a workspace
     /// shape to pick.
-    fn make_shape(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn make_shape(&mut self, terminal: &mut DefaultTerminal, core: &mut Core) -> Result<()> {
         let Some(sel) = self.sel.clone() else {
             self.mode = Mode::PickShape {
                 query: String::new(),
@@ -922,36 +947,28 @@ impl<'a> Board<'a> {
                 }
             }
         };
-        self.open_editor(terminal, start)
+        self.open_editor(terminal, start, core)
     }
 
-    /// Runs the shape editor on the board's core; after it, the board's shapes are read again
-    /// and hear what the core said meanwhile.
+    /// Runs the shape editor on the workspace's core; after it, the board's shapes are read
+    /// again. What the core said meanwhile is kept for `take_heard`.
     fn open_editor(
         &mut self,
         terminal: &mut DefaultTerminal,
         start: crate::shape_editor::Start,
+        core: &mut Core,
     ) -> Result<()> {
-        let left = match crate::shape_editor::run(terminal, &self.workspace_root, self.core, start)
-        {
+        let left = match crate::shape_editor::run(terminal, &self.workspace_root, core, start) {
             Ok(left) => left,
             Err(e) => {
                 self.flash(e.to_string());
                 return Ok(());
             }
         };
-        for e in &left.events {
-            self.live.noticed(self.core, e);
-        }
         self.events.extend(left.events);
-        for (owner, news) in left.news {
-            match owner == crate::bind::OWNER {
-                true => self.live.heard(self.core, &news),
-                false => self.news.push((owner, news)),
-            }
-        }
+        self.news.extend(left.news);
         if left.saved {
-            self.live.close(self.core);
+            self.live.close(core);
             self.live = Live::new(crate::shapes::for_workspace(&self.workspace_root));
             self.flash("shapes read again: s places the one you made");
         }
@@ -1184,13 +1201,6 @@ impl<'a> Board<'a> {
         )
     }
 
-    fn fit_pending(&mut self) {
-        // Rough centre before the first draw; `fit` refines it once the area is known.
-        if let Some((x0, y0, x1, y1)) = self.bounds() {
-            self.cam = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-        }
-    }
-
     fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
         let mut it = self.doc.nodes.iter();
         let first = it.next()?;
@@ -1409,7 +1419,7 @@ impl<'a> Board<'a> {
 
     // ---------- editing operations ----------
 
-    fn flash(&mut self, s: impl Into<String>) {
+    pub fn flash(&mut self, s: impl Into<String>) {
         self.msg = Some((s.into(), Instant::now()));
     }
 
@@ -1770,7 +1780,13 @@ impl<'a> Board<'a> {
 
     // ---------- input ----------
 
-    fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub fn on_key(
+        &mut self,
+        k: KeyEvent,
+        terminal: &mut DefaultTerminal,
+        core: &mut Core,
+        registry: &mut Registry,
+    ) -> Result<()> {
         if self.alert.take().is_some() {
             return Ok(());
         }
@@ -1848,7 +1864,7 @@ impl<'a> Board<'a> {
                             if let Mode::Bind { fields, .. } = &self.mode
                                 && fields.is_empty()
                             {
-                                self.submit_bind();
+                                self.submit_bind(core);
                             }
                         }
                     }
@@ -1876,7 +1892,7 @@ impl<'a> Board<'a> {
                         }
                         *error = None;
                     }
-                    KeyCode::Enter => self.submit_bind(),
+                    KeyCode::Enter => self.submit_bind(core),
                     _ => {}
                 }
                 return Ok(());
@@ -1903,7 +1919,7 @@ impl<'a> Board<'a> {
                                 None => crate::shape_editor::Start::New,
                                 Some(id) => crate::shape_editor::Start::Edit(id.clone()),
                             };
-                            self.open_editor(terminal, start)?;
+                            self.open_editor(terminal, start, core)?;
                         }
                     }
                     _ => {}
@@ -1928,7 +1944,12 @@ impl<'a> Board<'a> {
                     KeyCode::Enter => {
                         self.mode = Mode::Normal;
                         if let Some((name, _)) = actions.get(p) {
-                            self.gesture(&id, Gesture::Action { name: name.clone() });
+                            self.gesture(
+                                &id,
+                                Gesture::Action { name: name.clone() },
+                                core,
+                                registry,
+                            );
                         }
                     }
                     _ => {}
@@ -1970,12 +1991,12 @@ impl<'a> Board<'a> {
                 .find(|s| Key::parse(s) == Some(key))
                 .map(String::from);
             if let Some(key) = declared {
-                self.gesture(&id, Gesture::Key { key });
+                self.gesture(&id, Gesture::Key { key }, core, registry);
                 return Ok(());
             }
         }
         if let Some(a) = self.keys.get(k) {
-            return self.run_action(a, terminal);
+            return self.run_action(a, terminal, core);
         }
         if let Some((nav, keys)) = &self.nav
             && let Some(a) = keys.get(k)
@@ -2036,7 +2057,12 @@ impl<'a> Board<'a> {
         commands::screen_key_hints(commands::BOARD, &self.keys, show, self.nav.as_ref())
     }
 
-    fn run_action(&mut self, a: BoardAction, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn run_action(
+        &mut self,
+        a: BoardAction,
+        terminal: &mut DefaultTerminal,
+        core: &mut Core,
+    ) -> Result<()> {
         match a {
             BoardAction::Quit => self.request_quit(),
             BoardAction::Help => self.mode = Mode::Help,
@@ -2120,7 +2146,7 @@ impl<'a> Board<'a> {
                 Some(id) if self.live.is_shape(&id) => self.flash("this shape has no actions"),
                 _ => self.flash("select a placed shape first, then x for what it can do"),
             },
-            BoardAction::MakeShape => self.make_shape(terminal)?,
+            BoardAction::MakeShape => self.make_shape(terminal, core)?,
             BoardAction::Delete => self.delete_selected(),
             BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
             BoardAction::ColourClear => self.set_color(None),
@@ -2151,7 +2177,7 @@ impl<'a> Board<'a> {
         }
     }
 
-    fn on_mouse(&mut self, m: MouseEvent) {
+    pub fn on_mouse(&mut self, m: MouseEvent, core: &mut Core, registry: &mut Registry) {
         if matches!(
             self.mode,
             Mode::Help
@@ -2334,7 +2360,7 @@ impl<'a> Board<'a> {
                     self.drag = None;
                     self.undo.pop();
                     if !moved {
-                        return self.click(&id, m.column, m.row);
+                        return self.click(&id, m.column, m.row, core, registry);
                     }
                     let tolerance = PX_COL / self.zoom / placed::UNIT;
                     let hit = self
@@ -2346,7 +2372,7 @@ impl<'a> Board<'a> {
                         .map(|r| r.id.clone());
                     match to {
                         Some(to) if to != from => {
-                            self.gesture(&id, Gesture::Drop { from, to, item })
+                            self.gesture(&id, Gesture::Drop { from, to, item }, core, registry)
                         }
                         _ => self.flash("dropped outside another region: nothing to do"),
                     }
@@ -2357,7 +2383,7 @@ impl<'a> Board<'a> {
                 {
                     self.drag = None;
                     self.undo.pop();
-                    return self.click(&id, col, row);
+                    return self.click(&id, col, row, core, registry);
                 }
                 if let Some(
                     Drag::Move { moved, .. }
@@ -2378,9 +2404,17 @@ impl<'a> Board<'a> {
 
     // ---------- drawing ----------
 
-    fn draw(&mut self, f: &mut Frame) {
+    pub fn draw(&mut self, f: &mut Frame, statuses: &[String]) {
         let [main, status] =
             Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(f.area());
+        self.area = Block::bordered().inner(main);
+        if !self.fitted {
+            self.fitted = true;
+            self.fit();
+            if let Some(id) = self.sel.clone() {
+                self.ensure_visible(&id);
+            }
+        }
         let name = self
             .path
             .file_stem()
@@ -2410,7 +2444,6 @@ impl<'a> Board<'a> {
                 ))
                 .right_aligned(),
             );
-        self.area = block.inner(main);
         f.render_widget(block, main);
         let area = self.area;
 
@@ -2457,7 +2490,7 @@ impl<'a> Board<'a> {
             );
         }
 
-        self.draw_status(f, status);
+        self.draw_status(f, status, statuses);
         match &self.mode {
             Mode::Help => draw_help(f, main, &self.keys, self.nav.as_ref().map(|(_, k)| k)),
             Mode::Keys => crate::whichkey::draw(f, main, &self.key_hints()),
@@ -2839,7 +2872,7 @@ impl<'a> Board<'a> {
         );
     }
 
-    fn draw_status(&mut self, f: &mut Frame, area: Rect) {
+    fn draw_status(&mut self, f: &mut Frame, area: Rect, statuses: &[String]) {
         let mut info = match self.sel.as_ref().and_then(|s| self.node(s)) {
             Some(n) => {
                 let links = self
@@ -2895,6 +2928,12 @@ impl<'a> Board<'a> {
             .is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3))
         {
             self.msg = None;
+        }
+        for text in statuses {
+            info.spans.push(Span::styled(
+                format!("   {text}"),
+                Style::new().fg(ACCENT_SOFT),
+            ));
         }
         if let Some((nav, keys)) = &self.nav {
             let first = |id| keys.keys(id).first();
@@ -3483,9 +3522,7 @@ mod tests {
         let path = dir.join("B.canvas");
         let canvas = |nodes: Vec<Value>| json!({"nodes": nodes, "edges": []}).to_string();
         std::fs::write(&path, canvas(vec![card("a", 0, "A")])).unwrap();
-        let mut core = Core::open(&dir).unwrap();
-        let mut registry = Registry::empty();
-        let mut b = Board::open(path.clone(), &dir, &mut core, &mut registry).unwrap();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
 
         // Our edit, while someone else is halfway through writing the file.
         let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);

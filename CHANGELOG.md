@@ -30,6 +30,12 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- The whiteboard runs in the menu's loop instead of its own (closes #92). Extensions keep being
+  answered while a drawing is open, and their status line words show in the whiteboard's.
+  Opening a board from a task in the agenda or the table, or from a backlink, selects the node
+  the task or the link is on; Back and Forward return to a board with the node that was
+  selected. A board that isn't a canvas says so in the status line instead of ending
+  cold-lava. The shape editor (`S`) and the board picker still pause extensions while open.
 - Renames rewrite a board's note cards and the links in its text cards through the canvas
   owner, only in nodes' `file` and `text`. The delete warning says "files link to them", since
   a board can be one.

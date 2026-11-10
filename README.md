@@ -242,7 +242,7 @@ tags count like a note's. A note card is a link from the board to the note, so t
 backlinks list the board, the graph draws the board with an edge to the note, and tidy doesn't
 call the note an orphan. Arrows between cards and web page cards aren't links. Renaming the note
 updates the card and the links in the text, changing those strings in the file and nothing
-else.
+else. Extensions keep running while a board is open, and their status shows in its status line.
 
 **Safe to use alongside Obsidian.** If the same board is open in both and changes on disk,
 cold-lava merges instead of overwriting: cards and arrows are matched by id and merged field
@@ -546,7 +546,7 @@ agenda` reads it. Each row has its checkbox, its words (links as their text), `ð
 recurs and its priority on a chip, and on the right the date (red when overdue) and the note.
 Tasks written on whiteboards are there too, from a sticky or any text card: ticking one saves
 it in that card of the `.canvas` file and changes nothing else in it, and `Enter` opens the
-whiteboard.
+whiteboard with that card selected.
 
 | Key | Action |
 | --- | --- |
