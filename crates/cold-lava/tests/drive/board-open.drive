@@ -8,10 +8,10 @@ type krakatoa
 wait-for Krakatoa
 keys enter
 wait-for ← Volcano Venn.canvas  Volcanoes/Krakatoa.md
-expect-in 25 64 25 120 ← Volcano Venn.canvas  Volcanoes/Krakatoa.md
-click 25 80
+expect-in 27 64 27 120 ← Volcano Venn.canvas  Volcanoes/Krakatoa.md
+click 27 80
 wait-for backlinks · ↑↓ choose
-click 25 80
+click 27 80
 wait-for whiteboard Volcano Venn
 wait-for shape card · Card (a note)
 expect Ctrl-o ⟵ Krakatoa
