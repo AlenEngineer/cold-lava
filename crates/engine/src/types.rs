@@ -834,7 +834,7 @@ pub enum Origin {
 
 impl Origin {
     /// What an error line starts with: the file, or the extension.
-    fn place(&self) -> String {
+    pub(crate) fn place(&self) -> String {
         match self {
             Origin::BuiltIn => "built in".into(),
             Origin::Extension { name } => format!("extension {name}"),
@@ -1440,7 +1440,7 @@ fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
     }
 }
 
-fn is_name(s: &str, dots: bool) -> bool {
+pub(crate) fn is_name(s: &str, dots: bool) -> bool {
     let mut chars = s.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || (dots && c == '.'))

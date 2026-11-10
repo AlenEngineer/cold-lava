@@ -3,7 +3,8 @@
 //! A part is either an **area** (it has an inside: `rect`, `circle`, `ellipse`, a closed `path`,
 //! a `text` box) or a **stroke** (only a line: `line`, `arrow`, an open `path`). Areas answer
 //! [`Part::contains`] exactly, from their implicit form or, for paths, their flattened polygon;
-//! that is what regions, rasterizing and hit testing are built on.
+//! that is what regions, rasterizing and hit testing are built on. A `label` is neither: one line
+//! of text at a point, placed in cells when drawn (`fit::anchored`).
 
 use crate::geom::{Point, Rect, Transform};
 
@@ -39,6 +40,47 @@ pub enum Kind {
         bounds: Rect,
         value: String,
     },
+    /// One line of text beside a point (a title at `left.top`), on the side `side` says.
+    Label {
+        at: Point,
+        side: Side,
+        value: String,
+    },
+}
+
+/// Where a label sits next to its point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Side {
+    /// The row above, centred.
+    Above,
+    /// The row below, centred.
+    Below,
+    /// Ending just left of it.
+    Left,
+    /// Starting just right of it.
+    Right,
+    /// On it, centred.
+    #[default]
+    Center,
+}
+
+impl Side {
+    /// The side outside the anchor a label is put at: `left.top` and `top-right` are on top, so
+    /// above; `bottom` below; `left` and `right` beside; anything else on the point.
+    pub fn outside(anchor: &str) -> Side {
+        let last = anchor.rsplit('.').next().unwrap_or(anchor);
+        if last.starts_with("top") {
+            Side::Above
+        } else if last.starts_with("bottom") {
+            Side::Below
+        } else if last == "left" {
+            Side::Left
+        } else if last == "right" {
+            Side::Right
+        } else {
+            Side::Center
+        }
+    }
 }
 
 /// A polyline or Bézier path (freehand strokes come in as many short segments). It is flattened
@@ -162,7 +204,7 @@ impl Part {
     /// Has an inside, so it can be filled and named in a region.
     pub fn is_area(&self) -> bool {
         match &self.kind {
-            Kind::Line { .. } | Kind::Arrow { .. } => false,
+            Kind::Line { .. } | Kind::Arrow { .. } | Kind::Label { .. } => false,
             Kind::Path(path) => path.closed,
             Kind::Rect(_) | Kind::Circle { .. } | Kind::Ellipse { .. } | Kind::Text { .. } => true,
         }
@@ -181,7 +223,7 @@ impl Part {
                 dx * dx + dy * dy <= 1.0
             }
             Kind::Path(path) => path.closed && path.contains(p),
-            Kind::Line { .. } | Kind::Arrow { .. } => false,
+            Kind::Line { .. } | Kind::Arrow { .. } | Kind::Label { .. } => false,
         }
     }
 
@@ -198,6 +240,7 @@ impl Part {
                 Rect::around([*from, *to]).expect("two points")
             }
             Kind::Path(path) => path.bounds,
+            Kind::Label { at, .. } => Rect::new(*at, *at),
         }
     }
 

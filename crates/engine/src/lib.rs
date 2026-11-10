@@ -20,6 +20,7 @@ pub mod recipe;
 pub mod rename;
 pub mod resolver;
 pub mod search;
+pub mod shapes;
 pub mod style;
 pub mod tasks;
 pub mod templates;

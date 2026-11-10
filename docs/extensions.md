@@ -1718,6 +1718,10 @@ id = "word-count.doc"            # must start with the extension's name, as a co
 on = "note"
 fields.words = { property = "words", type = "number" }
 
+[[shapes]]                       # a shape, in the language of docs/shapes.md
+id = "word-count.badge"          # must start with the extension's name, as a type's
+parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
+
 [[commands]]
 id = "word-count.show"           # must start with the extension's name
 title = "Word count of this note"
@@ -1735,7 +1739,10 @@ keys = ["W"]                     # default keys; config.toml can change them
   extension of the same name, an `api` other than 1, a transport cold-lava doesn't have, an empty
   `run`, a permission it doesn't know, a file type with a bad extension or a `new` that isn't
   one of its commands, or types written as `[types.NAME]` instead of `[[types]]` leave that
-  extension out with one line each. The menu
+  extension out with one line each. A `[[types]]` or `[[shapes]]` entry whose id is outside the
+  extension's namespace, or given twice, is left out alone, said in `cold-lava keys`; one whose
+  definition doesn't read is dropped by the engine, said in `cold-lava types` or `cold-lava
+  shapes`. The menu
   says so at start, and `cold-lava ext list [WORKSPACE]` prints every extension (where it runs
   from, its permissions, commands, types and log) and then the mistakes, exiting 1 when there
   are any.

@@ -30,8 +30,8 @@ mod whichkey;
 
 use cold_lava_engine::{
     bookmarks, core, daily, edit, files, frontmatter, gateway, index, items, markdown, matcher,
-    merge, owner, paths, recipe, rename, resolver, search, style, tasks, templates, tidy, trash,
-    types, workspace, write,
+    merge, owner, paths, recipe, rename, resolver, search, shapes, style, tasks, templates, tidy,
+    trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -74,6 +74,11 @@ Usage:
   cold-lava types [WORKSPACE]         every type: where it comes from, what it found, its
                                       shapes and fields;
                                       checks [types] in config.toml and .cold-lava/types.toml
+  cold-lava shapes [WORKSPACE]        every shape and glyph: where it comes from, its parts,
+                                      regions, inputs and behaviour; checks [[shapes]] in
+                                      config.toml and .cold-lava/shapes.toml
+  cold-lava shapes [WORKSPACE] --render ID [--size WxH]
+                                      draw a shape as text (braille, labels, then its regions)
   cold-lava drive [SCRIPT] [-- ARGS…] run cold-lava ARGS in a hidden terminal, typing and
                                       checking the screen as SCRIPT says (stdin if none),
                                       with an empty home unless --real-home
@@ -84,8 +89,8 @@ Options:
   --pixels             force pixel rendering (Kitty graphics protocol)
   --from / --to DATE   agenda range (YYYY-MM-DD; default: this month)
   --from / --to TAG    recipe rename-tag: the tag to rename, and its new name
-  --json               machine-readable output (agenda, items, types, task toggle, item set,
-                       tidy, recipe, style, table: the view's own JSON)
+  --json               machine-readable output (agenda, items, types, shapes, task toggle,
+                       item set, tidy, recipe, style, table: the view's own JSON)
   --id ID              task toggle: only if the line still matches this id from the agenda
   --rev REV            item set: only if the item is still this version (its rev)
   --remove             item set: take the field's value out instead of setting one
@@ -94,6 +99,8 @@ Options:
   --dry-run            rename, recipe, item set: show what would change, change nothing
   --sort FIELD         table: sort by FIELD (-FIELD: descending), as s and S do
   --no-backlinks       tidy: also list notes nothing links to that do link elsewhere
+  --render ID          shapes: draw this shape, unbound (${a.title} shows as a.title)
+  --size WxH           shapes --render: the terminal it is drawn on (default 60x18)
   -V, --version        print the version
   -h, --help           this help
 
@@ -110,7 +117,7 @@ struct Args {
 
 impl Args {
     fn parse() -> Result<Args> {
-        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit", "rev", "sort"];
+        const WITH_VALUE: &[&str] = &["from", "to", "id", "limit", "rev", "sort", "render", "size"];
         let mut a = Args {
             words: Vec::new(),
             values: Default::default(),
@@ -250,6 +257,25 @@ fn run() -> Result<()> {
         layers.push(types::Layer::config(&path, config::get().types.clone()));
     }
     types::set_configured(layers);
+    let mut layers: Vec<shapes::Layer> = registry
+        .manifests()
+        .map(|m| {
+            let shapes = m
+                .shapes
+                .iter()
+                .map(|s| (s.id.clone(), s.definition.clone()));
+            shapes::Layer::extension(&m.name, shapes)
+        })
+        .collect();
+    if let Some(path) = config::path() {
+        let c = config::get();
+        layers.push(shapes::Layer::config(
+            &path,
+            c.shapes.clone(),
+            c.glyphs.clone(),
+        ));
+    }
+    shapes::set_configured(layers);
 
     match args.word(0) {
         Some("keys") => {
@@ -304,6 +330,47 @@ fn run() -> Result<()> {
                     eprintln!("errors:");
                     for e in &found.errors {
                         eprintln!("  {e}");
+                    }
+                }
+            }
+            if !found.errors.is_empty() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some("shapes") => {
+            let root = match args.word(1) {
+                Some(dir) => PathBuf::from(dir),
+                None => workspace::find_workspace_root(Path::new(".")),
+            };
+            let found = shapes::for_workspace(&root);
+            if let Some(id) = args.values.get("render") {
+                let Some(shape) = found.get(id) else {
+                    anyhow::bail!("no shape is called {id}; cold-lava shapes lists them");
+                };
+                let size = args.values.get("size").map_or("60x18", String::as_str);
+                let (cols, rows) = (size.split_once('x'))
+                    .and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?)))
+                    .filter(|&(w, h)| w > 0 && h > 0)
+                    .ok_or_else(|| anyhow::anyhow!("--size is WxH in cells, like 60x18"))?;
+                let unbound = std::sync::Arc::new(shape.unbound());
+                let aspect = shape.definition.aspect;
+                print!(
+                    "{}",
+                    cold_lava_canvas::draw::preview(unbound, cols, rows, aspect)
+                );
+                return Ok(());
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&found)?);
+            } else {
+                print_shapes(&found);
+                for (title, lines) in [("notes:", &found.notes), ("errors:", &found.errors)] {
+                    if !lines.is_empty() {
+                        eprintln!("{title}");
+                        for line in lines {
+                            eprintln!("  {line}");
+                        }
                     }
                 }
             }
@@ -975,6 +1042,74 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
             eprintln!("  {e}");
         }
     }
+}
+
+/// `cold-lava shapes`: each shape with where it comes from, then what it is made of, the data
+/// it takes and what it does, one line each; then the glyphs.
+fn print_shapes(found: &shapes::Shapes) {
+    for s in &found.shapes {
+        let d = &s.definition;
+        let title = if d.title.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", d.title)
+        };
+        println!("{}  {}{title}", s.id, s.origin);
+        let mut about = Vec::new();
+        if !d.inputs.is_empty() {
+            about.push(format!("inputs {}", d.inputs.join(", ")));
+        }
+        if let Some(key) = &d.key {
+            about.push(format!("key {key}"));
+        }
+        if let Some(aspect) = d.aspect {
+            about.push(format!("aspect {aspect}"));
+        }
+        if !about.is_empty() {
+            println!("  {}", about.join(" · "));
+        }
+        let parts: Vec<String> = (d.parts.iter())
+            .map(|p| match (p, p.id()) {
+                (shapes::PartDef::Shape(n), _) => format!("{} ({})", n.id, n.shape),
+                (shapes::PartDef::Text(t), id) => match (&t.at, id) {
+                    (Some(shapes::Pos::Anchor(a)), _) => format!("text at {a}"),
+                    (Some(shapes::Pos::Point([x, y])), _) => format!("text at [{x}, {y}]"),
+                    (None, Some(id)) => format!("text {id}"),
+                    (None, None) => "text".into(),
+                },
+                (p, Some(id)) => format!("{} {id}", p.kind()),
+                (p, None) => p.kind().to_string(),
+            })
+            .collect();
+        println!("  parts {}", parts.join(", "));
+        for r in &d.regions {
+            let shows = r.shows.as_ref().map(|e| format!(", shows {e}"));
+            println!("  region {}: {}{}", r.id, r.area, shows.unwrap_or_default());
+        }
+        for b in &d.on {
+            let gesture = match (&b.drop, &b.click, &b.key, &b.action) {
+                (Some(d), ..) => format!("drop {} → {}", d.from, d.to),
+                (_, Some(c), ..) => format!("click {c}"),
+                (_, _, Some(k), _) => format!("key {k}"),
+                (.., Some(a)) if b.title.is_empty() => format!("action {a}"),
+                (.., Some(a)) => format!("action {a} ({})", b.title),
+                _ => String::new(),
+            };
+            let steps: Vec<String> = (b.edit.iter().map(|_| "edit".to_string()))
+                .chain(b.steps.iter().map(|s| match s {
+                    shapes::Step::Edit(_) => "edit".into(),
+                    shapes::Step::Create(_) => "create a note".into(),
+                    shapes::Step::Rebind(r) => format!("rebind to {}", r.shape),
+                }))
+                .collect();
+            println!("  on {gesture}: {}", steps.join(", "));
+        }
+        println!();
+    }
+    let glyphs: Vec<String> = (found.glyphs.iter())
+        .map(|g| format!("{} {}", g.symbol, g.name))
+        .collect();
+    println!("glyphs  {}", glyphs.join("  "));
 }
 
 /// `cold-lava types`: each type with where it comes from, then each shape with the fields it
