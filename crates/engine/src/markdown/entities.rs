@@ -8,7 +8,7 @@ pub(super) fn named(name: &str) -> Option<&'static str> {
 }
 
 #[rustfmt::skip]
-const NAMED: [(&str, &str); 2125] = [
+static NAMED: [(&str, &str); 2125] = [
     ("AElig", "\u{00C6}"), ("AMP", "\u{0026}"), ("Aacute", "\u{00C1}"), ("Abreve", "\u{0102}"),
     ("Acirc", "\u{00C2}"), ("Acy", "\u{0410}"), ("Afr", "\u{1D504}"), ("Agrave", "\u{00C0}"),
     ("Alpha", "\u{0391}"), ("Amacr", "\u{0100}"), ("And", "\u{2A53}"), ("Aogon", "\u{0104}"),
