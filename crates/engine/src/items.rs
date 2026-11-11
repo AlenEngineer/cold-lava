@@ -563,6 +563,7 @@ impl<'a> Walk<'a> {
                 self.quotes += 1;
                 self.begin(at, None, false);
             }
+            Kind::FootnoteDefinition => self.begin(at, None, false),
             Kind::FencedCode | Kind::IndentedCode | Kind::Frontmatter => {
                 self.verbatim += 1;
                 self.begin(at, None, true);
@@ -627,7 +628,7 @@ impl<'a> Walk<'a> {
                 self.verbatim = self.verbatim.saturating_sub(1);
                 self.end();
             }
-            Kind::List | Kind::HtmlBlock | Kind::Table => {
+            Kind::List | Kind::HtmlBlock | Kind::Table | Kind::FootnoteDefinition => {
                 self.end();
             }
             Kind::CodeSpan | Kind::InlineMath if self.wants.typing => {
@@ -1661,6 +1662,15 @@ fields.w = { capture = "w" }
         "See [the note][n], [N][], [n] and ![pic][n]; [web][w], [missing][y] and [y].\n\n[n]: Note.md\n[w]: https://example.com \"Title\"\n[N]: Other.md\n",
         // Definitions in a quote and in a list item, and before a paragraph's text.
         "> [q]: Quoted.md\n> the text with [q]\n\n- [i]: Item.md\n- see [i] and [Q]\n\n[t]: <Top Note.md> 'title'\nSetext after a definition, [t]\n===\n",
+        // Footnote definitions hold blocks: a second paragraph indented under a blank line,
+        // a list, a task, a fenced block, and the paragraph after one, which isn't its.
+        "Text[^1] here.\n\n[^1]: First paragraph. ^f1\n\n    Second paragraph the same note. ^f2\n\nAfter the note.\n",
+        "[^1]: Note with a list:\n\n    - a\n    - b ^li\n\n[^t]: Tasks:\n\n    - [ ] a task in a footnote\n    - [x] done\n",
+        "[^c]: Code:\n\n    ```\n    - [ ] not a task\n    ```\n\n    after the code ^ac\n",
+        "[^1]: The note.\nlazy line of it ^lz\n\n[^2]: Another.\n\nUnindented paragraph the end. ^un\n",
+        // Two definitions in a row, right under a paragraph, and definitions in a quote.
+        "Para the first ^p\n[^1]: One. ^one\n[^2]: Two. ^two\n",
+        "> [^q]: In a quote the note. ^q1\n>\n>     Second in the quote. ^q2\n\n> text\n> [^r]: after quoted text ^r1\n",
         // Tags right after the markers that open emphasis and a strikethrough.
         "Read **#bold** and _#slanted_, *#star*, __#under__, ***#both*** and ~~#gone~~, but a#b and http://x.y/#frag are no tags.\n",
     ];

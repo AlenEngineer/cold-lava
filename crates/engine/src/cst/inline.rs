@@ -59,13 +59,13 @@ fn lines<'t>(
             Ev::Start(kind) => {
                 open = 0;
                 cell = kind == TableCell;
-                b.block(Some(kind));
+                b.block();
                 b.start(kind)
             }
             Ev::Finish => {
                 open = 0;
                 cell = false;
-                b.block(None);
+                b.block();
                 b.finish()
             }
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
@@ -97,7 +97,7 @@ fn lines<'t>(
             Ev::Yaml(a, z) => yaml(text, gates, defs, b, a, z),
         }
     }
-    b.block(None);
+    b.block();
 }
 
 fn token<'t>(b: &mut (impl Sink<'t> + ?Sized), kind: Kind, text: &'t str, a: usize, z: usize) {
@@ -698,9 +698,8 @@ enum Rec {
     Start(Kind),
     Finish,
     Tok(Kind, usize, usize),
-    /// A line of the block's text starts: where it is, and where the footnote's `[^label]:`
-    /// that starts it ends.
-    Line(usize, usize, Option<usize>),
+    /// A line of the block's text starts: where it is.
+    Line(usize, usize),
 }
 
 /// What a piece of a `Text` token becomes.
@@ -708,7 +707,7 @@ enum Rec {
 enum Piece {
     /// A token of this kind.
     Token(Kind),
-    /// A whole node of this kind: an autolink, a footnote's reference or its marker.
+    /// A whole node of this kind: an autolink or a footnote's reference.
     Node(Kind),
     /// The marker that opens a node of this kind.
     Open(Kind),
@@ -750,9 +749,6 @@ struct Held<'s, 't> {
     b: &'s mut dyn Sink<'t>,
     recs: Vec<Rec>,
     hold: bool,
-    /// The block being read, and how many lines of its text were read.
-    kind: Option<Kind>,
-    lines: usize,
 }
 
 impl<'t> Sink<'t> for Held<'_, 't> {
@@ -780,31 +776,18 @@ impl<'t> Sink<'t> for Held<'_, 't> {
         }
     }
 
-    /// A block of `kind` starts, or one ends: what was held goes on.
-    fn block(&mut self, kind: Option<Kind>) {
+    /// A block starts, or one ends: what was held goes on.
+    fn block(&mut self) {
         self.release();
-        self.kind = kind;
-        self.lines = 0;
     }
 
     /// A line of the block's text, `a..z`, is about to be read.
     fn line(&mut self, a: usize, z: usize) {
-        let first = self.lines == 0;
-        self.lines += 1;
-        let line = &self.text[a..z];
-        if !self.hold && !may_hold_more(line) {
+        if !self.hold && !may_hold_more(&self.text[a..z]) {
             return;
         }
         self.hold = true;
-        // A footnote starts on a line of a paragraph, where a block could start: its first,
-        // or one indented less than four.
-        let indent = || self.text[..a].bytes().rev().take_while(|c| is_blank(*c));
-        let starts = self.kind == Some(Paragraph)
-            && self.g.has(S::Footnotes)
-            && (first || indent().count() < 4);
-        let footnote = starts.then(|| footnote_marker(line)).flatten();
-        let footnote = footnote.map(|len| a + len);
-        self.recs.push(Rec::Line(a, z, footnote));
+        self.recs.push(Rec::Line(a, z));
     }
 }
 
@@ -816,8 +799,6 @@ impl<'s, 't> Held<'s, 't> {
             b,
             recs: Vec::new(),
             hold: false,
-            kind: None,
-            lines: 0,
         }
     }
 
@@ -872,14 +853,12 @@ impl<'s, 't> Held<'s, 't> {
                 token(b, AngleClose, text, z - 1, z);
                 b.finish();
             }
-            // `[^label]`, or `[^label]:`.
+            // `[^label]`.
             Piece::Node(kind) => {
-                let close = if kind == FootnoteMarker { z - 2 } else { z - 1 };
                 b.start(kind);
                 token(b, LBracket, text, a, a + 1);
-                token(b, FootnoteLabel, text, a + 1, close);
-                token(b, RBracket, text, close, close + 1);
-                token(b, Colon, text, close + 1, z);
+                token(b, FootnoteLabel, text, a + 1, z - 1);
+                token(b, RBracket, text, z - 1, z);
                 b.finish();
             }
         }
@@ -904,12 +883,6 @@ fn footnote_label(s: &str) -> Option<usize> {
     let label = s.strip_prefix("[^")?;
     let k = label.find(['[', ']'])?;
     (label.as_bytes()[k] == b']' && !label[..k].trim().is_empty()).then_some(2 + k)
-}
-
-/// A footnote's `[^label]:` starting `line`: how long it is.
-fn footnote_marker(line: &str) -> Option<usize> {
-    let close = footnote_label(line)?;
-    (line.as_bytes().get(close + 1) == Some(&b':')).then_some(close + 2)
 }
 
 /// What is written as a character reference at the `&` that starts `t`: how long it is.
@@ -966,8 +939,6 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
     // scope 0.
     let mut scopes: Vec<(usize, bool)> = Vec::new();
     let mut line = (0, 0);
-    // Where the footnote's `[^label]:` that starts the line ends, until its text is read.
-    let mut footnote = None;
     // The hard break the line just read ends with, if another line follows it.
     let mut hard: Option<(usize, usize)> = None;
     for (k, rec) in recs.iter().enumerate() {
@@ -983,13 +954,12 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
                 scopes.pop();
                 continue;
             }
-            Rec::Line(a, z, marker) => {
+            Rec::Line(a, z) => {
                 if let Some((a, z)) = hard.take() {
                     let piece = Piece::Token(HardBreak);
                     cuts.push(Cut { a, z, piece });
                 }
                 line = (a, z);
-                footnote = marker;
                 continue;
             }
             // What a wikilink shows in its target's place is read as text is, and so is the
@@ -1000,11 +970,6 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
         };
         let scope = scopes.last().map_or(0, |s| s.0);
         let mut i = a;
-        if let Some(end) = footnote.take().filter(|&end| a == line.0 && end <= z) {
-            let piece = Piece::Node(FootnoteMarker);
-            cuts.push(Cut { a, z: end, piece });
-            i = end;
-        }
         while i < z {
             let c = t[i];
             let (len, piece) = match c {

@@ -98,6 +98,7 @@ const EDGES: &[&str] = &[
     "| *a* | **b |\n| - | - |\n| c** | ==d== |\n",
     "***a** b* *c **d*** ****e**** _f__g__h_ snake_case_word 2*3*4 **==#t==** [*x*](y) *z [w* v](u)\n",
     "\u{feff}*emphasis after a BOM*\r\n**strong  \r\nover a CRLF**\\\r\n&#x1F30B; &nope <a href=\"x\">\r\n",
+    "[^a]: one\n\n    two [[L]]\n\n    - [ ] t\n[^b]: three\n> [^c]: in a quote\n>     more\n\nafter\n- [^d]: in an item\n\n      under it\n\t[^e]: tabbed\n",
 ];
 
 #[test]
@@ -463,36 +464,80 @@ fn text_holds_escapes_references_html_autolinks_footnotes_and_hard_breaks() {
     // Two blanks or a backslash break the line, where the block has another line.
     let lines = "one  \ntwo\\\nthree  \n\n# Heading  \n";
     assert_eq!(texts(lines, ob, Kind::HardBreak), ["  ", "\\"]);
-    // A footnote's reference, and the `[^label]:` that starts its paragraph.
+    // A footnote's reference; its definition is a block.
     let notes = "Text[^1] and [^a note].\n\n[^1]: The note,\nlazily.\n\nNot [^1]: here.\n";
     assert_eq!(
         texts(notes, ob, Kind::FootnoteRef),
         ["[^1]", "[^a note]", "[^1]"]
     );
-    assert_eq!(texts(notes, ob, Kind::FootnoteMarker), ["[^1]:"]);
     assert_eq!(
         texts(notes, ob, Kind::FootnoteLabel),
         ["^1", "^a note", "^1", "^1"]
     );
-    let marker = Tree::with(notes, ob)
-        .root()
-        .descendants()
-        .find(|n| n.kind() == Kind::FootnoteMarker)
-        .unwrap();
-    assert_eq!(marker.parent().unwrap().kind(), Kind::Paragraph);
-    assert_eq!(
-        marker.parent().unwrap().text().to_string(),
-        "[^1]: The note,\nlazily.\n"
-    );
-    // One footnote under another starts on a later line of the same paragraph, as a block
-    // would: indented less than four.
-    let list = "Text.\n[^1]: One.\n  [^2]: Two,\n    [^3]: still two.\n";
-    assert_eq!(texts(list, ob, Kind::FootnoteMarker), ["[^1]:", "[^2]:"]);
-    assert_eq!(texts(list, ob, Kind::FootnoteRef), ["[^3]"]);
-    assert_eq!(texts(list, ob, Kind::Paragraph).len(), 1);
     let commonmark = Gates::of(&Flavour::built_in("commonmark").unwrap());
     assert!(texts(notes, commonmark, Kind::FootnoteRef).is_empty());
-    assert!(texts(notes, commonmark, Kind::FootnoteMarker).is_empty());
+}
+
+#[test]
+fn a_footnote_definition_holds_the_blocks_indented_under_it() {
+    let ob = obsidian();
+    let text = "Text[^1].\n\n[^1]: The note,\nlazily.\n\n    A second paragraph with [[Link]] and #tag.\n\n    - [ ] a task\n\nAfter.\n[^2]: Right under a paragraph.\n[^3]: And another.\n";
+    let root = Tree::with(text, ob).root();
+    let top: Vec<Kind> = root.children().map(|n| n.kind()).collect();
+    assert_eq!(
+        top,
+        [
+            Kind::Paragraph,
+            Kind::BlankLine,
+            Kind::FootnoteDefinition,
+            Kind::Paragraph,
+            Kind::FootnoteDefinition,
+            Kind::FootnoteDefinition,
+        ]
+    );
+    let first = root.children().nth(2).unwrap();
+    assert_eq!(
+        first.text().to_string(),
+        "[^1]: The note,\nlazily.\n\n    A second paragraph with [[Link]] and #tag.\n\n    - [ ] a task\n\n"
+    );
+    let inside: Vec<Kind> = first.children().map(|n| n.kind()).collect();
+    assert_eq!(
+        inside,
+        [
+            Kind::Paragraph,
+            Kind::BlankLine,
+            Kind::Paragraph,
+            Kind::BlankLine,
+            Kind::List,
+        ]
+    );
+    assert_eq!(
+        texts(text, ob, Kind::FootnoteLabel),
+        ["^1", "^1", "^2", "^3"]
+    );
+    // What is indented under it is read as text is: its links and tags count, for the
+    // index too, and a task is a task.
+    assert_eq!(texts(text, ob, Kind::Target), ["Link"]);
+    assert_eq!(texts(text, Gates::INDEX, Kind::Target), ["Link"]);
+    assert_eq!(texts(text, ob, Kind::Tag), ["#tag"]);
+    assert_eq!(texts(text, ob, Kind::TaskMarker), ["[ ]"]);
+    // In a quote, in a list item, and one that starts right inside another, which ends it.
+    let nested =
+        "> [^q]: quoted\n>\n>     more\n\n- [^i]: in an item\n\n[^a]: one\n    [^b]: two\n";
+    let labels = ["^q", "^i", "^a", "^b"];
+    assert_eq!(texts(nested, ob, Kind::FootnoteLabel), labels);
+    let quoted = (Tree::with(nested, ob).root().descendants())
+        .find(|n| n.kind() == Kind::FootnoteDefinition)
+        .unwrap();
+    assert_eq!(quoted.parent().unwrap().kind(), Kind::BlockQuote);
+    assert_eq!(quoted.text().to_string(), "[^q]: quoted\n>\n>     more\n");
+    let last: Vec<String> = texts(nested, ob, Kind::FootnoteDefinition);
+    assert_eq!(last[2..], ["[^a]: one\n", "[^b]: two\n"]);
+    // Without footnotes there is no such block: the indented lines are code.
+    let commonmark = Gates::of(&Flavour::built_in("commonmark").unwrap());
+    assert!(texts(text, commonmark, Kind::FootnoteDefinition).is_empty());
+    assert!(kinds(text, commonmark).contains(&Kind::IndentedCode));
+    assert!(!kinds(text, ob).contains(&Kind::IndentedCode));
 }
 
 /// The steps through `text` with what text itself holds put back into text.
@@ -520,8 +565,7 @@ fn folded(text: &str, gates: Gates) -> Vec<String> {
                 Kind::Emphasis | Kind::Strong | Kind::Strikethrough | Kind::Highlight
             )
         };
-        let whole =
-            |k: Kind| matches!(k, Kind::Autolink | Kind::FootnoteRef | Kind::FootnoteMarker);
+        let whole = |k: Kind| matches!(k, Kind::Autolink | Kind::FootnoteRef);
         let was_text = |k: Kind| {
             matches!(
                 k,
@@ -726,6 +770,8 @@ const PIECES: &[&str] = &[
     "<https://x.y>",
     "[^n]",
     "[^n]: ",
+    "\n\n    ",
+    "[^n]: x\n\n    y\n",
     "é",
     "\u{feff}",
 ];
