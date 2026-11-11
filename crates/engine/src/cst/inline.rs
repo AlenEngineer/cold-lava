@@ -2,7 +2,8 @@
 //! links and images (inline, or by reference to one of the note's link definitions), Dataview
 //! fields, comments, math, tags and block ids; the rest is text. What starts first wins, so a
 //! wikilink inside a code span stays code. Emphasis and the like stay text: nothing reads them
-//! from the tree yet, but a tag may follow their opening markers (`**#tag**`).
+//! from the tree yet, but a tag may follow their opening markers (`**#tag**`). A link's text
+//! may go on to a later line of its block: its `](destination)` there is read (`LinkEnd`).
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -25,10 +26,18 @@ pub(super) fn build<'t>(
 ) {
     // A code span an earlier line of the paragraph opened: its closing backticks.
     let mut code: Option<Range<usize>> = None;
+    // How many `[` the block's earlier lines left open.
+    let mut open = 0;
     for (k, ev) in events.iter().enumerate() {
         match *ev {
-            Ev::Start(kind) => b.start(kind),
-            Ev::Finish => b.finish(),
+            Ev::Start(kind) => {
+                open = 0;
+                b.start(kind)
+            }
+            Ev::Finish => {
+                open = 0;
+                b.finish()
+            }
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
             Ev::Inline(a, z) => {
                 let line = Line::new(text, gates, defs, a, z);
@@ -52,7 +61,7 @@ pub(super) fn build<'t>(
                         None => a,
                     },
                 };
-                code = line.run(b, from, z, false, &events[k + 1..]);
+                code = line.run(b, from, z, false, &events[k + 1..], &mut open);
             }
             Ev::Yaml(a, z) => yaml(text, gates, defs, b, a, z),
         }
@@ -174,7 +183,9 @@ impl<'t, 'd> Line<'t, 'd> {
 
     /// Read `a..z`; `in_link` inside a link's text, where no other link starts. A code span
     /// that the line doesn't close may close on one of the block's `later` lines: then it is
-    /// left open at the line's end, and its closing backticks are what this returns.
+    /// left open at the line's end, and its closing backticks are what this returns. `open`
+    /// counts the `[` that nothing closed yet, on this line and the block's earlier ones: a
+    /// `](destination)` closes one as a link.
     fn run(
         &self,
         b: &mut impl Sink<'t>,
@@ -182,6 +193,7 @@ impl<'t, 'd> Line<'t, 'd> {
         z: usize,
         in_link: bool,
         later: &[Ev],
+        open: &mut usize,
     ) -> Option<Range<usize>> {
         let t = self.text.as_bytes();
         let mut plain = a;
@@ -206,24 +218,32 @@ impl<'t, 'd> Line<'t, 'd> {
                 b'!' if t.get(i + 1) == Some(&b'[') => {
                     if t.get(i + 2) == Some(&b'[') && self.g.has(S::Embeds) {
                         self.wikilink(i + 1, z).map(|e| (Embed, e))
-                    } else if !in_link {
+                    } else {
+                        // A link's text may hold an image, though no other link.
                         let end = self.link(i + 1, z).or_else(|| self.reference(i + 1, z));
                         end.map(|e| (Image, e))
-                    } else {
-                        None
                     }
                 }
                 b'[' if t.get(i + 1) == Some(&b'[') => match self.g.has(S::WikiLinks) {
                     true => self.wikilink(i, z).map(|e| (WikiLink, e)),
                     false => None,
                 },
-                b'[' => (self.field(i, z).map(|e| (InlineField, e))).or_else(|| match in_link {
-                    true => None,
-                    false => {
-                        let end = self.link(i, z).or_else(|| self.reference(i, z));
-                        end.map(|e| (Link, e))
-                    }
-                }),
+                b'[' => {
+                    let field = self.field(i, z).map(|e| (InlineField, e));
+                    let found = field.or_else(|| match in_link {
+                        true => None,
+                        false => {
+                            let end = self.link(i, z).or_else(|| self.reference(i, z));
+                            end.map(|e| (Link, e))
+                        }
+                    });
+                    *open += (found.is_none() && !in_link) as usize;
+                    found
+                }
+                b']' if !in_link && *open > 0 => {
+                    *open -= 1;
+                    self.link_end(i, z).map(|e| (LinkEnd, e))
+                }
                 b'(' => self.field(i, z).map(|e| (InlineField, e)),
                 b'%' if self.g.has(S::Comments) && t.get(i + 1) == Some(&b'%') => {
                     (self.text[i + 2..z].find("%%")).map(|k| (Comment, i + 2 + k + 2))
@@ -298,7 +318,7 @@ impl<'t, 'd> Line<'t, 'd> {
                         .map(|k| close + k)
                         .expect("and its `)`");
                     b.start(LinkText);
-                    self.run(b, open, close, true, &[]);
+                    self.run(b, open, close, true, &[], &mut 0);
                     b.finish();
                     token(b, RBracket, text, close, after);
                     token(b, LParen, text, after, after + 1);
@@ -307,7 +327,7 @@ impl<'t, 'd> Line<'t, 'd> {
                 } else if after + 2 < z {
                     // `[text][label]`.
                     b.start(LinkText);
-                    self.run(b, open, close, true, &[]);
+                    self.run(b, open, close, true, &[], &mut 0);
                     b.finish();
                     token(b, RBracket, text, close, after);
                     token(b, LBracket, text, after, after + 1);
@@ -322,6 +342,14 @@ impl<'t, 'd> Line<'t, 'd> {
                         token(b, RBracket, text, after + 1, z);
                     }
                 }
+                b.finish();
+            }
+            LinkEnd => {
+                b.start(LinkEnd);
+                token(b, RBracket, text, a, a + 1);
+                token(b, LParen, text, a + 1, a + 2);
+                token(b, LinkDest, text, a + 2, z - 1);
+                token(b, RParen, text, z - 1, z);
                 b.finish();
             }
             InlineField | LineField => {
@@ -340,7 +368,7 @@ impl<'t, 'd> Line<'t, 'd> {
                 }
                 token(b, FieldKey, text, key, colons);
                 token(b, FieldColons, text, colons, colons + 2);
-                self.run(b, colons + 2, value_end, false, &[]);
+                self.run(b, colons + 2, value_end, false, &[], &mut 0);
                 if inline {
                     let close = if text.as_bytes()[a] == b'[' {
                         RBracket
@@ -451,6 +479,16 @@ impl<'t, 'd> Line<'t, 'd> {
             return None;
         }
         let paren = self.text[close + 2..z].find(')')? + close + 2;
+        Some(paren + 1)
+    }
+
+    /// `](dest)` with its `]` at `a`, closing a link whose `[` an earlier line left open:
+    /// where it ends.
+    fn link_end(&self, a: usize, z: usize) -> Option<usize> {
+        if self.text.as_bytes().get(a + 1) != Some(&b'(') || a + 1 >= z {
+            return None;
+        }
+        let paren = self.text[a + 2..z].find(')')? + a + 2;
         Some(paren + 1)
     }
 

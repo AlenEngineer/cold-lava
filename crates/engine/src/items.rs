@@ -244,6 +244,8 @@ struct Pass {
     /// The tags and links in the note's body, when some type reads them.
     tags: Vec<String>,
     links: Vec<String>,
+    /// Where the tags and the links are written, when some type reads a block's own.
+    written: matcher::Written,
 }
 
 /// What the workspace's types read, which is all a pass collects.
@@ -257,6 +259,8 @@ struct Wants {
     inline: bool,
     tags: bool,
     links: bool,
+    /// A block's own links.
+    own_links: bool,
 }
 
 impl Wants {
@@ -270,8 +274,20 @@ impl Wants {
             lists: want(On::ListItem),
             headings: want(On::Heading),
             inline: want(On::Inline),
-            tags: m.needs_tags,
+            tags: m.needs_tags || m.reads_tags,
             links: m.needs_links,
+            own_links: m.reads_links,
+        }
+    }
+
+    /// The syntax a note is walked in: `flavour`'s, but when a type reads the note's tags, or a
+    /// block's own tags or links, tags and wikilinks count whatever the flavour, as they
+    /// always have.
+    fn gates(self, flavour: cst::Gates) -> cst::Gates {
+        let gates = flavour.set(Syntax::Tags, self.tags);
+        match self.own_links {
+            true => gates.set(Syntax::WikiLinks, true),
+            false => gates,
         }
     }
 
@@ -331,11 +347,23 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let source = s.flavour.source_with(text, |text| code_in(text, gates));
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
-    // When a type reads the note's tags, they count whatever the flavour, as they always have.
-    let (blocks, defs) = cst::blocks(lines.src, gates.set(Syntax::Tags, wants.tags));
+    let (blocks, defs) = cst::blocks(lines.src, wants.gates(gates));
     let mut walk = Walk::new(&lines, &s.flavour, wants, &defs);
     blocks.read(&defs, &mut |step| walk.step(step));
-    finish(note, text, s, &source, &lines, walk.pass)
+    let Walk {
+        mut pass, written, ..
+    } = walk;
+    pass.written.links = own_links(written.finish(&defs));
+    finish(note, text, s, &source, &lines, pass)
+}
+
+/// The links a block's own `links` are read from, of those the Markdown owner found: where
+/// each is written, whether as a Markdown link, and the note it names.
+fn own_links(links: Vec<crate::owner::markdown::Link<'_>>) -> Vec<(usize, bool, String)> {
+    let links = (links.iter()).filter(|l| l.by != crate::owner::markdown::By::Definition);
+    links
+        .filter_map(|l| Some((l.at, l.md(), l.note()?)))
+        .collect()
 }
 
 /// The code spans, code blocks and math in `text`, where `%%` is no comment.
@@ -394,8 +422,11 @@ struct Walk<'a> {
     code_at: usize,
     /// The wikilink being read: what it says before its `|`.
     wiki: Option<String>,
-    /// Whether the link being read is a Markdown link, not an image.
+    /// Inside a Markdown link, and inside an image, which a link's text may hold.
     link: bool,
+    image: bool,
+    /// The links as the Markdown owner reads them, for a block's own.
+    written: crate::owner::markdown::Links<'a>,
     /// The last callout's `[!type]`.
     marker: Range<usize>,
     /// The paragraph just read, which pulldown-cmark read on into a paragraph or `$$` math on
@@ -436,6 +467,8 @@ impl<'a> Walk<'a> {
             code_at: 0,
             wiki: None,
             link: false,
+            image: false,
+            written: Default::default(),
             marker: 0..0,
             pending: None,
             rows: 0,
@@ -444,7 +477,10 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn step(&mut self, step: Step<'_>) {
+    fn step(&mut self, step: Step<'a>) {
+        if self.wants.own_links {
+            self.written.step(step);
+        }
         match step {
             Step::Enter(kind, at) => self.enter(kind, at),
             Step::Leave(kind, at) => self.leave(kind, at),
@@ -538,8 +574,12 @@ impl<'a> Walk<'a> {
             }
             Kind::CalloutTitle => self.begin(self.marker.start, None, false),
             Kind::CodeSpan | Kind::InlineMath => self.code_at = at,
-            Kind::WikiLink if self.wants.links => self.wiki = Some(String::new()),
-            Kind::Link | Kind::Image => self.link = kind == Kind::Link,
+            // The note's own links are the flavour's.
+            Kind::WikiLink if self.wants.links && self.flavour.has(Syntax::WikiLinks) => {
+                self.wiki = Some(String::new())
+            }
+            Kind::Link => self.link = true,
+            Kind::Image => self.image = true,
             _ => {}
         }
     }
@@ -591,6 +631,8 @@ impl<'a> Walk<'a> {
             Kind::CodeSpan | Kind::InlineMath if self.wants.typing => {
                 self.pass.code.push(self.code_at..at)
             }
+            Kind::Link => self.link = false,
+            Kind::Image => self.image = false,
             Kind::WikiLink => {
                 if let Some(wiki) = self.wiki.take()
                     && self.wants.links
@@ -618,20 +660,23 @@ impl<'a> Walk<'a> {
             Kind::SetextUnderline => self.level = if text.starts_with('=') { 1 } else { 2 },
             Kind::CalloutMarker => self.marker = at..at + text.len(),
             Kind::Delimiter => self.cols += 1,
-            Kind::Tag if self.wants.tags => self.pass.tags.push(text[1..].to_string()),
+            Kind::Tag if self.wants.tags => {
+                self.pass.tags.push(text[1..].to_string());
+                self.pass.written.tags.push(at + 1..at + text.len());
+            }
             Kind::Target | Kind::Anchor => {
                 if let Some(wiki) = &mut self.wiki {
                     wiki.push_str(text);
                 }
             }
-            Kind::LinkDest if self.link && self.wants.links => {
+            Kind::LinkDest if self.link && !self.image && self.wants.links => {
                 let dest = match text.strip_prefix('<') {
                     Some(pointy) => pointy.split('>').next(),
                     None => text.split_whitespace().next(),
                 };
                 self.md_link(dest.unwrap_or_default());
             }
-            Kind::LinkLabel if self.link && self.wants.links => {
+            Kind::LinkLabel if self.link && !self.image && self.wants.links => {
                 if let Some(dest) = self.defs.get(text) {
                     self.md_link(dest);
                 }
@@ -892,6 +937,7 @@ fn finish(
         tables,
         tags,
         links,
+        written,
     } = pass;
     let m = &s.matcher;
     if !m.is_empty() {
@@ -902,6 +948,7 @@ fn finish(
             found.add_tag(tag);
         }
         found.links.extend(links);
+        found.written = written;
         let gate = m.gate(&found);
         let mut note_is: Vec<String> = Vec::new();
         if let Some((typed, key)) = m.note(&gate, &found) {
