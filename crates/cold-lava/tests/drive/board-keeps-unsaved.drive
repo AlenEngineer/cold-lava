@@ -1,0 +1,40 @@
+# The guard of board-keeps-drafts.drive, for edits a refused save left unsaved. tests/drive.rs
+# installs the open-tasks example patched to open two notes whenever the tasks change. Another
+# program leaves the canvas half written, so the card typed next can't be saved over it. A
+# task written then makes the extension ask twice: the board stays in front and says that both
+# were refused. Once the other program has finished the file, the card is merged into it and
+# saved, and the next request opens its note. tests/drive.rs reads the canvas after.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type Drafts
+keys enter
+wait-for whiteboard Drafts · 0 cards
+write Drafts.canvas {"nodes":[
+wait-for couldn't read Drafts.canvas
+screen
+keys n
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type Kept through a refused save
+keys esc
+wait-for not saved: the file changed on disk and can't be read yet
+screen
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+wait-for open-tasks wanted to open Volcanoes/Vesuvius.md: not while the whiteboard's last edits aren't saved (2 requests refused)
+expect whiteboard Drafts · 1 cards
+screen
+write Drafts.canvas {"nodes":[{"id":"theirs","type":"text","text":"Written elsewhere","x":0,"y":300,"width":260,"height":60}],"edges":[]}\n
+wait-for whiteboard Drafts · 2 cards
+screen
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n- [ ] Count the masks\n
+wait-for ☐ 18 open tasks
+wait-for Volcanoes/Vesuvius  reading
+screen
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

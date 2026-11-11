@@ -308,7 +308,12 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   about their shapes it keeps for the menu to do (`Board::take_asked`). The board picker (`w`,
   `board::Picker`) is a layer too, `Home::picking`, over the menu or the graph. Neither it nor
   the shape editor may get a loop of its own: extensions are answered only in the menu's.
-  `cold-lava board` runs the board in a small loop of its own.
+  `cold-lava board` runs the board in a small loop of its own, where what needs the menu is
+  refused (`Board::asked_alone`). In memory a node's id is the canvas owner's place for it
+  (`parse`, from `canvas::places`), so cards that repeat an id stay apart. A place must never
+  be written into the canvas: `as_written` gives every node, and every arrow's ends, the id
+  the file had (`Board::twins`), and is the only way a board's `Doc` becomes bytes. A notice that a request was
+  refused to keep unsaved work goes through `Board::refused`, not `flash`.
 - `table.rs`: how the terminal draws the declarative table view (its data, columns, rows by
   id and events back, is `cold-lava-views`' `table.rs`, serde, so it can cross the view
   gateway). `type_table.rs` is the table as a built-in extension (`Tables`):

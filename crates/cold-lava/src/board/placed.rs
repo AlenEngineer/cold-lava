@@ -314,7 +314,7 @@ mod tests {
         // What Obsidian does on save: sort the nodes, round the box, keep unknown fields.
         let mut saved = serde_json::to_value(&doc).unwrap();
         saved["nodes"].as_array_mut().unwrap().reverse();
-        let doc = parse(saved.to_string().as_bytes(), Path::new("t.canvas")).unwrap();
+        let (doc, _) = parse(saved.to_string().as_bytes(), Path::new("t.canvas")).unwrap();
         let venn = doc.nodes.iter().find(|n| n.id == "venn").unwrap();
         assert_eq!((venn.x, venn.width), (13.0, 305.0), "whole numbers on disk");
         let stored = Stored::of(venn).unwrap().unwrap();

@@ -325,6 +325,35 @@ fn item_set_ticks_a_canvas_task_through_its_owner() {
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
+/// Another program's canvas may repeat a card's id. The owner's place for the second card
+/// (the id and a number) finds the card, and is never written.
+#[test]
+fn item_set_ticks_a_task_on_a_card_that_repeats_an_id() {
+    let workspace = sandbox("set-twin");
+    let v = workspace.to_str().unwrap();
+    let file = format!("{v}/Inbox/Twins.canvas");
+    let original = "{\"nodes\":[\n\
+        {\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Feed the first\",\"x\":0,\"y\":0,\"width\":260,\"height\":80},\n\
+        {\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Feed the twin\",\"x\":0,\"y\":200,\"width\":320,\"height\":120}\n\
+        ],\"edges\":[{\"id\":\"e\",\"fromNode\":\"s\",\"toNode\":\"s\"}]}\n";
+    std::fs::write(&file, original).unwrap();
+    let task = run(&workspace, &["items", v, "task", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|i| i["note"] == "Inbox/Twins.canvas" && i["text"] == "Feed the twin")
+        .unwrap();
+    let id = task["id"].as_str().unwrap();
+    let set = run(&workspace, &["item", "set", &file, id, "status", "x"]);
+    assert!(set.contains("[x] Feed the twin"), "{set}");
+    let now = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        now,
+        original.replace("- [ ] Feed the twin", "- [x] Feed the twin"),
+        "only the second card's line changed"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
 #[test]
 fn table_prints_a_types_rows_sorted() {
     let workspace = sandbox("table");

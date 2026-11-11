@@ -1,0 +1,8 @@
+# cold-lava board WORKSPACE, with no file: Esc in the picker ends the program and makes no
+# board. tests/drive.rs checks the workspace has no new canvas.
+size 140x30
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type Never made
+wait-for + new board "Never made.canvas"
+keys esc
+exits 0

@@ -1,0 +1,14 @@
+# cold-lava board WORKSPACE, with no file: the picker's filter and Enter open a board the
+# workspace has, and q on it ends the program. tests/drive.rs checks the canvas is byte for
+# byte as it was.
+size 140x30
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type welc
+wait-for + new board "welc.canvas"
+expect Welcome.canvas
+expect-not Volcano Venn.canvas
+keys enter
+wait-for whiteboard Welcome
+screen
+keys q
+exits 0

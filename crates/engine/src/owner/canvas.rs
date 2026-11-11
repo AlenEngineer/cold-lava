@@ -36,16 +36,27 @@ fn place(id: &str, nth: usize) -> String {
     }
 }
 
+/// Every node's place, from the nodes' ids in the file's order. The whiteboard names its nodes
+/// by these, so a place the owner gave selects the node it is for. A place is an address in
+/// memory and in messages: it is never written into the canvas.
+pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    ids.into_iter()
+        .map(|id| {
+            let nth = seen.entry(id).or_insert(0);
+            *nth += 1;
+            place(id, *nth - 1)
+        })
+        .collect()
+}
+
 /// A canvas's items and links: its text nodes as Markdown pieces, its file nodes as links.
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
     let mut given = Given::default();
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    for n in doc.nodes {
-        let nth = seen.entry(n.id.clone()).or_insert(0);
-        let place = place(&n.id, *nth);
-        *nth += 1;
+    let places = places(doc.nodes.iter().map(|n| n.id.as_str()));
+    for (n, place) in doc.nodes.into_iter().zip(places) {
         match (n.kind.as_str(), n.text, n.file) {
             ("text", Some(text), _) => given.items.push(GivenItem::Markdown { place, text }),
             ("file", _, Some(file)) => given.links.push(GivenLink {
@@ -274,6 +285,13 @@ mod tests {
         assert_eq!(relinked, second.replace("Also [[Lava]]", "Also [[Magma]]"));
         let applied = crate::owner::given::apply(asked.given.as_ref().unwrap(), &asked.changes);
         assert_eq!(read(&relinked).unwrap().items, applied.items);
+    }
+
+    /// The whiteboard names its nodes by their places: every node has one of its own.
+    #[test]
+    fn every_node_has_a_place_of_its_own() {
+        let named = places(["a", "s", "s", "b", "s"]);
+        assert_eq!(named, ["a", "s", "s\u{1f}1", "b", "s\u{1f}2"]);
     }
 
     /// A node without a type: `read` gives nothing for the file, and a rename still rewrites

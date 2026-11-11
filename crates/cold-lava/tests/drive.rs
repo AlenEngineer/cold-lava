@@ -55,6 +55,31 @@ fn drive_with(script: &str, dir: &Path, options: &[&std::ffi::OsStr]) -> Output 
         .unwrap()
 }
 
+/// `drive` on `cold-lava board WORKSPACE`, the whiteboard with no menu behind it, in place of
+/// the menu.
+fn drive_board(script: &str, dir: &Path) -> Output {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/drive")
+        .join(script);
+    Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .arg("drive")
+        .arg(&script)
+        .args(["--", "board"])
+        .arg(dir.join("example-workspace"))
+        .output()
+        .unwrap()
+}
+
+#[track_caller]
+fn assert_passed(out: &Output) {
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 #[test]
 fn deletes_a_note_to_the_system_trash_and_undoes_it() {
     let dir = sandbox("delete");
@@ -1207,6 +1232,20 @@ fn install_open_tasks(dir: &Path, home: &Path) {
     std::fs::write(dir.join("example-workspace/Inbox/Seismograph.md"), late).unwrap();
 }
 
+/// `install_open_tasks`, with the example made to do `push` (lines of its `items/changed`
+/// handler, in Python) whenever the tasks change, before it shows its count: once the count is
+/// on the screen, the menu has dealt with what it asked for. No extension should ask for such
+/// things unasked.
+fn install_pushy_open_tasks(dir: &Path, home: &Path, push: &str) {
+    install_open_tasks(dir, home);
+    let main = home.join(".config/cold-lava/extensions/open-tasks/main.py");
+    let polite = std::fs::read_to_string(&main).unwrap();
+    let counted = "    open_ids.difference_update(params[\"removed\"])\n";
+    let pushy = polite.replace(counted, &format!("{counted}{push}"));
+    assert_ne!(pushy, polite, "the example's items/changed handler moved");
+    std::fs::write(&main, pushy).unwrap();
+}
+
 /// Needs python3, which CI's runners have.
 #[test]
 fn the_python_example_extension_counts_and_moves_tasks() {
@@ -1343,34 +1382,168 @@ fn an_extension_cant_take_the_whiteboard_away_from_unsaved_work() {
     }
     let dir = sandbox("board-keeps-drafts");
     let home = dir.join("home");
-    install_open_tasks(&dir, &home);
-    // The example, made to open a note whenever the tasks change, before it shows its count:
-    // once the count is on the screen, the menu has dealt with the open.
-    let main = home.join(".config/cold-lava/extensions/open-tasks/main.py");
-    let polite = std::fs::read_to_string(&main).unwrap();
-    let counted = "    open_ids.difference_update(params[\"removed\"])\n    show_count()\n";
-    let pushy = polite.replace(
-        counted,
-        "    open_ids.difference_update(params[\"removed\"])\n    \
-         ext.open_note(\"Volcanoes/Krakatoa.md\")\n    show_count()\n",
-    );
-    assert_ne!(pushy, polite, "the example's items/changed handler moved");
-    std::fs::write(&main, pushy).unwrap();
+    // The count comes more than three seconds after the open, so a notice that only lasted
+    // its three seconds from when it was made is gone before the card's edit ends.
+    let push =
+        "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    __import__(\"time\").sleep(3.2)\n";
+    install_pushy_open_tasks(&dir, &home, push);
     let out = drive_with(
         "board-keeps-drafts.drive",
         &dir,
         &["--home".as_ref(), home.as_os_str()],
     );
-    assert!(
-        out.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_passed(&out);
     let board = std::fs::read_to_string(dir.join("example-workspace/Drafts.canvas")).unwrap();
     assert!(board.contains("Draft, kept"), "{board}");
     let shape = saved_shape(&dir.join("example-workspace"), "shape1");
     assert_eq!(shape["parts"].as_array().map(Vec::len), Some(1), "{shape}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_bring_a_view_in_front_of_a_card_being_typed() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("board-keeps-drafts-view");
+    let home = dir.join("home");
+    let push = "    if view is not None:\n        ext.show_view(view)\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "board-keeps-drafts-view.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let board = std::fs::read_to_string(dir.join("example-workspace/Volcano Venn.canvas"));
+    assert!(board.as_ref().unwrap().contains("\"Draft\""), "{board:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_run_a_command_over_a_card_being_typed() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("board-keeps-drafts-command");
+    let home = dir.join("home");
+    let push = "    ext.notify(\"command/run\", \
+                {\"id\": \"search.open\", \"args\": {\"query\": \"ash\"}})\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "board-keeps-drafts-command.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let board = std::fs::read_to_string(dir.join("example-workspace/Drafts.canvas")).unwrap();
+    assert!(board.contains("Draft, kept"), "{board}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_take_the_whiteboard_away_from_edits_a_refused_save_left() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("board-keeps-unsaved");
+    let home = dir.join("home");
+    let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    \
+                ext.open_note(\"Volcanoes/Vesuvius.md\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "board-keeps-unsaved.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let board = std::fs::read_to_string(dir.join("example-workspace/Drafts.canvas")).unwrap();
+    assert!(
+        board.contains("Kept through a refused save") && board.contains("Written elsewhere"),
+        "the card typed before the refused save, merged into the other program's file: {board}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Two cards of one id, as another program may write them, with a task on the second.
+const TWINS: &str = "{\"nodes\":[\
+    {\"id\":\"s\",\"type\":\"text\",\"text\":\"First card\",\"x\":0,\"y\":0,\"width\":260,\"height\":80},\
+    {\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Feed the twin\",\"x\":0,\"y\":200,\"width\":320,\"height\":120}\
+    ],\"edges\":[]}\n";
+
+#[test]
+fn a_whiteboard_opened_from_a_task_on_a_card_that_repeats_an_id_selects_that_card() {
+    let dir = sandbox("board-twin-card");
+    let twins = dir.join("example-workspace/Inbox/Twins.canvas");
+    std::fs::write(&twins, TWINS).unwrap();
+    let out = drive("board-twin-card.drive", &dir);
+    assert_passed(&out);
+    let text = std::fs::read_to_string(&twins).unwrap();
+    let marked = text.contains('\u{1f}') || text.to_lowercase().contains("\\u001f");
+    assert!(
+        !marked,
+        "the board's name for a card is in the file: {text}"
+    );
+    let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let nodes: Vec<(&str, &str)> = (saved["nodes"].as_array().unwrap().iter())
+        .map(|n| (n["id"].as_str().unwrap(), n["text"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        nodes,
+        [("s", "First card"), ("s", "- [ ] Feed the twin, twice")],
+        "the second card edited, the first and both ids as the other program wrote them"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_board_picker_on_its_own_makes_a_new_board() {
+    let dir = sandbox("board-alone");
+    let out = drive_board("board-alone.drive", &dir);
+    assert_passed(&out);
+    let board = std::fs::read_to_string(dir.join("example-workspace/Alone.canvas")).unwrap();
+    assert!(board.contains("On its own"), "{board}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_board_picker_on_its_own_opens_a_board_of_the_workspace() {
+    let dir = sandbox("board-alone-pick");
+    let welcome = dir.join("example-workspace/Welcome.canvas");
+    let before = std::fs::read(&welcome).unwrap();
+    let out = drive_board("board-alone-pick.drive", &dir);
+    assert_passed(&out);
+    assert_eq!(
+        std::fs::read(&welcome).unwrap(),
+        before,
+        "looking at a board writes nothing"
+    );
+    assert!(!dir.join("example-workspace/welc.canvas").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn esc_in_the_board_picker_on_its_own_makes_no_board() {
+    let dir = sandbox("board-alone-esc");
+    let workspace = dir.join("example-workspace");
+    let out = drive_board("board-alone-esc.drive", &dir);
+    assert_passed(&out);
+    let mut canvases = files_ending(&workspace, ".canvas");
+    canvases.sort();
+    assert_eq!(
+        canvases,
+        [
+            workspace.join("Eruptions Timeline.canvas"),
+            workspace.join("Volcano Venn.canvas"),
+            workspace.join("Welcome.canvas")
+        ]
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
