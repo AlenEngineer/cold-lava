@@ -8,7 +8,6 @@ use crate::looks;
 use crate::term;
 use crate::types::Colour;
 use anyhow::{Context as _, Result};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -24,7 +23,6 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -213,9 +211,12 @@ pub struct Board {
     base: Doc,
     /// Exact bytes last read or written, to spot outside changes cheaply.
     disk: Vec<u8>,
+    /// The file as the core names it in its events (workspace-relative), when it is one the
+    /// core watches: the board has no watcher of its own.
+    rel: Option<String>,
+    /// The core said the file changed, and it hasn't been read since.
+    stale: bool,
     last_check: Instant,
-    fs_events: Option<Receiver<notify::Event>>,
-    _watcher: Option<RecommendedWatcher>,
     keys: Keymap<BoardAction>,
     /// Inside the main menu: where Back and Forward lead, and their keys.
     nav: Option<(Nav, Keymap<HistoryAction>)>,
@@ -352,22 +353,13 @@ impl Board {
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let doc = parse(&disk, &path)?;
         let base = doc.clone();
-        // Watch the folder (not the file): editors replace files by renaming over them.
-        let (tx, rx) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(ev) = res {
-                let _ = tx.send(ev);
-            }
-        })
-        .ok();
-        if let (Some(w), Some(dir)) = (watcher.as_mut(), path.parent())
-            && w.watch(dir, RecursiveMode::NonRecursive).is_err()
-        {
-            watcher = None;
-        }
         let workspace_root = workspace_root
             .canonicalize()
             .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let rel = path.canonicalize().ok().and_then(|p| {
+            let rel = p.strip_prefix(&workspace_root).ok()?;
+            Some(rel.to_string_lossy().replace('\\', "/"))
+        });
         let workspace_name = workspace_root
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -404,9 +396,9 @@ impl Board {
             previews: HashMap::new(),
             base,
             disk,
+            rel,
+            stale: false,
             last_check: Instant::now(),
-            fs_events: watcher.is_some().then_some(rx),
-            _watcher: watcher,
             keys: Keymap::new(commands::BOARD),
             nav: None,
         })
@@ -480,10 +472,18 @@ impl Board {
 
     // ---------- placed shapes, kept up with the workspace ----------
 
-    /// The core's events, for the placed shapes' bindings.
+    /// The core's events: for the placed shapes' bindings, and a change to the board's own
+    /// file, which the next tick reads.
     pub fn noticed(&mut self, core: &Core, events: &[CoreEvent]) {
         for e in events {
             self.live.noticed(core, e);
+            self.stale |= match e {
+                CoreEvent::BoardChanged(rel)
+                | CoreEvent::OwnedChanged(rel)
+                | CoreEvent::FileChanged(rel) => Some(rel) == self.rel.as_ref(),
+                CoreEvent::Rescanned => true,
+                _ => false,
+            };
             if let CoreEvent::ItemEdited { note, by, what, .. } = e {
                 let name = note.rsplit('/').next().unwrap_or(note);
                 self.flash(format!("{by}: {what} on {name}"));
@@ -996,19 +996,15 @@ impl Board {
 
     // ---------- live sync with the file on disk ----------
 
-    /// Pick up outside changes: on a file-system event, or every 2 s as a fallback.
+    /// Pick up outside changes: once the core says the file changed (`noticed`), and every 2 s
+    /// for a file the core doesn't watch (outside the workspace, or in a hidden folder). A
+    /// card being typed or dragged comes first: the change waits, and saving merges it.
     fn watch_disk(&mut self) {
-        let mut touched = false;
-        if let Some(rx) = &self.fs_events {
-            let name = self.path.file_name();
-            for ev in rx.try_iter() {
-                touched |= ev.paths.iter().any(|p| p.file_name() == name);
-            }
-        }
         let busy = matches!(self.mode, Mode::Edit { .. }) || self.drag.is_some();
-        if busy || !(touched || self.last_check.elapsed() > Duration::from_secs(2)) {
+        if busy || !(self.stale || self.last_check.elapsed() > Duration::from_secs(2)) {
             return;
         }
+        self.stale = false;
         self.last_check = Instant::now();
         self.sync_from_disk();
     }

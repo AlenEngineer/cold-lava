@@ -2126,7 +2126,11 @@ zooming wait.
   bound and asked, outside changes to the file merged three ways), draws it over the whole
   screen with the extensions' `ui/status` words in its status line, gives it keys and the
   mouse, and passes it the core's events and the item news of the placed shapes' subscriptions
-  (as `canvas`). So extensions keep being answered while a drawing is open
+  (as `canvas`). The board watches no file: the core's event for its canvas (`BoardChanged`,
+  `OwnedChanged`) makes the next tick read the file and merge, once no card is being typed or
+  dragged, and its own saves merge nothing because the bytes are the ones it wrote. A canvas
+  the core doesn't watch (outside the workspace, in a hidden folder) is read every 2 s. So
+  extensions keep being answered while a drawing is open
   (`board-extensions.drive` checks it with `open-tasks`: a task written by another program and
   one typed on a new card both reach the count). The board is a place in Back's history
   (`Place::Board` with the selected node): Back and Forward leave it and reopen it with that
