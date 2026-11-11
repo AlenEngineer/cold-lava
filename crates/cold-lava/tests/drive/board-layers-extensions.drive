@@ -27,7 +27,7 @@ expect-not whiteboards · type to filter
 keys w
 wait-for whiteboards · type to filter · ⏎ open · Esc back
 type Editor
-expect + new board "Editor.canvas"
+wait-for + new board "Editor.canvas"
 keys enter
 wait-for whiteboard Editor
 wait-for Ctrl-o ⟵ graph
