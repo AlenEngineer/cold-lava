@@ -35,6 +35,6 @@ jobs:
           for side in ../main .; do
             bin=$(cd $side && ls -t target/release/deps/cold_lava_engine-* | grep -v '\.d$' | head -1)
             echo "== $side ($(git -C $side rev-parse --short HEAD)): $bin"
-            (cd $side/crates/engine && valgrind --tool=callgrind --callgrind-out=/tmp/callgrind.out "../../$bin" --ignored --nocapture read_cost 2>&1 | grep -v "^==\|^test \|^running\|^$")
+            (cd $side/crates/engine && valgrind --tool=callgrind --callgrind-out-file=/tmp/callgrind.out "../../$bin" --ignored --nocapture read_cost 2>&1 | grep -v "^==\|^test \|^running\|^$")
             callgrind_annotate /tmp/callgrind.out | head -48 | cut -c1-220
           done
