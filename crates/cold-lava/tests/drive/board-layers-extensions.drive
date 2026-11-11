@@ -27,6 +27,7 @@ expect-not whiteboards · type to filter
 keys w
 wait-for whiteboards · type to filter · ⏎ open · Esc back
 type Editor
+expect + new board "Editor.canvas"
 keys enter
 wait-for whiteboard Editor
 wait-for Ctrl-o ⟵ graph
@@ -44,8 +45,9 @@ expect shape editor · shape1 (new)
 keys q
 wait-for whiteboard Editor
 expect ☐ 18 open tasks
+# Back in the graph, which has the new board Editor.canvas as a node now.
 keys ctrl+o
-wait-for example-workspace · 40 nodes
+wait-for example-workspace · 41 nodes
 keys q
 wait-for cold-lava workspaces
 keys q
