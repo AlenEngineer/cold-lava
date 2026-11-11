@@ -77,7 +77,10 @@ one can't break anything.
 `items.rs`, `cold-lava items`; queries, subscriptions and edits are built in-process:
 `gateway.rs`, extensions.md, "The workspace gateway, as built")*. What the types find: typed
 values with an `id` that survives ticking, re-dating and lines added above,
-and a `rev` for the item's own lines. Extensions query them, subscribe to changes, and edit one
+and a `rev` for the item's own lines. That id is an *address*: it says where the item is now,
+and it changes when the item is reworded or its note moves. An *anchor*, a `^id` the engine
+writes into the note the first time something keeps a reference to the item, makes it the same
+item for good *(decided, to build: #190)*. Extensions query them, subscribe to changes, and edit one
 item; the engine changes only that item's lines, through the safe write path, and refuses if
 that item changed meanwhile.
 
@@ -193,8 +196,12 @@ change what it shows, never how it works.
   show what two queries share). A headless canvas engine computes geometry, regions, fitting and
   bindings; the TUI only paints.
 - **The UI is a host of views.** The frontend owns layout, drawing, keys, mouse and frame rate.
-  Everything it shows (the reader, the agenda, a type's table, a whiteboard) is a view; the
-  built-in ones use the same view gateway as anyone's. File-type owners only say how to show
+  What extensions show (the agenda, a type's table, the graph) is a view, and the built-in
+  ones use the same view gateway as anyone's. The surfaces you work in (the page with the
+  reader and the editor, the whiteboard) are built into the frontend *(decided 2026-11-11)*:
+  typing, selection, drawing and undo need every frame, and the whiteboard showed that such a
+  surface doesn't fit a protocol of lists, tables and scenes (#170). They still get all their
+  data through the workspace gateway. File-type owners only say how to show
   their files; what the frontend does with that (where, how big, inline or full screen) is its
   call.
 - **The document view.** The reader grows into the place you think in: a note rendered with
@@ -309,6 +316,52 @@ change what it shows, never how it works.
   whiteboard's dots and arrows, so the writer waits for a real need.
 - **Honest limits.** A terminal draws whiteboards, diagrams, boards and graphs well, with Kitty
   pixels where the terminal has them and braille elsewhere. It won't feel like a tablet.
+
+## Direction and order
+
+*(decided 2026-11-11; the work, in this order, is the first section of roadmap issue #100)*
+
+cold-lava has a code editor's architecture, for human notes: owners are to file formats what
+language servers are to languages, types are the type system, and extensions are the plugins.
+The center is **shared types**: the contract between the engine, extensions and the person
+writing.
+
+What was decided:
+
+- **A shared vocabulary of types** (#191, #186). Three name spaces: `core` (what the engine
+  needs), `std` (a small set shipped as data files: an address, a person, a place) and one per
+  extension. A manifest says which it uses, so two extensions that have never heard of each
+  other agree on `std.address`. Value types are definitions too, not only text, number and
+  date.
+- **Identity** (#190). An item gets an anchor the first time a shape, a link or an extension
+  keeps a reference to it; items nobody refers to are never written to.
+- **One door** (#179, #180, #193, #194). Every program is a client of one versioned protocol:
+  the terminal app, a GUI, `cold-lava lsp`, the command line and extensions. The extension host
+  and its permission check are shared by all frontends, settings belong to each open workspace,
+  and what the menu does to files goes through gateway messages.
+- **Built-in surfaces, extension data.** Extensions bring data, file formats, types and simple
+  views. The page and the whiteboard are built in ("The frontend", above). The earlier goal
+  that the menu and the canvas become extensions is dropped.
+- **Drawings mean something only through bindings.** What a drawing means is an ordinary type
+  edit through an explicit binding; position and colour stay in the drawing's file, and nothing
+  is inferred from geometry. A bound shape also saves a readable snapshot of what it last
+  showed into its canvas node, so Obsidian shows a card with content (#192; docs/shapes.md,
+  "Who decides what").
+- **The language server comes before the editor** (#195). It is the smallest frontend, it puts
+  types, links and renames into the editor you already use, and cold-lava's own editor later
+  builds on the same pieces.
+
+The order, engine-facing work first and the UX last:
+
+1. Finish the half-done migrations, so there is one path for each thing: one Markdown reading
+   (the tree), one path for owned files, the whiteboard's screens in the menu's loop.
+2. One door into the engine.
+3. `cold-lava lsp`, used daily on real notes.
+4. Types and identity.
+5. The terminal views (lists, tables, the graph).
+6. Drawings.
+7. The notebook: cold-lava's own editor and the page. Whether the page is built for the
+   terminal or the GUI first is open (#196), to decide after real use.
 
 ## What stays fixed
 
