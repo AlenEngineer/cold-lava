@@ -9,10 +9,10 @@
 //! character references, autolinks, inline HTML, footnotes, hard line breaks, and emphasis, a
 //! block at a time, since emphasis may open on one line and close on a later one. That reading
 //! only cuts `Text` tokens (and a wikilink's `Alias` and the `LinkLabel` a link by reference
-//! shows, which are text on screen) into more tokens and wraps them in nodes: the links, the tags and everything else found first stay
-//! as they were found, so a reader that doesn't ask for it
-//! (`Gates::plain`) reads the same links and tags. A tag may follow the markers that open
-//! emphasis (`**#tag**`) either way.
+//! shows, which are text on screen) into more tokens and wraps them in nodes: the links, the
+//! tags and everything else found first stay as they were found, so a reader that doesn't ask
+//! for it (`Gates::plain`) reads the same links and tags. A tag may follow the markers that
+//! open emphasis (`**#tag**`) either way.
 
 use std::ops::Range;
 use std::sync::OnceLock;

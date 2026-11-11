@@ -306,11 +306,19 @@ change what it shows, never how it works.
     their own length; `==` pairs left to right among what is directly inside the same span,
     as the reader always paired it. A span opens and closes in the same inline node, so it
     holds a link whole or sits inside its text, and it may close on a later line of its block,
-    with the block's `>` and indentation on the lines between as tokens inside it. This
-    reading only cuts `Text` tokens and wraps them in nodes: the links, tags, fields and
+    with the block's `>` and indentation on the lines between as tokens inside it. A
+    wikilink's alias and the label a link by reference shows (`[[Note|*shown*]]`,
+    `[**label**]`) are read the same way, being text on screen. This reading only cuts those
+    tokens and wraps them in nodes: the links, tags, fields and
     blocks found before it are the same with it and without it, which a test checks on every
     note of the corpus. So the index and the items read without it (`Gates::plain`,
-    `Gates::INDEX`) and pay nothing for it, and `Tree::parse` reads with it. Strikethroughs,
+    `Gates::INDEX`) and pay nothing for it, and `Tree::parse` reads with it: their sink is
+    the one they had, and the sink that holds a block back is compiled once, behind a trait
+    object. The new kinds come last in `Kind`, so the others keep their numbers. On a GitHub
+    runner the scan's functions take the same instructions as before (callgrind: the block
+    parser, `Line::run`, `Links::step`), and a keystroke in a 5,000-line note takes what it
+    took; a full parse of that note, which now reads what text holds, takes about a tenth
+    longer. Strikethroughs,
     highlights and footnotes are the flavour's `Syntax`; the rest is CommonMark's. Within a
     line: an autolink, a tag or a footnote that the line reader's tokens cut through isn't
     one, and an escape doesn't stop a link, a code span or a tag the line reader found
