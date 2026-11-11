@@ -83,6 +83,10 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- What an extension asks for while the whiteboard asks it about a shape it ships is done now:
+  its notification shows in the whiteboard's status line, its status word changes, and a note
+  it opens opens (part of #173). The whiteboard used to discard all of it. `cold-lava board`,
+  which has no menu behind it, shows the notifications.
 - A tag right after the markers that open emphasis, a strikethrough or a highlight is a tag,
   as in Obsidian: `**#tag**`, `_#tag_`, `~~#tag~~` and `==#tag==` (#181). Backlinks' tag
   searches, the graph's tag groups, `rename-tag` and the types that read a note's tags see it.

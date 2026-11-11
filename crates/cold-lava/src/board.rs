@@ -32,7 +32,7 @@ mod placed;
 use crate::act::{self, Acted, Answered, Done, Gesture};
 use crate::bind::{Binding, Source};
 use crate::core::{Core, Event as CoreEvent};
-use crate::ext::{ExtId, Registry};
+use crate::ext::{Effect, ExtId, Registry};
 use crate::gateway::News;
 use cold_lava_canvas::{Cell as GridCell, Handle, Point, Style as Token, Viewport, draw as ink};
 use live::Live;
@@ -176,6 +176,10 @@ pub struct Board {
     /// Extensions asked about their shapes. On its own the board polls them; in the menu, the
     /// menu polls every extension.
     asking: Vec<ExtId>,
+    /// What extensions asked for (`ui/notify`, `ui/status`, opening something) inside the
+    /// board's calls to them about their shapes, for whoever runs the board to do
+    /// (`take_asked`).
+    asked: Vec<(ExtId, Effect)>,
     /// A gesture handed to the extension that ships its shape: the node, and the gesture.
     gesturing: Option<(String, Gesture)>,
     /// Where the mouse went down on a shape, for a click when it comes up without moving.
@@ -371,6 +375,7 @@ impl Board {
             events: Vec::new(),
             news: Vec::new(),
             asking: Vec::new(),
+            asked: Vec::new(),
             gesturing: None,
             press: None,
             path,
@@ -421,9 +426,16 @@ impl Board {
                 self.heard(core, owner, news);
             }
             for ext in self.asking.clone() {
-                registry.call(ext, Some(&mut *core), |e, host| e.poll(host));
+                let effects = registry.call(ext, Some(&mut *core), |e, host| e.poll(host));
+                self.asked.extend(effects.into_iter().map(|e| (ext, e)));
             }
             self.tick(core, registry);
+            // There is no menu here to open things or keep a status line: what they say shows.
+            for (_, effect) in self.take_asked() {
+                if let Effect::Notify { message } = effect {
+                    self.flash(message);
+                }
+            }
             terminal.draw(|f| self.draw(f, &[]))?;
             if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
@@ -460,6 +472,12 @@ impl Board {
     /// How the board was left, once it was: the history keys, `q`, or a card's note.
     pub fn left(&self) -> Option<Exit> {
         self.quit.then(|| self.exit.clone())
+    }
+
+    /// What extensions asked for in the board's calls to them since the last time, in order:
+    /// the menu does it as it does after any call to an extension.
+    pub fn take_asked(&mut self) -> Vec<(ExtId, Effect)> {
+        std::mem::take(&mut self.asked)
     }
 
     /// What the core said while the shape editor ran, for the screen under the board.
@@ -512,7 +530,8 @@ impl Board {
             let Some(ext) = registry.by_name(&name) else {
                 continue;
             };
-            registry.ask_shape(ext, Some(&mut *core), ask);
+            let effects = registry.ask_shape(ext, Some(&mut *core), ask);
+            self.asked.extend(effects.into_iter().map(|e| (ext, e)));
             if !self.asking.contains(&ext) {
                 self.asking.push(ext);
             }
@@ -554,7 +573,8 @@ impl Board {
                               host: &mut crate::ext::Host<'_>| {
                         out = Some(binding.act(host, &gesture, placed))
                     };
-                    registry.call(ext, Some(&mut *core), gw);
+                    let effects = registry.call(ext, Some(&mut *core), gw);
+                    self.asked.extend(effects.into_iter().map(|e| (ext, e)));
                     out.expect("called")
                 }
                 None => return self.flash(format!("{name} isn't installed")),
@@ -566,7 +586,8 @@ impl Board {
                 let Some(ext) = binding.extension().and_then(|n| registry.by_name(n)) else {
                     return;
                 };
-                registry.ask_shape(ext, Some(&mut *core), ask);
+                let effects = registry.ask_shape(ext, Some(&mut *core), ask);
+                self.asked.extend(effects.into_iter().map(|e| (ext, e)));
                 if !self.asking.contains(&ext) {
                     self.asking.push(ext);
                 }
@@ -592,9 +613,10 @@ impl Board {
             return;
         };
         let mut out = None;
-        registry.call(ext, Some(&mut *core), |_, host| {
+        let effects = registry.call(ext, Some(&mut *core), |_, host| {
             out = Some(binding.run(host, gesture, steps))
         });
+        self.asked.extend(effects.into_iter().map(|e| (ext, e)));
         match out.expect("called") {
             Ok(done) => self.done(id, done),
             Err(e) => self.flash(e.to_string()),
@@ -3614,6 +3636,71 @@ mod tests {
         assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None);
         assert_eq!(std::fs::read(&path).unwrap(), text);
         assert_eq!((b.doc.nodes.len(), b.undo.len()), (3, undo));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An extension that ships the shape `chatty.box` and has things to say when asked what
+    /// its region shows.
+    struct Chatty;
+
+    impl crate::ext::Extension for Chatty {
+        fn initialize(&mut self) -> crate::ext::Manifest {
+            let manifest = json!({"name": "chatty", "title": "Chatty", "roles": [], "hints": [],
+                "commands": []});
+            serde_json::from_value(manifest).unwrap()
+        }
+        fn pane(&mut self, _: crate::ext::PaneNews, _: &mut crate::ext::Host<'_>) {}
+        fn editor(&mut self, _: crate::ext::EditorRequest, _: &mut crate::ext::Host<'_>) {}
+        fn shape(&mut self, ask: act::Ask, host: &mut crate::ext::Host<'_>) {
+            host.notify("chatty counted");
+            host.status(Some("chatty: 1".into()));
+            host.shape_answered(&ask, Err("nothing to show".into()));
+        }
+    }
+
+    #[test]
+    fn what_an_extension_asks_for_when_asked_about_its_shape_is_kept_for_the_menu() {
+        use crate::shapes::{Layer, load};
+        let (dir, path, _) = workspace("board-asked", Vec::new());
+        std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let mut registry = Registry::new(vec![Box::new(Chatty)]);
+        let chatty = registry.by_name("chatty").unwrap();
+        let shape: toml::Table = toml::from_str(
+            r#"
+            inputs = ["a"]
+            parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
+            regions = [{ id = "count", area = "box", extension = true }]
+            "#,
+        )
+        .unwrap();
+        let mut b = Board::open(&dir, path, None).unwrap();
+        b.live = Live::new(load([
+            Layer::built_in(),
+            Layer::extension("chatty", [("chatty.box".to_string(), shape)]),
+        ]));
+        let mut node: CNode = serde_json::from_value(json!(
+            {"id": "n", "type": "text", "x": 0, "y": 0, "width": 200, "height": 100}
+        ))
+        .unwrap();
+        let sources: indexmap::IndexMap<String, Source> =
+            [("a".to_string(), Source::Items(vec!["Krakatoa".into()]))].into();
+        let at = cold_lava_canvas::Placement::new(Point::new(0.0, 0.0), Point::new(20.0, 10.0));
+        let inputs = ["a".to_string()];
+        placed::place(&mut node, "chatty.box", &inputs, "Chatty", &sources, at);
+        b.doc.nodes.push(node);
+
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None, "it bound");
+        let said = Effect::Notify {
+            message: "chatty counted".into(),
+        };
+        let status = Effect::Status {
+            text: Some("chatty: 1".into()),
+        };
+        assert_eq!(b.take_asked(), [(chatty, said), (chatty, status)]);
+        b.tick(&mut core, &mut registry);
+        assert!(b.take_asked().is_empty(), "asked once, said once");
         let _ = std::fs::remove_dir_all(dir);
     }
 
