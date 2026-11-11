@@ -1221,9 +1221,12 @@ impl<'a> Reader<'a> {
     /// The wikilink or the embed just entered.
     fn wikilink(&mut self, kind: Kind, range: Range<usize>, out: &mut Vec<Read>) {
         let mut target = String::new();
-        // Where the target is written, and what the link shows in its place.
+        // Where the target is written, and what the link shows in its place once its `|` is
+        // read: its alias, read as text is.
         let mut named = range.start..range.start;
-        let mut alias: Option<Range<usize>> = None;
+        let mut alias: Option<Vec<Read>> = None;
+        let list = self.start_list();
+        let in_link = std::mem::replace(&mut self.in_link, true);
         while let Some(step) = self.next() {
             match step {
                 Step::Leave(..) => break,
@@ -1234,16 +1237,30 @@ impl<'a> Reader<'a> {
                     target.push_str(text);
                     named.end = at + text.len();
                 }
-                Step::Token(Kind::Pipe, pipe, at) => alias = Some(at + pipe.len()..at + pipe.len()),
-                Step::Token(Kind::Alias, text, at) => alias = Some(at..at + text.len()),
-                _ => {}
+                Step::Token(Kind::Pipe, ..) => alias = Some(Vec::new()),
+                Step::Token(kind, text, at) => match &mut alias {
+                    Some(shown) if kind == Kind::Alias => {
+                        shown.push(written(self.src, at..at + text.len()))
+                    }
+                    Some(shown) => self.token(kind, text, at, shown),
+                    None => {}
+                },
+                Step::Enter(kind, at) => match &mut alias {
+                    Some(shown) => self.inline(kind, at, shown),
+                    None => self.skip(),
+                },
             }
+        }
+        (self.list, self.in_link) = (list, in_link);
+        // `[[]]` and `[[|alias]]` name nothing: they are text, and no link of the index's.
+        if target.is_empty() {
+            return out.push(written(self.src, range));
         }
         if kind == Kind::Embed {
             return out.push((Inline::Embed { target }, range, Piece::Container));
         }
-        let shown = written(self.src, alias.unwrap_or(named));
-        let text = self.held(vec![shown], range.clone());
+        let shown = alias.unwrap_or_else(|| vec![written(self.src, named)]);
+        let text = self.held(shown, range.clone());
         let link = Inline::Link {
             target,
             kind: LinkKind::Wiki,
@@ -1773,8 +1790,14 @@ mod tests {
             name: "links".into(),
             syntax: [S::WikiLinks].into(),
         };
+        // Without embeds, `![[x]]` is a `!` and a wikilink, as the items count it.
         let blocks = parse("![[img.png]]", &only_links).blocks;
-        assert_eq!(para(blocks), [t("![[img.png]]")]);
+        let link = I::Link {
+            target: "img.png".into(),
+            kind: LinkKind::Wiki,
+            text: vec![t("img.png")],
+        };
+        assert_eq!(para(blocks), [t("!"), link]);
     }
 
     #[test]

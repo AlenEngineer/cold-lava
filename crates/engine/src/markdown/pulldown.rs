@@ -626,32 +626,102 @@ mod tests {
         "key:: value with [[Link]]\n\nA [due:: 2026-01-01] and (done:: no) field.\n",
         // Wikilinks.
         "[[Note]] [[Note|alias]] [[Note#H]] [[Note#^b]] [[Folder/Note.md|x]] ![[E]] [[]] [[a]]b[[c]]\n",
+        // Probes.
+        "Text[^1].\n\n[^1]: First paragraph.\n\n    Second paragraph, indented.\n\nAfter.\n",
+        "\\[[Note]] and \\[text](url.md) and \\`code\\` and \\#tag and \\*not em\\*\n",
+        "[[Note]]#tag **bold**#tag2 `code`#tag3 a#no\n",
+        "a**#b** and ==a **b== c** and **a ==b** c==\n",
+        "<span title=\"*x*\">*y*</span> and <a href=\"x_y_z\">l_i_n_k</a>\n",
+        "$$\nunclosed math\n\nnext para\n",
+        "> $$\n> x\n> $$\n",
+        "> [!note] Title\nlazy line after the title\n\n> [!note] Title *one\n> two* three\n",
+        "[*a*][ref] and [**ref**] and [ref][] and [`r`][ref]\n\n[ref]: x.md\n[**ref**]: y.md\n",
+        "[a [b](c.md) d](e.md) and [![alt *x*](p.png)](n.md) and [a](b.md)[c](d.md)\n",
+        "# Heading\\\n\n# Heading two  \n",
+        "-\ttab item\n\t-\tnested\n\n\tcode by tab\n\n1.\tone\n\t\tdeep code\n",
+        "[a](<b c.md>) [d](e\\_f.md) [g](h&amp;i.md) [j](k.md 'l') [](m.md) [n]( ) [o](p.md\"q\")\n",
+        "| a | b |\n|---|---|\n| `x|y` | \\| |\n| **b** | [l](m.md) |\n\n| only header |\n|---|\n\na | b\n--|--\n1 | 2\n",
+        "5. five\n6. six\n\n- a\n\n  para\n\n  - nested\n\n    para\n\n- ```\n  code\n  ```\n- > quote\n- # head\n",
+        ">no space\n> > nested\n> ```\n> code\n> ```\n>\n> after\nlazy\n",
+        "```rust,ignore attr\ncode\n```\n\n~~~\ntilde\n~~~\n\n```\n\n```\n\n````\n```\nnested\n```\n````\n\n   ```\n   indented fence\n    more\n   ```\n",
+        "#\n\n# #\n\n####### seven\n\n#hashtag\n\n# [link](x.md)\n\n## Trailing hashes ## \n\n## Mid # hash\n",
+        "*(a)* **\"b\"** a*\"c\"* _(d)_e «*f*» **「日本」**語 🌋*g*🌋 _h_🌋 *i*, *j*. (**k**)\n",
+        "~a~ ~~b~~ ~~c~ ~d~~ ~~~e~~~ a~b~c H~2~O\n",
+        "&nbsp;x &#x1F30B; &#99999999; &amp;amp; `&amp;` [&amp;](a&amp;b.md) &AMP; &Tab;\n",
+        "text\n<div>\nblock\n</div>\nafter\n\n<br>\n\ninline <br> and <!-- c --> and <a href=\"x\">t</a> and <b>*em*</b>\n",
+        "$a$b$ $ a $ \\$5 $x_y$ and $z_w$ $$m$$ text $1 and $2\n",
+        "a %%b\nc%% d\n\ne %%unclosed\n",
+        "#tag. #a/b #1a (#x) ,#y *#z* _#w_ #x_y_ [#l](m.md) #tag#two # no\n\n| #cell | b |\n|---|---|\n| c | #d |\n",
+        "Intro\n\n---\nkey: value\n---\n\nAfter\n",
+        "---\nunclosed: frontmatter\n\ntext\n",
+        "[a]: b.md\n  \"title on the next line\"\n\n[c]:\n  d.md\n\ntext [a] and [c]\n\npara\n[e]: f.md\n",
+        "<a@b> <http://x y> <https://x.y/#frag> <ftp://a.b/c> <x:y>\n",
+        "`\\`a\\`` and `` ` `` and ` a ` and `  ` and ```x``y```\n",
+        "[[a|b|c]] [[Note#^blk|x]] ![[img.png|100]] [[Note\\|x]] [[ Note ]] [[Note|]]\n",
+        "***\n\n* * *\n\n*** text\n\n**a***b*\n\n*a**b**\n\n**a*b*c**d\n\n***a*b**\n\n*a**b***\n",
+        "- [ ] task\n  - nested\n- [x] done\n\n  para\n- [ ]\n  - under empty\n- [X] upper\n* [ ] star\n+ [ ] plus\n",
+        "Hard  \nbreak in *em  \nphasis* and `code  \nspan` and [link  \ntext](x.md)\n",
+        "Text ^id-mid\nmore\n\n# Heading ^h\n\n| a ^c |\n|---|\n\n- item\n  ^alone\n",
+        "1. one\n   two\n\n   three\n2. four\n\n       code in four\n\n10. ten\n\n    in ten\n",
+        "> quote\n\n> another\n>\n> - list\n> - items\n>\n>     code\n\n>\n\n> ## Heading\n> text\n> ===\n",
+        "Setext with *emphasis\nover lines*\n===\n\nNot setext\n\n===\n\nPara\n- - -\n",
+        "A line with trailing backslash\\\n\nTwo\\\\\nlines\n\nEnd\\",
+        "http://bare.url/a_b_c and www.example.com and foo@bar.com\n",
+        "![image](a.png)![two](b.png)\n\n![a](b.png) text\n\n![[x.png]] ![[y.png]]\n\n[![a](b.png)](c.md)\n",
+        "**bold\n\nnot closed** across paragraphs\n\n*a\n- b*\n",
+        "| a | b |\n|:--|--:|\n| *x | y* |\n| `c` | d \\\\| e |\n",
+        "\t\ttwo tabs\n\n  \tspace tab\n\n- item\n\n\tcode or paragraph\n",
+        "Text[^a] and[^b].\n\n[^a]: One.\n\n[^b]:\n    Indented start.\n\n[^c]: Unused, with [[Link]] and #tag.\n",
+        "==a== ===b=== ====c==== ==d ==e== == f == g==h==i ==\n",
+        "\\\n\n\\\\\n\n\\a \\! \\\\! \\_x\\_ \\| \\> \\- item\n",
+        "Title\n-\n\nx\n=\n\n- item\n=\n",
+        "<details>\n<summary>S</summary>\ntext\n</details>\n\n<pre>\n*x*\n\n</pre>\n\n<script>\nif (a < b) {}\n</script>\nafter\n",
+        "term[^1]\n\n[^1]: note with `code` and **bold** and a [link](x.md) ^fid\n",
     ];
 
-    /// Markdown the tree reads otherwise than pulldown-cmark did, and why. In each, the tree
-    /// reads what the index already counts, or pulldown-cmark wasn't Obsidian.
-    const DIFFERENT: &[(&str, &str)] = &[
+    /// Markdown the tree reads otherwise than pulldown-cmark did: the flavour (a built-in's
+    /// name, or syntax names joined by `+`), the note, and why. In each, the tree reads what
+    /// the index already counts, or pulldown-cmark wasn't Obsidian.
+    const DIFFERENT: &[(&str, &str, &str)] = &[
         (
+            "obsidian",
             "\u{feff}# Title\n",
             "A byte order mark made the first line text.",
         ),
         (
+            "obsidian",
             "---\n\nkanban-plugin: basic\n\n---\n\n## To do\n",
-            "A frontmatter whose first line is blank was a rule and Markdown.",
+            "A frontmatter whose first line is blank, as the Kanban plugin writes it, was a rule and Markdown.",
         ),
         (
+            "obsidian",
             "See [[#Heading]].\n",
             "`[[#Heading]]` showed the tag `Heading` in the link.",
         ),
         (
+            "obsidian",
             "Read ==#marked==.\n",
             "A tag right after a highlight's `==` was none.",
         ),
         (
+            "obsidian",
             "| [[A\\|B]] | c |\n| --- | --- |\n| d | e |\n",
             "`[[A\\|B]]` in a table cell linked to `A\\`.",
         ),
+        (
+            "wikilinks",
+            "![[img.png]]\n",
+            "Without embeds, `![[x]]` was text; it is a `!` and a wikilink, as the items count it.",
+        ),
     ];
+
+    /// The flavour a `DIFFERENT` row names.
+    fn named(name: &str) -> Flavour {
+        Flavour::built_in(name).unwrap_or_else(|| Flavour {
+            name: name.to_string(),
+            syntax: name.split('+').filter_map(Syntax::from_name).collect(),
+        })
+    }
 
     /// A long note of every kind of block.
     fn long_note() -> String {
@@ -708,15 +778,21 @@ mod tests {
         let mut differ = Vec::new();
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
         let flavour = flavour_for(&workspace);
+        // The one note of the repository that reads otherwise is the Kanban example, whose
+        // frontmatter starts with a blank line (`DIFFERENT`).
+        let kanban = |text: &str| text.starts_with("---\n\n");
         for e in walkdir::WalkDir::new(&workspace).into_iter().flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "md") {
                 let name = p.strip_prefix(&workspace).unwrap().to_string_lossy();
                 let text = std::fs::read_to_string(p).unwrap();
-                differ.extend(difference(&name, &text, &flavour));
+                if !kanban(&text) {
+                    differ.extend(difference(&name, &text, &flavour));
+                }
             }
         }
-        let corpus = cst::corpus();
+        let mut corpus = cst::corpus();
+        corpus.retain(|(_, text)| !kanban(text));
         let long = long_note();
         for name in ["obsidian", "github", "commonmark"] {
             let flavour = Flavour::built_in(name).unwrap();
@@ -725,13 +801,13 @@ mod tests {
             }
             let tricky = TRICKY.iter().chain(crate::items::tests::TRICKY);
             for (k, text) in tricky.enumerate() {
-                differ.extend(difference(&format!("Tricky {k}"), text, &flavour));
+                let start: String = text.chars().take(40).collect();
+                differ.extend(difference(&format!("Tricky {k} {start:?}"), text, &flavour));
             }
             differ.extend(difference("5,000 lines", &long, &flavour));
         }
-        let obsidian = Flavour::built_in("obsidian").unwrap();
-        for (text, _) in DIFFERENT {
-            if difference("Different", text, &obsidian).is_none() {
+        for (name, text, _) in DIFFERENT {
+            if difference("Different", text, &named(name)).is_none() {
                 differ.push(format!("reads alike now, so it isn't DIFFERENT: {text:?}"));
             }
         }
