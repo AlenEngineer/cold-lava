@@ -1,0 +1,32 @@
+# cold-lava board WORKSPACE, with no file: the board picker in a loop of its own, with no menu
+# behind it. It lists the workspace's boards and filters them as you type; a name that
+# matches none makes a new board. The board then runs on its own: a card is typed and saved,
+# and q ends the program. tests/drive.rs starts the subcommand and reads the new canvas after.
+size 140x30
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+expect Eruptions Timeline.canvas
+expect Volcano Venn.canvas
+expect Welcome.canvas
+expect + new board "Untitled.canvas"
+expect-not cold-lava workspaces
+screen
+type venn
+wait-for + new board "venn.canvas"
+expect Volcano Venn.canvas
+expect-not Welcome.canvas
+keys backspace backspace backspace backspace
+wait-for + new board "Untitled.canvas"
+type Alone
+wait-for + new board "Alone.canvas"
+expect-not Welcome.canvas
+keys enter
+wait-for whiteboard Alone · 0 cards
+expect-not Ctrl-o
+keys n
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type On its own
+keys esc
+wait-for whiteboard Alone · 1 cards
+screen
+keys q
+exits 0

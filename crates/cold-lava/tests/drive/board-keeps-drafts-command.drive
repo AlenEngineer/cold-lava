@@ -1,0 +1,36 @@
+# The guard of board-keeps-drafts.drive, for command/run. tests/drive.rs installs the
+# open-tasks example patched to run search.open whenever the tasks change. While a card is
+# typed, a task another program writes makes it ask: the search doesn't open, the card stays,
+# and when the edit ends the status line says what was not done. With the card saved, the next
+# command/run opens the search. tests/drive.rs reads the canvas after.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type Drafts
+keys enter
+wait-for whiteboard Drafts · 0 cards
+keys n
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type Draft
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+expect whiteboard Drafts
+expect Draft▏
+type , kept
+wait-for Draft, kept▏
+keys esc
+wait-for open-tasks wanted to run search.open: not while a card is being edited
+expect whiteboard Drafts · 1 cards
+screen
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n- [ ] Count the masks\n
+wait-for ☐ 18 open tasks
+wait-gone whiteboard Drafts
+expect-not open-tasks wanted to run search.open
+screen
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

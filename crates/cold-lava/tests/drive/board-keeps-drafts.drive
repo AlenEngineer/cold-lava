@@ -1,9 +1,11 @@
 # An extension can't take the whiteboard away from unsaved work. tests/drive.rs installs the
 # open-tasks example patched to open a note whenever the tasks change, which no extension
-# should do unasked. While a card is being typed, and while the shape editor holds an unsaved
-# draft, a task another program writes makes it ask: the card and the draft stay in front, the
-# count still follows, and the editor's status line says what was not done. The card then
-# saves with Esc and the shape with ctrl+s. tests/drive.rs reads both files after.
+# should do unasked, and to show its count more than three seconds later. While a card is
+# being typed, and while the shape editor holds an unsaved draft, a task another program
+# writes makes it ask: the card and the draft stay in front, the count still follows, and the
+# status line says what was not done. During the card's edit the editing hint has that line,
+# so the notice waits and shows when the edit ends, however long it took. The card saves with
+# Esc and the shape with ctrl+s. tests/drive.rs reads both files after.
 size 140x44
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
@@ -22,8 +24,12 @@ expect whiteboard Drafts
 expect Draft▏
 type , kept
 wait-for Draft, kept▏
+expect editing · type text · ⏎ new line · Esc done (saves)
+screen
 keys esc
-wait-for whiteboard Drafts · 1 cards
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while a card is being edited
+expect whiteboard Drafts · 1 cards
+screen
 # The shape editor with a triangle drawn and not saved.
 keys S
 wait-for shape editor · type to filter

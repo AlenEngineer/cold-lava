@@ -41,6 +41,9 @@ use live::Live;
 // canvas owner.
 use crate::json_canvas::{CEdge, CNode, Doc};
 
+/// How long a message stays in the status line.
+const MESSAGE_SHOWS: Duration = Duration::from_secs(3);
+
 fn new_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let t = SystemTime::now()
@@ -196,7 +199,16 @@ pub struct Board {
     drag: Option<Drag>,
     undo: Vec<Doc>,
     redo: Vec<Doc>,
-    msg: Option<(String, Instant)>,
+    /// What the second status line says for 3 seconds, and since when it has shown: `None`
+    /// while an alert or a mode's hint has the line, under which it waits (`draw_status`).
+    msg: Option<(String, Option<Instant>)>,
+    /// The ids another program repeated: the name each later node of one goes by here (its
+    /// place, `parse`) to the id it has in the file, which `as_written` gives it back. Never
+    /// forgotten while the board is open, so an undo finds its node's id again.
+    twins: HashMap<String, String>,
+    /// How many refused requests the message tells of (`refused`), 0 when it is about
+    /// something else.
+    refusals: usize,
     /// Something the user must see, shown until the next key.
     alert: Option<String>,
     /// Left, and how: `exit` says where to.
@@ -390,7 +402,7 @@ impl Board {
     pub fn open(workspace_root: &Path, path: PathBuf, node: Option<String>) -> Result<Board> {
         crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        let doc = parse(&disk, &path)?;
+        let (doc, twins) = parse(&disk, &path)?;
         let base = doc.clone();
         let workspace_root = workspace_root
             .canonicalize()
@@ -425,6 +437,8 @@ impl Board {
             undo: Vec::new(),
             redo: Vec::new(),
             msg: None,
+            twins: twins.into_iter().collect(),
+            refusals: 0,
             alert: None,
             quit: false,
             exit: Exit::Quit,
@@ -451,6 +465,7 @@ impl Board {
         core: &mut Core,
         registry: &mut Registry,
     ) -> Result<()> {
+        let mut statuses = Vec::new();
         while !self.quit {
             let events = core.poll();
             let news = core.take_item_news();
@@ -463,13 +478,9 @@ impl Board {
                 self.asked.extend(effects.into_iter().map(|e| (ext, e)));
             }
             self.tick(core, registry);
-            // There is no menu here to open things or keep a status line: what they say shows.
-            for (_, effect) in self.take_asked() {
-                if let Effect::Notify { message } = effect {
-                    self.flash(message);
-                }
-            }
-            terminal.draw(|f| self.draw(f, &[]))?;
+            self.asked_alone(registry, &mut statuses);
+            let words: Vec<String> = statuses.iter().map(|(_, text)| text.clone()).collect();
+            terminal.draw(|f| self.draw(f, &words))?;
             if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
@@ -481,6 +492,34 @@ impl Board {
             }
         }
         Ok(())
+    }
+
+    /// On its own, does what extensions asked for in the board's calls to them. No menu is
+    /// behind it: a notification shows, each extension's status words are kept in `statuses`
+    /// for the status line, and what only the menu can do (open a note, show a view, run a
+    /// command) is refused with a notice.
+    fn asked_alone(&mut self, registry: &Registry, statuses: &mut Vec<(ExtId, String)>) {
+        for (ext, effect) in self.take_asked() {
+            let wanted = match effect {
+                Effect::Notify { message } => {
+                    self.flash(message);
+                    continue;
+                }
+                Effect::Status { text } => {
+                    statuses.retain(|(e, _)| *e != ext);
+                    statuses.extend(text.map(|text| (ext, text)));
+                    continue;
+                }
+                Effect::OpenNote { note, .. } => format!("open {}", note.display()),
+                Effect::OpenView { .. } | Effect::ShowView { .. } => "show a view".to_string(),
+                Effect::RunCommand { id, .. } => format!("run {id}"),
+                _ => continue,
+            };
+            let name = &registry.manifest(ext).name;
+            self.refused(format!(
+                "{name} wanted to {wanted}: cold-lava board shows the whiteboard only"
+            ));
+        }
     }
 
     /// Stops following the workspace: the placed shapes' subscriptions end.
@@ -1085,9 +1124,10 @@ impl Board {
             return false;
         }
         // A half-written file fails to parse; we'll catch the complete one on the next check.
-        let Ok(theirs) = parse(&bytes, &self.path) else {
+        let Ok((theirs, twins)) = parse(&bytes, &self.path) else {
             return false;
         };
+        self.twins.extend(twins);
         self.disk = bytes;
         let (Ok(b), Ok(o), Ok(t)) = (
             serde_json::to_value(&self.base),
@@ -1148,7 +1188,7 @@ impl Board {
 
     fn write_file(&mut self) {
         placed::mark_version(&mut self.doc.extra, &self.doc.nodes);
-        let buf = match crate::json_canvas::to_bytes(&self.doc) {
+        let buf = match crate::json_canvas::to_bytes(&as_written(&self.doc, &self.twins)) {
             Ok(buf) => buf,
             Err(e) => return self.flash(format!("save failed: {e}")),
         };
@@ -1483,10 +1523,31 @@ impl Board {
 
     pub fn flash(&mut self, s: impl Into<String>) {
         let s = s.into();
-        if let Some(editor) = &mut self.editor {
+        // The shape editor in front shows it now, in the board's place.
+        let shown = self.editor.as_mut().map(|editor| {
             editor.say(s.clone());
-        }
-        self.msg = Some((s, Instant::now()));
+            Instant::now()
+        });
+        self.msg = Some((s, shown));
+        self.refusals = 0;
+    }
+
+    /// Says that something asked for was not done, so that the board keeps what it holds
+    /// (`notice`). The user is told of every such request: a notice that comes while the last
+    /// one still shows, or waits to, takes its place and says how many there were.
+    pub fn refused(&mut self, notice: impl Into<String>) {
+        let notice = notice.into();
+        let unread = (self.msg.as_ref())
+            .is_some_and(|(_, shown)| shown.is_none_or(|at| at.elapsed() <= MESSAGE_SHOWS));
+        let n = match unread {
+            true => self.refusals + 1,
+            false => 1,
+        };
+        self.flash(match n {
+            1 => notice,
+            n => format!("{notice} ({n} requests refused)"),
+        });
+        self.refusals = n;
     }
 
     /// Place a new card: right of the selection, else in the middle of the view.
@@ -1518,7 +1579,11 @@ impl Board {
     fn add_node(&mut self, kind: &str, at: Option<(f64, f64)>, w: f64, h: f64) -> String {
         self.checkpoint();
         let (x, y) = at.unwrap_or_else(|| self.spot_for_new(w, h));
-        let id = new_id();
+        // Not an id the file may still hold: a twin's, whose first node was deleted here.
+        let mut id = new_id();
+        while self.node(&id).is_some() || self.twins.values().any(|theirs| *theirs == id) {
+            id = new_id();
+        }
         self.doc.nodes.push(CNode {
             id: id.clone(),
             kind: kind.to_string(),
@@ -2227,8 +2292,9 @@ impl Board {
                 .map_err(anyhow::Error::from)
                 .and_then(|b| Ok((parse(&b, &self.path)?, b)))
             {
-                Ok((d, bytes)) => {
+                Ok(((d, twins), bytes)) => {
                     self.checkpoint();
+                    self.twins.extend(twins);
                     self.base = d.clone();
                     self.disk = bytes;
                     self.doc = d;
@@ -3001,10 +3067,27 @@ impl Board {
                 Style::new().fg(MUTED),
             ),
         };
-        if self
-            .msg
-            .as_ref()
-            .is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3))
+        // The second line is one of: an alert, the mode's hint, a message, the keys. A message
+        // made under an alert or a hint waits: its time starts when it shows.
+        let hint = match self.mode {
+            Mode::Edit { .. } => Some(" editing · type text · ⏎ new line · Esc done (saves)"),
+            Mode::Bind { .. } => {
+                Some(" bind · type a source for each input · Tab next · ⏎ place · Esc cancel")
+            }
+            Mode::Connect { .. } => Some(
+                " connect · pick the target (arrows/Tab/click) · ⏎ draw arrow (again removes it) · Esc cancel",
+            ),
+            _ => None,
+        };
+        if hint.is_none()
+            && self.alert.is_none()
+            && let Some((_, shown)) = &mut self.msg
+            && shown.is_none()
+        {
+            *shown = Some(Instant::now());
+        }
+        if (self.msg.as_ref())
+            .is_some_and(|(_, shown)| shown.is_some_and(|at| at.elapsed() > MESSAGE_SHOWS))
         {
             self.msg = None;
         }
@@ -3022,25 +3105,13 @@ impl Board {
                     .push(Span::styled(format!("   {hint}"), Style::new().fg(MUTED)));
             }
         }
-        if let Some(alert) = &self.alert {
-            let line = Line::styled(format!(" {alert}"), Style::new().fg(Color::Black).bg(HIT));
-            return f.render_widget(Paragraph::new(vec![info, line]), area);
-        }
-        let second = match (&self.mode, &self.msg) {
-            (Mode::Edit { .. }, _) => Line::styled(
-                " editing · type text · ⏎ new line · Esc done (saves)",
-                Style::new().fg(HIT),
-            ),
-            (Mode::Bind { .. }, _) => Line::styled(
-                " bind · type a source for each input · Tab next · ⏎ place · Esc cancel",
-                Style::new().fg(HIT),
-            ),
-            (Mode::Connect { .. }, _) => Line::styled(
-                " connect · pick the target (arrows/Tab/click) · ⏎ draw arrow (again removes it) · Esc cancel",
-                Style::new().fg(HIT),
-            ),
-            (_, Some((m, _))) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
-            _ => {
+        let second = match (&self.alert, hint, &self.msg) {
+            (Some(alert), ..) => {
+                Line::styled(format!(" {alert}"), Style::new().fg(Color::Black).bg(HIT))
+            }
+            (None, Some(hint), _) => Line::styled(hint, Style::new().fg(HIT)),
+            (None, None, Some((m, _))) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
+            (None, None, None) => {
                 let k = |id| self.keys.first_label(id);
                 Line::styled(
                     format!(
@@ -3063,9 +3134,39 @@ impl Board {
 
 // ---------- helpers ----------
 
-fn parse(bytes: &[u8], path: &Path) -> Result<Doc> {
-    crate::json_canvas::parse(bytes)
-        .with_context(|| format!("{} is not a valid canvas file", path.display()))
+/// The canvas in a file's bytes. Here every node goes by the canvas owner's place for it, so
+/// that the selection, an edit and a placed shape's binding each mean one node. That is its
+/// id, unless another program repeated one: then a later node of that id has a name of the
+/// board's own, which must never reach the file. Those come back too, each with the id its
+/// node has in the file, for `as_written`. An arrow names an id, so it is the first node's.
+fn parse(bytes: &[u8], path: &Path) -> Result<(Doc, Vec<(String, String)>)> {
+    let mut doc = crate::json_canvas::parse(bytes)
+        .with_context(|| format!("{} is not a valid canvas file", path.display()))?;
+    let places = crate::owner::canvas::places(doc.nodes.iter().map(|n| n.id.as_str()));
+    let mut twins = Vec::new();
+    for (n, place) in doc.nodes.iter_mut().zip(places) {
+        if place != n.id {
+            twins.push((place.clone(), std::mem::replace(&mut n.id, place)));
+        }
+    }
+    Ok((doc, twins))
+}
+
+/// The canvas as its file has it: every node under the id it was read with, and an arrow
+/// drawn here to a node in `twins` naming that id, as the file's own arrows do.
+fn as_written(doc: &Doc, twins: &HashMap<String, String>) -> Doc {
+    let mut doc = doc.clone();
+    let theirs = |name: &mut String| {
+        if let Some(id) = twins.get(name.as_str()) {
+            *name = id.clone();
+        }
+    };
+    doc.nodes.iter_mut().for_each(|n| theirs(&mut n.id));
+    for e in &mut doc.edges {
+        theirs(&mut e.from_node);
+        theirs(&mut e.to_node);
+    }
+    doc
 }
 
 // ---------- three-way merge ----------
@@ -3605,7 +3706,7 @@ mod tests {
 
         // Our edit, while someone else is halfway through writing the file.
         let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);
-        b.doc = parse(ours.as_bytes(), &path).unwrap();
+        b.doc = parse(ours.as_bytes(), &path).unwrap().0;
         std::fs::write(&path, "{\"nodes\": [").unwrap();
         b.save();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"nodes\": [");
@@ -3701,8 +3802,10 @@ mod tests {
     }
 
     /// An extension that ships the shape `chatty.box` and has things to say when asked what
-    /// its region shows.
-    struct Chatty;
+    /// its region shows. A `pushy` one also asks for a note and a command, unasked.
+    struct Chatty {
+        pushy: bool,
+    }
 
     impl crate::ext::Extension for Chatty {
         fn initialize(&mut self) -> crate::ext::Manifest {
@@ -3715,17 +3818,22 @@ mod tests {
         fn shape(&mut self, ask: act::Ask, host: &mut crate::ext::Host<'_>) {
             host.notify("chatty counted");
             host.status(Some("chatty: 1".into()));
+            if self.pushy {
+                host.open_note("Krakatoa.md".into(), None, None);
+                host.run_command("search.open", Value::Null);
+            }
             host.shape_answered(&ask, Err("nothing to show".into()));
         }
     }
 
-    #[test]
-    fn what_an_extension_asks_for_when_asked_about_its_shape_is_kept_for_the_menu() {
+    /// A workspace whose board has one `chatty.box` placed on it, not ticked yet: the folder,
+    /// its core, the registry with Chatty in it, Chatty's id, the board.
+    fn chatty_board(name: &str, pushy: bool) -> (PathBuf, Core, Registry, ExtId, Board) {
         use crate::shapes::{Layer, load};
-        let (dir, path, _) = workspace("board-asked", Vec::new());
+        let (dir, path, _) = workspace(name, Vec::new());
         std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
-        let mut registry = Registry::new(vec![Box::new(Chatty)]);
+        let core = Core::open(&dir).unwrap();
+        let registry = Registry::new(vec![Box::new(Chatty { pushy })]);
         let chatty = registry.by_name("chatty").unwrap();
         let shape: toml::Table = toml::from_str(
             r#"
@@ -3750,7 +3858,12 @@ mod tests {
         let inputs = ["a".to_string()];
         placed::place(&mut node, "chatty.box", &inputs, "Chatty", &sources, at);
         b.doc.nodes.push(node);
+        (dir, core, registry, chatty, b)
+    }
 
+    #[test]
+    fn what_an_extension_asks_for_when_asked_about_its_shape_is_kept_for_the_menu() {
+        let (dir, mut core, mut registry, chatty, mut b) = chatty_board("board-asked", false);
         b.tick(&mut core, &mut registry);
         assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None, "it bound");
         let said = Effect::Notify {
@@ -3762,6 +3875,275 @@ mod tests {
         assert_eq!(b.take_asked(), [(chatty, said), (chatty, status)]);
         b.tick(&mut core, &mut registry);
         assert!(b.take_asked().is_empty(), "asked once, said once");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `cold-lava board`: no menu is behind the board to open a note or run a command in.
+    #[test]
+    fn on_its_own_the_board_keeps_status_words_and_refuses_what_needs_the_menu() {
+        let (dir, mut core, mut registry, chatty, mut b) = chatty_board("board-alone", true);
+        let mut statuses = Vec::new();
+        b.tick(&mut core, &mut registry);
+        b.asked_alone(&registry, &mut statuses);
+        assert_eq!(statuses, [(chatty, "chatty: 1".to_string())]);
+        assert_eq!(
+            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            Some(
+                "chatty wanted to run search.open: cold-lava board shows the whiteboard only \
+                 (2 requests refused)"
+            ),
+            "the note and the command, both refused"
+        );
+        assert!(b.left().is_none(), "the board stays");
+        assert_eq!(b.doc.nodes.len(), 1);
+
+        let words = |text: Option<&str>| Effect::Status {
+            text: text.map(String::from),
+        };
+        b.asked.push((chatty, words(Some("chatty: 2"))));
+        b.asked_alone(&registry, &mut statuses);
+        assert_eq!(statuses, [(chatty, "chatty: 2".to_string())]);
+        b.asked.push((chatty, words(None)));
+        b.asked_alone(&registry, &mut statuses);
+        assert!(statuses.is_empty(), "{statuses:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The board's two status lines, as drawn.
+    fn status_lines(b: &mut Board) -> [String; 2] {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| b.draw(f, &[])).unwrap();
+        let buffer = t.backend().buffer();
+        let line = |y: u16| {
+            let cells = (0..120).filter_map(|x| buffer.cell((x, y)));
+            let text: String = cells.map(|c| c.symbol()).collect();
+            text.trim_end().to_string()
+        };
+        [line(28), line(29)]
+    }
+
+    #[test]
+    fn a_notice_made_while_a_card_is_typed_waits_for_the_edit_to_end() {
+        let (dir, path, _core) = workspace("board-notice", vec![card("a", 0, "Alpha")]);
+        let mut b = Board::open(&dir, path, None).unwrap();
+        b.mode = Mode::Edit {
+            id: "a".into(),
+            buf: "Alpha, typed".into(),
+            is_new: false,
+        };
+        b.refused("pushy wanted to open Lava.md: not while a card is being edited");
+        b.refused("pushy wanted to run search.open: not while a card is being edited");
+        let [_, second] = status_lines(&mut b);
+        assert!(second.contains("Esc done (saves)"), "the hint: {second}");
+        let waits = |b: &Board| b.msg.as_ref().map(|(_, shown)| shown.is_none());
+        assert_eq!(waits(&b), Some(true), "its 3 seconds haven't begun");
+
+        b.finish_edit();
+        let [_, second] = status_lines(&mut b);
+        assert_eq!(
+            second,
+            " pushy wanted to run search.open: not while a card is being edited \
+             (2 requests refused)"
+        );
+        assert_eq!(waits(&b), Some(false), "they begin once it shows");
+
+        // A request refused after that notice had its time is counted from one again.
+        if let Some(long_ago) = Instant::now().checked_sub(MESSAGE_SHOWS * 2) {
+            b.msg = Some(("pushy wanted to open Lava.md".into(), Some(long_ago)));
+            b.refused("pushy wanted to open Ash.md");
+            let said = b.msg.as_ref().map(|(m, _)| m.as_str());
+            assert_eq!(said, Some("pushy wanted to open Ash.md"));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Two cards of one id, `First` and `Second`, a card `t`, and an arrow from the id to `t`,
+    /// written as the board writes a canvas.
+    fn twins_canvas() -> String {
+        let doc: Doc = serde_json::from_value(json!({
+            "nodes": [card("s", 0, "First"), card("s", 300, "Second"), card("t", 600, "Third")],
+            "edges": [{"id": "e", "fromNode": "s", "toNode": "t"}],
+        }))
+        .unwrap();
+        String::from_utf8(crate::json_canvas::to_bytes(&doc).unwrap()).unwrap()
+    }
+
+    /// The board on `twins_canvas`, with the node named `sel` selected.
+    fn twins_board(name: &str, sel: &str) -> (PathBuf, PathBuf, Board) {
+        let (dir, path, _core) = workspace(name, Vec::new());
+        std::fs::write(&path, twins_canvas()).unwrap();
+        let b = Board::open(&dir, path.clone(), Some(sel.into())).unwrap();
+        assert_eq!(b.selected(), Some(sel));
+        (dir, path, b)
+    }
+
+    /// The saved canvas, which must never hold the board's own name for a repeated id.
+    fn saved_twins(path: &Path) -> Value {
+        let text = std::fs::read_to_string(path).unwrap();
+        let marked = text.contains('\u{1f}') || text.to_lowercase().contains("\\u001f");
+        assert!(
+            !marked,
+            "the board's name for a node is in the file: {text}"
+        );
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn texts(v: &Value) -> Vec<&str> {
+        let nodes = v["nodes"].as_array().unwrap().iter();
+        nodes.map(|n| n["text"].as_str().unwrap()).collect()
+    }
+
+    const SECOND: &str = "s\u{1f}1";
+
+    /// Another program's canvas may repeat an id. The board names such nodes by the canvas
+    /// owner's places, so the place of an item opens the board at its card, and saves them
+    /// under the ids they had.
+    #[test]
+    fn a_card_that_repeats_an_id_is_selected_and_edited_by_its_place() {
+        let (dir, path, mut b) = twins_board("board-twins", SECOND);
+        let selected = b.selected().and_then(|id| b.node(id));
+        assert_eq!(selected.and_then(|n| n.text.as_deref()), Some("Second"));
+        b.mode = Mode::Edit {
+            id: SECOND.into(),
+            buf: "Second, edited".into(),
+            is_new: false,
+        };
+        b.finish_edit();
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "s", "t"]);
+        assert_eq!(texts(&saved), ["First", "Second, edited", "Third"]);
+        assert!(!b.sync_from_disk(), "its own save read back is nothing new");
+        assert_eq!(b.selected(), Some(SECOND));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn moving_a_card_that_repeats_an_id_changes_only_where_it_is() {
+        let (dir, path, mut b) = twins_board("board-twins-move", SECOND);
+        b.move_selected(40.0, 20.0);
+        let (before, after) = (twins_canvas(), std::fs::read_to_string(&path).unwrap());
+        assert_eq!(before.lines().count(), after.lines().count(), "{after}");
+        let changed: Vec<(&str, &str)> = (before.lines().zip(after.lines()))
+            .filter(|(was, is)| was != is)
+            .map(|(was, is)| (was.trim(), is.trim()))
+            .collect();
+        let fields: Vec<&str> = (changed.iter())
+            .map(|(was, _)| was.split(':').next().unwrap_or_default())
+            .collect();
+        assert_eq!(fields, ["\"x\"", "\"y\""], "{changed:?}");
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "s", "t"]);
+        let second = &saved["nodes"][1];
+        assert_eq!(
+            (second["x"].as_f64(), second["y"].as_f64()),
+            (Some(340.0), Some(20.0))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The first of two cards of one id is deleted: the other is written with the id it was
+    /// read with, and undo brings the first back under the same id.
+    #[test]
+    fn deleting_a_twin_leaves_the_other_its_id_and_undo_brings_it_back() {
+        let (dir, path, mut b) = twins_board("board-twins-delete", "s");
+        b.delete_selected();
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "t"]);
+        assert_eq!(texts(&saved), ["Second", "Third"]);
+        assert_eq!(
+            saved["edges"],
+            json!([]),
+            "its arrow went with it, as drawn"
+        );
+
+        b.undo();
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "s", "t"]);
+        assert_eq!(texts(&saved), ["First", "Second", "Third"]);
+        assert_eq!(saved["edges"][0]["fromNode"], "s");
+        b.redo();
+        assert_eq!(ids(&saved_twins(&path), "nodes"), ["s", "t"]);
+
+        // A card made now gets an id of its own, and the twin keeps the file's.
+        let made = b.add_node("text", None, 200.0, 100.0);
+        b.commit();
+        assert_ne!(made, "s");
+        assert_eq!(ids(&saved_twins(&path), "nodes"), ["s", "t", made.as_str()]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An arrow in the file names an id, so with two cards of that id it is the first one's:
+    /// drawn from it, deleted with it, and written back as it was while the other card is
+    /// changed or deleted. An arrow drawn here from the second card names the same id.
+    #[test]
+    fn an_arrow_to_a_repeated_id_is_the_first_cards() {
+        let (dir, path, mut b) = twins_board("board-twins-arrow", SECOND);
+        let from = b.node(&b.doc.edges[0].from_node);
+        assert_eq!(from.and_then(|n| n.text.as_deref()), Some("First"));
+
+        b.toggle_edge(SECOND, "t");
+        let saved = saved_twins(&path);
+        let ends = |v: &Value| -> Vec<(String, String)> {
+            let edges = v["edges"].as_array().unwrap().iter();
+            let end = |e: &Value, key: &str| e[key].as_str().unwrap().to_string();
+            edges
+                .map(|e| (end(e, "fromNode"), end(e, "toNode")))
+                .collect()
+        };
+        let arrow = ("s".to_string(), "t".to_string());
+        assert_eq!(ends(&saved), [arrow.clone(), arrow.clone()]);
+        assert_eq!(
+            saved["edges"][0]["id"], "e",
+            "the file's own arrow, untouched"
+        );
+
+        b.sel = Some(SECOND.into());
+        b.delete_selected();
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "t"]);
+        assert_eq!(texts(&saved), ["First", "Third"]);
+        assert_eq!(ends(&saved), [arrow], "the first card's arrow stays");
+        assert_eq!(saved["edges"][0]["id"], "e");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Another program adds a card, ahead of the twins, while the second twin is typed.
+    #[test]
+    fn twins_survive_an_outside_change_merged_into_an_edit() {
+        let (dir, path, mut b) = twins_board("board-twins-merge", SECOND);
+        let mut core = Core::open(&dir).unwrap();
+        let mut registry = Registry::empty();
+        b.mode = Mode::Edit {
+            id: SECOND.into(),
+            buf: "Second, edited".into(),
+            is_new: false,
+        };
+        let mut theirs: Value = serde_json::from_str(&twins_canvas()).unwrap();
+        let nodes = theirs["nodes"].as_array_mut().unwrap();
+        nodes.insert(0, card("c", 900, "Theirs"));
+        std::fs::write(&path, theirs.to_string()).unwrap();
+        b.noticed(&core, &[CoreEvent::BoardChanged("B.canvas".into())]);
+        b.tick(&mut core, &mut registry);
+        b.finish_edit();
+
+        let saved = saved_twins(&path);
+        let mut cards: Vec<(String, &str)> = (ids(&saved, "nodes").into_iter())
+            .zip(texts(&saved))
+            .collect();
+        cards.sort();
+        let is = |id: &str, text: &'static str| (id.to_string(), text);
+        assert_eq!(
+            cards,
+            [
+                is("c", "Theirs"),
+                is("s", "First"),
+                is("s", "Second, edited"),
+                is("t", "Third")
+            ]
+        );
+        assert_eq!(saved["edges"][0]["fromNode"], "s");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3842,7 +4224,7 @@ mod tests {
     fn canvas_round_trip_preserves_unknown_fields_and_integers() {
         let src = r##"{"nodes":[{"id":"a","type":"text","text":"x","x":10.4,"y":-20,"width":250,"height":60,"color":"#ff0000","futureField":{"k":[1,2]}}],
                       "edges":[{"id":"e","fromNode":"a","toNode":"a","toEnd":"none","styleAttributes":{}}],"meta":"keep"}"##;
-        let doc = parse(src.as_bytes(), Path::new("t.canvas")).unwrap();
+        let (doc, _) = parse(src.as_bytes(), Path::new("t.canvas")).unwrap();
         let out = serde_json::to_value(&doc).unwrap();
         assert_eq!(out["nodes"][0]["x"], 10); // coordinates are written as integers
         assert_eq!(out["nodes"][0]["futureField"]["k"][1], 2);
@@ -3883,7 +4265,7 @@ mod tests {
 
     #[test]
     fn empty_file_is_an_empty_board() {
-        let d = parse(b"  \n", Path::new("t.canvas")).unwrap();
+        let (d, _) = parse(b"  \n", Path::new("t.canvas")).unwrap();
         assert!(d.nodes.is_empty() && d.edges.is_empty());
         assert!(parse(b"{not json", Path::new("t.canvas")).is_err());
     }
