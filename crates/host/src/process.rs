@@ -497,10 +497,10 @@ impl Extension for Process {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Core;
-    use crate::ext::view::Content;
-    use crate::ext::{Effect, ExtId, Permission, Registry};
     use crate::gateway::{Answer, Edit, Filter, Op, Query, Select};
+    use crate::view::Content;
+    use crate::{Effect, ExtId, Permission, Registry};
+    use cold_lava_engine::core::Core;
     use std::collections::VecDeque;
     use std::path::PathBuf;
 
@@ -559,7 +559,7 @@ mod tests {
             commands: Vec::new(),
             types: Default::default(),
             shapes: Vec::new(),
-            permissions: crate::ext::read_only(),
+            permissions: crate::read_only(),
             file_types: Vec::new(),
             shows: Vec::new(),
         };
@@ -691,7 +691,7 @@ mod tests {
         let dir = workspace("previews");
         let mut core = Core::open(&dir).unwrap();
         let mut installed = installed(dir.clone(), None);
-        installed.manifest.file_types = vec![crate::ext::FileType {
+        installed.manifest.file_types = vec![crate::FileType {
             extension: "csv".into(),
             title: "CSV".into(),
             new: None,
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn an_edit_of_an_owned_file_is_answered_once_its_owner_wrote_it() {
-        use crate::ext::FileType;
+        use crate::FileType;
         static OWNER: Scripted = Scripted(|m| {
             let (method, params) = (m["method"].as_str(), &m["params"]);
             let given = |vei: u32| json!({"items": [{"place": "1", "type": "eruption", "fields": {"vei": vei}}]});
@@ -1064,7 +1064,7 @@ mod tests {
         std::fs::write(root.join("Inbox/Seismograph.md"), late).unwrap();
         let from = repo.join("examples/extensions").join(example);
         copy_dir(&from, &extensions.join(example));
-        let (found, mistakes) = crate::ext::installed::load(&extensions);
+        let (found, mistakes) = crate::installed::load(&extensions);
         assert_eq!(mistakes, Vec::<String>::new());
         let mut installed = found.into_iter().next().unwrap();
         installed.launch.log = Some(dir.join(format!("{example}.log")));
@@ -1095,9 +1095,9 @@ mod tests {
 
     #[test]
     fn the_csv_example_says_what_its_files_say_as_items_and_links() {
-        use crate::core::Event;
         use crate::gateway::Page;
         use crate::owner::cache::Kind;
+        use cold_lava_engine::core::Event;
         if !has_python() {
             return;
         }
@@ -1196,8 +1196,8 @@ mod tests {
 
     #[test]
     fn the_csv_example_saves_on_top_of_a_change_it_hadnt_heard_of() {
-        use crate::ext::FileNews;
-        use crate::ext::view::{Event, Happened, ViewNews};
+        use crate::FileNews;
+        use crate::view::{Event, Happened, ViewNews};
         if !has_python() {
             return;
         }
@@ -1278,7 +1278,7 @@ mod tests {
 
     #[test]
     fn the_python_example_opens_a_list_and_hears_what_the_user_did_in_it() {
-        use crate::ext::view::{Content, Event, Happened, ViewNews};
+        use crate::view::{Content, Event, Happened, ViewNews};
         if !has_python() {
             return;
         }

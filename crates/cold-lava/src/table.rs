@@ -1,85 +1,23 @@
 //! The table view: a declarative view any extension can send (docs/extensions.md, "Views").
 //! The sender says what the columns are and what each row holds; the view sorts, filters,
-//! scrolls and draws it, and answers keys with `Event`s about rows by id. Every type that
-//! crosses derives serde, so a table can come over the view gateway unchanged; it moves to
-//! `crates/views` when a second frontend draws one.
+//! scrolls and draws it, and answers keys with `Event`s about rows by id. What crosses the
+//! view gateway (`Table`, its columns and rows, `Event`) is data in `cold-lava-views`, named
+//! here as before; this file is how the terminal draws it.
 
 use std::cmp::Ordering;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::app::{ACCENT, DIM, HIT, MUTED, NOTE};
-use crate::list::{Filter, type_into};
+use crate::list::{Filter, takes, type_into};
 use crate::looks;
 use crate::types::Look;
 use crate::workspace::search_key;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Table {
-    pub title: String,
-    pub columns: Vec<Column>,
-    pub rows: Vec<Row>,
-    #[serde(default, skip_serializing_if = "Filter::is_slash")]
-    pub filter: Filter,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Column {
-    pub name: String,
-    /// How its cells sort, align and read.
-    #[serde(flatten)]
-    pub kind: Kind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub look: Option<Look>,
-    /// Why its cells can't be edited, when they can't.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub read_only: Option<String>,
-}
-
-/// A column's value type: numbers and durations sort as numbers and align right, dates as
-/// ISO text, enums in their declared order, the rest as folded text.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum Kind {
-    Text,
-    Number,
-    Date,
-    Datetime,
-    /// Minutes.
-    Duration,
-    Bool,
-    Link,
-    Tag,
-    Enum {
-        values: Vec<String>,
-    },
-}
-
-/// One row: an id the sender knows it by, and a value per column (`null` for none, a list
-/// for several).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Row {
-    pub id: String,
-    pub cells: Vec<Json>,
-}
-
-/// What the view tells its sender.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "kebab-case")]
-pub enum Event {
-    /// Enter on a row.
-    Activated { row: String },
-    /// A cell was edited to `value`, as typed.
-    Edit {
-        row: String,
-        column: String,
-        value: String,
-    },
-}
+pub use cold_lava_views::table::{Column, Event, Kind, Row, Table};
 
 /// What the menu should do after a key.
 #[derive(Debug, PartialEq)]
@@ -280,7 +218,7 @@ impl TableView {
             }
             Input::None => {}
         }
-        if self.table.filter.takes(&k) {
+        if takes(self.table.filter, &k) {
             let keep = self.selected().map(|r| r.id.clone());
             type_into(&mut self.filter, &k);
             self.reorder(keep.as_deref());
@@ -872,42 +810,5 @@ mod tests {
         assert_eq!(scroll(&w, 1, 2, 30), 1, "back left to the selected one");
         assert_eq!(fit("Kīlauea", 5, Align::Left), "Kīla…");
         assert_eq!(fit("42", 4, Align::Right), "  42");
-    }
-
-    #[test]
-    fn the_table_json_is_pinned() {
-        let mut t = table();
-        t.columns.truncate(3);
-        t.rows.truncate(1);
-        for r in &mut t.rows {
-            r.cells.truncate(3);
-        }
-        assert_eq!(
-            serde_json::to_value(&t).unwrap(),
-            json!({
-                "title": "volcano",
-                "columns": [
-                    {"name": "name", "type": "text"},
-                    {"name": "elevation", "type": "number"},
-                    {"name": "status", "type": "enum", "values": ["todo", "in_progress", "done"]},
-                ],
-                "rows": [{"id": "a", "cells": ["Kīlauea", 1247, "done"]}],
-            })
-        );
-        t.filter = Filter::Typing;
-        let typing = serde_json::to_value(&t).unwrap();
-        assert_eq!(
-            typing["filter"], "typing",
-            "the default, slash, is left out"
-        );
-        let e = Event::Edit {
-            row: "a".into(),
-            column: "due".into(),
-            value: "2026-12-01".into(),
-        };
-        assert_eq!(
-            serde_json::to_value(&e).unwrap(),
-            json!({"event": "edit", "row": "a", "column": "due", "value": "2026-12-01"})
-        );
     }
 }

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Its name in messages and commands.
-pub const NAME: &str = "nvim";
+pub const NAME: &str = super::NVIM;
 
 pub struct Nvim {
     program: String,

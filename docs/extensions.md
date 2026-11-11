@@ -687,14 +687,15 @@ style.minutes = { badge = true, icon = "⏱" }
 
 ### The table view, as built
 
-- **The view is declarative and knows nothing of types.** `crates/cold-lava/src/table.rs`:
+- **The view is declarative and knows nothing of types.** `crates/views/src/table.rs`:
   a `Table` is a title, `Column`s (a name, a value type: `text`, `number`, `date`, `datetime`,
   `duration`, `bool`, `link`, `tag`, or `enum` with its names in order; an optional `look`, the
   type's `Look` as is; an optional `read_only` reason) and `Row`s (an `id` and one JSON value per
   column, `null` for none, a list for several). Back come `Event`s: `activated {row}` on Enter
   and `edit {row, column, value}` with the text typed. Everything derives serde and a test pins
-  the JSON, so a table can cross the view gateway unchanged. It lives in the binary for now and
-  moves to `crates/views` when a second frontend draws one.
+  the JSON, so a table can cross the view gateway unchanged. These types are in
+  `cold-lava-views`, for every frontend; the terminal draws them in
+  `crates/cold-lava/src/table.rs`.
 - **The frontend owns** selection by row and column, sorting (`s` / `S` on the selected column:
   numbers and durations as numbers, dates and datetimes as their ISO text, enums by their
   declared order, bools, the rest by `search_key`; empty cells last either way; stable, so the
@@ -740,7 +741,7 @@ style.minutes = { badge = true, icon = "⏱" }
 
 ### The list view and the agenda, as built
 
-- **The view is declarative and knows nothing of tasks.** `crates/cold-lava/src/list.rs`: a
+- **The view is declarative and knows nothing of tasks.** `crates/views/src/list.rs`: a
   `List` is a title, `Group`s (an `id`, a title, `collapsed` to start folded) of `Row`s (an
   `id`; `text`, a list of `Piece`s, each a string with an optional `Look`; an optional `check`,
   `unchecked`, `partial`, `checked` or `crossed`; `right`, pieces drawn at the right edge; a
@@ -748,8 +749,8 @@ style.minutes = { badge = true, icon = "⏱" }
   character, a command name and a title for the hint line) and what an empty list says. Back
   come `Event`s: `activated {row}` on Enter, `toggled {row}` on `x` over a row with a checkbox,
   and `command {command, row}` for the sender's keys. Everything derives serde and a test pins
-  the JSON. It lives in the binary for now, beside the table, and moves to `crates/views` with
-  it.
+  the JSON. These types are in `cold-lava-views`, beside the table's; the terminal draws
+  them in `crates/cold-lava/src/list.rs`.
 - **The frontend owns** the selection (a group's header or a row, kept by id when a new list
   arrives; a row folded away selects its group's header, and `select` follows a row that shows
   up later), folding (`h`/`←` folds the selection's group, `l`/`→` opens it, `Tab` and Enter
@@ -899,7 +900,7 @@ graph all see the new date. None of them knew what a canvas is.
 
 ### File types, as built
 
-- **Claiming a kind.** A manifest's `[[file-types]]` (`ext::FileType`: `extension`, `title`,
+- **Claiming a kind.** A manifest's `[[file-types]]` (`cold_lava_host::FileType`: `extension`, `title`,
   optional `new`) names the kinds of file the extension opens. `extension` is read lowercase
   without its dot, and must be letters, digits, `-` and `_` (`tar.gz` is refused); `new` must
   be one of its own `[[commands]]`, which joins the palette and keys like any other. A mistake
@@ -960,7 +961,7 @@ graph all see the new date. None of them knew what a canvas is.
   again, sends the table with `view/update` and brings it to the front with `view/show`, so
   the selection, sort and filter stay. `csv-table.drive` checks it through the menu (open from
   the tree, an edit saved, a change made outside with the drive step `write`, a link, the
-  switcher bringing the filtered table back, a new table), and `ext/process.rs` checks the
+  switcher bringing the filtered table back, a new table), and `crates/host/src/process.rs` checks the
   retry.
 - **Not planned:** the whiteboard as a view of the gateway. It stays a built-in surface
   *(decided 2026-11-11; docs/engine.md, "Direction and order")*: `.canvas` has the engine's
@@ -1035,7 +1036,7 @@ graph all see the new date. None of them knew what a canvas is.
   VEI, Notes`, with `[[links]]` and a task) is then `eruption` rows, matched by a second
   table-row shape of that type in the example workspace's `types.toml`, five backlinks on
   Krakatoa and a task in the agenda. `csv-items.drive` checks it through the menu, and
-  `ext/process.rs` through the real transport.
+  `crates/host/src/process.rs` through the real transport.
 - **Edits through the owner** (`owner/edits.rs`, `Core::edit_item`, `file_edited`).
   `items/edit` on an item of an owned file makes the change to what the owner gave: on a
   Markdown piece, the Markdown owner's `edit` on the piece's text (kept on `Owned::given`, so
@@ -1104,7 +1105,7 @@ graph all see the new date. None of them knew what a canvas is.
   answer one, and the CSV is unchanged. `csv-rename-refused.drive` runs a copy that refuses one
   rename and doesn't answer another, then cancels a third with Esc, and every file of the
   workspace is byte for byte as it was; a merge it refuses is in that script too.
-  `csv-merge.drive` merges Vesuvius into Mauna Loa, and the CSV's row then leads to Mauna Loa. `ext/process.rs` checks the late JSON-RPC answer and
+  `csv-merge.drive` merges Vesuvius into Mauna Loa, and the CSV's row then leads to Mauna Loa. `crates/host/src/process.rs` checks the late JSON-RPC answer and
   the timeout through the transport.
 - **The command line** (`crates/cold-lava/src/owned.rs`) has no menu to run extensions, so it
   reads owned files from the owners' cache and starts an owner only to change its files.
@@ -1120,12 +1121,12 @@ graph all see the new date. None of them knew what a canvas is.
   ends the command with the owner's reason and "nothing was changed"; `--dry-run` starts
   nothing. What the owners read is kept in the cache. `tests/owned.rs` runs it with csv-table
   in a home of its own. The CLI has no merge command.
-- **Types shipped by owners.** A manifest's `[[types]]` (`ext::TypeSpec`) are an `id` and a
+- **Types shipped by owners.** A manifest's `[[types]]` (`cold_lava_host::Spec`) are an `id` and a
   definition in the language of any type, shapes and all, loaded with origin `extension NAME`
   between the built-in types and `config.toml`'s (`types::Layer::extension`). Like a command's,
   the id must start with the extension's name and a dot (`csv-table.row`); one outside that
   namespace, or a second with the same id, is left out and reported like a command conflict,
-  on the status line at start and in `cold-lava keys` (`ext::leave_out_types`). A definition
+  on the status line at start and in `cold-lava keys` (`leave_out_definitions` in `cold-lava-host`). A definition
   that doesn't read or doesn't check is dropped with its error in `cold-lava types`, and the
   extension and its other types load. `[types.NAME]` in a manifest, the earlier form, leaves
   the extension out and says how to write it. A later origin may still replace an extension's
@@ -1253,7 +1254,7 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
 
 ### Owners on top of Markdown, as built
 
-- **The claim.** A manifest's `[[shows]]` (`ext::Shows`) is a `title` and a `where`: the
+- **The claim.** A manifest's `[[shows]]` (`cold_lava_host::Shows`) is a `title` and a `where`: the
   engine's `types::Where`, read as a note shape's, with only `property` (frontmatter values),
   `tag` (the note's tags, frontmatter's and body's, a nested tag counting) and `folder`. Every
   condition given must hold (`matcher::note_meets`, which shares the note gate with types). A
@@ -1306,7 +1307,7 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
 
   `width` is the columns the reader has under the embed, `height` the lines it gives a preview
   (`previews::HEIGHT`, 8). The answer is checked like `view/open`'s content and may have at
-  most 200 rows and groups (`ext::PREVIEW_ROWS`); a bigger one is refused.
+  most 200 rows and groups (`view::PREVIEW_ROWS` in `cold-lava-views`); a bigger one is refused.
 - **Drawn in the reader.** Under the embed's name (`⧉ Eruptions.csv`) the reader draws the
   content as the list or table view would, with nothing selected and cut to `height` lines,
   behind a `│` bar (`views::preview`). An embed of a file nobody owns, or a picture, stays its
@@ -1323,7 +1324,8 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
 - **The example.** csv-table answers with the file's header and its first rows as a table.
   `csv-preview.drive` writes a note that embeds `Eruptions.csv` and a picture, checks the
   preview in the reader, changes the CSV as another program would, and sees the new rows;
-  `ext/process.rs` checks the answer, the bound and the timeout through the transport.
+  `crates/host/src/process.rs` checks the answer, the bound and the timeout through the
+  transport.
 - **Not yet:** a file card on a whiteboard asking for a preview, and previews in the peek popup.
 
 ### Link resolver
@@ -1701,7 +1703,8 @@ pub trait Connector: Sync {
 
 ### Transport, as built
 
-- **Where it lives.** `crates/cold-lava/src/ext/`: `frame.rs` (the framing), `transport.rs`
+- **Where it lives.** `crates/host/src/` (`cold-lava-host`, the extension host every frontend
+  shares, with no user interface): `frame.rs` (the framing), `transport.rs`
   (`Transport`, `Connector`, `CONNECTORS` and the stdio connector), `rpc.rs` (JSON-RPC
   messages, and `serve`, which answers an extension's request through `Host`), `process.rs`
   (`Process`, the `Extension` that speaks for one in another process) and `installed.rs`
@@ -1774,7 +1777,7 @@ Paths in the `editor/*` messages are absolute and inside the workspace; items, `
 and the file messages name them relative to the workspace. A message's tag is its method name, for example
 `{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
 
-Built-in extensions already use, in-process (`crates/cold-lava/src/ext/mod.rs`): `initialize`
+Built-in extensions already use, in-process (`crates/host/src/lib.rs`): `initialize`
 (with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
 `editor/deleted`, `pane/message`, `pane/exited`, `items/changed`, `items/reset`, `view/event`,
 `view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
@@ -1894,7 +1897,9 @@ keys = ["W"]                     # default keys; config.toml can change them
 ### Permissions
 
 `permissions` names the parts of the workspace gateway an extension may use. Without the
-field, an extension may read. *(Exists: `ext::Permission`, checked by `Host`.)*
+field, an extension may read. *(Exists: `Permission`, checked by `Host`, both in
+`cold-lava-host`, so every frontend checks the same way; `crates/host/tests/permissions.rs`
+runs the `open-tasks` example with and without `items.edit`.)*
 
 | Permission | Allows |
 | --- | --- |
@@ -1979,9 +1984,10 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
 
 ### The view gateway, as built
 
-- **Where it lives.** The messages are `crates/cold-lava/src/ext/view.rs` (`Content`, `Event`,
-  `ViewNews`) and the `Effect`s in `ext/mod.rs`, pinned by tests; the frontend's open views are
-  `crates/cold-lava/src/views.rs`, drawn with the list and table views. An extension reaches
+- **Where it lives.** The messages are `crates/views/src/view.rs` (`Content`, `Event`,
+  `ViewNews`, in `cold-lava-views` with the list, the table, the image and the scene they
+  carry) and the `Effect`s in `crates/host/src/lib.rs`, pinned by tests; the terminal's open
+  views are `crates/cold-lava/src/views.rs`, drawn with its list and table views. An extension reaches
   them through `Host` (`open_view`, `update_view`, `close_view`, `open_note`), and one in a
   process through `rpc::serve`, so both take one path.
 - **Extension → host.** `view/open {content, select, file}` answers `{view}`, an id the host
@@ -2047,7 +2053,7 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   `view/closed`.
 - **The built-in agenda** is an extension on this path ("The list view and the agenda, as
   built"), and the example in `examples/extensions/open-tasks` sends a list of its own
-  (`open-tasks.list`), checked through the real transport (`ext/process.rs`) and through the
+  (`open-tasks.list`), checked through the real transport (`crates/host/src/process.rs`) and through the
   menu (`open-tasks-list.drive`).
 - **The built-in table** is one too ("The table view, as built"): `type_table.rs` sends a type's
   items as a table and turns a cell's edit into `items/edit set-field`.
@@ -2056,7 +2062,7 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
 
 ### The image view, as built
 
-- **The content** (`crate::image::Image`, pinned in `ext/view.rs`): `{"kind": "image", "title":
+- **The content** (`cold_lava_views::image::Image`, pinned in `crates/views/src/view.rs`): `{"kind": "image", "title":
   "Lava lake", "path": "Volcanoes/lava-lake.png"}`, a workspace-relative path that must stay
   inside the workspace and out of hidden folders (`files::resolve`), or `{"kind": "image",
   "title": …, "png": "<base64>"}`, a PNG's bytes. Either is at most 8 MB (`image::MAX_BYTES`);
@@ -2129,7 +2135,7 @@ design for an extension that needs it, and nothing is built of it.
 ### Scenes, as built
 
 - **The content.** `view/open` and `view/update` take `{"kind": "scene", "title", "nodes",
-  "edges", "groups", "flags"}` (`scene_view::Scene`, pinned in `ext/view.rs`): nodes with an
+  "edges", "groups", "flags"}` (`cold_lava_views::scene::Scene`, pinned in `crates/views/src/view.rs`): nodes with an
   `id`, a `label`, a `look` (`note`, the default, `ghost` for a link to nothing yet, or `tag`), a
   colour `group` (its place in `groups`), the workspace `file` it stands for and a `detail` for
   the status line; edges `{from, to}` by node id (unknown ids, links to themselves and repeats
@@ -2237,7 +2243,7 @@ surface that needs every frame doesn't fit a protocol of lists, tables and scene
 the engine through the same gateway as everyone. Daily notes, rename, delete and recipes are
 engine features that get gateway messages (#193), so any frontend or extension can use them.
 
-A built-in extension implements the `Extension` trait (`crates/cold-lava/src/ext/mod.rs`)
+A built-in extension implements the `Extension` trait (`crates/host/src/lib.rs`)
 instead of reading messages from a transport. The trait is the protocol: each of its methods is
 one host→extension method, and the `Host` it is given has one method per extension→host
 method. Every type that crosses derives serde, and tests pin its JSON, so an extension can move

@@ -8,14 +8,9 @@ use std::path::{Path, PathBuf};
 use super::transport::{self, Launch};
 use super::{CommandSpec, FileType, Manifest, Permission, Shows, Spec, read_only, rpc};
 
-/// Names an installed extension can't take: the built-in ones and the menu's screens, which edits
-/// are attributed to.
-const RESERVED: &[&str] = &[
-    super::nvim::NAME,
-    super::TABLE,
-    super::AGENDA,
-    super::READER,
-];
+/// Names an installed extension can't take: the built-in ones and the frontend's screens, which
+/// edits are attributed to.
+const RESERVED: &[&str] = &[super::NVIM, super::TABLE, super::AGENDA, super::READER];
 
 /// An extension found on disk, ready to start.
 #[derive(Clone, Debug, PartialEq)]
