@@ -808,7 +808,13 @@ impl Home {
             self.pump_pane();
             self.run_requested(terminal)?;
             if let Some(place) = self.go_to.take() {
-                self.go_from_here(place)?;
+                // Asked for before the last keys, which may have begun work it would close.
+                match self.unsaved_in_front() {
+                    Some(why) => {
+                        self.refused(format!("{} was not opened: not while {why}", place.label()))
+                    }
+                    None => self.go_from_here(place)?,
+                }
             }
             self.load_pending();
             self.check_disk();
@@ -1023,10 +1029,7 @@ impl Home {
                     self.refresh_backlinks();
                 }
             }
-            Effect::RunCommand { id, args } => match self.unsaved_in_front() {
-                Some(why) => self.held_back(ext, &format!("run {id}"), why),
-                None => self.requested.push((ext, id, args)),
-            },
+            Effect::RunCommand { id, args } => self.requested.push((ext, id, args)),
             Effect::Saved { note } => {
                 if let Some(core) = self.core.as_mut() {
                     core.note_changed(&note);
@@ -1085,8 +1088,17 @@ impl Home {
     /// It is dropped, not kept for later: by then the user is somewhere else.
     fn held_back(&mut self, ext: ExtId, to: &str, why: &str) {
         let name = &self.registry.manifest(ext).name;
-        let msg = format!("{name} wanted to {to}: not while {why}");
-        self.flash(msg);
+        let notice = format!("{name} wanted to {to}: not while {why}");
+        self.refused(notice);
+    }
+
+    /// A notice that something was refused to keep the whiteboard in front as it is. The board
+    /// says it, and counts those it hasn't shown yet (`Board::refused`).
+    fn refused(&mut self, notice: String) {
+        if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
+            return b.refused(notice);
+        }
+        self.flash(notice);
     }
 
     /// Show an extension's new view in place of what showed, which Back returns to.
@@ -1227,7 +1239,11 @@ impl Home {
     /// wait for the next one, so a command that keeps running itself can't freeze the menu.
     fn run_requested(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         for (from, id, args) in std::mem::take(&mut self.requested) {
-            self.run_command(from, &id, args, terminal)?;
+            // Checked as it runs: a key since it was asked for may have begun unsaved work.
+            match self.unsaved_in_front() {
+                Some(why) => self.held_back(from, &format!("run {id}"), why),
+                None => self.run_command(from, &id, args, terminal)?,
+            }
         }
         Ok(())
     }
@@ -1609,6 +1625,9 @@ impl Home {
         if !matches!(self.mode, Mode::Board) {
             return self.close_board();
         }
+        // What was said while the board is in front, the board shows. The menu keeps only what
+        // is said in the frame that leaves the board, so it doesn't repeat a notice later.
+        self.msg = None;
         let nav = Nav::of(&self.history);
         if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
             b.navigate(nav);

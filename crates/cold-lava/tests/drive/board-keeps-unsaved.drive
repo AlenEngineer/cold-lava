@@ -14,6 +14,8 @@ type Drafts
 keys enter
 wait-for whiteboard Drafts · 0 cards
 write Drafts.canvas {"nodes":[
+wait-for couldn't read Drafts.canvas
+screen
 keys n
 wait-for editing · type text · ⏎ new line · Esc done (saves)
 type Kept through a refused save

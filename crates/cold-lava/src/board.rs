@@ -41,6 +41,9 @@ use live::Live;
 // canvas owner.
 use crate::json_canvas::{CEdge, CNode, Doc};
 
+/// How long a message stays in the status line.
+const MESSAGE_SHOWS: Duration = Duration::from_secs(3);
+
 fn new_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let t = SystemTime::now()
@@ -196,7 +199,12 @@ pub struct Board {
     drag: Option<Drag>,
     undo: Vec<Doc>,
     redo: Vec<Doc>,
-    msg: Option<(String, Instant)>,
+    /// What the second status line says for 3 seconds, and since when it has shown: `None`
+    /// while an alert or a mode's hint has the line, under which it waits (`draw_status`).
+    msg: Option<(String, Option<Instant>)>,
+    /// How many refused requests the message tells of (`refused`), 0 when it is about
+    /// something else.
+    refusals: usize,
     /// Something the user must see, shown until the next key.
     alert: Option<String>,
     /// Left, and how: `exit` says where to.
@@ -425,6 +433,7 @@ impl Board {
             undo: Vec::new(),
             redo: Vec::new(),
             msg: None,
+            refusals: 0,
             alert: None,
             quit: false,
             exit: Exit::Quit,
@@ -451,6 +460,7 @@ impl Board {
         core: &mut Core,
         registry: &mut Registry,
     ) -> Result<()> {
+        let mut statuses = Vec::new();
         while !self.quit {
             let events = core.poll();
             let news = core.take_item_news();
@@ -463,13 +473,9 @@ impl Board {
                 self.asked.extend(effects.into_iter().map(|e| (ext, e)));
             }
             self.tick(core, registry);
-            // There is no menu here to open things or keep a status line: what they say shows.
-            for (_, effect) in self.take_asked() {
-                if let Effect::Notify { message } = effect {
-                    self.flash(message);
-                }
-            }
-            terminal.draw(|f| self.draw(f, &[]))?;
+            self.asked_alone(registry, &mut statuses);
+            let words: Vec<String> = statuses.iter().map(|(_, text)| text.clone()).collect();
+            terminal.draw(|f| self.draw(f, &words))?;
             if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
@@ -481,6 +487,34 @@ impl Board {
             }
         }
         Ok(())
+    }
+
+    /// On its own, does what extensions asked for in the board's calls to them. No menu is
+    /// behind it: a notification shows, each extension's status words are kept in `statuses`
+    /// for the status line, and what only the menu can do (open a note, show a view, run a
+    /// command) is refused with a notice.
+    fn asked_alone(&mut self, registry: &Registry, statuses: &mut Vec<(ExtId, String)>) {
+        for (ext, effect) in self.take_asked() {
+            let wanted = match effect {
+                Effect::Notify { message } => {
+                    self.flash(message);
+                    continue;
+                }
+                Effect::Status { text } => {
+                    statuses.retain(|(e, _)| *e != ext);
+                    statuses.extend(text.map(|text| (ext, text)));
+                    continue;
+                }
+                Effect::OpenNote { note, .. } => format!("open {}", note.display()),
+                Effect::OpenView { .. } | Effect::ShowView { .. } => "show a view".to_string(),
+                Effect::RunCommand { id, .. } => format!("run {id}"),
+                _ => continue,
+            };
+            let name = &registry.manifest(ext).name;
+            self.refused(format!(
+                "{name} wanted to {wanted}: cold-lava board shows the whiteboard only"
+            ));
+        }
     }
 
     /// Stops following the workspace: the placed shapes' subscriptions end.
@@ -1148,7 +1182,7 @@ impl Board {
 
     fn write_file(&mut self) {
         placed::mark_version(&mut self.doc.extra, &self.doc.nodes);
-        let buf = match crate::json_canvas::to_bytes(&self.doc) {
+        let buf = match crate::json_canvas::to_bytes(&as_written(&self.doc)) {
             Ok(buf) => buf,
             Err(e) => return self.flash(format!("save failed: {e}")),
         };
@@ -1483,10 +1517,31 @@ impl Board {
 
     pub fn flash(&mut self, s: impl Into<String>) {
         let s = s.into();
-        if let Some(editor) = &mut self.editor {
+        // The shape editor in front shows it now, in the board's place.
+        let shown = self.editor.as_mut().map(|editor| {
             editor.say(s.clone());
-        }
-        self.msg = Some((s, Instant::now()));
+            Instant::now()
+        });
+        self.msg = Some((s, shown));
+        self.refusals = 0;
+    }
+
+    /// Says that something asked for was not done, so that the board keeps what it holds
+    /// (`notice`). The user is told of every such request: a notice that comes while the last
+    /// one still shows, or waits to, takes its place and says how many there were.
+    pub fn refused(&mut self, notice: impl Into<String>) {
+        let notice = notice.into();
+        let unread = (self.msg.as_ref())
+            .is_some_and(|(_, shown)| shown.is_none_or(|at| at.elapsed() <= MESSAGE_SHOWS));
+        let n = match unread {
+            true => self.refusals + 1,
+            false => 1,
+        };
+        self.flash(match n {
+            1 => notice,
+            n => format!("{notice} ({n} requests refused)"),
+        });
+        self.refusals = n;
     }
 
     /// Place a new card: right of the selection, else in the middle of the view.
@@ -3001,10 +3056,27 @@ impl Board {
                 Style::new().fg(MUTED),
             ),
         };
-        if self
-            .msg
-            .as_ref()
-            .is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(3))
+        // The second line is one of: an alert, the mode's hint, a message, the keys. A message
+        // made under an alert or a hint waits: its time starts when it shows.
+        let hint = match self.mode {
+            Mode::Edit { .. } => Some(" editing · type text · ⏎ new line · Esc done (saves)"),
+            Mode::Bind { .. } => {
+                Some(" bind · type a source for each input · Tab next · ⏎ place · Esc cancel")
+            }
+            Mode::Connect { .. } => Some(
+                " connect · pick the target (arrows/Tab/click) · ⏎ draw arrow (again removes it) · Esc cancel",
+            ),
+            _ => None,
+        };
+        if hint.is_none()
+            && self.alert.is_none()
+            && let Some((_, shown)) = &mut self.msg
+            && shown.is_none()
+        {
+            *shown = Some(Instant::now());
+        }
+        if (self.msg.as_ref())
+            .is_some_and(|(_, shown)| shown.is_some_and(|at| at.elapsed() > MESSAGE_SHOWS))
         {
             self.msg = None;
         }
@@ -3022,25 +3094,13 @@ impl Board {
                     .push(Span::styled(format!("   {hint}"), Style::new().fg(MUTED)));
             }
         }
-        if let Some(alert) = &self.alert {
-            let line = Line::styled(format!(" {alert}"), Style::new().fg(Color::Black).bg(HIT));
-            return f.render_widget(Paragraph::new(vec![info, line]), area);
-        }
-        let second = match (&self.mode, &self.msg) {
-            (Mode::Edit { .. }, _) => Line::styled(
-                " editing · type text · ⏎ new line · Esc done (saves)",
-                Style::new().fg(HIT),
-            ),
-            (Mode::Bind { .. }, _) => Line::styled(
-                " bind · type a source for each input · Tab next · ⏎ place · Esc cancel",
-                Style::new().fg(HIT),
-            ),
-            (Mode::Connect { .. }, _) => Line::styled(
-                " connect · pick the target (arrows/Tab/click) · ⏎ draw arrow (again removes it) · Esc cancel",
-                Style::new().fg(HIT),
-            ),
-            (_, Some((m, _))) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
-            _ => {
+        let second = match (&self.alert, hint, &self.msg) {
+            (Some(alert), ..) => {
+                Line::styled(format!(" {alert}"), Style::new().fg(Color::Black).bg(HIT))
+            }
+            (None, Some(hint), _) => Line::styled(hint, Style::new().fg(HIT)),
+            (None, None, Some((m, _))) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
+            (None, None, None) => {
                 let k = |id| self.keys.first_label(id);
                 Line::styled(
                     format!(
@@ -3063,9 +3123,27 @@ impl Board {
 
 // ---------- helpers ----------
 
+/// The canvas in a file's bytes. Here every node goes by the canvas owner's place for it: its
+/// id, unless another program repeated one, so that the selection, an edit and a placed
+/// shape's binding each mean one node. `as_written` gives the file its ids back.
 fn parse(bytes: &[u8], path: &Path) -> Result<Doc> {
-    crate::json_canvas::parse(bytes)
-        .with_context(|| format!("{} is not a valid canvas file", path.display()))
+    let mut doc = crate::json_canvas::parse(bytes)
+        .with_context(|| format!("{} is not a valid canvas file", path.display()))?;
+    let places = crate::owner::canvas::places(doc.nodes.iter().map(|n| n.id.as_str()));
+    for (n, place) in doc.nodes.iter_mut().zip(places) {
+        n.id = place;
+    }
+    Ok(doc)
+}
+
+/// The canvas as its file has it: the nodes under the ids they were read with (`parse`).
+fn as_written(doc: &Doc) -> Doc {
+    let mut doc = doc.clone();
+    let ids = crate::owner::canvas::ids(doc.nodes.iter().map(|n| n.id.as_str()));
+    for (n, id) in doc.nodes.iter_mut().zip(ids) {
+        n.id = id;
+    }
+    doc
 }
 
 // ---------- three-way merge ----------
@@ -3701,8 +3779,10 @@ mod tests {
     }
 
     /// An extension that ships the shape `chatty.box` and has things to say when asked what
-    /// its region shows.
-    struct Chatty;
+    /// its region shows. A `pushy` one also asks for a note and a command, unasked.
+    struct Chatty {
+        pushy: bool,
+    }
 
     impl crate::ext::Extension for Chatty {
         fn initialize(&mut self) -> crate::ext::Manifest {
@@ -3715,17 +3795,22 @@ mod tests {
         fn shape(&mut self, ask: act::Ask, host: &mut crate::ext::Host<'_>) {
             host.notify("chatty counted");
             host.status(Some("chatty: 1".into()));
+            if self.pushy {
+                host.open_note("Krakatoa.md".into(), None, None);
+                host.run_command("search.open", Value::Null);
+            }
             host.shape_answered(&ask, Err("nothing to show".into()));
         }
     }
 
-    #[test]
-    fn what_an_extension_asks_for_when_asked_about_its_shape_is_kept_for_the_menu() {
+    /// A workspace whose board has one `chatty.box` placed on it, not ticked yet: the folder,
+    /// its core, the registry with Chatty in it, Chatty's id, the board.
+    fn chatty_board(name: &str, pushy: bool) -> (PathBuf, Core, Registry, ExtId, Board) {
         use crate::shapes::{Layer, load};
-        let (dir, path, _) = workspace("board-asked", Vec::new());
+        let (dir, path, _) = workspace(name, Vec::new());
         std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
-        let mut registry = Registry::new(vec![Box::new(Chatty)]);
+        let core = Core::open(&dir).unwrap();
+        let registry = Registry::new(vec![Box::new(Chatty { pushy })]);
         let chatty = registry.by_name("chatty").unwrap();
         let shape: toml::Table = toml::from_str(
             r#"
@@ -3750,7 +3835,12 @@ mod tests {
         let inputs = ["a".to_string()];
         placed::place(&mut node, "chatty.box", &inputs, "Chatty", &sources, at);
         b.doc.nodes.push(node);
+        (dir, core, registry, chatty, b)
+    }
 
+    #[test]
+    fn what_an_extension_asks_for_when_asked_about_its_shape_is_kept_for_the_menu() {
+        let (dir, mut core, mut registry, chatty, mut b) = chatty_board("board-asked", false);
         b.tick(&mut core, &mut registry);
         assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None, "it bound");
         let said = Effect::Notify {
@@ -3762,6 +3852,113 @@ mod tests {
         assert_eq!(b.take_asked(), [(chatty, said), (chatty, status)]);
         b.tick(&mut core, &mut registry);
         assert!(b.take_asked().is_empty(), "asked once, said once");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `cold-lava board`: no menu is behind the board to open a note or run a command in.
+    #[test]
+    fn on_its_own_the_board_keeps_status_words_and_refuses_what_needs_the_menu() {
+        let (dir, mut core, mut registry, chatty, mut b) = chatty_board("board-alone", true);
+        let mut statuses = Vec::new();
+        b.tick(&mut core, &mut registry);
+        b.asked_alone(&registry, &mut statuses);
+        assert_eq!(statuses, [(chatty, "chatty: 1".to_string())]);
+        assert_eq!(
+            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            Some(
+                "chatty wanted to run search.open: cold-lava board shows the whiteboard only \
+                 (2 requests refused)"
+            ),
+            "the note and the command, both refused"
+        );
+        assert!(b.left().is_none(), "the board stays");
+        assert_eq!(b.doc.nodes.len(), 1);
+
+        let words = |text: Option<&str>| Effect::Status {
+            text: text.map(String::from),
+        };
+        b.asked.push((chatty, words(Some("chatty: 2"))));
+        b.asked_alone(&registry, &mut statuses);
+        assert_eq!(statuses, [(chatty, "chatty: 2".to_string())]);
+        b.asked.push((chatty, words(None)));
+        b.asked_alone(&registry, &mut statuses);
+        assert!(statuses.is_empty(), "{statuses:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The board's two status lines, as drawn.
+    fn status_lines(b: &mut Board) -> [String; 2] {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| b.draw(f, &[])).unwrap();
+        let buffer = t.backend().buffer();
+        let line = |y: u16| {
+            let cells = (0..120).filter_map(|x| buffer.cell((x, y)));
+            let text: String = cells.map(|c| c.symbol()).collect();
+            text.trim_end().to_string()
+        };
+        [line(28), line(29)]
+    }
+
+    #[test]
+    fn a_notice_made_while_a_card_is_typed_waits_for_the_edit_to_end() {
+        let (dir, path, _core) = workspace("board-notice", vec![card("a", 0, "Alpha")]);
+        let mut b = Board::open(&dir, path, None).unwrap();
+        b.mode = Mode::Edit {
+            id: "a".into(),
+            buf: "Alpha, typed".into(),
+            is_new: false,
+        };
+        b.refused("pushy wanted to open Lava.md: not while a card is being edited");
+        b.refused("pushy wanted to run search.open: not while a card is being edited");
+        let [_, second] = status_lines(&mut b);
+        assert!(second.contains("Esc done (saves)"), "the hint: {second}");
+        let waits = |b: &Board| b.msg.as_ref().map(|(_, shown)| shown.is_none());
+        assert_eq!(waits(&b), Some(true), "its 3 seconds haven't begun");
+
+        b.finish_edit();
+        let [_, second] = status_lines(&mut b);
+        assert_eq!(
+            second,
+            " pushy wanted to run search.open: not while a card is being edited \
+             (2 requests refused)"
+        );
+        assert_eq!(waits(&b), Some(false), "they begin once it shows");
+
+        // A request refused after that notice had its time is counted from one again.
+        if let Some(long_ago) = Instant::now().checked_sub(MESSAGE_SHOWS * 2) {
+            b.msg = Some(("pushy wanted to open Lava.md".into(), Some(long_ago)));
+            b.refused("pushy wanted to open Ash.md");
+            let said = b.msg.as_ref().map(|(m, _)| m.as_str());
+            assert_eq!(said, Some("pushy wanted to open Ash.md"));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Another program's canvas may repeat an id. The board names such nodes by the canvas
+    /// owner's places, so the place of an item opens the board at its card, and saves them
+    /// under the ids they had.
+    #[test]
+    fn a_card_that_repeats_an_id_is_selected_and_edited_by_its_place() {
+        let twins = vec![card("s", 0, "First"), card("s", 300, "Second")];
+        let (dir, path, _core) = workspace("board-twins", twins);
+        let mut b = Board::open(&dir, path.clone(), Some("s\u{1f}1".into())).unwrap();
+        assert_eq!(b.selected(), Some("s\u{1f}1"));
+        let selected = b.selected().and_then(|id| b.node(id));
+        assert_eq!(selected.and_then(|n| n.text.as_deref()), Some("Second"));
+        b.mode = Mode::Edit {
+            id: "s\u{1f}1".into(),
+            buf: "Second, edited".into(),
+            is_new: false,
+        };
+        b.finish_edit();
+        let saved = on_disk(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "s"]);
+        assert_eq!(saved["nodes"][0]["text"], "First");
+        assert_eq!(saved["nodes"][1]["text"], "Second, edited");
+        assert!(!b.sync_from_disk(), "its own save read back is nothing new");
+        assert_eq!(b.selected(), Some("s\u{1f}1"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

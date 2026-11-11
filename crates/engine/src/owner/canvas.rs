@@ -36,16 +36,44 @@ fn place(id: &str, nth: usize) -> String {
     }
 }
 
+/// Every node's place, from the nodes' ids in the file's order. The whiteboard names its nodes
+/// by these, so a place the owner gave selects the node it is for.
+pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    ids.into_iter()
+        .map(|id| {
+            let nth = seen.entry(id).or_insert(0);
+            *nth += 1;
+            place(id, *nth - 1)
+        })
+        .collect()
+}
+
+/// The ids `places` was made from, to write the nodes back as they were read. A numbered place
+/// gives the id it repeats only while it still follows that many nodes of the id; after they
+/// were removed or reordered it is written whole, an id nothing else has.
+pub fn ids<'a>(places: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    places
+        .into_iter()
+        .map(|p| {
+            let id = match p.rsplit_once('\u{1f}') {
+                Some((id, _)) if seen.get(id).is_some_and(|&nth| place(id, nth) == p) => id,
+                _ => p,
+            };
+            *seen.entry(id).or_insert(0) += 1;
+            id.to_string()
+        })
+        .collect()
+}
+
 /// A canvas's items and links: its text nodes as Markdown pieces, its file nodes as links.
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
     let mut given = Given::default();
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    for n in doc.nodes {
-        let nth = seen.entry(n.id.clone()).or_insert(0);
-        let place = place(&n.id, *nth);
-        *nth += 1;
+    let places = places(doc.nodes.iter().map(|n| n.id.as_str()));
+    for (n, place) in doc.nodes.into_iter().zip(places) {
         match (n.kind.as_str(), n.text, n.file) {
             ("text", Some(text), _) => given.items.push(GivenItem::Markdown { place, text }),
             ("file", _, Some(file)) => given.links.push(GivenLink {
@@ -274,6 +302,23 @@ mod tests {
         assert_eq!(relinked, second.replace("Also [[Lava]]", "Also [[Magma]]"));
         let applied = crate::owner::given::apply(asked.given.as_ref().unwrap(), &asked.changes);
         assert_eq!(read(&relinked).unwrap().items, applied.items);
+    }
+
+    /// The whiteboard names its nodes by their places and writes them back by their ids.
+    #[test]
+    fn places_give_their_ids_back() {
+        let in_file = ["a", "s", "s", "b", "s"];
+        let named = places(in_file);
+        assert_eq!(named, ["a", "s", "s\u{1f}1", "b", "s\u{1f}2"]);
+        assert_eq!(ids(named.iter().map(String::as_str)), in_file);
+        // With the first `s` deleted the others no longer repeat an id that is there.
+        let left = ["a", "s\u{1f}1", "b", "s\u{1f}2"];
+        assert_eq!(ids(left), left);
+        assert_eq!(
+            places(left),
+            left,
+            "and are read again under the same names"
+        );
     }
 
     /// A node without a type: `read` gives nothing for the file, and a rename still rewrites
