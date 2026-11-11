@@ -142,9 +142,12 @@ impl<'t, 'd> Line<'t, 'd> {
         if g.has(S::Tags) && text[at..z].contains('#') {
             let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
             let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-            for c in tag_pattern().captures_iter(&text[start..end]) {
-                let markers = c.get(1).expect("the pattern has markers").as_str();
-                let name = c.get(2).expect("the pattern has a name");
+            let line = &text[start..end];
+            for c in tag_pattern().captures_iter(line) {
+                let name = c.get(1).expect("the pattern has a name");
+                let hash = name.start() - 1;
+                let before = line[..hash].trim_end_matches(['*', '_', '~', '=']);
+                let markers = &line[before.len()..hash];
                 if !opens(markers, g) {
                     continue;
                 }
@@ -154,7 +157,7 @@ impl<'t, 'd> Line<'t, 'd> {
                     false => name.as_str(),
                 };
                 if !named.bytes().all(|b| b.is_ascii_digit()) {
-                    let hash = start + name.start() - 1;
+                    let hash = start + hash;
                     tags.push(hash..hash + 1 + named.len());
                 }
             }

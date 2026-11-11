@@ -6,6 +6,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  feedback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        if: always()
+        run: cargo fmt --all --check
+      - name: Clippy
+        if: always()
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Engine tests
+        if: always()
+        run: cargo test -p cold-lava-engine
+
   instructions:
     runs-on: ubuntu-latest
     steps:
@@ -31,7 +49,22 @@ jobs:
             echo "== $b"
             valgrind --tool=callgrind --callgrind-out-file="$HOME/cg-$b" "$HOME/t-$b" read_cost --ignored --nocapture 2>&1 | grep -E 'Collected|refs' || true
             echo "-- $b, inclusive"
-            callgrind_annotate --inclusive=yes "$HOME/cg-$b" | head -90 | cut -c1-220
-            echo "-- $b, self"
-            callgrind_annotate "$HOME/cg-$b" | head -70 | cut -c1-220
+            callgrind_annotate --inclusive=yes "$HOME/cg-$b" | head -110 | cut -c1-220
+          done
+      - name: Reading 3,000 notes, each build in turn
+        run: |
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for round in 1 2 3 4 5; do
+            for b in main branch; do
+              echo "== $b, round $round"
+              "$HOME/t-$b" read_cost --ignored --nocapture | grep -A5 'read_cost:'
+            done
+          done
+      - name: One keystroke in a 5,000-line note, each build in turn
+        run: |
+          for round in 1 2 3 4 5; do
+            for b in main branch; do
+              echo "== $b, round $round"
+              "$HOME/t-$b" keystroke --ignored --nocapture | grep 'keystroke:'
+            done
           done

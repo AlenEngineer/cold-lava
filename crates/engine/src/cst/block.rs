@@ -454,7 +454,15 @@ impl<'t> Parser<'t> {
         {
             // A lazy line: the paragraph goes on without its containers' markers.
             self.emit_prefix(&prefix);
-            self.text_line(Some((start, lines)), pos, fp, le, next);
+            let last_line = self.para_line(pos, fp, le, next);
+            self.tok(Whitespace, pos, fp);
+            self.push(Ev::Inline(fp, le));
+            self.newline(le, next);
+            self.leaf = Some(Leaf::Para {
+                start,
+                lines: lines + 1,
+                last_line,
+            });
             return self.done(prefix, next);
         }
 
@@ -862,65 +870,63 @@ impl<'t> Parser<'t> {
                     return;
                 }
             }
-            let para = para.map(|(start, lines, _)| (start, lines));
-            self.text_line(para, pos, fp, le, next);
+            // A link definition, where no paragraph is open: a block of its own, which no
+            // paragraph goes on from, as pulldown-cmark reads it.
+            if para.is_none()
+                && t[fp] == b'['
+                && let Some((label, dest)) = self.definition(fp, le)
+            {
+                self.start(LinkDefinition);
+                self.tok(Whitespace, pos, fp);
+                self.tok(LBracket, fp, fp + 1);
+                self.tok(DefinitionLabel, fp + 1, label);
+                self.tok(RBracket, label, label + 1);
+                self.tok(Colon, label + 1, label + 2);
+                self.tok(Whitespace, label + 2, dest.0);
+                self.tok(DefinitionDest, dest.0, dest.1);
+                self.tok(Whitespace, dest.1, le);
+                self.newline(le, next);
+                self.finish();
+                let text = self.text;
+                self.defs.add(&text[fp + 1..label], &text[dest.0..dest.1]);
+                return;
+            }
+            // A paragraph's line.
+            let last_line = self.para_line(pos, fp, le, next);
+            match para {
+                Some((start, lines, _)) => {
+                    self.tok(Whitespace, pos, fp);
+                    self.push(Ev::Inline(fp, le));
+                    self.newline(le, next);
+                    self.leaf = Some(Leaf::Para {
+                        start,
+                        lines: lines + 1,
+                        last_line,
+                    });
+                }
+                None => {
+                    let start = self.events.len();
+                    self.start(Paragraph);
+                    self.tok(Whitespace, pos, fp);
+                    self.push(Ev::Inline(fp, le));
+                    self.newline(le, next);
+                    self.leaf = Some(Leaf::Para {
+                        start,
+                        lines: 1,
+                        last_line,
+                    });
+                }
+            }
             return;
         }
     }
 
-    /// A paragraph's line from `pos`, its text at `fp`; `para` is the open paragraph's `Start`
-    /// and how many lines it has. Where none is open, the line may be a link definition
-    /// instead: a block of its own, which no paragraph goes on from, as pulldown-cmark reads
-    /// it.
-    fn text_line(
-        &mut self,
-        para: Option<(usize, usize)>,
-        pos: usize,
-        fp: usize,
-        le: usize,
-        next: usize,
-    ) {
-        let last_line = self.para_line(pos, fp, le, next);
-        let (start, lines) = match para {
-            Some(para) => para,
-            None => {
-                if let Some((label, dest)) = self.definition(fp, le) {
-                    self.start(LinkDefinition);
-                    self.tok(Whitespace, pos, fp);
-                    self.tok(LBracket, fp, fp + 1);
-                    self.tok(DefinitionLabel, fp + 1, label);
-                    self.tok(RBracket, label, label + 1);
-                    self.tok(Colon, label + 1, label + 2);
-                    self.tok(Whitespace, label + 2, dest.0);
-                    self.tok(DefinitionDest, dest.0, dest.1);
-                    self.tok(Whitespace, dest.1, le);
-                    self.newline(le, next);
-                    self.finish();
-                    let text = self.text;
-                    self.defs.add(&text[fp + 1..label], &text[dest.0..dest.1]);
-                    return;
-                }
-                let start = self.events.len();
-                self.start(Paragraph);
-                (start, 0)
-            }
-        };
-        self.tok(Whitespace, pos, fp);
-        self.push(Ev::Inline(fp, le));
-        self.newline(le, next);
-        self.leaf = Some(Leaf::Para {
-            start,
-            lines: lines + 1,
-            last_line,
-        });
-    }
-
-    /// A link definition, `[label]: destination "title"`, taking the line `fp..le`: where its
-    /// label ends, and its destination with its title. With footnotes, `[^label]:` is a
-    /// footnote.
+    /// A link definition, `[label]: destination "title"`, taking the line `fp..le`, which
+    /// starts with `[`: where its label ends, and its destination with its title. With
+    /// footnotes, `[^label]:` is a footnote.
     fn definition(&self, fp: usize, le: usize) -> Option<(usize, (usize, usize))> {
         let t = self.bytes();
-        if t[fp] != b'[' || t.get(fp + 1) == Some(&b'[') || !self.text[fp..le].contains("]:") {
+        if t.get(fp + 1) == Some(&b'[') || !self.text[fp..le].contains("]:") {
             return None;
         }
         static RE: OnceLock<Regex> = OnceLock::new();
