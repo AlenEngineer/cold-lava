@@ -159,6 +159,8 @@ kinds! {
     Image,
     /// The text of a link or an image, between the brackets.
     LinkText,
+    /// `](destination)` closing a link whose text started on an earlier line of its block.
+    LinkEnd,
     /// Dataview's `[key:: value]` or `(key:: value)`.
     InlineField,
     /// Dataview's `key:: value` taking a whole line.
@@ -263,11 +265,7 @@ impl Definitions {
 
     /// Add the definition written with this label and this destination (with its title).
     fn add(&mut self, label: &str, dest: &str) {
-        let dest = match dest.strip_prefix('<') {
-            Some(pointy) => pointy.split('>').next(),
-            None => dest.split_whitespace().next(),
-        };
-        let dest = dest.unwrap_or_default().to_string();
+        let dest = dest[destination(dest)].to_string();
         self.0.push((fold(label), dest));
     }
 
@@ -287,6 +285,15 @@ impl Definitions {
             }
             _ => {}
         }
+    }
+}
+
+/// Where the destination is in what a link definition's label points to as written
+/// (`DefinitionDest`): without its title or its `<>`.
+pub(crate) fn destination(written: &str) -> Range<usize> {
+    match written.strip_prefix('<') {
+        Some(pointy) => 1..1 + pointy.find('>').unwrap_or(pointy.len()),
+        None => 0..written.find(char::is_whitespace).unwrap_or(written.len()),
     }
 }
 
@@ -527,6 +534,7 @@ impl<'t> Blocks<'t> {
 }
 
 /// One step of a walk through a green tree, with its byte offset.
+#[derive(Clone, Copy)]
 pub enum Step<'a> {
     Enter(Kind, usize),
     Leave(Kind, usize),

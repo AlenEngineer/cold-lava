@@ -1,0 +1,114 @@
+//! Links by reference (`[text][label]` with `[label]: Note.md`) through the CLI: a rename
+//! rewrites the definition, tidy counts the link, and a task's own tags and links are the ones
+//! the syntax tree reads. Each test has its own workspace and an empty home.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+fn workspace(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("reference-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (rel, text) in files {
+        let p = dir.join("ws").join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    dir
+}
+
+fn cold_lava(dir: &Path, args: &[&str]) -> Output {
+    let home = dir.join("home");
+    let out = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+fn read(dir: &Path, rel: &str) -> String {
+    std::fs::read_to_string(dir.join("ws").join(rel)).unwrap()
+}
+
+const USES: &str = "# Uses\n\nSee [the other note][b] and ![its picture][pic].\n\n- [ ] **#urgent** ask [Bee][b] about [[Uses]]\n\n[b]: Notes/B.md \"The other\"\n[pic]: <Notes/b%20map.png>\n";
+
+#[test]
+fn a_rename_rewrites_the_definition_of_a_note_linked_only_by_reference() {
+    let files = [
+        ("Uses.md", USES),
+        ("Notes/B.md", "# B\n"),
+        ("Notes/b map.png", ""),
+    ];
+    let dir = workspace("rename", &files);
+    let ws = dir.join("ws");
+    let ws = ws.to_str().unwrap();
+    let dry = cold_lava(&dir, &["rename", ws, "Notes/B", "C", "--dry-run"]);
+    assert_eq!(
+        String::from_utf8_lossy(&dry.stdout),
+        "would rename Notes/B.md → Notes/C.md\n  Uses.md:7  [b]: Notes/C.md \"The other\"\n1 links in 1 files\n"
+    );
+    assert_eq!(read(&dir, "Uses.md"), USES, "a dry run writes nothing");
+
+    cold_lava(&dir, &["rename", ws, "Notes/B", "C"]);
+    assert_eq!(
+        read(&dir, "Uses.md"),
+        USES.replace("Notes/B.md", "Notes/C.md"),
+        "the definition's destination, and no other byte"
+    );
+    assert!(dir.join("ws/Notes/C.md").exists() && !dir.join("ws/Notes/B.md").exists());
+
+    // The folder moves: both definitions follow, each as it was written.
+    cold_lava(&dir, &["rename", ws, "Notes", "Field Notes"]);
+    assert_eq!(
+        read(&dir, "Uses.md"),
+        USES.replace("Notes/B.md", "Field%20Notes/C.md")
+            .replace("Notes/b%20map.png", "Field%20Notes/b%20map.png")
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tidy_counts_a_link_by_reference() {
+    let files = [
+        ("A.md", "See [the other][b].\n\n[b]: B.md\n[unused]: C.md\n"),
+        ("B.md", "Back to [A].\n\n[a]: A.md\n"),
+        ("C.md", "alone\n"),
+    ];
+    let dir = workspace("tidy", &files);
+    let ws = dir.join("ws");
+    let out = cold_lava(&dir, &["tidy", ws.to_str().unwrap(), "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let orphans: Vec<&str> = (report["orphans"].as_array().unwrap().iter())
+        .map(|o| o["note"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        orphans,
+        ["C.md"],
+        "A and B link each other by reference; a definition nothing uses is no link"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_tasks_tags_and_links_are_what_the_tree_reads() {
+    let dir = workspace("task", &[("Uses.md", USES), ("Notes/B.md", "# B\n")]);
+    let ws = dir.join("ws");
+    let out = cold_lava(&dir, &["items", ws.to_str().unwrap(), "task", "--json"]);
+    let lines = String::from_utf8(out.stdout).unwrap();
+    let tasks: Vec<serde_json::Value> = (lines.lines())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(tasks.len(), 1, "{lines}");
+    assert_eq!(tasks[0]["tags"], serde_json::json!(["urgent"]));
+    assert_eq!(tasks[0]["links"], serde_json::json!(["Uses", "Notes/B"]));
+    let _ = std::fs::remove_dir_all(dir);
+}

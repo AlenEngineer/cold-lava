@@ -1,7 +1,9 @@
 //! Markdown, the engine's own format and the first owner. Its three jobs, each on a note's text:
 //! `read` (links, tags and aliases, when the note is scanned) with `items` (on first use),
 //! `edit` (one item → the note's new text) and `relink` (links to moved files → new text).
-//! `tags_in` says where each tag is written, for `read` and for recipes that change tags.
+//! `tags_in` says where each tag is written, for `read` and for recipes that change tags, and
+//! `links` where each link's target is: `read`, `relink`, tidy's `link_targets` and an item's own
+//! `links` all take a note's links from it, so they agree on what a link is.
 
 use crate::cst::{self, Kind, Step};
 use crate::edit::{self, SetField};
@@ -13,9 +15,7 @@ use crate::style::{self, Lazy};
 use crate::tasks;
 use crate::workspace::{Ref, attachment_kind, clean_target};
 use chrono::NaiveDate;
-use regex::Regex;
 use std::ops::Range;
-use std::sync::OnceLock;
 
 /// What reading a note gives besides its items, which are read on first use (`items`).
 pub struct Read {
@@ -125,141 +125,178 @@ pub fn edit(
     }
 }
 
+/// How a link's target is written in a note.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum By {
+    /// `[[target]]` or `![[target]]`.
+    Wiki,
+    /// `[text](target)` or `![text](target)`.
+    Inline,
+    /// `[text][label]`, `[label][]` or `[label]`: the target is its label's definition's.
+    Reference,
+    /// `[label]: target`.
+    Definition,
+}
+
+/// A file named in a note: the name or path as written, before any `#heading`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Link<'t> {
+    /// Where the target is written; for a link by reference, where its label is.
+    pub at: usize,
+    pub target: &'t str,
+    pub by: By,
+}
+
+impl Link<'_> {
+    /// Written as a Markdown link, not a wikilink.
+    pub(crate) fn md(&self) -> bool {
+        self.by != By::Wiki
+    }
+
+    /// The note it names, as the index holds a link's target; `None` for an attachment, a web
+    /// address, or a Markdown link to anything but a `.md` file.
+    pub(crate) fn note(&self) -> Option<String> {
+        let note = !self.md() || self.target.ends_with(".md");
+        clean_target(self.target).filter(|_| note)
+    }
+
+    /// Whether it names a file a rename can move: any wikilink's target, and a Markdown link's
+    /// when it is a note or an attachment.
+    fn file(&self) -> bool {
+        match self.md() {
+            true => self.target.ends_with(".md") || attachment_kind(self.target).is_some(),
+            false => !self.target.trim().is_empty(),
+        }
+    }
+}
+
+/// The file a Markdown link's destination names, as written before its `#heading`. `None` for
+/// a web address, and for a destination with a space in it (one with a title).
+fn md_path(dest: &str) -> Option<&str> {
+    let path = dest.split('#').next().unwrap_or_default();
+    let named = !path.is_empty() && !path.contains(char::is_whitespace) && !path.contains("://");
+    named.then_some(path)
+}
+
+/// A note's links, collected from the steps of a walk through its syntax tree.
+#[derive(Default)]
+pub(crate) struct Links<'t> {
+    found: Vec<Link<'t>>,
+    /// Each link by reference: where its label is, and the label.
+    labels: Vec<(usize, &'t str)>,
+    /// Each definition's destination as written, and the file it names.
+    dests: Vec<(&'t str, &'t str)>,
+}
+
+impl<'t> Links<'t> {
+    pub(crate) fn step(&mut self, step: Step<'t>) {
+        let Step::Token(kind, text, at) = step else {
+            return;
+        };
+        let (at, target, by) = match kind {
+            Kind::Target => (at, Some(text), By::Wiki),
+            Kind::LinkDest => (at, md_path(text), By::Inline),
+            Kind::DefinitionDest => {
+                let dest = cst::destination(text);
+                let target = md_path(&text[dest.clone()]);
+                self.dests
+                    .extend(target.map(|target| (&text[dest.clone()], target)));
+                (at + dest.start, target, By::Definition)
+            }
+            Kind::LinkLabel => {
+                self.labels.push((at, text));
+                return;
+            }
+            _ => return,
+        };
+        self.found
+            .extend(target.map(|target| Link { at, target, by }));
+    }
+
+    /// The links in the order written; `defs`, the note's definitions, say where a link by
+    /// reference leads.
+    pub(crate) fn finish(mut self, defs: &cst::Definitions) -> Vec<Link<'t>> {
+        for &(at, label) in &self.labels {
+            let dest = defs.get(label);
+            let defined = dest.and_then(|dest| self.dests.iter().find(|d| d.0 == dest));
+            self.found.extend(defined.map(|d| Link {
+                at,
+                target: d.1,
+                by: By::Reference,
+            }));
+        }
+        if !self.labels.is_empty() {
+            self.found.sort_by_key(|l| l.at);
+        }
+        self.found
+    }
+}
+
+/// Every file named in a note's text (or a canvas text card's), in the order written, as the
+/// index reads it (`cst::Gates::INDEX`): wikilinks and embeds, the frontmatter's included,
+/// Markdown links and images, links by reference, and each definition's own destination.
+pub(crate) fn links(text: &str) -> Vec<Link<'_>> {
+    // A link is written with `[[` or `](`, a definition with `]:`.
+    if !(text.contains("[[") || text.contains("](") || text.contains("]:")) {
+        return Vec::new();
+    }
+    let (note, defs) = cst::blocks(text, cst::Gates::INDEX);
+    let mut links = Links::default();
+    note.read(&defs, &mut |step| links.step(step));
+    links.finish(&defs)
+}
+
 /// Rewrite the links in a note's text (or a canvas text card's): `link` says what each target,
-/// as written, becomes (`md`: in a Markdown link), or `None` to leave it. Returns the new text,
-/// the changed lines and how many links changed.
+/// as written, becomes (`md`: in a Markdown link), or `None` to leave it. A link by reference
+/// is rewritten where its target is written, in its definition. Returns the new text, the
+/// changed lines and how many links changed. Every byte outside the targets stays.
 pub(crate) fn relink(
     text: &str,
     link: impl Fn(&str, bool) -> Option<String>,
 ) -> (String, Vec<Change>, usize) {
-    let p = patterns();
+    let written = links(text).into_iter();
+    let reps: Vec<(Range<usize>, String)> = written
+        .filter(|l| l.by != By::Reference && l.file())
+        .filter_map(|l| Some((l.at..l.at + l.target.len(), link(l.target, l.md())?)))
+        .collect();
     let mut out = String::with_capacity(text.len());
     let mut changes = Vec::new();
-    let mut count = 0;
-    let mut in_fence = false;
-    for (i, line) in text.split_inclusive('\n').enumerate() {
-        let body = line.trim_end_matches(['\n', '\r']);
-        let ending = &line[body.len()..];
-        let t = body.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
+    let (mut at, mut line, mut counted) = (0, 1, 0);
+    let mut k = 0;
+    while k < reps.len() {
+        let first = reps[k].0.start;
+        let start = text[..first].rfind('\n').map_or(0, |i| i + 1);
+        let end = text[first..].find('\n').map_or(text.len(), |i| first + i);
+        let end = start + text[start..end].trim_end_matches('\r').len();
+        out.push_str(&text[at..start]);
+        let from = out.len();
+        at = start;
+        while k < reps.len() && reps[k].0.start < end {
+            out.push_str(&text[at..reps[k].0.start]);
+            out.push_str(&reps[k].1);
+            at = reps[k].0.end;
+            k += 1;
         }
-        if in_fence || t.starts_with("```") || t.starts_with("~~~") {
-            out.push_str(line);
-            continue;
-        }
-        let (new_body, n) = relink_line(body, &link, p);
-        if n > 0 {
-            count += n;
-            changes.push(Change {
-                line: i + 1,
-                before: body.to_string(),
-                after: new_body.clone(),
-            });
-        }
-        out.push_str(&new_body);
-        out.push_str(ending);
+        out.push_str(&text[at..end]);
+        at = end;
+        line += newlines(&text.as_bytes()[counted..start]);
+        counted = start;
+        changes.push(Change {
+            line,
+            before: text[start..end].to_string(),
+            after: out[from..].to_string(),
+        });
     }
-    (out, changes, count)
+    out.push_str(&text[at..]);
+    (out, changes, reps.len())
 }
 
-fn relink_line(
-    body: &str,
-    link: &impl Fn(&str, bool) -> Option<String>,
-    p: &Patterns,
-) -> (String, usize) {
-    // Collect replacements (byte range of the target, new text), then apply from the end.
-    let mut reps: Vec<(usize, usize, String)> = Vec::new();
-    for (r, md) in line_targets(body, p) {
-        if let Some(new) = link(&body[r.clone()], md) {
-            reps.push((r.start, r.end, new));
-        }
-    }
-    reps.sort_by_key(|r| std::cmp::Reverse(r.0));
-    let mut s = body.to_string();
-    for (a, b, new) in &reps {
-        s.replace_range(*a..*b, new);
-    }
-    (s, reps.len())
-}
-
-struct Patterns {
-    wikilink: Regex,
-    mdlink: Regex,
-    inline_code: Regex,
-}
-
-fn patterns() -> &'static Patterns {
-    static P: OnceLock<Patterns> = OnceLock::new();
-    P.get_or_init(|| Patterns {
-        // [[target#heading|alias]] — target is group 1.
-        wikilink: Regex::new(r"\[\[([^\]\|#\^]*)((?:[#\^][^\]\|]*)?)((?:\|[^\]]*)?)\]\]").unwrap(),
-        // [text](path#heading) — path is group 1; kept if it names a note or an attachment.
-        mdlink: Regex::new(r"\]\(([^)\s#]+)((?:#[^)]*)?)\)").unwrap(),
-        inline_code: Regex::new(r"`[^`\n]*`").unwrap(),
-    })
-}
-
-/// The links on one line outside inline code, as (byte range of the target, Markdown link?):
-/// wikilinks, then Markdown links naming a note or an attachment.
-fn line_targets(body: &str, p: &Patterns) -> Vec<(Range<usize>, bool)> {
-    let code: Vec<(usize, usize)> = p
-        .inline_code
-        .find_iter(body)
-        .map(|m| (m.start(), m.end()))
-        .collect();
-    let in_code = |s: usize| code.iter().any(|&(a, b)| s >= a && s < b);
-    let wiki = (p.wikilink.captures_iter(body))
-        .map(|c| c.get(1).unwrap())
-        .filter(|m| !m.as_str().trim().is_empty())
-        .map(|m| (m.range(), false));
-    let md = (p.mdlink.captures_iter(body))
-        .map(|c| c.get(1).unwrap())
-        .filter(|m| {
-            let t = m.as_str();
-            (t.ends_with(".md") || attachment_kind(t).is_some()) && !t.contains("://")
-        })
-        .map(|m| (m.range(), true));
-    wiki.chain(md).filter(|(r, _)| !in_code(r.start)).collect()
-}
-
-/// Every link target in a note's (or a canvas text card's) text outside code, as written.
+/// Every link target in a note's (or a canvas text card's) text, as written: what `read`
+/// counts as a link, and the attachments linked too.
 pub(crate) fn link_targets(text: &str) -> Vec<&str> {
-    let p = patterns();
-    let mut in_fence = false;
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-        } else if !in_fence {
-            out.extend(line_targets(line, p).into_iter().map(|(r, _)| &line[r]));
-        }
-    }
-    out
-}
-
-struct Parsers {
-    wikilink: Regex,
-    mdlink: Regex,
-    inline_code: Regex,
-}
-
-impl Parsers {
-    fn new() -> Self {
-        Self {
-            // [[target]], [[target#heading]], [[target|alias]], ![[embed]]
-            wikilink: Regex::new(r"\[\[([^\]\|#\^]*)[^\]]*\]\]").unwrap(),
-            // [text](some/note.md) — local markdown links only
-            mdlink: Regex::new(r"\]\(([^)\s]+?\.md)(?:#[^)]*)?\)").unwrap(),
-            inline_code: Regex::new(r"`[^`\n]*`").unwrap(),
-        }
-    }
-}
-
-fn parsers() -> &'static Parsers {
-    static P: OnceLock<Parsers> = OnceLock::new();
-    P.get_or_init(Parsers::new)
+    let written = links(text).into_iter();
+    let linked = written.filter(|l| l.by != By::Definition && l.file());
+    linked.map(|l| l.target).collect()
 }
 
 /// Read the note `text` forwards in the syntax every workspace's links are read in, as its
@@ -275,24 +312,8 @@ fn body_tag(at: usize, tag: &str) -> TagSpan {
     }
 }
 
-/// The note path a Markdown link's destination names, as written: a local `.md` file, maybe
-/// with a `#heading`.
-fn md_target(dest: &str) -> Option<&str> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"^([^)\s]+?\.md)(?:#[^)]*)?$").unwrap());
-    re.captures(dest).and_then(|c| c.get(1)).map(|m| m.as_str())
-}
-
 fn newlines(bytes: &[u8]) -> usize {
     bytes.iter().filter(|&&b| b == b'\n').count()
-}
-
-/// A link as the tree holds it: where it is, whether a Markdown link, and its target as
-/// written.
-struct Written<'t> {
-    at: usize,
-    md: bool,
-    target: &'t str,
 }
 
 fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
@@ -325,41 +346,18 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
     let (note, defs) = cst::blocks(text, cst::Gates::INDEX);
     let mut body_tags = Vec::new();
     let mut frontmatter_end = 0;
-    let mut links: Vec<Written> = Vec::new();
-    let mut wiki: Option<Written> = None;
-    note.read(&defs, &mut |step| match step {
-        Step::Leave(Kind::Frontmatter, at) => frontmatter_end = at,
-        Step::Token(Kind::Tag, tag, at) => body_tags.push(body_tag(at, tag)),
-        Step::Enter(Kind::WikiLink | Kind::Embed, at) => {
-            wiki = Some(Written {
-                at,
-                md: false,
-                target: "",
-            })
+    let mut links = Links::default();
+    note.read(&defs, &mut |step| {
+        match step {
+            Step::Leave(Kind::Frontmatter, at) => frontmatter_end = at,
+            Step::Token(Kind::Tag, tag, at) => body_tags.push(body_tag(at, tag)),
+            _ => {}
         }
-        Step::Token(Kind::Target, target, _) => {
-            if let Some(w) = &mut wiki {
-                w.target = target;
-            }
-        }
-        Step::Leave(Kind::WikiLink | Kind::Embed, _) => links.extend(wiki.take()),
-        Step::Token(Kind::LinkDest, dest, at) => {
-            links.extend(md_target(dest).map(|target| Written {
-                at,
-                md: true,
-                target,
-            }))
-        }
-        Step::Token(Kind::LinkLabel, label, at) => {
-            let target = defs.get(label).and_then(md_target);
-            links.extend(target.map(|target| Written {
-                at,
-                md: true,
-                target,
-            }))
-        }
-        _ => {}
+        links.step(step);
     });
+    // A definition is no link itself: the links that use its label are.
+    let mut links = links.finish(&defs);
+    links.retain(|l| l.by != By::Definition);
     for t in with_frontmatter_tags(text, body_tags) {
         push_tag(&mut tags, &text[t.name]);
     }
@@ -386,9 +384,8 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
     }
     // Wikilinks inside frontmatter properties count too, like in Obsidian. In the body, each
     // line's wikilinks come before its Markdown links.
-    links.sort_by_key(|w| w.at);
     let (mut line, mut counted) = (0, 0);
-    let mut numbered: Vec<(usize, Written)> = links
+    let mut numbered: Vec<(usize, Link)> = links
         .into_iter()
         .map(|w| {
             line += newlines(&text.as_bytes()[counted..w.at]);
@@ -397,11 +394,11 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
         })
         .collect();
     let body = numbered.partition_point(|(_, w)| w.at < frontmatter_end);
-    numbered[body..].sort_by_key(|(n, w)| (*n, w.md));
+    numbered[body..].sort_by_key(|(n, w)| (*n, w.md()));
     for (k, (n, w)) in numbered.into_iter().enumerate() {
-        let target = clean_target(w.target);
+        let target = w.note();
         if k >= body && target.is_some() {
-            written.add(w.md, w.target);
+            written.add(w.md(), w.target);
         }
         add(&mut refs, target, n, w.at);
     }
@@ -532,31 +529,13 @@ fn is_number(name: &str) -> bool {
     name.chars().all(|c| c.is_ascii_digit())
 }
 
-/// The link targets on one line outside inline code: wikilinks, then Markdown links.
-pub fn line_links(line: &str) -> Vec<String> {
-    links_in(line, None)
-}
-
-/// `line_links`, counting how each link is written into `written`.
-fn links_in(line: &str, mut written: Option<&mut style::Links>) -> Vec<String> {
-    // Without code to take out, a link needs `[[` or `](`; most lines have neither.
-    if !line.contains('`') && !line.contains("[[") && !line.contains("](") {
-        return Vec::new();
-    }
-    let p = parsers();
-    let line = p.inline_code.replace_all(line, "");
-    let wiki = p.wikilink.captures_iter(&line).map(|c| (false, c));
-    let md = p.mdlink.captures_iter(&line).map(|c| (true, c));
-    let mut out = Vec::new();
-    for (md, c) in wiki.chain(md) {
-        if let Some(target) = clean_target(&c[1]) {
-            if let Some(w) = written.as_deref_mut() {
-                w.add(md, &c[1]);
-            }
-            out.push(target);
-        }
-    }
-    out
+/// The notes linked in a piece of text read on its own, as a field's value or a frontmatter
+/// line is: wikilinks, then Markdown links.
+pub fn line_links(text: &str) -> Vec<String> {
+    let mut links = links(text);
+    links.retain(|l| l.by != By::Definition);
+    links.sort_by_key(|l| l.md());
+    links.iter().filter_map(|l| l.note()).collect()
 }
 
 fn clean_alias(raw: &str) -> Option<String> {
@@ -666,108 +645,6 @@ mod tests {
         assert_eq!(tags, ["one", "two"]);
     }
 
-    /// Notes were read line by line, with patterns, before the syntax tree. The line reader
-    /// stays here to show the tree reads every note of the corpus as it did.
-    mod lines {
-        use super::super::*;
-
-        pub fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
-            let p = parsers();
-            static TAG: OnceLock<Regex> = OnceLock::new();
-            let tag = TAG.get_or_init(|| Regex::new(crate::markdown::TAG).unwrap());
-            let mut written = style::Links::default();
-            let mut refs = Vec::new();
-            let mut tags = Vec::new();
-            let mut aliases: Vec<String> = Vec::new();
-            let lines: Vec<&str> = text.lines().collect();
-            let mut i = 0;
-            let add = |refs: &mut Vec<Ref>, target: Option<String>, i: usize, line: &str| {
-                if let Some(target) = target {
-                    let mut context: String = line.trim().chars().take(240).collect();
-                    if line.trim().chars().count() > 240 {
-                        context.push('…');
-                    }
-                    refs.push(Ref {
-                        target,
-                        line: i + 1,
-                        context,
-                    });
-                }
-            };
-            let mut body_from = 0;
-            if let Some(fm) = frontmatter::read(text) {
-                for t in with_frontmatter_tags(text, Vec::new()) {
-                    push_tag(&mut tags, &text[t.name]);
-                }
-                body_from = (text.split_inclusive('\n').take(fm.end_line))
-                    .map(str::len)
-                    .sum();
-            }
-            let mut in_fence = false;
-            for line in text[body_from..].lines() {
-                let t = line.trim_start();
-                if t.starts_with("```") || t.starts_with("~~~") {
-                    in_fence = !in_fence;
-                    continue;
-                }
-                if in_fence {
-                    continue;
-                }
-                let code: Vec<Range<usize>> =
-                    (p.inline_code.find_iter(line)).map(|m| m.range()).collect();
-                for c in tag.captures_iter(line) {
-                    let name = c.get(1).unwrap();
-                    if !code.iter().any(|r| r.contains(&(name.start() - 1))) {
-                        push_tag(&mut tags, name.as_str());
-                    }
-                }
-            }
-            if lines.first().map(|l| l.trim_end()) == Some("---") {
-                i = 1;
-                let mut in_aliases = false;
-                while i < lines.len() {
-                    let line = lines[i];
-                    let t = line.trim();
-                    if t == "---" || t == "..." {
-                        i += 1;
-                        break;
-                    }
-                    if let Some(rest) = t
-                        .strip_prefix("aliases:")
-                        .or_else(|| t.strip_prefix("alias:"))
-                    {
-                        in_aliases = true;
-                        let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
-                        aliases.extend(rest.split(',').filter_map(clean_alias));
-                    } else if in_aliases && t.starts_with("- ") {
-                        aliases.extend(clean_alias(&t[2..]));
-                    } else if !t.is_empty() {
-                        in_aliases = false;
-                    }
-                    for c in p.wikilink.captures_iter(line) {
-                        add(&mut refs, clean_target(&c[1]), i, line);
-                    }
-                    i += 1;
-                }
-            }
-            let mut in_fence = false;
-            for (n, raw) in lines.iter().enumerate().skip(i) {
-                let t = raw.trim_start();
-                if t.starts_with("```") || t.starts_with("~~~") {
-                    in_fence = !in_fence;
-                    continue;
-                }
-                if in_fence {
-                    continue;
-                }
-                for target in links_in(raw, Some(&mut written)) {
-                    add(&mut refs, Some(target), n, raw);
-                }
-            }
-            (refs, tags, aliases, written)
-        }
-    }
-
     #[test]
     fn a_link_to_a_heading_is_not_a_tag() {
         let (_, tags) = links_and_tags("See [the agenda](#agenda), (#real) and #also.");
@@ -791,79 +668,247 @@ mod tests {
         assert_eq!(refs[2].context, "[web][w], [none] and ![pic][n].");
     }
 
-    /// A link's line as its `Ref` holds it.
-    fn context(line: &str) -> String {
-        let mut context: String = line.trim().chars().take(240).collect();
-        if line.trim().chars().count() > 240 {
-            context.push('…');
-        }
-        context
+    #[test]
+    fn a_links_text_may_hold_an_image_and_go_on_to_the_next_line() {
+        let (links, _) = links_and_tags(
+            "See [text that\ngoes on](B.md), [![alt](x.md)](C.md) and no bracket](D.md).\n\n[Source]: [[Book]]\n",
+        );
+        assert_eq!(links, ["B", "x", "C", "Book"]);
     }
 
-    /// `text` with each code span that goes on past its line blanked out, line breaks kept.
-    fn without_wrapped_code(text: &str) -> String {
-        let mut spans = Vec::new();
-        let mut from = 0;
-        cst::read(text, cst::Gates::INDEX, &mut |step| match step {
-            Step::Enter(Kind::CodeSpan, at) => from = at,
-            Step::Leave(Kind::CodeSpan, at) if text[from..at].contains('\n') => {
-                spans.push(from..at)
-            }
-            _ => {}
-        });
-        let mut out = text.to_string();
-        for span in spans.into_iter().rev() {
-            let blank: String = text[span.clone()]
-                .chars()
-                .map(|c| if c == '\n' { c } else { ' ' })
-                .collect();
-            out.replace_range(span, &blank);
+    /// What a rename of the note `B` to `C`, and of `b.png` to `c.png`, makes of a link.
+    fn b_to_c(raw: &str, md: bool) -> Option<String> {
+        match (raw, md) {
+            ("B", false) => Some("C".into()),
+            ("B.md", true) => Some("C.md".into()),
+            ("b.png", _) => Some("c.png".into()),
+            _ => None,
         }
-        out
     }
 
     #[test]
-    fn the_tree_reads_the_corpus_as_the_lines_did() {
-        let mut differ = Vec::new();
-        for (name, text) in cst::corpus() {
-            // The line reader read a code span that goes on past its line as text, a line at a
-            // time; the tree reads it as code, as the reader shows it. It is blanked out for the
-            // line reader.
-            let (tree, mut lines) = (parse(&text), lines::parse(&without_wrapped_code(&text)));
-            let written: Vec<&str> = text.lines().collect();
-            for r in &mut lines.0 {
-                r.context = context(written[r.line - 1]);
-            }
-            // The one way they differ here: the line reader took a link to a heading of the
-            // same note, `[text](#heading)`, for a tag. The tree reads it as a link.
-            let anchor = |t: &String| text.to_lowercase().contains(&format!("](#{t})"));
-            lines.1.retain(|t| tree.1.contains(t) || !anchor(t));
-            if tree != lines {
-                let refs = |r: &[Ref]| -> Vec<String> {
-                    r.iter()
-                        .map(|r| format!("{}:{}", r.line, r.target))
-                        .collect()
-                };
-                differ.push(format!(
-                    "{name}\n  tree:  {:?} {:?} {:?}\n  lines: {:?} {:?} {:?}",
-                    refs(&tree.0),
-                    tree.1,
-                    tree.2,
-                    refs(&lines.0),
-                    lines.1,
-                    lines.2
-                ));
-            }
-        }
-        assert!(
-            differ.is_empty(),
-            "read differently:\n{}",
-            differ.join("\n")
+    fn relink_rewrites_a_definition_where_it_is_written() {
+        let text = "See [the note][n], [N] and ![pic][p].\n\n[n]: B.md \"Title\"\n[p]: <b.png> 'Pic'\n  [Unused]:   B.md#Heading\n[web]: https://example.com/B.md\n";
+        let (new, changes, links) = relink(text, b_to_c);
+        assert_eq!(
+            new,
+            "See [the note][n], [N] and ![pic][p].\n\n[n]: C.md \"Title\"\n[p]: <c.png> 'Pic'\n  [Unused]:   C.md#Heading\n[web]: https://example.com/B.md\n"
+        );
+        assert_eq!(links, 3);
+        let lines: Vec<(usize, &str, &str)> = changes
+            .iter()
+            .map(|c| (c.line, c.before.as_str(), c.after.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (3, "[n]: B.md \"Title\"", "[n]: C.md \"Title\""),
+                (4, "[p]: <b.png> 'Pic'", "[p]: <c.png> 'Pic'"),
+                (
+                    5,
+                    "  [Unused]:   B.md#Heading",
+                    "  [Unused]:   C.md#Heading"
+                ),
+            ]
         );
     }
 
-    /// What reading every note of a workspace costs: the line reader, `read` (the tree's parse
-    /// read forwards), and making each note's tree. Run on `scripts/bench-items.py`'s workspace:
+    #[test]
+    fn relink_rewrites_every_style_in_one_note_and_keeps_every_other_byte() {
+        let text = "---\nup: \"[[B]]\"\n---\r\n# [[B|shown]] and [[B#H]]\r\n  - [ ] ![[B]] [md](B.md#H) ![i](b.png)  \r\n> [a [[B]] b](B.md)\n\n| [[B]] | [y](B.md) |\n| --- | --- |\n\n[r]: B.md\nlast [[B]]";
+        let (new, changes, links) = relink(text, b_to_c);
+        assert_eq!(new, text.replace('B', "C").replace("b.png", "c.png"));
+        assert_eq!(links, 12);
+        let lines: Vec<usize> = changes.iter().map(|c| c.line).collect();
+        assert_eq!(lines, [2, 4, 5, 6, 8, 11, 12]);
+        assert_eq!(
+            (changes[2].before.as_str(), changes[2].after.as_str()),
+            (
+                "  - [ ] ![[B]] [md](B.md#H) ![i](b.png)  ",
+                "  - [ ] ![[C]] [md](C.md#H) ![i](c.png)  "
+            ),
+            "a changed line comes without its line ending"
+        );
+    }
+
+    #[test]
+    fn relink_leaves_what_the_tree_reads_as_no_link() {
+        for text in [
+            "    [[B]] in indented code\n",
+            "````\n```\n[[B]] after a fence line too short to close its fence\n````\n",
+            "> ```\n> [[B]] in a fence in a quote\n> ```\n",
+            "<div>\n[[B]] in an HTML block\n</div>\n",
+            "<!-- [[B]] -->\n",
+            "``[[B]]`` between two backticks\n",
+            "`code that\n[[B]] goes on`\n",
+            "---\nlink: \"[md](B.md)\"\n---\n",
+            "no bracket before](B.md)\n",
+            "[a]([[B]])\n",
+            "text\n[n]: B.md\n",
+        ] {
+            let (new, _, links) = relink(text, b_to_c);
+            assert_eq!((new.as_str(), links), (text, 0), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn relink_finds_the_links_the_line_reader_missed() {
+        for (text, links) in [
+            ("```js``` then [[B]]\n", 1),
+            (
+                "text\n    ```\n[[B]] after an indented line that is no fence\n",
+                1,
+            ),
+            ("See [text that\ngoes on](B.md) here.\n", 1),
+            ("[![alt](b.png)](B.md)\n", 2),
+            ("[Source]: [[B]]\n", 1),
+        ] {
+            let (new, _, n) = relink(text, b_to_c);
+            assert_eq!(n, links, "{text:?}");
+            assert_eq!(new, text.replace('B', "C").replace("b.png", "c.png"));
+        }
+    }
+
+    fn sorted(mut targets: Vec<String>) -> Vec<String> {
+        targets.sort();
+        targets
+    }
+
+    /// Backlinks and the graph (`read`), tidy (`link_targets`) and a rename (`relink`) take the
+    /// same links from every note of the corpus. A rename considers a link by reference where
+    /// its target is written, in its definition, used or not.
+    #[test]
+    fn read_tidy_and_rename_agree_on_every_link_of_the_corpus() {
+        let mut total = 0;
+        for (name, text) in cst::corpus() {
+            let read = sorted(parse(&text).0.into_iter().map(|r| r.target).collect());
+            let tidy = link_targets(&text).into_iter().filter_map(clean_target);
+            assert_eq!(sorted(tidy.collect()), read, "{name}: tidy and read");
+
+            let considered = std::cell::RefCell::new(Vec::new());
+            relink(&text, |raw, _| {
+                considered.borrow_mut().extend(clean_target(raw));
+                None
+            });
+            let by = |by: By| -> Vec<String> {
+                let links = links(&text).into_iter();
+                links
+                    .filter(|l| l.by == by)
+                    .filter_map(|l| l.note())
+                    .collect()
+            };
+            let (used, defined) = (by(By::Reference), by(By::Definition));
+            assert!(
+                used.iter().all(|u| defined.contains(u)),
+                "{name}: a link by reference whose definition a rename doesn't consider"
+            );
+            let rename = considered.into_inner().into_iter().chain(used);
+            let read_and_defined = read.iter().cloned().chain(defined);
+            assert_eq!(
+                sorted(rename.collect()),
+                sorted(read_and_defined.collect()),
+                "{name}: rename and read"
+            );
+            total += read.len();
+        }
+        assert!(total > 20, "the corpus has {total} links");
+    }
+
+    /// Every step of reading `text`: its kind, and a token's text.
+    fn steps(text: &str) -> Vec<(u8, Kind, &str)> {
+        let mut out = Vec::new();
+        cst::read(text, cst::Gates::INDEX, &mut |step| {
+            out.push(match step {
+                Step::Enter(kind, _) => (0, kind, ""),
+                Step::Leave(kind, _) => (1, kind, ""),
+                Step::Token(kind, text, _) => (2, kind, text),
+            })
+        });
+        out
+    }
+
+    /// Whether the token `is` is the token `was` with nothing but the file it names changed:
+    /// a `#heading`, a definition's title and its `<>` stay.
+    fn names_another_file(kind: Kind, was: &str, is: &str) -> bool {
+        let heading = |dest: &str| dest.find('#').map(|i| dest[i..].to_string());
+        match kind {
+            Kind::Target => true,
+            Kind::LinkDest => heading(was) == heading(is),
+            Kind::DefinitionDest => {
+                let (a, b) = (cst::destination(was), cst::destination(is));
+                was[..a.start] == is[..b.start]
+                    && was[a.end..] == is[b.end..]
+                    && heading(&was[a]) == heading(&is[b])
+            }
+            _ => false,
+        }
+    }
+
+    /// `new` is `old` with `links` link targets rewritten and nothing else: the two trees have
+    /// the same shape, and every token is the same bytes but those targets.
+    fn only_targets_differ(name: &str, old: &str, new: &str, links: usize) {
+        let (was, is) = (steps(old), steps(new));
+        assert_eq!(was.len(), is.len(), "{name}: the tree changed shape");
+        let mut changed = 0;
+        for (a, b) in was.iter().zip(&is) {
+            assert_eq!((a.0, a.1), (b.0, b.1), "{name}: the tree changed shape");
+            if a.2 != b.2 {
+                assert!(
+                    names_another_file(a.1, a.2, b.2),
+                    "{name}: {:?} became {:?}, which is more than a link's target",
+                    a.2,
+                    b.2
+                );
+                changed += 1;
+            }
+        }
+        assert_eq!(changed, links, "{name}: links rewritten");
+    }
+
+    #[test]
+    fn a_relink_of_the_corpus_changes_only_the_targets_it_rewrites() {
+        let mut total = 0;
+        for (name, text) in cst::corpus() {
+            assert_eq!(relink(&text, |_, _| None).0, text, "{name}: nothing moved");
+            let (new, changes, links) = relink(&text, |raw, _| Some(format!("X{raw}")));
+            only_targets_differ(&name, &text, &new, links);
+            assert_eq!(new.len(), text.len() + links, "{name}");
+            let (old_lines, new_lines): (Vec<&str>, Vec<&str>) =
+                (text.split('\n').collect(), new.split('\n').collect());
+            for c in &changes {
+                let line = |lines: &[&str]| lines[c.line - 1].trim_end_matches('\r').to_string();
+                assert_eq!(
+                    (line(&old_lines), line(&new_lines)),
+                    (c.before.clone(), c.after.clone()),
+                    "{name}:{}",
+                    c.line
+                );
+            }
+            total += links;
+        }
+        assert!(total > 20, "the corpus has {total} links");
+    }
+
+    /// Renaming each note of the example workspace changes, in every note the plan touches,
+    /// only the targets of the links it counts.
+    #[test]
+    fn a_rename_in_the_example_workspace_changes_only_link_targets() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        let ix = crate::index::Index::build(crate::workspace::scan(&root).unwrap());
+        let mut total = 0;
+        for note in 0..ix.workspace.notes.len() {
+            let plan = crate::rename::plan(&ix, note, "Moved Elsewhere/Renamed Note.md").unwrap();
+            for e in plan.edits.iter().filter(|e| e.file.ends_with(".md")) {
+                only_targets_differ(&e.file, &e.old_text, &e.new_text, e.links);
+                total += e.links;
+            }
+        }
+        assert!(total > 20, "the renames rewrote {total} links");
+    }
+
+    /// What reading every note of a workspace costs: `read` (the tree's parse read forwards),
+    /// `relink` when nothing moves, and making each note's tree. Run on
+    /// `scripts/bench-items.py`'s workspace:
     /// `COLD_LAVA_BENCH_WS=DIR cargo test --release -p cold-lava-engine read_cost -- --ignored
     /// --nocapture`.
     #[test]
@@ -889,11 +934,11 @@ mod tests {
             runs.sort();
             (runs[4], runs[0], runs[8])
         };
-        let lines = time(&|n| {
-            std::hint::black_box(lines::parse(n));
-        });
         let read = time(&|n| {
             std::hint::black_box(super::read(n));
+        });
+        let relink = time(&|n| {
+            std::hint::black_box(super::relink(n, |_, _| None));
         });
         let steps = time(&|n| {
             let mut k = 0usize;
@@ -912,8 +957,8 @@ mod tests {
             bytes / 1024
         );
         for (what, t) in [
-            ("line reader", lines),
             ("read", read),
+            ("relink, nothing moving", relink),
             ("the parse's steps alone", steps),
             ("blocks alone", blocks),
             ("making the trees", tree),

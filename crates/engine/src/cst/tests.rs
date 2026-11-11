@@ -91,6 +91,7 @@ const EDGES: &[&str] = &[
     "lone \r in a line\r\n",
     "See [text][ref], [ref][], [ref], ![img][ref] and [none].\n\n[ref]: Note.md \"Title\"\n  [Other Ref]: <a b.md>\n> [q]: q.md\n- [i]: i.md\n",
     "**#bold** _#slanted_ ==#marked== ~~#struck~~ a**#b** snake_#case\n",
+    "A [link whose text\n> goes on\nto here](Note.md) ] ](x) [![img](p.png)](n.md) [open\n\n[Source]: [[Book]]\n](y)\n",
 ];
 
 #[test]
@@ -229,6 +230,24 @@ fn a_reference_link_is_a_link_where_the_note_defines_its_label() {
     }
     let plain = Tree::with("[^1]: b.md\n", Gates(0));
     assert_eq!(plain.definitions().get("^1"), Some("b.md"));
+}
+
+#[test]
+fn a_links_text_may_hold_an_image_and_end_on_a_later_line() {
+    let gates = obsidian();
+    let nested = "[![alt](pic.png)](Note.md)\n";
+    assert_eq!(texts(nested, gates, Kind::Image), ["![alt](pic.png)"]);
+    assert_eq!(texts(nested, gates, Kind::LinkDest), ["pic.png", "Note.md"]);
+    // The `[` is still open on the paragraph's next line; a blank line ends the paragraph.
+    let wrapped = "See [text that\ngoes on](Note.md) here, not this](Other.md).\n\n[alone\n\nnext](Third.md)\n";
+    assert_eq!(texts(wrapped, gates, Kind::LinkEnd), ["](Note.md)"]);
+    assert_eq!(texts(wrapped, gates, Kind::LinkDest), ["Note.md"]);
+    // With wikilinks, a definition whose destination starts one is a line with a wikilink.
+    let field = "[Source]: [[Book]]\n";
+    assert_eq!(texts(field, gates, Kind::Target), ["Book"]);
+    assert!(Tree::with(field, gates).definitions().is_empty());
+    let defs = Tree::with(field, github());
+    assert_eq!(defs.definitions().get("source"), Some("[[Book]]"));
 }
 
 #[test]
