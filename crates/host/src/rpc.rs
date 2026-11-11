@@ -355,8 +355,8 @@ fn serve_now(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Core;
-    use crate::ext::{Effect, Permission};
+    use crate::{Effect, Permission};
+    use cold_lava_engine::core::Core;
 
     #[test]
     fn reads_requests_notifications_and_responses() {
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn views_open_update_close_and_show_over_the_wire() {
-        use crate::ext::view::{Content, MAX_ROWS, ViewId};
+        use crate::view::{Content, MAX_ROWS, ViewId};
         let dir = workspace("views");
         let mut core = Core::open(&dir).unwrap();
         let list = json!({"kind": "list", "title": "Open", "groups": []});

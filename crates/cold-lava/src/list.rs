@@ -2,66 +2,36 @@
 //! "list / tree" word of the view vocabulary. The sender says what the groups and rows are; the
 //! view moves the selection, folds groups, filters and draws, and answers keys with `Event`s
 //! about rows by id. It knows nothing of tasks: a checkbox is a state to draw and a key to
-//! report. Every type that crosses derives serde, like the table's; it moves to `crates/views`
-//! when a second frontend draws one.
+//! report. What crosses the view gateway (`List`, its rows, `Event`) is data in
+//! `cold-lava-views`, named here as before; this file is how the terminal draws it.
 
 use std::collections::HashMap;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use serde::{Deserialize, Serialize};
 
 use crate::app::{ACCENT, DIM, HIT, MUTED, NOTE};
 use crate::looks;
 use crate::types::Look;
 use crate::workspace::search_key;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct List {
-    pub title: String,
-    pub groups: Vec<Group>,
-    /// Keys the sender gives a meaning to. The view's own keys come first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub keys: Vec<KeyCommand>,
-    /// What an empty list says.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub empty: Option<String>,
-    #[serde(default, skip_serializing_if = "Filter::is_slash")]
-    pub filter: Filter,
+pub use cold_lava_views::list::{Check, Event, Filter, Group, KeyCommand, List, Piece, Row};
+
+/// Whether a view filtering as `filter` says takes `k` into its filter: when it filters as you
+/// type, a character (without Ctrl or Alt), Backspace and Ctrl-u.
+pub fn takes(filter: Filter, k: &KeyEvent) -> bool {
+    let plain = !(k.modifiers).intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    filter == Filter::Typing
+        && match k.code {
+            KeyCode::Char('u') if k.modifiers == KeyModifiers::CONTROL => true,
+            KeyCode::Char(_) => plain,
+            KeyCode::Backspace => true,
+            _ => false,
+        }
 }
 
-/// How a view starts filtering: with `/` (the default), or as soon as you type, for a view
-/// whose whole job is picking a row. Typing then takes every character, so the view's letter
-/// keys and the sender's keys are out of reach; the arrows, Enter and Esc still work.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Filter {
-    #[default]
-    Slash,
-    Typing,
-}
-
-impl Filter {
-    pub fn is_slash(&self) -> bool {
-        *self == Filter::Slash
-    }
-
-    /// Whether a view filtering this way takes `k` into its filter: when it filters as you
-    /// type, a character (without Ctrl or Alt), Backspace and Ctrl-u.
-    pub fn takes(self, k: &KeyEvent) -> bool {
-        let plain = !(k.modifiers).intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-        self == Filter::Typing
-            && match k.code {
-                KeyCode::Char('u') if k.modifiers == KeyModifiers::CONTROL => true,
-                KeyCode::Char(_) => plain,
-                KeyCode::Backspace => true,
-                _ => false,
-            }
-    }
-}
-
-/// `k` typed into `text`, as `Filter::takes` says it takes it.
+/// `k` typed into `text`, as `takes` says it takes it.
 pub fn type_into(text: &mut String, k: &KeyEvent) {
     match k.code {
         KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
@@ -71,85 +41,6 @@ pub fn type_into(text: &mut String, k: &KeyEvent) {
         }
         _ => {}
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Group {
-    pub id: String,
-    pub title: String,
-    /// Folded when it first shows; folding it by hand then wins.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub collapsed: bool,
-    pub rows: Vec<Row>,
-}
-
-/// One row: an id the sender knows it by, its text, and what goes beside it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Row {
-    pub id: String,
-    pub text: Vec<Piece>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub check: Option<Check>,
-    /// Drawn at the right edge: a date, a note's name.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub right: Vec<Piece>,
-    /// How far it is nested under the row before it.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub depth: usize,
-    /// A look over the whole row (a done task's).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub look: Option<Look>,
-}
-
-/// Text with a look of its own: a priority's chip, an overdue date.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Piece {
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub look: Option<Look>,
-}
-
-impl Piece {
-    pub fn plain(text: impl Into<String>) -> Piece {
-        Piece {
-            text: text.into(),
-            look: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Check {
-    Unchecked,
-    Partial,
-    Checked,
-    Crossed,
-}
-
-/// A key the sender binds: pressing it sends `Event::Command` with the selected row.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct KeyCommand {
-    /// One character.
-    pub key: char,
-    pub command: String,
-    pub title: String,
-}
-
-/// What the view tells its sender.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "kebab-case")]
-pub enum Event {
-    /// Enter on a row.
-    Activated { row: String },
-    /// `x` on a row with a checkbox.
-    Toggled { row: String },
-    /// One of the sender's keys.
-    Command {
-        command: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        row: Option<String>,
-    },
 }
 
 /// What the menu should do after a key.
@@ -329,7 +220,7 @@ impl ListView {
             self.reshow(keep);
             return Action::Stay;
         }
-        if self.list.filter.takes(&k) {
+        if takes(self.list.filter, &k) {
             let keep = self.at();
             type_into(&mut self.filter, &k);
             self.reshow(keep);
@@ -474,14 +365,6 @@ impl ListView {
 
 const SELECTED: Color = Color::Rgb(45, 45, 62);
 
-fn is_false(b: &bool) -> bool {
-    !b
-}
-
-fn is_zero(n: &usize) -> bool {
-    *n == 0
-}
-
 fn plural(n: usize, word: &str) -> String {
     match n {
         1 => format!("1 {word}"),
@@ -587,7 +470,6 @@ fn row_line(row: &Row, width: usize) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
@@ -841,43 +723,5 @@ mod tests {
         let s: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(s.starts_with("  ☐ Look up the 2022 eruption  ⏫ "), "{s}");
         assert!(s.ends_with("  Journal"));
-    }
-
-    #[test]
-    fn the_list_json_is_pinned() {
-        let mut l = list();
-        l.groups.truncate(1);
-        l.groups[0].rows.truncate(1);
-        assert_eq!(
-            serde_json::to_value(&l).unwrap(),
-            json!({
-                "title": "agenda",
-                "groups": [{
-                    "id": "today",
-                    "title": "Today",
-                    "rows": [{
-                        "id": "a",
-                        "text": [{"text": "Pay rent"}],
-                        "check": "unchecked",
-                        "right": [{"text": "Journal"}],
-                    }],
-                }],
-                "keys": [{"key": "d", "command": "show-done", "title": "show done"}],
-            })
-        );
-        l.filter = Filter::Typing;
-        assert_eq!(serde_json::to_value(&l).unwrap()["filter"], "typing");
-        let e = Event::Command {
-            command: "show-done".into(),
-            row: None,
-        };
-        assert_eq!(
-            serde_json::to_value(&e).unwrap(),
-            json!({"event": "command", "command": "show-done"})
-        );
-        assert_eq!(
-            serde_json::to_value(Event::Toggled { row: "a".into() }).unwrap(),
-            json!({"event": "toggled", "row": "a"})
-        );
     }
 }

@@ -7,7 +7,7 @@ use std::fmt;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::ext::{ExtId, Manifest};
+use crate::ext::{ExtId, Manifest, namespaced};
 use crate::history::Nav;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -130,14 +130,6 @@ const fn cmd<A>(
         title,
         keys,
     }
-}
-
-/// Whether `id` is in the extension `name`'s namespace: `<name>.<something>`. Its commands'
-/// and its types' ids must be.
-pub fn namespaced(name: &str, id: &str) -> bool {
-    (id.strip_prefix(name))
-        .and_then(|rest| rest.strip_prefix('.'))
-        .is_some_and(|rest| !rest.is_empty())
 }
 
 /// The main menu's commands, in the order the help screen lists them.
