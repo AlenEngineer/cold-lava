@@ -1,0 +1,52 @@
+name: tree 203 bench (temporary)
+
+on:
+  push:
+    branches: [tree-links-203]
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build main
+        run: |
+          git worktree add ../main origin/main
+          cd ../main && cargo build --release -p cold-lava
+          cp target/release/cold-lava "$HOME/cold-lava-main"
+      - name: Build this branch
+        run: |
+          cargo build --release -p cold-lava
+          cp target/release/cold-lava "$HOME/cold-lava-branch"
+      - name: Items, agenda, table, tidy, rename on 3,000 notes (main, then this branch)
+        run: python3 scripts/bench-items.py --runs 11 "$HOME/cold-lava-main" "$HOME/cold-lava-branch"
+      - name: Main against itself, for the noise
+        run: |
+          cp "$HOME/cold-lava-main" "$HOME/cold-lava-main-again"
+          python3 scripts/bench-items.py --runs 11 "$HOME/cold-lava-main" "$HOME/cold-lava-main-again"
+      - name: Build the cost tests (main, this branch)
+        run: |
+          (cd ../main && cargo test --release -p cold-lava-engine --no-run)
+          cargo test --release -p cold-lava-engine --no-run
+      - name: Reading 3,000 notes, main and this branch in turns
+        run: |
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for round in 1 2 3; do
+            echo "== main, round $round"
+            (cd ../main && cargo test --release -p cold-lava-engine read_cost -- --ignored --nocapture | grep -A6 'read_cost:')
+            echo "== branch, round $round"
+            cargo test --release -p cold-lava-engine read_cost -- --ignored --nocapture | grep -A6 'read_cost:'
+          done
+      - name: Items of 3,000 notes, main and this branch in turns
+        run: |
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for round in 1 2 3; do
+            echo "== main, round $round"
+            (cd ../main && cargo test --release -p cold-lava-engine items_cost -- --ignored --nocapture | grep -A5 'items_cost:')
+            echo "== branch, round $round"
+            cargo test --release -p cold-lava-engine items_cost -- --ignored --nocapture | grep -A5 'items_cost:'
+          done
