@@ -261,9 +261,12 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
 - **Deleting.** `ext.delete(path, rev)` (`workspace/delete`) moves a file or a folder to the
   trash the workspace uses, never for good, and is refused as `changed` unless it is still
   the version `rev`. `ext.stat(path)` (`workspace/stat`) gives that `rev` for any file, an
-  image too, and for a folder, with `inside`, everything in it, to show before you ask. The
-  answer's `trashed` is a token: `ext.restore(trashed)` (`workspace/restore`) puts the file
-  back where it was, or at `to`, refused as `exists` when something is there. The token is
+  image too, and for a folder, with `inside`, what is in it, to show before you ask (up to
+  1000 entries, `more` counting the rest and `hidden` the ones under hidden names, which
+  are never listed). A symlink is deleted as the link it is. The
+  answer's `trashed` is a token, yours alone: `ext.restore(trashed)` (`workspace/restore`)
+  puts the file back where it was, refused as `exists` when something is there; with `to`
+  it goes under another name, which needs `files.write` too. The token is
   gone once cold-lava restarts; the file stays in the trash. `ext.create_folder(path)`
   (`workspace/create-folder`) makes an empty folder.
 - **Previews.** A note that embeds one of your files (`![[Eruptions.csv]]`) shows a small view

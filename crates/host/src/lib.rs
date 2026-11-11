@@ -633,16 +633,22 @@ impl Host<'_> {
         self.core(Permission::FilesWrite)?.run_recipe(id, options)
     }
 
+    /// Nothing, when the caller's manifest asks for `needs`; else the refusal, naming it.
+    fn may(&self, needs: Permission) -> Result<(), gateway::Error> {
+        if self.permissions.contains(&needs) {
+            return Ok(());
+        }
+        let message = format!(
+            "{} may not do this: its manifest's permissions don't include {}",
+            self.name,
+            needs.name()
+        );
+        Err(gateway::Error::new(Reason::Forbidden, message))
+    }
+
     /// The core, when the caller's manifest asks for `needs`.
     fn core(&mut self, needs: Permission) -> Result<&mut Core, gateway::Error> {
-        if !self.permissions.contains(&needs) {
-            let message = format!(
-                "{} may not do this: its manifest's permissions don't include {}",
-                self.name,
-                needs.name()
-            );
-            return Err(gateway::Error::new(Reason::Forbidden, message));
-        }
+        self.may(needs)?;
         (self.core.as_deref_mut())
             .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open"))
     }
@@ -752,10 +758,15 @@ impl Host<'_> {
         Ok(self.files_core(Some(kind), false)?.files(extension))
     }
 
-    /// `workspace/stat`: a read, so the owner of the file's kind or `files.read`.
+    /// `workspace/stat`: a read, so the owner of the file's kind or `files.read`. A folder
+    /// answers with what is in it, so it needs `files.read` whatever it is called.
     pub fn stat_file(&mut self, path: &str) -> Result<Stat, gateway::Error> {
-        self.files_core(files::extension_of(path), false)?
-            .stat_file(path)
+        let core = self.files_core(files::extension_of(path), false)?;
+        let stat = core.stat_file(path)?;
+        if stat.inside.is_some() {
+            self.may(Permission::FilesRead)?;
+        }
+        Ok(stat)
     }
 
     /// `workspace/delete`, to the trash and attributed to the caller: it needs `files.delete`,
@@ -766,8 +777,13 @@ impl Host<'_> {
             .delete_file(name, path, expect)
     }
 
-    /// `workspace/restore`, under `files.delete` too: whoever may delete may put back.
+    /// `workspace/restore`, under `files.delete` too: whoever may delete may put back what it
+    /// deleted. Putting it somewhere else (`to`) makes a file there, so it needs `files.write`
+    /// as well.
     pub fn restore_file(&mut self, restore: &Restore) -> Result<Restored, gateway::Error> {
+        if restore.to.is_some() {
+            self.may(Permission::FilesWrite)?;
+        }
         let name = self.name;
         self.core(Permission::FilesDelete)?
             .restore_file(name, restore)

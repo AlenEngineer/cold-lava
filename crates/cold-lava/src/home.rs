@@ -475,10 +475,12 @@ struct Doomed {
     rev: String,
 }
 
-/// Something the menu deleted: the core's token to put it back, and where it was.
+/// Something the menu deleted: the core's token to put it back, where it was, and in which
+/// workspace.
 struct Gone {
     trashed: files::TrashId,
     from: PathBuf,
+    root: PathBuf,
 }
 
 /// A delete waiting for a yes: what the user is deciding on, and what links to it.
@@ -632,6 +634,10 @@ pub struct Home {
     pending: Option<(PathBuf, Instant)>,
     /// What was deleted or merged this session, most recent last.
     undo: Vec<Undo>,
+    /// What the menu deleted in the workspaces it has left, by workspace: taken out of each
+    /// one's core when it is dropped and given to the next core on that workspace, so `undo`
+    /// still works after a look at another workspace.
+    kept: HashMap<PathBuf, files::Kept>,
     /// Marked tree rows (workspace-relative, as `Item::rel`), for moving, deleting and tagging
     /// several at once.
     marks: BTreeSet<String>,
@@ -720,6 +726,7 @@ impl Home {
             shown: None,
             pending: None,
             undo: Vec::new(),
+            kept: HashMap::new(),
             marks: BTreeSet::new(),
             folded: HashSet::new(),
             go_to: None,
@@ -1341,6 +1348,9 @@ impl Home {
             return;
         };
         self.vsel = i;
+        if let (Some(core), Some(leaving)) = (self.core.as_mut(), self.root.clone()) {
+            self.kept.insert(leaving, core.take_trashed(MENU));
+        }
         self.root = Some(v.path.clone());
         self.views.root = Some(v.path.clone());
         self.flavour = markdown::flavour_for(&v.path);
@@ -1353,6 +1363,9 @@ impl Home {
         self.core = None; // a different workspace: start a fresh core
         self.history.clear();
         self.reload_tree();
+        if let (Some(core), Some(kept)) = (self.core.as_mut(), self.kept.remove(&v.path)) {
+            core.keep_trashed(MENU, kept);
+        }
         // Start with top-level folders open if the workspace is small enough to take in at once.
         if self.items.len() <= 60 {
             for it in &self.items {
@@ -1395,6 +1408,18 @@ impl Home {
         self.refresh_rows();
         self.refresh_backlinks();
         self.deliver_item_news();
+    }
+
+    /// After the menu changed files through the core, which read them again inside the call:
+    /// the tree, and what the core has to say of it. No rescan, so item subscribers hear the
+    /// change once, as the core told it.
+    fn after_core_change(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        self.set_items(self.scan_tree(&root));
+        let events = self.core.as_mut().map(Core::poll).unwrap_or_default();
+        self.sync_with_core(&events);
     }
 
     /// The file whose backlinks the pane lists: the one the view in front shows, else the note
@@ -5124,7 +5149,7 @@ impl Home {
                     }
                     return self.flash(match refused {
                         Some(Err(e)) if e.reason != Reason::Changed => {
-                            format!("can't delete {file}: {e}")
+                            format!("can't delete {e}")
                         }
                         _ => format!("{file} is no longer there"),
                     });
@@ -5237,6 +5262,7 @@ impl Home {
                     batch.push(Gone {
                         trashed: deleted.trashed,
                         from: d.path.clone(),
+                        root: root.clone(),
                     });
                 }
                 Err(e) => {
@@ -5268,7 +5294,7 @@ impl Home {
         if gone.len() == p.doomed.len() && p.tidy.is_none() {
             self.marks.clear();
         }
-        self.reload_tree();
+        self.after_core_change();
         if was_shown {
             match (self.current().map(|it| it.kind), self.current_path()) {
                 (Some(ItemKind::Note), Some(next)) => self.show(&next),
@@ -5320,6 +5346,16 @@ impl Home {
             Some(Undo::Recipe(r)) => return self.undo_recipe(*r),
             Some(Undo::Delete(batch)) => batch,
         };
+        // The core that can put it back is the one on the workspace it was deleted in.
+        if let Some(elsewhere) = batch.iter().find(|t| Some(&t.root) != self.root.as_ref()) {
+            let name = elsewhere.root.file_name().unwrap_or_default();
+            let msg = format!(
+                "the last delete was in {}: open it to undo",
+                name.to_string_lossy()
+            );
+            self.undo.push(Undo::Delete(batch));
+            return self.flash(msg);
+        }
         let taken = batch.iter().any(|t| t.from.exists());
         let batch: Vec<(Gone, PathBuf)> = (batch.into_iter())
             .map(|t| {
@@ -5356,7 +5392,7 @@ impl Home {
                 }
             }
         }
-        self.reload_tree();
+        self.after_core_change();
         for to in back.iter().filter(|to| to.is_dir()) {
             if let Ok(rel) = to.strip_prefix(&root) {
                 self.expanded
@@ -5954,7 +5990,7 @@ impl Home {
         }
         self.flash(format!("created {rel}/"));
         self.filter.clear();
-        self.reload_tree();
+        self.after_core_change();
         self.select_path(&root.join(&rel));
     }
 

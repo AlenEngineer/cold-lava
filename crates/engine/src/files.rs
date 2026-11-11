@@ -120,14 +120,27 @@ pub struct Listed {
     pub files: Vec<String>,
 }
 
-/// The answer to `workspace/stat`. For a folder, `inside` lists everything in it at any depth:
-/// workspace-relative, sorted, a folder ending in `/`.
+/// The answer to `workspace/stat`. For a folder, `inside` lists what is in it at any depth,
+/// workspace-relative, sorted, a folder ending in `/`: the first `LISTED` entries a client may
+/// read. `more` counts the ones after those, `hidden` the ones under a hidden name (`.git`),
+/// which are never listed. The `rev` covers them all.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stat {
     pub rev: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inside: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub more: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hidden: usize,
 }
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// How many of a folder's entries `workspace/stat` lists.
+pub const LISTED: usize = 1000;
 
 /// The answer to `workspace/delete`: the token that restores it, and which trash took it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -169,6 +182,23 @@ pub fn extension_of(path: &str) -> Option<String> {
 /// `..`, `.` or hidden part (`.obsidian`, `.trash`, `.git`), and leads inside the workspace once
 /// symlinks are followed.
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+    let path = named(root, rel)?;
+    within(root, rel, &path)?;
+    Ok(path)
+}
+
+/// The entry at `rel` itself, for `workspace/stat` and `workspace/delete`: as `resolve`, but
+/// the last part is not followed when it is a symlink. The folder it is in has to lead inside
+/// the workspace; the link is then an entry of the workspace like any other, whatever it
+/// points to.
+fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+    let path = named(root, rel)?;
+    within(root, rel, path.parent().unwrap_or(root))?;
+    Ok(path)
+}
+
+/// `rel` under `root`, refused unless it is relative and has no `..`, `.` or hidden part.
+fn named(root: &Path, rel: &str) -> Result<PathBuf, Error> {
     let refuse = |why: &str| Error::new(Reason::Refused, format!("{rel}: {why}"));
     let p = Path::new(rel);
     if rel.is_empty() || p.is_absolute() {
@@ -184,14 +214,20 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
             }
         }
     }
-    let path = root.join(p);
+    Ok(root.join(p))
+}
+
+/// Refused unless `path`, or its deepest folder that exists, leads inside the workspace once
+/// symlinks are followed.
+fn within(root: &Path, rel: &str, path: &Path) -> Result<(), Error> {
     let real_root = root.canonicalize().map_err(io(rel))?;
     let existing = path.ancestors().find(|a| a.exists()).unwrap_or(root);
     let real = existing.canonicalize().map_err(io(rel))?;
     if !real.starts_with(&real_root) {
-        return Err(refuse("it leads outside the workspace"));
+        let message = format!("{rel}: it leads outside the workspace");
+        return Err(Error::new(Reason::Refused, message));
     }
-    Ok(path)
+    Ok(())
 }
 
 fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
@@ -297,12 +333,17 @@ fn rev_of(contents: &Contents) -> String {
             }
             rev(&listing)
         }
+        Contents::Link(target) => {
+            let mut link = b"link\n".to_vec();
+            link.extend(target.to_string_lossy().as_bytes());
+            rev(&link)
+        }
     }
 }
 
 /// What is at `rel` now. Nothing there is `changed`.
 fn contents(root: &Path, rel: &str) -> Result<(PathBuf, Contents), Error> {
-    let path = resolve(root, rel)?;
+    let path = resolve_entry(root, rel)?;
     let read = Contents::read(&path).map_err(|e| match e {
         WriteError::Io(_, e) if e.kind() == std::io::ErrorKind::NotFound => {
             Error::new(Reason::Changed, format!("{rel} is gone"))
@@ -326,20 +367,30 @@ fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
 /// `workspace/stat`
 pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
     let (path, read) = contents(root, rel)?;
-    let inside = match &read {
-        Contents::File(_) => None,
-        Contents::Folder(entries) => {
-            let folder = rel.trim_end_matches('/');
-            let listed = entries.iter().map(|(entry, _, _)| {
-                let slash = if path.join(entry).is_dir() { "/" } else { "" };
-                let entry = entry.to_string_lossy().replace('\\', "/");
-                format!("{folder}/{entry}{slash}")
-            });
-            Some(listed.collect())
-        }
+    let mut stat = Stat {
+        rev: rev_of(&read),
+        inside: None,
+        more: 0,
+        hidden: 0,
     };
-    let rev = rev_of(&read);
-    Ok(Stat { rev, inside })
+    if let Contents::Folder(entries) = &read {
+        let folder = rel.trim_end_matches('/');
+        let is_hidden = |entry: &Path| {
+            let mut parts = entry.components();
+            parts.any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+        };
+        let (hidden, seen): (Vec<_>, Vec<_>) =
+            (entries.iter().map(|(entry, _, _)| entry)).partition(|entry| is_hidden(entry));
+        let listed = seen.iter().take(LISTED).map(|entry| {
+            let slash = if path.join(entry).is_dir() { "/" } else { "" };
+            let entry = entry.to_string_lossy().replace('\\', "/");
+            format!("{folder}/{entry}{slash}")
+        });
+        stat.inside = Some(listed.collect());
+        stat.more = seen.len().saturating_sub(LISTED);
+        stat.hidden = hidden.len();
+    }
+    Ok(stat)
 }
 
 /// `workspace/delete`, through `trash::delete`: to the trash the workspace's `trashOption`
@@ -361,15 +412,19 @@ pub fn delete(
 /// `workspace/restore`, through `trash::restore`: back where it was, or at `to`. The answer
 /// says where it is now.
 pub fn restore(root: &Path, trashed: &Trashed, to: Option<&str>) -> Result<Restored, Error> {
+    let from = trashed.from.strip_prefix(root).unwrap_or(&trashed.from);
+    let from = from.to_string_lossy().replace('\\', "/");
     let rel = match to {
-        Some(to) => to.to_string(),
-        None => {
-            let from = trashed.from.strip_prefix(root).unwrap_or(&trashed.from);
-            from.to_string_lossy().replace('\\', "/")
+        // Somewhere else is a new name, under the rules a new folder's has.
+        Some(to) if to != from => {
+            let unfit = |e: anyhow::Error| Error::new(Reason::Refused, e.to_string());
+            crate::rename::check_path(to).map_err(unfit)?;
+            to.to_string()
         }
+        _ => from,
     };
     let path = resolve(root, &rel)?;
-    if !trashed.at.exists() {
+    if trashed.at.symlink_metadata().is_err() {
         let message = format!("{rel} is no longer in the trash");
         return Err(Error::new(Reason::Changed, message));
     }
@@ -390,30 +445,34 @@ pub fn create_folder(root: &Path, rel: &str) -> Result<Folder, Error> {
 /// How many deletes of one client the core keeps tokens for.
 const KEPT: usize = 256;
 
-/// What the core put in a trash, by token, with who deleted it.
+/// What the core put in a trash, by token, each with the client that deleted it. A token is
+/// that client's alone: to any other it names nothing.
+#[derive(Default)]
 pub struct Trash {
     kept: Vec<(TrashId, String, Trashed)>,
-    /// When this core opened: a token of another run names nothing here.
-    run: u128,
+    /// Keyed at random when this core opened, for tokens nobody can work out: not from
+    /// another token, and not from a run before.
+    keys: std::collections::hash_map::RandomState,
     next: u64,
 }
 
-impl Default for Trash {
-    fn default() -> Trash {
-        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        Trash {
-            kept: Vec::new(),
-            run: since.map_or(0, |d| d.as_nanos()),
-            next: 0,
-        }
-    }
-}
+/// A client's deletes, taken out of one core to be given to another (`Core::take_trashed`,
+/// `keep_trashed`): how a frontend's undo outlives the core it deleted through. Only a core
+/// makes one.
+#[derive(Default)]
+pub struct Kept(Vec<(TrashId, Trashed)>);
 
 impl Trash {
-    /// The token for what `by` just deleted. Its oldest is forgotten once it has `KEPT`.
+    /// The token for what `by` just deleted: 128 bits of the keyed hash of a counter. Its
+    /// oldest is forgotten once it has `KEPT`.
     pub fn keep(&mut self, by: &str, trashed: Trashed) -> TrashId {
+        use std::hash::BuildHasher;
         self.next += 1;
-        let id = TrashId(format!("{:x}-{}", self.run, self.next));
+        let (high, low) = (
+            self.keys.hash_one((0u8, self.next)),
+            self.keys.hash_one((1u8, self.next)),
+        );
+        let id = TrashId(format!("{high:016x}{low:016x}"));
         let mine = |(_, owner, _): &(TrashId, String, Trashed)| owner == by;
         if self.kept.iter().filter(|k| mine(k)).count() >= KEPT
             && let Some(oldest) = self.kept.iter().position(mine)
@@ -424,14 +483,32 @@ impl Trash {
         id
     }
 
-    pub fn get(&self, id: &TrashId) -> Option<&Trashed> {
-        let found = self.kept.iter().find(|(kept, _, _)| kept == id);
+    /// What `by` deleted under `id`. Another client's token is as one nobody was given.
+    pub fn get(&self, by: &str, id: &TrashId) -> Option<&Trashed> {
+        let mut all = self.kept.iter();
+        let found = all.find(|(kept, owner, _)| kept == id && owner == by);
         found.map(|(_, _, trashed)| trashed)
     }
 
-    /// After it was put back.
-    pub fn forget(&mut self, id: &TrashId) {
-        self.kept.retain(|(kept, _, _)| kept != id);
+    /// After `by` put it back.
+    pub fn forget(&mut self, by: &str, id: &TrashId) {
+        self.kept
+            .retain(|(kept, owner, _)| kept != id || owner != by);
+    }
+
+    /// Everything `by` deleted, out of this core.
+    pub fn take(&mut self, by: &str) -> Kept {
+        let all = std::mem::take(&mut self.kept).into_iter();
+        let (taken, left): (Vec<_>, Vec<_>) = all.partition(|(_, owner, _)| owner == by);
+        self.kept = left;
+        Kept(taken.into_iter().map(|(id, _, t)| (id, t)).collect())
+    }
+
+    /// `by`'s deletes from an earlier core, under the tokens they had.
+    pub fn give(&mut self, by: &str, kept: Kept) {
+        let theirs = kept.0.into_iter();
+        self.kept
+            .extend(theirs.map(|(id, trashed)| (id, by.to_string(), trashed)));
     }
 }
 
@@ -554,6 +631,8 @@ mod tests {
             Stat {
                 rev: rev(b"a"),
                 inside: None,
+                more: 0,
+                hidden: 0,
             },
             json!({"rev": "af63dc4c8601ec8c"}),
         );
@@ -561,8 +640,11 @@ mod tests {
             Stat {
                 rev: "9c1d0a52e17b3f04".into(),
                 inside: Some(vec!["Concepts/Lava.md".into(), "Concepts/Old/".into()]),
+                more: 12,
+                hidden: 3,
             },
-            json!({"rev": "9c1d0a52e17b3f04", "inside": ["Concepts/Lava.md", "Concepts/Old/"]}),
+            json!({"rev": "9c1d0a52e17b3f04", "inside": ["Concepts/Lava.md", "Concepts/Old/"],
+                   "more": 12, "hidden": 3}),
         );
         wire(
             Deleted {
@@ -912,7 +994,7 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&outside, dir.join("Link")).unwrap();
-            bad.extend(["Link", "Link/secret.md"]);
+            bad.push("Link/secret.md");
         }
         for path in bad {
             let stat = core.stat_file(path).unwrap_err();

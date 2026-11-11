@@ -974,8 +974,10 @@ graph all see the new date. None of them knew what a canvas is.
 ### Deleting, restoring and making folders
 
 *(design of 2026-11-11, written before the code; the first group of #193, "one door into the
-engine". Built as written: `crates/engine/src/files.rs`, `Core::stat_file`, `delete_file`,
-`restore_file` and `create_folder`, `Host`'s methods of the same names, `rpc.rs`.)*
+engine". Built: `crates/engine/src/files.rs`, `Core::stat_file`, `delete_file`,
+`restore_file` and `create_folder`, `Host`'s methods of the same names, `rpc.rs`. Revised
+after an independent check of the first build: whose a token is, what `to` may do, symlinks,
+what `stat` lists, and the menu's undo across workspaces.)*
 
 The menu deleted, restored and made folders by calling the engine's functions itself, so an
 extension, `cold-lava lsp` (#195) or the GUI could do none of it. These are now file messages,
@@ -985,20 +987,20 @@ the same `{reason, message}`.
 
 | Request | Answer |
 | --- | --- |
-| `workspace/stat {path}` | `{rev}` for a file, `{rev, inside}` for a folder; `changed` when nothing is there |
+| `workspace/stat {path}` | `{rev}` for a file or a symlink, `{rev, inside, more, hidden}` for a folder; `changed` when nothing is there |
 | `workspace/delete {path, expect}` | `{trashed, went}`; `changed` unless the file or folder is still the version `expect`, or when it is gone |
-| `workspace/restore {trashed, to}` | `{path}`, where it is now; `to` is optional; `exists` when something is there, `changed` when the core keeps nothing under `trashed` or the trash no longer has it |
+| `workspace/restore {trashed, to}` | `{path}`, where it is now; `to` is optional; `exists` when something is there, `changed` when the caller was given no such token or the trash no longer has it |
 | `workspace/create-folder {path}` | `{path}`; `exists` when something is there; missing parents are made |
 
 ```json
 {"method": "workspace/stat", "params": {"path": "Concepts"}}
-{"rev": "9c1d0a52e17b3f04", "inside": ["Concepts/Lava.md", "Concepts/Old/", "Concepts/Old/Ash.md"]}
+{"rev": "9c1d0a52e17b3f04", "inside": ["Concepts/Lava.md", "Concepts/Old/", "Concepts/Old/Ash.md"], "hidden": 2}
 
 {"method": "workspace/delete", "params": {"path": "Concepts/Lava.md", "expect": "af63dc4c8601ec8c"}}
-{"trashed": "18a1f3c2d4-1", "went": "system"}
+{"trashed": "3f9c1b7e02a44d18c6e5a09b7d21f4e3", "went": "system"}
 
-{"method": "workspace/restore", "params": {"trashed": "18a1f3c2d4-1"}}
-{"method": "workspace/restore", "params": {"trashed": "18a1f3c2d4-1", "to": "Concepts/Lava 1.md"}}
+{"method": "workspace/restore", "params": {"trashed": "3f9c1b7e02a44d18c6e5a09b7d21f4e3"}}
+{"method": "workspace/restore", "params": {"trashed": "3f9c1b7e02a44d18c6e5a09b7d21f4e3", "to": "Concepts/Lava 1.md"}}
 {"path": "Concepts/Lava.md"}
 
 {"method": "workspace/create-folder", "params": {"path": "Guide/Field Notes"}}
@@ -1017,6 +1019,24 @@ the same `{reason, message}`.
   file's text, so it has none for an image and none for a folder. `stat` gives the `rev` of
   any file (the same 16 hex digits `workspace/read` gives, of the file's bytes) and of a
   folder.
+- **What `stat` lists.** `inside` is what the caller shows before it asks: the folder's
+  entries at any depth, workspace-relative, sorted, a folder ending in `/`. It leaves out
+  every entry under a hidden name (`.git/objects/…`, `.DS_Store`), which `workspace/read`
+  would refuse too, and says how many there are as `hidden`, so a dialog can say "and 40
+  hidden entries" without naming them. It stops at 1000 entries (`files::LISTED`) and
+  counts the rest as `more`. Both counts are left out when zero. The `rev` still covers
+  every entry, hidden and unlisted ones too, so the delete's check loses nothing. Listing a
+  folder needs `files.read` whatever the folder is called: an owner's kind is a kind of
+  file, and a folder named `Old.csv` is not one.
+- **Symlinks.** `stat` and `delete` take the entry itself. A symlink is never followed: its
+  `rev` is of where it points, it has no `inside`, and a delete moves the link to the
+  trash and leaves its target alone, a file or a folder, inside the workspace or outside,
+  there or gone. The folder the link is in still has to lead inside the workspace, so
+  nothing is reached *through* a link that leads out. A symlinked folder is treated the
+  same way as a symlinked note, and not refused: the tree shows both, the link is the
+  workspace's own entry, and trashing it is what the menu did before these were messages.
+  `workspace/read`, `write` and `create` follow links as before and refuse one that
+  leads out.
 - **A folder's version** is a hash of its listing: every file and folder in it, at any depth,
   hidden ones too, each with its size and modified time. `stat` answers it with the listing
   (`inside`: workspace-relative, sorted, a folder ending in `/`), which is what the caller
@@ -1032,22 +1052,45 @@ the same `{reason, message}`.
   first, as the menu does for marked notes; a change between that check and a delete still
   stops at that one, with the ones before it in the trash and their tokens in hand.
 - **The restore token.** `trash::restore` needs where the file was, where it is in the trash,
-  and on Linux its `.trashinfo`. The core keeps that and hands out `trashed`, a token: a
-  string, new for each delete and each run of the core. `workspace/restore` puts the file back
-  where it was, or at `to` (the menu asks first and passes a free name when the old path is
-  taken), never over something: that is `exists`, and the token still works. Once restored the
-  token is spent. **It does not survive a restart of the core, in either trash**: the core's
-  memory is the only record. The workspace's `.trash` and macOS's `~/.Trash` are plain folders
-  that record nothing of where a file came from, so a token that outlived the core would have
-  to carry both paths itself, and the core could not tell it from a forged one, which would
-  let a client move any file out of the user's trash into the workspace and read it. After a
-  restart the file is still in the trash, and the desktop's own "restore" puts it back on
-  Linux (the `.trashinfo` is written for that). The core keeps the last 256 deletes of each
-  client; an older token is `changed`.
+  and on Linux its `.trashinfo`. The core keeps that and hands out `trashed`, a token.
+  `workspace/restore` puts the file back where it was, or at `to`, never over something:
+  that is `exists`, and the token still works. Once restored the token is spent.
+  - **A token is the client's it was given to.** The core keeps who deleted what, and
+    another client's token answers exactly as one nobody was given: `changed`. An extension
+    can't put back, or put elsewhere, what the user or another extension deleted.
+  - **A token says nothing about any other.** It is 32 hex digits, 128 bits of a hash keyed
+    at random when the core opens (the standard library's `RandomState`), of a counter no
+    client sees. Nothing in one token, or in a token of an earlier run, helps to work out
+    another.
+  - **It does not survive a restart of the core, in either trash.** The core's memory is
+    the only record that a token is real, and whose it is. The workspace's `.trash` and
+    macOS's `~/.Trash` are plain folders that record nothing of where a file came from, so
+    a token that outlived the core would have to carry both paths itself, as data the
+    client sends, and then the core could not tell a real one from a forged one: any client
+    could move any file out of the user's trash into the workspace and read it. A token
+    that is only a random name for something the core holds can't be forged, and the price
+    is that it goes with the core. After a restart the file is still in the trash, and the
+    desktop's own "restore" puts it back on Linux (the `.trashinfo` is written for that).
+  - The core keeps the last 256 deletes of each client; an older token is `changed`.
+- **`to` is a new name.** Putting a file back somewhere else makes a file there, so over the
+  gateway `to` needs `files.write` as well as `files.delete`, and a `to` other than where the
+  file was follows the rules a new folder's name does: `files::resolve` (inside the
+  workspace, no hidden part) and `rename::check_path` (no `[ ] | # ^`, which links can't
+  point to). Without `to` the file goes back under the name it had, whatever that was.
+  `to` is for the free name a frontend offers when the old path is taken; it is not a move.
+  A move that keeps the links to a note right is `rename`'s, in the next group.
+- **A frontend's undo across cores.** The menu drops its core when another workspace is
+  opened, and its undo has to outlive that. `Core::take_trashed(by)` hands a client's
+  deletes out of a core, and `Core::keep_trashed(by, kept)` gives them to the next core on
+  that workspace, under the tokens they had. Only a core makes the value that travels
+  (`files::Kept`), and it never crosses the wire, so this is for a frontend that holds the
+  core, not for extensions. The menu keeps it per workspace while it is away. An undo asked
+  for while another workspace is open says which workspace to open, and stays on the stack.
 - **Permissions.** `workspace/delete` and `workspace/restore` need **`files.delete`**, a
-  permission of its own that `files.write` does not include; `workspace/create-folder` needs
+  permission of its own that `files.write` does not include; a restore with `to` needs
+  `files.write` too; `workspace/create-folder` needs
   `files.write` (creating is a write); `workspace/stat` is a read (`files.read`, or the owner
-  of a file's kind). A manifest is where the user sees what an extension may do, and the trust
+  of a file's kind; `files.read` for any folder). A manifest is where the user sees what an extension may do, and the trust
   prompt (#89) will list the same words: "may delete files" is a line worth its own, and an
   extension that writes tables should not get it by asking to write. It guards against an
   extension that deletes by mistake, not against a hostile one: `files.write` can already
@@ -1059,7 +1102,13 @@ the same `{reason, message}`.
   changed and then `Deleted {path, by}`, `Restored {path, by}` or `FolderCreated {path, by}`,
   with `by` the client's name, as `ItemEdited` does for edits. The menu's status line says
   `<extension>: deleted <path>`. Item and link subscribers hear the removal and the return
-  once each, in that order (`core/news.rs`).
+  once each, in that order (`core/news.rs`). That holds for the menu's own deletes too: it
+  no longer reads the workspace again after one, since the core has (`delete-news.drive`
+  counts what an extension hears). A folder is the exception, on purpose: the core reads
+  the workspace again inside the call, which is one `items/reset`, and the watcher's own
+  report of a folder is a second one a little later, as for any folder that changes.
+  Telling the core's own move from someone else's in the watcher's report would risk
+  missing a real change, and a reset only costs a query.
 - **No plan for a delete.** A plan is for a change the engine computes and the user reads
   before it happens: a rename's link edits. A delete computes nothing. What the menu shows
   first, the notes that link to what goes, is a question any client already asks:
@@ -1067,8 +1116,10 @@ the same `{reason, message}`.
   dialog, then `delete` with the `rev` the user saw. That `rev` is the ticket.
 - **The menu is a client.** It asks the core directly, in-process and with no JSON, with the
   same request types, as `menu` (a name no extension can take). It needs no permission: it is
-  the user. `home.rs` no longer calls `trash::delete`, `trash::restore` or
-  `write::create_dir`, and a test reads its source to keep it so.
+  the user. Nothing in the terminal app calls `trash::delete`, `trash::restore` or
+  `write::create_dir` any more, and `tests/one_door.rs` reads its source to keep it so:
+  it lists every engine write, every whole-workspace operation and every `std::fs` change
+  the app still makes itself, and why.
 
 **The pattern for the next groups** (rename, move and merge; recipes; undo; bookmarks), so
 each doesn't invent one:
@@ -2033,9 +2084,9 @@ runs the `open-tasks` example with and without `items.edit`.)*
 | --- | --- |
 | `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`, `workspace/style` |
 | `items.edit` | `items/edit` |
-| `files.read` | `workspace/read`, `workspace/files` and `workspace/stat` for kinds of file it doesn't own |
+| `files.read` | `workspace/read`, `workspace/files` and `workspace/stat` for kinds of file it doesn't own, and `workspace/stat` of any folder |
 | `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own, and `workspace/create-folder` |
-| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too |
+| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too; a restore to another path needs `files.write` as well |
 
 A request without its permission is refused as `forbidden`, with the permission it needs in
 the message. An owner needs no permission for files of its own kinds ("File types, as built").

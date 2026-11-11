@@ -207,9 +207,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   inside the workspace and out of hidden folders. `Core` answers them, and its watcher reports
   other files as `Event::FileChanged`. Also here (#193, docs/extensions.md "Deleting,
   restoring and making folders"): `workspace/stat` (the `rev` of any file, or of a folder's
-  listing), `workspace/delete` (to the trash, refused unless still that `rev`; answers a
-  token the core keeps, `Trash`, gone when the core is), `workspace/restore` (never over
-  something) and `workspace/create-folder`. The core reads what moved at once and emits
+  listing, which leaves out hidden entries and is bounded), `workspace/delete` (to the
+  trash, refused unless still that `rev`; answers a random token that only the client it
+  was given to can use, kept in the core's `Trash` and gone with the core),
+  `workspace/restore` (never over something; `to` is a new name) and
+  `workspace/create-folder`. `stat` and `delete` never follow a symlink: the link is what
+  goes (`resolve_entry`). A frontend that drops a core carries its own deletes to the next
+  one with `Core::take_trashed` / `keep_trashed`. The core reads what moved at once and emits
   `Event::Deleted`, `Restored` or `FolderCreated` naming the client. The next groups of #193
   (rename, merge, recipes, undo, bookmarks) follow the pattern that section ends with.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
@@ -300,8 +304,10 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   program, backlinks, switcher, search). It applies the extensions' `Effect`s. It deletes,
   restores and makes folders by asking the core as `MENU` (`Core::delete_file`,
   `restore_file`, `create_folder`), never `trash::delete`, `trash::restore` or
-  `write::create_dir`: `tests/one_door.rs` reads its source and lists the engine calls it
-  still makes itself, a list that only shrinks (#193).
+  `write::create_dir`, and doesn't rescan afterwards (`after_core_change`): the core read
+  what moved. `tests/one_door.rs` reads every file under `src/` and lists the engine
+  writes, the whole-workspace operations and the `std::fs` changes the app still makes
+  itself, lists that only shrink (#193).
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
   plans, applies and undoes through `recipe.rs`, asking owners as the merge dialog does.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a

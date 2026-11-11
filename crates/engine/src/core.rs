@@ -1035,13 +1035,13 @@ impl Core {
         by: &str,
         restore: &files::Restore,
     ) -> Result<files::Restored, gateway::Error> {
-        let Some(trashed) = self.trashed.get(&restore.trashed) else {
-            let message = "nothing in the trash goes by that token: it was put back, or \
+        let Some(trashed) = self.trashed.get(by, &restore.trashed) else {
+            let message = "nothing you deleted goes by that token: it was put back, or \
                            cold-lava started again since it was deleted";
             return Err(gateway::Error::new(Reason::Changed, message));
         };
         let restored = files::restore(self.root(), trashed, restore.to.as_deref())?;
-        self.trashed.forget(&restore.trashed);
+        self.trashed.forget(by, &restore.trashed);
         let path = self.root().join(&restored.path);
         let mut events = self.moved(&path, path.is_dir());
         events.push(Event::Restored {
@@ -1051,6 +1051,19 @@ impl Core {
         self.broadcast(&events);
         self.unseen.extend(events);
         Ok(restored)
+    }
+
+    /// Everything `by` deleted through this core, out of it: for a frontend that is about to
+    /// drop this core and still wants to undo (`keep_trashed` on the next one). Its tokens
+    /// stop working here.
+    pub fn take_trashed(&mut self, by: &str) -> files::Kept {
+        self.trashed.take(by)
+    }
+
+    /// What `take_trashed` gave for `by`, from an earlier core on this workspace: the tokens
+    /// work here as they did there.
+    pub fn keep_trashed(&mut self, by: &str, kept: files::Kept) {
+        self.trashed.give(by, kept);
     }
 
     /// `workspace/create-folder` on behalf of `by`. An empty folder changes nothing the index
@@ -1086,6 +1099,9 @@ impl Core {
                 let mut events = Vec::new();
                 if owned {
                     events = self.owned_changed(std::slice::from_ref(&rel));
+                } else {
+                    // Links to it resolve, or stop resolving, from now on.
+                    self.index.relink();
                 }
                 events.push(Event::FileChanged(rel));
                 events

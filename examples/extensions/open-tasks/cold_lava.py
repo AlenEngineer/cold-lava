@@ -149,7 +149,9 @@ class Extension:
 
     def stat(self, path):
         """The version of a file or a folder without its text: {"rev"}, and for a folder
-        {"rev", "inside"}, everything in it. It is the `expect` a delete needs."""
+        {"rev", "inside"}, what is in it: up to 1000 entries, with "more" counting the rest and
+        "hidden" the ones under hidden names, which are never listed. The `rev` is the `expect`
+        a delete needs."""
         return self.request("workspace/stat", {"path": path})
 
     def delete(self, path, expect):
@@ -159,9 +161,10 @@ class Extension:
         return self.request("workspace/delete", {"path": path, "expect": expect})
 
     def restore(self, trashed, to=None):
-        """Put back what `delete` answered as `trashed`, where it was or at `to`. Never
-        overwrites: a taken path is refused as `exists`. The token is gone once cold-lava
-        restarts. Returns {"path"}."""
+        """Put back what your `delete` answered as `trashed`, where it was, or under another
+        name at `to`, which needs `files.write` too. Never overwrites: a taken path is refused
+        as `exists`. The token is yours alone and is gone once cold-lava restarts. Returns
+        {"path"}."""
         params = {"trashed": trashed}
         if to is not None:
             params["to"] = to
