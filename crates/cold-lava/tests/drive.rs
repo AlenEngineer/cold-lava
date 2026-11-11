@@ -2039,6 +2039,28 @@ fn editing_a_shape_rewrites_only_its_block() {
 }
 
 #[test]
+fn a_shape_saved_in_the_editor_shows_on_its_whiteboard_at_once() {
+    let dir = sandbox("shape-saved-shows");
+    let canvas = dir.join("example-workspace/Volcano Venn.canvas");
+    let before = std::fs::read(&canvas).unwrap();
+    let out = drive("shape-saved-shows.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let saved = saved_shape(&dir.join("example-workspace"), "checklist");
+    assert_eq!(saved["title"].as_str(), Some("Checklist-mine"));
+    assert_eq!(
+        std::fs::read(&canvas).unwrap(),
+        before,
+        "the canvas places the shape by id: saving the shape writes nothing to it"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn placed_shapes_in_a_group_become_one_shape() {
     let dir = sandbox("shape-from-drawing");
     let workspace = dir.join("example-workspace");
