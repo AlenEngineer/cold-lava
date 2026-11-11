@@ -83,7 +83,12 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   `core/news.rs` (tests only) is the harness for what subscribers hear and in which order: it
   plays the watcher and an owner, applies steps (outside write, `items/edit`, rescan, rename,
   recipe, an owner's answers) and collects each delivery, with no waiting. Test a change to how
-  news is queued there, not in a drive script.
+  news is queued there, not in a drive script. News goes into the queue through `Core::tell`
+  only: while an `items/reset` waits to be taken, it drops that subscription's later item news
+  (the query on the reset finds it), so a frontend never has to take news between two calls to
+  keep a change from counting twice. News carries no order: `items/query`'s is the only one
+  (notes by path, then owned files by path), and whoever shows rows queries again on any news
+  (`Feed`, bound shapes).
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read), `create`, `move_file`. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's

@@ -118,7 +118,8 @@ then a query and a view, not a parser of its own.
   edits refuse a stale one. The core never adds `^ids` by itself.
 - **Reading.** `items/query` takes a `kind` and a fixed filter (notes under a folder or with a
   tag, status, a date range on `due`, `scheduled`, `start`, `done` or `agenda`, text, a property
-  key), returns items ordered by note and line, and pages. No query language in the core: an
+  key), returns items in one order (notes by path and line, then other owners' files), and
+  pages. No query language in the core: an
   extension that wants Dataview's can compile it to this. Reads are answered at once; they don't
   change anything, so effects stay queued.
 - **Hearing changes.** `items/subscribe` (kinds and the same filter), then `items/changed` with
@@ -151,8 +152,11 @@ then a query and a view, not a parser of its own.
   `status_type` is one of these), `date` (`field` is `due`, `scheduled`, `start`, `done` or
   `agenda`, with `from` and `to`, both included, either open), `text` (every folded word is in
   one of the item's text values) and `property` (the item has a value for that field). An
-  unknown filter key is refused when the message is read. Items come by note, then line, the
-  order `cold-lava items` prints. A page is `after` (the last id of the previous page) and
+  unknown filter key is refused when the message is read. Items come by note, then line, and
+  after the notes the files other owners read (canvases, an extension's kinds) by path, each
+  with its items as its owner gave them: the order `cold-lava items` prints, and the only
+  place the order is decided. News carries no order, so a subscriber that shows items in order
+  queries again on `items/changed` as it does on `items/reset`. A page is `after` (the last id of the previous page) and
   `limit`; the answer is `{items, next}`, with `next` the `after` of the next page or `null`.
   `note` keeps one note's or owned file's items: its workspace-relative path with its
   extension (`Inbox/Field Season.md`).
@@ -164,7 +168,9 @@ then a query and a view, not a parser of its own.
   `items/changed {subscription, added, updated, removed}`: added and updated items whole,
   removed ones by id. An item that stops matching the filter (a task ticked out of `status:
   ["todo"]`) is removed. After a full rescan every subscription gets `items/reset
-  {subscription}`, and the subscriber queries again. `items/unsubscribe {subscription}` stops
+  {subscription}`, and the subscriber queries again. While a reset waits to be handed out, the
+  core drops that subscription's later `items/changed`: the query on the reset finds those
+  changes, so they are never counted twice (#199). `items/unsubscribe {subscription}` stops
   one, only the caller's own. The menu hands news to the extension whose name made the
   subscription (`Extension::items`), or to its own screen; news for a subscription nobody holds
   any more stops it.
@@ -723,8 +729,8 @@ style.minutes = { badge = true, icon = "⏱" }
   changed since the table was read). The core reads the edited note at once, and the extension
   hears it through its subscription and sends the table again with `select` naming the row as
   it reads now, so an edit that changed the row's id (its key field) keeps the row selected.
-- **Live.** The table applies its subscription's `items/changed` to its items (an updated item
-  keeps its place, added ones are put in by note and line) and `items/reset` queries again,
+- **Live.** The table queries again on its subscription's `items/changed` and `items/reset`
+  alike, so its rows are in the query's order whichever it heard last (#199),
   sending the table with `view/update`; the view keeps sort, filter and selection. Enter is
   `view/event activated`, and the extension asks for `workspace/open` at the item's line. Back
   (`Ctrl-o`) returns to the table as it was, since a view is a place while it is open.

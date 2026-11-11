@@ -79,7 +79,7 @@ pub enum DateField {
     Agenda,
 }
 
-/// `items/query`: the items `select` names, ordered by note and line, a page at a time.
+/// `items/query`: the items `select` names, a page at a time, in the order `query` gives them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Query {
     #[serde(flatten)]
@@ -518,7 +518,10 @@ impl Page {
     }
 }
 
-/// `items/query` on the workspace as the core has it now.
+/// `items/query` on the workspace as the core has it now. Its order is the order of items
+/// everywhere: notes by path, then the files other owners read by path (`files`), each file's
+/// items as the file has them (a note's by line, an owned file's as its owner gave them).
+/// News says nothing of order, so whoever shows items in order queries again when it hears any.
 pub fn query(workspace: &Workspace, q: &Query) -> Result<Found, Error> {
     q.select.check(workspace)?;
     let mut all = files(workspace).flat_map(|f| q.select.in_file(workspace, f));
