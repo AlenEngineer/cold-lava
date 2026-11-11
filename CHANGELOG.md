@@ -59,6 +59,18 @@ change commands, keys and file formats; patch versions only fix things.
   the Markdown the reader shows: a link to a heading of the same note (`[text](#heading)`) is no
   longer the tag `heading`, and links and tags in indented code, in a ``` ``code`` ``` span, in an
   HTML block or past a fence line that doesn't close the fence no longer count.
+- Renames, tidy and a task's `tags` and `links` read the same syntax tree as backlinks and the
+  graph (#203, part of #140), so they agree on what a link is. A rename therefore leaves
+  alone what the reader shows as no link: text in indented code, in a ``` ``code`` ``` span or a
+  code span that goes on to the next line, in an HTML block, in a fence inside a quote or past
+  a fence line too short to close its fence, a Markdown link in the frontmatter, `](Note.md)`
+  with no `[` before it, and a `[text](…)` cut in two by a table's `|`. It now finds links it
+  missed: after a line that only looked like a fence (` ```js``` ` on one line, or a fence
+  indented four spaces inside a paragraph). These stay links, for a rename and for backlinks:
+  a Markdown link whose text goes on to the next line, an image inside a link's text
+  (`[![alt](pic.png)](Note.md)`) and a wikilink on a line that looks like a definition
+  (`[Source]: [[Book]]`). In a flavour without wikilinks, a task's `links` no longer lists
+  `[[…]]`.
 
 ### Fixed
 
@@ -68,8 +80,15 @@ change commands, keys and file formats; patch versions only fix things.
   `a#b`, `a**#b**`, a `#` in a URL, `[[#Heading]]` and a link's destination still hold none.
 - Reference links are links (#181): `[text][ref]`, `[ref][]` and `[ref]` point where the note's
   `[ref]: Note.md` says, so the note they name gets the backlink and the graph's edge, and the
-  types that read a note's links see them. A rename doesn't rewrite a definition's destination
-  yet, and `tidy` doesn't count these links yet.
+  types that read a note's links see them.
+- A rename rewrites a reference link's definition (#203): `[ref]: Old.md "Title"` becomes
+  `[ref]: New.md "Title"`, keeping its label, its title and the way its path was written. It
+  used to report "0 links" and leave the link broken. `tidy` counts reference links, so two
+  notes joined only by one are no longer orphans.
+- A task's own `tags` and `links` (and any type's that reads them from a block) are the ones
+  the note's syntax tree reads on its lines (#203): `- [ ] **#urgent** call` has the tag, a
+  reference link is in `links`, and what sits in a wikilink's alias or a link's destination
+  is no tag.
 - The agenda and the type table no longer list a task twice when it comes in the first change
   after cold-lava created, renamed, moved, merged or deleted files (#172). Those read the
   workspace again, and the `items/reset` that sends waited for the next change and came with

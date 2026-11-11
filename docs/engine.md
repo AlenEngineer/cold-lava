@@ -248,13 +248,18 @@ change what it shows, never how it works.
     with `|` ends the paragraph above it, as on GitHub; another table's header is a
     paragraph's only line. A link definition (`[label]: destination "title"` on one line,
     where a paragraph would start) is a block of its own, and the line after it starts
-    afresh, as pulldown-cmark reads it. With footnotes, `[^label]:` is none.
+    afresh, as pulldown-cmark reads it. With footnotes, `[^label]:` is none. With wikilinks, a
+    destination that starts one is none either: `[Source]: [[Book]]` is a line of text with a
+    wikilink, which backlinks and a rename find.
   - *Inlines* are read per line, left to right, the first to start winning: code spans,
     wikilinks and embeds (target, `#heading` or `^block`, `|alias`), Markdown links and images,
     Dataview fields (`[key:: value]`, `(key:: value)`, a `key:: value` line), `%%comments%%`,
     `$math$`, tags and block ids. A code span its line doesn't close goes on into the next
-    lines of its paragraph when one of them closes it, as CommonMark has it. A task's checkbox
-    is a token of its list item. Emphasis, highlights and footnotes stay text, and so do the
+    lines of its paragraph when one of them closes it, as CommonMark has it. A link's text may
+    go on to a later line of its block too: a `[` that nothing closed is still open there, and
+    the `](destination)` that closes it is a `LinkEnd`, whose destination counts as a link's.
+    A link's text may hold an image (`[![alt](pic.png)](Note.md)`), though no other link. A
+    task's checkbox is a token of its list item. Emphasis, highlights and footnotes stay text, and so do the
     Tasks plugin's emoji fields, which the `task` type reads (its markers are data, not
     syntax). Every one of these is gated by the flavour's `Syntax`.
   - *Reference links:* `[text][label]`, `[label][]` and `[label]` (and the same after `!`)
@@ -289,21 +294,28 @@ change what it shows, never how it works.
     GitHub runner, 3,300 notes took 76 ms to make into trees and 54 ms to read so, where the
     line reader before it took 58 ms. A test checks both give the same steps on every note of
     the corpus.
-  - *What reads it:* the Markdown owner's `read` (links, aliases, how links are written) and
-    `tags_in`. They read in the same syntax whatever the flavour, as they always have
-    (`Gates::INDEX`: wikilinks, embeds and tags count; links in comments and math do too). A
-    test keeps the old line reader and checks both read every note of the corpus alike. Where
-    they differ, the tree follows the Markdown the reader shows: links in indented code, in a
-    ```` ``code`` ```` span or one that goes on past its line, inside an HTML block or a fence
-    that a shorter fence line didn't close don't count; a tag needs to be text, not inside a
-    link's destination or a wikilink; a reference link to a note is a link, on the line it
-    is written on, and a tag may follow emphasis, strikethrough and highlight markers.
-    `relink`, `link_targets` and the matcher's `line_links` still read lines, so a rename
-    doesn't rewrite a definition's destination yet, `tidy` doesn't count a reference link,
-    and a task's own `tags` and `links` fields don't see either; moving them onto the tree
-    is #140's next step. Reading reference links and tags after markers costs the scan
-    nothing that shows: on a GitHub runner `read` took 91.2 ms for 3,300 notes where it took
-    90.5 ms before, and that build with a function nothing calls added took 90.1 to 91.5 ms.
+  - *What reads it:* the Markdown owner, for every link and tag. `owner::markdown::links`
+    gives each file a note names and where it is written (a wikilink's or an embed's target, a
+    Markdown link's or an image's destination, a link by reference, a definition's
+    destination), and `tags_in` each tag. `read` (backlinks, the graph), tidy's
+    `link_targets`, a rename's `relink` and an item's own `tags` and `links` all take them
+    from there, so they agree on what a link is; a test compares them on every note of the
+    corpus. The index reads in the same syntax whatever the flavour, as it always has
+    (`Gates::INDEX`: wikilinks, embeds and tags count; links in comments and math do too);
+    items read in the workspace's flavour. Until #203 a rename, tidy and the matcher read
+    lines with patterns of their own. The tree follows the Markdown the reader shows: links in
+    indented code, in a ```` ``code`` ```` span or one that goes on past its line, inside an
+    HTML block, in a fence inside a quote or a fence that a shorter fence line didn't close
+    don't count, and neither does a Markdown link in the frontmatter (Obsidian's properties
+    hold wikilinks); a tag needs to be text, not inside a link's destination or a wikilink; a
+    link by reference to a note is a link, on the line it is written on, and a tag may follow
+    emphasis, strikethrough and highlight markers.
+  - *Renames:* `relink` rewrites the bytes of a target and nothing else: a link by reference
+    is rewritten once, in its definition (`[ref]: Old.md "Title"` keeps its label, its title
+    and its `<>`), whether a link uses it or not. Two tests hold "nothing else": every note of
+    the corpus is relinked, and every note of the example workspace renamed in a plan, then
+    the old and the new text are read again and must give the same tree, token for token,
+    but for the targets rewritten.
   - *Items:* `items::extract` walks the tree with `cst::read`, in the workspace's flavour, over
     the note without its `%%comments%%` (the code a `%%` is in comes from the tree too), where
     it read pulldown-cmark's events before. Ids, revs and spans hang on the blocks, so the walk
