@@ -1,10 +1,17 @@
 //! A line of a block's text, read left to right into code spans, wikilinks and embeds, Markdown
 //! links and images (inline, or by reference to one of the note's link definitions), Dataview
 //! fields, comments, math, tags and block ids; the rest is text. What starts first wins, so a
-//! wikilink inside a code span stays code. Emphasis and the like stay text: nothing reads them
-//! from the tree yet, but a tag may follow their opening markers (`**#tag**`). A link's text
-//! may go on to a later line of its block: its `](destination)` there is read (`LinkEnd`). A
-//! link's `)` comes after its destination and its title, either of which may hold parentheses.
+//! wikilink inside a code span stays code. A link's text may go on to a later line of its
+//! block: its `](destination)` there is read (`LinkEnd`). A link's `)` comes after its
+//! destination and its title, either of which may hold parentheses.
+//!
+//! What is left as text is then read for what text itself holds (`Held`, below): escapes,
+//! character references, autolinks, inline HTML, footnotes, hard line breaks, and emphasis, a
+//! block at a time, since emphasis may open on one line and close on a later one. That reading
+//! only cuts `Text` tokens into more tokens and wraps them in nodes: the links, the tags and
+//! everything else found first stay as they were found, so a reader that doesn't ask for it
+//! (`Gates::plain`) reads the same links and tags. A tag may follow the markers that open
+//! emphasis (`**#tag**`) either way.
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -25,6 +32,7 @@ pub(super) fn build<'t>(
     defs: &Definitions,
     b: &mut impl Sink<'t>,
 ) {
+    let b = &mut Held::new(text, gates, b);
     // A code span an earlier line of the paragraph opened: its closing backticks.
     let mut code: Option<Range<usize>> = None;
     // How many `[` the block's earlier lines left open.
@@ -36,15 +44,18 @@ pub(super) fn build<'t>(
             Ev::Start(kind) => {
                 open = 0;
                 cell = kind == TableCell;
+                b.block(Some(kind));
                 b.start(kind)
             }
             Ev::Finish => {
                 open = 0;
                 cell = false;
+                b.block(None);
                 b.finish()
             }
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
             Ev::Inline(a, z) => {
+                b.line(a, z);
                 let line = Line::new(text, gates, defs, cell, a, z);
                 let from = match code.take() {
                     Some(close) if close.start >= z => {
@@ -71,6 +82,7 @@ pub(super) fn build<'t>(
             Ev::Yaml(a, z) => yaml(text, gates, defs, b, a, z),
         }
     }
+    b.block(None);
 }
 
 fn token<'t>(b: &mut impl Sink<'t>, kind: Kind, text: &'t str, a: usize, z: usize) {
@@ -662,5 +674,533 @@ impl<'t, 'd> Line<'t, 'd> {
             .count();
         let end = i + 1 + n;
         (n > 0 && t[end..z].iter().all(|c| *c == b' ' || *c == b'\t')).then_some(end)
+    }
+}
+
+/// One step of a block's text, held until the block ends.
+#[derive(Clone, Copy)]
+enum Rec {
+    Start(Kind),
+    Finish,
+    Tok(Kind, usize, usize),
+    /// A line of the block's text starts: where it is.
+    Line(usize, usize),
+}
+
+/// What a piece of a `Text` token becomes.
+#[derive(Clone, Copy)]
+enum Piece {
+    /// A token of this kind.
+    Token(Kind),
+    /// A whole node of this kind: an autolink, a footnote's reference or its marker.
+    Node(Kind),
+    /// The marker that opens a node of this kind.
+    Open(Kind),
+    /// The marker that closes the node its opener opened.
+    Close,
+}
+
+#[derive(Clone, Copy)]
+struct Cut {
+    a: usize,
+    z: usize,
+    piece: Piece,
+}
+
+/// A run of `*`, `_`, `~` or `=` that may open or close a span.
+#[derive(Clone, Copy)]
+struct Run {
+    a: usize,
+    len: usize,
+    ch: u8,
+    open: bool,
+    close: bool,
+    /// The inline node whose text it is in: a span opens and closes in the same one.
+    scope: usize,
+}
+
+/// The sink a block's lines are read into. A block whose text may hold more than the line
+/// reader finds (an escape, a character reference, `<`, a footnote, a hard break, emphasis) is
+/// held back until it ends: emphasis may close on a later line than it opened on. Its `Text`
+/// tokens are then cut where those are, and it goes on to the sink. Nothing else of it changes.
+struct Held<'s, 't, S> {
+    text: &'t str,
+    g: Gates,
+    b: &'s mut S,
+    recs: Vec<Rec>,
+    hold: bool,
+    /// The block being read, and how many lines of its text were read.
+    kind: Option<Kind>,
+    lines: usize,
+    /// Where the `[^label]:` that starts the paragraph being held ends.
+    footnote: Option<usize>,
+}
+
+impl<'t, S: Sink<'t>> Sink<'t> for Held<'_, 't, S> {
+    fn start(&mut self, kind: Kind) {
+        match self.hold {
+            true => self.recs.push(Rec::Start(kind)),
+            false => self.b.start(kind),
+        }
+    }
+
+    fn finish(&mut self) {
+        match self.hold {
+            true => self.recs.push(Rec::Finish),
+            false => self.b.finish(),
+        }
+    }
+
+    fn token(&mut self, kind: Kind, text: &'t str) {
+        if self.hold {
+            // Every token is a piece of the note's text.
+            let a = text.as_ptr() as usize - self.text.as_ptr() as usize;
+            self.recs.push(Rec::Tok(kind, a, a + text.len()));
+        } else {
+            self.b.token(kind, text);
+        }
+    }
+}
+
+impl<'s, 't, S: Sink<'t>> Held<'s, 't, S> {
+    fn new(text: &'t str, g: Gates, b: &'s mut S) -> Self {
+        Held {
+            text,
+            g,
+            b,
+            recs: Vec::new(),
+            hold: false,
+            kind: None,
+            lines: 0,
+            footnote: None,
+        }
+    }
+
+    /// A block of `kind` starts, or one ends: what was held goes on.
+    fn block(&mut self, kind: Option<Kind>) {
+        self.release();
+        self.kind = kind;
+        self.lines = 0;
+        self.footnote = None;
+    }
+
+    /// A line of the block's text, `a..z`, is about to be read.
+    fn line(&mut self, a: usize, z: usize) {
+        if !self.g.text() {
+            return;
+        }
+        let first = self.lines == 0 && self.kind == Some(Paragraph);
+        self.lines += 1;
+        let line = &self.text[a..z];
+        if !self.hold && !may_hold_more(line) {
+            return;
+        }
+        self.hold = true;
+        if first && self.g.has(S::Footnotes) {
+            self.footnote = footnote_marker(line).map(|n| a + n);
+        }
+        self.recs.push(Rec::Line(a, z));
+    }
+
+    /// What was held goes on to the sink, its text cut.
+    fn release(&mut self) {
+        if !self.hold {
+            return;
+        }
+        self.hold = false;
+        let recs = std::mem::take(&mut self.recs);
+        let cuts = cuts(self.text, self.g, &recs, self.footnote.take());
+        let text = self.text;
+        let mut cuts = cuts.iter().peekable();
+        for rec in &recs {
+            match *rec {
+                Rec::Start(kind) => self.b.start(kind),
+                Rec::Finish => self.b.finish(),
+                Rec::Line(..) => {}
+                Rec::Tok(Text, a, z) => {
+                    let mut at = a;
+                    while let Some(cut) = cuts.next_if(|c| c.a < z) {
+                        token(&mut *self.b, Text, text, at, cut.a);
+                        self.piece(cut);
+                        at = cut.z;
+                    }
+                    token(&mut *self.b, Text, text, at, z);
+                }
+                Rec::Tok(kind, a, z) => self.b.token(kind, &text[a..z]),
+            }
+        }
+        self.recs = recs;
+        self.recs.clear();
+    }
+
+    fn piece(&mut self, cut: &Cut) {
+        let (text, b) = (self.text, &mut *self.b);
+        let (a, z) = (cut.a, cut.z);
+        match cut.piece {
+            Piece::Token(kind) => token(b, kind, text, a, z),
+            Piece::Open(kind) => {
+                b.start(kind);
+                token(b, EmphasisMarker, text, a, z);
+            }
+            Piece::Close => {
+                token(b, EmphasisMarker, text, a, z);
+                b.finish();
+            }
+            Piece::Node(Autolink) => {
+                b.start(Autolink);
+                token(b, AngleOpen, text, a, a + 1);
+                token(b, Url, text, a + 1, z - 1);
+                token(b, AngleClose, text, z - 1, z);
+                b.finish();
+            }
+            // `[^label]`, or `[^label]:`.
+            Piece::Node(kind) => {
+                let close = if kind == FootnoteMarker { z - 2 } else { z - 1 };
+                b.start(kind);
+                token(b, LBracket, text, a, a + 1);
+                token(b, FootnoteLabel, text, a + 1, close);
+                token(b, RBracket, text, close, close + 1);
+                token(b, Colon, text, close + 1, z);
+                b.finish();
+            }
+        }
+    }
+}
+
+fn is_blank(c: u8) -> bool {
+    c == b' ' || c == b'\t'
+}
+
+/// Whether `line` may hold more than the line reader finds: one of the characters that starts
+/// it, or the blanks of a hard break at its end.
+fn may_hold_more(line: &str) -> bool {
+    let t = line.as_bytes();
+    let starts = |c: &u8| matches!(c, b'*' | b'_' | b'~' | b'=' | b'\\' | b'&' | b'<' | b'^');
+    t.iter().any(starts) || matches!(t, [.., a, b] if is_blank(*a) && is_blank(*b))
+}
+
+/// A footnote's `[^label]` starting `s`: where its `]` is. A label holds no bracket, and
+/// something that isn't blank.
+fn footnote_label(s: &str) -> Option<usize> {
+    let label = s.strip_prefix("[^")?;
+    let k = label.find(['[', ']'])?;
+    (label.as_bytes()[k] == b']' && !label[..k].trim().is_empty()).then_some(2 + k)
+}
+
+/// A footnote's `[^label]:` starting `line`: how long it is.
+fn footnote_marker(line: &str) -> Option<usize> {
+    let close = footnote_label(line)?;
+    (line.as_bytes().get(close + 1) == Some(&b':')).then_some(close + 2)
+}
+
+/// What is written as a character reference at the `&` that starts `t`: how long it is.
+fn entity(t: &[u8]) -> Option<usize> {
+    let (from, ok): (usize, fn(&u8) -> bool) = match t.get(1..3) {
+        Some([b'#', b'x' | b'X']) => (3, u8::is_ascii_hexdigit),
+        Some([b'#', _]) => (2, u8::is_ascii_digit),
+        _ => (1, u8::is_ascii_alphanumeric),
+    };
+    let n = t[from.min(t.len())..].iter().take_while(|c| ok(*c)).count();
+    ((1..=32).contains(&n) && t.get(from + n) == Some(&b';')).then_some(from + n + 1)
+}
+
+/// An autolink or inline HTML at the `<` that starts `s`, as CommonMark defines them: which,
+/// and how long it is.
+fn angle(s: &str) -> Option<(Piece, usize)> {
+    static RE: OnceLock<[Regex; 2]> = OnceLock::new();
+    let [autolink, html] = RE.get_or_init(|| {
+        let name = r"[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?";
+        let autolink = [
+            r"^<(?:[A-Za-z][A-Za-z0-9+.\-]{1,31}:[^\x00-\x20<>]*",
+            r"|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~\-]+@",
+            name,
+            r"(?:\.",
+            name,
+            r")*)>",
+        ];
+        let html = [
+            r#"^<(?:[A-Za-z][A-Za-z0-9\-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:\-]*"#,
+            r#"(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*/?>"#,
+            r#"|/[A-Za-z][A-Za-z0-9\-]*\s*>"#,
+            r#"|!---?>|!--(?s:.*?)-->"#,
+            r#"|\?(?s:.*?)\?>"#,
+            r#"|![A-Za-z][^>]*>"#,
+            r#"|!\[CDATA\[(?s:.*?)\]\]>)"#,
+        ];
+        [
+            Regex::new(&autolink.concat()).unwrap(),
+            Regex::new(&html.concat()).unwrap(),
+        ]
+    });
+    if let Some(m) = autolink.find(s) {
+        return Some((Piece::Node(Autolink), m.end()));
+    }
+    html.find(s).map(|m| (Piece::Token(InlineHtml), m.end()))
+}
+
+/// Where the `Text` tokens of the held `recs` are cut, in order. `footnote` is where the
+/// `[^label]:` starting the block's first line ends.
+fn cuts(text: &str, g: Gates, recs: &[Rec], footnote: Option<usize>) -> Vec<Cut> {
+    let t = text.as_bytes();
+    let mut cuts: Vec<Cut> = Vec::new();
+    let mut runs: Vec<Run> = Vec::new();
+    // The inline nodes open; the block's own text is scope 0.
+    let mut scopes: Vec<usize> = Vec::new();
+    let mut line = (0, 0);
+    let mut lines = 0;
+    // The hard break the line just read ends with, if another line follows it.
+    let mut hard: Option<(usize, usize)> = None;
+    for (k, rec) in recs.iter().enumerate() {
+        let (a, z) = match *rec {
+            Rec::Start(_) => {
+                scopes.push(k + 1);
+                continue;
+            }
+            Rec::Finish => {
+                scopes.pop();
+                continue;
+            }
+            Rec::Line(a, z) => {
+                if let Some((a, z)) = hard.take() {
+                    let piece = Piece::Token(HardBreak);
+                    cuts.push(Cut { a, z, piece });
+                }
+                line = (a, z);
+                lines += 1;
+                continue;
+            }
+            Rec::Tok(Text, a, z) => (a, z),
+            Rec::Tok(..) => continue,
+        };
+        let scope = scopes.last().copied().unwrap_or(0);
+        let mut i = a;
+        if let Some(end) = footnote.filter(|&end| lines == 1 && a == line.0 && end <= z) {
+            let piece = Piece::Node(FootnoteMarker);
+            cuts.push(Cut { a, z: end, piece });
+            i = end;
+        }
+        while i < z {
+            let c = t[i];
+            let (len, piece) = match c {
+                b'\\' if i + 1 < z && t[i + 1].is_ascii_punctuation() => {
+                    (2, Some(Piece::Token(Escape)))
+                }
+                b'\\' if i + 1 == line.1 => {
+                    hard = Some((i, i + 1));
+                    (1, None)
+                }
+                b'&' => match entity(&t[i..z]) {
+                    Some(n) => (n, Some(Piece::Token(Entity))),
+                    None => (1, None),
+                },
+                b'<' => match angle(&text[i..z]) {
+                    Some((piece, n)) => (n, Some(piece)),
+                    None => (1, None),
+                },
+                b'[' if g.has(S::Footnotes) => match footnote_label(&text[i..z]) {
+                    Some(close) => (close + 1, Some(Piece::Node(FootnoteRef))),
+                    None => (1, None),
+                },
+                b'*' | b'_' | b'~' | b'=' => {
+                    let len = t[i..z].iter().take_while(|&&x| x == c).count();
+                    let read = match c {
+                        b'~' => g.has(S::Strikethrough) && len <= 2,
+                        b'=' => g.has(S::Highlights) && len == 2,
+                        _ => true,
+                    };
+                    let (open, close) = match read {
+                        true => flanks(text, line, i, len, c),
+                        false => (false, false),
+                    };
+                    if open || close {
+                        runs.push(Run {
+                            a: i,
+                            len,
+                            ch: c,
+                            open,
+                            close,
+                            scope,
+                        });
+                    }
+                    (len, None)
+                }
+                _ => (1, None),
+            };
+            if let Some(piece) = piece {
+                cuts.push(Cut {
+                    a: i,
+                    z: i + len,
+                    piece,
+                });
+            }
+            i += len;
+        }
+        if z == line.1 {
+            let blanks = t[a..z].iter().rev().take_while(|c| is_blank(**c)).count();
+            if blanks >= 2 {
+                hard = Some((z - blanks, z));
+            }
+        }
+    }
+    spans(&runs, &mut cuts);
+    cuts.sort_by_key(|c| c.a);
+    cuts
+}
+
+/// Whether the run of `len` `ch`s at `a` on `line` may open a span and may close one, by
+/// CommonMark's rules for delimiter runs as pulldown-cmark applied them: an opener is
+/// followed by something that isn't blank, a closer follows something that isn't blank, and
+/// `_` and a single `~` do neither inside a word. `==` only asks about the blanks.
+fn flanks(text: &str, line: (usize, usize), a: usize, len: usize, ch: u8) -> (bool, bool) {
+    let before = text[line.0..a].chars().next_back();
+    let after = text[a + len..line.1].chars().next();
+    if ch == b'=' {
+        let blank = |c: Option<char>| c.is_none_or(char::is_whitespace);
+        return (!blank(after), !blank(before));
+    }
+    let punct = |c: char| {
+        c.is_ascii_punctuation() || !(c.is_ascii() || c.is_alphanumeric() || c.is_whitespace())
+    };
+    let in_words = ch == b'*' || (ch == b'~' && len > 1);
+    let open = match (before, after) {
+        (_, None) => false,
+        (_, Some(n)) if n.is_whitespace() => false,
+        (None, _) => true,
+        (Some(p), Some(n)) => {
+            (ch == b'*' && !punct(n)) || (ch == b'~' && len > 1) || p.is_whitespace() || punct(p)
+        }
+    };
+    let close = match (before, after) {
+        (None, _) => false,
+        (Some(p), _) if p.is_whitespace() => false,
+        (_, None) => true,
+        (Some(p), Some(n)) => (in_words && !punct(p)) || n.is_whitespace() || punct(n),
+    };
+    (open, close)
+}
+
+/// Pairs `runs` into spans, each within the inline node that holds it: emphasis, strong and
+/// strikethrough first, then the highlights among what those left.
+fn spans(runs: &[Run], cuts: &mut Vec<Cut>) {
+    let mut order: Vec<usize> = (0..runs.len()).collect();
+    // Stable, so the runs of a scope stay in the order written.
+    order.sort_by_key(|&k| runs[k].scope);
+    let mut from = 0;
+    while from < order.len() {
+        let scope = runs[order[from]].scope;
+        let same = order[from..]
+            .iter()
+            .take_while(|&&k| runs[k].scope == scope);
+        let to = from + same.count();
+        let inside = emphasis(runs, &order[from..to], cuts);
+        highlights(runs, &order[from..to], &inside, cuts);
+        from = to;
+    }
+}
+
+/// A run that opened and nothing closed yet.
+#[derive(Clone, Copy)]
+struct Opener {
+    /// Where its markers still free start, and how many they are.
+    at: usize,
+    count: usize,
+    /// How long the run was written.
+    run: usize,
+    ch: u8,
+    /// Whether it could close too.
+    both: bool,
+}
+
+/// Pairs the `*`, `_` and `~` runs of one scope, `group`, as CommonMark does: a closer takes
+/// the nearest opener of its character that the rule of three allows (a `~` run one of its own
+/// length), and what opened between them stays text. Two markers make strong and one makes
+/// emphasis, from the inside out. It returns what each span holds, between its markers.
+fn emphasis(runs: &[Run], group: &[usize], cuts: &mut Vec<Cut>) -> Vec<(usize, usize)> {
+    let mut inside = Vec::new();
+    let mut stack: Vec<Opener> = Vec::new();
+    for r in group.iter().map(|&k| runs[k]).filter(|r| r.ch != b'=') {
+        let both = r.open && r.close;
+        let (mut at, mut count) = (r.a, r.len);
+        while r.close && count > 0 {
+            let fits = |o: &Opener| {
+                o.ch == r.ch
+                    && (r.ch != b'~' || o.run == r.len)
+                    && (!(both || o.both) || (r.len + o.run) % 3 != 0 || r.len % 3 == 0)
+            };
+            let Some(found) = stack.iter().rposition(fits) else {
+                break;
+            };
+            let o = stack[found];
+            stack.truncate(found);
+            let matched = count.min(o.count);
+            let (mut open, mut close, mut left) = (o.at + o.count, at, matched);
+            while left > 0 {
+                let n = left.min(2);
+                let kind = match (r.ch, n) {
+                    (b'~', _) => Strikethrough,
+                    (_, 2) => Strong,
+                    _ => Emphasis,
+                };
+                cuts.push(Cut {
+                    a: open - n,
+                    z: open,
+                    piece: Piece::Open(kind),
+                });
+                cuts.push(Cut {
+                    a: close,
+                    z: close + n,
+                    piece: Piece::Close,
+                });
+                inside.push((open, close));
+                (open, close, left) = (open - n, close + n, left - n);
+            }
+            if o.count > matched {
+                stack.push(Opener {
+                    count: o.count - matched,
+                    ..o
+                });
+            }
+            (at, count) = (at + matched, count - matched);
+        }
+        if count > 0 && r.open {
+            stack.push(Opener {
+                at,
+                count,
+                run: r.len,
+                ch: r.ch,
+                both,
+            });
+        }
+    }
+    inside
+}
+
+/// Pairs the `==` runs of one scope, `group`, left to right as the reader always did: a `==`
+/// that may close takes the last one that may open, among those directly inside the same span
+/// (`inside`: what the scope's spans hold).
+fn highlights(runs: &[Run], group: &[usize], inside: &[(usize, usize)], cuts: &mut Vec<Cut>) {
+    // The `==` open at each level: the span it is directly inside, if it is in one.
+    let mut open: Vec<(Option<usize>, usize)> = Vec::new();
+    for r in group.iter().map(|&k| runs[k]).filter(|r| r.ch == b'=') {
+        let holds = |k: &usize| inside[*k].0 <= r.a && r.a < inside[*k].1;
+        let level = (0..inside.len()).filter(holds).max_by_key(|&k| inside[k].0);
+        match open.iter().position(|o| o.0 == level) {
+            Some(k) if r.close => {
+                let (_, a) = open.swap_remove(k);
+                cuts.push(Cut {
+                    a,
+                    z: a + r.len,
+                    piece: Piece::Open(Highlight),
+                });
+                cuts.push(Cut {
+                    a: r.a,
+                    z: r.a + r.len,
+                    piece: Piece::Close,
+                });
+            }
+            Some(k) if r.open => open[k].1 = r.a,
+            None if r.open => open.push((level, r.a)),
+            _ => {}
+        }
     }
 }

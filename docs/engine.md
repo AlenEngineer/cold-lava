@@ -268,9 +268,30 @@ change what it shows, never how it works.
     table cell the pipe before a wikilink's alias may be escaped, as Obsidian writes it there:
     the backslash belongs to the `Pipe` token, not to the target. Outside a table the
     backslash stays in the target. A
-    task's checkbox is a token of its list item. Emphasis, highlights and footnotes stay text, and so do the
-    Tasks plugin's emoji fields, which the `task` type reads (its markers are data, not
-    syntax). Every one of these is gated by the flavour's `Syntax`.
+    task's checkbox is a token of its list item. The Tasks plugin's emoji fields stay text,
+    which the `task` type reads (its markers are data, not syntax). Every one of these is
+    gated by the flavour's `Syntax`.
+  - *What text holds* (#212) is read after that, in what is left as `Text`, a block at a
+    time: escapes (`\*`), what is written as a character reference (`&amp;`), autolinks
+    (`<https://…>`) and inline HTML as CommonMark defines them, a footnote's reference
+    (`[^label]`) and the `[^label]:` that starts its paragraph (`FootnoteMarker`: the
+    paragraph is the footnote's text, and the blocks are what they were), a hard break (two
+    blanks or a `\` before the line break, where the block has another line), and emphasis,
+    strong, strikethroughs and highlights. `*` and `_` follow CommonMark's delimiter runs
+    (left- and right-flanking, `_` not inside a word, the rule of three), with the nearest
+    opener taken and what opened in between left as text; `~` and `~~` pair with a run of
+    their own length; `==` pairs left to right among what is directly inside the same span,
+    as the reader always paired it. A span opens and closes in the same inline node, so it
+    holds a link whole or sits inside its text, and it may close on a later line of its block,
+    with the block's `>` and indentation on the lines between as tokens inside it. This
+    reading only cuts `Text` tokens and wraps them in nodes: the links, tags, fields and
+    blocks found before it are the same with it and without it, which a test checks on every
+    note of the corpus. So the index and the items read without it (`Gates::plain`,
+    `Gates::INDEX`) and pay nothing for it, and `Tree::parse` reads with it. Strikethroughs,
+    highlights and footnotes are the flavour's `Syntax`; the rest is CommonMark's. Within a
+    line: an autolink, a tag or a footnote that the line reader's tokens cut through isn't
+    one, and an escape doesn't stop a link, a code span or a tag the line reader found
+    (`\[[Note]]` is still a wikilink, as the index counts it).
   - *Reference links:* `[text][label]`, `[label][]` and `[label]` (and the same after `!`)
     are links only where the note defines the label, anywhere in it, as in CommonMark; else
     the brackets are text. Labels match whatever their case and the amount of whitespace, and
@@ -296,7 +317,8 @@ change what it shows, never how it works.
     the definitions are the old tree's, and the new blocks are read with them. A test makes
     thousands of random edits, definitions and reference links among them, and checks each
     against a full parse. A long list is one top-level block, so an edit inside it reparses
-    the whole list.
+    the whole list. What text holds is read within a block (a paragraph, a heading, a table
+    cell), so emphasis widens nothing an edit reparses.
   - *One parse, two sinks:* the parse writes to rowan's builder for a tree, or through
     `cst::read`, which hands a reader the same steps a walk through the tree takes, without
     making it. The workspace's scan reads every note once and drops it, so it uses `read`. On a

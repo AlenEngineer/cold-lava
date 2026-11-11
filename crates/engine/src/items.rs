@@ -343,7 +343,9 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
         return Vec::new();
     }
     // The comments are taken out first, as for the reader, so their lines read as blank.
-    let gates = cst::Gates::of(&s.flavour).set(Syntax::Comments, false);
+    // No item is made of what text itself holds (emphasis and the like), so it isn't read.
+    let gates = cst::Gates::of(&s.flavour).plain();
+    let gates = gates.set(Syntax::Comments, false);
     let source = s.flavour.source_with(text, |text| code_in(text, gates));
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
