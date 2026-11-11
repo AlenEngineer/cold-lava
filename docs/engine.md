@@ -246,7 +246,9 @@ change what it shows, never how it works.
     paragraph's containers don't go on to, ends the paragraph at any block that starts there,
     a list item of another kind (`1. a` then `2) b`) included. A table whose header starts
     with `|` ends the paragraph above it, as on GitHub; another table's header is a
-    paragraph's only line.
+    paragraph's only line. A link definition (`[label]: destination "title"` on one line,
+    where a paragraph would start) is a block of its own, and the line after it starts
+    afresh, as pulldown-cmark reads it. With footnotes, `[^label]:` is none.
   - *Inlines* are read per line, left to right, the first to start winning: code spans,
     wikilinks and embeds (target, `#heading` or `^block`, `|alias`), Markdown links and images,
     Dataview fields (`[key:: value]`, `(key:: value)`, a `key:: value` line), `%%comments%%`,
@@ -255,11 +257,28 @@ change what it shows, never how it works.
     is a token of its list item. Emphasis, highlights and footnotes stay text, and so do the
     Tasks plugin's emoji fields, which the `task` type reads (its markers are data, not
     syntax). Every one of these is gated by the flavour's `Syntax`.
+  - *Reference links:* `[text][label]`, `[label][]` and `[label]` (and the same after `!`)
+    are links only where the note defines the label, anywhere in it, as in CommonMark; else
+    the brackets are text. Labels match whatever their case and the amount of whitespace, and
+    a label's first definition wins. The tree holds the label (`LinkLabel`), not the
+    destination: `Tree::definitions` (or `cst::blocks`, for a reader going forwards) says
+    where it points. A definition that takes more than one line isn't read, and neither is
+    a reference link that goes on past its line.
+  - *Tags after markers:* a tag follows the start of the line, a space, `(` or `,`, and the
+    markers that open emphasis (`*`, `_`), a strikethrough (`~~`) or a highlight (`==`) may
+    stand between that and its `#`, so `**#tag**`, `_#tag_` and `==#tag==` hold a tag, as in
+    Obsidian. After `_`, the `_` that closes the emphasis isn't part of the name. The
+    strikethrough and the highlight are the flavour's. `a#b`, `a**#b**`, a `#` in a URL,
+    `[[#Heading]]` and a link's destination hold none.
   - *Incremental reparsing:* `Tree::edit` parses again from the top-level block before the edit
     (a block's end depends on the first line after it that isn't blank) until the parse is
     back on a line where nothing is open and an old block starts, then splices the new blocks
     into the old green tree, sharing the rest. An edit on line 1 parses the note whole, since
-    line 1 decides the frontmatter. A test makes thousands of random edits and checks each
+    line 1 decides the frontmatter. A link definition anywhere changes how `[label]` reads in
+    every block, so when the blocks parsed again don't define exactly what the blocks they
+    replace defined (labels and destinations, in order), the note is parsed whole; otherwise
+    the definitions are the old tree's, and the new blocks are read with them. A test makes
+    thousands of random edits, definitions and reference links among them, and checks each
     against a full parse. A long list is one top-level block, so an edit inside it reparses
     the whole list.
   - *One parse, two sinks:* the parse writes to rowan's builder for a tree, or through
@@ -275,23 +294,28 @@ change what it shows, never how it works.
     they differ, the tree follows the Markdown the reader shows: links in indented code, in a
     ```` ``code`` ```` span or one that goes on past its line, inside an HTML block or a fence
     that a shorter fence line didn't close don't count; a tag needs to be text, not inside a
-    link's destination or a wikilink. `relink` and the matcher's `line_links` still read
-    lines; moving them onto the tree is #140's next step.
+    link's destination or a wikilink; a reference link to a note is a link, on the line it
+    is written on, and a tag may follow emphasis, strikethrough and highlight markers.
+    `relink` and the matcher's `line_links` still read lines, so a rename doesn't rewrite a
+    definition's destination yet and a task's own `tags` and `links` fields don't see either;
+    moving them onto the tree is #140's next step.
   - *Items:* `items::extract` walks the tree with `cst::read`, in the workspace's flavour, over
     the note without its `%%comments%%` (the code a `%%` is in comes from the tree too), where
     it read pulldown-cmark's events before. Ids, revs and spans hang on the blocks, so the walk
     reads them as pulldown-cmark had them: a paragraph, a table row or a fence starts at its
     first character; a callout's title is the first line of a paragraph that the next line
-    goes on (a GitHub alert's `[!NOTE]` is none); `$$` math is a paragraph's text; a
-    paragraph's leading link reference definitions are no paragraph; a table row's cells are
+    goes on (a GitHub alert's `[!NOTE]` is none); `$$` math is a paragraph's text; link
+    definitions are no paragraph (the tree has them as blocks); a table row's cells are
     split at every `|` not escaped and cut or filled to the table's columns. A test keeps the
     pulldown-cmark pass and checks both give the same items on every note of the corpus, with
     types that read every kind of block, in three flavours, and on tricky notes (lazy lines,
-    loose lists, indented code, HTML, block ids, callouts, tables, math, comments). They differ
+    loose lists, indented code, HTML, block ids, callouts, tables, math, comments, reference
+    links, tags after emphasis markers). They differ
     in one way, where pulldown-cmark wasn't Obsidian: a frontmatter whose first line is blank,
     as the Kanban plugin writes it, was a rule and Markdown to it, and is frontmatter now.
-    Other cases where pulldown-cmark wasn't Obsidian, or where the tree doesn't read the
-    syntax yet, are kept in the test (`DIFFERENT`). On a GitHub runner, 3,300 notes' items took
+    Other cases where pulldown-cmark wasn't Obsidian are kept in the test (`DIFFERENT`): a
+    `---` pair in mid-note, a byte order mark, `[[#Heading]]` as a tag, and a tag after a
+    highlight's `==`, which it didn't read. On a GitHub runner, 3,300 notes' items took
     160 ms with no type loaded, the walk and the ids alone, where pulldown-cmark's pass took
     153 ms; with the bench workspace's types, 495 ms and 493 ms, the type matching being most
     of it.

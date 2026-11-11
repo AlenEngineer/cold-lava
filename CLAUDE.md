@@ -124,6 +124,12 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   reparses only the top-level blocks an edit can change; `cst::read` gives a reader the steps
   of a walk through the tree without making it (the scan uses it). The Markdown owner's `read`
   and `tags_in` read links and tags this way, and `items::extract` reads items so (#140).
+  Link definitions (`[label]: destination`) are blocks, kept as the note's `Definitions`
+  (`Tree::definitions`, `cst::blocks`): a reference link (`[text][label]`, `[label][]`,
+  `[label]`) is a link only where the note defines its label, and its reader asks the
+  definitions where its `LinkLabel` points. An edit that changes the definitions parses the
+  note whole. A tag may follow the markers that open emphasis, a strikethrough or a highlight
+  (`**#tag**`, `markdown::MARKED_TAG`).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:
