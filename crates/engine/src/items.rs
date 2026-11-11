@@ -346,7 +346,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     // No item is made of what text itself holds (emphasis and the like), so it isn't read.
     let gates = cst::Gates::of(&s.flavour).plain();
     let gates = gates.set(Syntax::Comments, false);
-    let source = s.flavour.source_with(text, |text| code_in(text, gates));
+    let source = s.flavour.source_with(text, |text| cst::code(text, gates));
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
     let (blocks, defs) = cst::blocks(lines.src, wants.gates(gates));
@@ -366,25 +366,6 @@ fn own_links(links: Vec<crate::owner::markdown::Link<'_>>) -> Vec<(usize, bool, 
     links
         .filter_map(|l| Some((l.at, l.md(), l.note()?)))
         .collect()
-}
-
-/// The code spans, code blocks and math in `text`, where `%%` is no comment.
-fn code_in(text: &str, gates: cst::Gates) -> Vec<Range<usize>> {
-    let mut code = Vec::new();
-    let mut from = 0;
-    cst::read(text, gates, &mut |step| match step {
-        Step::Enter(kind, at) if is_code(kind) => from = at,
-        Step::Leave(kind, at) if is_code(kind) => code.push(from..at),
-        _ => {}
-    });
-    code
-}
-
-fn is_code(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::CodeSpan | Kind::InlineMath | Kind::MathBlock | Kind::FencedCode | Kind::IndentedCode
-    )
 }
 
 /// A block the walk is inside.
@@ -1259,7 +1240,7 @@ fn list_text(first: &str) -> String {
 mod pulldown;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -1616,7 +1597,7 @@ fields.w = { capture = "w" }
     }
 
     /// Markdown whose blocks are easy to read differently from pulldown-cmark.
-    const TRICKY: &[&str] = &[
+    pub(crate) const TRICKY: &[&str] = &[
         // Lazy lines.
         "- [ ] task\nlazy line\n- [ ] next\n\n> quote\nlazy in quote ^q1\n\nPara\nlazy\n    still para ^p1\n",
         // Loose and tight lists.

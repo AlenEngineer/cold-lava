@@ -645,6 +645,29 @@ pub fn walk<'a>(node: &'a GreenNodeData, at: usize, f: &mut impl FnMut(Step<'a>)
     at
 }
 
+/// The code spans, code blocks and math of `text` read in `gates`, in order: where a `%%`
+/// opens no comment, and where no inline type matches.
+pub(crate) fn code(text: &str, gates: Gates) -> Vec<Range<usize>> {
+    let is_code = |kind| {
+        matches!(
+            kind,
+            Kind::CodeSpan
+                | Kind::InlineMath
+                | Kind::MathBlock
+                | Kind::FencedCode
+                | Kind::IndentedCode
+        )
+    };
+    let mut code = Vec::new();
+    let mut from = 0;
+    read(text, gates, &mut |step| match step {
+        Step::Enter(kind, at) if is_code(kind) => from = at,
+        Step::Leave(kind, at) if is_code(kind) => code.push(from..at),
+        _ => {}
+    });
+    code
+}
+
 /// How many block events `text` makes, for timing the block pass alone.
 #[cfg(test)]
 pub(crate) fn block_events(text: &str, gates: Gates) -> usize {

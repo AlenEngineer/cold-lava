@@ -2,20 +2,22 @@
 //! `parse` turns a note into a `Doc` for the reader to draw. Syntax the flavour lacks stays
 //! plain text, so `==x==` is a highlight under `obsidian` and four equals signs under `github`.
 //!
-//! pulldown-cmark parses CommonMark and the features it has options for. The Obsidian syntax it
-//! lacks is added by the rules in "Extras" below, each gated by its `Syntax`.
+//! The `Doc` is built from the note's syntax tree (`cst`), the one the index and the items
+//! read, so what the reader shows as a link, a tag or a task is what they count.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::iter::Peekable;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use pulldown_cmark::{
-    BlockQuoteKind, CodeBlockKind, Event, LinkType, OffsetIter, Options, Parser, Tag,
-};
 use regex::Regex;
+
+use crate::cst::{self, Kind, Step};
+
+mod entities;
+#[cfg(test)]
+pub(crate) mod pulldown;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Syntax {
@@ -47,31 +49,22 @@ pub enum Syntax {
 
 use Syntax as S;
 
-/// Each syntax's name in `config.toml` and the pulldown-cmark option behind it (empty for the
-/// ones added by the extras).
-const SYNTAX: &[(Syntax, &str, Options)] = &[
-    (S::Tables, "tables", Options::ENABLE_TABLES),
-    (S::TaskLists, "task-lists", Options::ENABLE_TASKLISTS),
-    (
-        S::Strikethrough,
-        "strikethrough",
-        Options::ENABLE_STRIKETHROUGH,
-    ),
-    (S::Footnotes, "footnotes", Options::ENABLE_FOOTNOTES),
-    (S::Alerts, "alerts", Options::ENABLE_GFM),
-    (S::WikiLinks, "wikilinks", Options::ENABLE_WIKILINKS),
-    (S::Embeds, "embeds", Options::ENABLE_WIKILINKS),
-    (S::Callouts, "callouts", Options::empty()),
-    (S::Highlights, "highlights", Options::empty()),
-    (S::Comments, "comments", Options::empty()),
-    (S::Tags, "tags", Options::empty()),
-    (S::BlockIds, "block-ids", Options::empty()),
-    (S::Math, "math", Options::ENABLE_MATH),
-    (
-        S::Frontmatter,
-        "frontmatter",
-        Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
-    ),
+/// Each syntax's name in `config.toml`.
+const SYNTAX: &[(Syntax, &str)] = &[
+    (S::Tables, "tables"),
+    (S::TaskLists, "task-lists"),
+    (S::Strikethrough, "strikethrough"),
+    (S::Footnotes, "footnotes"),
+    (S::Alerts, "alerts"),
+    (S::WikiLinks, "wikilinks"),
+    (S::Embeds, "embeds"),
+    (S::Callouts, "callouts"),
+    (S::Highlights, "highlights"),
+    (S::Comments, "comments"),
+    (S::Tags, "tags"),
+    (S::BlockIds, "block-ids"),
+    (S::Math, "math"),
+    (S::Frontmatter, "frontmatter"),
 ];
 
 impl Syntax {
@@ -82,14 +75,6 @@ impl Syntax {
     /// Every name, for error messages.
     pub fn names() -> String {
         SYNTAX.iter().map(|r| r.1).collect::<Vec<_>>().join(", ")
-    }
-
-    fn options(self) -> Options {
-        SYNTAX
-            .iter()
-            .find(|r| r.0 == self)
-            .expect("every syntax has a row")
-            .2
     }
 }
 
@@ -143,34 +128,9 @@ impl Flavour {
         self.syntax.contains(&syntax)
     }
 
-    /// pulldown-cmark's options for this flavour.
-    pub fn options(&self) -> Options {
-        self.syntax
-            .iter()
-            .fold(Options::empty(), |o, s| o | s.options())
-    }
-
-    /// The text pulldown-cmark reads: without `%%comments%%` when the flavour has them. Line
-    /// numbers stay those of the note, and `Source::file_range` maps byte offsets back to it.
-    pub fn source<'t>(&self, text: &'t str) -> Source<'t> {
-        self.source_with(text, |text| {
-            Parser::new_ext(text, self.options())
-                .into_offset_iter()
-                .filter(|(e, _)| {
-                    matches!(
-                        e,
-                        Event::Code(_)
-                            | Event::InlineMath(_)
-                            | Event::DisplayMath(_)
-                            | Event::Start(Tag::CodeBlock(_))
-                    )
-                })
-                .map(|(_, r)| r)
-                .collect()
-        })
-    }
-
-    /// `source`, where `code` finds the code spans, code blocks and math of a note that has a
+    /// The text the reader and the items read: without `%%comments%%` when the flavour has
+    /// them. Line numbers stay those of the note, and `Source::file_range` maps byte offsets
+    /// back to it. `code` finds the code spans, code blocks and math of a note that has a
     /// `%%`: a `%%` in code doesn't open or close a comment.
     pub fn source_with<'t>(
         &self,
@@ -188,7 +148,7 @@ impl Flavour {
     }
 }
 
-/// A note's text as pulldown-cmark reads it, and where each byte of it is in the file.
+/// A note's text as it is read, and where each byte of it is in the file.
 pub struct Source<'t> {
     pub text: Cow<'t, str>,
     /// `(offset here, offset in the file)` where each copied piece starts; empty when nothing
@@ -371,54 +331,61 @@ pub fn parse(text: &str, flavour: &Flavour) -> Doc {
 /// `parse`, with each of `marks` (byte ranges of the file) shown as `Inline::Mark`s around the
 /// text it covers.
 pub fn parse_marked(text: &str, flavour: &Flavour, marks: &[Range<usize>]) -> Doc {
-    let options = flavour.options();
-    let source = flavour.source(text);
-    let mut broken = vec![false; marks.len()];
-    let marks: Vec<Range<usize>> = marks
-        .iter()
-        .zip(&mut broken)
-        .map(|(m, broken)| {
-            source.text_range(m.clone()).unwrap_or_else(|| {
-                *broken = true;
-                0..0
-            })
-        })
-        .collect();
-    let text = source.text;
+    // The comments are taken out first, as for the items, so their lines read as blank.
+    let gates = cst::Gates::of(flavour).set(S::Comments, false);
+    let source = flavour.source_with(text, |text| cst::code(text, gates.plain()));
+    let marks = Marks::new(&source, marks, flavour.has(S::Tags));
+    let text: &str = &source.text;
+    let (blocks, defs) = cst::blocks(text, gates);
+    let mut steps = Vec::new();
+    blocks.read(&defs, &mut |step| steps.push(step));
     let mut reader = Reader {
-        src: &text,
+        src: text,
         flavour,
-        events: Parser::new_ext(&text, options)
-            .into_offset_iter()
-            .peekable(),
+        footnotes: footnotes(&steps),
+        steps,
+        // Past the document's own step.
+        at: 1,
+        defs,
         newlines: text.match_indices('\n').map(|(i, _)| i).collect(),
-        tasks: Vec::new(),
         marks,
-        broken,
-        within: None,
+        hard: false,
+        level: 0,
+        open: Vec::new(),
+        list: 0,
+        lists: 0,
+        in_link: false,
+        top: 0,
+        notes: Vec::new(),
+        checkbox: None,
     };
     Doc {
         blocks: reader.blocks(),
-        broken: reader.broken,
+        broken: reader.marks.broken,
     }
 }
 
-/// Builds the `Doc` from pulldown-cmark's events by recursive descent: each container reads
-/// its children up to its `End` event.
-struct Reader<'a> {
-    src: &'a str,
-    flavour: &'a Flavour,
-    events: Peekable<OffsetIter<'a>>,
-    newlines: Vec<usize>,
-    /// One slot per open list item, for its task marker. Nested items open after the outer
-    /// item's marker, so the marker always belongs to the last slot.
-    tasks: Vec<Option<bool>>,
-    /// Marks to place, in this text's offsets (empty when broken already).
-    marks: Vec<Range<usize>>,
-    broken: Vec<bool>,
-    /// The inline container being read (a link, emphasis), whose marks it doesn't place when
-    /// they cover all of it: the level around it does.
-    within: Option<Range<usize>>,
+/// The labels of the footnotes the tree's `steps` define, as labels are compared.
+fn footnotes(steps: &[Step]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut marker = false;
+    for step in steps {
+        match *step {
+            Step::Enter(Kind::FootnoteMarker, _) => marker = true,
+            Step::Leave(Kind::FootnoteMarker, _) => marker = false,
+            Step::Token(Kind::FootnoteLabel, label, _) if marker => found.push(fold(label)),
+            _ => {}
+        }
+    }
+    found
+}
+
+/// A footnote's label (`^label`, as the tree holds it) as labels are compared: case and the
+/// amount of whitespace don't count.
+fn fold(label: &str) -> String {
+    let name = label.strip_prefix('^').unwrap_or(label);
+    let words: Vec<&str> = name.split_whitespace().collect();
+    words.join(" ").to_lowercase()
 }
 
 /// What an inline is to a mark: text as written can be cut, a container holds its own marks,
@@ -430,261 +397,55 @@ enum Piece {
     Atom,
 }
 
-fn is_inline(tag: &Tag) -> bool {
-    matches!(
-        tag,
-        Tag::Emphasis
-            | Tag::Strong
-            | Tag::Strikethrough
-            | Tag::Superscript
-            | Tag::Subscript
-            | Tag::Link { .. }
-            | Tag::Image { .. }
+/// An inline as it is read: where it is in the source, and what it is to a mark.
+type Read = (Inline, Range<usize>, Piece);
+
+/// Text shown as it is written at `range` of `src`.
+fn written(src: &str, range: Range<usize>) -> Read {
+    (
+        Inline::Text(src[range.clone()].to_string()),
+        range,
+        Piece::Written,
     )
 }
 
-impl Reader<'_> {
-    fn line(&self, offset: usize) -> usize {
-        self.newlines.partition_point(|&n| n < offset) + 1
-    }
+/// The marks `parse_marked` was given, and where they go among the inlines read.
+struct Marks {
+    /// Marks to place, in the read text's offsets (empty when broken already).
+    marks: Vec<Range<usize>>,
+    broken: Vec<bool>,
+    /// The inline container being read (a link, emphasis), whose marks it doesn't place when
+    /// they cover all of it: the level around it does.
+    within: Option<Range<usize>>,
+    /// Whether the flavour has tags, which a mark doesn't cut.
+    tags: bool,
+}
 
-    /// Blocks up to the enclosing container's end (consumed) or the end of the note.
-    fn blocks(&mut self) -> Vec<Block> {
-        let mut blocks = Vec::new();
-        while let Some((event, range)) = self.events.peek() {
-            let start = range.start;
-            match event {
-                Event::End(_) => {
-                    self.events.next();
-                    break;
-                }
-                Event::Start(tag) if !is_inline(tag) => {
-                    let Some((Event::Start(tag), range)) = self.events.next() else {
-                        unreachable!()
-                    };
-                    self.block(tag, range, &mut blocks);
-                }
-                Event::Rule => {
-                    self.events.next();
-                    blocks.push(Block {
-                        line: self.line(start),
-                        kind: BlockKind::Rule,
-                    });
-                }
-                // A tight list item holds its text without a paragraph.
-                _ => {
-                    let inlines = self.inlines(false);
-                    blocks.extend(self.paragraph(inlines, start));
-                }
-            }
-        }
-        blocks
-    }
-
-    fn block(&mut self, tag: Tag, range: Range<usize>, out: &mut Vec<Block>) {
-        let line = self.line(range.start);
-        let kind = match tag {
-            Tag::Paragraph => {
-                let inlines = self.inlines(true);
-                out.extend(self.paragraph(inlines, range.start));
-                return;
-            }
-            Tag::Heading { level, .. } => BlockKind::Heading {
-                level: level as u8,
-                inlines: self.inlines(true),
-            },
-            Tag::BlockQuote(Some(alert)) => BlockKind::Callout {
-                kind: alert_kind(alert).to_string(),
-                title: Vec::new(),
-                folded: None,
-                blocks: self.blocks(),
-            },
-            Tag::BlockQuote(None) => {
-                let blocks = self.blocks();
-                if self.flavour.has(S::Callouts) {
-                    callout(blocks)
-                } else {
-                    BlockKind::Quote(blocks)
-                }
-            }
-            Tag::CodeBlock(kind) => BlockKind::Code {
-                lang: match kind {
-                    CodeBlockKind::Fenced(info) => {
-                        info.split_whitespace().next().map(str::to_string)
-                    }
-                    CodeBlockKind::Indented => None,
-                },
-                text: self.text(),
-            },
-            Tag::HtmlBlock => BlockKind::Code {
-                lang: Some("html".to_string()),
-                text: self.text(),
-            },
-            Tag::List(start) => BlockKind::List {
-                start,
-                items: self.items(),
-            },
-            Tag::FootnoteDefinition(label) => BlockKind::FootnoteDef {
-                label: label.to_string(),
-                blocks: self.blocks(),
-            },
-            Tag::Table(_) => self.table(),
-            Tag::MetadataBlock(_) => {
-                self.text();
-                return;
-            }
-            // Containers of options no flavour turns on (definition lists): keep their content.
-            _ => {
-                out.extend(self.blocks());
-                return;
-            }
-        };
-        out.push(Block { line, kind });
-    }
-
-    fn paragraph(&self, inlines: Vec<Inline>, start: usize) -> Option<Block> {
-        let mut inlines = inlines;
-        if self.flavour.has(S::BlockIds) {
-            block_id(&mut inlines);
-        }
-        let mut content = inlines
+impl Marks {
+    fn new(source: &Source, marks: &[Range<usize>], tags: bool) -> Marks {
+        let mut broken = vec![false; marks.len()];
+        let marks = marks
             .iter()
-            .filter(|i| !is_blank(i) && !matches!(i, Inline::Mark { .. }));
-        let only = match (content.next(), content.next()) {
-            (None, _) => return None,
-            (Some(only), None) => Some(only),
-            _ => None,
-        };
-        let kind = match only {
-            Some(Inline::Embed { target }) => BlockKind::Embed {
-                target: target.clone(),
-            },
-            Some(Inline::Math(m)) if self.src[start..].trim_start().starts_with("$$") => {
-                BlockKind::Math(m.clone())
-            }
-            _ => BlockKind::Paragraph(inlines),
-        };
-        Some(Block {
-            line: self.line(start),
-            kind,
-        })
-    }
-
-    fn items(&mut self) -> Vec<Item> {
-        let mut items = Vec::new();
-        while let Some((Event::Start(Tag::Item), _)) = self.events.next() {
-            self.tasks.push(None);
-            let blocks = self.blocks();
-            items.push(Item {
-                task: self.tasks.pop().flatten(),
-                blocks,
-            });
+            .zip(&mut broken)
+            .map(|(m, broken)| {
+                source.text_range(m.clone()).unwrap_or_else(|| {
+                    *broken = true;
+                    0..0
+                })
+            })
+            .collect();
+        Marks {
+            marks,
+            broken,
+            within: None,
+            tags,
         }
-        items
-    }
-
-    fn table(&mut self) -> BlockKind {
-        let mut header = Vec::new();
-        let mut rows = Vec::new();
-        loop {
-            match self.events.next() {
-                Some((Event::Start(Tag::TableHead), _)) => header = self.cells(),
-                Some((Event::Start(Tag::TableRow), _)) => rows.push(self.cells()),
-                _ => break,
-            }
-        }
-        BlockKind::Table { header, rows }
-    }
-
-    fn cells(&mut self) -> Vec<Vec<Inline>> {
-        let mut cells = Vec::new();
-        while let Some((Event::Start(Tag::TableCell), _)) = self.events.next() {
-            cells.push(self.inlines(true));
-        }
-        cells
-    }
-
-    /// The raw text up to the container's end.
-    fn text(&mut self) -> String {
-        let mut text = String::new();
-        for (event, _) in self.events.by_ref() {
-            match event {
-                Event::Text(t) | Event::Html(t) | Event::Code(t) => text.push_str(&t),
-                Event::End(_) => break,
-                _ => {}
-            }
-        }
-        text
-    }
-
-    /// Inlines up to the container's end, which is consumed when `explicit`. Otherwise (a tight
-    /// list item's text) reading stops before the next block or the item's end.
-    fn inlines(&mut self, explicit: bool) -> Vec<Inline> {
-        let mut out = Vec::new();
-        // Where each of `out` is in the source, and what it is to a mark.
-        let mut at: Vec<(Range<usize>, Piece)> = Vec::new();
-        loop {
-            match self.events.peek() {
-                None => break,
-                Some((Event::End(_), _)) => {
-                    if explicit {
-                        self.events.next();
-                    }
-                    break;
-                }
-                Some((Event::Start(tag), _)) if !is_inline(tag) => break,
-                Some((Event::Rule, _)) => break,
-                _ => {}
-            }
-            let Some((event, range)) = self.events.next() else {
-                break;
-            };
-            let before = out.len();
-            let container = matches!(event, Event::Start(_));
-            match event {
-                Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => {
-                    out.push(Inline::Text(t.into_string()))
-                }
-                Event::Code(t) => out.push(Inline::Code(t.into_string())),
-                Event::InlineMath(t) | Event::DisplayMath(t) => {
-                    out.push(Inline::Math(t.into_string()))
-                }
-                Event::FootnoteReference(label) => {
-                    out.push(Inline::FootnoteRef(label.into_string()))
-                }
-                Event::SoftBreak => out.push(Inline::SoftBreak),
-                Event::HardBreak => out.push(Inline::HardBreak),
-                Event::TaskListMarker(done) => {
-                    if let Some(slot) = self.tasks.last_mut() {
-                        *slot = Some(done);
-                    }
-                }
-                Event::Start(tag) => {
-                    let outer = self.within.replace(range.clone());
-                    self.inline(tag, range.clone(), &mut out);
-                    self.within = outer;
-                }
-                Event::End(_) | Event::Rule => unreachable!("handled above"),
-            }
-            for inline in &out[before..] {
-                let piece = match inline {
-                    Inline::Text(t) if self.src.get(range.clone()) == Some(t.as_str()) => {
-                        Piece::Written
-                    }
-                    _ if container => Piece::Container,
-                    _ => Piece::Atom,
-                };
-                at.push((range.clone(), piece));
-            }
-        }
-        let out = self.place_marks(out, at);
-        extras(out, self.flavour)
     }
 
     /// Puts `Inline::Mark`s around the inlines each mark covers: text as written is cut at a
     /// mark's ends, a container it covers only in part keeps the marks its own inlines got, and
     /// anything else it covers only in part breaks the mark.
-    fn place_marks(&mut self, out: Vec<Inline>, at: Vec<(Range<usize>, Piece)>) -> Vec<Inline> {
+    fn place(&mut self, out: Vec<Inline>, at: Vec<(Range<usize>, Piece)>) -> Vec<Inline> {
         let (Some(first), Some(last)) = (at.first(), at.last()) else {
             return out;
         };
@@ -702,7 +463,7 @@ impl Reader<'_> {
         if here.is_empty() {
             return out;
         }
-        let tags = self.flavour.has(S::Tags);
+        let tags = self.tags;
         let mut pieces: Vec<(Inline, Range<usize>, Piece)> = Vec::with_capacity(out.len());
         for (inline, (range, piece)) in out.into_iter().zip(at) {
             let Inline::Text(text) = &inline else {
@@ -762,64 +523,942 @@ impl Reader<'_> {
         placed.extend(open.into_iter().map(|id| Inline::Mark { id, open: false }));
         placed
     }
+}
 
-    fn inline(&mut self, tag: Tag, range: Range<usize>, out: &mut Vec<Inline>) {
-        let wiki = |t: LinkType| matches!(t, LinkType::WikiLink { .. });
-        match tag {
-            Tag::Emphasis => out.push(Inline::Emph(self.inlines(true))),
-            Tag::Strong => out.push(Inline::Strong(self.inlines(true))),
-            Tag::Strikethrough => out.push(Inline::Strike(self.inlines(true))),
-            // `ENABLE_WIKILINKS` is on for either syntax, so each one checks its own.
-            Tag::Link { link_type, .. } if wiki(link_type) && !self.flavour.has(S::WikiLinks) => {
-                self.literal(range, out)
+/// Builds the `Doc` from the note's syntax tree (`cst`), read as the steps of a walk through
+/// it, by recursive descent: each node reads its children up to its end. The tree is the one
+/// the index and the items read, so what the reader shows as a link, a tag or a task is what
+/// they count.
+struct Reader<'a> {
+    src: &'a str,
+    flavour: &'a Flavour,
+    steps: Vec<Step<'a>>,
+    /// The step to read next.
+    at: usize,
+    /// The note's link definitions, which say where a link by reference points.
+    defs: cst::Definitions,
+    /// The labels of the note's footnotes: a `[^label]` without one is text.
+    footnotes: Vec<String>,
+    newlines: Vec<usize>,
+    marks: Marks,
+    /// The line break being read is a hard one.
+    hard: bool,
+    /// The level of the heading being read.
+    level: u8,
+    /// The `[` that nothing closed yet in the block being read, counted as the tree counts
+    /// them, since the `](destination)` of a link whose text started on an earlier line
+    /// (`LinkEnd`) closes the last: the list of inlines each is in, which of them (none for a
+    /// `[` that isn't shown as written), and where in its text.
+    open: Vec<(usize, Option<usize>, usize)>,
+    /// The list of inlines being read, and how many were started.
+    list: usize,
+    lists: usize,
+    /// Inside a link's text, where the tree counts no brackets.
+    in_link: bool,
+    /// The list of the paragraph being read, where a footnote may start, and where its
+    /// footnotes do: the inline each starts before, its label, and its `[^label]:`.
+    top: usize,
+    notes: Vec<(usize, String, Range<usize>)>,
+    /// A list item's checkbox that is no task's to the reader (`[/]`), shown as it is written
+    /// before the item's text.
+    checkbox: Option<usize>,
+}
+
+impl<'a> Reader<'a> {
+    fn line(&self, offset: usize) -> usize {
+        self.newlines.partition_point(|&n| n < offset) + 1
+    }
+
+    fn next(&mut self) -> Option<Step<'a>> {
+        let step = self.steps.get(self.at).copied();
+        self.at += 1;
+        step
+    }
+
+    /// Where the node just entered ends.
+    fn end(&self) -> usize {
+        let mut depth = 0usize;
+        for step in self.steps.get(self.at..).unwrap_or_default() {
+            match step {
+                Step::Enter(..) => depth += 1,
+                Step::Leave(_, at) if depth == 0 => return *at,
+                Step::Leave(..) => depth -= 1,
+                Step::Token(..) => {}
             }
-            Tag::Image { link_type, .. } if wiki(link_type) && !self.flavour.has(S::Embeds) => {
-                self.literal(range, out)
+        }
+        self.src.len()
+    }
+
+    /// Past the node just entered.
+    fn skip(&mut self) {
+        self.only(Kind::Document);
+    }
+
+    /// Past the node just entered: the text of its tokens of `kind`.
+    fn only(&mut self, kind: Kind) -> String {
+        let mut found = String::new();
+        let mut depth = 0usize;
+        while let Some(step) = self.next() {
+            match step {
+                Step::Enter(..) => depth += 1,
+                Step::Leave(..) if depth == 0 => break,
+                Step::Leave(..) => depth -= 1,
+                Step::Token(k, text, _) if k == kind => found.push_str(text),
+                Step::Token(..) => {}
             }
-            Tag::Link {
-                link_type,
-                dest_url,
-                ..
-            } => {
-                let kind = if wiki(link_type) {
-                    LinkKind::Wiki
-                } else if matches!(link_type, LinkType::Autolink | LinkType::Email)
-                    || has_scheme(&dest_url)
-                {
-                    LinkKind::Url
-                } else {
-                    LinkKind::Markdown
-                };
-                out.push(Inline::Link {
-                    target: dest_url.into_string(),
-                    kind,
-                    text: self.inlines(true),
-                });
+        }
+        found
+    }
+
+    /// A list of inlines starts: nothing of it is read yet.
+    fn start_list(&mut self) -> usize {
+        self.lists += 1;
+        std::mem::replace(&mut self.list, self.lists)
+    }
+
+    /// The blocks of the container just entered, up to its end.
+    fn blocks(&mut self) -> Vec<Block> {
+        let mut out = Vec::new();
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                // A container's markers and the indentation of its lines.
+                Step::Token(..) => {}
+                Step::Enter(kind, at) => self.block(kind, at, &mut out),
             }
-            Tag::Image { dest_url, .. } => {
-                self.inlines(true);
-                out.push(Inline::Embed {
-                    target: dest_url.into_string(),
-                });
+        }
+        out
+    }
+
+    fn block(&mut self, kind: Kind, at: usize, out: &mut Vec<Block>) {
+        let line = self.line(at);
+        let kind = match kind {
+            Kind::Paragraph | Kind::MathBlock => {
+                self.paragraph(kind, at, out);
+                return;
             }
-            _ => out.extend(self.inlines(true)),
+            Kind::AtxHeading | Kind::SetextHeading => {
+                let inlines = self.heading(kind == Kind::AtxHeading);
+                BlockKind::Heading {
+                    level: self.level,
+                    inlines,
+                }
+            }
+            Kind::ThematicBreak => {
+                self.skip();
+                BlockKind::Rule
+            }
+            Kind::BlockQuote => BlockKind::Quote(self.blocks()),
+            Kind::Callout => self.callout(),
+            Kind::List => self.list(),
+            Kind::FencedCode => self.fenced(),
+            Kind::IndentedCode => BlockKind::Code {
+                lang: None,
+                text: self.indented(),
+            },
+            Kind::HtmlBlock => BlockKind::Code {
+                lang: Some("html".to_string()),
+                text: self.html(),
+            },
+            Kind::Table => self.table(),
+            // The frontmatter, a blank line, a link definition: nothing to show.
+            _ => {
+                self.skip();
+                return;
+            }
+        };
+        out.push(Block { line, kind });
+    }
+
+    /// The paragraph or the `$$` math just entered at `at`, with the paragraphs and the math
+    /// that start on the lines right under it: no blank line parts them, so they are one
+    /// paragraph on screen, as they always were. A footnote's `[^label]:` on one of its lines
+    /// ends the paragraph there and starts the footnote.
+    fn paragraph(&mut self, kind: Kind, at: usize, out: &mut Vec<Block>) {
+        let mut read = Vec::new();
+        self.start_list();
+        self.top = self.list;
+        self.notes.clear();
+        if let Some(checkbox) = self.checkbox.take() {
+            let rest = &self.src[at..];
+            let text = at + rest.len() - rest.trim_start_matches([' ', '\t']).len();
+            read.push(written(self.src, checkbox..text));
+        }
+        self.leaf(kind, at, &mut read);
+        self.joined(&mut read);
+        self.top = 0;
+        let mut parts = Vec::new();
+        for (k, label, marker) in std::mem::take(&mut self.notes).into_iter().rev() {
+            parts.push((Some((label, marker)), read.split_off(k)));
+        }
+        parts.push((None, read));
+        for (note, read) in parts.into_iter().rev() {
+            let inlines = self.finish(read, true);
+            match note {
+                None => out.extend(self.shown(inlines, at)),
+                Some((label, marker)) => out.push(Block {
+                    line: self.line(marker.start),
+                    kind: BlockKind::FootnoteDef {
+                        label,
+                        blocks: self.shown(inlines, marker.end).into_iter().collect(),
+                    },
+                }),
+            }
         }
     }
 
-    fn literal(&mut self, range: Range<usize>, out: &mut Vec<Inline>) {
-        self.inlines(true);
-        out.push(Inline::Text(self.src[range].to_string()));
+    /// The text of the paragraph or the `$$` math just entered at `at`, onto `read`.
+    fn leaf(&mut self, kind: Kind, at: usize, read: &mut Vec<Read>) {
+        self.open.clear();
+        if kind != Kind::MathBlock {
+            return self.pieces(read);
+        }
+        // `$$`, the math, `$$`, and what its last line goes on with.
+        let (src, end) = (self.src, self.end());
+        self.skip();
+        let from = at + src[at..end].find("$$").map_or(0, |k| k + 2);
+        let body = &src[from..end];
+        let close = body.find("$$");
+        let math = close.map_or(body.trim_end_matches(['\n', '\r']), |k| &body[..k]);
+        let after = from + close.map_or(body.len(), |k| k + 2);
+        read.push((Inline::Math(math.to_string()), at..after, Piece::Atom));
+        let rest = src[after..end].trim_end_matches(['\n', '\r']);
+        if !rest.is_empty() {
+            read.push(written(src, after..after + rest.len()));
+        }
+        // Its line break, should a paragraph go on under it.
+        read.push((Inline::SoftBreak, end..end, Piece::Atom));
+    }
+
+    /// Reads on, onto `read`, into the paragraphs and the `$$` math that start on the line
+    /// right under the block just read. Whether any did.
+    fn joined(&mut self, read: &mut Vec<Read>) -> bool {
+        let mut any = false;
+        loop {
+            let mut k = self.at;
+            while matches!(self.steps.get(k), Some(Step::Token(..))) {
+                k += 1;
+            }
+            let Some(&Step::Enter(kind @ (Kind::Paragraph | Kind::MathBlock), at)) =
+                self.steps.get(k)
+            else {
+                return any;
+            };
+            self.at = k + 1;
+            self.leaf(kind, at, read);
+            any = true;
+        }
+    }
+
+    /// A paragraph's inlines as the block the reader shows, if they show anything; `start` is
+    /// where its text starts.
+    fn shown(&self, inlines: Vec<Inline>, start: usize) -> Option<Block> {
+        let mut inlines = inlines;
+        if self.flavour.has(S::BlockIds) {
+            block_id(&mut inlines);
+        }
+        let mut content = inlines
+            .iter()
+            .filter(|i| !is_blank(i) && !matches!(i, Inline::Mark { .. }));
+        let only = match (content.next(), content.next()) {
+            (None, _) => return None,
+            (Some(only), None) => Some(only),
+            _ => None,
+        };
+        let kind = match only {
+            Some(Inline::Embed { target }) => BlockKind::Embed {
+                target: target.clone(),
+            },
+            Some(Inline::Math(m)) if self.src[start..].trim_start().starts_with("$$") => {
+                BlockKind::Math(m.clone())
+            }
+            _ => BlockKind::Paragraph(inlines),
+        };
+        Some(Block {
+            line: self.line(start),
+            kind,
+        })
+    }
+
+    /// The inlines of the heading just entered; its level is `self.level`.
+    fn heading(&mut self, atx: bool) -> Vec<Inline> {
+        let mut read = Vec::new();
+        self.start_list();
+        self.open.clear();
+        self.pieces(&mut read);
+        if atx {
+            unclose(&mut read);
+        }
+        self.finish(read, true)
+    }
+
+    /// The callout just entered: its `[!type]`, its title, its blocks.
+    fn callout(&mut self) -> BlockKind {
+        let (mut kind, mut folded) = (String::new(), None);
+        let mut title = Vec::new();
+        let mut line = 0;
+        while let Some(step) = self.next() {
+            match step {
+                Step::Token(Kind::CalloutMarker, marker, _) => {
+                    let name = marker.trim_start_matches("[!");
+                    let close = name.find(']').unwrap_or(name.len());
+                    kind = name[..close].to_lowercase();
+                    folded = match &name[close..] {
+                        "]-" => Some(true),
+                        "]+" => Some(false),
+                        _ => None,
+                    };
+                }
+                Step::Token(..) => {}
+                Step::Enter(Kind::CalloutTitle, at) => {
+                    line = self.line(at);
+                    self.start_list();
+                    self.open.clear();
+                    self.pieces(&mut title);
+                    break;
+                }
+                // A callout has its title before anything else.
+                _ => break,
+            }
+        }
+        let alerts = ["note", "tip", "important", "warning", "caution"];
+        let untitled = title.iter().all(is_break);
+        if self.flavour.has(S::Alerts) && alerts.contains(&kind.as_str()) && untitled {
+            // A GitHub alert: `[!NOTE]` alone, then its blocks.
+            return BlockKind::Callout {
+                kind,
+                title: Vec::new(),
+                folded: None,
+                blocks: self.blocks(),
+            };
+        }
+        // The lines right under the title go on from it as one paragraph: they are the
+        // callout's first block, and a `^id` at their end is the paragraph's.
+        let mut body = Vec::new();
+        let mut blocks = Vec::new();
+        let ids = self.flavour.has(S::BlockIds);
+        let mut title = match self.joined(&mut body) {
+            true => {
+                let title = self.finish(title, true);
+                let mut body = self.finish(body, true);
+                if ids {
+                    block_id(&mut body);
+                }
+                if !body.iter().all(is_blank) {
+                    blocks.push(Block {
+                        line: line + 1,
+                        kind: BlockKind::Paragraph(body),
+                    });
+                }
+                title
+            }
+            false => {
+                let mut title = self.finish(title, true);
+                if ids {
+                    block_id(&mut title);
+                }
+                title
+            }
+        };
+        title.retain(|i| !matches!(i, Inline::Text(t) if t.is_empty()));
+        blocks.extend(self.blocks());
+        BlockKind::Callout {
+            kind,
+            title,
+            folded,
+            blocks,
+        }
+    }
+
+    /// The list just entered.
+    fn list(&mut self) -> BlockKind {
+        let mut start = None;
+        let mut items = Vec::new();
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(..) => {}
+                Step::Enter(Kind::ListItem, _) => {
+                    let mut task = None;
+                    // The item's marker and its checkbox come before its blocks.
+                    while let Some(&Step::Token(kind, text, at)) = self.steps.get(self.at) {
+                        self.at += 1;
+                        match (kind, text) {
+                            (Kind::ListMarker, _) if items.is_empty() => {
+                                let number = text.trim_end_matches(['.', ')']);
+                                start = number.parse::<u64>().ok();
+                            }
+                            (Kind::TaskMarker, "[ ]") => task = Some(false),
+                            (Kind::TaskMarker, "[x]" | "[X]") => task = Some(true),
+                            // Any other status is the items' to read: here it is text.
+                            (Kind::TaskMarker, _) => self.checkbox = Some(at),
+                            _ => {}
+                        }
+                    }
+                    let mut blocks = Vec::new();
+                    // With no paragraph of the item's to start, it is the item's text.
+                    let next = self.steps.get(self.at);
+                    let starts = matches!(next, Some(Step::Enter(Kind::Paragraph, _)));
+                    if let Some(at) = self.checkbox.take_if(|_| !starts) {
+                        let text = self.src[at..].lines().next().unwrap_or_default();
+                        let text = at..at + text.trim_end().len();
+                        let inlines = self.finish(vec![written(self.src, text)], true);
+                        blocks.push(Block {
+                            line: self.line(at),
+                            kind: BlockKind::Paragraph(inlines),
+                        });
+                    }
+                    blocks.extend(self.blocks());
+                    items.push(Item { task, blocks });
+                }
+                Step::Enter(..) => self.skip(),
+            }
+        }
+        BlockKind::List { start, items }
+    }
+
+    /// The fenced code just entered: its language, and its lines without the fence's
+    /// indentation.
+    fn fenced(&mut self) -> BlockKind {
+        let mut lang = None;
+        let mut text = String::new();
+        let (mut indent, mut fences, mut lines) = (0, 0, 0);
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(Kind::Whitespace, blanks, _) if fences == 0 => indent = blanks.len(),
+                Step::Token(Kind::Fence, ..) => fences += 1,
+                Step::Token(Kind::Info, info, _) => {
+                    lang = info.split_whitespace().next().map(str::to_string)
+                }
+                Step::Token(Kind::CodeText, line, _) => {
+                    let blanks = line.bytes().take(indent).take_while(|b| *b == b' ');
+                    text.push_str(&line[blanks.count()..]);
+                }
+                Step::Token(Kind::Newline, ..) => {
+                    // Not the opening fence's line break, nor the closing one's.
+                    if lines > 0 && fences == 1 {
+                        text.push('\n');
+                    }
+                    lines += 1;
+                }
+                _ => {}
+            }
+        }
+        BlockKind::Code { lang, text }
+    }
+
+    /// The lines of the indented code just entered, without their indentation.
+    fn indented(&mut self) -> String {
+        let mut text = String::new();
+        let mut depth = 0usize;
+        while let Some(step) = self.next() {
+            match step {
+                // A blank line between its lines, whose blanks past the indentation are code.
+                Step::Enter(..) => depth += 1,
+                Step::Leave(..) if depth == 0 => break,
+                Step::Leave(..) => depth -= 1,
+                Step::Token(Kind::CodeText, line, _) => text.push_str(unindent(line)),
+                Step::Token(Kind::Whitespace, blanks, _) if depth > 0 => {
+                    text.push_str(unindent(blanks))
+                }
+                Step::Token(Kind::Newline, ..) => text.push('\n'),
+                Step::Token(..) => {}
+            }
+        }
+        text
+    }
+
+    /// The lines of the HTML block just entered, as written.
+    fn html(&mut self) -> String {
+        let mut text = String::new();
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(Kind::HtmlText, line, _) => text.push_str(line),
+                Step::Token(Kind::Newline, ..) => text.push('\n'),
+                _ => {}
+            }
+        }
+        text
+    }
+
+    /// The table just entered: its header, then its rows, each with the header's cells.
+    fn table(&mut self) -> BlockKind {
+        let mut header = Vec::new();
+        let mut rows: Vec<Vec<Vec<Inline>>> = Vec::new();
+        let mut head = true;
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(..) => {}
+                Step::Enter(Kind::TableRow, _) if head => {
+                    header = self.cells();
+                    head = false;
+                }
+                Step::Enter(Kind::TableRow, _) => rows.push(self.cells()),
+                // The delimiter row.
+                Step::Enter(..) => self.skip(),
+            }
+        }
+        for row in &mut rows {
+            row.resize(header.len(), Vec::new());
+        }
+        BlockKind::Table { header, rows }
+    }
+
+    /// The cells of the table row just entered. The tree holds no node for a cell with
+    /// nothing in it: two pipes with none between them had one.
+    fn cells(&mut self) -> Vec<Vec<Inline>> {
+        let mut cells = Vec::new();
+        // Whether the row has started, and whether a cell was read since its last pipe.
+        let (mut started, mut filled) = (false, false);
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(Kind::Pipe, ..) => {
+                    if started && !filled {
+                        cells.push(Vec::new());
+                    }
+                    (started, filled) = (true, false);
+                }
+                Step::Token(..) => {}
+                Step::Enter(Kind::TableCell, _) => {
+                    let mut read = Vec::new();
+                    self.start_list();
+                    self.open.clear();
+                    self.pieces(&mut read);
+                    cells.push(self.finish(read, true));
+                    (started, filled) = (true, true);
+                }
+                Step::Enter(..) => self.skip(),
+            }
+        }
+        cells
+    }
+
+    /// The inlines of the node just entered, up to its end, onto `out`.
+    fn pieces(&mut self, out: &mut Vec<Read>) {
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => return,
+                Step::Token(kind, text, at) => self.token(kind, text, at, out),
+                Step::Enter(kind, at) => self.inline(kind, at, out),
+            }
+        }
+    }
+
+    fn token(&mut self, kind: Kind, text: &str, at: usize, out: &mut Vec<Read>) {
+        let range = at..at + text.len();
+        match kind {
+            Kind::Text | Kind::InlineHtml => {
+                self.brackets(text, Some(out.len()));
+                out.push(written(self.src, range));
+            }
+            // A `^id` names its block only at the block's end (`block_id`), and what a field
+            // is made of is shown as written.
+            Kind::BlockId
+            | Kind::FieldKey
+            | Kind::FieldColons
+            | Kind::LBracket
+            | Kind::RBracket
+            | Kind::LParen
+            | Kind::RParen => out.push(written(self.src, range)),
+            Kind::Escape => {
+                self.brackets(&text[1..], None);
+                out.push((Inline::Text(text[1..].to_string()), range, Piece::Atom));
+            }
+            Kind::Entity => match character(text) {
+                Some(shown) => out.push((Inline::Text(shown), range, Piece::Atom)),
+                None => out.push(written(self.src, range)),
+            },
+            Kind::Tag => out.push((Inline::Tag(text[1..].to_string()), range, Piece::Atom)),
+            Kind::HardBreak => self.hard = true,
+            Kind::Newline => {
+                let line_break = match std::mem::take(&mut self.hard) {
+                    true => Inline::HardBreak,
+                    false => Inline::SoftBreak,
+                };
+                out.push((line_break, range, Piece::Atom));
+            }
+            Kind::HeadingMarker => self.level = text.len() as u8,
+            Kind::SetextUnderline => self.level = if text.starts_with('=') { 1 } else { 2 },
+            // Indentation, a container's markers, the markers of emphasis.
+            _ => {}
+        }
+    }
+
+    /// Counts the brackets of `text`, which is the block's own, as the tree counted them;
+    /// `piece` is the inline that shows it as written.
+    fn brackets(&mut self, text: &str, piece: Option<usize>) {
+        if self.in_link {
+            return;
+        }
+        for (k, b) in text.bytes().enumerate() {
+            match b {
+                b'[' => self.open.push((self.list, piece, k)),
+                b']' => {
+                    self.open.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn inline(&mut self, kind: Kind, at: usize, out: &mut Vec<Read>) {
+        let range = at..self.end();
+        match kind {
+            Kind::Emphasis | Kind::Strong | Kind::Strikethrough | Kind::Highlight => {
+                let inlines = self.contained(range.clone(), false);
+                let inline = match kind {
+                    Kind::Emphasis => Inline::Emph(inlines),
+                    Kind::Strong => Inline::Strong(inlines),
+                    Kind::Strikethrough => Inline::Strike(inlines),
+                    _ => Inline::Highlight(inlines),
+                };
+                out.push((inline, range, Piece::Container));
+            }
+            Kind::CodeSpan => {
+                let code = self.code_span();
+                out.push((Inline::Code(code), range, Piece::Atom));
+            }
+            Kind::InlineMath => {
+                let math = self.only(Kind::MathText);
+                out.push((Inline::Math(math), range, Piece::Atom));
+            }
+            Kind::WikiLink | Kind::Embed => self.wikilink(kind, range, out),
+            Kind::Link | Kind::Image => self.link(kind, range, out),
+            Kind::LinkEnd => self.link_end(range, out),
+            // A Dataview field is shown as written, its value read; the tree counts the
+            // brackets in it apart.
+            Kind::InlineField | Kind::LineField => {
+                let open = std::mem::take(&mut self.open);
+                let in_link = std::mem::replace(&mut self.in_link, false);
+                self.pieces(out);
+                (self.open, self.in_link) = (open, in_link);
+            }
+            Kind::FootnoteRef => {
+                let label = self.only(Kind::FootnoteLabel);
+                let name = label.strip_prefix('^').unwrap_or(&label).trim();
+                match self.footnotes.contains(&fold(&label)) {
+                    true => out.push((Inline::FootnoteRef(name.to_string()), range, Piece::Atom)),
+                    false => out.push(written(self.src, range)),
+                }
+            }
+            Kind::FootnoteMarker => {
+                let label = self.only(Kind::FootnoteLabel);
+                let name = label.strip_prefix('^').unwrap_or(&label).trim();
+                match self.list == self.top {
+                    true => self.notes.push((out.len(), name.to_string(), range)),
+                    false => out.push(written(self.src, range)),
+                }
+            }
+            Kind::Autolink => {
+                let url = self.only(Kind::Url);
+                self.brackets(&url, None);
+                let shown = written(self.src, range.start + 1..range.end - 1);
+                let text = self.held(vec![shown], range.clone());
+                let link = Inline::Link {
+                    target: url,
+                    kind: LinkKind::Url,
+                    text,
+                };
+                out.push((link, range, Piece::Container));
+            }
+            // A node the reader has nothing of its own for: what it holds.
+            _ => self.pieces(out),
+        }
+    }
+
+    /// The inlines of the node just entered, which is at `range`, as a list of their own;
+    /// `link` when they are a link's text.
+    fn contained(&mut self, range: Range<usize>, link: bool) -> Vec<Inline> {
+        let mut read = Vec::new();
+        let list = self.start_list();
+        let in_link = std::mem::replace(&mut self.in_link, self.in_link || link);
+        self.pieces(&mut read);
+        (self.list, self.in_link) = (list, in_link);
+        self.held(read, range)
+    }
+
+    /// `read` as the inlines a container at `range` holds.
+    fn held(&mut self, read: Vec<Read>, range: Range<usize>) -> Vec<Inline> {
+        let outer = self.marks.within.replace(range);
+        let inlines = self.finish(read, false);
+        self.marks.within = outer;
+        inlines
+    }
+
+    /// `read` as the reader has it: no blanks before a line break, nor around a `block`'s own
+    /// text, the marks placed, text next to text made one.
+    fn finish(&mut self, mut read: Vec<Read>, block: bool) -> Vec<Inline> {
+        trim(&mut read, block);
+        let (out, at): (Vec<Inline>, Vec<(Range<usize>, Piece)>) =
+            read.into_iter().map(|(i, r, p)| (i, (r, p))).unzip();
+        merge_text(self.marks.place(out, at))
+    }
+
+    /// The text of the code span just entered, as CommonMark has it: a line break is a
+    /// space, and one space comes off each end when both have one.
+    fn code_span(&mut self) -> String {
+        let mut code = String::new();
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(Kind::CodeText, text, _) => code.push_str(text),
+                Step::Token(Kind::Newline, ..) => code.push(' '),
+                _ => {}
+            }
+        }
+        let inner = code.strip_prefix(' ').and_then(|c| c.strip_suffix(' '));
+        match inner {
+            Some(inner) if !inner.trim_matches(' ').is_empty() => inner.to_string(),
+            _ => code,
+        }
+    }
+
+    /// The wikilink or the embed just entered.
+    fn wikilink(&mut self, kind: Kind, range: Range<usize>, out: &mut Vec<Read>) {
+        let mut target = String::new();
+        // Where the target is written, and what the link shows in its place.
+        let mut named = range.start..range.start;
+        let mut alias: Option<Range<usize>> = None;
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(Kind::Target | Kind::Anchor, text, at) => {
+                    if target.is_empty() {
+                        named.start = at;
+                    }
+                    target.push_str(text);
+                    named.end = at + text.len();
+                }
+                Step::Token(Kind::Pipe, pipe, at) => alias = Some(at + pipe.len()..at + pipe.len()),
+                Step::Token(Kind::Alias, text, at) => alias = Some(at..at + text.len()),
+                _ => {}
+            }
+        }
+        if kind == Kind::Embed {
+            return out.push((Inline::Embed { target }, range, Piece::Container));
+        }
+        let shown = written(self.src, alias.unwrap_or(named));
+        let text = self.held(vec![shown], range.clone());
+        let link = Inline::Link {
+            target,
+            kind: LinkKind::Wiki,
+            text,
+        };
+        out.push((link, range, Piece::Container));
+    }
+
+    /// The Markdown link or image just entered: inline, or by reference to a definition.
+    fn link(&mut self, kind: Kind, range: Range<usize>, out: &mut Vec<Read>) {
+        let mut text = None;
+        let mut inline = false;
+        let mut dest = "";
+        let mut label: Option<(&str, usize)> = None;
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Enter(Kind::LinkText, _) => text = Some(self.contained(range.clone(), true)),
+                Step::Enter(..) => self.skip(),
+                Step::Token(Kind::LParen, ..) => inline = true,
+                Step::Token(Kind::LinkDest, to, _) => dest = to,
+                Step::Token(Kind::LinkLabel, name, at) => label = Some((name, at)),
+                Step::Token(..) => {}
+            }
+        }
+        let target = match (inline, label) {
+            (true, _) => cst::link_destination(dest).map(|d| unescape(&dest[d])),
+            (false, Some((name, _))) => self.defs.get(name).map(unescape),
+            (false, None) => None,
+        };
+        // A destination CommonMark doesn't read (`[a](two words)`) makes no link: the index
+        // counts none either.
+        let Some(target) = target else {
+            return out.push(written(self.src, range));
+        };
+        if kind == Kind::Image {
+            return out.push((Inline::Embed { target }, range, Piece::Container));
+        }
+        let text = match (text, label) {
+            (Some(text), _) => text,
+            // `[label]` and `[label][]` show their label.
+            (None, Some((name, at))) => {
+                let shown = written(self.src, at..at + name.len());
+                self.held(vec![shown], range.clone())
+            }
+            (None, None) => Vec::new(),
+        };
+        let kind = match has_scheme(&target) {
+            true => LinkKind::Url,
+            false => LinkKind::Markdown,
+        };
+        out.push((Inline::Link { target, kind, text }, range, Piece::Container));
+    }
+
+    /// The `](destination)` just entered, which closes a link whose text started on an
+    /// earlier line of the block: the link is made of what was read since its `[`.
+    fn link_end(&mut self, range: Range<usize>, out: &mut Vec<Read>) {
+        let dest = self.only(Kind::LinkDest);
+        let target = cst::link_destination(&dest).map(|d| unescape(&dest[d]));
+        let opener = match self.in_link {
+            true => None,
+            false => self.open.pop(),
+        };
+        // Its `[` is among the inlines being read, shown as written, with no footnote
+        // starting after it.
+        let found = match (target, opener) {
+            (Some(target), Some((list, Some(piece), k)))
+                if list == self.list
+                    && piece < out.len()
+                    && self.notes.iter().all(|n| n.0 <= piece) =>
+            {
+                Some((target, piece, k))
+            }
+            _ => None,
+        };
+        let Some((target, piece, k)) = found else {
+            return out.push(written(self.src, range));
+        };
+        let from = out[piece].1.start + k;
+        let mut read = out.split_off(piece + 1);
+        let (_, opener, _) = out.pop().expect("the inline its `[` is in");
+        if from + 1 < opener.end {
+            read.insert(0, written(self.src, from + 1..opener.end));
+        }
+        if opener.start < from {
+            out.push(written(self.src, opener.start..from));
+        }
+        let whole = from..range.end;
+        let text = self.held(read, whole.clone());
+        let kind = match has_scheme(&target) {
+            true => LinkKind::Url,
+            false => LinkKind::Markdown,
+        };
+        out.push((Inline::Link { target, kind, text }, whole, Piece::Container));
     }
 }
 
-fn alert_kind(kind: BlockQuoteKind) -> &'static str {
-    match kind {
-        BlockQuoteKind::Note => "note",
-        BlockQuoteKind::Tip => "tip",
-        BlockQuoteKind::Important => "important",
-        BlockQuoteKind::Warning => "warning",
-        BlockQuoteKind::Caution => "caution",
+fn is_break(read: &Read) -> bool {
+    matches!(read.0, Inline::SoftBreak | Inline::HardBreak)
+}
+
+/// Takes the blanks off the end of a line's text before its line break and, for a `block`'s
+/// own inlines, off its start and its end with the line breaks there. Text left empty goes.
+fn trim(read: &mut Vec<Read>, block: bool) {
+    let blank = [' ', '\t'];
+    let trim_end = |read: &mut Read| {
+        if let (Inline::Text(text), range, Piece::Written) = read {
+            text.truncate(text.trim_end_matches(blank).len());
+            range.end = range.start + text.len();
+        }
+    };
+    for k in 1..read.len() {
+        if is_break(&read[k]) {
+            trim_end(&mut read[k - 1]);
+        }
     }
+    let empty = |read: &Read| matches!(&read.0, Inline::Text(text) if text.is_empty());
+    read.retain(|r| !empty(r));
+    if !block {
+        return;
+    }
+    while let Some(last) = read.last_mut() {
+        trim_end(last);
+        if !(is_break(last) || empty(last)) {
+            break;
+        }
+        read.pop();
+    }
+    let lead = read.iter().take_while(|r| is_break(r)).count();
+    read.drain(..lead);
+    if let Some((Inline::Text(text), range, Piece::Written)) = read.first_mut() {
+        let blanks = text.len() - text.trim_start_matches(blank).len();
+        text.drain(..blanks);
+        range.start += blanks;
+        if text.is_empty() {
+            read.remove(0);
+        }
+    }
+}
+
+/// Takes an ATX heading's closing `#`s off its text: a run of them at its end, after a blank
+/// or alone.
+fn unclose(read: &mut [Read]) {
+    let Some(k) = read.iter().rposition(|r| !is_break(r)) else {
+        return;
+    };
+    let (Inline::Text(text), range, Piece::Written) = &mut read[k] else {
+        return;
+    };
+    let blank = [' ', '\t'];
+    let end = text.trim_end_matches(blank);
+    let words = end.trim_end_matches('#');
+    if words.len() < end.len() && (words.ends_with(blank) || (words.is_empty() && k == 0)) {
+        text.truncate(words.trim_end_matches(blank).len());
+        range.end = range.start + text.len();
+    }
+}
+
+/// A line of indented code without its indentation of four columns.
+fn unindent(line: &str) -> &str {
+    let mut col = 0;
+    for (k, b) in line.bytes().enumerate() {
+        match b {
+            _ if col >= 4 => return &line[k..],
+            b' ' => col += 1,
+            b'\t' => col += 4 - col % 4,
+            _ => return &line[k..],
+        }
+    }
+    ""
+}
+
+/// The characters a character reference as written (`&amp;`, `&#35;`, `&#x23;`) stands for,
+/// if it names any.
+fn character(written: &str) -> Option<String> {
+    let name = written.strip_prefix('&')?.strip_suffix(';')?;
+    let Some(number) = name.strip_prefix('#') else {
+        return entities::named(name).map(str::to_string);
+    };
+    let code = match number.strip_prefix(['x', 'X']) {
+        Some(hex) if hex.len() <= 6 => u32::from_str_radix(hex, 16).ok()?,
+        None if number.len() <= 7 => number.parse::<u32>().ok()?,
+        _ => return None,
+    };
+    // As CommonMark has it: what is no character, and zero, is U+FFFD.
+    let shown = char::from_u32(code).filter(|c| *c != '\0');
+    Some(shown.unwrap_or('\u{fffd}').to_string())
+}
+
+/// A link's destination as it reads: its escapes and its character references resolved.
+fn unescape(written: &str) -> String {
+    let b = written.as_bytes();
+    let mut out = String::with_capacity(written.len());
+    let (mut from, mut i) = (0, 0);
+    while i < b.len() {
+        let escaped = b[i] == b'\\' && b.get(i + 1).is_some_and(u8::is_ascii_punctuation);
+        let reference = match b[i] {
+            b'&' => {
+                let end = b[i..].iter().take(34).position(|c| *c == b';');
+                end.and_then(|k| Some((k + 1, character(&written[i..=i + k])?)))
+            }
+            _ => None,
+        };
+        if escaped {
+            out.push_str(&written[from..i]);
+            (from, i) = (i + 1, i + 2);
+        } else if let Some((len, shown)) = reference {
+            out.push_str(&written[from..i]);
+            out.push_str(&shown);
+            (from, i) = (i + len, i + len);
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&written[from..]);
+    out
 }
 
 fn has_scheme(url: &str) -> bool {
@@ -837,8 +1476,7 @@ fn is_blank(inline: &Inline) -> bool {
     }
 }
 
-// Extras: the syntax pulldown-cmark doesn't parse. They work on `Inline`s, where code is its
-// own variant, so none of them reaches inside code.
+// Text: what the tree leaves to the reader.
 
 /// `#tag`: after the start of the text, a space, `(` or `,`; at least one non-digit. The workspace
 /// index finds tags with the same pattern.
@@ -850,39 +1488,7 @@ pub const TAG: &str = r"(?:^|[\s(,])#([\p{L}\p{N}_/\-]+)";
 /// flavour.
 pub const MARKED_TAG: &str = r"(?:^|[\s(,])[*_~=]*#([\p{L}\p{N}_/\-]+)";
 
-/// Delimited spans that may wrap other inlines.
-type Wrap = fn(Vec<Inline>) -> Inline;
-
-const SPANS: &[(Syntax, &str, Wrap)] = &[(S::Highlights, "==", Inline::Highlight)];
-
-/// The first match in `text` at or after `from`: its byte range and what it becomes.
-type Token = fn(text: &str, from: usize) -> Option<(Range<usize>, Inline)>;
-
-/// Words inside text.
-const TOKENS: &[(Syntax, Token)] = &[(S::Tags, tag)];
-
-fn extras(inlines: Vec<Inline>, flavour: &Flavour) -> Vec<Inline> {
-    let tokens: Vec<Token> = TOKENS
-        .iter()
-        .filter(|t| flavour.has(t.0))
-        .map(|t| t.1)
-        .collect();
-    let mut out: Vec<Inline> = merge_text(inlines)
-        .into_iter()
-        .flat_map(|i| match i {
-            Inline::Text(t) if !tokens.is_empty() => split_tokens(&t, &tokens),
-            i => vec![i],
-        })
-        .collect();
-    for (syntax, delim, wrap) in SPANS {
-        if flavour.has(*syntax) {
-            out = spans(out, delim, *wrap);
-        }
-    }
-    out
-}
-
-/// pulldown-cmark splits text at every character that might start syntax.
+/// Text next to text is one text.
 fn merge_text(inlines: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::with_capacity(inlines.len());
     for i in inlines {
@@ -890,26 +1496,6 @@ fn merge_text(inlines: Vec<Inline>) -> Vec<Inline> {
             (Some(Inline::Text(a)), Inline::Text(b)) => a.push_str(&b),
             (_, i) => out.push(i),
         }
-    }
-    out
-}
-
-fn split_tokens(text: &str, tokens: &[Token]) -> Vec<Inline> {
-    let mut out = Vec::new();
-    let mut at = 0;
-    while let Some((range, inline)) = tokens
-        .iter()
-        .filter_map(|find| find(text, at))
-        .min_by_key(|(r, _)| r.start)
-    {
-        if range.start > at {
-            out.push(Inline::Text(text[at..range.start].to_string()));
-        }
-        out.push(inline);
-        at = range.end;
-    }
-    if at < text.len() {
-        out.push(Inline::Text(text[at..].to_string()));
     }
     out
 }
@@ -952,68 +1538,6 @@ fn tag(text: &str, from: usize) -> Option<(Range<usize>, Inline)> {
     None
 }
 
-/// Pairs `delim`s left to right into `wrap`ped spans, like `**`: an opener is followed by
-/// something other than a space, a closer follows something other than a space. Unpaired
-/// delimiters stay text.
-fn spans(inlines: Vec<Inline>, delim: &str, wrap: Wrap) -> Vec<Inline> {
-    enum Piece {
-        Inline(Inline),
-        Delim,
-    }
-    let mut pieces = Vec::new();
-    for i in inlines {
-        match i {
-            Inline::Text(t) if t.contains(delim) => {
-                for (k, part) in t.split(delim).enumerate() {
-                    if k > 0 {
-                        pieces.push(Piece::Delim);
-                    }
-                    if !part.is_empty() {
-                        pieces.push(Piece::Inline(Inline::Text(part.to_string())));
-                    }
-                }
-            }
-            i => pieces.push(Piece::Inline(i)),
-        }
-    }
-    let can_open: Vec<bool> = (0..pieces.len())
-        .map(|k| match pieces.get(k + 1) {
-            Some(Piece::Inline(Inline::Text(t))) => !t.starts_with(char::is_whitespace),
-            Some(Piece::Inline(_)) => true,
-            _ => false,
-        })
-        .collect();
-
-    let mut out: Vec<Inline> = Vec::new();
-    let mut open: Option<usize> = None;
-    for (k, piece) in pieces.into_iter().enumerate() {
-        if let Piece::Inline(i) = piece {
-            out.push(i);
-            continue;
-        }
-        let can_close = match out.last() {
-            Some(Inline::Text(t)) => !t.ends_with(char::is_whitespace),
-            Some(_) => true,
-            None => false,
-        };
-        match open {
-            Some(at) if can_close && out.len() > at => {
-                let inner = out.split_off(at);
-                out.pop();
-                out.push(wrap(merge_text(inner)));
-                open = None;
-            }
-            _ => {
-                out.push(Inline::Text(delim.to_string()));
-                if can_open[k] {
-                    open = Some(out.len());
-                }
-            }
-        }
-    }
-    merge_text(out)
-}
-
 /// A trailing `^id`, after a space or alone: the block's id is group 1.
 pub fn block_id_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -1046,60 +1570,6 @@ fn trailing_block_id(inlines: &mut Vec<Inline>) {
         inlines.pop();
     }
     inlines.push(Inline::BlockId(id));
-}
-
-/// `> [!type]± Title` on the quote's first line makes it a callout.
-fn callout(mut blocks: Vec<Block>) -> BlockKind {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"^\[!([^\]\s]+)\]([+-]?)[ \t]*").unwrap());
-    let Some(Block {
-        line,
-        kind: BlockKind::Paragraph(inlines),
-    }) = blocks.first_mut()
-    else {
-        return BlockKind::Quote(blocks);
-    };
-    let Some(Inline::Text(first)) = inlines
-        .iter_mut()
-        .find(|i| !matches!(i, Inline::Mark { .. }))
-    else {
-        return BlockKind::Quote(blocks);
-    };
-    let Some(c) = re.captures(first) else {
-        return BlockKind::Quote(blocks);
-    };
-    let kind = c[1].to_lowercase();
-    let folded = match &c[2] {
-        "-" => Some(true),
-        "+" => Some(false),
-        _ => None,
-    };
-    let marker = c.get(0).unwrap().end();
-    first.drain(..marker);
-    let line = *line;
-    let mut title = std::mem::take(inlines);
-    let body = match title
-        .iter()
-        .position(|i| matches!(i, Inline::SoftBreak | Inline::HardBreak))
-    {
-        Some(at) => title.split_off(at).split_off(1),
-        None => Vec::new(),
-    };
-    title.retain(|i| !matches!(i, Inline::Text(t) if t.is_empty()));
-    if body.iter().all(is_blank) {
-        blocks.remove(0);
-    } else {
-        blocks[0] = Block {
-            line: line + 1,
-            kind: BlockKind::Paragraph(body),
-        };
-    }
-    BlockKind::Callout {
-        kind,
-        title,
-        folded,
-        blocks,
-    }
 }
 
 /// Removes `%%…%%` outside code, keeping the line breaks so lines still match the file.

@@ -9,7 +9,7 @@ pub(super) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     if s.templates.is_template(note) {
         return Vec::new();
     }
-    let source = s.flavour.source(text);
+    let source = markdown::pulldown::source(&s.flavour, text);
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
     let mut pass = pass(&lines, &s.flavour, wants);
@@ -93,7 +93,8 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
     }];
     let enclosing = |open: &[Open]| open.iter().rev().find_map(|o| o.item);
 
-    for (event, range) in Parser::new_ext(src, flavour.options()).into_offset_iter() {
+    let options = markdown::pulldown::options(flavour);
+    for (event, range) in Parser::new_ext(src, options).into_offset_iter() {
         match event {
             Event::Text(t) if wants.tags && verbatim == 0 && t.contains('#') => {
                 body_tags.extend(tags_in(&t));
