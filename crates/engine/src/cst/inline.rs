@@ -8,8 +8,8 @@
 //! What is left as text is then read for what text itself holds (`Held`, below): escapes,
 //! character references, autolinks, inline HTML, footnotes, hard line breaks, and emphasis, a
 //! block at a time, since emphasis may open on one line and close on a later one. That reading
-//! only cuts `Text` tokens (and a wikilink's `Alias`, which it shows as text) into more
-//! tokens and wraps them in nodes: the links, the tags and everything else found first stay
+//! only cuts `Text` tokens (and a wikilink's `Alias` and the `LinkLabel` a link by reference
+//! shows, which are text on screen) into more tokens and wraps them in nodes: the links, the tags and everything else found first stay
 //! as they were found, so a reader that doesn't ask for it
 //! (`Gates::plain`) reads the same links and tags. A tag may follow the markers that open
 //! emphasis (`**#tag**`) either way.
@@ -738,8 +738,8 @@ struct Run {
 /// The sink a block's lines are read into. A block whose text may hold more than the line
 /// reader finds (an escape, a character reference, `<`, a footnote, a hard break, emphasis) is
 /// held back until it ends: emphasis may close on a later line than it opened on. Its `Text`
-/// tokens, and a wikilink's `Alias`, are then cut where those are, and it goes on to the sink.
-/// Nothing else of it changes.
+/// tokens, a wikilink's `Alias` and the `LinkLabel` a link by reference shows are then cut
+/// where those are, and it goes on to the sink. Nothing else of it changes.
 struct Held<'s, 't, B> {
     text: &'t str,
     g: Gates,
@@ -832,7 +832,7 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
                 Rec::Start(kind) => self.b.start(kind),
                 Rec::Finish => self.b.finish(),
                 Rec::Line(..) => {}
-                Rec::Tok(kind @ (Text | Alias), a, z) => {
+                Rec::Tok(kind @ (Text | Alias | LinkLabel), a, z) => {
                     let mut at = a;
                     while let Some(cut) = cuts.next_if(|c| c.a < z) {
                         token(&mut *self.b, kind, text, at, cut.a);
@@ -958,8 +958,9 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
     let t = text.as_bytes();
     let mut cuts: Vec<Cut> = Vec::new();
     let mut runs: Vec<Run> = Vec::new();
-    // The inline nodes open; the block's own text is scope 0.
-    let mut scopes: Vec<usize> = Vec::new();
+    // The inline nodes open, and whether each holds a link's text; the block's own text is
+    // scope 0.
+    let mut scopes: Vec<(usize, bool)> = Vec::new();
     let mut line = (0, 0);
     // Where the footnote's `[^label]:` that starts the line ends, until its text is read.
     let mut footnote = None;
@@ -967,8 +968,11 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
     let mut hard: Option<(usize, usize)> = None;
     for (k, rec) in recs.iter().enumerate() {
         let (a, z) = match *rec {
-            Rec::Start(_) => {
-                scopes.push(k + 1);
+            Rec::Start(kind) => {
+                if let (LinkText, Some(link)) = (kind, scopes.last_mut()) {
+                    link.1 = true;
+                }
+                scopes.push((k + 1, false));
                 continue;
             }
             Rec::Finish => {
@@ -984,11 +988,13 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
                 footnote = marker;
                 continue;
             }
-            // What a wikilink shows in its target's place is read as text is.
+            // What a wikilink shows in its target's place is read as text is, and so is the
+            // label a link by reference shows, having no text of its own.
             Rec::Tok(Text | Alias, a, z) => (a, z),
+            Rec::Tok(LinkLabel, a, z) if scopes.last().is_some_and(|s| !s.1) => (a, z),
             Rec::Tok(..) => continue,
         };
-        let scope = scopes.last().copied().unwrap_or(0);
+        let scope = scopes.last().map_or(0, |s| s.0);
         let mut i = a;
         if let Some(end) = footnote.take().filter(|&end| a == line.0 && end <= z) {
             let piece = Piece::Node(FootnoteMarker);
@@ -1017,11 +1023,33 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
                     Some(close) => (close + 1, Some(Piece::Node(FootnoteRef))),
                     None => (1, None),
                 },
-                b'*' | b'_' | b'~' | b'=' => {
+                // Every two `=` of a run are a marker, left to right, as the reader always
+                // split them; only the last may open, having something other than a marker
+                // after it.
+                b'=' => {
+                    let len = t[i..z].iter().take_while(|&&x| x == c).count();
+                    let markers = if g.has(S::Highlights) { len / 2 } else { 0 };
+                    for k in 0..markers {
+                        let a = i + 2 * k;
+                        let (open, close) = flanks(text, line, a, 2, c);
+                        let open = open && k + 1 == markers;
+                        if open || close {
+                            runs.push(Run {
+                                a,
+                                len: 2,
+                                ch: c,
+                                open,
+                                close,
+                                scope,
+                            });
+                        }
+                    }
+                    (len, None)
+                }
+                b'*' | b'_' | b'~' => {
                     let len = t[i..z].iter().take_while(|&&x| x == c).count();
                     let read = match c {
                         b'~' => g.has(S::Strikethrough) && len <= 2,
-                        b'=' => g.has(S::Highlights) && len == 2,
                         _ => true,
                     };
                     let (open, close) = match read {
@@ -1134,6 +1162,9 @@ struct Opener {
 fn emphasis(runs: &[Run], group: &[usize], cuts: &mut Vec<Cut>) -> Vec<(usize, usize)> {
     let mut inside = Vec::new();
     let mut stack: Vec<Opener> = Vec::new();
+    // A `~` run that found no opener rules out, for the `~` runs after it, the openers there
+    // were then: pulldown-cmark kept one such bound for every length of `~` run.
+    let mut tildes = 0;
     for r in group.iter().map(|&k| runs[k]).filter(|r| r.ch != b'=') {
         let both = r.open && r.close;
         let (mut at, mut count) = (r.a, r.len);
@@ -1145,11 +1176,20 @@ fn emphasis(runs: &[Run], group: &[usize], cuts: &mut Vec<Cut>) -> Vec<(usize, u
                         || !(r.len + o.run).is_multiple_of(3)
                         || r.len.is_multiple_of(3))
             };
-            let Some(found) = stack.iter().rposition(fits) else {
+            let from = match r.ch {
+                b'~' => tildes.min(stack.len()),
+                _ => 0,
+            };
+            let Some(found) = stack[from..].iter().rposition(fits) else {
+                if r.ch == b'~' {
+                    tildes = stack.len();
+                }
                 break;
             };
+            let found = from + found;
             let o = stack[found];
             stack.truncate(found);
+            tildes = tildes.min(found);
             let matched = count.min(o.count);
             let (mut open, mut close, mut left) = (o.at + o.count, at, matched);
             while left > 0 {

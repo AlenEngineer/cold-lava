@@ -338,6 +338,17 @@ fn a_tag_may_follow_the_markers_that_open_emphasis_and_highlights() {
         texts(alias, obsidian(), Kind::Target),
         ["Note", "Pic.png", "Other"]
     );
+    // So does a link by reference that shows its label.
+    let label = "[**ref**] and [*text*][ref] and [ref][]\n\n[ref]: x.md\n[**ref**]: y.md\n";
+    assert_eq!(texts(label, obsidian(), Kind::Strong), ["**ref**"]);
+    assert_eq!(texts(label, obsidian(), Kind::Emphasis), ["*text*"]);
+    let links = ["[**ref**]", "[*text*][ref]", "[ref][]"];
+    assert_eq!(texts(label, obsidian(), Kind::Link), links);
+    assert_eq!(texts(label, obsidian().plain(), Kind::Link), links);
+    assert_eq!(
+        texts(label, obsidian().plain(), Kind::LinkLabel),
+        ["**ref**", "ref", "ref"]
+    );
     let marked = "==#marked== ~~#struck~~ **==#nested==**\n";
     let all = ["#marked", "#struck", "#nested"];
     assert_eq!(tags(marked, obsidian()), all);
@@ -375,6 +386,13 @@ fn text_holds_emphasis_strong_strikethrough_and_highlights() {
     );
     assert_eq!(texts(all, ob, Kind::Strikethrough), ["~~f~~", "~g~"]);
     assert_eq!(texts(all, ob, Kind::Highlight), ["==h==", "==**i** j=="]);
+    // Every two `=` are a marker, and a `~` run takes an opener of its own length.
+    let runs = "==a== ===b=== ====c==== ~~d~ ~e~~\n";
+    assert_eq!(
+        texts(runs, ob, Kind::Highlight),
+        ["==a==", "===b==", "==c=="]
+    );
+    assert!(texts(runs, ob, Kind::Strikethrough).is_empty());
     // GitHub has strikethroughs and no highlights; CommonMark has neither.
     assert_eq!(texts(all, github(), Kind::Strikethrough), ["~~f~~", "~g~"]);
     assert!(texts(all, github(), Kind::Highlight).is_empty());
@@ -491,6 +509,10 @@ fn folded(text: &str, gates: Gates) -> Vec<String> {
     // What a wikilink shows in its target's place, which was one token.
     let mut alias: Option<(usize, usize)> = None;
     let mut wiki = false;
+    // The label a link by reference shows, which was one token: what follows the link's
+    // first bracket, unless its text does.
+    let mut label: Option<(usize, usize)> = None;
+    let mut entered = false;
     read(text, gates, &mut |s| {
         let span = |k: Kind| {
             matches!(
@@ -515,6 +537,29 @@ fn folded(text: &str, gates: Gates) -> Vec<String> {
             Step::Enter(k, _) | Step::Leave(k, _) if span(k) => {}
             Step::Enter(k, _) if whole(k) => within += 1,
             Step::Leave(k, _) if whole(k) => within -= 1,
+            Step::Enter(Kind::Link | Kind::Image, _) => {
+                flush(&mut out, &mut run, text);
+                entered = true;
+                out.push(step(s));
+            }
+            Step::Token(Kind::LBracket | Kind::ImageOpen, t, at) if entered => {
+                entered = false;
+                out.push(step(s));
+                label = Some((at + t.len(), at + t.len()));
+            }
+            Step::Enter(Kind::LinkText, _) => {
+                label = None;
+                out.push(step(s));
+            }
+            Step::Token(Kind::RBracket, ..) if label.is_some() && within == 0 => {
+                if let Some((a, z)) = label.take().filter(|(a, z)| a < z) {
+                    out.push(step(Step::Token(Kind::LinkLabel, &text[a..z], a)));
+                }
+                out.push(step(s));
+            }
+            Step::Token(_, t, _) if label.is_some() => {
+                label = label.map(|(a, z)| (a, z + t.len()));
+            }
             Step::Enter(Kind::WikiLink | Kind::Embed, _) => {
                 flush(&mut out, &mut run, text);
                 wiki = true;
