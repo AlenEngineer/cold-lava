@@ -270,7 +270,17 @@ change what it shows, never how it works.
     with `|` ends the paragraph above it, as on GitHub; another table's header is a
     paragraph's only line. A link definition (`[label]: destination "title"` on one line,
     where a paragraph would start) is a block of its own, and the line after it starts
-    afresh, as pulldown-cmark reads it. With footnotes, `[^label]:` is none. With wikilinks, a
+    afresh, as pulldown-cmark reads it. With footnotes, `[^label]:` is none: it starts a
+    footnote's definition (`FootnoteDefinition`), a container as a list item is. It starts
+    where a block can start, ends the paragraph above it, and holds what follows it on its
+    line and the lines under it that are blank or indented four or more: a second paragraph,
+    a list, a task, a fenced block. A line that is neither ends it, unless it goes on the
+    footnote's paragraph lazily; a footnote that starts right inside another ends that one.
+    This is how pulldown-cmark read footnotes, and so how the items read them before #178:
+    the links, tags and tasks in a footnote's indented lines count (they were indented code
+    in the tree until #212), and a `^id` on a definition's line names the footnote's text
+    without its `[^label]:`. An edit inside a definition, or on the line right after one,
+    reparses the definition: it is one top-level block, as a list is. With wikilinks, a
     destination that starts one is none either: `[Source]: [[Book]]` is a line of text with a
     wikilink, which backlinks and a rename find.
   - *Inlines* are read per line, left to right, the first to start winning: code spans,
@@ -296,9 +306,7 @@ change what it shows, never how it works.
   - *What text holds* (#212) is read after that, in what is left as `Text`, a block at a
     time: escapes (`\*`), what is written as a character reference (`&amp;`), autolinks
     (`<https://…>`) and inline HTML as CommonMark defines them, a footnote's reference
-    (`[^label]`) and the `[^label]:` that starts a line of a paragraph (`FootnoteMarker`:
-    from there on the paragraph is the footnote's text, and the blocks are what they were),
-    a hard break (two
+    (`[^label]`; its definition is a block, above), a hard break (two
     blanks or a `\` before the line break, where the block has another line), and emphasis,
     strong, strikethroughs and highlights. `*` and `_` follow CommonMark's delimiter runs
     (left- and right-flanking, `_` not inside a word, the rule of three), with the nearest
