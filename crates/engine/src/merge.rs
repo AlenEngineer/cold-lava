@@ -102,7 +102,7 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
         before,
     };
     let mut warnings = Vec::new();
-    let mut edits = rename::edits(ix, &rw)?;
+    let mut edits = rename::edits(ix, &rw, &mut warnings)?;
     edits.extend(rename::owned_edits(ix, &rw, &mut warnings));
     let mut own = |rel: &str, text: &str| match edits.iter().position(|e| e.file == rel) {
         Some(i) => {

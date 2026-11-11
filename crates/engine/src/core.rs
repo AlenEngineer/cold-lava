@@ -613,7 +613,7 @@ impl Core {
             owner,
             rev: files::rev(text.as_bytes()),
             text,
-            expect,
+            expect: Some(expect),
             goal,
             stage: Stage::Editing,
         };
@@ -707,13 +707,16 @@ impl Core {
         let owner = p.owner.clone();
         let given = match given {
             Ok(g) => g,
+            // It couldn't read the file before the change either, and gave nothing for it.
+            Err(_) if p.expect.is_none() => Given::default(),
             Err(why) => {
                 let message = format!("{owner} couldn't read its new text for {path}: {why}");
                 return self.edit_failed(path, error(Reason::ReadBack, message));
             }
         };
         let settings = self.index.workspace.item_settings();
-        let asked = given::read(path, &p.expect, settings);
+        let nothing = Given::default();
+        let asked = given::read(path, p.expect.as_ref().unwrap_or(&nothing), settings);
         let gave = given::read(path, &given, settings);
         if let Err(diff) = given::same(&asked, &gave) {
             let message = format!(
@@ -825,7 +828,7 @@ impl Core {
                     owner: o.owner.clone(),
                     rev: files::rev(e.old_text.as_bytes()),
                     text: e.old_text.clone(),
-                    expect: given::apply(&o.given, &o.changes),
+                    expect: (o.given.as_ref()).map(|g| given::apply(g, &o.changes)),
                     goal: Goal::Relink(ticket),
                     stage: Stage::Editing,
                 };

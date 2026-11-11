@@ -38,8 +38,9 @@ pub(crate) struct Pending {
     /// The file's version and text the change was made on.
     pub rev: String,
     pub text: String,
-    /// What the owner should give for the file once it is written.
-    pub expect: Given,
+    /// What the owner should give for the file once it is written. `None`: it couldn't read the
+    /// file before the change, and isn't expected to read it after.
+    pub expect: Option<Given>,
     pub goal: Goal,
     pub stage: Stage,
 }

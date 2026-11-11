@@ -49,12 +49,14 @@ pub struct FileEdit {
 }
 
 /// The changes to ask the owner of a file for (`file/edit`), what it gave before them, and what
-/// it gave for its new text once that read back as asked.
+/// it gave for its new text once that read back as asked. `given` is `None` for a file its
+/// owner can't read (a canvas with a node that has no type): its links are rewritten all the
+/// same, and its new text is expected to read no better.
 #[derive(Clone, Debug)]
 pub struct Through {
     pub owner: String,
     pub changes: Vec<Ask>,
-    pub given: Given,
+    pub given: Option<Given>,
     pub after: Option<Given>,
 }
 
@@ -391,7 +393,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
             ));
         }
     }
-    let mut edits = edits(ix, &rw)?;
+    let mut edits = edits(ix, &rw, &mut warnings)?;
     edits.extend(owned_edits(ix, &rw, &mut warnings));
     let bookmarks = match bookmarks_edit(&ix.workspace.root, &moves) {
         Ok(b) => b,
@@ -441,8 +443,13 @@ pub(crate) fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileE
     }))
 }
 
-/// Every note and canvas whose links change.
-pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
+/// Every note and canvas whose links change. A canvas that can't be searched for links is
+/// named in `warnings`.
+pub(crate) fn edits(
+    ix: &Index,
+    rw: &Rewriter,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<FileEdit>> {
     let mut edits = Vec::new();
     for (i, n) in ix.workspace.notes.iter().enumerate() {
         let (dir_then, dir_now) = (dir_of(&rw.before.rels[i]), dir_of(&rw.after.rels[i]));
@@ -461,7 +468,7 @@ pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
     }
     for i in 0..rw.before.rels.len() {
         if rw.before.rels[i].ends_with(".canvas") {
-            edits.extend(canvas_edit(ix, rw, i)?);
+            edits.extend(canvas_edit(ix, rw, i, warnings));
         }
     }
     Ok(edits)
@@ -472,12 +479,17 @@ pub(crate) fn edits(ix: &Index, rw: &Rewriter) -> Result<Vec<FileEdit>> {
 /// changes itself, since a card holds a path, not a link written in a style, and it knows the
 /// line each is on. The file's new text then comes from the owner as any owned file's does
 /// (`Core::relink`), edited in place, so the rest of the file stays exactly as Obsidian wrote it.
-fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> {
+/// Every node is searched, also in a canvas the owner gives no items for. A file that isn't
+/// JSON with nodes can't be searched at all: it is left as it is, and `warnings` says so.
+fn canvas_edit(
+    ix: &Index,
+    rw: &Rewriter,
+    i: usize,
+    warnings: &mut Vec<String>,
+) -> Option<FileEdit> {
     let rel = &rw.before.rels[i];
     let path = ix.workspace.root.join(rel);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(None);
-    };
+    let text = std::fs::read_to_string(&path).ok()?;
     let (dir_then, dir_now) = (dir_of(rel), dir_of(&rw.after.rels[i]));
     let file = |value: &str| {
         let f = rw.before.path(link_key(value))?;
@@ -487,10 +499,16 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
         let (text, _, n) = rw.note_text(value, dir_then, dir_now);
         (n > 0).then_some((text, n))
     };
-    let Some(asked) = canvas::relink(&text, file, piece) else {
-        return Ok(None);
+    let asked = match canvas::relink(&text, file, piece) {
+        Ok(asked) => asked?,
+        Err(why) => {
+            warnings.push(format!(
+                "{rel} can't be read ({why}), so links in it aren't updated"
+            ));
+            return None;
+        }
     };
-    Ok(Some(FileEdit {
+    Some(FileEdit {
         file: rel.clone(),
         path,
         old_text: text,
@@ -509,7 +527,7 @@ fn canvas_edit(ix: &Index, rw: &Rewriter, i: usize) -> Result<Option<FileEdit>> 
             given: asked.given,
             after: None,
         }),
-    }))
+    })
 }
 
 /// Every file an extension owns whose links change: each Markdown piece's links rewritten as
@@ -590,7 +608,7 @@ pub(crate) fn owned_edit(
         owned: Some(Through {
             owner: f.owner.clone(),
             changes: asks,
-            given: f.given.clone(),
+            given: Some(f.given.clone()),
             after: None,
         }),
     })
@@ -918,6 +936,60 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Canvases as other programs write them. Every node's path and links follow a rename: in
+    /// a canvas whose owner gives no items (a node has no type), and in nodes that share an id,
+    /// both of them or only the second. A file that isn't JSON is named in the plan and left as
+    /// it is; it doesn't stop the rename.
+    #[test]
+    fn every_canvas_node_is_relinked_whatever_its_type_or_id() {
+        let size = "\"x\":0,\"y\":0,\"width\":1,\"height\":1";
+        let text = |id: &str, text: &str| {
+            format!("{{\"id\":\"{id}\",\"type\":\"text\",\"text\":\"{text}\",{size}}}")
+        };
+        let canvas = |nodes: &[String]| format!("{{\"nodes\":[{}],\"edges\":[]}}", nodes.join(","));
+        let card = format!("{{\"id\":\"a\",\"type\":\"file\",\"file\":\"Notes/Lava.md\",{size}}}");
+        let good = canvas(&[card.clone(), text("b", "about [[Lava]]")]);
+        let no_type = good.replace("\"type\":\"file\",", "");
+        let both = canvas(&[text("a", "first [[Lava]]"), text("a", "second [[Lava]]")]);
+        let second = canvas(&[text("a", "first"), text("a", "second [[Lava]]")]);
+        let broken = "{\"nodes\":[{\"id\":\"a\",\"type\":\"file\",\"file\":\"Notes/Lava.md\"";
+        let canvases = [
+            ("Good.canvas", good.as_str()),
+            ("NoType.canvas", no_type.as_str()),
+            ("DupId.canvas", both.as_str()),
+            ("DupOne.canvas", second.as_str()),
+        ];
+        let mut files = vec![
+            ("Notes/Lava.md", "x"),
+            ("Other.md", "See [[Lava]].\n"),
+            ("Broken.canvas", broken),
+        ];
+        files.extend(canvases);
+        let (dir, ix) = workspace_with("canvases", &files);
+        assert!(crate::owner::canvas::read(&no_type).is_err(), "no items");
+        let p = plan(&ix, ix.by_rel("Notes/Lava").unwrap(), "Notes/Magma.md").unwrap();
+        assert_eq!((p.links(), p.files()), (8, 5));
+        let [warning] = &p.warnings[..] else {
+            panic!("{:?}", p.warnings);
+        };
+        assert!(
+            warning.starts_with("Broken.canvas can't be read"),
+            "{warning}"
+        );
+        apply_through_owners(&ix, p).unwrap();
+        for (rel, before) in canvases {
+            let after = before
+                .replace("Notes/Lava.md", "Notes/Magma.md")
+                .replace("[[Lava]]", "[[Magma]]");
+            assert_eq!(read(&dir, rel), after, "{rel}");
+        }
+        assert_eq!(read(&dir, "Other.md"), "See [[Magma]].\n");
+        assert_eq!(read(&dir, "Broken.canvas"), broken);
+        assert!(dir.join("Notes/Magma.md").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn folder_move_rewrites_links_in_and_out() {
         let canvas = "{\"nodes\":[\n{\"id\":\"a\",\"type\":\"file\",\"file\":\"People/Krafft.md\"},\n{\"id\":\"b\",\"type\":\"file\",\"file\":\"People/photo.png\"},\n{\"id\":\"c\",\"type\":\"text\",\"text\":\"[[People/Johnston]]\"},\n{\"id\":\"d\",\"type\":\"file\",\"file\":\"Volcanoes/Helens.md\"}\n],\"edges\":[]}";
