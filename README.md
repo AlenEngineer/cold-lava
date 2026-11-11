@@ -505,7 +505,9 @@ cold-lava recipe ~/workspace rename-tag --from lava --to magma --dry-run --json
 - frontmatter `tags` (or `tag`) written as a `- item` list, as `[a, b]`, or as a string
   (`tags: a, b`), with or without `#`, quoted or not, each kept as written;
 - tags in the Markdown that extensions read out of their files (a CSV's Markdown cells), through
-  the extension, as a rename's links are.
+  the extension, as a rename's links are;
+- tags on a whiteboard's stickies and text cards. The plan shows such a file as
+  `Board.canvas (through canvas)` with the card's changed lines, not the file's JSON.
 
 Tags match whatever their case, as in Obsidian (`#Lava` is `#lava`), and the new name is written
 as you type it. Renaming into a tag that already exists merges the two: a frontmatter list that

@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::ops::Range;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -95,6 +96,9 @@ pub fn to_bytes(doc: &Doc) -> serde_json::Result<Vec<u8>> {
 pub struct Field {
     /// The node's id.
     pub node: String,
+    /// Which of the nodes with that id it is, from 0: ids should be unique, and a file another
+    /// program wrote may repeat one.
+    pub nth: usize,
     /// `text` or `file`.
     pub name: &'static str,
     /// Where its JSON string is in the file's text, quotes included.
@@ -125,7 +129,11 @@ pub fn fields(text: &str) -> serde_json::Result<Vec<Field>> {
     }
     let spans: Spans = serde_json::from_str(text)?;
     let mut out = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
     for n in spans.nodes {
+        let nth = seen.entry(n.id.clone()).or_insert(0);
+        *nth += 1;
+        let nth = *nth - 1;
         for (name, raw) in [("text", n.text), ("file", n.file)] {
             let Some(raw) = raw else { continue };
             let Ok(value) = serde_json::from_str::<String>(raw.get()) else {
@@ -134,6 +142,7 @@ pub fn fields(text: &str) -> serde_json::Result<Vec<Field>> {
             let start = raw.get().as_ptr() as usize - text.as_ptr() as usize;
             out.push(Field {
                 node: n.id.clone(),
+                nth,
                 name,
                 span: start..start + raw.get().len(),
                 value,
