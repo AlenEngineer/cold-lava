@@ -35,6 +35,13 @@ type data, and now drawn by shape.
 What is saved is what the user meant; what is computed is how it is drawn, so neither can drift
 from the other.
 
+One exception *(decided 2026-11-11, to build: #192)*: when cold-lava saves a canvas, a bound
+shape also writes a plain-text snapshot of what it last showed (its title, each region's labels
+as a short list) into the node's standard `text`, so Obsidian and anything else that reads the
+file show a card with content, not an empty one. The snapshot is output only: cold-lava never
+reads meaning back from it, replaces it on its next save, doesn't index its links or tasks, and
+recomputes it on a merge conflict. The binding in the `cold-lava` field stays the truth.
+
 ## Shape definitions
 
 Defined like types: in `.cold-lava/shapes.toml` in a workspace, in `~/.config/cold-lava/config.toml`, built

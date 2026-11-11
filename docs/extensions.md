@@ -2142,9 +2142,15 @@ start full screen; one beside the tree waits for a way to keep Kitty images unde
 
 ## Built-in features become extensions
 
-The graph, whiteboards, agenda, daily notes and rename move onto the same `Extension` interface
-(in-process, through the in-process transport). If our own features fit the interface, it is
-good enough for everyone else.
+The graph, the agenda and the type table run on the same `Extension` interface (in-process,
+through the in-process transport). If our own features fit the interface, it is good enough for
+everyone else.
+
+Not everything moves *(decided 2026-11-11; docs/engine.md, "Direction and order")*: the menu,
+the page (the reader and the editor) and the whiteboard stay built into the frontend, since a
+surface that needs every frame doesn't fit a protocol of lists, tables and scenes. They reach
+the engine through the same gateway as everyone. Daily notes, rename, delete and recipes are
+engine features that get gateway messages (#193), so any frontend or extension can use them.
 
 A built-in extension implements the `Extension` trait (`crates/cold-lava/src/ext/mod.rs`)
 instead of reading messages from a transport. The trait is the protocol: each of its methods is

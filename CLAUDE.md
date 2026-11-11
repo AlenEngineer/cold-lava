@@ -1,9 +1,21 @@
 # cold-lava — notes for Claude
 
-cold-lava is a terminal app for Obsidian vaults, written in Rust (ratatui). It works on a
-workspace **without the Obsidian app, and safely alongside it**. That is the project's core value:
-everything else (graph, whiteboards, agenda) is a feature on top, and is meant to become an
-extension once there is an extension API.
+cold-lava has a code editor's architecture, for human notes. It is written in Rust: an engine
+that understands a workspace of plain files, and frontends on it (the terminal app today, built
+with ratatui). Three things define it:
+
+- **Shared types.** A task, a date or an address is the same thing wherever it is written (a
+  note, a canvas card, a CSV row) and whoever reads it (the engine, an extension, the person
+  writing). Owners translate file formats; types are the contract between them all.
+- **Safe beside Obsidian.** It works on a workspace **without the Obsidian app, and safely
+  alongside it**: plain Markdown and JSON Canvas, one safe write path, nothing overwritten.
+  Everything else stands on this, and no feature may break it.
+- **One door.** Everything outside the engine reaches it through the gateway. Extensions bring
+  data, file formats, types and simple views (lists, tables, scenes). The surfaces you work in
+  (the page with the reader and the editor, the whiteboard) are built into the frontend.
+
+The order of work is the first section of roadmap issue #100: the engine-facing work first (one
+path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
 
 cold-lava's word for a folder of notes is **workspace**, in the UI, the CLI, the docs and the
 code. "Vault" is only for Obsidian's own concept (an Obsidian vault, Obsidian's vault list,
@@ -313,8 +325,11 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 - The whole picture (engine layers, engine vs. frontends) is `docs/engine.md`; the crate split
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
-- In progress: the extension API (step 3). The `Extension` interface exists and Neovim runs on
-  it, and so do the agenda, the table and the graph (over the view gateway); the canvas and
-  the menu should become extensions of the core too. Then
-  the rest of #97 (smaller items, a cache of parsed notes), a config file, light-terminal colours.
+- The direction and the order of work were decided on 2026-11-11 (`docs/engine.md`, "Direction
+  and order"; roadmap issue #100): finish the half-done migrations, one door into the engine
+  (#179, #180, #193), `cold-lava lsp` (#195), types and identity (#190, #191, #186), the
+  terminal views, drawings, then the notebook.
+- The `Extension` interface exists and Neovim runs on it, and so do the agenda, the table and
+  the graph (over the view gateway). The menu, the page and the whiteboard stay built into the
+  frontend: they are not meant to become extensions.
 - The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).
