@@ -8,8 +8,9 @@
 //! What is left as text is then read for what text itself holds (`Held`, below): escapes,
 //! character references, autolinks, inline HTML, footnotes, hard line breaks, and emphasis, a
 //! block at a time, since emphasis may open on one line and close on a later one. That reading
-//! only cuts `Text` tokens into more tokens and wraps them in nodes: the links, the tags and
-//! everything else found first stay as they were found, so a reader that doesn't ask for it
+//! only cuts `Text` tokens (and a wikilink's `Alias`, which it shows as text) into more
+//! tokens and wraps them in nodes: the links, the tags and everything else found first stay
+//! as they were found, so a reader that doesn't ask for it
 //! (`Gates::plain`) reads the same links and tags. A tag may follow the markers that open
 //! emphasis (`**#tag**`) either way.
 
@@ -737,7 +738,8 @@ struct Run {
 /// The sink a block's lines are read into. A block whose text may hold more than the line
 /// reader finds (an escape, a character reference, `<`, a footnote, a hard break, emphasis) is
 /// held back until it ends: emphasis may close on a later line than it opened on. Its `Text`
-/// tokens are then cut where those are, and it goes on to the sink. Nothing else of it changes.
+/// tokens, and a wikilink's `Alias`, are then cut where those are, and it goes on to the sink.
+/// Nothing else of it changes.
 struct Held<'s, 't, B> {
     text: &'t str,
     g: Gates,
@@ -830,14 +832,14 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
                 Rec::Start(kind) => self.b.start(kind),
                 Rec::Finish => self.b.finish(),
                 Rec::Line(..) => {}
-                Rec::Tok(Text, a, z) => {
+                Rec::Tok(kind @ (Text | Alias), a, z) => {
                     let mut at = a;
                     while let Some(cut) = cuts.next_if(|c| c.a < z) {
-                        token(&mut *self.b, Text, text, at, cut.a);
+                        token(&mut *self.b, kind, text, at, cut.a);
                         self.piece(cut);
                         at = cut.z;
                     }
-                    token(&mut *self.b, Text, text, at, z);
+                    token(&mut *self.b, kind, text, at, z);
                 }
                 Rec::Tok(kind, a, z) => self.b.token(kind, &text[a..z]),
             }
@@ -982,7 +984,8 @@ fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
                 footnote = marker;
                 continue;
             }
-            Rec::Tok(Text, a, z) => (a, z),
+            // What a wikilink shows in its target's place is read as text is.
+            Rec::Tok(Text | Alias, a, z) => (a, z),
             Rec::Tok(..) => continue,
         };
         let scope = scopes.last().copied().unwrap_or(0);

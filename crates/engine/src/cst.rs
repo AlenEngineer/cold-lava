@@ -92,7 +92,8 @@ kinds! {
     Target,
     /// `#Heading` or `^block` after a wikilink's target.
     Anchor,
-    /// What a wikilink shows instead of its target.
+    /// What a wikilink shows instead of its target. A reading with what text holds cuts it
+    /// as it cuts text (`[[Note|*shown*]]`).
     Alias,
     /// `[`.
     LBracket,

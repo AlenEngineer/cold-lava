@@ -322,6 +322,22 @@ fn a_tag_may_follow_the_markers_that_open_emphasis_and_highlights() {
             "#paren"
         ]
     );
+    // A wikilink shows its alias as text is read, and is the same link either way.
+    let alias = "[[Note|*shown* and **more**]] ![[Pic.png|a_b_c]] [[Other|plain]]\n";
+    assert_eq!(texts(alias, obsidian(), Kind::Emphasis), ["*shown*"]);
+    assert_eq!(texts(alias, obsidian(), Kind::Strong), ["**more**"]);
+    assert_eq!(
+        texts(alias, obsidian(), Kind::WikiLink),
+        ["[[Note|*shown* and **more**]]", "[[Other|plain]]"]
+    );
+    assert_eq!(
+        texts(alias, obsidian().plain(), Kind::Alias),
+        ["*shown* and **more**", "a_b_c", "plain"]
+    );
+    assert_eq!(
+        texts(alias, obsidian(), Kind::Target),
+        ["Note", "Pic.png", "Other"]
+    );
     let marked = "==#marked== ~~#struck~~ **==#nested==**\n";
     let all = ["#marked", "#struck", "#nested"];
     assert_eq!(tags(marked, obsidian()), all);
@@ -472,6 +488,9 @@ fn folded(text: &str, gates: Gates) -> Vec<String> {
     let mut run: Option<(usize, usize)> = None;
     // Inside an autolink or a footnote's brackets, whose tokens were text.
     let mut within = 0;
+    // What a wikilink shows in its target's place, which was one token.
+    let mut alias: Option<(usize, usize)> = None;
+    let mut wiki = false;
     read(text, gates, &mut |s| {
         let span = |k: Kind| {
             matches!(
@@ -496,6 +515,29 @@ fn folded(text: &str, gates: Gates) -> Vec<String> {
             Step::Enter(k, _) | Step::Leave(k, _) if span(k) => {}
             Step::Enter(k, _) if whole(k) => within += 1,
             Step::Leave(k, _) if whole(k) => within -= 1,
+            Step::Enter(Kind::WikiLink | Kind::Embed, _) => {
+                flush(&mut out, &mut run, text);
+                wiki = true;
+                out.push(step(s));
+            }
+            Step::Leave(Kind::WikiLink | Kind::Embed, _) => {
+                wiki = false;
+                out.push(step(s));
+            }
+            Step::Token(Kind::Pipe, t, at) if wiki => {
+                out.push(step(s));
+                alias = Some((at + t.len(), at + t.len()));
+            }
+            Step::Token(Kind::WikiClose, ..) => {
+                flush(&mut out, &mut run, text);
+                if let Some((a, z)) = alias.take() {
+                    out.push(step(Step::Token(Kind::Alias, &text[a..z], a)));
+                }
+                out.push(step(s));
+            }
+            Step::Token(_, t, _) if alias.is_some() => {
+                alias = alias.map(|(a, z)| (a, z + t.len()));
+            }
             Step::Token(k, t, at) if within > 0 || was_text(k) => {
                 let from = run.map_or(at, |r| r.0);
                 run = Some((from, at + t.len()));
