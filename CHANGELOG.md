@@ -94,6 +94,15 @@ change commands, keys and file formats; patch versions only fix things.
   `[ref]: New.md "Title"`, keeping its label, its title and the way its path was written. It
   used to report "0 links" and leave the link broken. `tidy` counts reference links, so two
   notes joined only by one are no longer orphans.
+- A rename, backlinks, the graph and `tidy` find three more ways to write a link (#206): an
+  aliased wikilink in a table, where Obsidian escapes the pipe (`[[Note\|alias]]`, which read
+  as a link to `Note\`); a Markdown link with a title (`[a](Note.md "title")`, with `'title'`
+  and `(title)` too); and a destination in angle brackets (`[a](<Note.md>)`,
+  `[a](<My Note.md>)`). A destination with parentheses is read whole as well
+  (`[a](Notes%20(old)/Note.md)`). A rename rewrites the target alone: the `\|`, the alias, the
+  title with its quotes and the `<>` stay, and a new name's spaces are written `%20`, between
+  `<>` too, as in every Markdown link a rename writes. Each of these used to be left
+  pointing at nothing. In a whiteboard's text card too.
 - A task's own `tags` and `links` (and any type's that reads them from a block) are the ones
   the note's syntax tree reads on its lines (#203): `- [ ] **#urgent** call` has the tag, a
   reference link is in `links`, and what sits in a wikilink's alias or a link's destination

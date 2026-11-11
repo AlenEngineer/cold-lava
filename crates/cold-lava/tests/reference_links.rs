@@ -76,6 +76,51 @@ fn a_rename_rewrites_the_definition_of_a_note_linked_only_by_reference() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// #206: an aliased wikilink in a table (`\|`), a link with a title, a destination in `<>`.
+const FORMS: &str = "# Forms\n\n| note | part |\n| --- | --- |\n| [[My Note\\|mine]] | ![[My Note#Part\\|part]] |\n\nTitles: [a](My%20Note.md \"double\"), [b](My%20Note.md 'single') and [c](My%20Note.md (parens)).\nBrackets: [d](<My Note.md>), [e](<My Note.md#Part> \"title\") and [f](My%20Note.md).\n";
+
+/// A whiteboard's text card with two of the forms: a card's text is relinked as a note's is.
+const BOARD: &str = "{\"nodes\":[{\"id\":\"a\",\"type\":\"text\",\"text\":\"[d](<My Note.md>) and [b](My%20Note.md 'single')\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}],\"edges\":[]}";
+
+/// `text` once the note `My Note` is called `name`: a wikilink names it as it is, a Markdown
+/// link with its spaces as `%20`, between `<>` too.
+fn renamed(text: &str, name: &str) -> String {
+    let encoded = name.replace(' ', "%20");
+    text.replace("[[My Note", &format!("[[{name}"))
+        .replace("<My Note.md", &format!("<{encoded}.md"))
+        .replace("My%20Note.md", &format!("{encoded}.md"))
+}
+
+#[test]
+fn a_rename_rewrites_a_link_in_a_table_with_a_title_and_in_angle_brackets() {
+    let files = [
+        ("Forms.md", FORMS),
+        ("Board.canvas", BOARD),
+        ("My Note.md", "# Part\n"),
+    ];
+    let dir = workspace("forms", &files);
+    let ws = dir.join("ws");
+    let ws = ws.to_str().unwrap();
+    let dry = cold_lava(&dir, &["rename", ws, "My Note", "Your Note", "--dry-run"]);
+    let dry = String::from_utf8_lossy(&dry.stdout);
+    assert!(dry.ends_with("\n10 links in 2 files\n"), "{dry}");
+    assert_eq!(read(&dir, "Forms.md"), FORMS, "a dry run writes nothing");
+
+    // Each target, and no other byte. A name without spaces keeps the `<>`; one with spaces
+    // again has them as `%20`, as a rename writes every Markdown link.
+    for (from, to) in [
+        ("My Note", "Your Note"),
+        ("Your Note", "Plain"),
+        ("Plain", "Two Words"),
+    ] {
+        cold_lava(&dir, &["rename", ws, from, to]);
+        assert_eq!(read(&dir, "Forms.md"), renamed(FORMS, to), "{to}");
+        assert_eq!(read(&dir, "Board.canvas"), renamed(BOARD, to), "{to}");
+    }
+    assert!(dir.join("ws/Two Words.md").exists() && !dir.join("ws/My Note.md").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn tidy_counts_a_link_by_reference() {
     let files = [
