@@ -11,8 +11,38 @@ pub(super) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     }
     let source = s.flavour.source(text);
     let lines = Lines::new(&source.text);
-    let pass = pass(&lines, &s.flavour, Wants::of(&s.matcher));
+    let wants = Wants::of(&s.matcher);
+    let mut pass = pass(&lines, &s.flavour, wants);
+    pass.written = written(lines.src, &s.flavour, wants);
     finish(note, text, s, &source, &lines, pass)
+}
+
+/// Where the tags and the links are written, which a block's own are read from. The tree says:
+/// pulldown-cmark's pass found the blocks, and a pattern over a block's text its tags and links.
+fn written(src: &str, flavour: &Flavour, wants: Wants) -> matcher::Written {
+    let gates = wants.gates(cst::Gates::of(flavour).set(Syntax::Comments, false));
+    let (blocks, defs) = cst::blocks(src, gates);
+    let mut written = matcher::Written::default();
+    let mut links = crate::owner::markdown::Links::default();
+    blocks.read(&defs, &mut |step| {
+        if let Step::Token(Kind::Tag, tag, at) = step {
+            written.tags.push(at + 1..at + tag.len());
+        }
+        links.step(step);
+    });
+    written.links = own_links(links.finish(&defs));
+    written
+}
+
+/// The tags in a piece of text, as `markdown::TAG` finds them.
+fn tags_in(text: &str) -> Vec<String> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(markdown::TAG).unwrap());
+    let names = re.captures_iter(text).filter_map(|c| c.get(1));
+    names
+        .filter(|m| !m.as_str().chars().all(|c| c.is_ascii_digit()))
+        .map(|m| m.as_str().to_string())
+        .collect()
 }
 
 /// A container pulldown-cmark has opened and not yet closed.
@@ -65,7 +95,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
     for (event, range) in Parser::new_ext(src, flavour.options()).into_offset_iter() {
         match event {
             Event::Text(t) if wants.tags && verbatim == 0 && t.contains('#') => {
-                body_tags.extend(matcher::Note::tags_in(&t).map(|(tag, _)| tag.to_string()));
+                body_tags.extend(tags_in(&t));
             }
             Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) if typing => {
                 code.push(range)
@@ -324,5 +354,6 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
         tables,
         tags: body_tags,
         links,
+        written: Default::default(),
     }
 }

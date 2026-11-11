@@ -923,7 +923,8 @@ impl<'t> Parser<'t> {
 
     /// A link definition, `[label]: destination "title"`, taking the line `fp..le`, which
     /// starts with `[`: where its label ends, and its destination with its title. With
-    /// footnotes, `[^label]:` is a footnote.
+    /// footnotes, `[^label]:` is a footnote; with wikilinks, a destination that starts one
+    /// (`[[`) leaves the line text.
     fn definition(&self, fp: usize, le: usize) -> Option<(usize, (usize, usize))> {
         let t = self.bytes();
         if t.get(fp + 1) == Some(&b'[') || !self.text[fp..le].contains("]:") {
@@ -939,7 +940,9 @@ impl<'t> Parser<'t> {
         let c = re.captures(&self.text[fp..le])?;
         let (label, dest) = (c.get(1)?, c.get(2)?);
         let footnote = self.g.has(S::Footnotes) && label.as_str().starts_with('^');
-        if label.as_str().trim().is_empty() || footnote {
+        // `[Source]: [[Book]]` is a line with a wikilink, which a rename must still find.
+        let wikilink = self.g.has(S::WikiLinks) && dest.as_str().starts_with("[[");
+        if label.as_str().trim().is_empty() || footnote || wikilink {
             return None;
         }
         Some((fp + label.end(), (fp + dest.start(), fp + dest.end())))

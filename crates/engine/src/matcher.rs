@@ -11,7 +11,6 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ops::Range;
-use std::sync::OnceLock;
 
 use indexmap::IndexMap;
 use regex::Regex;
@@ -76,6 +75,9 @@ pub struct Matcher {
     /// Some shape needs the note's tags, or its links.
     pub needs_tags: bool,
     pub needs_links: bool,
+    /// Some shape reads the tags, or the links, written in a block of its own (`Written`).
+    pub reads_tags: bool,
+    pub reads_links: bool,
     /// Some shape has `where.inside`.
     pub needs_inside: bool,
     daily: daily::Settings,
@@ -172,7 +174,9 @@ impl Matcher {
                     continue;
                 }
                 let w = &shape.conditions;
-                m.needs_tags |= matches!(shape.on, On::Note | On::Inline) && !w.tag.is_empty();
+                let whole_note = matches!(shape.on, On::Note | On::Inline);
+                m.needs_tags |= whole_note && !w.tag.is_empty();
+                m.reads_tags |= !whole_note && !w.tag.is_empty();
                 m.needs_inside |= !w.inside.is_empty();
                 let fields = shape
                     .fields
@@ -184,9 +188,16 @@ impl Matcher {
                     .collect::<Vec<(usize, Vec<Src>)>>();
                 for (_, srcs) in &fields {
                     for s in srcs {
+                        let (tags, links) = (
+                            matches!(s, Src::Inlines(InlineKind::Tags)),
+                            matches!(s, Src::Inlines(InlineKind::Links)),
+                        );
                         if shape.on == On::Note {
-                            m.needs_tags |= matches!(s, Src::Inlines(InlineKind::Tags));
-                            m.needs_links |= matches!(s, Src::Inlines(InlineKind::Links));
+                            m.needs_tags |= tags;
+                            m.needs_links |= links;
+                        } else {
+                            m.reads_tags |= tags;
+                            m.reads_links |= links;
                         }
                     }
                 }
@@ -651,6 +662,8 @@ pub struct Note<'a> {
     /// Its tags, frontmatter's then the body's, without `#`, each once.
     pub tags: Vec<String>,
     pub links: Vec<String>,
+    /// Where its tags and links are written, for a block's own.
+    pub written: Written,
     /// The date of the daily note it is, read once its blocks ask.
     date: std::cell::OnceCell<Option<chrono::NaiveDate>>,
 }
@@ -680,6 +693,7 @@ impl<'a> Note<'a> {
             body: (&src[body_at..], body_at),
             tags: Vec::new(),
             links: Vec::new(),
+            written: Written::default(),
             frontmatter,
             date: Default::default(),
         };
@@ -711,14 +725,6 @@ impl<'a> Note<'a> {
         }
     }
 
-    /// The tags in a piece of text, as `markdown::TAG` finds them.
-    pub fn tags_in(text: &str) -> impl Iterator<Item = (&str, Range<usize>)> {
-        tag_pattern().captures_iter(text).filter_map(|c| {
-            let m = c.get(1)?;
-            (!m.as_str().chars().all(|c| c.is_ascii_digit())).then(|| (m.as_str(), m.range()))
-        })
-    }
-
     fn has_tag(&self, wanted: &str) -> bool {
         self.tags.iter().any(|t| tag_under(t, wanted))
     }
@@ -728,9 +734,29 @@ impl<'a> Note<'a> {
     }
 }
 
-fn tag_pattern() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(markdown::TAG).unwrap())
+/// The tags and the links written in a note, as its syntax tree reads them, by where they are
+/// in `src`, in order: a block's own `tags` and `links` are the ones on its lines.
+#[derive(Default)]
+pub struct Written {
+    /// Each tag's name, without its `#`.
+    pub tags: Vec<Range<usize>>,
+    /// Each link: where its target is written, whether it is a Markdown link, and the note it
+    /// names.
+    pub links: Vec<(usize, bool, String)>,
+}
+
+impl Written {
+    fn tags_in(&self, block: Range<usize>) -> &[Range<usize>] {
+        let from = self.tags.partition_point(|t| t.start < block.start);
+        let to = self.tags.partition_point(|t| t.start < block.end);
+        &self.tags[from..to]
+    }
+
+    fn links_in(&self, block: Range<usize>) -> &[(usize, bool, String)] {
+        let from = self.links.partition_point(|l| l.0 < block.start);
+        let to = self.links.partition_point(|l| l.0 < block.end);
+        &self.links[from..to]
+    }
 }
 
 /// `volcano/caldera` is under `volcano`; `volcano-type` is not. Tags ignore case, as in Obsidian.
@@ -765,6 +791,11 @@ pub struct Block<'a> {
 }
 
 impl Block<'_> {
+    /// Where its text is in `src`.
+    fn range(&self) -> Range<usize> {
+        self.at..self.at + self.text.len()
+    }
+
     /// Whether this range of its text touches code.
     fn in_code(&self, r: &Range<usize>) -> bool {
         let (start, end) = (self.at + r.start, self.at + r.end);
@@ -807,7 +838,8 @@ fn block_passes(w: &crate::types::Where, note: &Note, b: &Block) -> bool {
     (w.tag.is_empty()
         || w.tag.iter().any(|t| match b.on {
             On::Note | On::Inline => note.has_tag(t),
-            _ => Note::tags_in(b.text).any(|(tag, _)| tag_under(tag, t)),
+            _ => (note.written.tags_in(b.range()).iter())
+                .any(|tag| tag_under(&note.src[tag.clone()], t)),
         }))
         && w.header.iter().all(|h| b.header.iter().any(|x| x == h))
         && (w.section.is_empty() || b.section.iter().any(|s| w.section.contains(s)))
@@ -993,19 +1025,22 @@ fn read_source<'a>(
                 verbatim: false,
             })
             .collect(),
-        Src::Inlines(InlineKind::Tags) => Note::tags_in(text)
-            .filter(|(_, r)| !b.in_code(r))
-            .map(|(t, r)| Piece::text(t, Some(at(r))))
+        Src::Inlines(InlineKind::Tags) => (note.written.tags_in(b.range()).iter())
+            .map(|tag| Piece::text(&note.src[tag.clone()], Some(note.file(tag.clone()))))
             .collect(),
-        Src::Inlines(InlineKind::Links) => crate::owner::markdown::line_links(text)
-            .into_iter()
-            .map(|l| Piece {
-                value: Some(Json::String(l.clone())),
-                text: Cow::Owned(l),
-                span: None,
-                verbatim: false,
-            })
-            .collect(),
+        Src::Inlines(InlineKind::Links) => {
+            // Wikilinks, then Markdown links, as in the note's own.
+            let links = note.written.links_in(b.range());
+            let written = |md: bool| links.iter().filter(move |l| l.1 == md);
+            (written(false).chain(written(true)))
+                .map(|l| Piece {
+                    text: Cow::Borrowed(l.2.as_str()),
+                    span: None,
+                    value: Some(Json::String(l.2.clone())),
+                    verbatim: false,
+                })
+                .collect()
+        }
         Src::Note(NotePart::Date) => match *note.date.get_or_init(|| daily.date_of(note.path)) {
             Some(d) => vec![Piece {
                 value: Some(Json::String(d.format("%Y-%m-%d").to_string())),
@@ -1972,6 +2007,38 @@ Survey the rim ~3h, not `~4h`, not~6h.
             serde_json::to_value(&shape.fields["text"]).unwrap(),
             json!([{"rest": {"without": ["#t(1)"]}}])
         );
+    }
+
+    #[test]
+    fn a_tasks_tags_and_links_are_the_ones_the_tree_reads_on_its_lines() {
+        let s = settings_with(vec![Layer::built_in()]);
+        let text = "- [ ] **#urgent** call [Ana][a], see [md](Plans/Trip.md) and [[Plan|the plan]], not `#code [[Code]]`\n- [ ] plain #later\n\n[a]: People/Ana.md\n";
+        let all = extract("Note.md", text, &s);
+        let tasks: Vec<&Item> = all.iter().filter(|i| i.data.kind() == "task").collect();
+        let wire = |item: &Item| serde_json::to_value(item).unwrap();
+        assert_eq!(wire(tasks[0])["tags"], json!(["urgent"]));
+        assert_eq!(
+            wire(tasks[0])["links"],
+            json!(["Plan", "People/Ana", "Plans/Trip"]),
+            "wikilinks, then Markdown links, a link by reference among them"
+        );
+        assert_eq!(spans(text, tasks[0], "tags"), ["urgent"]);
+        assert_eq!(wire(tasks[1])["tags"], json!(["later"]));
+        assert_eq!(wire(tasks[1])["links"], json!([]));
+    }
+
+    #[test]
+    fn a_block_type_gated_by_a_tag_reads_the_tags_on_its_lines() {
+        let s = settings(
+            "[chore]\non = \"list-item\"\nwhere.tag = [\"chore\"]\nfields.what = { rest = true }\n",
+        );
+        let all = extract(
+            "Note.md",
+            "- ==#chore== sweep\n- `#chore` code\n- rest\n",
+            &s,
+        );
+        let kinds: Vec<&str> = all.iter().map(|i| i.data.kind()).collect();
+        assert_eq!(kinds, ["chore", "list", "list"]);
     }
 
     #[test]

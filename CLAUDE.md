@@ -131,8 +131,8 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   (every byte a token; printing it gives the note back), blocks found line by line as
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
   reparses only the top-level blocks an edit can change; `cst::read` gives a reader the steps
-  of a walk through the tree without making it (the scan uses it). The Markdown owner's `read`
-  and `tags_in` read links and tags this way, and `items::extract` reads items so (#140).
+  of a walk through the tree without making it (the scan uses it). The Markdown owner reads
+  every link and tag this way (`links`, `tags_in`), and `items::extract` reads items so (#140).
   Link definitions (`[label]: destination`) are blocks, kept as the note's `Definitions`
   (`Tree::definitions`, `cst::blocks`): a reference link (`[text][label]`, `[label][]`,
   `[label]`) is a link only where the note defines its label, and its reader asks the
@@ -143,7 +143,11 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:
   the link parser, `items::extract`, `edit::plan`, `tasks::toggle_text` and rename's link
-  rewriting, each reached through it. Read and change notes through the owner. An extension
+  rewriting, each reached through it. Its `links` is the one reading of a note's links, from
+  the tree: `read` (backlinks, the graph), `link_targets` (tidy), `relink` (renames, which
+  rewrite a reference link in its definition and no byte outside a target) and an item's own
+  `links` all take them from it. Don't match links or tags with a pattern of your own. Read
+  and change notes through the owner. An extension
   can own another kind: `owner/given.rs` reads its `file/read` answer (Markdown pieces, typed
   items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
   `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` holds an edit while

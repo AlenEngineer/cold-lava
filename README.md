@@ -411,14 +411,17 @@ itself or onto a folder that exists, and hidden folders (`.obsidian`, `.trash`) 
 `N` makes a new, empty folder in the selected one (Obsidian shows empty folders too).
 
 Every link to what moves is updated, the way Obsidian does it: `[[wikilinks]]` with their
-aliases, headings and embeds, Markdown links (relative or workspace paths), links to attachments,
-links in frontmatter, and whiteboard file cards and text cards. Each link keeps its style: a
+aliases, headings and embeds, Markdown links (relative or workspace paths), reference links
+(in their definition: `[ref]: Old.md "Title"` becomes `[ref]: New.md "Title"`), links to
+attachments, wikilinks in frontmatter, and whiteboard file cards and text cards. Each link keeps its style: a
 short `[[Name]]` stays short unless another note has the same name, `[[Folder/Name]]` keeps its
 path, and relative Markdown links are recomputed. When a note moves folder, its own relative
 links are fixed too. A short `[[Name]]` survives a folder move, except when the move makes
 another note called Name the one closest to the workspace's top (Obsidian picks that one): then it
-becomes a path, so it still leads to the same note. Code is never touched. If any file changes
-between the plan and writing it, nothing is changed.
+becomes a path, so it still leads to the same note. Only a link's target is rewritten: every
+other byte of the note stays. What the reader shows as no link is never touched: code (fenced,
+indented, or a span, also one that goes on to the next line) and HTML blocks. If any file
+changes between the plan and writing it, nothing is changed.
 
 ### Deleting notes and folders
 

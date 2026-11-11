@@ -991,6 +991,37 @@ mod tests {
     }
 
     #[test]
+    fn a_link_by_reference_is_rewritten_in_its_definition() {
+        let uses = "See [molten rock][lava] and [Lava].\n\n[lava]: ../Concepts/Lava.md \"Hot\"\n[abs]: <Concepts/Lava.md#Lava>\n";
+        let (dir, ix) = workspace_with(
+            "reference",
+            &[("Concepts/Lava.md", "# Lava\n"), ("Notes/Uses.md", uses)],
+        );
+        let p = plan(
+            &ix,
+            ix.by_rel("Concepts/Lava").unwrap(),
+            "Geology/Hot Rock.md",
+        )
+        .unwrap();
+        assert_eq!((p.links(), p.files()), (2, 1));
+        std::fs::write(
+            dir.join("Notes/Uses.md"),
+            format!("{uses}edited elsewhere\n"),
+        )
+        .unwrap();
+        assert!(apply(&p).is_err());
+        assert!(dir.join("Concepts/Lava.md").exists(), "nothing moved");
+        std::fs::write(dir.join("Notes/Uses.md"), uses).unwrap();
+        apply(&p).unwrap();
+        assert_eq!(
+            read(&dir, "Notes/Uses.md"),
+            "See [molten rock][lava] and [Lava].\n\n[lava]: ../Geology/Hot%20Rock.md \"Hot\"\n[abs]: <Geology/Hot%20Rock.md#Lava>\n",
+            "the label, the title, the `<>` and the heading stay"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn folder_move_rewrites_links_in_and_out() {
         let canvas = "{\"nodes\":[\n{\"id\":\"a\",\"type\":\"file\",\"file\":\"People/Krafft.md\"},\n{\"id\":\"b\",\"type\":\"file\",\"file\":\"People/photo.png\"},\n{\"id\":\"c\",\"type\":\"text\",\"text\":\"[[People/Johnston]]\"},\n{\"id\":\"d\",\"type\":\"file\",\"file\":\"Volcanoes/Helens.md\"}\n],\"edges\":[]}";
         let (dir, ix) = workspace_with(
