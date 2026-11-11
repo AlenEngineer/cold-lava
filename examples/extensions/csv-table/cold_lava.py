@@ -147,6 +147,30 @@ class Extension:
         """Every file in the workspace whose name ends in `.extension`."""
         return self.request("workspace/files", {"extension": extension})["files"]
 
+    def stat(self, path):
+        """The version of a file or a folder without its text: {"rev"}, and for a folder
+        {"rev", "inside"}, everything in it. It is the `expect` a delete needs."""
+        return self.request("workspace/stat", {"path": path})
+
+    def delete(self, path, expect):
+        """Move a file or a folder to the trash (never for good), refused as `changed` unless
+        it is still the version `expect`. Needs the `files.delete` permission. Returns
+        {"trashed", "went"}: the token `restore` takes, and `system` or `workspace`."""
+        return self.request("workspace/delete", {"path": path, "expect": expect})
+
+    def restore(self, trashed, to=None):
+        """Put back what `delete` answered as `trashed`, where it was or at `to`. Never
+        overwrites: a taken path is refused as `exists`. The token is gone once cold-lava
+        restarts. Returns {"path"}."""
+        params = {"trashed": trashed}
+        if to is not None:
+            params["to"] = to
+        return self.request("workspace/restore", params)
+
+    def create_folder(self, path):
+        """Make an empty folder, with any missing parents; `exists` when something is there."""
+        return self.request("workspace/create-folder", {"path": path})
+
     def style(self):
         """How the workspace writes (list marker, links, task fields, ...), each as
         {"value", "from", "counts"}: for text the extension writes itself."""

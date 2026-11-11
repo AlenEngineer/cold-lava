@@ -209,6 +209,10 @@ pub const HOST_METHODS: &[&str] = &[
     "workspace/write",
     "workspace/create",
     "workspace/files",
+    "workspace/stat",
+    "workspace/delete",
+    "workspace/restore",
+    "workspace/create-folder",
     "ui/notify",
     "ui/status",
     "command/run",
@@ -240,6 +244,10 @@ const FILES: &[&str] = &[
     "workspace/write",
     "workspace/create",
     "workspace/files",
+    "workspace/stat",
+    "workspace/delete",
+    "workspace/restore",
+    "workspace/create-folder",
 ];
 
 /// What `serve` answers: now, or later under a ticket, which `Extension::edited` brings back
@@ -318,6 +326,10 @@ fn serve_now(
             }
             files::Request::Create(create) => answer(host.create_file(&create)),
             files::Request::Files { extension } => answer(host.list_files(&extension)),
+            files::Request::Stat { path } => answer(host.stat_file(&path)),
+            files::Request::Delete { path, expect } => answer(host.delete_file(&path, &expect)),
+            files::Request::Restore(restore) => answer(host.restore_file(&restore)),
+            files::Request::CreateFolder { path } => answer(host.create_folder(&path)),
         };
     }
     if !HOST_METHODS.contains(&method) {
@@ -659,6 +671,71 @@ mod tests {
         assert_eq!(reason(&refused.unwrap_err()), "refused");
         let (bad, _) = served(&mut core, &both, "workspace/create", json!({"text": ""}));
         assert_eq!(bad.unwrap_err().code, INVALID_PARAMS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_are_deleted_and_restored_and_folders_made_over_the_wire() {
+        use Permission::{FilesDelete, FilesRead, FilesWrite};
+        let dir = workspace("trash");
+        let mut core = Core::open(&dir).unwrap();
+        let bin = dir.with_extension("bin");
+        let _ = std::fs::remove_dir_all(&bin);
+        let system = cold_lava_engine::trash::Bin::Freedesktop(bin.clone());
+        core.set_system_trash(Some(system));
+        let plan = json!({"path": "Plan.md"});
+        let (stat, _) = served(&mut core, &[FilesRead], "workspace/stat", plan);
+        let delete = json!({"path": "Plan.md", "expect": stat.unwrap()["rev"]});
+
+        let writes = [FilesRead, FilesWrite];
+        let (refused, _) = served(&mut core, &writes, "workspace/delete", delete.clone());
+        let refused = refused.unwrap_err();
+        assert_eq!((refused.code, reason(&refused)), (REFUSED, "forbidden"));
+        assert!(
+            refused.message.contains("files.delete"),
+            "{}",
+            refused.message
+        );
+        assert!(dir.join("Plan.md").exists(), "untouched");
+
+        let may = [FilesDelete];
+        let (deleted, _) = served(&mut core, &may, "workspace/delete", delete.clone());
+        let deleted = deleted.unwrap();
+        assert_eq!(deleted["went"], "system");
+        assert!(deleted["trashed"].is_string());
+        assert!(!dir.join("Plan.md").exists());
+        assert!(
+            bin.join("files/Plan.md").exists(),
+            "in the trash this test named"
+        );
+        let (twice, _) = served(&mut core, &may, "workspace/delete", delete);
+        assert_eq!(reason(&twice.unwrap_err()), "changed");
+
+        let restore = json!({"trashed": deleted["trashed"]});
+        let (refused, _) = served(&mut core, &writes, "workspace/restore", restore.clone());
+        assert_eq!(reason(&refused.unwrap_err()), "forbidden");
+        let (restored, _) = served(&mut core, &may, "workspace/restore", restore);
+        assert_eq!(restored.unwrap(), json!({"path": "Plan.md"}));
+        let back = std::fs::read_to_string(dir.join("Plan.md")).unwrap();
+        assert_eq!(back, "- [ ] Pay rent\n");
+
+        let folder = json!({"path": "Guide/Field Notes"});
+        let (refused, _) = served(&mut core, &may, "workspace/create-folder", folder.clone());
+        assert_eq!(reason(&refused.unwrap_err()), "forbidden");
+        let (made, _) = served(
+            &mut core,
+            &writes,
+            "workspace/create-folder",
+            folder.clone(),
+        );
+        assert_eq!(made.unwrap(), folder);
+        assert!(dir.join("Guide/Field Notes").is_dir());
+        let (taken, _) = served(&mut core, &writes, "workspace/create-folder", folder);
+        assert_eq!(reason(&taken.unwrap_err()), "exists");
+        let no_version = json!({"path": "Plan.md"});
+        let (bad, _) = served(&mut core, &may, "workspace/delete", no_version);
+        assert_eq!(bad.unwrap_err().code, INVALID_PARAMS);
+        let _ = std::fs::remove_dir_all(&bin);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

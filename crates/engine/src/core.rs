@@ -15,6 +15,7 @@ use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
 use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Relink, Stage};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
+use crate::trash::{Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned};
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -59,6 +60,23 @@ pub enum Event {
         item: String,
         by: String,
         what: String,
+    },
+    /// The client named `by` moved a file or a folder to the trash through the gateway
+    /// (`workspace/delete`), after the events of what went. Workspace-relative, with its
+    /// extension.
+    Deleted {
+        path: String,
+        by: String,
+    },
+    /// `by` put it back (`workspace/restore`), after the events of what came back.
+    Restored {
+        path: String,
+        by: String,
+    },
+    /// `by` made a folder (`workspace/create-folder`).
+    FolderCreated {
+        path: String,
+        by: String,
     },
 }
 
@@ -109,6 +127,10 @@ pub struct Core {
     edits: Edits,
     /// Extensions' answers to `shape/region` and `shape/gesture`, for the frontend's bindings.
     shape_answers: Vec<ShapeAnswer>,
+    /// What `workspace/delete` put in a trash, for `workspace/restore`.
+    trashed: files::Trash,
+    /// The system trash deletes go to, when the workspace's `trashOption` names it.
+    system_trash: Option<Bin>,
 }
 
 impl Core {
@@ -134,7 +156,16 @@ impl Core {
             owners: Owners::default(),
             edits: Edits::default(),
             shape_answers: Vec::new(),
+            trashed: files::Trash::default(),
+            // This crate's tests get none unless they set one, so none reaches the real trash.
+            system_trash: if cfg!(test) { None } else { system_bin() },
         })
+    }
+
+    /// Use `bin` as the system trash, or none: deletes then go to the workspace's `.trash`.
+    /// A test that deletes sets one under its own folder.
+    pub fn set_system_trash(&mut self, bin: Option<Bin>) {
+        self.system_trash = bin;
     }
 
     pub fn root(&self) -> &Path {
@@ -967,6 +998,107 @@ impl Core {
         let created = files::create(&self.index, c)?;
         self.reread_note(&created.path);
         Ok(created)
+    }
+
+    /// `workspace/stat`
+    pub fn stat_file(&self, rel: &str) -> Result<files::Stat, gateway::Error> {
+        files::stat(self.root(), rel)
+    }
+
+    /// `workspace/delete` on behalf of the client named `by`: to the trash, refused unless the
+    /// file or folder is still the version `expect`. What went is read again at once, and its
+    /// events, ending with `Deleted`, come from the next `poll`.
+    pub fn delete_file(
+        &mut self,
+        by: &str,
+        rel: &str,
+        expect: &str,
+    ) -> Result<files::Deleted, gateway::Error> {
+        let trashed = files::delete(self.root(), rel, expect, self.system_trash.as_ref())?;
+        let mut events = self.moved(&trashed.from, trashed.at.is_dir());
+        events.push(Event::Deleted {
+            path: rel.to_string(),
+            by: by.to_string(),
+        });
+        self.broadcast(&events);
+        self.unseen.extend(events);
+        let went = trashed.went;
+        let trashed = self.trashed.keep(by, trashed);
+        Ok(files::Deleted { trashed, went })
+    }
+
+    /// `workspace/restore` on behalf of `by`: what a `workspace/delete` of this core answered
+    /// goes back where it was, or to `to`, never over something. Its events, ending with
+    /// `Restored`, come from the next `poll`. Refused, the token still works.
+    pub fn restore_file(
+        &mut self,
+        by: &str,
+        restore: &files::Restore,
+    ) -> Result<files::Restored, gateway::Error> {
+        let Some(trashed) = self.trashed.get(&restore.trashed) else {
+            let message = "nothing in the trash goes by that token: it was put back, or \
+                           cold-lava started again since it was deleted";
+            return Err(gateway::Error::new(Reason::Changed, message));
+        };
+        let restored = files::restore(self.root(), trashed, restore.to.as_deref())?;
+        self.trashed.forget(&restore.trashed);
+        let path = self.root().join(&restored.path);
+        let mut events = self.moved(&path, path.is_dir());
+        events.push(Event::Restored {
+            path: restored.path.clone(),
+            by: by.to_string(),
+        });
+        self.broadcast(&events);
+        self.unseen.extend(events);
+        Ok(restored)
+    }
+
+    /// `workspace/create-folder` on behalf of `by`. An empty folder changes nothing the index
+    /// reads; `FolderCreated` comes from the next `poll`.
+    pub fn create_folder(&mut self, by: &str, rel: &str) -> Result<files::Folder, gateway::Error> {
+        let made = files::create_folder(self.root(), rel)?;
+        let events = [Event::FolderCreated {
+            path: made.path.clone(),
+            by: by.to_string(),
+        }];
+        self.broadcast(&events);
+        self.unseen.extend(events);
+        Ok(made)
+    }
+
+    /// cold-lava itself just moved the file or folder at `path` out of the workspace or into
+    /// it: read what that changes now, as `poll` does what the watcher reports. Its events.
+    fn moved(&mut self, path: &Path, folder: bool) -> Vec<Event> {
+        let kind = if folder {
+            Kind::Folder
+        } else {
+            classify(self.root(), path)
+        };
+        match kind {
+            Kind::Note => self.refresh(&[path.to_path_buf()]),
+            Kind::Board(rel) => {
+                let mut events = self.owned_changed(std::slice::from_ref(&rel));
+                events.push(Event::BoardChanged(rel));
+                events
+            }
+            Kind::File(rel) => {
+                let owned = self.owners.owner_of(&rel).is_some();
+                let mut events = Vec::new();
+                if owned {
+                    events = self.owned_changed(std::slice::from_ref(&rel));
+                }
+                events.push(Event::FileChanged(rel));
+                events
+            }
+            Kind::Folder => match workspace::scan(self.root()) {
+                Ok(scanned) => {
+                    self.rescanned(Index::build(scanned));
+                    vec![Event::Rescanned]
+                }
+                Err(_) => Vec::new(),
+            },
+            Kind::GraphSettings | Kind::Bookmarks | Kind::Ignored => Vec::new(),
+        }
     }
 
     /// A recipe planned and applied at once, the files it wrote read again (their events come

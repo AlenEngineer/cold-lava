@@ -3,8 +3,10 @@
 //! These use the host as a second frontend would, through its public API, with no terminal.
 
 use cold_lava_engine::core::{Core, Event};
+use cold_lava_engine::files::Restore;
 use cold_lava_engine::gateway::{self, Reason};
 use cold_lava_engine::tasks;
+use cold_lava_engine::trash::Bin;
 use cold_lava_host::process::Process;
 use cold_lava_host::{
     CommandRequest, EditorRequest, Effect, ExtId, Extension, FileType, Host, Manifest, PaneNews,
@@ -216,6 +218,27 @@ impl Extension for Quiet {
     fn editor(&mut self, _: EditorRequest, _: &mut Host<'_>) {}
 }
 
+fn quiet(
+    name: &'static str,
+    permissions: &[Permission],
+    opens: &'static [&'static str],
+) -> Box<dyn Extension> {
+    let permissions = permissions.to_vec();
+    Box::new(Quiet {
+        name,
+        permissions,
+        opens,
+    })
+}
+
+/// A core on `root` whose system trash is `dir/trash`, under the test's own folder, never the
+/// user's.
+fn core_with_trash(dir: &Path, root: &Path) -> Core {
+    let mut core = Core::open(root).unwrap();
+    core.set_system_trash(Some(Bin::Freedesktop(dir.join("trash"))));
+    core
+}
+
 /// What the gateway answers `ext` when it asks `f`.
 fn ask<T>(
     r: &mut Registry,
@@ -233,14 +256,6 @@ fn a_write_needs_files_write_and_an_owner_writes_only_its_own_kind() {
     use Permission::{FilesRead, FilesWrite, ItemsEdit, ItemsRead};
     let (dir, root) = workspace("files");
     let mut core = Core::open(&root).unwrap();
-    let quiet = |name: &'static str, permissions: &[Permission], opens: &'static [&'static str]| {
-        let permissions = permissions.to_vec();
-        Box::new(Quiet {
-            name,
-            permissions,
-            opens,
-        }) as Box<dyn Extension>
-    };
     let mut r = Registry::new(vec![
         quiet("sheets", &[], &["csv"]),
         quiet("items", &[ItemsRead, ItemsEdit], &[]),
@@ -302,4 +317,192 @@ fn a_write_needs_files_write_and_an_owner_writes_only_its_own_kind() {
     assert!(saved.is_ok(), "{saved:?}");
     assert_eq!(on_disk(csv), more);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_delete_needs_files_delete_which_neither_files_write_nor_owning_the_kind_gives() {
+    use Permission::{FilesDelete, FilesRead, FilesWrite};
+    let (dir, root) = workspace("delete");
+    let mut core = core_with_trash(&dir, &root);
+    let mut r = Registry::new(vec![
+        quiet("sheets", &[], &["csv"]),
+        quiet("write", &[FilesRead, FilesWrite], &[]),
+        quiet("tidy", &[FilesRead, FilesDelete], &[]),
+    ]);
+    let (sheets, write, tidy) = (ExtId(0), ExtId(1), ExtId(2));
+    let csv = "Volcanoes/Eruptions.csv";
+    let on_disk = |path: &str| std::fs::read_to_string(root.join(path)).unwrap();
+    let forbidden = Err(Reason::Forbidden);
+
+    let note = ask(&mut r, &mut core, tidy, |h| h.stat_file(NOTE)).unwrap();
+    let table = ask(&mut r, &mut core, sheets, |h| h.stat_file(csv)).unwrap();
+    let others = ask(&mut r, &mut core, sheets, |h| h.stat_file(NOTE));
+    assert_eq!(others.map(drop), forbidden, "a note isn't its kind");
+
+    let mut refusal = None;
+    r.call(write, Some(&mut core), |_, h| {
+        refusal = h.delete_file(NOTE, &note.rev).err()
+    });
+    let refusal = refusal.unwrap();
+    assert_eq!(
+        refusal.reason,
+        Reason::Forbidden,
+        "files.write doesn't delete"
+    );
+    assert!(
+        (refusal.message).contains("write may not do this")
+            && (refusal.message).contains("files.delete"),
+        "the refusal names who asked and the permission: {}",
+        refusal.message
+    );
+    let owner = ask(&mut r, &mut core, sheets, |h| {
+        h.delete_file(csv, &table.rev)
+    });
+    assert_eq!(owner.map(drop), forbidden, "nor does owning the kind");
+    assert_eq!(on_disk(NOTE), LATE, "untouched");
+    assert!(root.join(csv).exists(), "untouched");
+    assert!(!dir.join("trash").exists(), "nothing went");
+    assert!(!root.join(".trash").exists(), "nothing went");
+
+    let gone = ask(&mut r, &mut core, tidy, |h| h.delete_file(NOTE, &note.rev)).unwrap();
+    assert!(!root.join(NOTE).exists());
+    let trashed = std::fs::read_to_string(dir.join("trash/files/Seismograph.md")).unwrap();
+    assert_eq!(trashed, LATE, "in the trash under the test's own folder");
+    assert!(!root.join(".trash").exists());
+    let deleted = Event::Deleted {
+        path: NOTE.into(),
+        by: "tidy".into(),
+    };
+    let events = core.poll();
+    assert!(events.contains(&deleted), "{events:?}");
+
+    let restore = Restore {
+        trashed: gone.trashed,
+        to: None,
+    };
+    let unasked = ask(&mut r, &mut core, write, |h| h.restore_file(&restore));
+    assert_eq!(unasked.map(drop), forbidden, "files.write doesn't restore");
+    let back = ask(&mut r, &mut core, tidy, |h| h.restore_file(&restore)).unwrap();
+    assert_eq!(back.path, NOTE);
+    assert_eq!(on_disk(NOTE), LATE, "exactly the bytes, where they were");
+
+    let folder = "Inbox/Field Notes";
+    let unasked = ask(&mut r, &mut core, tidy, |h| h.create_folder(folder));
+    assert_eq!(unasked.map(drop), forbidden, "files.delete doesn't create");
+    assert!(!root.join(folder).exists());
+    let made = ask(&mut r, &mut core, write, |h| h.create_folder(folder)).unwrap();
+    assert_eq!(made.path, folder);
+    assert!(root.join(folder).is_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `trash-can` extension of this folder in a process of its own, installed in `dir` with
+/// `permissions` in place of its manifest's and the examples' `cold_lava.py` beside it.
+fn trash_can(dir: &Path, permissions: &str) -> Registry {
+    let folder = dir.join("extensions/trash-can");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/trash-can");
+    copy_dir(&source, &folder);
+    let helper = repo().join("examples/extensions/open-tasks/cold_lava.py");
+    std::fs::copy(helper, folder.join("cold_lava.py")).unwrap();
+    let manifest = folder.join("extension.toml");
+    let shipped = std::fs::read_to_string(&manifest).unwrap();
+    let asks = "permissions = [\"files.read\", \"files.delete\"]";
+    assert!(shipped.contains(asks), "it asks for files.delete");
+    let given = shipped.replace(asks, &format!("permissions = {permissions}"));
+    std::fs::write(&manifest, given).unwrap();
+    let (found, mistakes) = installed::load(&dir.join("extensions"));
+    assert_eq!(mistakes, Vec::<String>::new());
+    let mut installed = found.into_iter().next().unwrap();
+    installed.launch.log = Some(dir.join("trash-can.log"));
+    Registry::new(vec![Box::new(Process::new(installed).unwrap())])
+}
+
+/// What `trash-can.delete` of `NOTE` did as an extension with `permissions`: what it said, the
+/// note afterwards, what the test's trash holds under the note's name, and who the core says
+/// deleted something.
+struct Trashed {
+    said: String,
+    note: Option<String>,
+    in_trash: Option<String>,
+    deleted_by: Vec<String>,
+}
+
+fn trash(name: &str, permissions: &str) -> Trashed {
+    let (dir, root) = workspace(name);
+    let mut core = core_with_trash(&dir, &root);
+    let mut r = trash_can(&dir, permissions);
+    r.call(ExtId(0), Some(&mut core), |e, h| {
+        e.workspace(Some(&root), h)
+    });
+    let run = CommandRequest::Run {
+        id: "trash-can.delete".into(),
+        args: serde_json::json!({ "path": NOTE }),
+    };
+    r.call(ExtId(0), Some(&mut core), |e, h| e.command(run, h));
+    let (said, mut events) = until(&mut r, &mut core, |e| matches!(e, Effect::Notify { .. }));
+    events.extend(core.poll());
+    let Effect::Notify { message: said } = said else {
+        unreachable!()
+    };
+    let deleted_by = (events.into_iter())
+        .filter_map(|e| match e {
+            Event::Deleted { by, .. } => Some(by),
+            _ => None,
+        })
+        .collect();
+    r.shutdown();
+    assert!(!r.running(ExtId(0)));
+    let log = std::fs::read_to_string(dir.join("trash-can.log")).unwrap();
+    assert_eq!(log, "", "nothing on stderr");
+    assert!(
+        !root.join(".trash").exists(),
+        "not the workspace's own trash"
+    );
+    let did = Trashed {
+        said,
+        note: std::fs::read_to_string(root.join(NOTE)).ok(),
+        in_trash: std::fs::read_to_string(dir.join("trash/files/Seismograph.md")).ok(),
+        deleted_by,
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    did
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_in_its_own_process_deletes_a_note_with_files_delete() {
+    if !has_python() {
+        return;
+    }
+    let did = trash("may-delete", "[\"files.read\", \"files.delete\"]");
+    assert_eq!(did.said, format!("deleted {NOTE} to the system trash"));
+    assert_eq!(did.note, None, "the note is gone");
+    assert_eq!(
+        did.in_trash.as_deref(),
+        Some(LATE),
+        "whole, in the trash under the test's own folder"
+    );
+    assert_eq!(did.deleted_by, ["trash-can"]);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_in_its_own_process_may_not_delete_without_files_delete() {
+    if !has_python() {
+        return;
+    }
+    let did = trash("may-not-delete", "[\"files.read\", \"files.write\"]");
+    assert!(
+        (did.said).starts_with("refused (forbidden): trash-can may not do this"),
+        "{}",
+        did.said
+    );
+    assert!(
+        (did.said).contains("its manifest's permissions don't include files.delete"),
+        "{}",
+        did.said
+    );
+    assert_eq!(did.note.as_deref(), Some(LATE), "the note is untouched");
+    assert_eq!(did.in_trash, None, "nothing went");
+    assert_eq!(did.deleted_by, Vec::<String>::new());
 }

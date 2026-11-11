@@ -273,6 +273,34 @@ impl Harness {
         self.call(Core::rescan_now);
     }
 
+    /// The version of the file or folder on disk now, as a dialog reads it before it asks
+    /// (`workspace/stat`).
+    pub(crate) fn stat(&self, rel: &str) -> String {
+        self.core.stat_file(rel).unwrap().rev
+    }
+
+    /// `workspace/delete` by `by`, of the version `expect`. The harness's core has no system
+    /// trash, so what goes is in the temp workspace's own `.trash`.
+    pub(crate) fn delete(
+        &mut self,
+        by: &str,
+        rel: &str,
+        expect: &str,
+    ) -> Result<files::Deleted, gateway::Error> {
+        self.call(|core| core.delete_file(by, rel, expect))
+    }
+
+    /// `workspace/restore` by `by`, to where it was.
+    pub(crate) fn restore(
+        &mut self,
+        by: &str,
+        trashed: &files::TrashId,
+    ) -> Result<files::Restored, gateway::Error> {
+        let trashed = trashed.clone();
+        let restore = files::Restore { trashed, to: None };
+        self.call(|core| core.restore_file(by, &restore))
+    }
+
     /// The menu tells the core who owns which kind of file again, as when extensions restart.
     pub(crate) fn set_owners(&mut self) {
         self.call(|core| core.set_owners(vec![lines_kind()], None));
@@ -1274,4 +1302,133 @@ fn a_follower_of_the_example_workspace_keeps_what_a_query_finds() {
     h.saw("Ashfall drill.md");
     assert_eq!(h.deliver().counts("agenda"), [(0, 0, 2)]);
     assert_eq!(h.items("agenda").len(), before);
+}
+
+/// What a delete and a restore are for the client `by`, as events.
+fn deleted(path: &str, by: &str) -> Event {
+    let (path, by) = (path.to_string(), by.to_string());
+    Event::Deleted { path, by }
+}
+
+fn restored(path: &str, by: &str) -> Event {
+    let (path, by) = (path.to_string(), by.to_string());
+    Event::Restored { path, by }
+}
+
+/// #193. A delete through the gateway is read inside the call, so the watcher's own report of
+/// it, late and twice, is no news; asked twice, the second is refused and says nothing.
+#[test]
+fn a_delete_and_its_restore_are_heard_once_each_in_order_and_name_who_made_them() {
+    let mut h = workspace("trash");
+    h.follow("agenda", tasks());
+    h.follow_links("graph");
+    let seen = h.stat("Ash.md");
+    let gone = h.delete("tidy", "Ash.md", &seen).unwrap();
+    assert_eq!(gone.went, crate::trash::Went::WorkspaceTrash);
+    assert_eq!(h.read(".trash/Ash.md"), ASH, "in the test's own folder");
+    let twice = h.delete("tidy", "Ash.md", &seen).unwrap_err();
+    assert_eq!(twice.reason, Reason::Changed);
+
+    let batch = h.deliver();
+    let events = [Event::NoteRemoved("Ash".into()), deleted("Ash.md", "tidy")];
+    assert_eq!(batch.events, events);
+    assert_eq!(batch.channel, events);
+    assert_eq!(batch.counts("agenda"), [(0, 0, 1)]);
+    assert_eq!(batch.links("graph"), [(rels(&[]), rels(&["Ash.md"]))]);
+    assert_eq!(h.count("agenda", "Sweep the ash"), 0);
+    h.saw("Ash.md");
+    h.saw("Ash.md");
+    assert!(h.deliver().is_empty(), "the watcher's report is no news");
+
+    let back = h.restore("tidy", &gone.trashed).unwrap();
+    assert_eq!(back.path, "Ash.md");
+    assert_eq!(h.read("Ash.md"), ASH);
+    let spent = h.restore("tidy", &gone.trashed).unwrap_err();
+    assert_eq!(spent.reason, Reason::Changed);
+    let batch = h.deliver();
+    let events = [Event::NoteCreated("Ash".into()), restored("Ash.md", "tidy")];
+    assert_eq!(batch.events, events);
+    assert_eq!(batch.channel, events);
+    assert_eq!(batch.counts("agenda"), [(1, 0, 0)]);
+    assert_eq!(batch.links("graph"), [(rels(&["Ash.md"]), rels(&[]))]);
+    assert_eq!(h.count("agenda", "Sweep the ash"), 1);
+    h.saw("Ash.md");
+    assert!(h.deliver().is_empty(), "the watcher's report is no news");
+
+    let once = vec!["items/changed"];
+    assert_eq!(h.heard("agenda"), [once.clone(), vec![], once, vec![]]);
+}
+
+/// The dialog read the note, another program wrote it, and the watcher hasn't said so yet: the
+/// delete is refused, the note stays as they wrote it, and nobody hears of a delete.
+#[test]
+fn a_note_changed_since_the_dialog_read_it_is_not_deleted() {
+    let mut h = workspace("trash-changed");
+    h.follow("agenda", tasks());
+    let seen = h.stat("Ash.md");
+    let theirs = format!("{ASH}- [ ] Buy a broom\n");
+    h.write("Ash.md", &theirs);
+    let refused = h.delete("tidy", "Ash.md", &seen).unwrap_err();
+    assert_eq!(refused.reason, Reason::Changed);
+    assert_eq!(h.read("Ash.md"), theirs);
+    assert!(h.deliver().is_empty(), "nothing was deleted");
+
+    h.saw("Ash.md");
+    let batch = h.deliver();
+    assert_eq!(batch.events, [changed("Ash")]);
+    assert_eq!(batch.counts("agenda"), [(1, 0, 0)]);
+}
+
+/// The other order: the core is behind the disk when the note is deleted at the version on
+/// disk. Subscribers lose the task they knew of, and the watcher's late report of the write
+/// is no news.
+#[test]
+fn a_delete_of_a_note_the_core_has_not_read_again_removes_what_subscribers_had() {
+    let mut h = workspace("trash-behind");
+    h.follow("agenda", tasks());
+    h.write("Ash.md", &format!("{ASH}- [ ] Buy a broom\n"));
+    let seen = h.stat("Ash.md");
+    h.delete("tidy", "Ash.md", &seen).unwrap();
+    let batch = h.deliver();
+    let events = [Event::NoteRemoved("Ash".into()), deleted("Ash.md", "tidy")];
+    assert_eq!(batch.events, events);
+    assert_eq!(batch.counts("agenda"), [(0, 0, 1)]);
+    h.saw("Ash.md");
+    assert!(h.deliver().is_empty(), "the write it never read is no news");
+    assert_eq!(h.count("agenda", "Buy a broom"), 0);
+}
+
+/// A folder goes and comes back with a rescan, so its subscribers hear a reset and query
+/// again. The watcher's report of a folder is a rescan too, as for any folder.
+#[test]
+fn a_folders_delete_and_restore_are_each_a_reset_then_the_event() {
+    let files = [
+        ("Plan.md", PLAN),
+        ("Zone/Ash.md", ASH),
+        ("Zone/Deep/Chores.md", "- [ ] Clear the gutters\n"),
+    ];
+    let mut h = Harness::with("trash-folder", &files);
+    h.follow("agenda", tasks());
+    let seen = h.stat("Zone");
+    let gone = h.delete("tidy", "Zone", &seen).unwrap();
+    let batch = h.deliver();
+    assert_eq!(batch.events, [Event::Rescanned, deleted("Zone", "tidy")]);
+    assert_eq!(batch.names("agenda"), ["items/reset"]);
+    assert_eq!(h.count("agenda", "Sweep the ash"), 0);
+    assert_eq!(h.count("agenda", "Clear the gutters"), 0);
+    assert_eq!(h.count("agenda", "Pay rent"), 1);
+
+    h.restore("tidy", &gone.trashed).unwrap();
+    assert_eq!(h.read("Zone/Deep/Chores.md"), "- [ ] Clear the gutters\n");
+    let batch = h.deliver();
+    assert_eq!(batch.events, [Event::Rescanned, restored("Zone", "tidy")]);
+    assert_eq!(batch.names("agenda"), ["items/reset"]);
+    assert_eq!(h.count("agenda", "Sweep the ash"), 1);
+    assert_eq!(h.count("agenda", "Clear the gutters"), 1);
+
+    h.saw("Zone");
+    let late = h.deliver();
+    assert_eq!(late.events, [Event::Rescanned]);
+    assert_eq!(late.names("agenda"), ["items/reset"]);
+    assert_eq!(h.count("agenda", "Clear the gutters"), 1);
 }

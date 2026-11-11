@@ -126,6 +126,33 @@ fn deletes_a_note_to_the_system_trash_and_undoes_it() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The slow input a delete has to survive: the note changes between the prompt and the yes.
+#[test]
+fn a_note_rewritten_while_the_delete_prompt_is_open_is_asked_about_again() {
+    let dir = sandbox("delete-changed");
+    let home = dir.join("home");
+    let workspace = dir.join("example-workspace");
+    let out = drive_with(
+        "delete-changed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let lava = std::fs::read_to_string(workspace.join("Concepts/Lava.md")).unwrap();
+    assert_eq!(lava, "Rewritten in Obsidian while the prompt was open.\n");
+    assert!(
+        files_ending(&system_trash(&home), "").is_empty(),
+        "undo took it out of the trash"
+    );
+    assert!(!workspace.join(".trash").exists());
+    assert_eq!(
+        in_real_trash(&dir),
+        Vec::<PathBuf>::new(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Links in notes that lead nowhere, as `note name: target` (names survive folder moves).
 fn unresolved(workspace: &Path) -> Vec<String> {
     use cold_lava_engine::{index::Index, resolver::Files, workspace};

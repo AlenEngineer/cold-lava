@@ -59,9 +59,12 @@ pub fn system_bin() -> Option<Bin> {
     None
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which trash took it. On the wire (`workspace/delete`): `system` or `workspace`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Went {
+    #[serde(rename = "system")]
     System,
+    #[serde(rename = "workspace")]
     WorkspaceTrash,
 }
 

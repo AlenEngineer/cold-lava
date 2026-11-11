@@ -13,7 +13,7 @@ use crate::embed::Embedded;
 use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
     AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, FileNews, FilePreview, GRAPH,
-    Host, Manifest, PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
+    Host, MENU, Manifest, PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
@@ -28,7 +28,7 @@ use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
 use crate::resolver::dir_of;
 use crate::tidy_view::{self, TidyView};
-use crate::trash::{self, TrashOption, Trashed, Went};
+use crate::trash::{self, TrashOption, Went};
 use crate::type_table;
 use crate::views::{self, Views};
 use crate::{agenda, board, files, graph_ext, items, templates, term, whichkey, workspace};
@@ -432,7 +432,7 @@ enum Mode {
     ConfirmDelete(Box<PendingDelete>),
     /// Undoing a delete whose old paths are taken now: put those back under free names? Each
     /// item with where it goes back to.
-    ConfirmRestore(Vec<(Trashed, PathBuf)>),
+    ConfirmRestore(Vec<(Gone, PathBuf)>),
     Hints(Hints<HintTarget>),
     /// The reader's headings, to jump to one; `sel` is a row of `outline_hits`.
     Outline {
@@ -469,7 +469,16 @@ struct Doomed {
     path: PathBuf,
     /// Workspace-relative, without `.md`.
     rel: String,
-    contents: trash::Contents,
+    /// Workspace-relative, as the gateway names it.
+    file: String,
+    /// Its version when the user was asked (`workspace/stat`): what the delete expects.
+    rev: String,
+}
+
+/// Something the menu deleted: the core's token to put it back, and where it was.
+struct Gone {
+    trashed: files::TrashId,
+    from: PathBuf,
 }
 
 /// A delete waiting for a yes: what the user is deciding on, and what links to it.
@@ -492,7 +501,7 @@ struct PendingDelete {
 /// Something `note.undo-delete` can put back.
 enum Undo {
     /// A delete: one item, or the marked ones.
-    Delete(Vec<Trashed>),
+    Delete(Vec<Gone>),
     Merge(Box<crate::merge::Merged>),
     Recipe(Box<crate::recipe::Applied>),
 }
@@ -1929,7 +1938,10 @@ impl Home {
             | CoreEvent::OwnerTrouble { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
-            | CoreEvent::ItemEdited { .. } => false,
+            | CoreEvent::ItemEdited { .. }
+            | CoreEvent::Deleted { .. }
+            | CoreEvent::Restored { .. }
+            | CoreEvent::FolderCreated { .. } => false,
         });
         if reread {
             self.reload_reader();
@@ -1947,6 +1959,16 @@ impl Home {
                     path,
                     message,
                 } => self.flash(format!("{owner} couldn't read {path}: {message}")),
+                // The menu says its own; an extension's show under its name.
+                CoreEvent::Deleted { path, by } if by != MENU => {
+                    self.flash(format!("{by}: deleted {path}"));
+                }
+                CoreEvent::Restored { path, by } if by != MENU => {
+                    self.flash(format!("{by}: restored {path}"));
+                }
+                CoreEvent::FolderCreated { path, by } if by != MENU => {
+                    self.flash(format!("{by}: created {path}/"));
+                }
                 _ => {}
             }
         }
@@ -5089,22 +5111,30 @@ impl Home {
         }
         let mut doomed = Vec::new();
         for path in &paths {
-            let rel = path
+            let file = path
                 .strip_prefix(&root)
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
-            let Ok(contents) = trash::Contents::read(path) else {
-                self.reload_tree();
-                if let Some(view) = tidy {
-                    self.show_tidy(view);
+            let stat = match self.core.as_ref().map(|c| c.stat_file(&file)) {
+                Some(Ok(stat)) => stat,
+                refused => {
+                    self.reload_tree();
+                    if let Some(view) = tidy {
+                        self.show_tidy(view);
+                    }
+                    return self.flash(match refused {
+                        Some(Err(e)) if e.reason != Reason::Changed => {
+                            format!("can't delete {file}: {e}")
+                        }
+                        _ => format!("{file} is no longer there"),
+                    });
                 }
-                return self.flash(format!("{rel} is no longer there"));
             };
-            let rel = rel.trim_end_matches(".md").to_string();
             doomed.push(Doomed {
                 path: path.clone(),
-                rel,
-                contents,
+                rel: file.trim_end_matches(".md").to_string(),
+                file,
+                rev: stat.rev,
             });
         }
         // The notes that go, and the links to them from notes that stay.
@@ -5182,21 +5212,33 @@ impl Home {
     }
 
     fn apply_delete(&mut self) {
-        let (Mode::ConfirmDelete(p), Some(root)) = (&self.mode, self.root.clone()) else {
+        let (Mode::ConfirmDelete(p), Some(root), Some(core)) =
+            (&self.mode, self.root.clone(), self.core.as_mut())
+        else {
             return;
         };
         // Everything is checked before anything goes, so a change means nothing went.
-        if (p.doomed.iter())
-            .any(|d| trash::Contents::read(&d.path).ok() != Some(d.contents.clone()))
-        {
+        let same = |d: &Doomed| core.stat_file(&d.file).is_ok_and(|now| now.rev == d.rev);
+        if !p.doomed.iter().all(same) {
             return self.start_delete(true);
         }
-        let system = trash::system_bin();
+        // The notes that go, while the index still has them, for the editor to forget.
+        let notes: Vec<PathBuf> = (core.index.workspace.notes.iter())
+            .filter(|n| p.doomed.iter().any(|d| n.path.starts_with(&d.path)))
+            .map(|n| n.path.clone())
+            .collect();
         let mut batch = Vec::new();
+        let mut local = false;
         let mut failed = None;
         for d in &p.doomed {
-            match trash::delete(&root, &d.path, &d.contents, system.as_ref()) {
-                Ok(t) => batch.push(t),
+            match core.delete_file(MENU, &d.file, &d.rev) {
+                Ok(deleted) => {
+                    local |= deleted.went == Went::WorkspaceTrash;
+                    batch.push(Gone {
+                        trashed: deleted.trashed,
+                        from: d.path.clone(),
+                    });
+                }
                 Err(e) => {
                     failed = Some(format!("couldn't delete {}: {e}", d.rel));
                     break;
@@ -5210,19 +5252,7 @@ impl Home {
         let went = |path: &Path| gone.iter().any(|d| path.starts_with(&d.path));
         let was_shown = self.shown.as_deref().is_some_and(went);
         if let Some(editor) = self.running_editor() {
-            let notes: Vec<PathBuf> = match self.core.as_ref() {
-                Some(core) => (core.index.workspace.notes.iter())
-                    .filter(|n| went(&n.path))
-                    .map(|n| n.path.clone())
-                    .collect(),
-                None => self
-                    .shown
-                    .clone()
-                    .filter(|_| was_shown)
-                    .into_iter()
-                    .collect(),
-            };
-            for note in notes {
+            for note in notes.into_iter().filter(|n| went(n)) {
                 let request = EditorRequest::Deleted { note };
                 self.call(editor, |e, host| e.editor(request, host));
             }
@@ -5251,7 +5281,6 @@ impl Home {
             [d] => d.rel.rsplit('/').next().unwrap_or(&d.rel).to_string(),
             ds => plural(ds.len(), "item"),
         };
-        let local = batch.iter().any(|t| t.went == Went::WorkspaceTrash);
         let msg = match (local, TrashOption::of_workspace(&root)) {
             (true, TrashOption::Permanent) => format!(
                 "moved {name} to .trash: this workspace deletes permanently in Obsidian, cold-lava never does · {undo} undo"
@@ -5292,7 +5321,7 @@ impl Home {
             Some(Undo::Delete(batch)) => batch,
         };
         let taken = batch.iter().any(|t| t.from.exists());
-        let batch: Vec<(Trashed, PathBuf)> = (batch.into_iter())
+        let batch: Vec<(Gone, PathBuf)> = (batch.into_iter())
             .map(|t| {
                 let to = trash::free_path(&t.from);
                 (t, to)
@@ -5305,12 +5334,22 @@ impl Home {
         self.restore(batch);
     }
 
-    fn restore(&mut self, batch: Vec<(Trashed, PathBuf)>) {
+    fn restore(&mut self, batch: Vec<(Gone, PathBuf)>) {
+        let root = self.root.clone().unwrap_or_default();
         let mut back = Vec::new();
         let mut failed = Vec::new();
         for (t, to) in batch {
-            match trash::restore(&t, &to) {
-                Ok(()) => back.push(to),
+            let rel = to.strip_prefix(&root).unwrap_or(&to);
+            let restore = files::Restore {
+                trashed: t.trashed.clone(),
+                to: Some(rel.to_string_lossy().replace('\\', "/")),
+            };
+            let restored = match self.core.as_mut() {
+                Some(core) => core.restore_file(MENU, &restore).map_err(|e| e.message),
+                None => Err("no workspace is open".to_string()),
+            };
+            match restored {
+                Ok(_) => back.push(to),
                 Err(e) => {
                     failed.push(format!("couldn't put {} back: {e}", t.from.display()));
                     self.undo.push(Undo::Delete(vec![t]));
@@ -5318,7 +5357,6 @@ impl Home {
             }
         }
         self.reload_tree();
-        let root = self.root.clone().unwrap_or_default();
         for to in back.iter().filter(|to| to.is_dir()) {
             if let Ok(rel) = to.strip_prefix(&root) {
                 self.expanded
@@ -5475,7 +5513,7 @@ impl Home {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default()
                 };
-                let taken: Vec<&(Trashed, PathBuf)> =
+                let taken: Vec<&(Gone, PathBuf)> =
                     batch.iter().filter(|(t, _)| t.from.exists()).collect();
                 let lines = match taken.as_slice() {
                     [(t, to)] if batch.len() == 1 => vec![
@@ -5908,9 +5946,10 @@ impl Home {
         } else {
             format!("{parent}/{name}")
         };
-        let made = crate::rename::check_path(&rel)
-            .and_then(|()| Ok(crate::write::create_dir(&root.join(&rel))?));
-        if let Err(e) = made {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        if let Err(e) = core.create_folder(MENU, &rel) {
             return self.flash(format!("can't create {rel}/: {e}"));
         }
         self.flash(format!("created {rel}/"));
