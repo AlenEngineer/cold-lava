@@ -1,0 +1,40 @@
+name: footnote block bench (temporary, #212)
+
+on:
+  push:
+    branches: [footnote-blocks-212]
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: A workspace of 3,000 notes
+        run: python3 -c "import runpy; print(runpy.run_path('scripts/bench-items.py')['generate'](3000))"
+      - name: Build the engine's tests, main and this branch
+        run: |
+          git worktree add ../main origin/main
+          (cd ../main && cargo test --release -p cold-lava-engine --no-run)
+          cargo test --release -p cold-lava-engine --no-run
+      - name: The scan, the items and a keystroke, main and this branch in turn
+        run: |
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for round in 1 2 3; do
+            for side in ../main .; do
+              echo "== round $round: $side ($(git -C $side rev-parse --short HEAD))"
+              (cd $side && cargo test --release -p cold-lava-engine -- --ignored --nocapture read_cost items_cost keystroke 2>&1 | grep -v "^test \|^running\|^$\|Finished\|Running\|Doc-tests\|test result")
+            done
+          done
+      - name: The instructions the scan's read takes, by function (callgrind)
+        run: |
+          sudo apt-get install -y valgrind > /dev/null
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for side in ../main .; do
+            bin=$(cd $side && ls -t target/release/deps/cold_lava_engine-* | grep -v '\.d$' | head -1)
+            echo "== $side ($(git -C $side rev-parse --short HEAD)): $bin"
+            (cd $side/crates/engine && valgrind --tool=callgrind --callgrind-out-file=/tmp/callgrind.out "../../$bin" --ignored --nocapture read_cost 2>&1 | grep -v "^==\|^test \|^running\|^$")
+            callgrind_annotate /tmp/callgrind.out | head -48 | cut -c1-220
+          done
