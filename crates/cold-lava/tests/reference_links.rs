@@ -98,6 +98,8 @@ fn tidy_counts_a_link_by_reference() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The workspace has no `.obsidian`, so its flavour is `github`: a task's wikilinks count all
+/// the same, as backlinks do.
 #[test]
 fn a_tasks_tags_and_links_are_what_the_tree_reads() {
     let dir = workspace("task", &[("Uses.md", USES), ("Notes/B.md", "# B\n")]);

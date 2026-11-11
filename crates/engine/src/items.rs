@@ -280,6 +280,17 @@ impl Wants {
         }
     }
 
+    /// The syntax a note is walked in: `flavour`'s, but when a type reads the note's tags, or a
+    /// block's own tags or links, tags and wikilinks count whatever the flavour, as they
+    /// always have.
+    fn gates(self, flavour: cst::Gates) -> cst::Gates {
+        let gates = flavour.set(Syntax::Tags, self.tags);
+        match self.own_links {
+            true => gates.set(Syntax::WikiLinks, true),
+            false => gates,
+        }
+    }
+
     /// Table rows are read for row types, and for the inline types in them.
     fn collect_rows(self) -> bool {
         self.rows || self.inline
@@ -336,8 +347,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let source = s.flavour.source_with(text, |text| code_in(text, gates));
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
-    // When a type reads the note's tags, they count whatever the flavour, as they always have.
-    let (blocks, defs) = cst::blocks(lines.src, gates.set(Syntax::Tags, wants.tags));
+    let (blocks, defs) = cst::blocks(lines.src, wants.gates(gates));
     let mut walk = Walk::new(&lines, &s.flavour, wants, &defs);
     blocks.read(&defs, &mut |step| walk.step(step));
     let Walk {
@@ -564,7 +574,10 @@ impl<'a> Walk<'a> {
             }
             Kind::CalloutTitle => self.begin(self.marker.start, None, false),
             Kind::CodeSpan | Kind::InlineMath => self.code_at = at,
-            Kind::WikiLink if self.wants.links => self.wiki = Some(String::new()),
+            // The note's own links are the flavour's.
+            Kind::WikiLink if self.wants.links && self.flavour.has(Syntax::WikiLinks) => {
+                self.wiki = Some(String::new())
+            }
             Kind::Link => self.link = true,
             Kind::Image => self.image = true,
             _ => {}

@@ -69,8 +69,7 @@ change commands, keys and file formats; patch versions only fix things.
   indented four spaces inside a paragraph). These stay links, for a rename and for backlinks:
   a Markdown link whose text goes on to the next line, an image inside a link's text
   (`[![alt](pic.png)](Note.md)`) and a wikilink on a line that looks like a definition
-  (`[Source]: [[Book]]`). In a flavour without wikilinks, a task's `links` no longer lists
-  `[[…]]`.
+  (`[Source]: [[Book]]`).
 
 ### Fixed
 
