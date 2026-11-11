@@ -104,6 +104,11 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- A Markdown link whose destination is followed by something that is no title
+  (`[a](B.md and more)`) named the note `B` in a type's `links` and nothing in backlinks. It
+  names no note in either now: the items ask the tree where a link's destination is, as the
+  index does (#212). pulldown-cmark is no longer a dependency of the engine, only of its
+  tests.
 - What an extension asks for while the whiteboard asks it about a shape it ships is done now:
   its notification shows in the whiteboard's status line, its status word changes, and a note
   it opens opens (part of #173). The whiteboard used to discard all of it. `cold-lava board`,
