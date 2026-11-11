@@ -769,6 +769,91 @@ mod tests {
         }
     }
 
+    /// #206: the pipe before an alias is written `\|` in a table cell, where a bare `|` would
+    /// end the cell. Obsidian writes an aliased link in a table so.
+    #[test]
+    fn relink_rewrites_a_wikilink_with_an_escaped_pipe_in_a_table() {
+        let text = "| note | seen |\n| --- | --- |\n| [[B\\|bee]] | ![[B#H\\|part]] |\n";
+        assert_eq!(links_and_tags(text).0, ["B", "B"]);
+        let (new, _, links) = relink(text, b_to_c);
+        assert_eq!(new, text.replace('B', "C"));
+        assert_eq!(links, 2);
+    }
+
+    /// Outside a table `\|` is not an escaped pipe: the backslash is the target's.
+    #[test]
+    fn an_escaped_pipe_outside_a_table_stays_in_the_target() {
+        let text = "See [[B\\|bee]].\n";
+        assert_eq!(links_and_tags(text).0, ["B\\"]);
+        let (new, _, links) = relink(text, b_to_c);
+        assert_eq!((new.as_str(), links), (text, 0));
+    }
+
+    /// #206: a title in each of CommonMark's three spellings, one with parentheses in it.
+    #[test]
+    fn relink_rewrites_a_link_with_a_title() {
+        let text = "[a](B.md \"title\") [b](B.md 'title') [c](B.md (title)) [d](B.md#H \"a (b) c\") ![e](b.png \"pic\")\n";
+        assert_eq!(links_and_tags(text).0, ["B", "B", "B", "B"]);
+        let (new, _, links) = relink(text, b_to_c);
+        assert_eq!(new, text.replace('B', "C").replace("b.png", "c.png"));
+        assert_eq!(links, 5);
+    }
+
+    /// #206: a destination in `<>`, which may hold spaces and parentheses.
+    #[test]
+    fn relink_rewrites_a_destination_in_angle_brackets() {
+        let text = "[a](<B.md>) [b](<B.md#H> \"title\") ![c](<b.png>) [d](<My Note.md>) [e](<Notes (old)/My Note.md>)\n";
+        assert_eq!(
+            links_and_tags(text).0,
+            ["B", "B", "My Note", "Notes (old)/My Note"]
+        );
+        let moved = |raw: &str, md: bool| match raw {
+            "My Note.md" => Some("Your%20Note.md".to_string()),
+            "Notes (old)/My Note.md" => Some("Notes%20(old)/Your%20Note.md".to_string()),
+            _ => b_to_c(raw, md),
+        };
+        let (new, _, links) = relink(text, moved);
+        assert_eq!(
+            new,
+            "[a](<C.md>) [b](<C.md#H> \"title\") ![c](<c.png>) [d](<Your%20Note.md>) [e](<Notes%20(old)/Your%20Note.md>)\n"
+        );
+        assert_eq!(links, 5);
+    }
+
+    /// A percent-encoded destination is read as the file it names, and a rename sees it as
+    /// written.
+    #[test]
+    fn relink_rewrites_a_percent_encoded_destination() {
+        let text = "[a](My%20Note.md#A%20Heading) ![p](b%20map.png)\n";
+        assert_eq!(links_and_tags(text).0, ["My Note"]);
+        let moved = |raw: &str, _: bool| match raw {
+            "My%20Note.md" => Some("Your%20Note.md".to_string()),
+            "b%20map.png" => Some("c%20map.png".to_string()),
+            _ => None,
+        };
+        let (new, _, links) = relink(text, moved);
+        assert_eq!(new, "[a](Your%20Note.md#A%20Heading) ![p](c%20map.png)\n");
+        assert_eq!(links, 2);
+    }
+
+    /// A destination may hold balanced parentheses, as a file named `Note (2024).md` does when
+    /// its link is percent-encoded.
+    #[test]
+    fn relink_rewrites_a_destination_with_parentheses() {
+        let text = "[a](Notes%20(old)/B.md) and [w](https://en.wikipedia.org/wiki/B_(letter)).\n";
+        assert_eq!(links_and_tags(text).0, ["Notes (old)/B"]);
+        let moved = |raw: &str, _: bool| match raw {
+            "Notes%20(old)/B.md" => Some("Notes%20(old)/C.md".to_string()),
+            _ => None,
+        };
+        let (new, _, links) = relink(text, moved);
+        assert_eq!(
+            new,
+            "[a](Notes%20(old)/C.md) and [w](https://en.wikipedia.org/wiki/B_(letter)).\n"
+        );
+        assert_eq!(links, 1);
+    }
+
     fn sorted(mut targets: Vec<String>) -> Vec<String> {
         targets.sort();
         targets
