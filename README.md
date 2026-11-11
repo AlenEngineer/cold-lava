@@ -947,7 +947,10 @@ How it fits together: [docs/engine.md](docs/engine.md) (the engine, its layers a
 frontends) and [docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
 
 The engine (`crates/engine`, no user interface), the terminal UI (`crates/cold-lava`), the
-frontend framework (`crates/views`, filled as its parts are extracted) and a small headless text
+extension host every frontend shares (`crates/host`, no user interface: manifests, permissions,
+extensions in their own process), the
+frontend framework (`crates/views`, filled as its parts are extracted: today the view
+vocabulary extensions send) and a small headless text
 editor both frontends render (`crates/editor`) and the headless canvas engine shapes are drawn from
 (`crates/canvas`) are crates in one Cargo workspace. A graphical window on Tauri lives in `crates/gui`, outside the workspace so normal
 builds never compile a webview: `cargo run --manifest-path crates/gui/Cargo.toml` (on Linux it

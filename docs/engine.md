@@ -98,7 +98,7 @@ the agenda and to any extension, and a card's `[[Lava]]` shows in `Lava`'s backl
 ## Two gateways
 
 **The workspace gateway** *(the item messages are built: `gateway.rs` in the engine, `Host` in
-`ext/mod.rs`, over the stdio transport too, and so are `workspace/read`, `write`, `create` and
+`cold-lava-host`, over the stdio transport too, and so are `workspace/read`, `write`, `create` and
 `files`)* is the engine's
 protocol: files, items, types, queries, edits and events. It knows nothing about screens. An
 extension that only aggregates and ticks tasks, a script, or a language server needs nothing
@@ -113,8 +113,8 @@ frontend draws the same view its own way, and drawing, keys and frame rate stay 
 frontend. Neovim's UI protocol works this way, and so, at the extreme, does HTML.
 
 *(Built for lists and tables: an extension sends `view/open` with one and hears `view/event`
-when you press Enter, tick a row, use a key it bound or edit a cell; `crates/cold-lava/src/ext/view.rs`
-and `views.rs`, ["The view gateway, as built"](extensions.md#the-view-gateway-as-built). The
+when you press Enter, tick a row, use a key it bound or edit a cell; `crates/views/src/view.rs`
+and the terminal's `views.rs`, ["The view gateway, as built"](extensions.md#the-view-gateway-as-built). The
 agenda and the table are built-in extensions on it, the same path an extension in Python
 takes.)*
 
@@ -123,8 +123,8 @@ The vocabulary stays small, and grows only when a real extension needs a new wor
 | View | For | Status |
 | --- | --- | --- |
 | **markdown** | text with the reader's styling | built (the reader) |
-| **list / tree** | the agenda, a todo aggregator, outlines | built (`crates/cold-lava/src/list.rs`; over `view/open`; the agenda, `A`, `agenda.open`, is an extension) |
-| **table** | a type's items as rows: books, people, projects | built (`crates/cold-lava/src/table.rs`; over `view/open`; the menu's table, `i`, `table.open`, is a built-in extension on it) |
+| **list / tree** | the agenda, a todo aggregator, outlines | built (`crates/views/src/list.rs`, drawn by `crates/cold-lava/src/list.rs`; over `view/open`; the agenda, `A`, `agenda.open`, is an extension) |
+| **table** | a type's items as rows: books, people, projects | built (`crates/views/src/table.rs`, drawn by `crates/cold-lava/src/table.rs`; over `view/open`; the menu's table, `i`, `table.open`, is a built-in extension on it) |
 | **scene** | nodes and edges: the graph, the whiteboard, mind maps | designed |
 | **pane** | the escape hatch: any terminal program (a GUI's could be a web view) | built |
 | **image** | pictures, with Kitty pixels where the terminal has them | to design |
@@ -165,18 +165,40 @@ The engine has no user interface. It is its own library crate, `cold-lava-engine
 items, tasks and daily notes), and it doesn't depend on ratatui, crossterm or the embedded
 terminal, so the compiler keeps UI code out of it. The terminal UI is the `cold-lava` binary in
 `crates/cold-lava`, which reads `config.toml` and hands the engine what it needs from it (the
-chosen Markdown flavour). Frontends sit beside the engine:
+chosen Markdown flavour). Frontends sit above the engine, and reach extensions through one
+host:
 
 ```
- cold-lava-engine   workspace · flavours · blocks · types · items · safe writes · events
-     ▲         ▲           ▲
-     │         │           └─ an extension host: the protocol, transports, the registry
-     │         └─ cold-lava lsp: links, backlinks, completion and renames in any editor
-     ├─ cold-lava (the terminal UI, the main frontend)
-     └─ cold-lava-gui (a Tauri window, crates/gui)      both draw from cold-lava-views,
-                                                        and render cold-lava-editor and
-                                                        cold-lava-canvas (both headless)
+ cold-lava (the terminal UI, the main frontend)      cold-lava-gui      cold-lava lsp
+     │                                                (crates/gui)       (planned, #195)
+     │   each frontend: its built-in extensions, applying Effects, keys, drawing
+     ▼
+ cold-lava-host    manifests · permissions · Host (the gateway's guard) · Extension
+     │             · Effects as data · the registry · processes, transports, JSON-RPC
+     ▼
+ cold-lava-views   the view vocabulary as data: list · table · image · scene, and the
+     │             view gateway's messages
+     ▼
+ cold-lava-engine  workspace · flavours · blocks · types · items · safe writes · events
 ```
+
+The arrows are the only direction a crate may depend in: frontends, then the host, then the
+views, then the engine. The engine never depends on the host, and neither the host nor the
+views depends on ratatui, crossterm, portable-pty or vt100 (`crates/host/tests/headless.rs`
+walks `Cargo.lock` to check it). Frontends also render `cold-lava-editor` and
+`cold-lava-canvas`, both headless.
+
+**The extension host** *(built: `crates/host`, #179)* is what runs extensions and guards the
+workspace gateway, once, for every frontend. An extension asks for notes as data through
+`Host`, which checks its manifest's permissions (`items.read`, `items.edit`, `files.read`,
+`files.write`) and puts its name on every edit. A security check written once can't drift
+between frontends. What a frontend adds is small: it builds a `Registry` from its built-in
+extensions and the installed ones, tells them the workspace, and once a frame hands them
+what the core has for them and applies the `Effect`s they return, or ignores those it has
+no screen for. `crates/host/examples/headless.rs` is that loop with no terminal, and
+`crates/host/tests/permissions.rs` checks the permissions on the `open-tasks` example the
+same way. The terminal UI keeps Neovim in a pane, its command table and keys, and drawing.
+The GUI depends only on the engine today; putting it on the host is the next step.
 
 A frontend asks the engine and draws; the engine never knows which frontend is asking. That's
 what lets a language server, a graphical app or a script use exactly the same understanding of
@@ -410,7 +432,7 @@ What was decided:
   keeps a reference to it; items nobody refers to are never written to.
 - **One door** (#179, #180, #193, #194). Every program is a client of one versioned protocol:
   the terminal app, a GUI, `cold-lava lsp`, the command line and extensions. The extension host
-  and its permission check are shared by all frontends, settings belong to each open workspace,
+  and its permission check are shared by all frontends *(built: `cold-lava-host`, #179)*, settings belong to each open workspace,
   and what the menu does to files goes through gateway messages.
 - **Built-in surfaces, extension data.** Extensions bring data, file formats, types and simple
   views. The page and the whiteboard are built in ("The frontend", above). The earlier goal
