@@ -626,6 +626,17 @@ mod tests {
         "key:: value with [[Link]]\n\nA [due:: 2026-01-01] and (done:: no) field.\n",
         // Wikilinks.
         "[[Note]] [[Note|alias]] [[Note#H]] [[Note#^b]] [[Folder/Note.md|x]] ![[E]] [[]] [[a]]b[[c]]\n",
+        // What the tree read otherwise until the reader drew from it: `$$` that nothing
+        // closes, escapes before what the line reader finds, a link in a link's text, a lazy
+        // line under a callout's title, an escaped pipe in a cell's code.
+        "$$ is slang for money\n\n- [ ] a task with [[Link]]\n\n# Heading\n",
+        "$$$\n\nPara\n",
+        "Text\n$$\nunclosed at the end\n",
+        "> $$\n> in a quote, never closed\n\nafter\n",
+        "\\[[Note]] and \\[text](Other.md) and \\`code\\` and \\$5 and $x$ and \\![[Pic.png]] and \\\\[[Real]]\n",
+        "[a [b](c.md) d](e.md) and [x [[W]] y](z.md) and [`[q](r.md)`](s.md)\n",
+        "> [!note] Title\nlazy line\n\n> [!NOTE]\nlazy under an alert\n\n> [!tip] T\n- not lazy\n",
+        "| a | b |\n|---|---|\n| `x \\| y` | $p \\| q$ |\n",
         // Probes.
         "Text[^1].\n\n[^1]: First paragraph.\n\n    Second paragraph, indented, with [[Link]].\n\n    - a list\n    - [ ] a task\n\n    ```\n    code\n    ```\n\nAfter.\n[^2]: Under a paragraph.\n[^3]: And one more,\nlazily.\n\n> [^q]: quoted\n>\n>     more\n",
         "\\*not em\\* and \\_x\\_ and \\\\ and \\! and \\[not a link\\]\n",
@@ -733,28 +744,13 @@ mod tests {
         ),
         (
             "obsidian",
-            "> [!note] Title\nlazy line\n",
-            "A line right under a callout's title, without its `>`, was the callout's. The tree ends the callout there, and the items with it.",
-        ),
-        (
-            "obsidian",
-            "[a [b](c.md) d](e.md)\n",
-            "A link whose text holds another link: CommonMark reads the inner one. The tree reads the outer, which is the one backlinks count.",
-        ),
-        (
-            "obsidian",
-            "\\[[Note]] and \\[text](Other.md) and \\`code\\`\n",
-            "An escape doesn't stop a wikilink, a link or a code span for the tree, so the index counts these links. Obsidian shows them as text.",
-        ),
-        (
-            "obsidian",
-            "\\$5 and $x$\n",
-            "An escaped `\\$` still opens math for the tree, as for the items.",
-        ),
-        (
-            "obsidian",
             "| a | b |\n|---|---|\n| c | d \\\\| e |\n",
             "`\\\\|` in a table cell: an escaped backslash, then a pipe that ends the cell. pulldown-cmark read a pipe in the cell.",
+        ),
+        (
+            "obsidian",
+            "$$\nx\n\ny\n$$\n",
+            "`$$` math over a blank line was two paragraphs of text. It is one block of math for the tree and the items, as in Obsidian.",
         ),
     ];
 
@@ -771,11 +767,6 @@ mod tests {
             "obsidian",
             "[c]:\n  d.md\n\ntext [c]\n",
             "A link definition whose destination is on the line under it is text, and `[c]` is no link.",
-        ),
-        (
-            "obsidian",
-            "$$\nmath nothing closes\n\nthe next paragraph\n",
-            "`$$` that nothing closes is math to the end of its container, not text.",
         ),
     ];
 

@@ -355,6 +355,7 @@ pub fn parse_marked(text: &str, flavour: &Flavour, marks: &[Range<usize>]) -> Do
         list: 0,
         lists: 0,
         in_link: false,
+        cell: false,
         checkbox: None,
     };
     Doc {
@@ -555,6 +556,8 @@ struct Reader<'a> {
     lists: usize,
     /// Inside a link's text, where the tree counts no brackets.
     in_link: bool,
+    /// Inside a table's cell.
+    cell: bool,
     /// A list item's checkbox that is no task's to the reader (`[/]`), shown as it is written
     /// before the item's text.
     checkbox: Option<usize>,
@@ -1025,7 +1028,9 @@ impl<'a> Reader<'a> {
                     let mut read = Vec::new();
                     self.start_list();
                     self.open.clear();
+                    self.cell = true;
                     self.pieces(&mut read);
+                    self.cell = false;
                     cells.push(self.finish(read, true));
                     (started, filled) = (true, true);
                 }
@@ -1065,10 +1070,7 @@ impl<'a> Reader<'a> {
             | Kind::RBracket
             | Kind::LParen
             | Kind::RParen => out.push(written(self.src, range)),
-            Kind::Escape => {
-                self.brackets(&text[1..], None);
-                out.push((Inline::Text(text[1..].to_string()), range, Piece::Atom));
-            }
+            Kind::Escape => out.push((Inline::Text(text[1..].to_string()), range, Piece::Atom)),
             Kind::Entity => match character(text) {
                 Some(shown) => out.push((Inline::Text(shown), range, Piece::Atom)),
                 None => out.push(written(self.src, range)),
@@ -1121,14 +1123,20 @@ impl<'a> Reader<'a> {
             }
             Kind::CodeSpan => {
                 let code = self.code_span();
-                out.push((Inline::Code(code), range, Piece::Atom));
+                out.push((Inline::Code(self.in_cell(code)), range, Piece::Atom));
             }
             Kind::InlineMath => {
                 let math = self.only(Kind::MathText);
-                out.push((Inline::Math(math), range, Piece::Atom));
+                out.push((Inline::Math(self.in_cell(math)), range, Piece::Atom));
             }
-            Kind::WikiLink | Kind::Embed => self.wikilink(kind, range, out),
-            Kind::Link | Kind::Image => self.link(kind, range, out),
+            Kind::WikiLink | Kind::Embed => {
+                self.ends_brackets(kind);
+                self.wikilink(kind, range, out)
+            }
+            Kind::Link | Kind::Image => {
+                self.ends_brackets(kind);
+                self.link(kind, range, out)
+            }
             Kind::LinkEnd => self.link_end(range, out),
             // A Dataview field is shown as written, its value read; the tree counts the
             // brackets in it apart.
@@ -1160,6 +1168,23 @@ impl<'a> Reader<'a> {
             }
             // A node the reader has nothing of its own for: what it holds.
             _ => self.pieces(out),
+        }
+    }
+
+    /// Code or math as a table's cell shows it: the pipe a cell escapes, so that it doesn't
+    /// end the cell, is a pipe.
+    fn in_cell(&self, text: String) -> String {
+        match self.cell && text.contains("\\|") {
+            true => text.replace("\\|", "|"),
+            false => text,
+        }
+    }
+
+    /// A link ends the brackets open before it, as the tree has it: none of them is a
+    /// link's any more.
+    fn ends_brackets(&mut self, kind: Kind) {
+        if !self.in_link && matches!(kind, Kind::Link | Kind::WikiLink) {
+            self.open.clear();
         }
     }
 
@@ -2008,6 +2033,71 @@ mod tests {
             marked("a &amp; b", std::slice::from_ref(&(2..7))).1,
             [false]
         );
+    }
+
+    #[test]
+    fn an_escaped_pipe_in_a_cells_code_or_math_is_a_pipe() {
+        let table = "| a | b |\n|---|---|\n| `x \\| y` | $p \\| q$ |\n\n`x \\| y`\n";
+        let [K::Table { rows, .. }, K::Paragraph(outside)] = kinds(obsidian(table))
+            .try_into()
+            .unwrap_or_else(|k| panic!("{k:?}"))
+        else {
+            panic!()
+        };
+        assert_eq!(
+            rows,
+            [vec![
+                vec![I::Code("x | y".into())],
+                vec![I::Math("p | q".into())]
+            ]]
+        );
+        assert_eq!(outside, [I::Code("x \\| y".into())]);
+    }
+
+    #[test]
+    fn what_the_tree_reads_is_what_the_reader_shows() {
+        // An escape stops a wikilink, a link, code and math.
+        assert_eq!(
+            para(obsidian(
+                "\\[[Note]] \\[text](url.md) \\`code\\` \\$5 and $x$ end"
+            )),
+            [
+                t("[[Note]] [text](url.md) `code` $5 and "),
+                I::Math("x".into()),
+                t(" end")
+            ]
+        );
+        // A link's text holds no link: the inner one is the link.
+        assert_eq!(
+            para(github("[a [b](c.md) d](e.md)")),
+            [
+                t("[a "),
+                I::Link {
+                    target: "c.md".into(),
+                    kind: LinkKind::Markdown,
+                    text: vec![t("b")]
+                },
+                t(" d](e.md)"),
+            ]
+        );
+        // `$$` that nothing closes is text, and what follows it reads as it would.
+        assert_eq!(
+            kinds(obsidian("$$ is slang for money\n\n# Heading\n")),
+            [
+                K::Paragraph(vec![t("$$ is slang for money")]),
+                K::Heading {
+                    level: 1,
+                    inlines: vec![t("Heading")]
+                },
+            ]
+        );
+        // A lazy line under a callout's title is the callout's.
+        let [K::Callout { title, blocks, .. }] = one(obsidian("> [!note] Title\nlazy line\n"))
+        else {
+            panic!()
+        };
+        assert_eq!(title, [t("Title")]);
+        assert_eq!(blocks[0].kind, K::Paragraph(vec![t("lazy line")]));
     }
 
     #[test]
