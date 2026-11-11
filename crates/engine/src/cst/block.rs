@@ -634,7 +634,7 @@ impl<'t> Parser<'t> {
             || html_start(&self.text[fp..le], true).is_some()
             || self.math_start(fp, le)
             || self.comment_start(fp, le)
-            || self.footnote(fp, le).is_some()
+            || (t[fp] == b'[' && self.footnote(fp, le).is_some())
     }
 
     /// A footnote's definition, `[^label]:`, starting at `fp`, in a flavour that has
@@ -754,7 +754,9 @@ impl<'t> Parser<'t> {
                         }
                     }
                 }
-                if let Some(label) = self.footnote(fp, le) {
+                if t[fp] == b'['
+                    && let Some(label) = self.footnote(fp, le)
+                {
                     self.close_leaf();
                     // A footnote that starts right inside another ends it.
                     if matches!(self.stack.last(), Some(Open::Footnote)) {
