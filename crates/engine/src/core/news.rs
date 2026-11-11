@@ -560,7 +560,10 @@ fn a_reset_left_in_the_queue_covers_the_next_change() {
     assert_eq!(batch.names("agenda"), ["items/reset"]);
     assert_eq!(h.count("agenda", "Sweep the roof"), 1);
 
-    h.write("Chores.md", "- [ ] Sweep the roof\n- [ ] Clear the gutters\n");
+    h.write(
+        "Chores.md",
+        "- [ ] Sweep the roof\n- [ ] Clear the gutters\n",
+    );
     h.saw("Chores.md");
     assert_eq!(h.deliver().counts("agenda"), [(1, 0, 0)]);
     assert_eq!(h.count("agenda", "Clear the gutters"), 1);
