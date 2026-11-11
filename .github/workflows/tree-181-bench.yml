@@ -64,7 +64,39 @@ jobs:
             echo "== branch, round $round"
             cargo test --release -p cold-lava-engine items_cost -- --ignored --nocapture | grep -A5 'items_cost:'
           done
-      - name: One keystroke in a 5,000-line note
+      - name: "Ablation builds: the old tag pattern, no LinkLabel arm"
         run: |
-          (cd ../main && cargo test --release -p cold-lava-engine keystroke -- --ignored --nocapture | grep 'keystroke:')
-          cargo test --release -p cold-lava-engine keystroke -- --ignored --nocapture | grep 'keystroke:'
+          exe() { cargo test --release -p cold-lava-engine --no-run 2>&1 | grep -o 'target/release/deps/cold_lava_engine-[0-9a-f]*' | head -1; }
+          (cd ../main && cp "$(exe)" "$HOME/t-main")
+          cp "$(exe)" "$HOME/t-branch"
+          sed -i 's/(\[\*_~=\]\*)#(/()#(/' crates/engine/src/markdown.rs
+          grep -n 'MARKED_TAG: ' crates/engine/src/markdown.rs
+          cp "$(exe)" "$HOME/t-oldtag"
+          git checkout crates/engine/src/markdown.rs
+          python3 - <<'PY'
+          import re
+          p = 'crates/engine/src/owner/markdown.rs'
+          s = open(p).read()
+          arm = re.search(r"        Step::Token\(Kind::LinkLabel, label, at\) => \{.*?\n        \}\n", s, re.S)
+          assert arm
+          open(p, 'w').write(s[:arm.start()] + s[arm.end():])
+          PY
+          cp "$(exe)" "$HOME/t-noarm"
+          git checkout crates/engine/src/owner/markdown.rs
+      - name: "Ablation: reading 3,000 notes, each build in turn"
+        run: |
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for round in 1 2 3 4 5; do
+            for b in main branch oldtag noarm; do
+              echo "== $b, round $round"
+              "$HOME/t-$b" read_cost --ignored --nocapture | grep -A5 'read_cost:'
+            done
+          done
+      - name: "One keystroke in a 5,000-line note, each build in turn"
+        run: |
+          for round in 1 2 3 4 5; do
+            for b in main branch; do
+              echo "== $b, round $round"
+              "$HOME/t-$b" keystroke --ignored --nocapture | grep 'keystroke:'
+            done
+          done
