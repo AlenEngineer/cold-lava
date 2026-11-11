@@ -3706,7 +3706,7 @@ mod tests {
 
         // Our edit, while someone else is halfway through writing the file.
         let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);
-        b.doc = parse(ours.as_bytes(), &path).unwrap();
+        b.doc = parse(ours.as_bytes(), &path).unwrap().0;
         std::fs::write(&path, "{\"nodes\": [").unwrap();
         b.save();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"nodes\": [");
@@ -4224,7 +4224,7 @@ mod tests {
     fn canvas_round_trip_preserves_unknown_fields_and_integers() {
         let src = r##"{"nodes":[{"id":"a","type":"text","text":"x","x":10.4,"y":-20,"width":250,"height":60,"color":"#ff0000","futureField":{"k":[1,2]}}],
                       "edges":[{"id":"e","fromNode":"a","toNode":"a","toEnd":"none","styleAttributes":{}}],"meta":"keep"}"##;
-        let doc = parse(src.as_bytes(), Path::new("t.canvas")).unwrap();
+        let (doc, _) = parse(src.as_bytes(), Path::new("t.canvas")).unwrap();
         let out = serde_json::to_value(&doc).unwrap();
         assert_eq!(out["nodes"][0]["x"], 10); // coordinates are written as integers
         assert_eq!(out["nodes"][0]["futureField"]["k"][1], 2);
@@ -4265,7 +4265,7 @@ mod tests {
 
     #[test]
     fn empty_file_is_an_empty_board() {
-        let d = parse(b"  \n", Path::new("t.canvas")).unwrap();
+        let (d, _) = parse(b"  \n", Path::new("t.canvas")).unwrap();
         assert!(d.nodes.is_empty() && d.edges.is_empty());
         assert!(parse(b"{not json", Path::new("t.canvas")).is_err());
     }
