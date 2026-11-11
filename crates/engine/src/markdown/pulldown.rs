@@ -627,6 +627,7 @@ mod tests {
         // Wikilinks.
         "[[Note]] [[Note|alias]] [[Note#H]] [[Note#^b]] [[Folder/Note.md|x]] ![[E]] [[]] [[a]]b[[c]]\n",
         // Probes.
+        "Text[^1].\n\n[^1]: First paragraph.\n\n    Second paragraph, indented, with [[Link]].\n\n    - a list\n    - [ ] a task\n\n    ```\n    code\n    ```\n\nAfter.\n[^2]: Under a paragraph.\n[^3]: And one more,\nlazily.\n\n> [^q]: quoted\n>\n>     more\n",
         "\\*not em\\* and \\_x\\_ and \\\\ and \\! and \\[not a link\\]\n",
         "a#no and (#yes) and ,#too and #end\n",
         "a**#b** and ==a **b== c** and **a ==b** c==\n",
@@ -761,11 +762,6 @@ mod tests {
     /// so and the index with it. Reading these as Obsidian does changes the blocks and the
     /// links the index counts, which is a change of its own to decide.
     const LESS: &[(&str, &str, &str)] = &[
-        (
-            "obsidian",
-            "Text[^1].\n\n[^1]: First paragraph.\n\n    Second paragraph, indented.\n",
-            "A footnote's text that goes on, indented, after a blank line is indented code, not the footnote's second paragraph.",
-        ),
         (
             "obsidian",
             "[a]: b.md\n  \"title on the next line\"\n\ntext [a]\n",

@@ -355,8 +355,6 @@ pub fn parse_marked(text: &str, flavour: &Flavour, marks: &[Range<usize>]) -> Do
         list: 0,
         lists: 0,
         in_link: false,
-        top: 0,
-        notes: Vec::new(),
         checkbox: None,
     };
     Doc {
@@ -371,9 +369,11 @@ fn footnotes(steps: &[Step]) -> Vec<String> {
     let mut marker = false;
     for step in steps {
         match *step {
-            Step::Enter(Kind::FootnoteMarker, _) => marker = true,
-            Step::Leave(Kind::FootnoteMarker, _) => marker = false,
-            Step::Token(Kind::FootnoteLabel, label, _) if marker => found.push(fold(label)),
+            Step::Enter(Kind::FootnoteDefinition, _) => marker = true,
+            Step::Token(Kind::FootnoteLabel, label, _) if marker => {
+                found.push(fold(label));
+                marker = false;
+            }
             _ => {}
         }
     }
@@ -555,10 +555,6 @@ struct Reader<'a> {
     lists: usize,
     /// Inside a link's text, where the tree counts no brackets.
     in_link: bool,
-    /// The list of the paragraph being read, where a footnote may start, and where its
-    /// footnotes do: the inline each starts before, its label, and its `[^label]:`.
-    top: usize,
-    notes: Vec<(usize, String, Range<usize>)>,
     /// A list item's checkbox that is no task's to the reader (`[/]`), shown as it is written
     /// before the item's text.
     checkbox: Option<usize>,
@@ -650,6 +646,7 @@ impl<'a> Reader<'a> {
             }
             Kind::BlockQuote => BlockKind::Quote(self.blocks()),
             Kind::Callout => self.callout(),
+            Kind::FootnoteDefinition => self.footnote(),
             Kind::List => self.list(),
             Kind::FencedCode => self.fenced(),
             Kind::IndentedCode => BlockKind::Code {
@@ -672,13 +669,10 @@ impl<'a> Reader<'a> {
 
     /// The paragraph or the `$$` math just entered at `at`, with the paragraphs and the math
     /// that start on the lines right under it: no blank line parts them, so they are one
-    /// paragraph on screen, as they always were. A footnote's `[^label]:` on one of its lines
-    /// ends the paragraph there and starts the footnote.
+    /// paragraph on screen, as they always were.
     fn paragraph(&mut self, kind: Kind, at: usize, out: &mut Vec<Block>) {
         let mut read = Vec::new();
         self.start_list();
-        self.top = self.list;
-        self.notes.clear();
         if let Some(checkbox) = self.checkbox.take() {
             let rest = &self.src[at..];
             let text = at + rest.len() - rest.trim_start_matches([' ', '\t']).len();
@@ -686,28 +680,8 @@ impl<'a> Reader<'a> {
         }
         self.leaf(kind, at, &mut read);
         self.joined(&mut read);
-        self.top = 0;
-        let mut parts = Vec::new();
-        for (k, label, marker) in std::mem::take(&mut self.notes).into_iter().rev() {
-            parts.push((Some((label, marker)), read.split_off(k)));
-        }
-        parts.push((None, read));
-        for (note, read) in parts.into_iter().rev() {
-            // A footnote's text starts on the first of its lines that holds any.
-            let text = read.iter().find(|r| !is_break(r)).map(|r| r.1.start);
-            let inlines = self.finish(read, true);
-            match note {
-                None => out.extend(self.shown(inlines, at)),
-                Some((label, marker)) => out.push(Block {
-                    line: self.line(marker.start),
-                    kind: BlockKind::FootnoteDef {
-                        label,
-                        blocks: (self.shown(inlines, text.unwrap_or(marker.end)).into_iter())
-                            .collect(),
-                    },
-                }),
-            }
-        }
+        let inlines = self.finish(read, true);
+        out.extend(self.shown(inlines, at));
     }
 
     /// The text of the paragraph or the `$$` math just entered at `at`, onto `read`.
@@ -787,6 +761,21 @@ impl<'a> Reader<'a> {
             line: self.line(start),
             kind,
         })
+    }
+
+    /// The footnote's definition just entered: its label, then its blocks.
+    fn footnote(&mut self) -> BlockKind {
+        let mut label = String::new();
+        while let Some(&Step::Token(kind, text, _)) = self.steps.get(self.at) {
+            self.at += 1;
+            if kind == Kind::FootnoteLabel {
+                label = text.strip_prefix('^').unwrap_or(text).trim().to_string();
+            }
+        }
+        BlockKind::FootnoteDef {
+            label,
+            blocks: self.blocks(),
+        }
     }
 
     /// The inlines of the heading just entered; its level is `self.level`.
@@ -1157,14 +1146,6 @@ impl<'a> Reader<'a> {
                     false => out.push(written(self.src, range)),
                 }
             }
-            Kind::FootnoteMarker => {
-                let label = self.only(Kind::FootnoteLabel);
-                let name = label.strip_prefix('^').unwrap_or(&label).trim();
-                match self.list == self.top {
-                    true => self.notes.push((out.len(), name.to_string(), range)),
-                    false => out.push(written(self.src, range)),
-                }
-            }
             Kind::Autolink => {
                 let url = self.only(Kind::Url);
                 self.brackets(&url, None);
@@ -1354,13 +1335,10 @@ impl<'a> Reader<'a> {
             true => None,
             false => self.open.pop(),
         };
-        // Its `[` is among the inlines being read, shown as written, with no footnote
-        // starting after it.
+        // Its `[` is among the inlines being read, shown as written.
         let found = match (target, opener) {
             (Some(target), Some((list, Some(piece), k)))
-                if list == self.list
-                    && piece < out.len()
-                    && self.notes.iter().all(|n| n.0 <= piece) =>
+                if list == self.list && piece < out.len() =>
             {
                 Some((target, piece, k))
             }
