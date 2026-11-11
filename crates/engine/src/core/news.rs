@@ -175,12 +175,7 @@ impl Harness {
         core._watcher = None;
         core.fs_events = Some(fs_events);
         let channel = core.subscribe();
-        let kind = OwnedKind {
-            extension: "lines".into(),
-            owner: OWNER.into(),
-            version: "1".into(),
-        };
-        core.set_owners(vec![kind], None);
+        core.set_owners(vec![lines_kind()], None);
         let mut harness = Harness {
             core,
             dir,
@@ -256,6 +251,11 @@ impl Harness {
 
     pub(crate) fn rescan(&mut self) {
         self.call(Core::rescan_now);
+    }
+
+    /// The menu tells the core who owns which kind of file again, as when extensions restart.
+    pub(crate) fn set_owners(&mut self) {
+        self.call(|core| core.set_owners(vec![lines_kind()], None));
     }
 
     /// A rename as the menu makes it: planned, applied, then everything read again.
@@ -377,6 +377,14 @@ fn temp(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
     dir
+}
+
+fn lines_kind() -> OwnedKind {
+    OwnedKind {
+        extension: "lines".into(),
+        owner: OWNER.into(),
+        version: "1".into(),
+    }
 }
 
 fn all(core: &Core, select: &Select) -> Vec<Item> {
@@ -534,6 +542,26 @@ fn a_reset_left_in_the_queue_shares_a_batch_with_the_next_change() {
     let both = h.deliver_unchecked();
     assert_eq!(both.names("agenda"), ["items/reset", "items/changed"]);
     assert_eq!(h.count("agenda", "Sweep the roof"), 2, "counted twice");
+}
+
+/// #199. `set_owners` queues a reset when the owned files changed (here the `.lines` file is
+/// dropped until its owner reads it again), and its events wait for the next `poll`, which
+/// also reads the new note.
+#[test]
+fn a_reset_from_set_owners_and_the_next_change_are_counted_once() {
+    let mut h = workspace("owners");
+    h.follow("agenda", tasks());
+    h.set_owners();
+    h.write("Chores.md", "- [ ] Sweep the roof\n");
+    h.saw("Chores.md");
+    let batch = h.deliver();
+    assert_eq!(batch.names("agenda"), ["items/reset"]);
+    assert_eq!(h.count("agenda", "Sweep the roof"), 1);
+    assert_eq!(h.count("agenda", "Read the report"), 0, "not read yet");
+
+    h.owner_reads();
+    assert_eq!(h.deliver().counts("agenda"), [(1, 0, 0)]);
+    assert_eq!(h.count("agenda", "Read the report"), 1);
 }
 
 #[test]
