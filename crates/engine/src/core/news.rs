@@ -939,6 +939,11 @@ fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
     let ticket = h
         .relink(&mut plan.edits)
         .expect("the extension answers later");
+    let owned = plan.edits.iter().filter_map(|e| e.owned.as_ref());
+    let waits: Vec<&str> = (owned.filter(|o| o.after.is_none()))
+        .map(|o| o.owner.as_str())
+        .collect();
+    assert_eq!(waits, [OWNER], "the canvas's owner has answered");
     assert!(h.relinked().is_empty(), "not before it answered");
     assert_eq!(
         h.owner_edits(),

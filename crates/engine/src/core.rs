@@ -841,6 +841,10 @@ impl Core {
         }
         let answered = |(t, _): &(Ticket, _)| *t == ticket;
         let Some(at) = self.edits.relinked.iter().position(answered) else {
+            // The answers that are in go into `edits`, so they say whose are still to come.
+            let relink = self.edits.relinks.get(&ticket);
+            let so_far = relink.map(|r| r.answered()).unwrap_or_default();
+            crate::rename::answered(edits, so_far);
             return Ok(Some(ticket));
         };
         let (_, answers) = self.edits.relinked.remove(at);

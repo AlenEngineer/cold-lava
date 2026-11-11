@@ -144,7 +144,8 @@ impl RecipeView {
                 ..
             } => {
                 let owners: Vec<&str> = (plan.edits.iter())
-                    .filter_map(|e| Some(e.owned.as_ref()?.owner.as_str()))
+                    .filter_map(|e| e.owned.as_ref().filter(|o| o.after.is_none()))
+                    .map(|o| o.owner.as_str())
                     .collect();
                 format!(
                     " waiting for {} to update its files · Esc stop ",

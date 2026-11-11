@@ -76,8 +76,18 @@ pub(crate) struct Relink {
 
 impl Relink {
     pub fn done(&self) -> bool {
-        (self.edits.iter()).all(|e| e.owned.as_ref().is_some_and(|o| o.after.is_some()))
+        self.edits.iter().all(is_answered)
     }
+
+    /// The edits whose owners have answered so far.
+    pub fn answered(&self) -> Vec<crate::rename::FileEdit> {
+        let answered = self.edits.iter().filter(|e| is_answered(e));
+        answered.cloned().collect()
+    }
+}
+
+fn is_answered(e: &crate::rename::FileEdit) -> bool {
+    e.owned.as_ref().is_some_and(|o| o.after.is_some())
 }
 
 /// The edits waiting for owners, and what is to be sent and handed out.
