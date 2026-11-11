@@ -82,7 +82,7 @@ fn all(host: &mut Host<'_>, select: &Select) -> Result<Vec<Item>, gateway::Error
 pub struct Feed {
     ty: Type,
     sub: SubId,
-    /// By note and line, as `items/query` orders them.
+    /// As `items/query` answered last, in its order.
     items: Vec<Item>,
 }
 
@@ -101,7 +101,7 @@ impl Feed {
         self.sub
     }
 
-    /// By note and line.
+    /// In `items/query`'s order.
     pub fn items(&self) -> &[Item] {
         &self.items
     }
@@ -110,32 +110,13 @@ impl Feed {
         build(&self.ty, &self.items)
     }
 
-    /// Apply news of its subscription.
+    /// News of its subscription: the items are queried again, whichever news it is. Only the
+    /// query knows the order (`items/changed` doesn't say where an added item goes), so the
+    /// rows are the same after a change as after a reset.
     pub fn heard(&mut self, host: &mut Host<'_>, news: News) -> Result<(), gateway::Error> {
-        let (added, updated, removed) = match news {
-            News::Reset { .. } => {
-                self.items = all(host, &select(&self.ty.name))?;
-                return Ok(());
-            }
-            News::Changed {
-                added,
-                updated,
-                removed,
-                ..
-            } => (added, updated, removed),
-            News::LinksChanged { .. } => return Ok(()),
-        };
-        let mut updated: HashMap<String, Item> =
-            (updated.into_iter()).map(|i| (i.id.clone(), i)).collect();
-        self.items.retain(|i| !removed.contains(&i.id));
-        for item in &mut self.items {
-            if let Some(new) = updated.remove(&item.id) {
-                *item = new;
-            }
+        if !matches!(news, News::LinksChanged { .. }) {
+            self.items = all(host, &select(&self.ty.name))?;
         }
-        self.items.extend(added);
-        let note = |i: &Item| i.note.strip_suffix(".md").unwrap_or(&i.note).to_string();
-        self.items.sort_by_cached_key(|i| (note(i), i.line));
         Ok(())
     }
 
