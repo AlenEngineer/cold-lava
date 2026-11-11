@@ -282,7 +282,11 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   about their shapes it keeps for the menu to do (`Board::take_asked`). The board picker (`w`,
   `board::Picker`) is a layer too, `Home::picking`, over the menu or the graph. Neither it nor
   the shape editor may get a loop of its own: extensions are answered only in the menu's.
-  `cold-lava board` runs the board in a small loop of its own.
+  `cold-lava board` runs the board in a small loop of its own, where what needs the menu is
+  refused (`Board::asked_alone`). In memory a node's id is the canvas owner's place for it
+  (`parse`, `as_written`: `canvas::places`, `canvas::ids`), so cards that repeat an id stay
+  apart; never compare a node id with the file's without them. A notice that a request was
+  refused to keep unsaved work goes through `Board::refused`, not `flash`.
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
   cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
   `i` (`table.open`, a core command the menu hands to it) sends the types as a table to pick

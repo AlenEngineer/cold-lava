@@ -94,7 +94,20 @@ change commands, keys and file formats; patch versions only fix things.
 - What an extension asks for while the whiteboard asks it about a shape it ships is done now:
   its notification shows in the whiteboard's status line, its status word changes, and a note
   it opens opens (part of #173). The whiteboard used to discard all of it. `cold-lava board`,
-  which has no menu behind it, shows the notifications.
+  which has no menu behind it, shows the notifications and keeps the status words in its status
+  line; a note, a view or a command the extension asks for there is refused, and the status
+  line says so (#215).
+- The whiteboard's notice that an extension's request was refused (`open-tasks wanted to open
+  Lava.md: not while a card is being edited`) can't be missed any more (#215). While a card is
+  typed the editing hint has its line, so the notice now waits and shows for its 3 seconds when
+  the edit ends; it used to run out under the hint. Requests refused before the last notice was
+  read are counted in it (`(2 requests refused)`), and the menu no longer repeats a whiteboard
+  notice after the whiteboard is left. A command an extension asked for is also refused when a
+  card was begun between the request and its run.
+- A whiteboard opened from a task or a backlink on a card that repeats another card's id (a
+  file another program wrote) selects that card (#215). Nothing was selected before, and with
+  such a card selected by hand, an edit went to the first card of that id. The file keeps the
+  ids it had.
 - A tag right after the markers that open emphasis, a strikethrough or a highlight is a tag,
   as in Obsidian: `**#tag**`, `_#tag_`, `~~#tag~~` and `==#tag==` (#181). Backlinks' tag
   searches, the graph's tag groups, `rename-tag` and the types that read a note's tags see it.

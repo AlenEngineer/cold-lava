@@ -962,10 +962,10 @@ graph all see the new date. None of them knew what a canvas is.
   the tree, an edit saved, a change made outside with the drive step `write`, a link, the
   switcher bringing the filtered table back, a new table), and `ext/process.rs` checks the
   retry.
-- **Not yet:** the whiteboard as a view of the gateway: `.canvas` has the engine's owner for
-  its items and links ("The canvas owner, as built"), and the whiteboard is a mode of the
-  menu's loop, built in ("Scenes, as built"). Images have a view kind ("The image view, as
-  built").
+- **Not planned:** the whiteboard as a view of the gateway. It stays a built-in surface
+  *(decided 2026-11-11; docs/engine.md, "Direction and order")*: `.canvas` has the engine's
+  owner for its items and links ("The canvas owner, as built"), and the whiteboard is a mode of
+  the menu's loop ("Scenes, as built"). Images have a view kind ("The image view, as built").
 
 ### Owners and types, as built
 
@@ -1225,12 +1225,15 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   answer.
 - **Tidy** reads what every owned file's owner gave as written, so a card's image counts as
   used, as before, and a card's note isn't an orphan.
-- **No extension can claim `.canvas`** while the engine owns it: `Registry` leaves out a claim
-  on any kind in `owner::BUILT_IN` ("File types, as built"). Lifting that is a matter of taking
-  `canvas` out of the list, once the whiteboard is an extension that owns its file.
+- **No extension can claim `.canvas`:** the engine owns it, and `Registry` leaves out a claim
+  on any kind in `owner::BUILT_IN` ("File types, as built"). That stays so, since the
+  whiteboard stays built in.
 - **Opening.** A canvas's backlink row, and Enter on a canvas's task in the agenda or the
   table, open the whiteboard with the node at the owner's place for it selected (the sticky the
-  task is on, the card that links); Back returns to where you were.
+  task is on, the card that links); Back returns to where you were. The whiteboard names its
+  nodes by the owner's places (`canvas::places` as it reads the file, `canvas::ids` as it
+  writes it), so a card that repeats another's id is selected and edited as itself, and saved
+  under the id it had (`board-twin-card.drive`).
 - **The example workspace.** `Volcano Venn.canvas`'s sticky task (`Two per person, for the
   trip`) is in the agenda's Undated group and the task table, and its Krakatoa card is one of
   Krakatoa's backlinks, as are `Eruptions Timeline.canvas`'s cards of its notes. `Welcome.canvas`'s
@@ -2093,6 +2096,11 @@ dragging. The extension says what exists and what it means; the core does everyt
 at frame rate, so nothing crosses the connection per frame and a slow extension never makes
 zooming wait.
 
+This section was written for both. Only the graph became a scene: the whiteboard stays a
+built-in surface *(decided 2026-11-11; docs/engine.md, "Direction and order")*. What only it
+needed of the protocol below (cards, fixed layouts, `scene/pick`, `ui/input`) is kept as the
+design for an extension that needs it, and nothing is built of it.
+
 - **The core:** the camera, hit-testing, selection and moving it by arrow or along links,
   dragging and resizing, edges attached to card sides, label placement, dimming around the
   selection, the local-graph neighbourhood, search over labels, help and the status line, and
@@ -2115,8 +2123,8 @@ zooming wait.
   fixed layout the core moves dragged nodes itself, reports the drop once, and the extension's
   next update is authoritative.
 - **Colour groups** move with the graph extension, which reads `graph.json` through the core.
-  The **three-way merge** moves with the whiteboard extension, which reads with a revision and
-  writes with `workspace/write` expecting it, merging and retrying when refused.
+  The **three-way merge** stays in the built-in whiteboard (`board.rs::merge3`), which saves
+  through the engine's safe writes.
 
 ### Scenes, as built
 
@@ -2186,24 +2194,36 @@ zooming wait.
   edits a refused save left unsaved (`Board::unsaved_work`). The menu doesn't let it: opening a
   note or a file, showing a view and running a command are then not done, and the status line
   says so (`open-tasks wanted to open X: not while the shape editor has unsaved changes`). The
-  request is dropped, not kept for later. Status words, notifications and a view's content
-  still arrive, and the user's own keys leave as before (`q` in the editor warns once about
-  unsaved changes). `board-keeps-drafts.drive` checks both cases with an example patched to
-  open a note unasked. What an extension asks for inside the board's calls to it about its
-  shapes (`shape/region`, a gesture's steps: `ui/notify`, `ui/status`, opening a note) the
-  board keeps (`Board::take_asked`) and the menu does after each tick, key and mouse event, as
-  after any call to an extension, within the same allowance per frame. `cold-lava board FILE`
-  runs the same `Board` in a small loop of its own, where only the notifications show.
+  request is dropped, not kept for later. A command is checked when it runs, and a board
+  about to open when it opens, so work begun by a key since the request is kept too. The
+  notice is the board's (`Board::refused`): under a card's editing hint it waits, and its 3
+  seconds start when the edit ends; one that comes before the last was read says how many
+  there were (`(2 requests refused)`); and the menu doesn't repeat it once the board is left.
+  Status words, notifications and a view's content still arrive, and the user's own keys leave
+  as before (`q` in the editor warns once about unsaved changes). `board-keeps-drafts.drive`
+  checks the card and the editor with an example patched to open a note unasked,
+  `board-keeps-drafts-view.drive` and `board-keeps-drafts-command.drive` a view shown and a
+  command run, and `board-keeps-unsaved.drive` edits a refused save left. What an extension
+  asks for inside the board's calls to it about its shapes (`shape/region`, a gesture's steps:
+  `ui/notify`, `ui/status`, opening a note) the board keeps (`Board::take_asked`) and the menu
+  does after each tick, key and mouse event, as after any call to an extension, within the
+  same allowance per frame. `cold-lava board FILE` runs the same `Board` in a small loop of its
+  own, with no menu behind it (`Board::asked_alone`): notifications show, status words are
+  kept in its status line, and a note, a view or a command an extension asks for is refused
+  with a notice (`chatty wanted to open X: cold-lava board shows the whiteboard only`), since
+  the board opens nothing but itself there. With no file it starts in the board picker
+  (`board-alone.drive`).
 - **Not yet:** a scene's own keys (an extension's scene gets the graph's), fixed layouts,
-  `scene/update` deltas, cards, and a scene beside the tree. The whiteboard as a scene on the
-  gateway would need all of these, plus input on cards and picking a node to connect; until
-  then it stays in the core, which the paragraph below calls a fair outcome.
+  `scene/update` deltas, cards, and a scene beside the tree.
+- **Not planned:** the whiteboard as a scene on the gateway. It stays a built-in surface for
+  good *(decided 2026-11-11; docs/engine.md, "Direction and order")*: a surface that needs
+  every frame doesn't fit a protocol of lists, tables and scenes ("Built-in features become
+  extensions", below).
 
-The graph moves first: it's read-only, already draws through a backend-neutral `Frame`, and is
-where the performance risk is (a 5k-note workspace is about 1.3 MB of `view/open`, sent once). The
-whiteboard follows once the graph has carried the protocol; if input and picking make the scene
-protocol grow into a UI toolkit, keeping the whiteboard in the core is a fair outcome. Scenes
-start full screen; one beside the tree waits for a way to keep Kitty images under overlays.
+The graph moved first: it's read-only, already drew through a backend-neutral `Frame`, and is
+where the performance risk is (a 5k-note workspace is about 1.3 MB of `view/open`, sent once).
+The whiteboard doesn't follow it. Scenes start full screen; one beside the tree waits for a
+way to keep Kitty images under overlays.
 
 ## Built-in features become extensions
 
