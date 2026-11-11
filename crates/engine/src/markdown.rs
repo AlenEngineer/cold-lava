@@ -2038,20 +2038,18 @@ mod tests {
     #[test]
     fn an_escaped_pipe_in_a_cells_code_or_math_is_a_pipe() {
         let table = "| a | b |\n|---|---|\n| `x \\| y` | $p \\| q$ |\n\n`x \\| y`\n";
-        let [K::Table { rows, .. }, K::Paragraph(outside)] = kinds(obsidian(table))
-            .try_into()
-            .unwrap_or_else(|k| panic!("{k:?}"))
-        else {
-            panic!()
+        let found = kinds(obsidian(table));
+        let [K::Table { rows, .. }, K::Paragraph(outside)] = &found[..] else {
+            panic!("{found:?}")
         };
         assert_eq!(
             rows,
-            [vec![
+            &[vec![
                 vec![I::Code("x | y".into())],
                 vec![I::Math("p | q".into())]
             ]]
         );
-        assert_eq!(outside, [I::Code("x \\| y".into())]);
+        assert_eq!(outside, &[I::Code("x \\| y".into())]);
     }
 
     #[test]
