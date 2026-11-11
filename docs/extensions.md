@@ -187,7 +187,8 @@ then a query and a view, not a parser of its own.
   writing), `refused` (an unknown kind or field, a read-only source, a value that doesn't fit,
   a toggle on no task), `read-back` (the note wouldn't read back as asked; nothing was
   written), `io`, `forbidden` (the manifest doesn't ask for the permission), `no-workspace` and
-  `exists` (`workspace/create` at a path where a file is).
+  `exists` (`workspace/create`, `workspace/create-folder` or `workspace/restore` at a path
+  where something is).
 - **Edits are made during the call, not queued.** An extension's reads and edits both need an
   answer (the new `rev`, or why it was refused), and a later edit in the same call must see the
   first one, so the core edits and reads the note again before `edit_item` returns. An item of
@@ -217,7 +218,9 @@ then a query and a view, not a parser of its own.
   `rpc::serve` reads each as a `gateway::Request` and answers it through the same `Host`, so
   the permission gate is the same; news goes out as notifications ("Transport, as built").
 - **Files.** `workspace/read`, `workspace/write`, `workspace/create` and `workspace/files`
-  read and write whole files ("File types, as built" below).
+  read and write whole files ("File types, as built" below). `workspace/stat`,
+  `workspace/delete`, `workspace/restore` and `workspace/create-folder` are there too
+  ("Deleting, restoring and making folders").
 - **The link graph.** `links/query` (no params, `items.read`) answers every file links come
   from and where each link leads, whatever owns the file (`crates/engine/src/links.rs`, pinned
   there): `{"files": [{"path": "Volcanoes/Kīlauea.md", "name": "Kīlauea", "tags":
@@ -1055,7 +1058,7 @@ the same `{reason, message}`.
   at once (a note as the watcher would, a folder with a rescan), and the core emits what
   changed and then `Deleted {path, by}`, `Restored {path, by}` or `FolderCreated {path, by}`,
   with `by` the client's name, as `ItemEdited` does for edits. The menu's status line says
-  `<extension>: deleted <name>`. Item and link subscribers hear the removal and the return
+  `<extension>: deleted <path>`. Item and link subscribers hear the removal and the return
   once each, in that order (`core/news.rs`).
 - **No plan for a delete.** A plan is for a change the engine computes and the user reads
   before it happens: a rename's link edits. A delete computes nothing. What the menu shows
@@ -1907,7 +1910,8 @@ Built-in extensions already use, in-process (`crates/host/src/lib.rs`): `initial
 `view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
 `workspace/saved`, `workspace/open`, `pane/open`, `pane/input`, `items/query`,
 `items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/style`,
-`workspace/read`, `workspace/write`, `workspace/create`, `workspace/files`, `view/open`,
+`workspace/read`, `workspace/write`, `workspace/create`, `workspace/files`,
+`workspace/stat`, `workspace/delete`, `workspace/restore`, `workspace/create-folder`, `view/open`,
 `view/update`, `view/close` and `view/show` from the extension. The `items/*`, `types/list`,
 `workspace/style` and file requests are answered
 during the call, and `view/open` names its view at once; the rest are queued.
@@ -2000,7 +2004,7 @@ keys = ["W"]                     # default keys; config.toml can change them
   be named as the extension. `run` is what the sketch called `command`: a word apart from
   `[[commands]]`.
 - **Mistakes** are collected like config.toml's: an unknown field, a bad name, a name
-  cold-lava keeps (`nvim`, `table`, `agenda`, `reader`), a folder named otherwise, a second
+  cold-lava keeps (`nvim`, `table`, `agenda`, `reader`, `menu`), a folder named otherwise, a second
   extension of the same name, an `api` other than 1, a transport cold-lava doesn't have, an empty
   `run`, a permission it doesn't know, a file type with a bad extension or a `new` that isn't
   one of its commands, or types written as `[types.NAME]` instead of `[[types]]` leave that
@@ -2029,17 +2033,22 @@ runs the `open-tasks` example with and without `items.edit`.)*
 | --- | --- |
 | `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`, `workspace/style` |
 | `items.edit` | `items/edit` |
-| `files.read` | `workspace/read` and `workspace/files` for kinds of file it doesn't own |
-| `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own |
+| `files.read` | `workspace/read`, `workspace/files` and `workspace/stat` for kinds of file it doesn't own |
+| `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own, and `workspace/create-folder` |
+| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too |
 
 A request without its permission is refused as `forbidden`, with the permission it needs in
 the message. An owner needs no permission for files of its own kinds ("File types, as built").
 Creating is a write, so there is no `files.create`, and a manifest that names it doesn't load.
+Deleting is not: `files.write` doesn't include `files.delete`, and owning a kind doesn't
+either ("Deleting, restoring and making folders").
 An extension changes notes only through the gateway (`items/edit`, or `workspace/write` with
 `files.write`), never by writing files itself. The built-in Neovim declares `permissions = []`: it edits
 notes as text in its pane, which the core watches like any other editor. The menu's own
 screens (the table, the reader's `x`) read and edit as `table` and `reader`; the built-in
-agenda asks for `items.read` and `items.edit` like any extension.
+agenda asks for `items.read` and `items.edit` like any extension. The menu itself deletes,
+restores and makes folders as `menu`, straight on the core: it is the user, so no permission
+is checked.
 
 Views need no permission. Like `ui/notify` and `pane/open`, a view is the frontend's to draw,
 size and close: the user closes it with Esc or `q`, it takes no keys but the ones its list
