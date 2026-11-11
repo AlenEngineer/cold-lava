@@ -2430,7 +2430,7 @@ impl Home {
         }
         match self.focus {
             Focus::Workspaces => self.workspace_key(k),
-            Focus::Notes => self.notes_key(k, terminal)?,
+            Focus::Notes => self.notes_key(k)?,
             Focus::Backlinks => self.backlinks_key(k),
             Focus::Pane => {}
         }
@@ -2956,7 +2956,7 @@ impl Home {
         }
     }
 
-    fn notes_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn notes_key(&mut self, k: KeyEvent) -> Result<()> {
         let page = self.areas[1].height.saturating_sub(2).max(1) as usize;
         match k.code {
             KeyCode::Down | KeyCode::Char('j') => self.select_row(self.nsel + 1),
