@@ -409,14 +409,18 @@ impl<'t> Parser<'t> {
             && ls != self.no_math
             && !matches!(self.leaf, Some(Leaf::Math))
             && self.text[ls..le].contains("$$");
-        self.before = may_open_math.then(|| Before {
-            line: ls,
-            events: self.events.len(),
-            stack: self.stack.clone(),
-            leaf: self.leaf,
-            defs: self.defs.0.len(),
-            titled,
-        });
+        if may_open_math {
+            self.before = Some(Before {
+                line: ls,
+                events: self.events.len(),
+                stack: self.stack.clone(),
+                leaf: self.leaf,
+                defs: self.defs.0.len(),
+                titled,
+            });
+        } else if self.before.is_some() {
+            self.before = None;
+        }
         let mut prefix = std::mem::take(&mut self.prefix);
         prefix.clear();
         self.pending = 0;
