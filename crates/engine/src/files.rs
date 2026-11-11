@@ -415,7 +415,7 @@ impl Trash {
         self.next += 1;
         let id = TrashId(format!("{:x}-{}", self.run, self.next));
         let mine = |(_, owner, _): &(TrashId, String, Trashed)| owner == by;
-        if self.kept.iter().filter(|k| mine(*k)).count() >= KEPT
+        if self.kept.iter().filter(|k| mine(k)).count() >= KEPT
             && let Some(oldest) = self.kept.iter().position(mine)
         {
             self.kept.remove(oldest);
