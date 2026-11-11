@@ -152,9 +152,18 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
   is answered `Later` (`take_edited`). Owned files are `Workspace::owned`, beside the notes,
   and the index, the gateway, the graph and tidy read them too. `owner/canvas.rs` is the
   engine's `.canvas` owner (`owner::BUILT_IN`): text nodes are Markdown pieces and file nodes
-  links, both at the node's id; it answers `owner::give`/`owner::edit` in the same call,
-  `workspace::scan` reads canvases into `owned`, and rename relinks them through it. No
-  extension may claim a built-in owner's kind.
+  links, both at the node's id. No extension may claim a built-in owner's kind.
+  **One path for owned files** (#183): a file that isn't a note is changed the same way
+  whoever owns it. An item edit (`Core::edit_item`) and a rename, merge or recipe
+  (`FileEdit::owned`, then `Core::relink`) ask the owner `file/edit`, read its new text back
+  (`file/read`) and only then write. The canvas owner answers the same two requests through
+  `owner::give`/`owner::edit`, inside the call, so a canvas's edit is done when `edit_item`
+  returns (still `Later`, the answer already in `take_edited`) and `relink` returns `None` with
+  the new texts in the plan when no extension has to answer. Don't give a built-in owner a
+  shortcut around that flow, and don't branch on who owns a file outside `owner/mod.rs`.
+  What stays direct: Markdown (the scan and a note's edits never ask anyone), the scan reading
+  canvases into `owned` (it has no core to ask through), and planning a canvas's rename
+  (`canvas::relink` plans its own changes, since a card holds a path, not a link).
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one walk through its tree (`cst::read`) in the workspace's flavour; `Workspace::items()`
   caches them per note on first use. Ids are stable (block id, heading path, or text hash under

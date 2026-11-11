@@ -30,6 +30,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- A whiteboard's file is changed the way an extension's file is (closes #183): a rename, a
+  merge and a recipe ask the canvas owner for the file's new text and read it back before
+  anything is written, as a tick in the agenda already did. Renames and merges look and write
+  as before. A recipe's plan now shows a canvas as `Board.canvas (through canvas)` with the
+  changed lines of its cards instead of a diff of the file's JSON, in the app and in
+  `cold-lava recipe` (`"owner": "canvas"` with `--json`). A recipe run by a shape's step reads
+  the canvases it changed at once, with the notes. A rename leaves alone a canvas that isn't
+  valid JSON Canvas, and a card whose id another card before it has.
 - Items are read from the note's own syntax tree instead of a second Markdown parser (part of
   #140): every task, list item, heading and block keeps its id, rev and fields, and
   `cold-lava items`, `agenda` and `table` print the same, as fast (3,000 notes on a GitHub
