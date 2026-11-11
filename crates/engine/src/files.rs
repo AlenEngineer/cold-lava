@@ -974,6 +974,145 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A token is the client's it was given to, and says nothing of anyone else's.
+    #[test]
+    fn a_token_restores_only_for_its_client_and_cant_be_guessed_from_another() {
+        let dir = workspace("tokens");
+        let local = r#"{"trashOption": "local"}"#;
+        std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
+        std::fs::write(dir.join("Theirs.md"), "the menu's\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let plan = core.stat_file("Plan.md").unwrap();
+        let theirs = core.stat_file("Theirs.md").unwrap();
+        let menus = core.delete_file("menu", "Theirs.md", &theirs.rev).unwrap();
+        let mine = core.delete_file("tidy", "Plan.md", &plan.rev).unwrap();
+
+        let (a, b) = (&menus.trashed.0, &mine.trashed.0);
+        assert!(a.len() >= 32 && b.len() >= 32, "{a} and {b} are short");
+        assert_ne!(
+            a[..8],
+            b[..8],
+            "{a} and {b} share what one could count on from"
+        );
+
+        for to in [None, Some("Mine.md")] {
+            let stolen = core
+                .restore_file("tidy", &back(&menus.trashed, to))
+                .unwrap_err();
+            assert_eq!(stolen.reason, Reason::Changed, "as an unknown token is");
+        }
+        assert!(!dir.join("Theirs.md").exists() && !dir.join("Mine.md").exists());
+        let kept = std::fs::read_to_string(dir.join(".trash/Theirs.md")).unwrap();
+        assert_eq!(kept, "the menu's\n", "still in the trash");
+        let restore = back(&menus.trashed, None);
+        let restored = core.restore_file("menu", &restore).unwrap();
+        assert_eq!(restored.path, "Theirs.md", "its own client still can");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The delete goes to the link, never through it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_deleted_as_the_link_it_is_and_never_followed() {
+        let dir = workspace("links");
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(outside.join("Shared")).unwrap();
+        std::fs::write(outside.join("secret.md"), "theirs\n").unwrap();
+        std::fs::write(outside.join("Shared/Deep.md"), "deep\n").unwrap();
+        let link = std::os::unix::fs::symlink::<PathBuf, PathBuf>;
+        link(outside.join("secret.md"), dir.join("Data/Linked.md")).unwrap();
+        link(outside.join("Shared"), dir.join("Shared")).unwrap();
+        link(outside.join("gone.md"), dir.join("Data/Dangling.md")).unwrap();
+        let (mut core, bin) = core_with_bin(&dir);
+        let links = [
+            ("Data/Linked.md", "secret.md"),
+            ("Shared", "Shared"),
+            ("Data/Dangling.md", "gone.md"),
+        ];
+        for (rel, target) in links {
+            let target = outside.join(target);
+            let seen = core.stat_file(rel).unwrap();
+            assert_eq!(seen.inside, None, "{rel}: what it leads to is not listed");
+            let gone = core.delete_file("tidy", rel, &seen.rev).unwrap();
+            assert!(dir.join(rel).symlink_metadata().is_err(), "{rel} went");
+            let name = Path::new(rel).file_name().unwrap();
+            let trashed = std::fs::read_link(bin.join("files").join(name)).unwrap();
+            assert_eq!(trashed, target, "{rel}: the link itself is in the trash");
+            core.restore_file("tidy", &back(&gone.trashed, None))
+                .unwrap();
+            let restored = std::fs::read_link(dir.join(rel)).unwrap();
+            assert_eq!(restored, target, "{rel}: the link is back");
+        }
+        let read = |rel: &str| std::fs::read_to_string(outside.join(rel)).unwrap();
+        assert_eq!(read("secret.md"), "theirs\n", "the target is untouched");
+        assert_eq!(read("Shared/Deep.md"), "deep\n", "the target is untouched");
+
+        let through = core.stat_file("Shared/Deep.md").unwrap_err();
+        assert_eq!(through.reason, Reason::Refused, "not through a link");
+        let through = core.delete_file("tidy", "Shared/Deep.md", "").unwrap_err();
+        assert_eq!(through.reason, Reason::Refused, "not through a link");
+        let text = core.read_file("Data/Linked.md").unwrap_err();
+        assert_eq!(
+            text.reason,
+            Reason::Refused,
+            "reading still follows, and refuses"
+        );
+        let _ = std::fs::remove_dir_all(&bin);
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_restore_somewhere_else_follows_the_rules_of_a_new_name() {
+        let dir = workspace("restore-to");
+        let local = r#"{"trashOption": "local"}"#;
+        std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
+        std::fs::create_dir_all(dir.join("Data/[old]")).unwrap();
+        std::fs::write(dir.join("Data/[old]/Table #1.csv"), "a\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let odd = "Data/[old]/Table #1.csv";
+        let seen = core.stat_file(odd).unwrap();
+        let gone = core.delete_file("tidy", odd, &seen.rev).unwrap();
+        for unfit in ["Data/a#b.csv", "Data/[x]/Table.csv", "Data/Table^.csv"] {
+            let there = back(&gone.trashed, Some(unfit));
+            let refused = core.restore_file("tidy", &there).unwrap_err();
+            assert_eq!(refused.reason, Reason::Refused, "{unfit}");
+            assert!(!dir.join(unfit).exists(), "{unfit}");
+        }
+        let home = core.restore_file("tidy", &back(&gone.trashed, None));
+        assert_eq!(home.unwrap().path, odd, "where it was needs no new name");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folders_listing_leaves_out_hidden_entries_and_is_bounded() {
+        let dir = workspace("listing");
+        std::fs::create_dir_all(dir.join("Data/.git/objects")).unwrap();
+        std::fs::write(dir.join("Data/.git/objects/1f"), "x").unwrap();
+        std::fs::write(dir.join("Data/.DS_Store"), "x").unwrap();
+        let core = Core::open(&dir).unwrap();
+        let stat = |rel: &str| serde_json::to_value(core.stat_file(rel).unwrap()).unwrap();
+        let data = stat("Data");
+        assert_eq!(data["inside"], json!(["Data/Eruptions.csv"]));
+        assert_eq!(data["hidden"], 4, ".DS_Store, .git, objects and 1f: {data}");
+        assert_eq!(data.get("more"), None, "{data}");
+        std::fs::write(dir.join("Data/.git/objects/1f"), "more than before").unwrap();
+        assert_ne!(stat("Data")["rev"], data["rev"], "the version covers them");
+
+        std::fs::create_dir_all(dir.join("Many")).unwrap();
+        for n in 0..1005 {
+            std::fs::write(dir.join(format!("Many/{n:04}.md")), "").unwrap();
+        }
+        let many = stat("Many");
+        let listed = many["inside"].as_array().unwrap();
+        assert_eq!(listed.len(), 1000);
+        assert_eq!(listed[999], "Many/0999.md");
+        assert_eq!(many["more"], 5, "the ones not listed are counted");
+        assert_eq!(many.get("hidden"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn writing_a_note_reads_it_again_and_outside_changes_to_files_are_events() {
         let dir = workspace("events");

@@ -1,0 +1,6 @@
+name = "news-count"
+title = "News count"
+version = "0.1.0"
+description = "Counts the items/changed and items/reset it hears about headings: the extension of delete-news.drive"
+run = ["python3", "main.py"]
+permissions = ["items.read"]

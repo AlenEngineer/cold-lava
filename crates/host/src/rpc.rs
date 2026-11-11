@@ -448,12 +448,23 @@ mod tests {
         method: &str,
         params: Value,
     ) -> (Result<Value, RpcError>, Vec<Effect>) {
+        served_as("wc", core, permissions, method, params)
+    }
+
+    /// `served`, for the extension called `name`.
+    fn served_as(
+        name: &str,
+        core: &mut Core,
+        permissions: &[Permission],
+        method: &str,
+        params: Value,
+    ) -> (Result<Value, RpcError>, Vec<Effect>) {
         let (mut next_pane, mut next_view) = (0, 0);
         let mut host = Host {
             effects: Vec::new(),
             next_pane: &mut next_pane,
             next_view: &mut next_view,
-            name: "wc",
+            name,
             permissions,
             me: None,
             owners: &[],
@@ -736,6 +747,61 @@ mod tests {
         let (bad, _) = served(&mut core, &may, "workspace/delete", no_version);
         assert_eq!(bad.unwrap_err().code, INVALID_PARAMS);
         let _ = std::fs::remove_dir_all(&bin);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two extensions that may both delete: neither restores what the other deleted, to
+    /// where it was or anywhere else, and a restore somewhere else is a write.
+    #[test]
+    fn one_clients_token_is_no_use_to_another_over_the_wire() {
+        use Permission::{FilesDelete, FilesRead, FilesWrite};
+        let dir = workspace("two-clients");
+        std::fs::write(dir.join("Notes.md"), "kept\n").unwrap();
+        let local = r#"{"trashOption": "local"}"#;
+        std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let may = [FilesRead, FilesDelete];
+        let mut delete = |name: &str, path: &str| {
+            let at = json!({ "path": path });
+            let (stat, _) = served_as(name, &mut core, &may, "workspace/stat", at);
+            let ask = json!({"path": path, "expect": stat.unwrap()["rev"]});
+            let (deleted, _) = served_as(name, &mut core, &may, "workspace/delete", ask);
+            deleted.unwrap()["trashed"].clone()
+        };
+        let first = delete("tidy", "Plan.md");
+        let second = delete("sweep", "Notes.md");
+        let (a, b) = (first.as_str().unwrap(), second.as_str().unwrap());
+        assert_ne!(
+            a[..8],
+            b[..8],
+            "{a} and {b}: one can't be counted on from the other"
+        );
+
+        for restore in [
+            json!({ "trashed": first }),
+            json!({"trashed": first, "to": "Taken.md"}),
+        ] {
+            let all = [FilesRead, FilesWrite, FilesDelete];
+            let (stolen, _) = served_as("sweep", &mut core, &all, "workspace/restore", restore);
+            let stolen = stolen.unwrap_err();
+            assert_eq!((stolen.code, reason(&stolen)), (REFUSED, "changed"));
+        }
+        assert!(!dir.join("Plan.md").exists() && !dir.join("Taken.md").exists());
+        assert!(dir.join(".trash/Plan.md").exists(), "still in the trash");
+
+        let moved = json!({"trashed": first, "to": "Moved.md"});
+        let (unasked, _) = served_as("tidy", &mut core, &may, "workspace/restore", moved.clone());
+        let unasked = unasked.unwrap_err();
+        assert_eq!(reason(&unasked), "forbidden", "somewhere else is a write");
+        assert!(
+            unasked.message.contains("files.write"),
+            "{}",
+            unasked.message
+        );
+        assert!(!dir.join("Moved.md").exists());
+        let own = json!({ "trashed": first });
+        let (restored, _) = served_as("tidy", &mut core, &may, "workspace/restore", own);
+        assert_eq!(restored.unwrap(), json!({"path": "Plan.md"}));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

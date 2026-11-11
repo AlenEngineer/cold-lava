@@ -1,0 +1,28 @@
+# A note that is a symlink to a file outside the workspace: d moves the link itself to the
+# trash and u puts it back. tests/drive.rs makes the link, above Loose thought in the tree, and
+# checks that its target was never touched.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 36 notes
+keys p loose
+wait-for Loose thought
+keys enter
+wait-for Inbox/Loose thought  reading
+keys esc
+wait-gone reading · Esc / q back
+keys k
+wait-for Kept outside the workspace.
+keys d
+wait-for Delete Inbox/LinkedSecret?
+keys y
+wait-for deleted LinkedSecret · u undo
+wait-for example-workspace 35 notes
+expect-not • LinkedSecret
+keys u
+wait-for restored Inbox/LinkedSecret.md
+wait-for example-workspace 36 notes
+wait-for • LinkedSecret
+wait-for Kept outside the workspace.
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

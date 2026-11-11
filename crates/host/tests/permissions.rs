@@ -506,3 +506,33 @@ fn an_extension_in_its_own_process_may_not_delete_without_files_delete() {
     assert_eq!(did.in_trash, None, "nothing went");
     assert_eq!(did.deleted_by, Vec::<String>::new());
 }
+
+/// `workspace/stat` of a folder is a listing, so it needs `files.read` whatever the folder is
+/// called: an owner's kind is a kind of file.
+#[test]
+fn a_folder_named_like_an_owners_kind_is_not_its_to_list() {
+    use Permission::FilesRead;
+    let (dir, root) = workspace("stat");
+    std::fs::create_dir_all(root.join("Volcanoes/Old.csv")).unwrap();
+    std::fs::write(root.join("Volcanoes/Old.csv/Secret.md"), "x\n").unwrap();
+    let mut core = core_with_trash(&dir, &root);
+    let mut r = Registry::new(vec![
+        quiet("sheets", &[], &["csv"]),
+        quiet("look", &[FilesRead], &[]),
+    ]);
+    let (sheets, look) = (ExtId(0), ExtId(1));
+    let folder = "Volcanoes/Old.csv";
+    let owner = ask(&mut r, &mut core, sheets, |h| h.stat_file(folder));
+    assert_eq!(owner.map(drop), Err(Reason::Forbidden));
+    let file = ask(&mut r, &mut core, sheets, |h| {
+        h.stat_file("Volcanoes/Eruptions.csv")
+    });
+    assert!(file.is_ok(), "a file of its kind still is: {file:?}");
+    let reader = ask(&mut r, &mut core, look, |h| h.stat_file(folder)).unwrap();
+    assert_eq!(
+        reader.inside.unwrap(),
+        ["Volcanoes/Old.csv/Secret.md"],
+        "with files.read"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

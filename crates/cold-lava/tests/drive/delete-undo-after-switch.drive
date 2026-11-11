@@ -1,0 +1,30 @@
+# An undo outlives a look at another workspace: delete a note, move to the workspace list, down
+# to the other workspace (which opens it) and back up, then u still puts the note back.
+# tests/drive.rs adds the second workspace to the list and checks the file and the trash.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+keys p lava
+wait-for Lava
+keys enter
+wait-for Concepts/Lava  reading
+keys d
+wait-for Delete Concepts/Lava?
+keys y
+wait-for deleted Lava · u undo
+wait-for example-workspace 34 notes
+keys esc
+wait-gone reading · Esc / q back
+keys h h h
+keys j
+wait-for elsewhere 1 note
+keys k
+wait-for example-workspace 34 notes
+keys l
+keys u
+wait-for restored Concepts/Lava.md
+wait-for example-workspace 35 notes
+wait-for Molten rock that reaches the surface.
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

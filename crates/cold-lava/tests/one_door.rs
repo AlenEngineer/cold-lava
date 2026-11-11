@@ -3,10 +3,10 @@
 
 const HOME: &str = include_str!("../src/home.rs");
 
-/// The functions of `module` that `home.rs` names outside comments, sorted, each as often as
+/// The functions of `module` that `source` names outside comments, sorted, each as often as
 /// it is named.
-fn named(module: &str) -> Vec<String> {
-    let code = HOME.lines().filter(|l| !l.trim_start().starts_with("//"));
+fn named_in(source: &str, module: &str) -> Vec<String> {
+    let code = source.lines().filter(|l| !l.trim_start().starts_with("//"));
     let mut found = Vec::new();
     for line in code {
         for (at, _) in line.match_indices(module) {
@@ -31,7 +31,10 @@ fn named(module: &str) -> Vec<String> {
 /// a template's text, which are later groups of #193.
 #[test]
 fn the_menu_deletes_restores_and_makes_folders_through_the_core() {
-    assert_eq!(named("trash::"), ["free_path", "system_bin", "system_bin"]);
+    assert_eq!(
+        named_in(HOME, "trash::"),
+        ["free_path", "system_bin", "system_bin"]
+    );
     let writes = [
         "create",
         "create_if_missing",
@@ -40,7 +43,7 @@ fn the_menu_deletes_restores_and_makes_folders_through_the_core() {
         "create_if_missing",
         "replace",
     ];
-    assert_eq!(named("write::"), writes);
+    assert_eq!(named_in(HOME, "write::"), writes);
     for asked in [
         "core.delete_file(MENU,",
         "core.restore_file(MENU,",
@@ -48,4 +51,11 @@ fn the_menu_deletes_restores_and_makes_folders_through_the_core() {
     ] {
         assert!(HOME.contains(asked), "the menu asks the core: {asked}");
     }
+}
+
+/// A function brought in with `use` and called by its bare name is a direct call too.
+#[test]
+fn the_scan_sees_an_import_and_a_bare_call() {
+    let sample = "use crate::trash::{delete, TrashOption};\nfn f() {\n    delete(a, b);\n}\n";
+    assert_eq!(named_in(sample, "trash::"), ["delete"]);
 }
