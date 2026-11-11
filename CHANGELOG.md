@@ -30,6 +30,15 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- A footnote's definition holds blocks (#212): after `[^label]:`, the lines under it that are
+  blank or indented four or more are the footnote's, a second paragraph, a list, a task or a
+  fenced block among them, as in Obsidian. They were indented code until now, for everything
+  but the reader. So links and tags there count: a note linked only from a footnote's second
+  paragraph has that backlink, shows in the graph and follows a rename, and a task there is
+  in the agenda. A definition also ends the paragraph above it, so `Text ^a` and `[^1]: Note
+  ^b` on consecutive lines are two blocks with their own ids, where they were one block named
+  `b`. The ids of headings, list items and tasks elsewhere don't change. In flavours without
+  footnotes nothing changes.
 - The reader draws from the same syntax tree the index and the items read (#212, part of
   #140), so what it shows as a link, a tag or a task is what backlinks, the graph and the
   agenda count. Notes read on screen as before, with these differences. A frontmatter whose
@@ -39,10 +48,9 @@ change commands, keys and file formats; patch versions only fix things.
   that starts a link's text. `[[A\|B]]` in a table cell links to `A`. A line under a
   callout's title that has no `>` is outside the callout. A link whose text holds another
   link is the outer one. An escape doesn't stop a wikilink, a link, a code span or `$` math
-  (`\[[Note]]` is a link, as the index counts it). Three things now show less than in
-  Obsidian, because the index reads them so: a footnote's indented continuation after a
-  blank line is a code block, a link definition written over two lines is text, and `$$`
-  that nothing closes is math to the end of its container.
+  (`\[[Note]]` is a link, as the index counts it). Two things now show less than in
+  Obsidian, because the index reads them so: a link definition written over two lines is
+  text, and `$$` that nothing closes is math to the end of its container.
 - Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
   of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
   example's count of open tasks keeps up under the picker and shows in the shape editor's

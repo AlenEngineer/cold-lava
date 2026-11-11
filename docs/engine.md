@@ -270,7 +270,17 @@ change what it shows, never how it works.
     with `|` ends the paragraph above it, as on GitHub; another table's header is a
     paragraph's only line. A link definition (`[label]: destination "title"` on one line,
     where a paragraph would start) is a block of its own, and the line after it starts
-    afresh, as pulldown-cmark reads it. With footnotes, `[^label]:` is none. With wikilinks, a
+    afresh, as pulldown-cmark reads it. With footnotes, `[^label]:` is none: it starts a
+    footnote's definition (`FootnoteDefinition`), a container as a list item is. It starts
+    where a block can start, ends the paragraph above it, and holds what follows it on its
+    line and the lines under it that are blank or indented four or more: a second paragraph,
+    a list, a task, a fenced block. A line that is neither ends it, unless it goes on the
+    footnote's paragraph lazily; a footnote that starts right inside another ends that one.
+    This is how pulldown-cmark read footnotes, and so how the items read them before #178:
+    the links, tags and tasks in a footnote's indented lines count (they were indented code
+    in the tree until #212), and a `^id` on a definition's line names the footnote's text
+    without its `[^label]:`. An edit inside a definition, or on the line right after one,
+    reparses the definition: it is one top-level block, as a list is. With wikilinks, a
     destination that starts one is none either: `[Source]: [[Book]]` is a line of text with a
     wikilink, which backlinks and a rename find.
   - *Inlines* are read per line, left to right, the first to start winning: code spans,
@@ -296,9 +306,7 @@ change what it shows, never how it works.
   - *What text holds* (#212) is read after that, in what is left as `Text`, a block at a
     time: escapes (`\*`), what is written as a character reference (`&amp;`), autolinks
     (`<https://…>`) and inline HTML as CommonMark defines them, a footnote's reference
-    (`[^label]`) and the `[^label]:` that starts a line of a paragraph (`FootnoteMarker`:
-    from there on the paragraph is the footnote's text, and the blocks are what they were),
-    a hard break (two
+    (`[^label]`; its definition is a block, above), a hard break (two
     blanks or a `\` before the line break, where the block has another line), and emphasis,
     strong, strikethroughs and highlights. `*` and `_` follow CommonMark's delimiter runs
     (left- and right-flanking, `_` not inside a word, the rule of three), with the nearest
@@ -377,8 +385,7 @@ change what it shows, never how it works.
     `%%comments%%`, as the items read it) and makes the same `Doc` the reader always drew. So
     what the reader shows as a link, a tag or a task is what the index and the items count.
     What isn't a node is put together on the way: paragraphs and `$$` math on consecutive lines
-    are one paragraph, a paragraph is cut at each `FootnoteMarker` into the paragraph and its
-    footnotes, a `LinkEnd` takes the inlines since its `[` as the link's text, a `^id` names
+    are one paragraph, a `LinkEnd` takes the inlines since its `[` as the link's text, a `^id` names
     its block only at the block's end, a checkbox that is no `[ ]` or `[x]` is text, and a
     character reference is looked up (`markdown/entities.rs`). pulldown-cmark's parse stays
     in `markdown/pulldown.rs`, for tests only: one compares the two `Doc`s on every note of
@@ -389,9 +396,8 @@ change what it shows, never how it works.
     under a callout's title without its `>` ends the callout), or pulldown-cmark wasn't
     Obsidian (a frontmatter whose first line is blank, YAML in the middle of a note, a byte
     order mark, `[[A\|B]]` in a table). `LESS`: the reader shows less than Obsidian does,
-    because the tree reads it so and the index with it (a footnote's indented continuation
-    after a blank line is indented code, a link definition over two lines is text, `$$` that
-    nothing closes is math to the end of its container). Those are the tree's to change, and
+    because the tree reads it so and the index with it (a link definition over two lines is
+    text, `$$` that nothing closes is math to the end of its container). Those are the tree's to change, and
     change what the index counts.
   - *Renames:* `relink` rewrites the bytes of a target and nothing else: a link by reference
     is rewritten once, in its definition (`[ref]: Old.md "Title"` keeps its label, its title

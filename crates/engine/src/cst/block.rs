@@ -1,5 +1,6 @@
 //! Blocks, line by line, the way CommonMark finds them: each line first continues the open
-//! containers (block quotes, list items) it can, then closes the rest, then opens new blocks.
+//! containers (block quotes, list items, footnote definitions) it can, then closes the rest,
+//! then opens new blocks.
 //! The result is a flat list of events in byte order; `inline` builds them into the tree.
 //!
 //! A container's markers on a later line (`>`, a list item's indentation) are tokens of the
@@ -86,6 +87,8 @@ enum Marker {
 #[derive(Clone, Copy, Debug)]
 enum Open {
     Quote,
+    /// A footnote's definition: it goes on over blank lines and lines indented four or more.
+    Footnote,
     List(Marker),
     Item {
         /// The column its content starts at; a later line goes on in it from there.
@@ -380,6 +383,19 @@ impl<'t> Parser<'t> {
                     }
                 }
                 Open::Item { .. } => break,
+                Open::Footnote => {
+                    let (fp, _) = self.skip_ws(pos, col, le);
+                    let (p, c) = self.skip_to(pos, col, le, col + 4);
+                    if fp == le {
+                        matched += 1;
+                    } else if c >= col + 4 {
+                        prefix.push((pos, p, Whitespace));
+                        (pos, col) = (p, c);
+                        matched += 1;
+                    } else {
+                        break;
+                    }
+                }
             }
         }
         let all = matched == self.stack.len();
@@ -618,6 +634,21 @@ impl<'t> Parser<'t> {
             || html_start(&self.text[fp..le], true).is_some()
             || self.math_start(fp, le)
             || self.comment_start(fp, le)
+            || self.footnote(fp, le).is_some()
+    }
+
+    /// A footnote's definition, `[^label]:`, starting at `fp`, in a flavour that has
+    /// footnotes: where the label's `]` is. A label holds no bracket, and something that
+    /// isn't blank.
+    fn footnote(&self, fp: usize, le: usize) -> Option<usize> {
+        if !self.g.has(S::Footnotes) {
+            return None;
+        }
+        let label = self.text[fp..le].strip_prefix("[^")?;
+        let k = label.find(['[', ']'])?;
+        let t = label.as_bytes();
+        let named = t[k] == b']' && !label[..k].trim().is_empty();
+        (named && t.get(k + 1) == Some(&b':')).then_some(fp + 2 + k)
     }
 
     fn math_start(&self, fp: usize, le: usize) -> bool {
@@ -722,6 +753,27 @@ impl<'t> Parser<'t> {
                             return;
                         }
                     }
+                }
+                if let Some(label) = self.footnote(fp, le) {
+                    self.close_leaf();
+                    // A footnote that starts right inside another ends it.
+                    if matches!(self.stack.last(), Some(Open::Footnote)) {
+                        self.stack.pop();
+                        self.close();
+                    }
+                    self.start(FootnoteDefinition);
+                    self.tok(Whitespace, pos, fp);
+                    self.tok(LBracket, fp, fp + 1);
+                    self.tok(FootnoteLabel, fp + 1, label);
+                    self.tok(RBracket, label, label + 1);
+                    self.tok(Colon, label + 1, label + 2);
+                    let (rest, _) = self.skip_ws(label + 2, 0, le);
+                    self.tok(Whitespace, label + 2, rest);
+                    col = self.cols(pos, rest, col);
+                    pos = rest;
+                    self.stack.push(Open::Footnote);
+                    opened = true;
+                    continue;
                 }
                 let b = t[fp];
                 if b == b'>' {

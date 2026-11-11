@@ -205,9 +205,10 @@ kinds! {
     Highlight,
     /// `[^label]`. Whether the note has that footnote is the reader's to say.
     FootnoteRef,
-    /// `[^label]:` starting a line of a paragraph: from there on the paragraph is the
-    /// footnote's text.
-    FootnoteMarker,
+    /// A footnote's definition, in a flavour with footnotes: `[^label]:`, what follows it
+    /// on its line, and the lines under it that are blank or indented four or more. It holds
+    /// blocks, as a list item does.
+    FootnoteDefinition,
     /// `<https://example.com>` or `<name@example.com>`.
     Autolink,
 }
@@ -333,7 +334,11 @@ impl Definitions {
                 let label = token_of(node, Kind::DefinitionLabel);
                 self.add(label, token_of(node, Kind::DefinitionDest));
             }
-            Kind::BlockQuote | Kind::Callout | Kind::List | Kind::ListItem => {
+            Kind::BlockQuote
+            | Kind::Callout
+            | Kind::List
+            | Kind::ListItem
+            | Kind::FootnoteDefinition => {
                 for child in node.children() {
                     if let NodeOrToken::Node(n) = child {
                         self.add_from(n);
@@ -528,8 +533,8 @@ trait Sink<'t> {
     fn finish(&mut self);
     fn token(&mut self, kind: Kind, text: &'t str);
 
-    /// A block of `kind` starts, or one ends: for a sink that holds a block's text back.
-    fn block(&mut self, _kind: Option<Kind>) {}
+    /// A block starts, or one ends: for a sink that holds a block's text back.
+    fn block(&mut self) {}
 
     /// A line of the block's text, `a..z`, is about to be read.
     fn line(&mut self, _a: usize, _z: usize) {}
