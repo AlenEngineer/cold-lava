@@ -26,6 +26,9 @@ wait-for example-workspace 34 notes
 keys u
 wait-for restored Concepts/Lava.md
 wait-for example-workspace 35 notes
-wait-for Rewritten in Obsidian while the prompt was open.
+wait-for Concepts/Lava  reading
+expect Rewritten in Obsidian while the prompt was open.
+keys esc
+wait-for ? help  q quit
 keys q
 exits 0
