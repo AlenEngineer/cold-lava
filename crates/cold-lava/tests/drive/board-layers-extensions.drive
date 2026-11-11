@@ -1,0 +1,52 @@
+# The example extension open-tasks (installed in the empty home by tests/drive.rs) keeps a count
+# of open tasks in the status line. The board picker and the shape editor run in the menu's
+# loop, so the extension is answered while either is in front: a task another program writes
+# shows in the count at once, under the picker and in the shape editor's status line. Esc in
+# the picker returns to where it was opened, the menu or the graph, and q in the shape editor
+# to the whiteboard it was opened from.
+size 140x44
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+expect whiteboards · type to filter · ⏎ open · Esc back
+keys esc
+wait-gone whiteboards · type to filter
+expect cold-lava workspaces
+# From the graph, Esc in the picker returns to the graph.
+keys g
+wait-for example-workspace · 40 nodes
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+keys esc
+wait-for example-workspace · 40 nodes
+expect-not whiteboards · type to filter
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type Editor
+keys enter
+wait-for whiteboard Editor
+wait-for Ctrl-o ⟵ graph
+expect ☐ 17 open tasks
+# The shape editor on a new shape: the count follows there too.
+keys S
+wait-for shape editor · type to filter
+expect + a new shape
+keys enter
+wait-for shape editor · shape1 (new)
+wait-for ☐ 17 open tasks
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n- [ ] Count the masks\n
+wait-for ☐ 18 open tasks
+expect shape editor · shape1 (new)
+keys q
+wait-for whiteboard Editor
+expect ☐ 18 open tasks
+keys ctrl+o
+wait-for example-workspace · 40 nodes
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0
