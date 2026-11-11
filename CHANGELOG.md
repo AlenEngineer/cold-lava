@@ -43,7 +43,6 @@ change commands, keys and file formats; patch versions only fix things.
   Obsidian, because the index reads them so: a footnote's indented continuation after a
   blank line is a code block, a link definition written over two lines is text, and `$$`
   that nothing closes is math to the end of its container.
-
 - Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
   of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
   example's count of open tasks keeps up under the picker and shows in the shape editor's
