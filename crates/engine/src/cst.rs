@@ -124,26 +124,6 @@ kinds! {
     Colon,
     /// What a link definition's label points to, with its title if it has one.
     DefinitionDest,
-    /// `*`, `_`, `**`, `__`, `~`, `~~` or `==`, opening or closing emphasis, a strikethrough or
-    /// a highlight.
-    EmphasisMarker,
-    /// `\` and the punctuation after it, which it makes plain text.
-    Escape,
-    /// What is written as a character reference: `&amp;`, `&#35;`, `&#x23;`. Whether it names a
-    /// character is the reader's to say.
-    Entity,
-    /// The two or more blanks, or the `\`, at the end of a line that breaks the line there.
-    HardBreak,
-    /// `^label` between a footnote's brackets.
-    FootnoteLabel,
-    /// `<` opening an autolink.
-    AngleOpen,
-    /// `>` closing an autolink.
-    AngleClose,
-    /// Where an autolink points: a URL with its scheme, or an email address.
-    Url,
-    /// An HTML tag, comment, instruction, declaration or CDATA section within a line, opaque.
-    InlineHtml,
 
     // Nodes.
     Document,
@@ -191,6 +171,30 @@ kinds! {
     Comment,
     /// `$x$` or `$$x$$` within a line.
     InlineMath,
+
+    // What text holds, after the rest, which keep the numbers they had: its tokens,
+    // then its nodes.
+    /// `*`, `_`, `**`, `__`, `~`, `~~` or `==`, opening or closing emphasis, a strikethrough or
+    /// a highlight.
+    EmphasisMarker,
+    /// `\` and the punctuation after it, which it makes plain text.
+    Escape,
+    /// What is written as a character reference: `&amp;`, `&#35;`, `&#x23;`. Whether it names a
+    /// character is the reader's to say.
+    Entity,
+    /// The two or more blanks, or the `\`, at the end of a line that breaks the line there.
+    HardBreak,
+    /// `^label` between a footnote's brackets.
+    FootnoteLabel,
+    /// `<` opening an autolink.
+    AngleOpen,
+    /// `>` closing an autolink.
+    AngleClose,
+    /// Where an autolink points: a URL with its scheme, or an email address.
+    Url,
+    /// An HTML tag, comment, instruction, declaration or CDATA section within a line, opaque.
+    InlineHtml,
+
     /// `*x*` or `_x_`.
     Emphasis,
     /// `**x**` or `__x__`.
