@@ -844,6 +844,11 @@ fn is_blank(inline: &Inline) -> bool {
 /// index finds tags with the same pattern.
 pub const TAG: &str = r"(?:^|[\s(,])#([\p{L}\p{N}_/\-]+)";
 
+/// `TAG` in a note's own text, where the markers that open emphasis, a strikethrough or a
+/// highlight may stand between what a tag follows and its `#` (`**#tag**`). The syntax tree
+/// finds tags with it, and checks the markers against the flavour.
+pub const MARKED_TAG: &str = r"(?:^|[\s(,])([*_~=]*)#([\p{L}\p{N}_/\-]+)";
+
 /// Delimited spans that may wrap other inlines.
 type Wrap = fn(Vec<Inline>) -> Inline;
 

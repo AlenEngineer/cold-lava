@@ -320,11 +320,15 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
         }
     };
 
+    // The note in the syntax every workspace's links are read in, with its link definitions,
+    // which say where a reference link points.
+    let note = cst::blocks(text, cst::Gates::INDEX);
+    let defs = note.definitions();
     let mut body_tags = Vec::new();
     let mut frontmatter_end = 0;
     let mut links: Vec<Written> = Vec::new();
     let mut wiki: Option<Written> = None;
-    read_syntax(text, &mut |step| match step {
+    note.read(&mut |step| match step {
         Step::Leave(Kind::Frontmatter, at) => frontmatter_end = at,
         Step::Token(Kind::Tag, tag, at) => body_tags.push(body_tag(at, tag)),
         Step::Enter(Kind::WikiLink | Kind::Embed, at) => {
@@ -342,6 +346,14 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
         Step::Leave(Kind::WikiLink | Kind::Embed, _) => links.extend(wiki.take()),
         Step::Token(Kind::LinkDest, dest, at) => {
             links.extend(md_target(dest).map(|target| Written {
+                at,
+                md: true,
+                target,
+            }))
+        }
+        Step::Token(Kind::LinkLabel, label, at) => {
+            let target = defs.get(label).and_then(md_target);
+            links.extend(target.map(|target| Written {
                 at,
                 md: true,
                 target,
@@ -761,6 +773,23 @@ mod tests {
     fn a_link_to_a_heading_is_not_a_tag() {
         let (_, tags) = links_and_tags("See [the agenda](#agenda), (#real) and #also.");
         assert_eq!(tags, ["real", "also"]);
+    }
+
+    #[test]
+    fn tags_right_after_emphasis_and_highlight_markers() {
+        let (_, tags) = links_and_tags(
+            "**#bold** _#slanted_ ==#marked== ~~#struck~~, not a#b, a**#c**, x_#d, http://e.f/#g, [[#H]], [i](#j) or [k](**#l).",
+        );
+        assert_eq!(tags, ["bold", "slanted", "marked", "struck"]);
+    }
+
+    #[test]
+    fn reference_links_count_where_they_are_written() {
+        let text = "See [the note][n] and [N].\n[web][w], [none] and ![pic][n].\n\n[n]: Some%20Note.md \"Title\"\n[w]: https://example.com/x.md\n[unused]: Unused.md\n";
+        let (refs, _, _, _) = parse(text);
+        let pos: Vec<(&str, usize)> = refs.iter().map(|r| (r.target.as_str(), r.line)).collect();
+        assert_eq!(pos, [("Some Note", 1), ("Some Note", 1), ("Some Note", 2)]);
+        assert_eq!(refs[2].context, "[web][w], [none] and ![pic][n].");
     }
 
     /// A link's line as its `Ref` holds it.

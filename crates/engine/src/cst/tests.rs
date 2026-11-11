@@ -89,6 +89,8 @@ const EDGES: &[&str] = &[
     "> - a\n>   - b\n> c\n",
     "* * *\n- - -\n_ _ _\n",
     "lone \r in a line\r\n",
+    "See [text][ref], [ref][], [ref], ![img][ref] and [none].\n\n[ref]: Note.md \"Title\"\n  [Other Ref]: <a b.md>\n> [q]: q.md\n- [i]: i.md\n",
+    "**#bold** _#slanted_ ==#marked== ~~#struck~~ a**#b** snake_#case\n",
 ];
 
 #[test]
@@ -204,6 +206,88 @@ fn the_flavour_gates_syntax() {
     assert!(!kinds("> [!custom]\n> x\n", github()).contains(&Kind::Callout));
 }
 
+#[test]
+fn a_reference_link_is_a_link_where_the_note_defines_its_label() {
+    let text = "See [the note][ref], [Ref][], [ref], ![pic][ref], [none][] and [none].\n\n[ref]: Note.md \"Title\"\n[REF]: Other.md\n> [in quote]: <Quoted Note.md>\n";
+    let gates = obsidian();
+    let links = ["[the note][ref]", "[Ref][]", "[ref]"];
+    assert_eq!(texts(text, gates, Kind::Link), links);
+    assert_eq!(texts(text, gates, Kind::Image), ["![pic][ref]"]);
+    let labels = ["ref", "Ref", "ref", "ref"];
+    assert_eq!(texts(text, gates, Kind::LinkLabel), labels);
+    assert_eq!(texts(text, gates, Kind::LinkText), ["the note", "pic"]);
+    assert_eq!(texts(text, gates, Kind::LinkDefinition).len(), 3);
+    let tree = Tree::with(text, gates);
+    let defs = tree.definitions();
+    assert_eq!(defs.get("ref"), Some("Note.md"), "the first wins");
+    assert_eq!(defs.get("In   Quote"), Some("Quoted Note.md"));
+    assert_eq!(defs.get("none"), None);
+    // A definition can't interrupt a paragraph, and with footnotes `[^1]:` is a footnote.
+    for none in ["text\n[a]: b.md\n", "[^1]: b.md\n", "[a]: b.md and more\n"] {
+        let tree = Tree::with(none, gates);
+        assert!(tree.definitions().is_empty(), "{none:?}");
+    }
+    let plain = Tree::with("[^1]: b.md\n", Gates(0));
+    assert_eq!(plain.definitions().get("^1"), Some("b.md"));
+}
+
+#[test]
+fn a_tag_may_follow_the_markers_that_open_emphasis_and_highlights() {
+    let tags = |text: &str, gates: Gates| texts(text, gates, Kind::Tag);
+    let emphasis = "**#bold** _#slanted_ *#star* __#snake_case__ ***#both*** (**#paren**)\n";
+    assert_eq!(
+        tags(emphasis, obsidian()),
+        ["#bold", "#slanted", "#star", "#snake_case", "#both", "#paren"]
+    );
+    let marked = "==#marked== ~~#struck~~ **==#nested==**\n";
+    let all = ["#marked", "#struck", "#nested"];
+    assert_eq!(tags(marked, obsidian()), all);
+    assert_eq!(tags(marked, Gates::INDEX), all);
+    // GitHub has strikethroughs and no highlights.
+    let github = github().set(Syntax::Tags, true);
+    assert_eq!(tags(marked, github), ["#struck"]);
+    for none in [
+        "a#b",
+        "a**#b**",
+        "snake_#case",
+        "http://x.y/#frag",
+        "http://x.y/**#frag",
+        "[[#Heading]]",
+        "[[Note#Heading]]",
+        "[text](#heading)",
+        "[text](**#heading)",
+        "`a **#code**`",
+        "**#123**",
+        "=#one=",
+        "~#one~",
+    ] {
+        assert!(tags(none, obsidian()).is_empty(), "{none:?}");
+    }
+}
+
+#[test]
+fn an_edit_that_changes_the_definitions_reads_every_link_again() {
+    let text = "See [ref] here.\n\nMore text.\n\n[ref]: Note.md\n";
+    let gates = obsidian();
+    let tree = Tree::with(text, gates);
+    assert_eq!(texts(text, gates, Kind::LinkLabel), ["ref"]);
+    // Without its definition, `[ref]` in the first block is text.
+    let at = text.find("[ref]:").unwrap();
+    let cut = &text[..at];
+    let edited = tree.edit(cut, at..text.len(), 0);
+    assert_eq!(edited, Tree::with(cut, gates));
+    assert!(texts(cut, gates, Kind::LinkLabel).is_empty());
+    assert_eq!(edited.edit(text, at..at, text.len() - at), tree);
+    // An edit that leaves the definitions alone keeps them, and reads `[ref]` with them.
+    let at = text.find("More").unwrap();
+    let mut more = text.to_string();
+    more.insert_str(at, "[ref] ");
+    let edited = tree.edit(&more, at..at, 6);
+    assert_eq!(edited, Tree::with(&more, gates));
+    assert_eq!(edited.definitions(), tree.definitions());
+    assert_eq!(texts(&more, gates, Kind::LinkLabel), ["ref", "ref"]);
+}
+
 /// A small, seeded generator, so a failure prints the case that made it.
 struct Rng(u64);
 
@@ -265,6 +349,12 @@ const PIECES: &[&str] = &[
     "key:: ",
     "[k:: v]",
     " ^id",
+    "[r]: r.md",
+    "[r]",
+    "[r][]",
+    "[t][r]",
+    "**#t**",
+    "_#t_",
     "é",
     "\u{feff}",
 ];
