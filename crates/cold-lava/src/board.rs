@@ -3546,6 +3546,81 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A workspace folder with `B.canvas` in it, and its core.
+    fn workspace(name: &str, nodes: Vec<Value>) -> (PathBuf, PathBuf, Core) {
+        let dir = std::env::temp_dir().join(format!("cold-lava-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("B.canvas");
+        std::fs::write(&path, canvas(nodes)).unwrap();
+        let core = Core::open(&dir).unwrap();
+        (dir, path, core)
+    }
+
+    fn canvas(nodes: Vec<Value>) -> String {
+        json!({"nodes": nodes, "edges": []}).to_string()
+    }
+
+    fn on_disk(path: &Path) -> Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_outside_change_the_core_reports_is_merged_on_the_next_tick() {
+        let (dir, path, mut core) = workspace("board-core-event", vec![card("a", 0, "A")]);
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.doc.nodes[0].text = Some("A, ours".into());
+
+        // Two outside changes before one tick: the file as it is now is what merges.
+        let changed = [CoreEvent::BoardChanged("B.canvas".into())];
+        std::fs::write(&path, canvas(vec![card("a", 0, "A"), card("c", 300, "C")])).unwrap();
+        b.noticed(&core, &changed);
+        let theirs = vec![card("a", 0, "A"), card("c", 300, "C"), card("d", 600, "D")];
+        std::fs::write(&path, canvas(theirs)).unwrap();
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+
+        let saved = on_disk(&path);
+        assert_eq!(ids(&saved, "nodes"), ["a", "c", "d"]);
+        assert_eq!(saved["nodes"][0]["text"], "A, ours", "our edit is kept");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_outside_change_waits_for_the_card_being_edited_and_a_save_of_its_own_is_not_one() {
+        let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
+        let (dir, path, mut core) = workspace("board-core-edit", cards.clone());
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let changed = [CoreEvent::BoardChanged("B.canvas".into())];
+
+        b.mode = Mode::Edit {
+            id: "b".into(),
+            buf: "Bravo, checked".into(),
+            is_new: false,
+        };
+        let theirs = [cards, vec![card("c", 600, "Charlie")]].concat();
+        std::fs::write(&path, canvas(theirs)).unwrap();
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.doc.nodes.len(), 2, "not under a card that is being typed");
+        b.finish_edit();
+        let saved = on_disk(&path);
+        assert_eq!(ids(&saved, "nodes"), ["a", "b", "c"]);
+        assert_eq!(saved["nodes"][1]["text"], "Bravo, checked");
+
+        // The core reports the board's own save as well: there is nothing to merge in it.
+        let (text, undo) = (std::fs::read(&path).unwrap(), b.undo.len());
+        b.msg = None;
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None);
+        assert_eq!(std::fs::read(&path).unwrap(), text);
+        assert_eq!((b.doc.nodes.len(), b.undo.len()), (3, undo));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn ids(v: &Value, key: &str) -> Vec<String> {
         v[key]
             .as_array()
