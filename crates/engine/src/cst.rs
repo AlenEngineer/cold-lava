@@ -200,7 +200,8 @@ kinds! {
     Highlight,
     /// `[^label]`. Whether the note has that footnote is the reader's to say.
     FootnoteRef,
-    /// `[^label]:` starting a paragraph, which is then the footnote's text.
+    /// `[^label]:` starting a line of a paragraph: from there on the paragraph is the
+    /// footnote's text.
     FootnoteMarker,
     /// `<https://example.com>` or `<name@example.com>`.
     Autolink,

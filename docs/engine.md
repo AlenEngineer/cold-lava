@@ -274,8 +274,9 @@ change what it shows, never how it works.
   - *What text holds* (#212) is read after that, in what is left as `Text`, a block at a
     time: escapes (`\*`), what is written as a character reference (`&amp;`), autolinks
     (`<https://…>`) and inline HTML as CommonMark defines them, a footnote's reference
-    (`[^label]`) and the `[^label]:` that starts its paragraph (`FootnoteMarker`: the
-    paragraph is the footnote's text, and the blocks are what they were), a hard break (two
+    (`[^label]`) and the `[^label]:` that starts a line of a paragraph (`FootnoteMarker`:
+    from there on the paragraph is the footnote's text, and the blocks are what they were),
+    a hard break (two
     blanks or a `\` before the line break, where the block has another line), and emphasis,
     strong, strikethroughs and highlights. `*` and `_` follow CommonMark's delimiter runs
     (left- and right-flanking, `_` not inside a word, the rule of three), with the nearest

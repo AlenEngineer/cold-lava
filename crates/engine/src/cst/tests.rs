@@ -450,6 +450,12 @@ fn text_holds_escapes_references_html_autolinks_footnotes_and_hard_breaks() {
         marker.parent().unwrap().text().to_string(),
         "[^1]: The note,\nlazily.\n"
     );
+    // One footnote under another starts on a later line of the same paragraph, as a block
+    // would: indented less than four.
+    let list = "Text.\n[^1]: One.\n  [^2]: Two,\n    [^3]: still two.\n";
+    assert_eq!(texts(list, ob, Kind::FootnoteMarker), ["[^1]:", "[^2]:"]);
+    assert_eq!(texts(list, ob, Kind::FootnoteRef), ["[^3]"]);
+    assert_eq!(texts(list, ob, Kind::Paragraph).len(), 1);
     let commonmark = Gates::of(&Flavour::built_in("commonmark").unwrap());
     assert!(texts(notes, commonmark, Kind::FootnoteRef).is_empty());
     assert!(texts(notes, commonmark, Kind::FootnoteMarker).is_empty());

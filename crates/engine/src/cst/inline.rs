@@ -683,8 +683,9 @@ enum Rec {
     Start(Kind),
     Finish,
     Tok(Kind, usize, usize),
-    /// A line of the block's text starts: where it is.
-    Line(usize, usize),
+    /// A line of the block's text starts: where it is, and where the footnote's `[^label]:`
+    /// that starts it ends.
+    Line(usize, usize, Option<usize>),
 }
 
 /// What a piece of a `Text` token becomes.
@@ -732,8 +733,6 @@ struct Held<'s, 't, B> {
     /// The block being read, and how many lines of its text were read.
     kind: Option<Kind>,
     lines: usize,
-    /// Where the `[^label]:` that starts the paragraph being held ends.
-    footnote: Option<usize>,
 }
 
 impl<'t, B: Sink<'t>> Sink<'t> for Held<'_, 't, B> {
@@ -772,7 +771,6 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
             hold: false,
             kind: None,
             lines: 0,
-            footnote: None,
         }
     }
 
@@ -781,7 +779,6 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
         self.release();
         self.kind = kind;
         self.lines = 0;
-        self.footnote = None;
     }
 
     /// A line of the block's text, `a..z`, is about to be read.
@@ -789,17 +786,22 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
         if !self.g.text() {
             return;
         }
-        let first = self.lines == 0 && self.kind == Some(Paragraph);
+        let first = self.lines == 0;
         self.lines += 1;
         let line = &self.text[a..z];
         if !self.hold && !may_hold_more(line) {
             return;
         }
         self.hold = true;
-        if first && self.g.has(S::Footnotes) {
-            self.footnote = footnote_marker(line).map(|n| a + n);
-        }
-        self.recs.push(Rec::Line(a, z));
+        // A footnote starts on a line of a paragraph, where a block could start: its first,
+        // or one indented less than four.
+        let indent = || self.text[..a].bytes().rev().take_while(|c| is_blank(*c));
+        let starts = self.kind == Some(Paragraph)
+            && self.g.has(S::Footnotes)
+            && (first || indent().count() < 4);
+        let footnote = starts.then(|| footnote_marker(line)).flatten();
+        let footnote = footnote.map(|len| a + len);
+        self.recs.push(Rec::Line(a, z, footnote));
     }
 
     /// What was held goes on to the sink, its text cut.
@@ -809,7 +811,7 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
         }
         self.hold = false;
         let recs = std::mem::take(&mut self.recs);
-        let cuts = cuts(self.text, self.g, &recs, self.footnote.take());
+        let cuts = cuts(self.text, self.g, &recs);
         let text = self.text;
         let mut cuts = cuts.iter().peekable();
         for rec in &recs {
@@ -900,7 +902,7 @@ fn entity(t: &[u8]) -> Option<usize> {
         Some([b'#', _]) => (2, u8::is_ascii_digit),
         _ => (1, u8::is_ascii_alphanumeric),
     };
-    let n = t[from.min(t.len())..].iter().take_while(|c| ok(*c)).count();
+    let n = t[from.min(t.len())..].iter().take_while(|c| ok(c)).count();
     ((1..=32).contains(&n) && t.get(from + n) == Some(&b';')).then_some(from + n + 1)
 }
 
@@ -938,16 +940,16 @@ fn angle(s: &str) -> Option<(Piece, usize)> {
     html.find(s).map(|m| (Piece::Token(InlineHtml), m.end()))
 }
 
-/// Where the `Text` tokens of the held `recs` are cut, in order. `footnote` is where the
-/// `[^label]:` starting the block's first line ends.
-fn cuts(text: &str, g: Gates, recs: &[Rec], footnote: Option<usize>) -> Vec<Cut> {
+/// Where the `Text` tokens of the held `recs` are cut, in order.
+fn cuts(text: &str, g: Gates, recs: &[Rec]) -> Vec<Cut> {
     let t = text.as_bytes();
     let mut cuts: Vec<Cut> = Vec::new();
     let mut runs: Vec<Run> = Vec::new();
     // The inline nodes open; the block's own text is scope 0.
     let mut scopes: Vec<usize> = Vec::new();
     let mut line = (0, 0);
-    let mut lines = 0;
+    // Where the footnote's `[^label]:` that starts the line ends, until its text is read.
+    let mut footnote = None;
     // The hard break the line just read ends with, if another line follows it.
     let mut hard: Option<(usize, usize)> = None;
     for (k, rec) in recs.iter().enumerate() {
@@ -960,13 +962,13 @@ fn cuts(text: &str, g: Gates, recs: &[Rec], footnote: Option<usize>) -> Vec<Cut>
                 scopes.pop();
                 continue;
             }
-            Rec::Line(a, z) => {
+            Rec::Line(a, z, marker) => {
                 if let Some((a, z)) = hard.take() {
                     let piece = Piece::Token(HardBreak);
                     cuts.push(Cut { a, z, piece });
                 }
                 line = (a, z);
-                lines += 1;
+                footnote = marker;
                 continue;
             }
             Rec::Tok(Text, a, z) => (a, z),
@@ -974,7 +976,7 @@ fn cuts(text: &str, g: Gates, recs: &[Rec], footnote: Option<usize>) -> Vec<Cut>
         };
         let scope = scopes.last().copied().unwrap_or(0);
         let mut i = a;
-        if let Some(end) = footnote.filter(|&end| lines == 1 && a == line.0 && end <= z) {
+        if let Some(end) = footnote.take().filter(|&end| a == line.0 && end <= z) {
             let piece = Piece::Node(FootnoteMarker);
             cuts.push(Cut { a, z: end, piece });
             i = end;
@@ -1125,7 +1127,9 @@ fn emphasis(runs: &[Run], group: &[usize], cuts: &mut Vec<Cut>) -> Vec<(usize, u
             let fits = |o: &Opener| {
                 o.ch == r.ch
                     && (r.ch != b'~' || o.run == r.len)
-                    && (!(both || o.both) || (r.len + o.run) % 3 != 0 || r.len % 3 == 0)
+                    && (!(both || o.both)
+                        || !(r.len + o.run).is_multiple_of(3)
+                        || r.len.is_multiple_of(3))
             };
             let Some(found) = stack.iter().rposition(fits) else {
                 break;
