@@ -26,7 +26,7 @@ keys x
 wait-for ☑ Pack the gas masks
 screen
 keys v
-wait-for Inbox/Field Season  reading
+wait-for Inbox/Field Season › To do  reading
 expect ☑ Pack the gas masks
 keys ctrl+o
 wait-for ▾ To do  2
