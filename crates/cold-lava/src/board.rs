@@ -500,6 +500,20 @@ impl Board {
         self.sel.as_deref()
     }
 
+    /// What closing the board now would lose, in words for the status line: a draft in the
+    /// shape editor, the text of a card being typed, edits a refused save left unsaved.
+    pub fn unsaved_work(&self) -> Option<&'static str> {
+        if self.editor.as_ref().is_some_and(|e| e.unsaved()) {
+            Some("the shape editor has unsaved changes")
+        } else if matches!(self.mode, Mode::Edit { .. }) {
+            Some("a card is being edited")
+        } else if self.unsaved {
+            Some("the whiteboard's last edits aren't saved")
+        } else {
+            None
+        }
+    }
+
     /// Where Back and Forward lead from here, for the history keys and the status line.
     pub fn navigate(&mut self, nav: Nav) {
         self.nav = Some((nav, commands::history_keys(&self.keys)));

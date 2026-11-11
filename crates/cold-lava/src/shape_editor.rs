@@ -400,7 +400,8 @@ impl Editor {
         self.reload();
     }
 
-    fn unsaved(&self) -> bool {
+    /// Whether the draft differs from what the file has for this shape.
+    pub fn unsaved(&self) -> bool {
         match &self.saved {
             Some((id, d)) => *id != self.id || *d != self.def,
             None => !self.def.parts.is_empty(),

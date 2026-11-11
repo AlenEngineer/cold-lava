@@ -1023,7 +1023,10 @@ impl Home {
                     self.refresh_backlinks();
                 }
             }
-            Effect::RunCommand { id, args } => self.requested.push((ext, id, args)),
+            Effect::RunCommand { id, args } => match self.unsaved_in_front() {
+                Some(why) => self.held_back(ext, &format!("run {id}"), why),
+                None => self.requested.push((ext, id, args)),
+            },
             Effect::Saved { note } => {
                 if let Some(core) = self.core.as_mut() {
                     core.note_changed(&note);
@@ -1068,6 +1071,24 @@ impl Home {
         }
     }
 
+    /// What the whiteboard in front would lose if something else took its place now (a draft
+    /// in its shape editor, a card being typed). Only the user's own keys leave it then: what
+    /// an extension asks for that would is not done (`held_back`).
+    fn unsaved_in_front(&self) -> Option<&'static str> {
+        match (&self.mode, &self.board) {
+            (Mode::Board, Some(b)) => b.unsaved_work(),
+            _ => None,
+        }
+    }
+
+    /// Says that what `ext` wanted (`to`: "open X", "run X") was not done, because of `why`.
+    /// It is dropped, not kept for later: by then the user is somewhere else.
+    fn held_back(&mut self, ext: ExtId, to: &str, why: &str) {
+        let name = &self.registry.manifest(ext).name;
+        let msg = format!("{name} wanted to {to}: not while {why}");
+        self.flash(msg);
+    }
+
     /// Show an extension's new view in place of what showed, which Back returns to.
     fn open_view(
         &mut self,
@@ -1092,6 +1113,9 @@ impl Home {
             matches!(self.mode, Mode::View { owner, view: v, .. } if (owner, v) == (ext, view));
         if shown || !self.views.has(ext, view) {
             return;
+        }
+        if let Some(why) = self.unsaved_in_front() {
+            return self.held_back(ext, "show a view", why);
         }
         if let Some(here) = self.here() {
             self.history.visit(here);
@@ -1123,6 +1147,9 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
+        if let Some(why) = self.unsaved_in_front() {
+            return self.held_back(ext, &format!("open {}", note.display()), why);
+        }
         let owned = self.core.as_ref().and_then(|c| {
             let rel = note.strip_prefix(c.root()).unwrap_or(note);
             let rel = rel.to_string_lossy().replace('\\', "/");

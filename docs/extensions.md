@@ -2181,7 +2181,15 @@ zooming wait.
   scene's pixels would show through the list. Enter opens the board from the place under it,
   and Esc leaves that place as it was. `board-layers-extensions.drive` checks with
   `open-tasks` that a task another program writes reaches the count under the picker and in
-  the editor. What an extension asks for inside the board's calls to it about its
+  the editor. Since the loop goes on under them, an extension could take the menu elsewhere
+  while the board holds work that isn't saved: a draft in the shape editor, a card being typed,
+  edits a refused save left unsaved (`Board::unsaved_work`). The menu doesn't let it: opening a
+  note or a file, showing a view and running a command are then not done, and the status line
+  says so (`open-tasks wanted to open X: not while the shape editor has unsaved changes`). The
+  request is dropped, not kept for later. Status words, notifications and a view's content
+  still arrive, and the user's own keys leave as before (`q` in the editor warns once about
+  unsaved changes). `board-keeps-drafts.drive` checks both cases with an example patched to
+  open a note unasked. What an extension asks for inside the board's calls to it about its
   shapes (`shape/region`, a gesture's steps: `ui/notify`, `ui/status`, opening a note) the
   board keeps (`Board::take_asked`) and the menu does after each tick, key and mouse event, as
   after any call to an extension, within the same allowance per frame. `cold-lava board FILE`
