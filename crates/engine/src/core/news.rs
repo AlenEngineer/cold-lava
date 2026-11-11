@@ -18,6 +18,10 @@
 //!   change from being counted twice. `rescan_now` still leaves its reset in the queue without
 //!   an event for `poll` and without `has_unseen`, so whoever calls it takes the news at once,
 //!   for its subscribers to be up to date.
+//! - Not so yet: an item that moves without its own lines changing (a line added above it)
+//!   is no news, since its `rev` is the same. A subscriber that applies `items/changed` keeps
+//!   its old `line`; one that queries again hears nothing to query on. The tests here leave
+//!   every item they keep where it is.
 //! - News carries no order. The order is `items/query`'s: notes by path, then the files other
 //!   owners read by path, each file's items as the file has them. A subscriber that shows rows
 //!   queries again on any news of its subscription, and then has them in that order.
@@ -454,8 +458,8 @@ const PLAN: &str = "# Plan\nSee [[Ash]].\n\n\
 const ASH: &str = "# Ash\n- [ ] Sweep the ash off the roof #ash\n";
 const READING: &str = "- [ ] Read the report 📅 2026-11-20\n";
 const BOARD: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Check the seismograph\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}\n";
-/// `BOARD` with a line above its task, and a second card after it.
-const BOARD_OF_TWO: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"Seismograph\\n- [ ] Check the seismograph\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"t\",\"type\":\"text\",\"text\":\"- [ ] Tighten the bolts\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}\n";
+/// `BOARD` with a card before its own, whose task is on that card's second line.
+const BOARD_OF_TWO: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"t\",\"type\":\"text\",\"text\":\"Bolts\\n- [ ] Tighten the bolts\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Check the seismograph\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}\n";
 
 /// Two notes, a canvas (the engine's own owner) and a `.lines` file (the harness's), with five
 /// tasks between them.
@@ -586,8 +590,8 @@ fn rows_are_in_the_query_s_order_after_a_change_and_after_a_reset() {
         "Pay rent",
         "Water plants",
         "Map the zone",
-        "Check the seismograph",
         "Tighten the bolts",
+        "Check the seismograph",
         "Read the report",
     ];
     assert_eq!(h.rows("table", &want), want, "after items/changed");
