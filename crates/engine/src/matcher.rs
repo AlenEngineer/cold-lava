@@ -2009,6 +2009,23 @@ Survey the rim ~3h, not `~4h`, not~6h.
         );
     }
 
+    /// What a typed note's own `links` hold, kept as it was when #206 looked at it: the
+    /// frontmatter's wikilinks, then the body's links to notes as written, by wikilink (in
+    /// the flavours that have them), by Markdown link or by reference. Not an embed, not an
+    /// image, and not a link whose text started on an earlier line.
+    #[test]
+    fn a_notes_own_links_leave_out_embeds_images_and_a_link_over_two_lines() {
+        let s = settings(
+            "[page]\non = \"note\"\nwhere.file-type = [\"md\"]\nfields.links = { inlines = \"links\", type = \"link\" }\n",
+        );
+        let text = "---\nup: \"[[Parent]]\"\n---\nSee [[Wiki]], ![[Embedded]], [md](Md.md \"title\"), [pointy](<Pointy Note.md>), ![img](Image.md), [by ref][r] and [a text that\ngoes on](Wrapped.md).\n\n| a |\n| --- |\n| [[Cell\\|alias]] |\n\n[r]: Reference.md\n";
+        let all = extract("Page.md", text, &s);
+        assert_eq!(
+            fields(one(&all, "page"))["links"],
+            json!(["Parent", "Wiki", "Md", "Pointy Note", "Reference", "Cell"])
+        );
+    }
+
     #[test]
     fn a_tasks_tags_and_links_are_the_ones_the_tree_reads_on_its_lines() {
         let s = settings_with(vec![Layer::built_in()]);

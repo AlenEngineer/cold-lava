@@ -91,6 +91,7 @@ const EDGES: &[&str] = &[
     "lone \r in a line\r\n",
     "See [text][ref], [ref][], [ref], ![img][ref] and [none].\n\n[ref]: Note.md \"Title\"\n  [Other Ref]: <a b.md>\n> [q]: q.md\n- [i]: i.md\n",
     "**#bold** _#slanted_ ==#marked== ~~#struck~~ a**#b** snake_#case\n",
+    "| a | b |\n| - | - |\n| [[B\\|x]] [[\\|y]] | ![[B#H\\|z]] [t](<a b.md> \"c (d)\") |\n\n[[B\\|x]] [a](B.md (t)) [b](<a (b).md> 'c') [c](a_(b).md) [d]( e.md ) [f](g\\) [h](i (j\n",
     "A [link whose text\n> goes on\nto here](Note.md) ] ](x) [![img](p.png)](n.md) [open\n\n[Source]: [[Book]]\n](y)\n",
 ];
 
@@ -248,6 +249,57 @@ fn a_links_text_may_hold_an_image_and_end_on_a_later_line() {
     assert!(Tree::with(field, gates).definitions().is_empty());
     let defs = Tree::with(field, github());
     assert_eq!(defs.definitions().get("source"), Some("[[Book]]"));
+}
+
+#[test]
+fn a_wikilink_in_a_table_cell_may_escape_the_pipe_before_its_alias() {
+    let gates = obsidian();
+    let table = "| a | b |\n| --- | --- |\n| [[B\\|x]] | ![[B#H\\|y]] |\n";
+    assert_eq!(texts(table, gates, Kind::Target), ["B", "B"]);
+    assert_eq!(texts(table, gates, Kind::Anchor), ["#H"]);
+    assert_eq!(texts(table, gates, Kind::Alias), ["x", "y"]);
+    let pipes = texts(table, gates, Kind::Pipe);
+    assert_eq!(pipes.iter().filter(|p| *p == "\\|").count(), 2, "{pipes:?}");
+    // Outside a cell the backslash is the target's.
+    let outside = "[[B\\|x]] and [[B#H\\|y]]\n";
+    assert_eq!(texts(outside, gates, Kind::Target), ["B\\", "B"]);
+    assert_eq!(texts(outside, gates, Kind::Anchor), ["#H\\"]);
+    assert_eq!(texts(outside, gates, Kind::Pipe), ["|", "|"]);
+}
+
+#[test]
+fn a_link_ends_after_its_destination_and_its_title() {
+    let dests = |text: &str| texts(text, obsidian(), Kind::LinkDest);
+    assert_eq!(
+        dests(
+            "[a](B.md (title)) [b](<a (b).md> \"t (x)\") [c](a_(b).md) d) ![e](p.png 'it\\'s (x)')\n"
+        ),
+        [
+            "B.md (title)",
+            "<a (b).md> \"t (x)\"",
+            "a_(b).md",
+            "p.png 'it\\'s (x)'"
+        ]
+    );
+    // What CommonMark reads as no link ends at its first `)`, as it always did.
+    assert_eq!(
+        dests("[a](b (c d) [e](f \"g) h) [i](j(k) [l](<m) n)\n"),
+        ["b (c d", "f \"g", "j(k", "<m"]
+    );
+    for (written, dest) in [
+        ("B.md", Some("B.md")),
+        ("B.md#H \"title\"", Some("B.md#H")),
+        ("<My Note.md> 'title'", Some("My Note.md")),
+        (" B.md (title) ", Some("B.md")),
+        ("", Some("")),
+        ("B.md and more", None),
+        ("B.md \"title", None),
+        ("<B.md>x", None),
+        ("<B.md", None),
+    ] {
+        let found = link_destination(written).map(|d| &written[d]);
+        assert_eq!(found, dest, "{written:?}");
+    }
 }
 
 #[test]

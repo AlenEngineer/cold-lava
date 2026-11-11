@@ -170,12 +170,11 @@ impl Link<'_> {
     }
 }
 
-/// The file a Markdown link's destination names, as written before its `#heading`. `None` for
-/// a web address, and for a destination with a space in it (one with a title).
+/// The file a Markdown link's destination names, as written before its `#heading`; the
+/// destination comes without its title or its `<>`. `None` for a web address.
 fn md_path(dest: &str) -> Option<&str> {
     let path = dest.split('#').next().unwrap_or_default();
-    let named = !path.is_empty() && !path.contains(char::is_whitespace) && !path.contains("://");
-    named.then_some(path)
+    (!path.is_empty() && !path.contains("://")).then_some(path)
 }
 
 /// A note's links, collected from the steps of a walk through its syntax tree.
@@ -195,7 +194,12 @@ impl<'t> Links<'t> {
         };
         let (at, target, by) = match kind {
             Kind::Target => (at, Some(text), By::Wiki),
-            Kind::LinkDest => (at, md_path(text), By::Inline),
+            Kind::LinkDest => {
+                let Some(dest) = cst::link_destination(text) else {
+                    return;
+                };
+                (at + dest.start, md_path(&text[dest]), By::Inline)
+            }
             Kind::DefinitionDest => {
                 let dest = cst::destination(text);
                 let target = md_path(&text[dest.clone()]);
@@ -715,12 +719,12 @@ mod tests {
 
     #[test]
     fn relink_rewrites_every_style_in_one_note_and_keeps_every_other_byte() {
-        let text = "---\nup: \"[[B]]\"\n---\r\n# [[B|shown]] and [[B#H]]\r\n  - [ ] ![[B]] [md](B.md#H) ![i](b.png)  \r\n> [a [[B]] b](B.md)\n\n| [[B]] | [y](B.md) |\n| --- | --- |\n\n[r]: B.md\nlast [[B]]";
+        let text = "---\nup: \"[[B]]\"\n---\r\n# [[B|shown]] and [[B#H]]\r\n  - [ ] ![[B]] [md](B.md#H) ![i](b.png)  \r\n> [a [[B]] b](B.md)\n\n| [[B]] | [y](B.md) |\n| --- | --- |\n| [[B\\|shown]] | ![[B#H\\|part]] |\n\n[t](B.md \"title\") [t](B.md 'title') [t](B.md#H (title)) ![i](b.png \"pic\")\n[p](<B.md>) [p](<B.md#H> \"title\") ![i](<b.png>)\n\n[r]: B.md\nlast [[B]]";
         let (new, changes, links) = relink(text, b_to_c);
         assert_eq!(new, text.replace('B', "C").replace("b.png", "c.png"));
-        assert_eq!(links, 12);
+        assert_eq!(links, 21);
         let lines: Vec<usize> = changes.iter().map(|c| c.line).collect();
-        assert_eq!(lines, [2, 4, 5, 6, 8, 11, 12]);
+        assert_eq!(lines, [2, 4, 5, 6, 8, 10, 12, 13, 15, 16]);
         assert_eq!(
             (changes[2].before.as_str(), changes[2].after.as_str()),
             (
@@ -865,7 +869,7 @@ mod tests {
     #[test]
     fn read_tidy_and_rename_agree_on_every_link_of_the_corpus() {
         let mut total = 0;
-        for (name, text) in cst::corpus() {
+        for (name, text) in corpus_and_forms() {
             let read = sorted(parse(&text).0.into_iter().map(|r| r.target).collect());
             let tidy = link_targets(&text).into_iter().filter_map(clean_target);
             assert_eq!(sorted(tidy.collect()), read, "{name}: tidy and read");
@@ -916,17 +920,37 @@ mod tests {
     /// a `#heading`, a definition's title and its `<>` stay.
     fn names_another_file(kind: Kind, was: &str, is: &str) -> bool {
         let heading = |dest: &str| dest.find('#').map(|i| dest[i..].to_string());
+        let around = |a: Range<usize>, b: Range<usize>| {
+            was[..a.start] == is[..b.start]
+                && was[a.end..] == is[b.end..]
+                && heading(&was[a]) == heading(&is[b])
+        };
         match kind {
             Kind::Target => true,
-            Kind::LinkDest => heading(was) == heading(is),
-            Kind::DefinitionDest => {
-                let (a, b) = (cst::destination(was), cst::destination(is));
-                was[..a.start] == is[..b.start]
-                    && was[a.end..] == is[b.end..]
-                    && heading(&was[a]) == heading(&is[b])
-            }
+            Kind::LinkDest => match (cst::link_destination(was), cst::link_destination(is)) {
+                (Some(a), Some(b)) => around(a, b),
+                _ => false,
+            },
+            Kind::DefinitionDest => around(cst::destination(was), cst::destination(is)),
             _ => false,
         }
+    }
+
+    /// Notes with the forms of #206, read with the corpus: an aliased wikilink in a table, a
+    /// title in each spelling, a destination in `<>`, parentheses in a destination, and blanks
+    /// around one.
+    const FORMS: &[&str] = &[
+        "| note | part |\n| --- | --- |\n| [[B\\|bee]] | ![[B#H\\|part]] and [[B\\|b]] |\n\nOutside a table: [[B\\|bee]].\n",
+        "[a](B.md \"title\") [b](B.md 'title') [c](B.md (title)) [d](B.md#H \"a (b) c\") ![e](b.png \"pic\")\n",
+        "[a](<B.md>) [b](<B.md#H> \"title\") ![c](<b.png>) [d](<My Note.md>) [e](<Notes (old)/My Note.md>)\n\n[r]: <My Note.md> 'title'\n",
+        "[a](Notes%20(old)/B.md), [b]( B.md ), [c](B.md and more) and [w](https://en.wikipedia.org/wiki/B_(letter)).\n",
+        "A [link whose text\ngoes on](<My Note.md> \"title\") and | [[B\\|x]] | in a paragraph.\n",
+    ];
+
+    /// The corpus, and `FORMS`.
+    fn corpus_and_forms() -> Vec<(String, String)> {
+        let forms = FORMS.iter().map(|f| (format!("{f:?}"), f.to_string()));
+        cst::corpus().into_iter().chain(forms).collect()
     }
 
     /// `new` is `old` with `links` link targets rewritten and nothing else: the two trees have
@@ -953,7 +977,7 @@ mod tests {
     #[test]
     fn a_relink_of_the_corpus_changes_only_the_targets_it_rewrites() {
         let mut total = 0;
-        for (name, text) in cst::corpus() {
+        for (name, text) in corpus_and_forms() {
             assert_eq!(relink(&text, |_, _| None).0, text, "{name}: nothing moved");
             let (new, changes, links) = relink(&text, |raw, _| Some(format!("X{raw}")));
             only_targets_differ(&name, &text, &new, links);
