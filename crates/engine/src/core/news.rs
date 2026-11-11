@@ -78,9 +78,7 @@ impl Batch {
         self.of(client)
             .filter_map(|n| match n {
                 News::LinksChanged {
-                    created,
-                    removed,
-                    ..
+                    created, removed, ..
                 } => Some((created.clone(), removed.clone())),
                 _ => None,
             })
