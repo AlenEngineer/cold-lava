@@ -1630,7 +1630,7 @@ fields.w = { capture = "w" }
         // Headings.
         "#NoSpace\n# Closed #\n## Trailing ##   \n#\n   ### Indented\nSetext one\nline two\n===\n> Quoted setext\n> ---\n- # In an item\n  Setext in an item\n  ---\n",
         // Tables.
-        "| Name | VEI | Note |\n|---|:-:|--:|\n| [[Krakatoa]] the big | 6 | big |\n| a \\| b | 2 |\n| x | y | z | extra |\nno pipes row\n\n> | q | r |\n> |---|---|\n> | 1 | 2 |\n\n| [[A\\|B]] | c |\n| --- | --- |\n| d | [[E\\|F]] |\n|| empty |\n  | indented | row |\n",
+        "| Name | VEI | Note |\n|---|:-:|--:|\n| [[Krakatoa]] the big | 6 | big |\n| a \\| b | 2 |\n| x | y | z | extra |\nno pipes row\n\n> | q | r |\n> |---|---|\n> | 1 | 2 |\n\n| [[A]] | c |\n| --- | --- |\n| d | [[E]] |\n|| empty |\n  | indented | row |\n",
         // Fences.
         "~~~md\n- [ ] in tilde\n~~~\n````\n```\n- [ ] in nested\n```\n````\n- item\n  ```\n  - [ ] in item fence\n  ```\n- [ ] after\n```\nunclosed\n- [ ] in unclosed\n",
         // Callouts.
@@ -1679,6 +1679,9 @@ fields.w = { capture = "w" }
         // A highlight was text to pulldown-cmark, so the tag right after its `==` was none. It
         // is one in Obsidian.
         "Read ==#marked==.\n",
+        // `[[A\|B]]` in a table cell, where the pipe before the alias is escaped so that it
+        // doesn't end the cell, linked to `A\`. The note is `A`.
+        "| [[A\\|B]] | c |\n| --- | --- |\n| d | [[E\\|F]] |\n",
     ];
 
     /// How the tree's items and pulldown-cmark's differ for one note, if they do.
