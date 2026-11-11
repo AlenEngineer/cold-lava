@@ -301,7 +301,9 @@ change what it shows, never how it works.
     `relink`, `link_targets` and the matcher's `line_links` still read lines, so a rename
     doesn't rewrite a definition's destination yet, `tidy` doesn't count a reference link,
     and a task's own `tags` and `links` fields don't see either; moving them onto the tree
-    is #140's next step.
+    is #140's next step. Reading reference links and tags after markers costs the scan
+    nothing that shows: on a GitHub runner `read` took 91.2 ms for 3,300 notes where it took
+    90.5 ms before, and that build with a function nothing calls added took 90.1 to 91.5 ms.
   - *Items:* `items::extract` walks the tree with `cst::read`, in the workspace's flavour, over
     the note without its `%%comments%%` (the code a `%%` is in comes from the tree too), where
     it read pulldown-cmark's events before. Ids, revs and spans hang on the blocks, so the walk
