@@ -28,3 +28,13 @@ jobs:
               (cd $side && cargo test --release -p cold-lava-engine -- --ignored --nocapture read_cost items_cost keystroke 2>&1 | grep -v "^test \|^running\|^$\|Finished\|Running\|Doc-tests\|test result")
             done
           done
+      - name: The instructions the scan's read takes, by function (callgrind)
+        run: |
+          sudo apt-get install -y valgrind > /dev/null
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for side in ../main .; do
+            bin=$(cd $side && ls -t target/release/deps/cold_lava_engine-* | grep -v '\.d$' | head -1)
+            echo "== $side ($(git -C $side rev-parse --short HEAD)): $bin"
+            (cd $side/crates/engine && valgrind --tool=callgrind --callgrind-out=/tmp/callgrind.out "../../$bin" --ignored --nocapture read_cost 2>&1 | grep -v "^==\|^test \|^running\|^$")
+            callgrind_annotate /tmp/callgrind.out | head -48 | cut -c1-220
+          done
