@@ -652,12 +652,12 @@ impl<'a> Walk<'a> {
                     wiki.push_str(text);
                 }
             }
+            // The tree says where the destination is in what the link points to. Where it
+            // is none (`[a](B.md and more)`), the link names no note, here as in the index.
             Kind::LinkDest if self.link && !self.image && self.wants.links => {
-                let dest = match text.strip_prefix('<') {
-                    Some(pointy) => pointy.split('>').next(),
-                    None => text.split_whitespace().next(),
-                };
-                self.md_link(dest.unwrap_or_default());
+                if let Some(dest) = cst::link_destination(text) {
+                    self.md_link(&text[dest]);
+                }
             }
             Kind::LinkLabel if self.link && !self.image && self.wants.links => {
                 if let Some(dest) = self.defs.get(text) {
@@ -1642,6 +1642,9 @@ fields.w = { capture = "w" }
         "See [the note][n], [N][], [n] and ![pic][n]; [web][w], [missing][y] and [y].\n\n[n]: Note.md\n[w]: https://example.com \"Title\"\n[N]: Other.md\n",
         // Definitions in a quote and in a list item, and before a paragraph's text.
         "> [q]: Quoted.md\n> the text with [q]\n\n- [i]: Item.md\n- see [i] and [Q]\n\n[t]: <Top Note.md> 'title'\nSetext after a definition, [t]\n===\n",
+        // Markdown links whose destination has a title, is in `<>` or is none: what follows
+        // `B.md` is no title, so the link names no note.
+        "[a](B.md and more) [b](C.md \"title\") [c](<D E.md>) [d]( F.md ) [e](G.md 'x' y) [f](<H.md>z)\n",
         // Tags right after the markers that open emphasis and a strikethrough.
         "Read **#bold** and _#slanted_, *#star*, __#under__, ***#both*** and ~~#gone~~, but a#b and http://x.y/#frag are no tags.\n",
     ];
@@ -1734,6 +1737,22 @@ fields.w = { capture = "w" }
             "{} read differently:\n{}",
             differ.len(),
             differ.join("\n")
+        );
+    }
+
+    /// A Markdown link names a note where the tree reads a destination, as the index counts
+    /// it: `[a](B.md and more)` was a link to `B` here and none there.
+    #[test]
+    fn a_link_names_a_note_where_the_tree_reads_its_destination() {
+        let text = "[a](B.md and more) [b](C.md \"title\") [c](<D E.md>) [d]( F.md ) [e](G.md#h)\n";
+        let all = extract("Note.md", text, &every_type("obsidian"));
+        let page = all.iter().find(|i| i.data.kind() == "page").unwrap();
+        let Data::Typed(page) = &page.data else {
+            panic!("{page:?}")
+        };
+        assert_eq!(
+            page.fields.get("links"),
+            Some(&json!(["C", "D E", "F", "G"]))
         );
     }
 
