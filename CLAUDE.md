@@ -37,7 +37,7 @@ required checks on `main`.
 
 ## Architecture
 
-A Cargo workspace of five crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
+A Cargo workspace of six crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
 `[workspace.package]`; `example-workspace/`, `docs/` and `scripts/` stay at the root.
 
 - `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
@@ -45,8 +45,17 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `crates/cold-lava`: the `cold-lava` binary (extensions and UI below, `tests/` with the drive
   scripts and goldens). `main.rs` imports the engine's modules by name, so `crate::workspace` etc.
   work in the binary.
-- `crates/views`: `cold-lava-views`, the frontend framework, empty on purpose: pieces move into it
-  from `crates/cold-lava` once a second frontend needs them (`docs/engine.md`, "The frontend").
+- `crates/host`: `cold-lava-host`, the extension host every frontend shares (the host below).
+  It has no UI and must not depend on ratatui, crossterm, portable-pty or vt100; it depends on
+  the engine and on `cold-lava-views`, and the engine never depends on it. The direction is
+  frontends → host → views → engine (`crates/host/tests/headless.rs` walks `Cargo.lock`, as
+  `cargo tree -p cold-lava-host` would).
+- `crates/views`: `cold-lava-views`, the frontend framework. Today it holds the view vocabulary
+  as serde data, because the host names it: `list.rs`, `table.rs`, `image.rs`, `scene.rs`
+  (`List`, `Table`, `Image`, `Scene` and their events) and `view.rs`, the view gateway's
+  messages (`Content`, `Event`, `ViewNews`, the bounds). No UI dependency either. More pieces
+  move into it from `crates/cold-lava` once a second frontend needs them (`docs/engine.md`,
+  "The frontend").
 - `crates/editor`: `cold-lava-editor`, cold-lava's own text editor (the main writing surface to come,
   docs/engine.md "The notebook"; other editors are extensions), headless (text, cursors, edits,
   undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
@@ -217,13 +226,16 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
 what it needs (`markdown::set_configured` for the chosen flavour).
 
-**Extensions** (`crates/cold-lava/src/ext/`, step 3 of `docs/extensions.md`):
+**The extension host** (`crates/host/src`, `cold-lava-host`; step 3 of `docs/extensions.md`).
+Every frontend runs extensions through it, so the permission check exists once. Don't write
+another host or check in a frontend:
 
-- `ext/mod.rs`: `Extension` (one method per host→extension JSON-RPC method), `Host` (one method
-  per extension→host method; it queues `Effect`s), `Registry` (loaded extensions, their
-  manifests, the editor, and the menu's command table: the core's commands plus the extensions',
-  built by `commands::menu`; keys, palette, help, `cold-lava keys` and config all read it).
-  Three rules:
+- `lib.rs`: `Extension` (one method per host→extension JSON-RPC method), `Host` (one method
+  per extension→host method; it queues `Effect`s and checks `Permission`s), the manifest types
+  (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`), `Effect`s as data, and `Registry`
+  (loaded extensions and their manifests, who owns which kind of file, who shows which notes,
+  what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's built-in
+  extensions and the folder of installed ones). Three rules:
   - An extension can only do what a message can say: every type that crosses derives serde.
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
     into panes, and draws the lists and tables they send (`view/open`), telling them what the
@@ -233,9 +245,7 @@ what it needs (`markdown::set_configured` for the chosen flavour).
     answered during the call by the core, after `Host` checks the manifest's `permissions`
     (`items.read` by default, `items.edit`). The reader's `x` uses the same `Host`, as
     `Registry::screen`; the agenda and the table are built-in `Extension`s.
-- `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
-  commands it types into its pane.
-- `ext/process.rs`, `transport.rs`, `rpc.rs`, `frame.rs`, `installed.rs`: extensions in their own
+- `process.rs`, `transport.rs`, `rpc.rs`, `frame.rs`, `installed.rs`: extensions in their own
   process. `installed` reads `~/.config/cold-lava/extensions/*/extension.toml`; `Process` is the
   `Extension` for one, starting it on `Extension::workspace` and answering it in
   `Extension::poll` (once a frame) through `rpc::serve` and `Host`, so the permission gate holds;
@@ -247,9 +257,25 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   links and bookmarks hand an owned file to its owner as `file/open`, and the core's
   `FileChanged` reaches it as `file/changed`. `Host` lets an owner read and write its own kinds;
   other files need `files.read`/`files.write`. The example is `examples/extensions/csv-table`.
-- `ext/view.rs`: the view gateway's messages (`Content` is a list or a table with a `kind`,
-  `Event`, `ViewNews`) and its bounds. `views.rs` in the binary keeps the views extensions
-  opened: drawn with `ListView`/`TableView`, updated once a frame, places in history while open.
+- The view gateway's messages (`Content` is a list or a table with a `kind`, `Event`,
+  `ViewNews`) and its bounds are `cold-lava-views`' `view.rs`, named in the host as `view`.
+- `tests/permissions.rs` runs the `open-tasks` example with and without `items.edit` and the
+  file permissions in-process, with no terminal. `examples/headless.rs` is the least a
+  frontend writes to host extensions (open a `Core`, `Registry::load`, tell them the
+  workspace, each frame hand them the core's news and apply or ignore their `Effect`s): the
+  GUI and the language server start from it.
+
+**Extensions in the terminal UI** (`crates/cold-lava/src/ext.rs`, `ext/`): what only this
+frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `ext::view`).
+
+- `ext.rs`: the menu's `Registry`, the host's (it derefs to it) with the editor and the menu's
+  command table: the core's commands plus the extensions', built by `commands::menu`; keys,
+  palette, help, `cold-lava keys` and config all read it. `Registry::load` names the built-in
+  extensions. `home.rs` applies the `Effect`s.
+- `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
+  commands it types into its pane.
+- `views.rs` keeps the views extensions opened: drawn with `ListView`/`TableView`, updated
+  once a frame, places in history while open.
 
 **Features / UI** (`crates/cold-lava/src`):
 
@@ -283,13 +309,15 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   `board::Picker`) is a layer too, `Home::picking`, over the menu or the graph. Neither it nor
   the shape editor may get a loop of its own: extensions are answered only in the menu's.
   `cold-lava board` runs the board in a small loop of its own.
-- `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
-  cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
+- `table.rs`: how the terminal draws the declarative table view (its data, columns, rows by
+  id and events back, is `cold-lava-views`' `table.rs`, serde, so it can cross the view
+  gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
   `i` (`table.open`, a core command the menu hands to it) sends the types as a table to pick
   from, then the picked type's table with `view/open`, kept by `items/query` and
   `items/subscribe` (`Feed`, which the agenda uses too); a cell's edit is
   `items/edit set-field`. `build` is also what `cold-lava table` prints.
-- `list.rs`: the declarative list / tree view (groups of rows by id with a checkbox, pieces of
+- `list.rs`: how the terminal draws the declarative list / tree view, whose data is
+  `cold-lava-views`' `list.rs` (groups of rows by id with a checkbox, pieces of
   text with looks, a right side; selection, folding, filtering; events back; serde like the
   table). `agenda.rs` is the agenda as a built-in extension: it follows tasks with
   `items/query` and `items/subscribe`, sends its list with `view/open` and ticks with
