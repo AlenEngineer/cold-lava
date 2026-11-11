@@ -3,9 +3,10 @@
 //! asks the file's owner for the file's new text. Before writing it, the engine asks the owner to
 //! read that text (`file/read`) and checks it reads as asked: what the owner gave before, with the
 //! change made. Only then is it written, with `write::replace`, refused if the file changed since.
-//! Owners answer later, so each edit waits here, one per file, until its owner has answered both.
-//! A rename or merge asks every owned file's owner this way before anything moves, and keeps
-//! each new text that read back until all are in (`Relink`).
+//! An extension answers later, so each edit waits here, one per file, until its owner has
+//! answered both; the engine's canvas owner answers both inside the call, through the same
+//! steps. A rename, merge or recipe asks every owned file's owner this way before anything is
+//! written, and keeps each new text that read back until all are in (`Relink`).
 
 use crate::gateway::{Edited, Error, Ticket};
 use crate::items::Item;

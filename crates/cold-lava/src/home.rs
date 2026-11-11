@@ -4074,7 +4074,7 @@ impl Home {
         let Some(core) = self.core.as_mut() else {
             return;
         };
-        match core.relink(&plan.edits) {
+        match core.relink(&mut plan.edits) {
             Ok(Some(ticket)) => {
                 *waiting = Some(ticket);
                 self.ask_owners();
@@ -4444,7 +4444,7 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                match core.relink(&plan.edits) {
+                match core.relink(&mut plan.edits) {
                     Ok(Some(ticket)) => {
                         *waiting = Some(ticket);
                         self.ask_owners();
@@ -4588,7 +4588,7 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                match core.relink(&plan.edits) {
+                match core.relink(&mut plan.edits) {
                     Ok(Some(ticket)) => {
                         *waiting = Some(ticket);
                         self.mode = Mode::Recipe(view);

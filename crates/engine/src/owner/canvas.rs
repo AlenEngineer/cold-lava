@@ -67,7 +67,7 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
     Ok(json_canvas::set(text, &new))
 }
 
-/// One field a rename changed: where it is (1-based line of the file) and its JSON before and
+/// One field a rename changes: where it is (1-based line of the file) and its JSON before and
 /// after.
 pub struct Relinked {
     pub line: usize,
@@ -75,42 +75,68 @@ pub struct Relinked {
     pub after: String,
 }
 
-/// The canvas's text with links to moved files rewritten: each file node's `file` becomes what
-/// `file` says (a workspace path), each text node's text what `piece` makes of it (the Markdown
-/// owner's relink, which keeps each link's style), with how many links `piece` changed. `None`
-/// when nothing changes or the file isn't a canvas.
+/// What a rename asks of a canvas: what the owner gives for it as it is, the changes that make
+/// its links follow the move (`file/edit`, answered by `edit`), each as it shows in the file, and
+/// how many links they rewrite.
+pub struct Relink {
+    pub given: Given,
+    pub changes: Vec<Change>,
+    pub shown: Vec<Relinked>,
+    pub links: usize,
+}
+
+/// The changes that rewrite a canvas's links to moved files: each file node's `file` becomes
+/// what `file` says (a workspace path: a card holds a path, not a link written in a style), each
+/// text node's text what `piece` makes of it (the Markdown owner's relink, which keeps each
+/// link's style), with how many links `piece` changed. `None` when nothing changes or the file
+/// isn't a canvas. A node whose id an earlier node has is left alone: a change names its node by
+/// id.
 pub fn relink(
     text: &str,
     file: impl Fn(&str) -> Option<String>,
     piece: impl Fn(&str) -> Option<(String, usize)>,
-) -> Option<(String, Vec<Relinked>, usize)> {
+) -> Option<Relink> {
+    let given = read(text).ok()?;
     let fields = json_canvas::fields(text).ok()?;
-    let (mut new, mut links) = (Vec::new(), 0);
-    for f in &fields {
+    let mut out = Relink {
+        given,
+        changes: Vec::new(),
+        shown: Vec::new(),
+        links: 0,
+    };
+    for (k, f) in fields.iter().enumerate() {
+        let same = |g: &Field| g.node == f.node && g.name == f.name;
+        if fields[..k].iter().any(same) {
+            continue;
+        }
         let to = match f.name {
             "file" => file(&f.value).map(|to| (to, 1)),
             _ => piece(&f.value),
         };
-        if let Some((to, n)) = to.filter(|(to, _)| *to != f.value) {
-            links += n;
-            new.push((f, to));
-        }
-    }
-    if new.is_empty() {
-        return None;
-    }
-    let changed = (new.iter())
-        .map(|(f, to)| Relinked {
+        let Some((to, n)) = to.filter(|(to, _)| *to != f.value) else {
+            continue;
+        };
+        out.links += n;
+        out.shown.push(Relinked {
             line: text[..f.span.start].matches('\n').count() + 1,
             before: format!("\"{}\": {}", f.name, &text[f.span.clone()]),
             after: format!(
                 "\"{}\": {}",
                 f.name,
-                serde_json::to_string(to).unwrap_or_default()
+                serde_json::to_string(&to).unwrap_or_default()
             ),
-        })
-        .collect();
-    Some((json_canvas::set(text, &new), changed, links))
+        });
+        let place = f.node.clone();
+        out.changes.push(match f.name {
+            "file" => Change::Link {
+                place,
+                link: f.value.clone(),
+                to,
+            },
+            _ => Change::Text { place, text: to },
+        });
+    }
+    (!out.changes.is_empty()).then_some(out)
 }
 
 #[cfg(test)]
@@ -177,8 +203,8 @@ mod tests {
     }
 
     #[test]
-    fn relink_rewrites_file_nodes_and_pieces_in_place() {
-        let (text, changed, links) = relink(
+    fn relink_asks_for_file_nodes_and_pieces_in_place() {
+        let asked = relink(
             CANVAS,
             |f| (f == "Volcanoes/Lava.md").then(|| "Hot/Lava.md".to_string()),
             |t| {
@@ -187,13 +213,32 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(asked.given, read(CANVAS).unwrap());
         let want = CANVAS
             .replace("Volcanoes/Lava.md", "Hot/Lava.md")
             .replace("[[Lava]]", "[[Magma]]");
-        assert_eq!(text, want);
-        assert_eq!((changed.len(), links), (2, 2));
-        assert_eq!(changed[1].line, 4);
-        assert_eq!(changed[1].after, "\"file\": \"Hot/Lava.md\"");
+        assert_eq!(edit(CANVAS, &asked.changes).unwrap(), want);
+        assert_eq!((asked.shown.len(), asked.links), (2, 2));
+        assert_eq!(asked.shown[1].line, 4);
+        assert_eq!(asked.shown[1].after, "\"file\": \"Hot/Lava.md\"");
         assert!(relink(CANVAS, |_| None, |_| None).is_none());
+    }
+
+    #[test]
+    fn relink_leaves_a_second_node_of_the_same_id_alone() {
+        let twice = CANVAS.replace(
+            "{\"id\":\"w\",\"type\":\"link\",\"url\":\"https://jsoncanvas.org\"",
+            "{\"id\":\"s\",\"type\":\"text\",\"text\":\"Also [[Lava]]\"",
+        );
+        let piece = |t: &str| {
+            t.contains("[[Lava]]")
+                .then(|| (t.replace("[[Lava]]", "[[Magma]]"), 1))
+        };
+        let asked = relink(&twice, |_| None, piece).unwrap();
+        assert_eq!(asked.changes.len(), 1, "{:?}", asked.changes);
+        assert_eq!(
+            edit(&twice, &asked.changes).unwrap(),
+            twice.replacen("each [[Lava]]", "each [[Magma]]", 1)
+        );
     }
 }
