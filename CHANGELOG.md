@@ -106,8 +106,8 @@ change commands, keys and file formats; patch versions only fix things.
   card was begun between the request and its run.
 - A whiteboard opened from a task or a backlink on a card that repeats another card's id (a
   file another program wrote) selects that card (#215). Nothing was selected before, and with
-  such a card selected by hand, an edit went to the first card of that id. The file keeps the
-  ids it had.
+  such a card selected by hand, an edit went to the first card of that id and a delete took
+  every card of it. The file keeps the ids it had.
 - A tag right after the markers that open emphasis, a strikethrough or a highlight is a tag,
   as in Obsidian: `**#tag**`, `_#tag_`, `~~#tag~~` and `==#tag==` (#181). Backlinks' tag
   searches, the graph's tag groups, `rename-tag` and the types that read a note's tags see it.

@@ -1232,9 +1232,13 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
 - **Opening.** A canvas's backlink row, and Enter on a canvas's task in the agenda or the
   table, open the whiteboard with the node at the owner's place for it selected (the sticky the
   task is on, the card that links); Back returns to where you were. The whiteboard names its
-  nodes by the owner's places (`canvas::places` as it reads the file, `canvas::ids` as it
-  writes it), so a card that repeats another's id is selected and edited as itself, and saved
-  under the id it had (`board-twin-card.drive`).
+  nodes by the owner's places (`canvas::places`, as it reads the file), so a card that repeats
+  another's id is selected, edited and deleted as itself (`board-twin-card.drive`). A place
+  never reaches the file: the board remembers the id each such node was read with and writes
+  it back (`Board::twins`), also after the first card of the id was deleted. An arrow names
+  an id, so with two cards of it the arrow is the first card's: drawn from it, deleted with
+  it, and written back unchanged. An arrow drawn on the board from a later card is written
+  with the same id, which is all the file can say.
 - **The example workspace.** `Volcano Venn.canvas`'s sticky task (`Two per person, for the
   trip`) is in the agenda's Undated group and the task table, and its Krakatoa card is one of
   Krakatoa's backlinks, as are `Eruptions Timeline.canvas`'s cards of its notes. `Welcome.canvas`'s

@@ -1484,8 +1484,13 @@ fn a_whiteboard_opened_from_a_task_on_a_card_that_repeats_an_id_selects_that_car
     std::fs::write(&twins, TWINS).unwrap();
     let out = drive("board-twin-card.drive", &dir);
     assert_passed(&out);
-    let saved: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&twins).unwrap()).unwrap();
+    let text = std::fs::read_to_string(&twins).unwrap();
+    let marked = text.contains('\u{1f}') || text.to_lowercase().contains("\\u001f");
+    assert!(
+        !marked,
+        "the board's name for a card is in the file: {text}"
+    );
+    let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
     let nodes: Vec<(&str, &str)> = (saved["nodes"].as_array().unwrap().iter())
         .map(|n| (n["id"].as_str().unwrap(), n["text"].as_str().unwrap()))
         .collect();

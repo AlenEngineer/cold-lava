@@ -37,7 +37,8 @@ fn place(id: &str, nth: usize) -> String {
 }
 
 /// Every node's place, from the nodes' ids in the file's order. The whiteboard names its nodes
-/// by these, so a place the owner gave selects the node it is for.
+/// by these, so a place the owner gave selects the node it is for. A place is an address in
+/// memory and in messages: it is never written into the canvas.
 pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut seen: HashMap<&str, usize> = HashMap::new();
     ids.into_iter()
@@ -45,24 +46,6 @@ pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
             let nth = seen.entry(id).or_insert(0);
             *nth += 1;
             place(id, *nth - 1)
-        })
-        .collect()
-}
-
-/// The ids `places` was made from, to write the nodes back as they were read. A numbered place
-/// gives the id it repeats only while it still follows that many nodes of the id; after they
-/// were removed or reordered it is written whole, an id nothing else has.
-pub fn ids<'a>(places: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut seen: HashMap<&str, usize> = HashMap::new();
-    places
-        .into_iter()
-        .map(|p| {
-            let id = match p.rsplit_once('\u{1f}') {
-                Some((id, _)) if seen.get(id).is_some_and(|&nth| place(id, nth) == p) => id,
-                _ => p,
-            };
-            *seen.entry(id).or_insert(0) += 1;
-            id.to_string()
         })
         .collect()
 }
@@ -304,21 +287,11 @@ mod tests {
         assert_eq!(read(&relinked).unwrap().items, applied.items);
     }
 
-    /// The whiteboard names its nodes by their places and writes them back by their ids.
+    /// The whiteboard names its nodes by their places: every node has one of its own.
     #[test]
-    fn places_give_their_ids_back() {
-        let in_file = ["a", "s", "s", "b", "s"];
-        let named = places(in_file);
+    fn every_node_has_a_place_of_its_own() {
+        let named = places(["a", "s", "s", "b", "s"]);
         assert_eq!(named, ["a", "s", "s\u{1f}1", "b", "s\u{1f}2"]);
-        assert_eq!(ids(named.iter().map(String::as_str)), in_file);
-        // With the first `s` deleted the others no longer repeat an id that is there.
-        let left = ["a", "s\u{1f}1", "b", "s\u{1f}2"];
-        assert_eq!(ids(left), left);
-        assert_eq!(
-            places(left),
-            left,
-            "and are read again under the same names"
-        );
     }
 
     /// A node without a type: `read` gives nothing for the file, and a rename still rewrites

@@ -202,6 +202,10 @@ pub struct Board {
     /// What the second status line says for 3 seconds, and since when it has shown: `None`
     /// while an alert or a mode's hint has the line, under which it waits (`draw_status`).
     msg: Option<(String, Option<Instant>)>,
+    /// The ids another program repeated: the name each later node of one goes by here (its
+    /// place, `parse`) to the id it has in the file, which `as_written` gives it back. Never
+    /// forgotten while the board is open, so an undo finds its node's id again.
+    twins: HashMap<String, String>,
     /// How many refused requests the message tells of (`refused`), 0 when it is about
     /// something else.
     refusals: usize,
@@ -398,7 +402,7 @@ impl Board {
     pub fn open(workspace_root: &Path, path: PathBuf, node: Option<String>) -> Result<Board> {
         crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        let doc = parse(&disk, &path)?;
+        let (doc, twins) = parse(&disk, &path)?;
         let base = doc.clone();
         let workspace_root = workspace_root
             .canonicalize()
@@ -433,6 +437,7 @@ impl Board {
             undo: Vec::new(),
             redo: Vec::new(),
             msg: None,
+            twins: twins.into_iter().collect(),
             refusals: 0,
             alert: None,
             quit: false,
@@ -1119,9 +1124,10 @@ impl Board {
             return false;
         }
         // A half-written file fails to parse; we'll catch the complete one on the next check.
-        let Ok(theirs) = parse(&bytes, &self.path) else {
+        let Ok((theirs, twins)) = parse(&bytes, &self.path) else {
             return false;
         };
+        self.twins.extend(twins);
         self.disk = bytes;
         let (Ok(b), Ok(o), Ok(t)) = (
             serde_json::to_value(&self.base),
@@ -1182,7 +1188,7 @@ impl Board {
 
     fn write_file(&mut self) {
         placed::mark_version(&mut self.doc.extra, &self.doc.nodes);
-        let buf = match crate::json_canvas::to_bytes(&as_written(&self.doc)) {
+        let buf = match crate::json_canvas::to_bytes(&as_written(&self.doc, &self.twins)) {
             Ok(buf) => buf,
             Err(e) => return self.flash(format!("save failed: {e}")),
         };
@@ -1573,7 +1579,11 @@ impl Board {
     fn add_node(&mut self, kind: &str, at: Option<(f64, f64)>, w: f64, h: f64) -> String {
         self.checkpoint();
         let (x, y) = at.unwrap_or_else(|| self.spot_for_new(w, h));
-        let id = new_id();
+        // Not an id the file may still hold: a twin's, whose first node was deleted here.
+        let mut id = new_id();
+        while self.node(&id).is_some() || self.twins.values().any(|theirs| *theirs == id) {
+            id = new_id();
+        }
         self.doc.nodes.push(CNode {
             id: id.clone(),
             kind: kind.to_string(),
@@ -2282,8 +2292,9 @@ impl Board {
                 .map_err(anyhow::Error::from)
                 .and_then(|b| Ok((parse(&b, &self.path)?, b)))
             {
-                Ok((d, bytes)) => {
+                Ok(((d, twins), bytes)) => {
                     self.checkpoint();
+                    self.twins.extend(twins);
                     self.base = d.clone();
                     self.disk = bytes;
                     self.doc = d;
@@ -3123,25 +3134,37 @@ impl Board {
 
 // ---------- helpers ----------
 
-/// The canvas in a file's bytes. Here every node goes by the canvas owner's place for it: its
-/// id, unless another program repeated one, so that the selection, an edit and a placed
-/// shape's binding each mean one node. `as_written` gives the file its ids back.
-fn parse(bytes: &[u8], path: &Path) -> Result<Doc> {
+/// The canvas in a file's bytes. Here every node goes by the canvas owner's place for it, so
+/// that the selection, an edit and a placed shape's binding each mean one node. That is its
+/// id, unless another program repeated one: then a later node of that id has a name of the
+/// board's own, which must never reach the file. Those come back too, each with the id its
+/// node has in the file, for `as_written`. An arrow names an id, so it is the first node's.
+fn parse(bytes: &[u8], path: &Path) -> Result<(Doc, Vec<(String, String)>)> {
     let mut doc = crate::json_canvas::parse(bytes)
         .with_context(|| format!("{} is not a valid canvas file", path.display()))?;
     let places = crate::owner::canvas::places(doc.nodes.iter().map(|n| n.id.as_str()));
+    let mut twins = Vec::new();
     for (n, place) in doc.nodes.iter_mut().zip(places) {
-        n.id = place;
+        if place != n.id {
+            twins.push((place.clone(), std::mem::replace(&mut n.id, place)));
+        }
     }
-    Ok(doc)
+    Ok((doc, twins))
 }
 
-/// The canvas as its file has it: the nodes under the ids they were read with (`parse`).
-fn as_written(doc: &Doc) -> Doc {
+/// The canvas as its file has it: every node under the id it was read with, and an arrow
+/// drawn here to a node in `twins` naming that id, as the file's own arrows do.
+fn as_written(doc: &Doc, twins: &HashMap<String, String>) -> Doc {
     let mut doc = doc.clone();
-    let ids = crate::owner::canvas::ids(doc.nodes.iter().map(|n| n.id.as_str()));
-    for (n, id) in doc.nodes.iter_mut().zip(ids) {
-        n.id = id;
+    let theirs = |name: &mut String| {
+        if let Some(id) = twins.get(name.as_str()) {
+            *name = id.clone();
+        }
+    };
+    doc.nodes.iter_mut().for_each(|n| theirs(&mut n.id));
+    for e in &mut doc.edges {
+        theirs(&mut e.from_node);
+        theirs(&mut e.to_node);
     }
     doc
 }
@@ -3936,29 +3959,191 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Two cards of one id, `First` and `Second`, a card `t`, and an arrow from the id to `t`,
+    /// written as the board writes a canvas.
+    fn twins_canvas() -> String {
+        let doc: Doc = serde_json::from_value(json!({
+            "nodes": [card("s", 0, "First"), card("s", 300, "Second"), card("t", 600, "Third")],
+            "edges": [{"id": "e", "fromNode": "s", "toNode": "t"}],
+        }))
+        .unwrap();
+        String::from_utf8(crate::json_canvas::to_bytes(&doc).unwrap()).unwrap()
+    }
+
+    /// The board on `twins_canvas`, with the node named `sel` selected.
+    fn twins_board(name: &str, sel: &str) -> (PathBuf, PathBuf, Board) {
+        let (dir, path, _core) = workspace(name, Vec::new());
+        std::fs::write(&path, twins_canvas()).unwrap();
+        let b = Board::open(&dir, path.clone(), Some(sel.into())).unwrap();
+        assert_eq!(b.selected(), Some(sel));
+        (dir, path, b)
+    }
+
+    /// The saved canvas, which must never hold the board's own name for a repeated id.
+    fn saved_twins(path: &Path) -> Value {
+        let text = std::fs::read_to_string(path).unwrap();
+        let marked = text.contains('\u{1f}') || text.to_lowercase().contains("\\u001f");
+        assert!(
+            !marked,
+            "the board's name for a node is in the file: {text}"
+        );
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn texts(v: &Value) -> Vec<&str> {
+        let nodes = v["nodes"].as_array().unwrap().iter();
+        nodes.map(|n| n["text"].as_str().unwrap()).collect()
+    }
+
+    const SECOND: &str = "s\u{1f}1";
+
     /// Another program's canvas may repeat an id. The board names such nodes by the canvas
     /// owner's places, so the place of an item opens the board at its card, and saves them
     /// under the ids they had.
     #[test]
     fn a_card_that_repeats_an_id_is_selected_and_edited_by_its_place() {
-        let twins = vec![card("s", 0, "First"), card("s", 300, "Second")];
-        let (dir, path, _core) = workspace("board-twins", twins);
-        let mut b = Board::open(&dir, path.clone(), Some("s\u{1f}1".into())).unwrap();
-        assert_eq!(b.selected(), Some("s\u{1f}1"));
+        let (dir, path, mut b) = twins_board("board-twins", SECOND);
         let selected = b.selected().and_then(|id| b.node(id));
         assert_eq!(selected.and_then(|n| n.text.as_deref()), Some("Second"));
         b.mode = Mode::Edit {
-            id: "s\u{1f}1".into(),
+            id: SECOND.into(),
             buf: "Second, edited".into(),
             is_new: false,
         };
         b.finish_edit();
-        let saved = on_disk(&path);
-        assert_eq!(ids(&saved, "nodes"), ["s", "s"]);
-        assert_eq!(saved["nodes"][0]["text"], "First");
-        assert_eq!(saved["nodes"][1]["text"], "Second, edited");
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "s", "t"]);
+        assert_eq!(texts(&saved), ["First", "Second, edited", "Third"]);
         assert!(!b.sync_from_disk(), "its own save read back is nothing new");
-        assert_eq!(b.selected(), Some("s\u{1f}1"));
+        assert_eq!(b.selected(), Some(SECOND));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn moving_a_card_that_repeats_an_id_changes_only_where_it_is() {
+        let (dir, path, mut b) = twins_board("board-twins-move", SECOND);
+        b.move_selected(40.0, 20.0);
+        let (before, after) = (twins_canvas(), std::fs::read_to_string(&path).unwrap());
+        assert_eq!(before.lines().count(), after.lines().count(), "{after}");
+        let changed: Vec<(&str, &str)> = (before.lines().zip(after.lines()))
+            .filter(|(was, is)| was != is)
+            .map(|(was, is)| (was.trim(), is.trim()))
+            .collect();
+        let fields: Vec<&str> = (changed.iter())
+            .map(|(was, _)| was.split(':').next().unwrap_or_default())
+            .collect();
+        assert_eq!(fields, ["\"x\"", "\"y\""], "{changed:?}");
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "s", "t"]);
+        let second = &saved["nodes"][1];
+        assert_eq!(
+            (second["x"].as_f64(), second["y"].as_f64()),
+            (Some(340.0), Some(20.0))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The first of two cards of one id is deleted: the other is written with the id it was
+    /// read with, and undo brings the first back under the same id.
+    #[test]
+    fn deleting_a_twin_leaves_the_other_its_id_and_undo_brings_it_back() {
+        let (dir, path, mut b) = twins_board("board-twins-delete", "s");
+        b.delete_selected();
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "t"]);
+        assert_eq!(texts(&saved), ["Second", "Third"]);
+        assert_eq!(
+            saved["edges"],
+            json!([]),
+            "its arrow went with it, as drawn"
+        );
+
+        b.undo();
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "s", "t"]);
+        assert_eq!(texts(&saved), ["First", "Second", "Third"]);
+        assert_eq!(saved["edges"][0]["fromNode"], "s");
+        b.redo();
+        assert_eq!(ids(&saved_twins(&path), "nodes"), ["s", "t"]);
+
+        // A card made now gets an id of its own, and the twin keeps the file's.
+        let made = b.add_node("text", None, 200.0, 100.0);
+        b.commit();
+        assert_ne!(made, "s");
+        assert_eq!(ids(&saved_twins(&path), "nodes"), ["s", "t", made.as_str()]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An arrow in the file names an id, so with two cards of that id it is the first one's:
+    /// drawn from it, deleted with it, and written back as it was while the other card is
+    /// changed or deleted. An arrow drawn here from the second card names the same id.
+    #[test]
+    fn an_arrow_to_a_repeated_id_is_the_first_cards() {
+        let (dir, path, mut b) = twins_board("board-twins-arrow", SECOND);
+        let from = b.node(&b.doc.edges[0].from_node);
+        assert_eq!(from.and_then(|n| n.text.as_deref()), Some("First"));
+
+        b.toggle_edge(SECOND, "t");
+        let saved = saved_twins(&path);
+        let ends = |v: &Value| -> Vec<(String, String)> {
+            let edges = v["edges"].as_array().unwrap().iter();
+            let end = |e: &Value, key: &str| e[key].as_str().unwrap().to_string();
+            edges
+                .map(|e| (end(e, "fromNode"), end(e, "toNode")))
+                .collect()
+        };
+        let arrow = ("s".to_string(), "t".to_string());
+        assert_eq!(ends(&saved), [arrow.clone(), arrow.clone()]);
+        assert_eq!(
+            saved["edges"][0]["id"], "e",
+            "the file's own arrow, untouched"
+        );
+
+        b.sel = Some(SECOND.into());
+        b.delete_selected();
+        let saved = saved_twins(&path);
+        assert_eq!(ids(&saved, "nodes"), ["s", "t"]);
+        assert_eq!(texts(&saved), ["First", "Third"]);
+        assert_eq!(ends(&saved), [arrow], "the first card's arrow stays");
+        assert_eq!(saved["edges"][0]["id"], "e");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Another program adds a card, ahead of the twins, while the second twin is typed.
+    #[test]
+    fn twins_survive_an_outside_change_merged_into_an_edit() {
+        let (dir, path, mut b) = twins_board("board-twins-merge", SECOND);
+        let mut core = Core::open(&dir).unwrap();
+        let mut registry = Registry::empty();
+        b.mode = Mode::Edit {
+            id: SECOND.into(),
+            buf: "Second, edited".into(),
+            is_new: false,
+        };
+        let mut theirs: Value = serde_json::from_str(&twins_canvas()).unwrap();
+        let nodes = theirs["nodes"].as_array_mut().unwrap();
+        nodes.insert(0, card("c", 900, "Theirs"));
+        std::fs::write(&path, theirs.to_string()).unwrap();
+        b.noticed(&core, &[CoreEvent::BoardChanged("B.canvas".into())]);
+        b.tick(&mut core, &mut registry);
+        b.finish_edit();
+
+        let saved = saved_twins(&path);
+        let mut cards: Vec<(String, &str)> = (ids(&saved, "nodes").into_iter())
+            .zip(texts(&saved))
+            .collect();
+        cards.sort();
+        let is = |id: &str, text: &'static str| (id.to_string(), text);
+        assert_eq!(
+            cards,
+            [
+                is("c", "Theirs"),
+                is("s", "First"),
+                is("s", "Second, edited"),
+                is("t", "Third")
+            ]
+        );
+        assert_eq!(saved["edges"][0]["fromNode"], "s");
         let _ = std::fs::remove_dir_all(dir);
     }
 
