@@ -100,7 +100,7 @@ fn lines<'t>(
     b.block(None);
 }
 
-fn token<'t>(b: &mut impl Sink<'t>, kind: Kind, text: &'t str, a: usize, z: usize) {
+fn token<'t>(b: &mut (impl Sink<'t> + ?Sized), kind: Kind, text: &'t str, a: usize, z: usize) {
     if a < z {
         b.token(kind, &text[a..z]);
     }
@@ -740,10 +740,14 @@ struct Run {
 /// held back until it ends: emphasis may close on a later line than it opened on. Its `Text`
 /// tokens, a wikilink's `Alias` and the `LinkLabel` a link by reference shows are then cut
 /// where those are, and it goes on to the sink. Nothing else of it changes.
-struct Held<'s, 't, B> {
+///
+/// It holds its sink as a trait object, so that the line reader is compiled once for it and
+/// not once more for each reader's sink: a reader that doesn't ask for what text holds keeps
+/// the code it had.
+struct Held<'s, 't> {
     text: &'t str,
     g: Gates,
-    b: &'s mut B,
+    b: &'s mut dyn Sink<'t>,
     recs: Vec<Rec>,
     hold: bool,
     /// The block being read, and how many lines of its text were read.
@@ -751,7 +755,7 @@ struct Held<'s, 't, B> {
     lines: usize,
 }
 
-impl<'t, B: Sink<'t>> Sink<'t> for Held<'_, 't, B> {
+impl<'t> Sink<'t> for Held<'_, 't> {
     fn start(&mut self, kind: Kind) {
         match self.hold {
             true => self.recs.push(Rec::Start(kind)),
@@ -804,8 +808,8 @@ impl<'t, B: Sink<'t>> Sink<'t> for Held<'_, 't, B> {
     }
 }
 
-impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
-    fn new(text: &'t str, g: Gates, b: &'s mut B) -> Self {
+impl<'s, 't> Held<'s, 't> {
+    fn new(text: &'t str, g: Gates, b: &'s mut dyn Sink<'t>) -> Self {
         Held {
             text,
             g,
