@@ -30,6 +30,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
+  of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
+  example's count of open tasks keeps up under the picker and shows in the shape editor's
+  status line, and so do notifications. The picker is drawn over the menu instead of an empty
+  screen. An extension can't take the whiteboard away from work that isn't saved: while a card
+  is being typed or the shape editor holds unsaved changes, a note, view or command it asks
+  for is not opened or run, and the status line says what it wanted. Before, a card being
+  typed could be lost that way.
 - A whiteboard's file is changed the way an extension's file is (closes #183): a rename, a
   merge and a recipe ask the canvas owner for the file's new text and read it back before
   anything is written, as a tick in the agenda already did. Renames and merges look and write
@@ -83,6 +91,10 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- What an extension asks for while the whiteboard asks it about a shape it ships is done now:
+  its notification shows in the whiteboard's status line, its status word changes, and a note
+  it opens opens (part of #173). The whiteboard used to discard all of it. `cold-lava board`,
+  which has no menu behind it, shows the notifications.
 - A tag right after the markers that open emphasis, a strikethrough or a highlight is a tag,
   as in Obsidian: `**#tag**`, `_#tag_`, `~~#tag~~` and `==#tag==` (#181). Backlinks' tag
   searches, the graph's tag groups, `rename-tag` and the types that read a note's tags see it.

@@ -277,7 +277,12 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   through the core and paints it with the canvas engine. The board is a mode of the menu
   (`Mode::Board`, `Home::board`, `Place::Board`): the menu keeps the core and the registry,
   hands them to each `Board` call, ticks and draws it in its loop and gives it the core's
-  events and the `canvas` item news. `cold-lava board` runs it in a small loop of its own.
+  events and the `canvas` item news. It has no file watcher: the core's event for its canvas
+  makes it read the file and merge (`merge3`). What extensions ask for in its calls to them
+  about their shapes it keeps for the menu to do (`Board::take_asked`). The board picker (`w`,
+  `board::Picker`) is a layer too, `Home::picking`, over the menu or the graph. Neither it nor
+  the shape editor may get a loop of its own: extensions are answered only in the menu's.
+  `cold-lava board` runs the board in a small loop of its own.
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
   cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
   `i` (`table.open`, a core command the menu hands to it) sends the types as a table to pick
@@ -289,8 +294,9 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   table). `agenda.rs` is the agenda as a built-in extension: it follows tasks with
   `items/query` and `items/subscribe`, sends its list with `view/open` and ticks with
   `items/edit toggle` (`A`, `agenda.open`, a core command the menu hands to it).
-- `shape_editor.rs`: the shape editor (`S` on the whiteboard, a screen with its own loop that
-  the whiteboard lends the core, so extensions wait while it is open): draws a
+- `shape_editor.rs`: the shape editor (`S` on the whiteboard, a layer over it with no loop of
+  its own: `Board::editor` gets the board's keys and mouse and the core's news and is drawn
+  instead of it, so the menu's loop goes on and extensions are answered while it is open): draws a
   shape and saves the same `[[shapes]]` TOML into the workspace's `.cold-lava/shapes.toml`.
   `shape_editor/draft.rs` is the editing on the `Definition` itself (grips, bending sides into
   `curve`s, regions read from what contains a click, anchors, a selection made into one shape),

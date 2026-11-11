@@ -1,0 +1,49 @@
+# An extension can't take the whiteboard away from unsaved work. tests/drive.rs installs the
+# open-tasks example patched to open a note whenever the tasks change, which no extension
+# should do unasked. While a card is being typed, and while the shape editor holds an unsaved
+# draft, a task another program writes makes it ask: the card and the draft stay in front, the
+# count still follows, and the editor's status line says what was not done. The card then
+# saves with Esc and the shape with ctrl+s. tests/drive.rs reads both files after.
+size 140x44
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type Drafts
+keys enter
+wait-for whiteboard Drafts · 0 cards
+keys n
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type Draft
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+expect whiteboard Drafts
+expect Draft▏
+type , kept
+wait-for Draft, kept▏
+keys esc
+wait-for whiteboard Drafts · 1 cards
+# The shape editor with a triangle drawn and not saved.
+keys S
+wait-for shape editor · type to filter
+keys enter
+wait-for shape editor · shape1 (new) · vertices
+click 10 34
+click 10 64
+click 23 79
+click 10 34
+wait-for closed path of 3 vertices
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n- [ ] Count the masks\n
+wait-for ☐ 18 open tasks
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while the shape editor has unsaved changes
+expect shape editor · shape1 (new)
+expect path1: path, 3 vertices, closed
+keys ctrl+s
+wait-for saved shape1 in .cold-lava/shapes.toml
+keys q
+wait-for whiteboard Drafts · 1 cards
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

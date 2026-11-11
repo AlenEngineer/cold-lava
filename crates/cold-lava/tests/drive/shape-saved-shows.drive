@@ -1,0 +1,38 @@
+# A shape saved in the shape editor shows on the whiteboard it was opened from at once. On
+# Volcano Venn, where the workspace's checklist is placed, S with nothing selected lists the
+# workspace's shapes; the checklist's title is changed and saved, and q returns to the board,
+# whose placed checklist is the saved one. tests/drive.rs checks that the canvas wasn't written.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type venn
+keys enter
+wait-for whiteboard Volcano Venn · 5 cards · 0 arrows
+wait-for Stratovolcanoes
+keys S
+wait-for shape editor · type to filter
+type checklist
+wait-for edit checklist
+keys enter
+wait-for shape editor · checklist (saved)
+keys i
+wait-for the shape
+keys tab
+type -mine
+keys enter
+wait-for shape editor · checklist (changed)
+expect checklist · Checklist-mine
+keys ctrl+s
+wait-for saved checklist in .cold-lava/shapes.toml
+keys q
+wait-for whiteboard Volcano Venn · 5 cards · 0 arrows
+wait-for shapes read again: s places the one you made
+expect-in 28 87 28 135 Field season
+click 30 100
+wait-for shape checklist · Checklist-mine
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

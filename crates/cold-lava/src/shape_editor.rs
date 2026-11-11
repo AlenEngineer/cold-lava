@@ -6,11 +6,15 @@
 //! saved; regions are read from what contains a clicked point (`draft::area_at`); the preview is
 //! the shape bound to data as a placed one is. Saving rewrites only this shape's block
 //! (`shapes::file`), refused if the file changed since it was read.
+//!
+//! It has no loop: the whiteboard that opened it keeps it as a layer over itself and hands it
+//! keys, the mouse and the core's news for the preview (`Editor::open`, `on_key`, `on_mouse`,
+//! `noticed`, `heard`, `draw`), so whatever runs the whiteboard runs it too.
 
 mod draft;
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
-use crate::bind::{self, Binding, Source};
+use crate::bind::{Binding, Source};
 use crate::commands::{self, KeyHint, Keymap, SHAPE_EDITOR, ShapeEditorAction as Action};
 use crate::core::{Core, Event as CoreEvent};
 use crate::gateway::News;
@@ -24,17 +28,14 @@ use cold_lava_canvas::{
 use draft::{Grip, GripAt, New, pt, xy};
 pub use draft::{Member, merged};
 use indexmap::IndexMap;
-use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
-};
+use ratatui::Frame;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
-use ratatui::{DefaultTerminal, Frame};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// How near, in world units, a guide or a grip reaches: about a cell.
 const REACH: f64 = 2.0;
@@ -52,14 +53,6 @@ pub enum Start {
         id: String,
         definition: Box<Definition>,
     },
-}
-
-/// How the editor was left: whether anything was saved, and what the core said meanwhile
-/// that the screen under it should still hear.
-pub struct Left {
-    pub saved: bool,
-    pub events: Vec<CoreEvent>,
-    pub news: Vec<(String, News)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,8 +178,8 @@ const STEPS: &[&str] = &[
     "rebind",
 ];
 
-struct Editor<'a> {
-    core: &'a mut Core,
+/// The shape editor, open on one shape.
+pub struct Editor {
     root: PathBuf,
     id: String,
     def: Definition,
@@ -212,6 +205,9 @@ struct Editor<'a> {
     form: Option<Form>,
     sources: IndexMap<String, Source>,
     binding: Option<Binding>,
+    /// The draft changed since the preview was bound: it is bound again once the key or the
+    /// mouse event that changed it is done.
+    unbound: bool,
     msg: Option<String>,
     keys: Keymap<Action>,
     which_key: bool,
@@ -219,17 +215,68 @@ struct Editor<'a> {
     leaving: bool,
     quit: bool,
     wrote: bool,
-    events: Vec<CoreEvent>,
-    news: Vec<(String, News)>,
 }
 
-/// Runs the editor until it is left.
-pub fn run(
-    terminal: &mut DefaultTerminal,
-    root: &Path,
-    core: &mut Core,
-    start: Start,
-) -> Result<Left> {
+impl Editor {
+    /// The editor on `start`, in the workspace at `root`.
+    pub fn open(root: &Path, core: &mut Core, start: Start) -> Result<Editor> {
+        let mut e = read(root, start)?;
+        e.reload();
+        e.settle(core);
+        if e.def.parts.is_empty() {
+            e.tool = Tool::Path;
+        }
+        Ok(e)
+    }
+
+    /// Whether it was left (`q`): the whiteboard closes it then.
+    pub fn left(&self) -> bool {
+        self.quit
+    }
+
+    /// Ends the preview's subscriptions. True when a shape was saved, so the workspace's
+    /// shapes are to be read again.
+    pub fn close(mut self, core: &mut Core) -> bool {
+        if let Some(mut b) = self.binding.take() {
+            b.close(core);
+        }
+        self.wrote
+    }
+
+    /// A core event, for the preview's binding.
+    pub fn noticed(&mut self, core: &Core, event: &CoreEvent) {
+        if let Some(b) = &mut self.binding {
+            b.noticed(core, event);
+        }
+    }
+
+    /// Item news for the canvas's subscriptions, one of which may be the preview's.
+    pub fn heard(&mut self, core: &Core, news: &News) {
+        if let Some(b) = &mut self.binding {
+            b.heard(core, news);
+        }
+    }
+
+    pub fn on_key(&mut self, k: KeyEvent, core: &mut Core) {
+        self.key(k, core);
+        self.settle(core);
+    }
+
+    pub fn on_mouse(&mut self, m: MouseEvent, core: &mut Core) {
+        self.mouse(m);
+        self.settle(core);
+    }
+
+    /// Binds the preview again when the draft changed.
+    fn settle(&mut self, core: &mut Core) {
+        if std::mem::take(&mut self.unbound) {
+            self.rebind(core);
+        }
+    }
+}
+
+/// The editor's state for `start`, read from the workspace's shapes file.
+fn read(root: &Path, start: Start) -> Result<Editor> {
     let path = root.join(shapes::WORKSPACE_FILE);
     let read = match std::fs::read(&path) {
         Ok(b) => Some(b),
@@ -265,8 +312,7 @@ pub fn run(
         Start::From { id, definition } => (id, *definition, None),
     };
     let saved = replacing.as_ref().map(|id| (id.clone(), def.clone()));
-    let mut e = Editor {
-        core,
+    Ok(Editor {
         root: root.to_path_buf(),
         id,
         def,
@@ -286,6 +332,7 @@ pub fn run(
         form: None,
         sources: IndexMap::new(),
         binding: None,
+        unbound: false,
         msg: None,
         keys: Keymap::new(SHAPE_EDITOR),
         which_key: false,
@@ -293,22 +340,6 @@ pub fn run(
         leaving: false,
         quit: false,
         wrote: false,
-        events: Vec::new(),
-        news: Vec::new(),
-    };
-    e.reload();
-    if e.def.parts.is_empty() {
-        e.tool = Tool::Path;
-    }
-    let ran = e.run(terminal);
-    if let Some(mut b) = e.binding.take() {
-        b.close(e.core);
-    }
-    ran?;
-    Ok(Left {
-        saved: e.wrote,
-        events: e.events,
-        news: e.news,
     })
 }
 
@@ -320,46 +351,11 @@ fn definition_of(block: &str) -> Option<Definition> {
     entry.try_into().ok()
 }
 
-impl Editor<'_> {
-    fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        while !self.quit {
-            self.tick();
-            terminal.draw(|f| self.draw(f))?;
-            if event::poll(Duration::from_millis(250))? {
-                match event::read()? {
-                    Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k),
-                    Event::Mouse(m) => self.on_mouse(m),
-                    _ => {}
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The core's news for the preview's binding; the rest is kept for the screen under it.
-    fn tick(&mut self) {
-        let events = self.core.poll();
-        if let Some(b) = &mut self.binding {
-            for e in &events {
-                b.noticed(self.core, e);
-            }
-        }
-        self.events.extend(events);
-        for (owner, news) in self.core.take_item_news() {
-            let mine = owner == bind::OWNER
-                && self
-                    .binding
-                    .as_mut()
-                    .is_some_and(|b| b.heard(self.core, &news));
-            if !mine {
-                self.news.push((owner, news));
-            }
-        }
-    }
-
+impl Editor {
     // ---------- the draft ----------
 
-    /// Loads the draft as the workspace's shape, to draw, check and bind it.
+    /// Loads the draft as the workspace's shape, to draw and check it; the preview is bound
+    /// to it again by `settle`.
     fn reload(&mut self) {
         self.loaded = shapes::with_draft(&self.root, &self.id, &self.def);
         let mark = format!("shape {}: ", self.id);
@@ -373,12 +369,12 @@ impl Editor<'_> {
         } else if self.def.parts.is_empty() {
             self.good = None;
         }
-        self.rebind();
+        self.unbound = true;
     }
 
-    fn rebind(&mut self) {
+    fn rebind(&mut self, core: &mut Core) {
         if let Some(mut b) = self.binding.take() {
-            b.close(self.core);
+            b.close(core);
         }
         if self.sources.is_empty() || !self.errors.is_empty() {
             return;
@@ -386,7 +382,7 @@ impl Editor<'_> {
         let sources = (self.sources.iter())
             .filter(|(input, _)| self.def.inputs.contains(input))
             .map(|(i, s)| (i.clone(), s.clone()));
-        match Binding::new(self.core, &self.loaded, &self.id, sources) {
+        match Binding::new(core, &self.loaded, &self.id, sources) {
             Ok(b) => self.binding = Some(b),
             Err(e) => self.msg = Some(format!("preview: {e}")),
         }
@@ -404,7 +400,8 @@ impl Editor<'_> {
         self.reload();
     }
 
-    fn unsaved(&self) -> bool {
+    /// Whether the draft differs from what the file has for this shape.
+    pub fn unsaved(&self) -> bool {
         match &self.saved {
             Some((id, d)) => *id != self.id || *d != self.def,
             None => !self.def.parts.is_empty(),
@@ -441,7 +438,8 @@ impl Editor<'_> {
         }
     }
 
-    fn say(&mut self, s: impl Into<String>) {
+    /// Shows `s` in the status line until the next key.
+    pub fn say(&mut self, s: impl Into<String>) {
         self.msg = Some(s.into());
     }
 
@@ -561,7 +559,7 @@ impl Editor<'_> {
 
     // ---------- the mouse ----------
 
-    fn on_mouse(&mut self, m: MouseEvent) {
+    fn mouse(&mut self, m: MouseEvent) {
         if self.form.is_some() {
             return;
         }
@@ -908,9 +906,9 @@ impl Editor<'_> {
 
     // ---------- keys ----------
 
-    fn on_key(&mut self, k: KeyEvent) {
+    fn key(&mut self, k: KeyEvent, core: &mut Core) {
         if self.form.is_some() {
-            return self.form_key(k);
+            return self.form_key(k, core);
         }
         if self.which_key {
             self.which_key = false;
@@ -1027,7 +1025,7 @@ impl Editor<'_> {
         commands::screen_key_hints(SHAPE_EDITOR, &self.keys, |a| a != Action::Keys, None)
     }
 
-    fn form_key(&mut self, k: KeyEvent) {
+    fn form_key(&mut self, k: KeyEvent, core: &mut Core) {
         let Some(form) = &mut self.form else { return };
         let n = form.fields.len();
         let field = &mut form.fields[form.pos];
@@ -1051,7 +1049,7 @@ impl Editor<'_> {
                 field.value.push(c);
                 form.error = None;
             }
-            KeyCode::Enter => self.submit(),
+            KeyCode::Enter => self.submit(core),
             _ => {}
         }
     }
@@ -1149,14 +1147,14 @@ impl Editor<'_> {
     }
 
     /// Applies the form, or says in it what's wrong.
-    fn submit(&mut self) {
+    fn submit(&mut self, core: &mut Core) {
         let Some(form) = self.form.take() else { return };
         let values: Vec<String> = form
             .fields
             .iter()
             .map(|f| f.value.trim().to_string())
             .collect();
-        let result = self.apply(&form.ask, &values);
+        let result = self.apply(&form.ask, &values, core);
         if let Err(e) = result {
             self.form = Some(Form {
                 error: Some(e),
@@ -1165,7 +1163,7 @@ impl Editor<'_> {
         }
     }
 
-    fn apply(&mut self, ask: &Ask, v: &[String]) -> Result<(), String> {
+    fn apply(&mut self, ask: &Ask, v: &[String], core: &mut Core) -> Result<(), String> {
         let name = |s: &str| -> Result<String, String> {
             let ok = s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
                 && s.chars()
@@ -1297,9 +1295,9 @@ impl Editor<'_> {
                 if !self.errors.is_empty() {
                     return Err("the shape has mistakes to fix first (the panel says)".into());
                 }
-                Binding::new(self.core, &self.loaded, &self.id, sources.clone())?.close(self.core);
+                Binding::new(core, &self.loaded, &self.id, sources.clone())?.close(core);
                 self.sources = sources;
-                self.rebind();
+                self.unbound = true;
             }
         }
         Ok(())
@@ -1307,7 +1305,9 @@ impl Editor<'_> {
 
     // ---------- drawing ----------
 
-    fn draw(&mut self, f: &mut Frame) {
+    /// Draws it over the whole screen, with the extensions' `ui/status` words (`statuses`) in
+    /// its status line.
+    pub fn draw(&mut self, f: &mut Frame, statuses: &[String]) {
         let area = f.area();
         let panel = PANEL.min(area.width / 2);
         self.canvas = Rect::new(
@@ -1348,8 +1348,8 @@ impl Editor<'_> {
             area.width,
             1,
         );
-        let line = match &self.msg {
-            Some(m) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
+        let mut line = match &self.msg {
+            Some(m) => Line::from(Span::styled(format!(" {m}"), Style::new().fg(HIT))),
             None => {
                 let mut spans = vec![Span::styled(
                     format!(" {} · {}", self.tool.name(), self.tool.hint()),
@@ -1368,6 +1368,12 @@ impl Editor<'_> {
                 Line::from(spans)
             }
         };
+        for text in statuses {
+            line.spans.push(Span::styled(
+                format!("   {text}"),
+                Style::new().fg(ACCENT_SOFT),
+            ));
+        }
         f.render_widget(Paragraph::new(line), status);
         if let Some(form) = &self.form {
             draw_form(f, self.canvas, form);

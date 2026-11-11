@@ -1305,6 +1305,77 @@ fn extensions_are_answered_while_a_whiteboard_is_open() {
 
 /// Needs python3, which CI's runners have.
 #[test]
+fn extensions_are_answered_while_the_board_picker_or_the_shape_editor_is_open() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("board-layers-extensions");
+    let home = dir.join("home");
+    install_open_tasks(&dir, &home);
+    let shapes = dir.join("example-workspace/.cold-lava/shapes.toml");
+    let before = std::fs::read(&shapes).unwrap();
+    let out = drive_with(
+        "board-layers-extensions.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&shapes).unwrap(),
+        before,
+        "looking at the shape editor writes nothing"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_take_the_whiteboard_away_from_unsaved_work() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("board-keeps-drafts");
+    let home = dir.join("home");
+    install_open_tasks(&dir, &home);
+    // The example, made to open a note whenever the tasks change, before it shows its count:
+    // once the count is on the screen, the menu has dealt with the open.
+    let main = home.join(".config/cold-lava/extensions/open-tasks/main.py");
+    let polite = std::fs::read_to_string(&main).unwrap();
+    let counted = "    open_ids.difference_update(params[\"removed\"])\n    show_count()\n";
+    let pushy = polite.replace(
+        counted,
+        "    open_ids.difference_update(params[\"removed\"])\n    \
+         ext.open_note(\"Volcanoes/Krakatoa.md\")\n    show_count()\n",
+    );
+    assert_ne!(pushy, polite, "the example's items/changed handler moved");
+    std::fs::write(&main, pushy).unwrap();
+    let out = drive_with(
+        "board-keeps-drafts.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let board = std::fs::read_to_string(dir.join("example-workspace/Drafts.canvas")).unwrap();
+    assert!(board.contains("Draft, kept"), "{board}");
+    let shape = saved_shape(&dir.join("example-workspace"), "shape1");
+    assert_eq!(shape["parts"].as_array().map(Vec::len), Some(1), "{shape}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
 fn the_python_example_extension_lists_tasks_in_a_view_of_its_own() {
     if !has_python() {
         eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
@@ -2004,6 +2075,28 @@ fn editing_a_shape_rewrites_only_its_block() {
     let low = "{ circle = { id = \"low\", center = [0.5, 0.695], radius = 0.27 } }";
     assert!(after[new].contains(low), "{after}");
     render_shape(&dir, "venn3", &[]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_shape_saved_in_the_editor_shows_on_its_whiteboard_at_once() {
+    let dir = sandbox("shape-saved-shows");
+    let canvas = dir.join("example-workspace/Volcano Venn.canvas");
+    let before = std::fs::read(&canvas).unwrap();
+    let out = drive("shape-saved-shows.drive", &dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let saved = saved_shape(&dir.join("example-workspace"), "checklist");
+    assert_eq!(saved["title"].as_str(), Some("Checklist-mine"));
+    assert_eq!(
+        std::fs::read(&canvas).unwrap(),
+        before,
+        "the canvas places the shape by id: saving the shape writes nothing to it"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 

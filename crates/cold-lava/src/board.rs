@@ -8,7 +8,6 @@ use crate::looks;
 use crate::term;
 use crate::types::Colour;
 use anyhow::{Context as _, Result};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -24,7 +23,6 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -34,7 +32,7 @@ mod placed;
 use crate::act::{self, Acted, Answered, Done, Gesture};
 use crate::bind::{Binding, Source};
 use crate::core::{Core, Event as CoreEvent};
-use crate::ext::{ExtId, Registry};
+use crate::ext::{Effect, ExtId, Registry};
 use crate::gateway::News;
 use cold_lava_canvas::{Cell as GridCell, Handle, Point, Style as Token, Viewport, draw as ink};
 use live::Live;
@@ -172,12 +170,16 @@ enum Grab {
 /// call that needs them: placed shapes' bindings follow the core.
 pub struct Board {
     live: Live,
-    /// What the core said while the shape editor ran, for the menu to hear after.
-    events: Vec<CoreEvent>,
-    news: Vec<(String, News)>,
+    /// The shape editor (`S`), a layer over the board while it is open: it gets the keys and
+    /// the mouse and is drawn instead, and the board under it keeps being ticked.
+    editor: Option<Box<crate::shape_editor::Editor>>,
     /// Extensions asked about their shapes. On its own the board polls them; in the menu, the
     /// menu polls every extension.
     asking: Vec<ExtId>,
+    /// What extensions asked for (`ui/notify`, `ui/status`, opening something) inside the
+    /// board's calls to them about their shapes, for whoever runs the board to do
+    /// (`take_asked`).
+    asked: Vec<(ExtId, Effect)>,
     /// A gesture handed to the extension that ships its shape: the node, and the gesture.
     gesturing: Option<(String, Gesture)>,
     /// Where the mouse went down on a shape, for a click when it comes up without moving.
@@ -213,9 +215,12 @@ pub struct Board {
     base: Doc,
     /// Exact bytes last read or written, to spot outside changes cheaply.
     disk: Vec<u8>,
+    /// The file as the core names it in its events (workspace-relative), when it is one the
+    /// core watches: the board has no watcher of its own.
+    rel: Option<String>,
+    /// The core said the file changed, and it hasn't been read since.
+    stale: bool,
     last_check: Instant,
-    fs_events: Option<Receiver<notify::Event>>,
-    _watcher: Option<RecommendedWatcher>,
     keys: Keymap<BoardAction>,
     /// Inside the main menu: where Back and Forward lead, and their keys.
     nav: Option<(Nav, Keymap<HistoryAction>)>,
@@ -232,10 +237,22 @@ pub fn launch(
 ) -> Result<()> {
     let path = match file {
         Some(p) => p,
-        None => match pick_board(terminal, workspace_root)? {
-            Some(p) => p,
-            None => return Ok(()),
-        },
+        None => {
+            let mut picker = Picker::new(workspace_root);
+            let picked = loop {
+                terminal.draw(|f| picker.draw(f))?;
+                if let Event::Key(k) = event::read()?
+                    && k.kind == KeyEventKind::Press
+                    && let Some(picked) = picker.on_key(k)
+                {
+                    break picked;
+                }
+            };
+            match picked {
+                Some(p) => p,
+                None => return Ok(()),
+            }
+        }
     };
     let mut core = crate::owned::open(workspace_root, registry)?;
     let mut b = Board::open(workspace_root, path, None)?;
@@ -244,103 +261,126 @@ pub fn launch(
     ran
 }
 
-pub fn pick_board(terminal: &mut DefaultTerminal, root: &Path) -> Result<Option<PathBuf>> {
-    let mut boards: Vec<String> = WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "canvas"))
-        .filter_map(|e| {
-            e.path()
-                .strip_prefix(root)
-                .ok()
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-        })
-        .collect();
-    boards.sort();
-    let mut query = String::new();
-    let mut pos = 0usize;
-    loop {
-        let q = crate::workspace::search_key(&query);
-        let hits: Vec<&String> = boards
-            .iter()
-            .filter(|b| crate::workspace::search_key(b).contains(&q))
+/// The board picker (`w`): the workspace's `.canvas` files, filtered as you type, and a new
+/// board named by what was typed. It has no loop: whoever shows it hands it keys and draws it.
+pub struct Picker {
+    root: PathBuf,
+    boards: Vec<String>,
+    query: String,
+    /// The chosen row: one of the boards the query keeps, or the new board after them.
+    pos: usize,
+}
+
+impl Picker {
+    pub fn new(root: &Path) -> Picker {
+        let mut boards: Vec<String> = WalkDir::new(root)
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "canvas")
+            })
+            .filter_map(|e| {
+                e.path()
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+            })
             .collect();
-        let new_name = if query.trim().is_empty() {
-            "Untitled".to_string()
-        } else {
-            query.trim().to_string()
-        };
-        let total = hits.len() + 1;
-        pos = pos.min(total - 1);
-        terminal.draw(|f| {
-            let area = centered(
-                f.area(),
-                64,
-                (total as u16 + 4)
-                    .min(f.area().height.saturating_sub(2))
-                    .max(6),
-            );
-            let mut lines = vec![Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-            ])];
-            lines.push(Line::raw(""));
-            for (i, h) in hits.iter().enumerate() {
-                let st = if i == pos {
-                    Style::new().fg(Color::Black).bg(ACCENT)
-                } else {
-                    Style::new().fg(NOTE)
-                };
-                lines.push(Line::styled(format!("  {h}  "), st));
-            }
-            let st = if pos == hits.len() {
-                Style::new().fg(Color::Black).bg(HIT)
-            } else {
-                Style::new().fg(HIT)
-            };
-            lines.push(Line::styled(
-                format!("  + new board \"{new_name}.canvas\"  "),
-                st,
-            ));
-            f.render_widget(Clear, area);
-            f.render_widget(
-                Paragraph::new(lines).block(
-                    Block::bordered()
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::new().fg(ACCENT))
-                        .title(" whiteboards · type to filter · ⏎ open · Esc back "),
-                ),
-                area,
-            );
-        })?;
-        if let Event::Key(k) = event::read()? {
-            if k.kind != KeyEventKind::Press {
-                continue;
-            }
-            match k.code {
-                KeyCode::Esc => return Ok(None),
-                KeyCode::Up => pos = pos.saturating_sub(1),
-                KeyCode::Down | KeyCode::Tab => pos = (pos + 1).min(total - 1),
-                KeyCode::Backspace => {
-                    query.pop();
-                    pos = 0;
-                }
-                KeyCode::Enter => {
-                    let rel = if pos < hits.len() {
-                        hits[pos].clone()
-                    } else {
-                        format!("{new_name}.canvas")
-                    };
-                    return Ok(Some(root.join(rel)));
-                }
-                KeyCode::Char(c) => {
-                    query.push(c);
-                    pos = 0;
-                }
-                _ => {}
-            }
+        boards.sort();
+        Picker {
+            root: root.to_path_buf(),
+            boards,
+            query: String::new(),
+            pos: 0,
         }
+    }
+
+    /// The boards the query keeps.
+    fn hits(&self) -> Vec<&String> {
+        let q = crate::workspace::search_key(&self.query);
+        (self.boards.iter())
+            .filter(|b| crate::workspace::search_key(b).contains(&q))
+            .collect()
+    }
+
+    /// The name of the new board: what was typed, or "Untitled".
+    fn new_name(&self) -> &str {
+        match self.query.trim() {
+            "" => "Untitled",
+            typed => typed,
+        }
+    }
+
+    /// A key. `Some` once the picker is done: the board to open, or `None` when it was left.
+    pub fn on_key(&mut self, k: KeyEvent) -> Option<Option<PathBuf>> {
+        match k.code {
+            KeyCode::Esc => return Some(None),
+            KeyCode::Up => self.pos = self.pos.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => self.pos = (self.pos + 1).min(self.hits().len()),
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.pos = 0;
+            }
+            KeyCode::Enter => {
+                let rel = match self.hits().get(self.pos) {
+                    Some(hit) => hit.to_string(),
+                    None => format!("{}.canvas", self.new_name()),
+                };
+                return Some(Some(self.root.join(rel)));
+            }
+            KeyCode::Char(c) => {
+                self.query.push(c);
+                self.pos = 0;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Draws it in the middle of the screen, over what is drawn there.
+    pub fn draw(&self, f: &mut Frame) {
+        let hits = self.hits();
+        let total = hits.len() + 1;
+        let area = centered(
+            f.area(),
+            64,
+            (total as u16 + 4)
+                .min(f.area().height.saturating_sub(2))
+                .max(6),
+        );
+        let mut lines = vec![Line::from(vec![
+            Span::styled(" ▸ ", Style::new().fg(HIT)),
+            Span::styled(format!("{}▏", self.query), Style::new().fg(NOTE)),
+        ])];
+        lines.push(Line::raw(""));
+        for (i, h) in hits.iter().enumerate() {
+            let st = if i == self.pos {
+                Style::new().fg(Color::Black).bg(ACCENT)
+            } else {
+                Style::new().fg(NOTE)
+            };
+            lines.push(Line::styled(format!("  {h}  "), st));
+        }
+        let st = if self.pos == hits.len() {
+            Style::new().fg(Color::Black).bg(HIT)
+        } else {
+            Style::new().fg(HIT)
+        };
+        lines.push(Line::styled(
+            format!("  + new board \"{}.canvas\"  ", self.new_name()),
+            st,
+        ));
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(lines).block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(ACCENT))
+                    .title(" whiteboards · type to filter · ⏎ open · Esc back "),
+            ),
+            area,
+        );
     }
 }
 
@@ -352,22 +392,13 @@ impl Board {
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let doc = parse(&disk, &path)?;
         let base = doc.clone();
-        // Watch the folder (not the file): editors replace files by renaming over them.
-        let (tx, rx) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(ev) = res {
-                let _ = tx.send(ev);
-            }
-        })
-        .ok();
-        if let (Some(w), Some(dir)) = (watcher.as_mut(), path.parent())
-            && w.watch(dir, RecursiveMode::NonRecursive).is_err()
-        {
-            watcher = None;
-        }
         let workspace_root = workspace_root
             .canonicalize()
             .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let rel = path.canonicalize().ok().and_then(|p| {
+            let rel = p.strip_prefix(&workspace_root).ok()?;
+            Some(rel.to_string_lossy().replace('\\', "/"))
+        });
         let workspace_name = workspace_root
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -376,9 +407,9 @@ impl Board {
         let sel = node.filter(|id| doc.nodes.iter().any(|n| n.id == *id));
         Ok(Board {
             live,
-            events: Vec::new(),
-            news: Vec::new(),
+            editor: None,
             asking: Vec::new(),
+            asked: Vec::new(),
             gesturing: None,
             press: None,
             path,
@@ -404,9 +435,9 @@ impl Board {
             previews: HashMap::new(),
             base,
             disk,
+            rel,
+            stale: false,
             last_check: Instant::now(),
-            fs_events: watcher.is_some().then_some(rx),
-            _watcher: watcher,
             keys: Keymap::new(commands::BOARD),
             nav: None,
         })
@@ -421,17 +452,23 @@ impl Board {
         registry: &mut Registry,
     ) -> Result<()> {
         while !self.quit {
-            let (mut events, mut news) = self.take_heard();
-            events.extend(core.poll());
-            news.extend(core.take_item_news());
+            let events = core.poll();
+            let news = core.take_item_news();
             self.noticed(core, &events);
             for (owner, news) in &news {
                 self.heard(core, owner, news);
             }
             for ext in self.asking.clone() {
-                registry.call(ext, Some(&mut *core), |e, host| e.poll(host));
+                let effects = registry.call(ext, Some(&mut *core), |e, host| e.poll(host));
+                self.asked.extend(effects.into_iter().map(|e| (ext, e)));
             }
             self.tick(core, registry);
+            // There is no menu here to open things or keep a status line: what they say shows.
+            for (_, effect) in self.take_asked() {
+                if let Effect::Notify { message } = effect {
+                    self.flash(message);
+                }
+            }
             terminal.draw(|f| self.draw(f, &[]))?;
             if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
@@ -448,6 +485,9 @@ impl Board {
 
     /// Stops following the workspace: the placed shapes' subscriptions end.
     pub fn close(mut self, core: &mut Core) {
+        if let Some(editor) = self.editor.take() {
+            editor.close(core);
+        }
         self.live.close(core);
     }
 
@@ -460,6 +500,20 @@ impl Board {
         self.sel.as_deref()
     }
 
+    /// What closing the board now would lose, in words for the status line: a draft in the
+    /// shape editor, the text of a card being typed, edits a refused save left unsaved.
+    pub fn unsaved_work(&self) -> Option<&'static str> {
+        if self.editor.as_ref().is_some_and(|e| e.unsaved()) {
+            Some("the shape editor has unsaved changes")
+        } else if matches!(self.mode, Mode::Edit { .. }) {
+            Some("a card is being edited")
+        } else if self.unsaved {
+            Some("the whiteboard's last edits aren't saved")
+        } else {
+            None
+        }
+    }
+
     /// Where Back and Forward lead from here, for the history keys and the status line.
     pub fn navigate(&mut self, nav: Nav) {
         self.nav = Some((nav, commands::history_keys(&self.keys)));
@@ -470,20 +524,29 @@ impl Board {
         self.quit.then(|| self.exit.clone())
     }
 
-    /// What the core said while the shape editor ran, for the screen under the board.
-    pub fn take_heard(&mut self) -> (Vec<CoreEvent>, Vec<(String, News)>) {
-        (
-            std::mem::take(&mut self.events),
-            std::mem::take(&mut self.news),
-        )
+    /// What extensions asked for in the board's calls to them since the last time, in order:
+    /// the menu does it as it does after any call to an extension.
+    pub fn take_asked(&mut self) -> Vec<(ExtId, Effect)> {
+        std::mem::take(&mut self.asked)
     }
 
     // ---------- placed shapes, kept up with the workspace ----------
 
-    /// The core's events, for the placed shapes' bindings.
+    /// The core's events: for the placed shapes' bindings, and a change to the board's own
+    /// file, which the next tick reads.
     pub fn noticed(&mut self, core: &Core, events: &[CoreEvent]) {
         for e in events {
             self.live.noticed(core, e);
+            if let Some(editor) = &mut self.editor {
+                editor.noticed(core, e);
+            }
+            self.stale |= match e {
+                CoreEvent::BoardChanged(rel)
+                | CoreEvent::OwnedChanged(rel)
+                | CoreEvent::FileChanged(rel) => Some(rel) == self.rel.as_ref(),
+                CoreEvent::Rescanned => true,
+                _ => false,
+            };
             if let CoreEvent::ItemEdited { note, by, what, .. } = e {
                 let name = note.rsplit('/').next().unwrap_or(note);
                 self.flash(format!("{by}: {what} on {name}"));
@@ -491,12 +554,15 @@ impl Board {
         }
     }
 
-    /// Item news for `owner`'s subscriptions: true when it was the placed shapes', which are
-    /// subscribed as the canvas.
+    /// Item news for `owner`'s subscriptions: true when it was the canvas's, as which the
+    /// placed shapes and the shape editor's preview are subscribed.
     pub fn heard(&mut self, core: &Core, owner: &str, news: &News) -> bool {
         let mine = owner == crate::bind::OWNER;
         if mine {
             self.live.heard(core, news);
+            if let Some(editor) = &mut self.editor {
+                editor.heard(core, news);
+            }
         }
         mine
     }
@@ -512,7 +578,8 @@ impl Board {
             let Some(ext) = registry.by_name(&name) else {
                 continue;
             };
-            registry.ask_shape(ext, Some(&mut *core), ask);
+            let effects = registry.ask_shape(ext, Some(&mut *core), ask);
+            self.asked.extend(effects.into_iter().map(|e| (ext, e)));
             if !self.asking.contains(&ext) {
                 self.asking.push(ext);
             }
@@ -554,7 +621,8 @@ impl Board {
                               host: &mut crate::ext::Host<'_>| {
                         out = Some(binding.act(host, &gesture, placed))
                     };
-                    registry.call(ext, Some(&mut *core), gw);
+                    let effects = registry.call(ext, Some(&mut *core), gw);
+                    self.asked.extend(effects.into_iter().map(|e| (ext, e)));
                     out.expect("called")
                 }
                 None => return self.flash(format!("{name} isn't installed")),
@@ -566,7 +634,8 @@ impl Board {
                 let Some(ext) = binding.extension().and_then(|n| registry.by_name(n)) else {
                     return;
                 };
-                registry.ask_shape(ext, Some(&mut *core), ask);
+                let effects = registry.ask_shape(ext, Some(&mut *core), ask);
+                self.asked.extend(effects.into_iter().map(|e| (ext, e)));
                 if !self.asking.contains(&ext) {
                     self.asking.push(ext);
                 }
@@ -592,9 +661,10 @@ impl Board {
             return;
         };
         let mut out = None;
-        registry.call(ext, Some(&mut *core), |_, host| {
+        let effects = registry.call(ext, Some(&mut *core), |_, host| {
             out = Some(binding.run(host, gesture, steps))
         });
+        self.asked.extend(effects.into_iter().map(|e| (ext, e)));
         match out.expect("called") {
             Ok(done) => self.done(id, done),
             Err(e) => self.flash(e.to_string()),
@@ -867,13 +937,13 @@ impl Board {
     /// The shape editor on the selected placed shape (a copy to make your own) or the placed
     /// shapes in the selected group (one shape of all their parts), else a new or a workspace
     /// shape to pick.
-    fn make_shape(&mut self, terminal: &mut DefaultTerminal, core: &mut Core) -> Result<()> {
+    fn make_shape(&mut self, core: &mut Core) {
         let Some(sel) = self.sel.clone() else {
             self.mode = Mode::PickShape {
                 query: String::new(),
                 pos: 0,
             };
-            return Ok(());
+            return;
         };
         let members: Vec<String> = (self.group_members(&sel).into_iter())
             .filter(|id| self.live.is_shape(id))
@@ -886,7 +956,7 @@ impl Board {
                     query: String::new(),
                     pos: 0,
                 };
-                return Ok(());
+                return;
             }
             [one] if *one == sel => {
                 let Some(shape) = (self.node(one))
@@ -894,7 +964,7 @@ impl Board {
                     .and_then(|s| self.live.shapes.get(&s))
                 else {
                     self.flash("this shape didn't load, so there is nothing to start from");
-                    return Ok(());
+                    return;
                 };
                 let id = (1..)
                     .map(|n| match n {
@@ -947,33 +1017,29 @@ impl Board {
                 }
             }
         };
-        self.open_editor(terminal, start, core)
+        self.open_editor(start, core);
     }
 
-    /// Runs the shape editor on the workspace's core; after it, the board's shapes are read
-    /// again. What the core said meanwhile is kept for `take_heard`.
-    fn open_editor(
-        &mut self,
-        terminal: &mut DefaultTerminal,
-        start: crate::shape_editor::Start,
-        core: &mut Core,
-    ) -> Result<()> {
-        let left = match crate::shape_editor::run(terminal, &self.workspace_root, core, start) {
-            Ok(left) => left,
-            Err(e) => {
-                self.flash(e.to_string());
-                return Ok(());
-            }
+    /// Opens the shape editor over the board, on the workspace's core.
+    fn open_editor(&mut self, start: crate::shape_editor::Start, core: &mut Core) {
+        match crate::shape_editor::Editor::open(&self.workspace_root, core, start) {
+            Ok(editor) => self.editor = Some(Box::new(editor)),
+            Err(e) => self.flash(e.to_string()),
+        }
+    }
+
+    /// Back from the shape editor. When it saved, the workspace's shapes are read again and
+    /// every placed shape is bound anew, so an extension's answer about a binding from before
+    /// names none (`live`).
+    fn close_editor(&mut self, core: &mut Core) {
+        let Some(editor) = self.editor.take() else {
+            return;
         };
-        self.events.extend(left.events);
-        self.news.extend(left.news);
-        if left.saved {
+        if editor.close(core) {
             self.live.close(core);
             self.live = Live::new(crate::shapes::for_workspace(&self.workspace_root));
             self.flash("shapes read again: s places the one you made");
         }
-        terminal.clear()?;
-        Ok(())
     }
 
     /// The selected shape's actions: each name and how its shape titles it.
@@ -996,19 +1062,15 @@ impl Board {
 
     // ---------- live sync with the file on disk ----------
 
-    /// Pick up outside changes: on a file-system event, or every 2 s as a fallback.
+    /// Pick up outside changes: once the core says the file changed (`noticed`), and every 2 s
+    /// for a file the core doesn't watch (outside the workspace, or in a hidden folder). A
+    /// card being typed or dragged comes first: the change waits, and saving merges it.
     fn watch_disk(&mut self) {
-        let mut touched = false;
-        if let Some(rx) = &self.fs_events {
-            let name = self.path.file_name();
-            for ev in rx.try_iter() {
-                touched |= ev.paths.iter().any(|p| p.file_name() == name);
-            }
-        }
         let busy = matches!(self.mode, Mode::Edit { .. }) || self.drag.is_some();
-        if busy || !(touched || self.last_check.elapsed() > Duration::from_secs(2)) {
+        if busy || !(self.stale || self.last_check.elapsed() > Duration::from_secs(2)) {
             return;
         }
+        self.stale = false;
         self.last_check = Instant::now();
         self.sync_from_disk();
     }
@@ -1420,7 +1482,11 @@ impl Board {
     // ---------- editing operations ----------
 
     pub fn flash(&mut self, s: impl Into<String>) {
-        self.msg = Some((s.into(), Instant::now()));
+        let s = s.into();
+        if let Some(editor) = &mut self.editor {
+            editor.say(s.clone());
+        }
+        self.msg = Some((s, Instant::now()));
     }
 
     /// Place a new card: right of the selection, else in the middle of the view.
@@ -1787,6 +1853,13 @@ impl Board {
         core: &mut Core,
         registry: &mut Registry,
     ) -> Result<()> {
+        if let Some(editor) = &mut self.editor {
+            editor.on_key(k, core);
+            if editor.left() {
+                self.close_editor(core);
+            }
+            return Ok(());
+        }
         if self.alert.take().is_some() {
             return Ok(());
         }
@@ -1919,7 +1992,7 @@ impl Board {
                                 None => crate::shape_editor::Start::New,
                                 Some(id) => crate::shape_editor::Start::Edit(id.clone()),
                             };
-                            self.open_editor(terminal, start, core)?;
+                            self.open_editor(start, core);
                         }
                     }
                     _ => {}
@@ -2146,7 +2219,7 @@ impl Board {
                 Some(id) if self.live.is_shape(&id) => self.flash("this shape has no actions"),
                 _ => self.flash("select a placed shape first, then x for what it can do"),
             },
-            BoardAction::MakeShape => self.make_shape(terminal, core)?,
+            BoardAction::MakeShape => self.make_shape(core),
             BoardAction::Delete => self.delete_selected(),
             BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
             BoardAction::ColourClear => self.set_color(None),
@@ -2178,6 +2251,9 @@ impl Board {
     }
 
     pub fn on_mouse(&mut self, m: MouseEvent, core: &mut Core, registry: &mut Registry) {
+        if let Some(editor) = &mut self.editor {
+            return editor.on_mouse(m, core);
+        }
         if matches!(
             self.mode,
             Mode::Help
@@ -2405,6 +2481,9 @@ impl Board {
     // ---------- drawing ----------
 
     pub fn draw(&mut self, f: &mut Frame, statuses: &[String]) {
+        if let Some(editor) = &mut self.editor {
+            return editor.draw(f, statuses);
+        }
         let [main, status] =
             Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(f.area());
         self.area = Block::bordered().inner(main);
@@ -3543,6 +3622,146 @@ mod tests {
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(ids(&saved, "nodes"), ["a", "ours", "theirs"]);
         assert!(!b.unsaved);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A workspace folder with `B.canvas` in it, and its core.
+    fn workspace(name: &str, nodes: Vec<Value>) -> (PathBuf, PathBuf, Core) {
+        let dir = std::env::temp_dir().join(format!("cold-lava-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("B.canvas");
+        std::fs::write(&path, canvas(nodes)).unwrap();
+        let core = Core::open(&dir).unwrap();
+        (dir, path, core)
+    }
+
+    fn canvas(nodes: Vec<Value>) -> String {
+        json!({"nodes": nodes, "edges": []}).to_string()
+    }
+
+    fn on_disk(path: &Path) -> Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_outside_change_the_core_reports_is_merged_on_the_next_tick() {
+        let (dir, path, mut core) = workspace("board-core-event", vec![card("a", 0, "A")]);
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.doc.nodes[0].text = Some("A, ours".into());
+
+        // Two outside changes before one tick: the file as it is now is what merges.
+        let changed = [CoreEvent::BoardChanged("B.canvas".into())];
+        std::fs::write(&path, canvas(vec![card("a", 0, "A"), card("c", 300, "C")])).unwrap();
+        b.noticed(&core, &changed);
+        let theirs = vec![card("a", 0, "A"), card("c", 300, "C"), card("d", 600, "D")];
+        std::fs::write(&path, canvas(theirs)).unwrap();
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+
+        let saved = on_disk(&path);
+        assert_eq!(ids(&saved, "nodes"), ["a", "c", "d"]);
+        assert_eq!(saved["nodes"][0]["text"], "A, ours", "our edit is kept");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_outside_change_waits_for_the_card_being_edited_and_a_save_of_its_own_is_not_one() {
+        let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
+        let (dir, path, mut core) = workspace("board-core-edit", cards.clone());
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let changed = [CoreEvent::BoardChanged("B.canvas".into())];
+
+        b.mode = Mode::Edit {
+            id: "b".into(),
+            buf: "Bravo, checked".into(),
+            is_new: false,
+        };
+        let theirs = [cards, vec![card("c", 600, "Charlie")]].concat();
+        std::fs::write(&path, canvas(theirs)).unwrap();
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.doc.nodes.len(), 2, "not under a card that is being typed");
+        b.finish_edit();
+        let saved = on_disk(&path);
+        assert_eq!(ids(&saved, "nodes"), ["a", "b", "c"]);
+        assert_eq!(saved["nodes"][1]["text"], "Bravo, checked");
+
+        // The core reports the board's own save as well: there is nothing to merge in it.
+        let (text, undo) = (std::fs::read(&path).unwrap(), b.undo.len());
+        b.msg = None;
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None);
+        assert_eq!(std::fs::read(&path).unwrap(), text);
+        assert_eq!((b.doc.nodes.len(), b.undo.len()), (3, undo));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An extension that ships the shape `chatty.box` and has things to say when asked what
+    /// its region shows.
+    struct Chatty;
+
+    impl crate::ext::Extension for Chatty {
+        fn initialize(&mut self) -> crate::ext::Manifest {
+            let manifest = json!({"name": "chatty", "title": "Chatty", "roles": [], "hints": [],
+                "commands": []});
+            serde_json::from_value(manifest).unwrap()
+        }
+        fn pane(&mut self, _: crate::ext::PaneNews, _: &mut crate::ext::Host<'_>) {}
+        fn editor(&mut self, _: crate::ext::EditorRequest, _: &mut crate::ext::Host<'_>) {}
+        fn shape(&mut self, ask: act::Ask, host: &mut crate::ext::Host<'_>) {
+            host.notify("chatty counted");
+            host.status(Some("chatty: 1".into()));
+            host.shape_answered(&ask, Err("nothing to show".into()));
+        }
+    }
+
+    #[test]
+    fn what_an_extension_asks_for_when_asked_about_its_shape_is_kept_for_the_menu() {
+        use crate::shapes::{Layer, load};
+        let (dir, path, _) = workspace("board-asked", Vec::new());
+        std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let mut registry = Registry::new(vec![Box::new(Chatty)]);
+        let chatty = registry.by_name("chatty").unwrap();
+        let shape: toml::Table = toml::from_str(
+            r#"
+            inputs = ["a"]
+            parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
+            regions = [{ id = "count", area = "box", extension = true }]
+            "#,
+        )
+        .unwrap();
+        let mut b = Board::open(&dir, path, None).unwrap();
+        b.live = Live::new(load([
+            Layer::built_in(),
+            Layer::extension("chatty", [("chatty.box".to_string(), shape)]),
+        ]));
+        let mut node: CNode = serde_json::from_value(json!(
+            {"id": "n", "type": "text", "x": 0, "y": 0, "width": 200, "height": 100}
+        ))
+        .unwrap();
+        let sources: indexmap::IndexMap<String, Source> =
+            [("a".to_string(), Source::Items(vec!["Krakatoa".into()]))].into();
+        let at = cold_lava_canvas::Placement::new(Point::new(0.0, 0.0), Point::new(20.0, 10.0));
+        let inputs = ["a".to_string()];
+        placed::place(&mut node, "chatty.box", &inputs, "Chatty", &sources, at);
+        b.doc.nodes.push(node);
+
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None, "it bound");
+        let said = Effect::Notify {
+            message: "chatty counted".into(),
+        };
+        let status = Effect::Status {
+            text: Some("chatty: 1".into()),
+        };
+        assert_eq!(b.take_asked(), [(chatty, said), (chatty, status)]);
+        b.tick(&mut core, &mut registry);
+        assert!(b.take_asked().is_empty(), "asked once, said once");
         let _ = std::fs::remove_dir_all(dir);
     }
 
