@@ -1,0 +1,28 @@
+name: owned files bench (temporary, #183)
+
+on:
+  push:
+    branches: [one-path-owned-183]
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build main
+        run: |
+          git worktree add ../main origin/main
+          cd ../main && cargo build --release -p cold-lava
+          cp target/release/cold-lava "$HOME/cold-lava-main"
+      - name: Build this branch
+        run: |
+          cargo build --release -p cold-lava
+          cp target/release/cold-lava "$HOME/cold-lava-branch"
+      - name: Items, agenda, table, tidy, rename on 3,000 notes (main, then this branch)
+        run: python3 scripts/bench-items.py --runs 11 "$HOME/cold-lava-main" "$HOME/cold-lava-branch"
+      - name: Every test, without stopping at the first failure
+        if: always()
+        run: cargo test --workspace --no-fail-fast
