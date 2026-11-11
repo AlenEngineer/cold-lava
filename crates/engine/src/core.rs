@@ -1125,6 +1125,10 @@ fn watch(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWat
     }
 }
 
+/// The harness for what subscribers hear, and its tests.
+#[cfg(test)]
+pub(crate) mod news;
+
 #[cfg(test)]
 mod tests {
     use super::*;

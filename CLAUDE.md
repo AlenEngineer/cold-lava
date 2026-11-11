@@ -80,6 +80,10 @@ A Cargo workspace of five crates, plus the GUI beside it. The version lives in t
 - `core.rs`: `Core` = one live workspace. Owns the `Index`, is the only file watcher, re-reads only
   changed notes and emits `Event`s (`poll()`, `subscribe()`). The menu owns it, and the graph
   runs in the menu's loop on it. Don't add another watcher or full rescan loop.
+  `core/news.rs` (tests only) is the harness for what subscribers hear and in which order: it
+  plays the watcher and an owner, applies steps (outside write, `items/edit`, rescan, rename,
+  recipe, an owner's answers) and collects each delivery, with no waiting. Test a change to how
+  news is queued there, not in a drive script.
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read), `create`, `move_file`. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
