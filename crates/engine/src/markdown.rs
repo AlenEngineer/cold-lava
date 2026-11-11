@@ -693,6 +693,8 @@ impl<'a> Reader<'a> {
         }
         parts.push((None, read));
         for (note, read) in parts.into_iter().rev() {
+            // A footnote's text starts on the first of its lines that holds any.
+            let text = read.iter().find(|r| !is_break(r)).map(|r| r.1.start);
             let inlines = self.finish(read, true);
             match note {
                 None => out.extend(self.shown(inlines, at)),
@@ -700,7 +702,8 @@ impl<'a> Reader<'a> {
                     line: self.line(marker.start),
                     kind: BlockKind::FootnoteDef {
                         label,
-                        blocks: self.shown(inlines, marker.end).into_iter().collect(),
+                        blocks: (self.shown(inlines, text.unwrap_or(marker.end)).into_iter())
+                            .collect(),
                     },
                 }),
             }
@@ -713,18 +716,24 @@ impl<'a> Reader<'a> {
         if kind != Kind::MathBlock {
             return self.pieces(read);
         }
-        // `$$`, the math, `$$`, and what its last line goes on with.
-        let (src, end) = (self.src, self.end());
-        self.skip();
-        let from = at + src[at..end].find("$$").map_or(0, |k| k + 2);
-        let body = &src[from..end];
+        // `$$`, the math, `$$`, and what its last line goes on with: the block's own text,
+        // without its containers' markers.
+        let end = self.end();
+        let mut body = String::new();
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(Kind::MathText | Kind::Newline, text, _) => body.push_str(text),
+                _ => {}
+            }
+        }
         let close = body.find("$$");
         let math = close.map_or(body.trim_end_matches(['\n', '\r']), |k| &body[..k]);
-        let after = from + close.map_or(body.len(), |k| k + 2);
-        read.push((Inline::Math(math.to_string()), at..after, Piece::Atom));
-        let rest = src[after..end].trim_end_matches(['\n', '\r']);
+        read.push((Inline::Math(math.to_string()), at..end, Piece::Atom));
+        let rest = close.map_or("", |k| &body[k + 2..]);
+        let rest = rest.trim_end_matches(['\n', '\r', ' ', '\t']);
         if !rest.is_empty() {
-            read.push(written(src, after..after + rest.len()));
+            read.push((Inline::Text(rest.to_string()), end..end, Piece::Atom));
         }
         // Its line break, should a paragraph go on under it.
         read.push((Inline::SoftBreak, end..end, Piece::Atom));
@@ -1056,8 +1065,11 @@ impl<'a> Reader<'a> {
                 out.push(written(self.src, range));
             }
             // A `^id` names its block only at the block's end (`block_id`), and what a field
-            // is made of is shown as written.
+            // is made of is shown as written. So is what a wikilink or a link by reference
+            // shows of its alias or its label.
             Kind::BlockId
+            | Kind::Alias
+            | Kind::LinkLabel
             | Kind::FieldKey
             | Kind::FieldColons
             | Kind::LBracket
@@ -1274,21 +1286,44 @@ impl<'a> Reader<'a> {
         let mut text = None;
         let mut inline = false;
         let mut dest = "";
-        let mut label: Option<(&str, usize)> = None;
+        // Where its first bracket ends and where the `]` that closes it is: between them,
+        // `[label]` and `[label][]` hold the label they show, which is read as text is.
+        let (mut open, mut close) = (None, None);
+        let mut shown: Vec<Read> = Vec::new();
+        // The label `[text][label]` names.
+        let mut named = None;
+        let list = self.start_list();
+        let in_link = std::mem::replace(&mut self.in_link, true);
         while let Some(step) = self.next() {
             match step {
                 Step::Leave(..) => break,
                 Step::Enter(Kind::LinkText, _) => text = Some(self.contained(range.clone(), true)),
+                Step::Enter(kind, at) if close.is_none() => self.inline(kind, at, &mut shown),
                 Step::Enter(..) => self.skip(),
+                Step::Token(Kind::LBracket | Kind::ImageOpen, bracket, at) => {
+                    open = open.or(Some(at + bracket.len()));
+                }
+                Step::Token(Kind::RBracket, _, at) => close = close.or(Some(at)),
                 Step::Token(Kind::LParen, ..) => inline = true,
+                Step::Token(Kind::RParen, ..) => {}
                 Step::Token(Kind::LinkDest, to, _) => dest = to,
-                Step::Token(Kind::LinkLabel, name, at) => label = Some((name, at)),
+                Step::Token(Kind::LinkLabel, name, at) if close.is_some() => {
+                    named = Some(at..at + name.len())
+                }
+                Step::Token(kind, text, at) if close.is_none() => {
+                    self.token(kind, text, at, &mut shown)
+                }
                 Step::Token(..) => {}
             }
         }
+        (self.list, self.in_link) = (list, in_link);
+        let label = match (&text, open, close) {
+            (None, Some(open), Some(close)) => Some(open..close),
+            _ => named,
+        };
         let target = match (inline, label) {
             (true, _) => cst::link_destination(dest).map(|d| unescape(&dest[d])),
-            (false, Some((name, _))) => self.defs.get(name).map(unescape),
+            (false, Some(label)) => self.defs.get(&self.src[label]).map(unescape),
             (false, None) => None,
         };
         // A destination CommonMark doesn't read (`[a](two words)`) makes no link: the index
@@ -1299,14 +1334,9 @@ impl<'a> Reader<'a> {
         if kind == Kind::Image {
             return out.push((Inline::Embed { target }, range, Piece::Container));
         }
-        let text = match (text, label) {
-            (Some(text), _) => text,
-            // `[label]` and `[label][]` show their label.
-            (None, Some((name, at))) => {
-                let shown = written(self.src, at..at + name.len());
-                self.held(vec![shown], range.clone())
-            }
-            (None, None) => Vec::new(),
+        let text = match text {
+            Some(text) => text,
+            None => self.held(shown, range.clone()),
         };
         let kind = match has_scheme(&target) {
             true => LinkKind::Url,

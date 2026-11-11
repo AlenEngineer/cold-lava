@@ -627,16 +627,14 @@ mod tests {
         // Wikilinks.
         "[[Note]] [[Note|alias]] [[Note#H]] [[Note#^b]] [[Folder/Note.md|x]] ![[E]] [[]] [[a]]b[[c]]\n",
         // Probes.
-        "Text[^1].\n\n[^1]: First paragraph.\n\n    Second paragraph, indented.\n\nAfter.\n",
-        "\\[[Note]] and \\[text](url.md) and \\`code\\` and \\#tag and \\*not em\\*\n",
-        "[[Note]]#tag **bold**#tag2 `code`#tag3 a#no\n",
+        "\\*not em\\* and \\_x\\_ and \\\\ and \\! and \\[not a link\\]\n",
+        "a#no and (#yes) and ,#too and #end\n",
         "a**#b** and ==a **b== c** and **a ==b** c==\n",
         "<span title=\"*x*\">*y*</span> and <a href=\"x_y_z\">l_i_n_k</a>\n",
-        "$$\nunclosed math\n\nnext para\n",
         "> $$\n> x\n> $$\n",
-        "> [!note] Title\nlazy line after the title\n\n> [!note] Title *one\n> two* three\n",
+        "> [!note] Title *one* **two**\n> body *three\n> four* five\n",
         "[*a*][ref] and [**ref**] and [ref][] and [`r`][ref]\n\n[ref]: x.md\n[**ref**]: y.md\n",
-        "[a [b](c.md) d](e.md) and [![alt *x*](p.png)](n.md) and [a](b.md)[c](d.md)\n",
+        "[![alt *x*](p.png)](n.md) and [a](b.md)[c](d.md)\n",
         "# Heading\\\n\n# Heading two  \n",
         "-\ttab item\n\t-\tnested\n\n\tcode by tab\n\n1.\tone\n\t\tdeep code\n",
         "[a](<b c.md>) [d](e\\_f.md) [g](h&amp;i.md) [j](k.md 'l') [](m.md) [n]( ) [o](p.md\"q\")\n",
@@ -649,14 +647,13 @@ mod tests {
         "~a~ ~~b~~ ~~c~ ~d~~ ~~~e~~~ a~b~c H~2~O\n",
         "&nbsp;x &#x1F30B; &#99999999; &amp;amp; `&amp;` [&amp;](a&amp;b.md) &AMP; &Tab;\n",
         "text\n<div>\nblock\n</div>\nafter\n\n<br>\n\ninline <br> and <!-- c --> and <a href=\"x\">t</a> and <b>*em*</b>\n",
-        "$a$b$ $ a $ \\$5 $x_y$ and $z_w$ $$m$$ text $1 and $2\n",
+        "$a$b$ $ a $ $x_y$ and $z_w$ $$m$$ text $1 and $2\n",
         "a %%b\nc%% d\n\ne %%unclosed\n",
-        "#tag. #a/b #1a (#x) ,#y *#z* _#w_ #x_y_ [#l](m.md) #tag#two # no\n\n| #cell | b |\n|---|---|\n| c | #d |\n",
-        "Intro\n\n---\nkey: value\n---\n\nAfter\n",
+        "#tag. #a/b #1a (#x) ,#y *#z* _#w_ #x_y_ #tag#two # no\n\n| #cell | b |\n|---|---|\n| c | #d |\n",
         "---\nunclosed: frontmatter\n\ntext\n",
-        "[a]: b.md\n  \"title on the next line\"\n\n[c]:\n  d.md\n\ntext [a] and [c]\n\npara\n[e]: f.md\n",
+        "text [a] and [c]\n\npara\n[e]: f.md\n\n[a]: b.md \"title\"\n",
         "<a@b> <http://x y> <https://x.y/#frag> <ftp://a.b/c> <x:y>\n",
-        "`\\`a\\`` and `` ` `` and ` a ` and `  ` and ```x``y```\n",
+        "`` ` `` and ` a ` and `  ` and ```x``y``` and ``a`b`` and `c``d`\n",
         "[[a|b|c]] [[Note#^blk|x]] ![[img.png|100]] [[Note\\|x]] [[ Note ]] [[Note|]]\n",
         "***\n\n* * *\n\n*** text\n\n**a***b*\n\n*a**b**\n\n**a*b*c**d\n\n***a*b**\n\n*a**b***\n",
         "- [ ] task\n  - nested\n- [x] done\n\n  para\n- [ ]\n  - under empty\n- [X] upper\n* [ ] star\n+ [ ] plus\n",
@@ -669,7 +666,7 @@ mod tests {
         "http://bare.url/a_b_c and www.example.com and foo@bar.com\n",
         "![image](a.png)![two](b.png)\n\n![a](b.png) text\n\n![[x.png]] ![[y.png]]\n\n[![a](b.png)](c.md)\n",
         "**bold\n\nnot closed** across paragraphs\n\n*a\n- b*\n",
-        "| a | b |\n|:--|--:|\n| *x | y* |\n| `c` | d \\\\| e |\n",
+        "| a | b |\n|:--|--:|\n| *x | y* |\n| `c` | d \\| e |\n",
         "\t\ttwo tabs\n\n  \tspace tab\n\n- item\n\n\tcode or paragraph\n",
         "Text[^a] and[^b].\n\n[^a]: One.\n\n[^b]:\n    Indented start.\n\n[^c]: Unused, with [[Link]] and #tag.\n",
         "==a== ===b=== ====c==== ==d ==e== == f == g==h==i ==\n",
@@ -695,23 +692,94 @@ mod tests {
         ),
         (
             "obsidian",
-            "See [[#Heading]].\n",
-            "`[[#Heading]]` showed the tag `Heading` in the link.",
+            "Intro\n\n---\nkey: value\n---\n\nAfter\n",
+            "A `---` line after a blank line, with a `---` line below it, opened YAML in the middle of a note and hid what was between. It is a rule and a heading.",
+        ),
+        (
+            "obsidian",
+            "See [[#Heading]] and [#text](Note.md).\n",
+            "A `#` that starts a link's text showed as a tag in the link. The index counts no tag there.",
+        ),
+        (
+            "obsidian",
+            "[[Note]]#one **bold**#two `code`#three\n",
+            "A `#` right after a link, closing emphasis or code started a tag. The index counts none: a tag follows the start of the line, a space, `(` or `,`.",
         ),
         (
             "obsidian",
             "Read ==#marked==.\n",
-            "A tag right after a highlight's `==` was none.",
+            "A tag right after a highlight's `==` was none. It is one for the index, as in Obsidian.",
+        ),
+        (
+            "obsidian",
+            "Not a \\#tag.\n",
+            "An escaped `\\#` showed as a tag.",
         ),
         (
             "obsidian",
             "| [[A\\|B]] | c |\n| --- | --- |\n| d | e |\n",
-            "`[[A\\|B]]` in a table cell linked to `A\\`.",
+            "`[[A\\|B]]` in a table cell linked to `A\\`. The note is `A`.",
         ),
         (
             "wikilinks",
             "![[img.png]]\n",
-            "Without embeds, `![[x]]` was text; it is a `!` and a wikilink, as the items count it.",
+            "Without embeds, `![[x]]` was text. It is a `!` and a wikilink, as the items count it.",
+        ),
+        (
+            "obsidian",
+            "> [!note] Title *one\n> two* three\n",
+            "Emphasis that opened in a callout's title and closed on its next line made that line part of the title.",
+        ),
+        (
+            "obsidian",
+            "> [!note] Title\nlazy line\n",
+            "A line right under a callout's title, without its `>`, was the callout's. The tree ends the callout there, and the items with it.",
+        ),
+        (
+            "obsidian",
+            "[a [b](c.md) d](e.md)\n",
+            "A link whose text holds another link: CommonMark reads the inner one. The tree reads the outer, which is the one backlinks count.",
+        ),
+        (
+            "obsidian",
+            "\\[[Note]] and \\[text](Other.md) and \\`code\\`\n",
+            "An escape doesn't stop a wikilink, a link or a code span for the tree, so the index counts these links. Obsidian shows them as text.",
+        ),
+        (
+            "obsidian",
+            "\\$5 and $x$\n",
+            "An escaped `\\$` still opens math for the tree, as for the items.",
+        ),
+        (
+            "obsidian",
+            "| a | b |\n|---|---|\n| c | d \\\\| e |\n",
+            "`\\\\|` in a table cell: an escaped backslash, then a pipe that ends the cell. pulldown-cmark read a pipe in the cell.",
+        ),
+    ];
+
+    /// Markdown where the reader now shows less than Obsidian does, because the tree reads it
+    /// so and the index with it. Reading these as Obsidian does changes the blocks and the
+    /// links the index counts, which is a change of its own to decide.
+    const LESS: &[(&str, &str, &str)] = &[
+        (
+            "obsidian",
+            "Text[^1].\n\n[^1]: First paragraph.\n\n    Second paragraph, indented.\n",
+            "A footnote's text that goes on, indented, after a blank line is indented code, not the footnote's second paragraph.",
+        ),
+        (
+            "obsidian",
+            "[a]: b.md\n  \"title on the next line\"\n\ntext [a]\n",
+            "A link definition's title on the line under it is a paragraph of text.",
+        ),
+        (
+            "obsidian",
+            "[c]:\n  d.md\n\ntext [c]\n",
+            "A link definition whose destination is on the line under it is text, and `[c]` is no link.",
+        ),
+        (
+            "obsidian",
+            "$$\nmath nothing closes\n\nthe next paragraph\n",
+            "`$$` that nothing closes is math to the end of its container, not text.",
         ),
     ];
 
@@ -806,7 +874,7 @@ mod tests {
             }
             differ.extend(difference("5,000 lines", &long, &flavour));
         }
-        for (name, text, _) in DIFFERENT {
+        for (name, text, _) in DIFFERENT.iter().chain(LESS) {
             if difference("Different", text, &named(name)).is_none() {
                 differ.push(format!("reads alike now, so it isn't DIFFERENT: {text:?}"));
             }
@@ -817,5 +885,59 @@ mod tests {
             differ.len(),
             differ.join("\n")
         );
+    }
+
+    /// What reading every note into a `Doc` costs, pulldown-cmark's parse against the tree's:
+    /// on `scripts/bench-items.py`'s workspace, on the repository's Markdown, and on one
+    /// 5,000-line note, which is what opening it in the reader waits for. Run with
+    /// `COLD_LAVA_BENCH_WS=DIR cargo test --release -p cold-lava-engine doc_cost -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn doc_cost() {
+        use std::time::{Duration, Instant};
+        let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
+        let flavour = flavour_for(Path::new(&dir));
+        let workspace: Vec<String> = walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .collect();
+        let corpus: Vec<String> = cst::corpus().into_iter().map(|n| n.1).collect();
+        let long = vec![long_note()];
+        type Read = fn(&str, &Flavour) -> Doc;
+        let sides: [(&str, Read); 2] =
+            [("pulldown-cmark", parse), ("the tree", super::super::parse)];
+        let sets = [
+            ("the bench workspace", &workspace),
+            ("the repository's Markdown", &corpus),
+            ("a 5,000-line note", &long),
+        ];
+        for (what, notes) in sets {
+            let mut runs: [Vec<Duration>; 2] = [Vec::new(), Vec::new()];
+            let mut blocks = [0usize; 2];
+            // The sides take turns, so drift and caches favour neither.
+            for _ in 0..9 {
+                for (k, (_, read)) in sides.iter().enumerate() {
+                    let t = Instant::now();
+                    blocks[k] = notes.iter().map(|n| read(n, &flavour).blocks.len()).sum();
+                    runs[k].push(t.elapsed());
+                }
+            }
+            let bytes: usize = notes.iter().map(String::len).sum();
+            println!(
+                "doc_cost, {what}: {} notes, {} KiB; median (min-max) of 9:",
+                notes.len(),
+                bytes / 1024
+            );
+            for (k, (side, _)) in sides.iter().enumerate() {
+                runs[k].sort();
+                println!(
+                    "  {side}: {:?} ({:?}-{:?}), {} blocks",
+                    runs[k][4], runs[k][0], runs[k][8], blocks[k]
+                );
+            }
+        }
     }
 }
