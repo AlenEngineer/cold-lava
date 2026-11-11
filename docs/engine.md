@@ -372,6 +372,27 @@ change what it shows, never how it works.
     hold wikilinks); a tag needs to be text, not inside a link's destination or a wikilink; a
     link by reference to a note is a link, on the line it is written on, and a tag may follow
     emphasis, strikethrough and highlight markers.
+  - *The reader's `Doc`* (#212) is built from the tree too: `markdown::parse` walks it
+    (`cst::read`, in the workspace's flavour with what text holds, over the note without its
+    `%%comments%%`, as the items read it) and makes the same `Doc` the reader always drew. So
+    what the reader shows as a link, a tag or a task is what the index and the items count.
+    What isn't a node is put together on the way: paragraphs and `$$` math on consecutive lines
+    are one paragraph, a paragraph is cut at each `FootnoteMarker` into the paragraph and its
+    footnotes, a `LinkEnd` takes the inlines since its `[` as the link's text, a `^id` names
+    its block only at the block's end, a checkbox that is no `[ ]` or `[x]` is text, and a
+    character reference is looked up (`markdown/entities.rs`). pulldown-cmark's parse stays
+    in `markdown/pulldown.rs`, for tests only: one compares the two `Doc`s on every note of
+    the corpus, the example workspace, some eighty tricky notes and a 5,000-line one, in
+    each flavour. They are equal but for two lists kept there with the reason for each row.
+    `DIFFERENT`: the tree reads what the index counts (a `#` right after a link is no tag,
+    `\[[Note]]` is still a link, a link whose text holds a link is the outer one, a line
+    under a callout's title without its `>` ends the callout), or pulldown-cmark wasn't
+    Obsidian (a frontmatter whose first line is blank, YAML in the middle of a note, a byte
+    order mark, `[[A\|B]]` in a table). `LESS`: the reader shows less than Obsidian does,
+    because the tree reads it so and the index with it (a footnote's indented continuation
+    after a blank line is indented code, a link definition over two lines is text, `$$` that
+    nothing closes is math to the end of its container). Those are the tree's to change, and
+    change what the index counts.
   - *Renames:* `relink` rewrites the bytes of a target and nothing else: a link by reference
     is rewritten once, in its definition (`[ref]: Old.md "Title"` keeps its label, its title
     and its `<>`), whether a link uses it or not. Two tests hold "nothing else": every note of
