@@ -590,7 +590,11 @@ result as it is. `S` on the whiteboard opens it:
   placed shapes are what is drawn freely there.
 
 **Where it lives, and why.** It is a screen of the core, in the binary
-(`crates/cold-lava/src/shape_editor.rs`), opened by the whiteboard, which lends it the core.
+(`crates/cold-lava/src/shape_editor.rs`), opened by the whiteboard as a layer over itself. It
+has no loop of its own: the whiteboard hands it keys, the mouse and the core's news and draws it
+in its place, so the menu's loop goes on while it is open and extensions keep being answered
+(their status words show in its status line). When it is left after a save, the whiteboard
+reads the workspace's shapes again, and the saved shape shows on the board at once.
 An extension can't be one: extensions never see keystrokes or draw, and the view gateway carries
 lists and tables, not a canvas with handles under the mouse. Nothing in it knows one shape from
 another, though, and it is split so the parts a second frontend needs carry no drawing:
