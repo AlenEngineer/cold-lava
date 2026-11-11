@@ -280,7 +280,13 @@ change what it shows, never how it works.
     the links, tags and tasks in a footnote's indented lines count (they were indented code
     in the tree until #212), and a `^id` on a definition's line names the footnote's text
     without its `[^label]:`. An edit inside a definition, or on the line right after one,
-    reparses the definition: it is one top-level block, as a list is. With wikilinks, a
+    reparses the definition: it is one top-level block, as a list is. `$$` math needs its
+    closing `$$`, on its line or any later line its containers reach, blank lines between
+    included. Without one the `$$` line is text and what follows reads as it would: the
+    parse goes back to that line and reads on. So a `$$` typed far below can make math of
+    what is above it, and an edit whose lines hold a `$$` parses the note whole. A line
+    right under a callout's title that doesn't go on the quote is the callout's first
+    paragraph, lazily, as the title is a paragraph's line to CommonMark. With wikilinks, a
     destination that starts one is none either: `[Source]: [[Book]]` is a line of text with a
     wikilink, which backlinks and a rename find.
   - *Inlines* are read per line, left to right, the first to start winning: code spans,
@@ -329,8 +335,12 @@ change what it shows, never how it works.
     longer. Strikethroughs,
     highlights and footnotes are the flavour's `Syntax`; the rest is CommonMark's. Within a
     line: an autolink, a tag or a footnote that the line reader's tokens cut through isn't
-    one, and an escape doesn't stop a link, a code span or a tag the line reader found
-    (`\[[Note]]` is still a wikilink, as the index counts it).
+    one. The line reader knows the escapes that matter to it: a backslash before `[`, `]`,
+    `` ` ``, `$`, `%`, `!`, `|`, `*`, `_`, `#`, `=`, `~` or another backslash starts nothing
+    and ends nothing, so `\[[Note]]` is text for the reader and no link for the index. A
+    link's text holds no link (wikilink, Markdown link or link by reference, outside code;
+    an image may be in it): the one inside is the link, the brackets around it are text,
+    and a link ends the brackets open before it.
   - *Reference links:* `[text][label]`, `[label][]` and `[label]` (and the same after `!`)
     are links only where the note defines the label, anywhere in it, as in CommonMark; else
     the brackets are text. Labels match whatever their case and the amount of whitespace, and
@@ -391,14 +401,16 @@ change what it shows, never how it works.
     in `markdown/pulldown.rs`, for tests only: one compares the two `Doc`s on every note of
     the corpus, the example workspace, some eighty tricky notes and a 5,000-line one, in
     each flavour. They are equal but for two lists kept there with the reason for each row.
-    `DIFFERENT`: the tree reads what the index counts (a `#` right after a link is no tag,
-    `\[[Note]]` is still a link, a link whose text holds a link is the outer one, a line
-    under a callout's title without its `>` ends the callout), or pulldown-cmark wasn't
-    Obsidian (a frontmatter whose first line is blank, YAML in the middle of a note, a byte
-    order mark, `[[A\|B]]` in a table). `LESS`: the reader shows less than Obsidian does,
-    because the tree reads it so and the index with it (a link definition over two lines is
-    text, `$$` that nothing closes is math to the end of its container). Those are the tree's to change, and
-    change what the index counts.
+    `DIFFERENT`: the tree reads what the index counts (a `#` right after a link, or one
+    that starts a link's text, is no tag; `$$` math may hold a blank line), or pulldown-cmark
+    wasn't Obsidian (a frontmatter whose first line is blank, YAML in the middle of a note, a
+    byte order mark, `[[A\|B]]` in a table, an escaped `\#`). `LESS`: the reader shows less
+    than Obsidian does, because the tree reads it so and the index with it (a link
+    definition over two lines is text). Four more differences were the tree's to mend, and
+    are mended in it, for the index and the items too: a backslash escapes what the line
+    reader finds (`\[[Note]]` is text), a link's text holds no link (the inner one is the
+    link), `$$` needs its closing `$$`, and a lazy line under a callout's title is the
+    callout's.
   - *Renames:* `relink` rewrites the bytes of a target and nothing else: a link by reference
     is rewritten once, in its definition (`[ref]: Old.md "Title"` keeps its label, its title
     and its `<>`), whether a link uses it or not. Two tests hold "nothing else": every note of

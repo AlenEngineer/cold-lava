@@ -244,6 +244,11 @@ impl<'t, 'd> Line<'t, 'd> {
         let mut i = a;
         while i < z {
             let found = match t[i] {
+                // An escaped character starts nothing and ends nothing.
+                b'\\' if i + 1 < z && b"\\[]`$%!*_#=~|".contains(&t[i + 1]) => {
+                    i += 2;
+                    continue;
+                }
                 b'`' => {
                     let run = t[i..z].iter().take_while(|&&c| c == b'`').count();
                     if let Some(end) = self.code_span(i, run, z) {
@@ -278,6 +283,8 @@ impl<'t, 'd> Line<'t, 'd> {
                         true => None,
                         false => {
                             let end = self.link(i, z).or_else(|| self.reference(i, z));
+                            // A link's text holds no link: the one inside is the link.
+                            let end = end.filter(|_| !self.holds_link(i, z));
                             end.map(|e| (Link, e))
                         }
                     });
@@ -301,6 +308,10 @@ impl<'t, 'd> Line<'t, 'd> {
             };
             match found {
                 Some((kind, end)) => {
+                    // A link ends the brackets open before it: none of them is a link's.
+                    if !in_link && matches!(kind, Link | WikiLink) {
+                        *open = 0;
+                    }
                     token(b, Text, self.text, plain, i);
                     self.emit(b, kind, i, end);
                     (plain, i) = (end, end);
@@ -495,6 +506,44 @@ impl<'t, 'd> Line<'t, 'd> {
         }
         token(b, WikiClose, text, inner_z, z);
         b.finish();
+    }
+
+    /// Whether the text between the `[` at `a` and its `]` holds a link: a wikilink, a
+    /// Markdown link or one by reference, outside code. An image isn't one.
+    fn holds_link(&self, a: usize, z: usize) -> bool {
+        let Some(close) = self.close_bracket(a, z) else {
+            return false;
+        };
+        let t = self.text.as_bytes();
+        let mut i = a + 1;
+        while i < close {
+            let next = t.get(i + 1).copied();
+            match t[i] {
+                b'\\' => i += 2,
+                b'`' => {
+                    let run = t[i..close].iter().take_while(|&&c| c == b'`').count();
+                    i = self.code_span(i, run, close).unwrap_or(i + run);
+                }
+                b'!' if next == Some(b'[') => {
+                    let image = match t.get(i + 2) == Some(&b'[') && self.g.has(S::Embeds) {
+                        true => self.wikilink(i + 1, close),
+                        false => (self.link(i + 1, close)).or_else(|| self.reference(i + 1, close)),
+                    };
+                    i = image.unwrap_or(i + 2);
+                }
+                b'[' if next == Some(b'[') && self.g.has(S::WikiLinks) => {
+                    match self.wikilink(i, close) {
+                        Some(_) => return true,
+                        None => i += 2,
+                    }
+                }
+                b'[' if self.link(i, close).is_some() || self.reference(i, close).is_some() => {
+                    return true;
+                }
+                _ => i += 1,
+            }
+        }
+        false
     }
 
     /// The `]` matching the `[` at `a`, before `z`.

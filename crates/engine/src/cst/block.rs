@@ -169,6 +169,28 @@ struct Parser<'t> {
     pending: usize,
     /// The link definitions found.
     defs: Definitions,
+    /// Where the line being read starts, and where the line whose `$$` nothing closed does:
+    /// that one opens no math.
+    at_line: usize,
+    no_math: usize,
+    /// The parse as it was before the line being read, when that line may open `$$` math. It
+    /// is kept (`math`) while the math it opened is open, and handed back (`unclosed`) when
+    /// the math ends with nothing closing it.
+    before: Option<Before>,
+    math: Option<Before>,
+    unclosed: Option<Before>,
+    /// The line read was a callout's title, which the next may go on from lazily.
+    titled: bool,
+}
+
+/// The parse before a line that may open `$$` math, to go back to if nothing closes it.
+struct Before {
+    line: usize,
+    events: usize,
+    stack: Vec<Open>,
+    leaf: Option<Leaf>,
+    defs: usize,
+    titled: bool,
 }
 
 fn is_ws(b: u8) -> bool {
@@ -186,6 +208,12 @@ impl<'t> Parser<'t> {
             prefix: Vec::new(),
             pending: 0,
             defs: Definitions::default(),
+            at_line: 0,
+            no_math: usize::MAX,
+            before: None,
+            math: None,
+            unclosed: None,
+            titled: false,
         }
     }
 
@@ -314,23 +342,55 @@ impl<'t> Parser<'t> {
     /// accepts, or the end; where they stop.
     fn run(&mut self, from: usize, stop: impl Fn(usize) -> bool) -> usize {
         let mut ls = from;
-        while ls < self.text.len() {
-            if ls > from && self.stack.is_empty() && self.leaf.is_none() && stop(ls) {
-                return ls;
+        loop {
+            while ls < self.text.len() {
+                if ls > from && self.stack.is_empty() && self.leaf.is_none() && stop(ls) {
+                    return ls;
+                }
+                ls = self.line(ls);
+                if let Some(before) = self.unclosed.take() {
+                    ls = self.back_to(before);
+                }
             }
-            ls = self.line(ls);
+            self.close_leaf();
+            match self.unclosed.take() {
+                Some(before) => ls = self.back_to(before),
+                None => break,
+            }
         }
-        self.close_leaf();
         while self.stack.pop().is_some() {
             self.finish();
         }
         ls
     }
 
+    /// The parse as it was `before` a line opened `$$` math that nothing closed: the line is
+    /// read again from where this returns, as text, and so is what followed it.
+    fn back_to(&mut self, before: Before) -> usize {
+        // The indented code open before that line was ended by it, with a `Finish` put in
+        // after its last line.
+        if let Some(Leaf::Indented { end }) = before.leaf {
+            self.events.remove(end);
+        }
+        self.events.truncate(before.events);
+        self.stack = before.stack;
+        self.leaf = before.leaf;
+        self.defs.0.truncate(before.defs);
+        self.titled = before.titled;
+        (self.before, self.math) = (None, None);
+        self.no_math = before.line;
+        before.line
+    }
+
     fn close_leaf(&mut self) {
         match self.leaf.take() {
             None => {}
             Some(Leaf::Indented { end }) => self.events.insert(end, Ev::Finish),
+            // Math that ends here without its closing `$$` was none.
+            Some(Leaf::Math) => {
+                self.unclosed = self.math.take();
+                self.close()
+            }
             Some(_) => self.close(),
         }
     }
@@ -343,6 +403,24 @@ impl<'t> Parser<'t> {
     fn line(&mut self, ls: usize) -> usize {
         let (le, next) = self.line_at(ls);
         let t = self.bytes();
+        self.at_line = ls;
+        let titled = std::mem::take(&mut self.titled);
+        let may_open_math = self.g.has(S::Math)
+            && ls != self.no_math
+            && !matches!(self.leaf, Some(Leaf::Math))
+            && self.text[ls..le].contains("$$");
+        if may_open_math {
+            self.before = Some(Before {
+                line: ls,
+                events: self.events.len(),
+                stack: self.stack.clone(),
+                leaf: self.leaf,
+                defs: self.defs.0.len(),
+                titled,
+            });
+        } else if self.before.is_some() {
+            self.before = None;
+        }
         let mut prefix = std::mem::take(&mut self.prefix);
         prefix.clear();
         self.pending = 0;
@@ -451,6 +529,7 @@ impl<'t> Parser<'t> {
                     self.tok(kind, pos, le);
                     self.newline(le, next);
                     if self.text[pos..le].contains(mark) {
+                        self.math = None;
                         self.close_leaf();
                     }
                     return self.done(prefix, next);
@@ -477,6 +556,27 @@ impl<'t> Parser<'t> {
             self.leaf = Some(Leaf::Para {
                 start,
                 lines: lines + 1,
+                last_line,
+            });
+            return self.done(prefix, next);
+        } else if titled
+            && self.leaf.is_none()
+            && !blank
+            && !sibling
+            && !self.interrupts(pos, col, le, true)
+        {
+            // A lazy line right under a callout's title: the title is a paragraph's line to
+            // CommonMark, so the line goes on from it, inside the callout.
+            self.emit_prefix(&prefix);
+            let last_line = self.para_line(pos, fp, le, next);
+            let start = self.events.len();
+            self.start(Paragraph);
+            self.tok(Whitespace, pos, fp);
+            self.push(Ev::Inline(fp, le));
+            self.newline(le, next);
+            self.leaf = Some(Leaf::Para {
+                start,
+                lines: 1,
                 last_line,
             });
             return self.done(prefix, next);
@@ -652,7 +752,7 @@ impl<'t> Parser<'t> {
     }
 
     fn math_start(&self, fp: usize, le: usize) -> bool {
-        self.g.has(S::Math) && self.text[fp..le].starts_with("$$")
+        self.g.has(S::Math) && self.at_line != self.no_math && self.text[fp..le].starts_with("$$")
     }
 
     fn comment_start(&self, fp: usize, le: usize) -> bool {
@@ -803,6 +903,7 @@ impl<'t> Parser<'t> {
                         }
                         self.newline(le, next);
                         self.finish();
+                        self.titled = true;
                         return;
                     }
                     continue;
@@ -918,6 +1019,12 @@ impl<'t> Parser<'t> {
                         MathBlock => Leaf::Math,
                         _ => Leaf::Comment,
                     });
+                    if kind == MathBlock {
+                        self.math = match closed {
+                            true => None,
+                            false => self.before.take(),
+                        };
+                    }
                     if closed {
                         self.close_leaf();
                     }

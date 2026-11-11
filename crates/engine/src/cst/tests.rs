@@ -98,6 +98,7 @@ const EDGES: &[&str] = &[
     "| *a* | **b |\n| - | - |\n| c** | ==d== |\n",
     "***a** b* *c **d*** ****e**** _f__g__h_ snake_case_word 2*3*4 **==#t==** [*x*](y) *z [w* v](u)\n",
     "\u{feff}*emphasis after a BOM*\r\n**strong  \r\nover a CRLF**\\\r\n&#x1F30B; &nope <a href=\"x\">\r\n",
+    "$$ never closed\n\n- [ ] task\n\n$$\nclosed\n\nmath\n$$\n> $$\n> quoted\n\n    code\n$$\n\\[[Esc]] \\`c\\` [a [b](c) d](e)\n> [!note] T\nlazy\n",
     "[^a]: one\n\n    two [[L]]\n\n    - [ ] t\n[^b]: three\n> [^c]: in a quote\n>     more\n\nafter\n- [^d]: in an item\n\n      under it\n\t[^e]: tabbed\n",
 ];
 
@@ -540,6 +541,109 @@ fn a_footnote_definition_holds_the_blocks_indented_under_it() {
     assert!(!kinds(text, ob).contains(&Kind::IndentedCode));
 }
 
+#[test]
+fn math_needs_its_closing_marker() {
+    let ob = obsidian();
+    let top = |text: &str| -> Vec<Kind> {
+        let root = Tree::with(text, ob).root();
+        root.children().map(|n| n.kind()).collect()
+    };
+    // `$$` that nothing closes is text, and what follows it reads as it would.
+    let open = "$$ is slang for money\n\n- [ ] a task [[Link]]\n\n# Heading\n";
+    assert_eq!(
+        top(open),
+        [
+            Kind::Paragraph,
+            Kind::BlankLine,
+            Kind::List,
+            Kind::AtxHeading
+        ]
+    );
+    assert_eq!(texts(open, ob, Kind::Target), ["Link"]);
+    assert_eq!(texts(open, ob, Kind::TaskMarker), ["[ ]"]);
+    for none in [
+        "$$$\n\ntext\n",
+        "text\n$$\nnever closed\n",
+        "> $$\n> in a quote\n\n$$\n",
+        "- $$\n  in an item\n\nafter\n",
+        "    code\n$$\nafter code\n",
+    ] {
+        assert!(!kinds(none, ob).contains(&Kind::MathBlock), "{none:?}");
+    }
+    // With its closing `$$`, on its line or a later one, over blank lines too, it is math.
+    let closed = "$$\nx\n\ny\n$$\nafter\n";
+    assert_eq!(top(closed), [Kind::MathBlock, Kind::Paragraph]);
+    assert_eq!(texts(closed, ob, Kind::MathBlock), ["$$\nx\n\ny\n$$\n"]);
+    assert_eq!(texts("$$x$$\n", ob, Kind::MathBlock), ["$$x$$\n"]);
+    // The first of two unclosed ones takes the second as its end.
+    let two = "$$ a\n\nb\n\n$$ c\n\nd\n";
+    assert_eq!(
+        top(two),
+        [Kind::MathBlock, Kind::BlankLine, Kind::Paragraph]
+    );
+    // Typing the closing `$$` far below makes math of what is above: such an edit parses
+    // the note whole.
+    let tree = Tree::with(open, ob);
+    let more = format!("{open}$$\n");
+    let edited = tree.edit(&more, open.len()..open.len(), 3);
+    assert_eq!(edited, Tree::with(&more, ob));
+    assert_eq!(texts(&more, ob, Kind::MathBlock), [more.as_str()]);
+    assert_eq!(edited.edit(open, open.len()..more.len(), 0), tree);
+}
+
+#[test]
+fn an_escape_stops_what_the_line_reader_finds() {
+    let text = "\\[[Note]] \\[text](url.md) \\`code\\` \\$5 and $x$ \\![[Pic.png]] \\\\[[Real]] [[A]] \\%%c%%\n";
+    for gates in [obsidian(), obsidian().plain(), Gates::INDEX] {
+        assert_eq!(texts(text, gates, Kind::Target), ["Pic.png", "Real", "A"]);
+        assert!(texts(text, gates, Kind::LinkDest).is_empty());
+        assert!(texts(text, gates, Kind::CodeSpan).is_empty());
+        assert!(texts(text, gates, Kind::Embed).is_empty());
+        assert!(texts(text, gates, Kind::Comment).is_empty());
+    }
+    assert_eq!(texts(text, obsidian(), Kind::InlineMath), ["$x$"]);
+    // In a table cell the pipe before a wikilink's alias is still the wikilink's.
+    let table = "| a |\n| - |\n| [[B\\|x]] \\[[C]] |\n";
+    assert_eq!(texts(table, Gates::INDEX, Kind::Target), ["B"]);
+    assert_eq!(texts(table, Gates::INDEX, Kind::Alias), ["x"]);
+}
+
+#[test]
+fn a_links_text_holds_no_link() {
+    let text = "[a [b](c.md) d](e.md) [x [[W]] y](z.md) [![alt](p.png)](n.md) [`[q](r.md)`](s.md) [t [u][ref] v](w.md)\n\n[ref]: R.md\n";
+    for gates in [obsidian(), Gates::INDEX] {
+        assert_eq!(
+            texts(text, gates, Kind::LinkDest),
+            ["c.md", "p.png", "n.md", "s.md"]
+        );
+        assert_eq!(texts(text, gates, Kind::Target), ["W"]);
+        assert_eq!(texts(text, gates, Kind::LinkLabel), ["ref"]);
+        assert!(texts(text, gates, Kind::LinkEnd).is_empty());
+    }
+}
+
+#[test]
+fn a_lazy_line_goes_on_from_a_callouts_title() {
+    let ob = obsidian();
+    let lazy = "> [!note] Title\nlazy line\nand another\n\nafter\n";
+    let root = Tree::with(lazy, ob).root();
+    let top: Vec<Kind> = root.children().map(|n| n.kind()).collect();
+    assert_eq!(top, [Kind::Callout, Kind::BlankLine, Kind::Paragraph]);
+    assert_eq!(
+        texts(lazy, ob, Kind::Callout),
+        ["> [!note] Title\nlazy line\nand another\n"]
+    );
+    assert_eq!(
+        texts("> [!NOTE]\nlazy\n", github(), Kind::Callout),
+        ["> [!NOTE]\nlazy\n"]
+    );
+    // A block that starts there isn't lazy.
+    assert_eq!(
+        texts("> [!note] Title\n- item\n", ob, Kind::Callout),
+        ["> [!note] Title\n"]
+    );
+}
+
 /// The steps through `text` with what text itself holds put back into text.
 fn folded(text: &str, gates: Gates) -> Vec<String> {
     fn flush(out: &mut Vec<String>, run: &mut Option<(usize, usize)>, text: &str) {
@@ -772,6 +876,13 @@ const PIECES: &[&str] = &[
     "[^n]: ",
     "\n\n    ",
     "[^n]: x\n\n    y\n",
+    "$$\n",
+    "$$ open\n\n",
+    "$$x$$",
+    "\\[",
+    "\\`",
+    "[a [b](c) d](e)",
+    "> [!note] T\n",
     "é",
     "\u{feff}",
 ];
