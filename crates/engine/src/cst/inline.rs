@@ -32,7 +32,21 @@ pub(super) fn build<'t>(
     defs: &Definitions,
     b: &mut impl Sink<'t>,
 ) {
-    let b = &mut Held::new(text, gates, b);
+    // A reader that doesn't ask for what text holds is read into straight.
+    match gates.text() {
+        true => lines(text, events, gates, defs, &mut Held::new(text, gates, b)),
+        false => lines(text, events, gates, defs, b),
+    }
+}
+
+/// `build`, into the sink the lines are read into.
+fn lines<'t>(
+    text: &'t str,
+    events: &[Ev],
+    gates: Gates,
+    defs: &Definitions,
+    b: &mut impl Sink<'t>,
+) {
     // A code span an earlier line of the paragraph opened: its closing backticks.
     let mut code: Option<Range<usize>> = None;
     // How many `[` the block's earlier lines left open.
@@ -759,20 +773,6 @@ impl<'t, B: Sink<'t>> Sink<'t> for Held<'_, 't, B> {
             self.b.token(kind, text);
         }
     }
-}
-
-impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
-    fn new(text: &'t str, g: Gates, b: &'s mut B) -> Self {
-        Held {
-            text,
-            g,
-            b,
-            recs: Vec::new(),
-            hold: false,
-            kind: None,
-            lines: 0,
-        }
-    }
 
     /// A block of `kind` starts, or one ends: what was held goes on.
     fn block(&mut self, kind: Option<Kind>) {
@@ -783,9 +783,6 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
 
     /// A line of the block's text, `a..z`, is about to be read.
     fn line(&mut self, a: usize, z: usize) {
-        if !self.g.text() {
-            return;
-        }
         let first = self.lines == 0;
         self.lines += 1;
         let line = &self.text[a..z];
@@ -802,6 +799,20 @@ impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
         let footnote = starts.then(|| footnote_marker(line)).flatten();
         let footnote = footnote.map(|len| a + len);
         self.recs.push(Rec::Line(a, z, footnote));
+    }
+}
+
+impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
+    fn new(text: &'t str, g: Gates, b: &'s mut B) -> Self {
+        Held {
+            text,
+            g,
+            b,
+            recs: Vec::new(),
+            hold: false,
+            kind: None,
+            lines: 0,
+        }
     }
 
     /// What was held goes on to the sink, its text cut.

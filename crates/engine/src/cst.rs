@@ -522,6 +522,12 @@ trait Sink<'t> {
     fn start(&mut self, kind: Kind);
     fn finish(&mut self);
     fn token(&mut self, kind: Kind, text: &'t str);
+
+    /// A block of `kind` starts, or one ends: for a sink that holds a block's text back.
+    fn block(&mut self, _kind: Option<Kind>) {}
+
+    /// A line of the block's text, `a..z`, is about to be read.
+    fn line(&mut self, _a: usize, _z: usize) {}
 }
 
 impl<'t> Sink<'t> for GreenNodeBuilder<'_> {
