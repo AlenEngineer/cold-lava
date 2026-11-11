@@ -20,7 +20,8 @@ pub(super) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
 /// Where the tags and the links are written, which a block's own are read from. The tree says:
 /// pulldown-cmark's pass found the blocks, and a pattern over a block's text its tags and links.
 fn written(src: &str, flavour: &Flavour, wants: Wants) -> matcher::Written {
-    let gates = wants.gates(cst::Gates::of(flavour).set(Syntax::Comments, false));
+    let gates = cst::Gates::of(flavour).plain();
+    let gates = wants.gates(gates.set(Syntax::Comments, false));
     let (blocks, defs) = cst::blocks(src, gates);
     let mut written = matcher::Written::default();
     let mut links = crate::owner::markdown::Links::default();

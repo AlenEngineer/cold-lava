@@ -149,7 +149,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   (`Tree::definitions`, `cst::blocks`): a reference link (`[text][label]`, `[label][]`,
   `[label]`) is a link only where the note defines its label, and its reader asks the
   definitions where its `LinkLabel` points. An edit that changes the definitions parses the
-  note whole. A tag may follow the markers that open emphasis, a strikethrough or a highlight
+  note whole. What text itself holds (escapes, character references, autolinks, inline HTML,
+  footnotes, hard breaks, emphasis, strong, strikethrough, highlights; #212) is read after the
+  lines, a block at a time, and only cuts `Text` tokens and wraps them in nodes: `Tree::parse`
+  and `Gates::of` read it, the index and the items don't (`Gates::INDEX`, `Gates::plain`) and
+  read the same links, tags and blocks either way (a test checks it on the corpus). Its kinds
+  come last in `Kind`, so the others keep their numbers. A tag may follow the markers that
+  open emphasis, a strikethrough or a highlight
   (`**#tag**`, `markdown::MARKED_TAG`).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and

@@ -8,8 +8,9 @@
 //!
 //! Parsing is in two parts: `block` finds the blocks line by line (CommonMark's containers and
 //! leaves) as a flat list of events, and `inline` reads a line of a block's text into code spans,
-//! links, tags and the rest while the events are built into the tree. What the flavour lacks
-//! (`Syntax`) stays text.
+//! links, tags and the rest while the events are built into the tree, then reads what is left
+//! as text for emphasis and the like, a block at a time. What the flavour lacks (`Syntax`)
+//! stays text.
 
 mod block;
 mod inline;
@@ -91,7 +92,8 @@ kinds! {
     Target,
     /// `#Heading` or `^block` after a wikilink's target.
     Anchor,
-    /// What a wikilink shows instead of its target.
+    /// What a wikilink shows instead of its target. A reading with what text holds cuts it
+    /// as it cuts text (`[[Note|*shown*]]`).
     Alias,
     /// `[`.
     LBracket,
@@ -169,6 +171,45 @@ kinds! {
     Comment,
     /// `$x$` or `$$x$$` within a line.
     InlineMath,
+
+    // What text holds, after the rest, which keep the numbers they had: its tokens,
+    // then its nodes.
+    /// `*`, `_`, `**`, `__`, `~`, `~~` or `==`, opening or closing emphasis, a strikethrough or
+    /// a highlight.
+    EmphasisMarker,
+    /// `\` and the punctuation after it, which it makes plain text.
+    Escape,
+    /// What is written as a character reference: `&amp;`, `&#35;`, `&#x23;`. Whether it names a
+    /// character is the reader's to say.
+    Entity,
+    /// The two or more blanks, or the `\`, at the end of a line that breaks the line there.
+    HardBreak,
+    /// `^label` between a footnote's brackets.
+    FootnoteLabel,
+    /// `<` opening an autolink.
+    AngleOpen,
+    /// `>` closing an autolink.
+    AngleClose,
+    /// Where an autolink points: a URL with its scheme, or an email address.
+    Url,
+    /// An HTML tag, comment, instruction, declaration or CDATA section within a line, opaque.
+    InlineHtml,
+
+    /// `*x*` or `_x_`.
+    Emphasis,
+    /// `**x**` or `__x__`.
+    Strong,
+    /// `~~x~~` or `~x~`.
+    Strikethrough,
+    /// `==x==`.
+    Highlight,
+    /// `[^label]`. Whether the note has that footnote is the reader's to say.
+    FootnoteRef,
+    /// `[^label]:` starting a line of a paragraph: from there on the paragraph is the
+    /// footnote's text.
+    FootnoteMarker,
+    /// `<https://example.com>` or `<name@example.com>`.
+    Autolink,
 }
 
 impl From<Kind> for rowan::SyntaxKind {
@@ -207,8 +248,24 @@ pub type SyntaxToken = rowan::SyntaxToken<Markdown>;
 pub struct Gates(u32);
 
 impl Gates {
+    /// What text itself holds, which is no `Syntax` of a flavour: escapes, character
+    /// references, hard line breaks, autolinks, inline HTML, emphasis, and the strikethroughs,
+    /// highlights and footnotes the flavour has.
+    const TEXT: u32 = 1 << 31;
+
     pub fn of(flavour: &Flavour) -> Gates {
-        Gates(flavour.syntax.iter().fold(0, |g, s| g | (1 << *s as u32)))
+        let syntax = flavour.syntax.iter().fold(0, |g, s| g | (1 << *s as u32));
+        Gates(syntax | Gates::TEXT)
+    }
+
+    /// These gates without what text itself holds: a reader of links, tags and blocks, as the
+    /// index and the items are, sees the same nodes either way and is spared reading them.
+    pub(crate) fn plain(self) -> Gates {
+        Gates(self.0 & !Gates::TEXT)
+    }
+
+    fn text(self) -> bool {
+        self.0 & Gates::TEXT != 0
     }
 
     /// What reading a note's links and tags sees, whatever the workspace's flavour, as it
@@ -470,6 +527,12 @@ trait Sink<'t> {
     fn start(&mut self, kind: Kind);
     fn finish(&mut self);
     fn token(&mut self, kind: Kind, text: &'t str);
+
+    /// A block of `kind` starts, or one ends: for a sink that holds a block's text back.
+    fn block(&mut self, _kind: Option<Kind>) {}
+
+    /// A line of the block's text, `a..z`, is about to be read.
+    fn line(&mut self, _a: usize, _z: usize) {}
 }
 
 impl<'t> Sink<'t> for GreenNodeBuilder<'_> {
