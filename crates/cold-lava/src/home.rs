@@ -607,6 +607,9 @@ pub struct Home {
     graph_alone: bool,
     /// The whiteboard, open while it is in front (`Mode::Board`).
     board: Option<board::Board>,
+    /// The board picker (`w`), over the menu or the graph it was opened from while it is open:
+    /// it gets the keys, and the loop goes on under it.
+    picking: Option<board::Picker>,
     /// What owners answered to `file/preview`, for the embeds the reader draws.
     previews: Previews,
     /// The picture placed with Kitty graphics: its view and the cells it covers. And the one
@@ -701,6 +704,7 @@ impl Home {
             scene_shown: None,
             graph_alone: false,
             board: None,
+            picking: None,
             picture: None,
             picture_wanted: None,
             catching_up: false,
@@ -860,11 +864,13 @@ impl Home {
     /// The scene view in front's frame, when one is: where Back leads, a step of its layout.
     /// How long it may wait for input. A scene's pixels go when it stops being in front.
     fn tick_scene(&mut self) -> Option<Duration> {
-        let front = self.front_scene();
+        // Under the board picker a scene isn't drawn (its pixels would show through the list).
+        let front = self.front_scene().filter(|_| self.picking.is_none());
         if self.scene_shown.is_some() && self.scene_shown != front {
             self.hide_scene();
         }
         self.scene_shown = front;
+        front?;
         let nav = Nav::of(&self.history);
         let s = self.front_scene_mut()?;
         s.navigate(nav);
@@ -1017,7 +1023,10 @@ impl Home {
                     self.refresh_backlinks();
                 }
             }
-            Effect::RunCommand { id, args } => self.requested.push((ext, id, args)),
+            Effect::RunCommand { id, args } => match self.unsaved_in_front() {
+                Some(why) => self.held_back(ext, &format!("run {id}"), why),
+                None => self.requested.push((ext, id, args)),
+            },
             Effect::Saved { note } => {
                 if let Some(core) = self.core.as_mut() {
                     core.note_changed(&note);
@@ -1062,6 +1071,24 @@ impl Home {
         }
     }
 
+    /// What the whiteboard in front would lose if something else took its place now (a draft
+    /// in its shape editor, a card being typed). Only the user's own keys leave it then: what
+    /// an extension asks for that would is not done (`held_back`).
+    fn unsaved_in_front(&self) -> Option<&'static str> {
+        match (&self.mode, &self.board) {
+            (Mode::Board, Some(b)) => b.unsaved_work(),
+            _ => None,
+        }
+    }
+
+    /// Says that what `ext` wanted (`to`: "open X", "run X") was not done, because of `why`.
+    /// It is dropped, not kept for later: by then the user is somewhere else.
+    fn held_back(&mut self, ext: ExtId, to: &str, why: &str) {
+        let name = &self.registry.manifest(ext).name;
+        let msg = format!("{name} wanted to {to}: not while {why}");
+        self.flash(msg);
+    }
+
     /// Show an extension's new view in place of what showed, which Back returns to.
     fn open_view(
         &mut self,
@@ -1086,6 +1113,9 @@ impl Home {
             matches!(self.mode, Mode::View { owner, view: v, .. } if (owner, v) == (ext, view));
         if shown || !self.views.has(ext, view) {
             return;
+        }
+        if let Some(why) = self.unsaved_in_front() {
+            return self.held_back(ext, "show a view", why);
         }
         if let Some(here) = self.here() {
             self.history.visit(here);
@@ -1117,6 +1147,9 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
+        if let Some(why) = self.unsaved_in_front() {
+            return self.held_back(ext, &format!("open {}", note.display()), why);
+        }
         let owned = self.core.as_ref().and_then(|c| {
             let rel = note.strip_prefix(c.root()).unwrap_or(note);
             let rel = rel.to_string_lossy().replace('\\', "/");
@@ -1582,7 +1615,6 @@ impl Home {
             b.tick(core, &mut self.registry);
         }
         self.board_asked();
-        self.board_heard();
     }
 
     /// What extensions asked for while the whiteboard called them about their shapes
@@ -1594,25 +1626,12 @@ impl Home {
         }
     }
 
-    /// What the core said while the whiteboard's shape editor ran: the menu hears it now.
-    fn board_heard(&mut self) {
-        let Some(b) = self.board.as_mut() else {
-            return;
-        };
-        let (events, news) = b.take_heard();
-        if !events.is_empty() {
-            self.sync_with_core(&events);
-        }
-        self.deliver_news(news);
-    }
-
     /// A key for the whiteboard in front.
     fn board_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
             b.on_key(k, terminal, core, &mut self.registry)?;
         }
         self.board_asked();
-        self.board_heard();
         self.board_left()
     }
 
@@ -2178,8 +2197,20 @@ impl Home {
     // ---------- input ----------
 
     fn on_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+        if let Some(picker) = &mut self.picking {
+            return match picker.on_key(k) {
+                None => Ok(()),
+                Some(picked) => {
+                    self.picking = None;
+                    match picked {
+                        Some(path) => self.go_from_here(Place::Board { path, node: None }),
+                        None => Ok(()),
+                    }
+                }
+            };
+        }
         if let Some((owner, view)) = self.front_scene() {
-            return self.scene_key(owner, view, k, terminal);
+            return self.scene_key(owner, view, k);
         }
         if matches!(self.mode, Mode::Board) {
             return self.board_key(k, terminal);
@@ -2426,7 +2457,7 @@ impl Home {
         }
         match self.focus {
             Focus::Workspaces => self.workspace_key(k),
-            Focus::Notes => self.notes_key(k, terminal)?,
+            Focus::Notes => self.notes_key(k)?,
             Focus::Backlinks => self.backlinks_key(k),
             Focus::Pane => {}
         }
@@ -2893,7 +2924,7 @@ impl Home {
             MenuAction::Tag => self.start_tag(),
             MenuAction::Zoom => self.zoom = !self.zoom,
             MenuAction::Graph => self.hand_to(GRAPH, graph_ext::OPEN),
-            MenuAction::Boards => self.open_boards(terminal, None)?,
+            MenuAction::Boards => self.open_boards(None)?,
             MenuAction::History(a) => self.travel(a)?,
             MenuAction::NewNote => {
                 self.mode = Mode::NewNote {
@@ -2952,7 +2983,7 @@ impl Home {
         }
     }
 
-    fn notes_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn notes_key(&mut self, k: KeyEvent) -> Result<()> {
         let page = self.areas[1].height.saturating_sub(2).max(1) as usize;
         match k.code {
             KeyCode::Down | KeyCode::Char('j') => self.select_row(self.nsel + 1),
@@ -2995,7 +3026,7 @@ impl Home {
                     }
                     ItemKind::Board => {
                         let p = self.current_path();
-                        self.open_boards(terminal, p)?;
+                        self.open_boards(p)?;
                     }
                     ItemKind::File => {
                         if let Some(p) = self.current_path() {
@@ -5548,6 +5579,9 @@ impl Home {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
+        if self.picking.is_some() {
+            return;
+        }
         if let Some(scene) = self.front_scene_mut() {
             return scene.mouse(m);
         }
@@ -5657,13 +5691,7 @@ impl Home {
 
     /// A key in a scene view: its own, else what its command means. What the user did with a
     /// node goes to the extension as `view/event`.
-    fn scene_key(
-        &mut self,
-        owner: ExtId,
-        view: ViewId,
-        k: KeyEvent,
-        terminal: &mut DefaultTerminal,
-    ) -> Result<()> {
+    fn scene_key(&mut self, owner: ExtId, view: ViewId, k: KeyEvent) -> Result<()> {
         let Some(open) = self.views.get_mut(owner, view) else {
             return Ok(());
         };
@@ -5682,32 +5710,20 @@ impl Home {
                 self.mode = Mode::Normal;
             }
             views::Action::History(h) => self.travel(h)?,
-            views::Action::Boards => {
-                self.hide_scene();
-                let Some(root) = self.root.clone() else {
-                    return Ok(());
-                };
-                match board::pick_board(terminal, &root)? {
-                    Some(path) => self.go_from_here(Place::Board { path, node: None })?,
-                    None => terminal.clear()?,
-                }
-            }
+            views::Action::Boards => self.open_boards(None)?,
         }
         Ok(())
     }
 
-    /// A board, the picked one when `file` is `None`.
-    fn open_boards(&mut self, terminal: &mut DefaultTerminal, file: Option<PathBuf>) -> Result<()> {
-        let Some(root) = self.root.clone() else {
-            return Ok(());
-        };
-        let path = match file {
-            Some(p) => Some(p),
-            None => board::pick_board(terminal, &root)?,
-        };
-        match path {
+    /// The board `file`, or with `None` the board picker, over what is in front: the board it
+    /// picks opens from here, and Esc leaves everything as it was.
+    fn open_boards(&mut self, file: Option<PathBuf>) -> Result<()> {
+        match file {
             Some(path) => self.go_from_here(Place::Board { path, node: None }),
-            None => Ok(terminal.clear()?),
+            None => {
+                self.picking = self.root.as_deref().map(board::Picker::new);
+                Ok(())
+            }
         }
     }
 
@@ -5942,7 +5958,19 @@ impl Home {
     }
 
     fn draw(&mut self, f: &mut Frame) {
+        self.draw_screen(f);
+        if let Some(picker) = &self.picking {
+            picker.draw(f);
+            self.picture_wanted = None;
+        }
+    }
+
+    fn draw_screen(&mut self, f: &mut Frame) {
         let statuses: Vec<String> = self.statuses.iter().map(|(_, t)| t.clone()).collect();
+        // Nothing is drawn under the board picker over a scene (`tick_scene`).
+        if self.picking.is_some() && self.front_scene().is_some() {
+            return;
+        }
         if let Some(scene) = self.front_scene_mut() {
             return scene.draw(f, f.area(), &statuses);
         }

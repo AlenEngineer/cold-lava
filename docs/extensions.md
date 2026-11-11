@@ -2170,9 +2170,26 @@ zooming wait.
   (`Place::Board` with the selected node): Back and Forward leave it and reopen it with that
   node selected, `q` goes to the menu, which Back returns from, and a card's note opens in the
   reader. Opened for a task or a backlink, it selects the node it was opened for. Leaving it
-  closes it; it saves on every change, so nothing waits. The shape editor (`S`) is still a
-  screen with its own loop, lent the core, so extensions wait while it is open, and so does the
-  board picker (`w`). What an extension asks for inside the board's calls to it about its
+  closes it; it saves on every change, so nothing waits. The shape editor (`S`) and the board
+  picker (`w`) run in the menu's loop too (#173), as layers with no loop of their own. The
+  editor is `Board::editor`: while it is open the board hands it the keys, the mouse, the
+  core's events and the `canvas` news (its preview is bound as a placed shape is) and draws it
+  instead of itself, with the extensions' status words in its status line; the board under it
+  is still ticked, so its placed shapes and its file keep up. `q` closes it, and when it saved,
+  the board reads the workspace's shapes again and binds every placed shape anew. The picker
+  is `Home::picking`, drawn over the menu; over the graph nothing is drawn under it, because a
+  scene's pixels would show through the list. Enter opens the board from the place under it,
+  and Esc leaves that place as it was. `board-layers-extensions.drive` checks with
+  `open-tasks` that a task another program writes reaches the count under the picker and in
+  the editor. Since the loop goes on under them, an extension could take the menu elsewhere
+  while the board holds work that isn't saved: a draft in the shape editor, a card being typed,
+  edits a refused save left unsaved (`Board::unsaved_work`). The menu doesn't let it: opening a
+  note or a file, showing a view and running a command are then not done, and the status line
+  says so (`open-tasks wanted to open X: not while the shape editor has unsaved changes`). The
+  request is dropped, not kept for later. Status words, notifications and a view's content
+  still arrive, and the user's own keys leave as before (`q` in the editor warns once about
+  unsaved changes). `board-keeps-drafts.drive` checks both cases with an example patched to
+  open a note unasked. What an extension asks for inside the board's calls to it about its
   shapes (`shape/region`, a gesture's steps: `ui/notify`, `ui/status`, opening a note) the
   board keeps (`Board::take_asked`) and the menu does after each tick, key and mouse event, as
   after any call to an extension, within the same allowance per frame. `cold-lava board FILE`

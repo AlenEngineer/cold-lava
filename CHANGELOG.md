@@ -30,6 +30,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
+  of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
+  example's count of open tasks keeps up under the picker and shows in the shape editor's
+  status line, and so do notifications. The picker is drawn over the menu instead of an empty
+  screen. An extension can't take the whiteboard away from work that isn't saved: while a card
+  is being typed or the shape editor holds unsaved changes, a note, view or command it asks
+  for is not opened or run, and the status line says what it wanted. Before, a card being
+  typed could be lost that way.
 - A whiteboard's file is changed the way an extension's file is (closes #183): a rename, a
   merge and a recipe ask the canvas owner for the file's new text and read it back before
   anything is written, as a tick in the agenda already did. Renames and merges look and write
