@@ -1175,7 +1175,8 @@ impl<'a> Reader<'a> {
     fn contained(&mut self, range: Range<usize>, link: bool) -> Vec<Inline> {
         let mut read = Vec::new();
         let list = self.start_list();
-        let in_link = std::mem::replace(&mut self.in_link, self.in_link || link);
+        let in_link = self.in_link;
+        self.in_link = in_link || link;
         self.pieces(&mut read);
         (self.list, self.in_link) = (list, in_link);
         self.held(read, range)
