@@ -93,6 +93,11 @@ const EDGES: &[&str] = &[
     "**#bold** _#slanted_ ==#marked== ~~#struck~~ a**#b** snake_#case\n",
     "| a | b |\n| - | - |\n| [[B\\|x]] [[\\|y]] | ![[B#H\\|z]] [t](<a b.md> \"c (d)\") |\n\n[[B\\|x]] [a](B.md (t)) [b](<a (b).md> 'c') [c](a_(b).md) [d]( e.md ) [f](g\\) [h](i (j\n",
     "A [link whose text\n> goes on\nto here](Note.md) ] ](x) [![img](p.png)](n.md) [open\n\n[Source]: [[Book]]\n](y)\n",
+    "*a* **b** ***c*** _d_ __e__ ~~f~~ ==g== \\*h\\* &amp; <b>i</b> <https://j.k> [^l]\n\n[^l]: note  \nbreak\\\nend\n",
+    "> **bold over\n> two lines** and *unclosed\n\n- item with _emphasis\n  over lines_ ^id\n",
+    "| *a* | **b |\n| - | - |\n| c** | ==d== |\n",
+    "***a** b* *c **d*** ****e**** _f__g__h_ snake_case_word 2*3*4 **==#t==** [*x*](y) *z [w* v](u)\n",
+    "\u{feff}*emphasis after a BOM*\r\n**strong  \r\nover a CRLF**\\\r\n&#x1F30B; &nope <a href=\"x\">\r\n",
 ];
 
 #[test]
@@ -317,6 +322,33 @@ fn a_tag_may_follow_the_markers_that_open_emphasis_and_highlights() {
             "#paren"
         ]
     );
+    // A wikilink shows its alias as text is read, and is the same link either way.
+    let alias = "[[Note|*shown* and **more**]] ![[Pic.png|a_b_c]] [[Other|plain]]\n";
+    assert_eq!(texts(alias, obsidian(), Kind::Emphasis), ["*shown*"]);
+    assert_eq!(texts(alias, obsidian(), Kind::Strong), ["**more**"]);
+    assert_eq!(
+        texts(alias, obsidian(), Kind::WikiLink),
+        ["[[Note|*shown* and **more**]]", "[[Other|plain]]"]
+    );
+    assert_eq!(
+        texts(alias, obsidian().plain(), Kind::Alias),
+        ["*shown* and **more**", "a_b_c", "plain"]
+    );
+    assert_eq!(
+        texts(alias, obsidian(), Kind::Target),
+        ["Note", "Pic.png", "Other"]
+    );
+    // So does a link by reference that shows its label.
+    let label = "[**ref**] and [*text*][ref] and [ref][]\n\n[ref]: x.md\n[**ref**]: y.md\n";
+    assert_eq!(texts(label, obsidian(), Kind::Strong), ["**ref**"]);
+    assert_eq!(texts(label, obsidian(), Kind::Emphasis), ["*text*"]);
+    let links = ["[**ref**]", "[*text*][ref]", "[ref][]"];
+    assert_eq!(texts(label, obsidian(), Kind::Link), links);
+    assert_eq!(texts(label, obsidian().plain(), Kind::Link), links);
+    assert_eq!(
+        texts(label, obsidian().plain(), Kind::LinkLabel),
+        ["**ref**", "ref", "ref"]
+    );
     let marked = "==#marked== ~~#struck~~ **==#nested==**\n";
     let all = ["#marked", "#struck", "#nested"];
     assert_eq!(tags(marked, obsidian()), all);
@@ -341,6 +373,256 @@ fn a_tag_may_follow_the_markers_that_open_emphasis_and_highlights() {
     ] {
         assert!(tags(none, obsidian()).is_empty(), "{none:?}");
     }
+}
+
+#[test]
+fn text_holds_emphasis_strong_strikethrough_and_highlights() {
+    let ob = obsidian();
+    let all = "*a* **b** ***c*** _d_ __e__ ~~f~~ ~g~ ==h== and ==**i** j==\n";
+    assert_eq!(texts(all, ob, Kind::Emphasis), ["*a*", "***c***", "_d_"]);
+    assert_eq!(
+        texts(all, ob, Kind::Strong),
+        ["**b**", "**c**", "__e__", "**i**"]
+    );
+    assert_eq!(texts(all, ob, Kind::Strikethrough), ["~~f~~", "~g~"]);
+    assert_eq!(texts(all, ob, Kind::Highlight), ["==h==", "==**i** j=="]);
+    // Every two `=` are a marker, and a `~` run takes an opener of its own length.
+    let runs = "==a== ===b=== ====c==== ~~d~ ~e~~\n";
+    assert_eq!(
+        texts(runs, ob, Kind::Highlight),
+        ["==a==", "===b==", "==c=="]
+    );
+    assert!(texts(runs, ob, Kind::Strikethrough).is_empty());
+    // GitHub has strikethroughs and no highlights; CommonMark has neither.
+    assert_eq!(texts(all, github(), Kind::Strikethrough), ["~~f~~", "~g~"]);
+    assert!(texts(all, github(), Kind::Highlight).is_empty());
+    let commonmark = Gates::of(&Flavour::built_in("commonmark").unwrap());
+    assert!(texts(all, commonmark, Kind::Strikethrough).is_empty());
+    assert_eq!(texts(all, commonmark, Kind::Emphasis).len(), 3);
+    // A reader that doesn't ask for what text holds gets none of it.
+    assert!(texts(all, ob.plain(), Kind::Emphasis).is_empty());
+    assert!(texts(all, Gates::INDEX, Kind::Strong).is_empty());
+}
+
+#[test]
+fn emphasis_follows_the_rules_for_delimiter_runs() {
+    let ob = obsidian();
+    let spans = |text: &str| {
+        let mut found = texts(text, ob, Kind::Emphasis);
+        found.extend(texts(text, ob, Kind::Strong));
+        found
+    };
+    // `_` neither opens nor closes inside a word; `*` does both.
+    assert!(spans("snake_case_name, a_b_ and _c_d\n").is_empty());
+    assert_eq!(spans("2*3*4\n"), ["*3*"]);
+    // A run that nothing closes, or that nothing opened, stays text.
+    assert!(spans("*a **b\n").is_empty());
+    assert!(spans("a* b** c\n").is_empty());
+    assert!(spans("* a *\n\n** b **\n").is_empty());
+    // The rule of three: `**` inside a word can't close the `*` that opened.
+    assert_eq!(spans("*foo**bar**baz*\n"), ["*foo**bar**baz*", "**bar**"]);
+    assert_eq!(spans("***a** b*\n"), ["***a** b*", "**a**"]);
+    // Emphasis goes over a line break of its block, with the markers of the block's
+    // containers inside it, and never over a blank line.
+    assert_eq!(spans("*one\ntwo* three\n"), ["*one\ntwo*"]);
+    assert_eq!(spans("> **one\n> two**\n"), ["**one\n> two**"]);
+    assert!(spans("*one\n\ntwo*\n").is_empty());
+    // It opens and closes inside the same link's text, or holds the link whole.
+    assert_eq!(spans("[*a*](x) *b [c* d](y)\n"), ["*a*"]);
+    assert_eq!(
+        spans("*a [b](c) [[D]] `e*` f*\n"),
+        ["*a [b](c) [[D]] `e*` f*"]
+    );
+    // A `*` in a URL, in code or escaped is no marker.
+    assert!(spans("<https://x.y/*a*> `*b*` \\*c\\* [d](e*f*g)\n").is_empty());
+    // A table's cell is its own text.
+    let table = "| *a* | **b |\n| - | - |\n| c** | d |\n";
+    assert_eq!(spans(table), ["*a*"]);
+}
+
+#[test]
+fn text_holds_escapes_references_html_autolinks_footnotes_and_hard_breaks() {
+    let ob = obsidian();
+    let text =
+        "\\*no\\* &amp; &#35; &#x23; & <b>x</b> <!-- c --> <https://a.b/c_d_e> <me@x.org> < 3\n";
+    assert_eq!(texts(text, ob, Kind::Escape), ["\\*", "\\*"]);
+    assert_eq!(texts(text, ob, Kind::Entity), ["&amp;", "&#35;", "&#x23;"]);
+    assert_eq!(
+        texts(text, ob, Kind::InlineHtml),
+        ["<b>", "</b>", "<!-- c -->"]
+    );
+    assert_eq!(
+        texts(text, ob, Kind::Autolink),
+        ["<https://a.b/c_d_e>", "<me@x.org>"]
+    );
+    assert_eq!(
+        texts(text, ob, Kind::Url),
+        ["https://a.b/c_d_e", "me@x.org"]
+    );
+    assert!(texts(text, ob, Kind::Emphasis).is_empty());
+    // Two blanks or a backslash break the line, where the block has another line.
+    let lines = "one  \ntwo\\\nthree  \n\n# Heading  \n";
+    assert_eq!(texts(lines, ob, Kind::HardBreak), ["  ", "\\"]);
+    // A footnote's reference, and the `[^label]:` that starts its paragraph.
+    let notes = "Text[^1] and [^a note].\n\n[^1]: The note,\nlazily.\n\nNot [^1]: here.\n";
+    assert_eq!(
+        texts(notes, ob, Kind::FootnoteRef),
+        ["[^1]", "[^a note]", "[^1]"]
+    );
+    assert_eq!(texts(notes, ob, Kind::FootnoteMarker), ["[^1]:"]);
+    assert_eq!(
+        texts(notes, ob, Kind::FootnoteLabel),
+        ["^1", "^a note", "^1", "^1"]
+    );
+    let marker = Tree::with(notes, ob)
+        .root()
+        .descendants()
+        .find(|n| n.kind() == Kind::FootnoteMarker)
+        .unwrap();
+    assert_eq!(marker.parent().unwrap().kind(), Kind::Paragraph);
+    assert_eq!(
+        marker.parent().unwrap().text().to_string(),
+        "[^1]: The note,\nlazily.\n"
+    );
+    // One footnote under another starts on a later line of the same paragraph, as a block
+    // would: indented less than four.
+    let list = "Text.\n[^1]: One.\n  [^2]: Two,\n    [^3]: still two.\n";
+    assert_eq!(texts(list, ob, Kind::FootnoteMarker), ["[^1]:", "[^2]:"]);
+    assert_eq!(texts(list, ob, Kind::FootnoteRef), ["[^3]"]);
+    assert_eq!(texts(list, ob, Kind::Paragraph).len(), 1);
+    let commonmark = Gates::of(&Flavour::built_in("commonmark").unwrap());
+    assert!(texts(notes, commonmark, Kind::FootnoteRef).is_empty());
+    assert!(texts(notes, commonmark, Kind::FootnoteMarker).is_empty());
+}
+
+/// The steps through `text` with what text itself holds put back into text.
+fn folded(text: &str, gates: Gates) -> Vec<String> {
+    fn flush(out: &mut Vec<String>, run: &mut Option<(usize, usize)>, text: &str) {
+        if let Some((a, z)) = run.take() {
+            out.push(step(Step::Token(Kind::Text, &text[a..z], a)));
+        }
+    }
+    let mut out = Vec::new();
+    let mut run: Option<(usize, usize)> = None;
+    // Inside an autolink or a footnote's brackets, whose tokens were text.
+    let mut within = 0;
+    // What a wikilink shows in its target's place, which was one token.
+    let mut alias: Option<(usize, usize)> = None;
+    let mut wiki = false;
+    // The label a link by reference shows, which was one token: what follows the link's
+    // first bracket, unless its text does.
+    let mut label: Option<(usize, usize)> = None;
+    let mut entered = false;
+    read(text, gates, &mut |s| {
+        let span = |k: Kind| {
+            matches!(
+                k,
+                Kind::Emphasis | Kind::Strong | Kind::Strikethrough | Kind::Highlight
+            )
+        };
+        let whole =
+            |k: Kind| matches!(k, Kind::Autolink | Kind::FootnoteRef | Kind::FootnoteMarker);
+        let was_text = |k: Kind| {
+            matches!(
+                k,
+                Kind::Text
+                    | Kind::EmphasisMarker
+                    | Kind::Escape
+                    | Kind::Entity
+                    | Kind::HardBreak
+                    | Kind::InlineHtml
+            )
+        };
+        match s {
+            Step::Enter(k, _) | Step::Leave(k, _) if span(k) => {}
+            Step::Enter(k, _) if whole(k) => within += 1,
+            Step::Leave(k, _) if whole(k) => within -= 1,
+            Step::Enter(Kind::Link | Kind::Image, _) => {
+                flush(&mut out, &mut run, text);
+                entered = true;
+                out.push(step(s));
+            }
+            Step::Token(Kind::LBracket | Kind::ImageOpen, t, at) if entered => {
+                entered = false;
+                out.push(step(s));
+                label = Some((at + t.len(), at + t.len()));
+            }
+            Step::Enter(Kind::LinkText, _) => {
+                label = None;
+                out.push(step(s));
+            }
+            Step::Token(Kind::RBracket, ..) if label.is_some() && within == 0 => {
+                if let Some((a, z)) = label.take().filter(|(a, z)| a < z) {
+                    out.push(step(Step::Token(Kind::LinkLabel, &text[a..z], a)));
+                }
+                out.push(step(s));
+            }
+            Step::Token(_, t, _) if label.is_some() => {
+                label = label.map(|(a, z)| (a, z + t.len()));
+            }
+            Step::Enter(Kind::WikiLink | Kind::Embed, _) => {
+                flush(&mut out, &mut run, text);
+                wiki = true;
+                out.push(step(s));
+            }
+            Step::Leave(Kind::WikiLink | Kind::Embed, _) => {
+                wiki = false;
+                out.push(step(s));
+            }
+            Step::Token(Kind::Pipe, t, at) if wiki => {
+                out.push(step(s));
+                alias = Some((at + t.len(), at + t.len()));
+            }
+            Step::Token(Kind::WikiClose, ..) => {
+                flush(&mut out, &mut run, text);
+                if let Some((a, z)) = alias.take() {
+                    out.push(step(Step::Token(Kind::Alias, &text[a..z], a)));
+                }
+                out.push(step(s));
+            }
+            Step::Token(_, t, _) if alias.is_some() => {
+                alias = alias.map(|(a, z)| (a, z + t.len()));
+            }
+            Step::Token(k, t, at) if within > 0 || was_text(k) => {
+                let from = run.map_or(at, |r| r.0);
+                run = Some((from, at + t.len()));
+            }
+            other => {
+                flush(&mut out, &mut run, text);
+                out.push(step(other));
+            }
+        }
+    });
+    flush(&mut out, &mut run, text);
+    out
+}
+
+/// Reading what text holds only cuts text into more tokens and wraps them in nodes: the
+/// blocks, links, tags and everything else the index and the items read are the same with it
+/// and without it.
+#[test]
+fn what_text_holds_changes_nothing_a_plain_reader_reads() {
+    let mut notes = corpus();
+    notes.extend(EDGES.iter().map(|e| (format!("{e:?}"), e.to_string())));
+    let commonmark = Gates::of(&Flavour::built_in("commonmark").unwrap());
+    for gates in [obsidian(), github(), commonmark] {
+        for (name, text) in &notes {
+            assert!(folded(text, gates) == folded(text, gates.plain()), "{name}");
+        }
+    }
+    // A tag after the markers that open emphasis is the same tag either way, now inside it.
+    let text = "**#bold** _#slanted_ ==#marked== ~~#struck~~ a**#b** snake_#case\n";
+    let tags = ["#bold", "#slanted", "#marked", "#struck"];
+    assert_eq!(texts(text, obsidian(), Kind::Tag), tags);
+    assert_eq!(texts(text, obsidian().plain(), Kind::Tag), tags);
+    assert_eq!(texts(text, Gates::INDEX, Kind::Tag), tags);
+    assert_eq!(texts(text, obsidian(), Kind::Strong), ["**#bold**"]);
+    assert_eq!(texts(text, obsidian(), Kind::Emphasis), ["_#slanted_"]);
+    assert_eq!(texts(text, obsidian(), Kind::Highlight), ["==#marked=="]);
+    assert_eq!(
+        texts(text, obsidian(), Kind::Strikethrough),
+        ["~~#struck~~"]
+    );
 }
 
 #[test]
@@ -433,6 +715,17 @@ const PIECES: &[&str] = &[
     "[t][r]",
     "**#t**",
     "_#t_",
+    "*",
+    "**",
+    "_",
+    "~~",
+    "==",
+    "\\",
+    "&amp;",
+    "<b>",
+    "<https://x.y>",
+    "[^n]",
+    "[^n]: ",
     "é",
     "\u{feff}",
 ];
