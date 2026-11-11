@@ -263,11 +263,9 @@ change what it shows, never how it works.
     a label's first definition wins. The tree holds the label (`LinkLabel`), not the
     destination: `Tree::definitions` says where it points. A reader going forwards gets the
     definitions from `cst::blocks`, apart from the blocks, which `read` takes and drops when
-    the walk ends. A reader that kept the blocks while it built its refs made the allocator
-    do more work for the same calls, and reading 3,300 notes took 4% longer on a GitHub
-    runner (72.4 ms against 69.1 ms; equal once the blocks were dropped first). A definition
-    that takes more than one line isn't read, and neither is a reference link that goes on
-    past its line.
+    the walk ends: a reader that kept the blocks while it built its refs made the allocator
+    do more work for the same calls (callgrind). A definition that takes more than one line
+    isn't read, and neither is a reference link that goes on past its line.
   - *Tags after markers:* a tag follows the start of the line, a space, `(` or `,`, and the
     markers that open emphasis (`*`, `_`), a strikethrough (`~~`) or a highlight (`==`) may
     stand between that and its `#`, so `**#tag**`, `_#tag_` and `==#tag==` hold a tag, as in

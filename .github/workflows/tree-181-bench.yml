@@ -6,70 +6,42 @@ on:
   workflow_dispatch:
 
 jobs:
-  feedback:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
-        if: always()
-        run: cargo fmt --all --check
-      - name: Clippy
-        if: always()
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Engine tests
-        if: always()
-        run: cargo test -p cold-lava-engine
-
-  bench:
+  placement:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build main
-        run: |
-          git worktree add ../main origin/main
-          cd ../main && cargo build --release -p cold-lava
-          cp target/release/cold-lava "$HOME/cold-lava-main"
-      - name: Build this branch
+      - name: The bench workspace
         run: |
           cargo build --release -p cold-lava
-          cp target/release/cold-lava "$HOME/cold-lava-branch"
-      - name: Items, agenda, table on 3,000 notes (main, then this branch)
-        run: python3 scripts/bench-items.py --runs 11 "$HOME/cold-lava-main" "$HOME/cold-lava-branch"
-      - name: Build the cost tests (main, this branch)
+          python3 scripts/bench-items.py --runs 1 target/release/cold-lava
+      - name: "Build the cost tests: main, main with code that is never run, this branch"
         run: |
+          git worktree add ../main origin/main
           exe() { cargo test --release -p cold-lava-engine --no-run 2>&1 | grep -o 'target/release/deps/cold_lava_engine-[0-9a-f]*' | head -1; }
-          (cd ../main && cp "$(exe)" "$HOME/t-main")
+          # A function nothing calls, kept by the linker: the same work, placed elsewhere.
+          pad() {
+            printf '\n#[inline(never)]\npub fn placement_pad_%s(x: &[u8]) -> usize {\n    x.iter().map(|b| *b as usize * %s).sum()\n}\n\n#[used]\nstatic PLACEMENT_PAD_%s: fn(&[u8]) -> usize = placement_pad_%s;\n' "$2" "$3" "$2" "$2" >> "$1"
+          }
           cp "$(exe)" "$HOME/t-branch"
+          cd ../main
+          cp "$(exe)" "$HOME/t-main"
+          pad crates/engine/src/cst/block.rs a 31
+          cp "$(exe)" "$HOME/t-main-pad1"
+          pad crates/engine/src/cst/inline.rs b 37
+          cp "$(exe)" "$HOME/t-main-pad2"
+          pad crates/engine/src/owner/markdown.rs c 41
+          pad crates/engine/src/cst.rs d 43
+          cp "$(exe)" "$HOME/t-main-pad3"
+          git diff --stat
       - name: Reading 3,000 notes, each build in turn
         run: |
           export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
           for round in 1 2 3 4 5; do
-            for b in main branch; do
+            for b in main main-pad1 main-pad2 main-pad3 branch; do
               echo "== $b, round $round"
               "$HOME/t-$b" read_cost --ignored --nocapture | grep -A5 'read_cost:'
-            done
-          done
-      - name: Items of 3,000 notes, each build in turn
-        run: |
-          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
-          for round in 1 2 3; do
-            for b in main branch; do
-              echo "== $b, round $round"
-              "$HOME/t-$b" items_cost --ignored --nocapture | grep -A4 'items_cost:'
-            done
-          done
-      - name: One keystroke in a 5,000-line note, each build in turn
-        run: |
-          for round in 1 2 3 4 5; do
-            for b in main branch; do
-              echo "== $b, round $round"
-              "$HOME/t-$b" keystroke --ignored --nocapture | grep 'keystroke:'
             done
           done
