@@ -1,37 +1,46 @@
-//! Extensions: what cold-lava does beyond the notes app itself, starting with the editor.
+//! The extension host: what runs cold-lava's extensions and guards the workspace gateway, the
+//! same for every frontend (the terminal UI, the GUI, a language server). It has no user
+//! interface and must not depend on ratatui, crossterm, portable-pty or vt100; frontends depend
+//! on it, and it depends on the engine, never the other way.
 //!
 //! This is the JSON-RPC protocol of docs/extensions.md, called in-process: each `Extension`
 //! method is one host→extension method, each `Host` method one extension→host method, and every
-//! type that crosses derives serde, so extensions in other processes will share this code path.
-//! Extensions never see keystrokes and never draw: the core owns the panes they open. What an
-//! extension asks for is queued as `Effect`s, which the menu applies after the call returns.
+//! type that crosses derives serde, so extensions in other processes share this code path.
+//! Extensions never see keystrokes and never draw: the frontend owns the panes they open. What an
+//! extension asks for is queued as `Effect`s, which the frontend applies after the call returns.
 //! Notes as data are the exception: `items/*`, `types/list` and the file messages
-//! (`workspace/read`, …) are answered during the call by the core (`crate::gateway`,
-//! `crate::files`), within the permissions the extension's manifest asks for. An extension can
-//! own a kind of file (`FileType`): the menu hands it those files (`file/open`) and their outside
-//! changes (`file/changed`), and asks it what each says as items and links (`file/read`).
+//! (`workspace/read`, …) are answered during the call by the core (the engine's `gateway` and
+//! `files`), within the permissions the extension's manifest asks for. An extension can
+//! own a kind of file (`FileType`): the frontend hands it those files (`file/open`) and their
+//! outside changes (`file/changed`), and asks it what each says as items and links (`file/read`).
 //! Extensions installed on disk (`installed`) run in processes of their own (`process`), over a
 //! `transport` that frames JSON-RPC messages (`frame`, `rpc`); they reach the same `Host`.
+//!
+//! What a frontend keeps for itself: its built-in extensions (the terminal's Neovim pane, its
+//! agenda, table and graph), applying `Effect`s, its command table and keys, and drawing views
+//! (the view gateway's messages are `cold-lava-views`' `view`, named here as `view`).
 
 pub mod frame;
 pub mod installed;
-pub mod nvim;
 pub mod process;
 pub mod rpc;
 pub mod transport;
-pub mod view;
 
-use crate::act::{self, Answered, Ask};
-use crate::commands::{self, Entry, MenuCommand};
-use crate::core::{Core, Jump};
-use crate::files::{self, Create, Created, Listed, Text, Written};
-use crate::gateway::{
+pub use cold_lava_views::view;
+
+use cold_lava_engine::act::{self, Answered, Ask};
+use cold_lava_engine::core::{Core, Jump};
+use cold_lava_engine::files::{self, Create, Created, Listed, Text, Written};
+use cold_lava_engine::gateway::{
     self, Answer, Edit, Edited, Found, News, Query, Reason, Select, SubId, Ticket,
 };
-use crate::owner::cache::{FileRead, Kind};
-use crate::owner::edits::FileEdit;
-use crate::owner::given::Given;
-use crate::types::Type;
+use cold_lava_engine::owner::cache::{FileRead, Kind};
+use cold_lava_engine::owner::edits::FileEdit;
+use cold_lava_engine::owner::given::Given;
+use cold_lava_engine::types::Type;
+#[cfg(test)]
+use cold_lava_engine::{bind, shapes, tasks};
+use cold_lava_engine::{links, matcher, owner, paths, recipe, style, types};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -40,11 +49,11 @@ use view::{Content, ViewId, ViewNews};
 
 /// A loaded extension. Only the host uses it: on the wire, the connection says who is talking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ExtId(pub(crate) usize);
+pub struct ExtId(pub usize);
 
 /// A pane, named by the extension that opened it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneId(u32);
+pub struct PaneId(pub u32);
 
 /// Who an extension is, from `initialize`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -180,11 +189,13 @@ pub(crate) fn read_only() -> Vec<Permission> {
 /// The reader, a screen of the menu's built the way an extension will be: it reaches notes as
 /// data only through `Host`, under this name (`Registry::screen`), which edits are attributed to.
 pub const READER: &str = "reader";
-/// The built-in extensions' names: the agenda (`crate::agenda`), the table
-/// (`crate::type_table`) and the graph (`crate::graph_ext`).
+/// The built-in extensions' names, in the frontends that have them: the agenda, the table,
+/// the graph and Neovim as the editor. An installed extension can't take one
+/// (`installed::load`).
 pub const AGENDA: &str = "agenda";
 pub const TABLE: &str = "table";
 pub const GRAPH: &str = "graph";
+pub const NVIM: &str = "nvim";
 const SCREEN_PERMISSIONS: &[Permission] = &[Permission::ItemsRead, Permission::ItemsEdit];
 
 /// A command an extension registers. Its id is `<extension name>.<something>`.
@@ -287,9 +298,6 @@ pub struct FilePreview {
     pub width: u16,
     pub height: u16,
 }
-
-/// The most rows and groups a preview may have: a preview is small, so more is refused.
-pub const PREVIEW_ROWS: usize = 200;
 
 /// `command/run` (host → extension): run one of the commands it registered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -567,7 +575,7 @@ impl Host<'_> {
 
     /// The answer to `file/preview` for a file of a kind it owns: what to draw where a note
     /// embeds it, or why not. Only the file's owner may answer; a view over the limits, or
-    /// with more than `PREVIEW_ROWS` rows, is refused.
+    /// with more than `view::PREVIEW_ROWS` rows, is refused.
     pub fn file_previewed(&mut self, path: &str, rev: &str, content: Result<Content, String>) {
         let me = self.me;
         let owns = (self.owners.iter())
@@ -754,16 +762,19 @@ impl act::Gateway for Host<'_> {
     }
 }
 
+/// The loaded extensions and their manifests, who owns which kind of file and who shows
+/// which notes. A frontend keeps one, calls extensions through it (`call`) and applies the
+/// `Effect`s that come back; its command table is its own (`refuse_commands`).
 pub struct Registry {
     loaded: Vec<(Box<dyn Extension>, Manifest)>,
-    /// The one in the editor role, until its program fails to start.
-    editor: Option<ExtId>,
     next_pane: u32,
     next_view: u32,
-    /// The menu's commands: the core's, then the extensions'.
-    commands: Vec<Entry<MenuCommand>>,
-    /// Why commands or keys the extensions registered were left out.
+    /// Why types, shapes, commands, keys, file types or claims the extensions registered were
+    /// left out.
     refused: Vec<String>,
+    /// Where in `refused` the frontend's word on commands goes: after the types and shapes,
+    /// before the file types and the claims.
+    commands_at: usize,
     /// Extensions on disk that didn't load, and why.
     mistakes: Vec<String>,
     /// Whether any extension runs in a process, so the menu polls more often.
@@ -772,6 +783,14 @@ pub struct Registry {
     owners: Vec<(String, ExtId)>,
     /// The claims to show notes that hold, in load order: the extension and its claim's index.
     shows: Vec<(ExtId, usize)>,
+}
+
+/// Whether `id` is in the extension `name`'s namespace: `<name>.<something>`. Its commands'
+/// and its types' ids must be.
+pub fn namespaced(name: &str, id: &str) -> bool {
+    (id.strip_prefix(name))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|rest| !rest.is_empty())
 }
 
 /// Leaves out of `m` the types and shapes it can't define, as commands are: an id outside its
@@ -788,7 +807,7 @@ fn leave_out(name: &str, what: &str, specs: &mut Vec<Spec>) -> Vec<String> {
     let mut ids = HashSet::new();
     specs.retain(|t| {
         let id = &t.id;
-        let problem = if !commands::namespaced(name, id) {
+        let problem = if !namespaced(name, id) {
             format!("its id must start with \"{name}.\"")
         } else if !ids.insert(id.clone()) {
             "that id is taken".into()
@@ -802,17 +821,11 @@ fn leave_out(name: &str, what: &str, specs: &mut Vec<Spec>) -> Vec<String> {
 }
 
 impl Registry {
-    /// The built-in extensions that can run here, then the user's (`installed::user_dir`).
-    pub fn load() -> Registry {
-        let mut found: Vec<Box<dyn Extension>> = Vec::new();
-        if let Some(nvim) = nvim::Nvim::detect() {
-            found.push(Box::new(nvim));
-        }
-        found.push(Box::new(crate::agenda::Agenda::default()));
-        found.push(Box::new(crate::type_table::Tables::default()));
-        found.push(Box::new(crate::graph_ext::Graph::default()));
-        let dir = installed::user_dir();
-        let (on_disk, mistakes) = dir.as_deref().map(installed::load).unwrap_or_default();
+    /// The frontend's built-in extensions, then the ones installed in `dir`
+    /// (`installed::user_dir` for the user's), each in a process of its own.
+    pub fn load(built_in: Vec<Box<dyn Extension>>, dir: Option<&Path>) -> Registry {
+        let mut found = built_in;
+        let (on_disk, mistakes) = dir.map(installed::load).unwrap_or_default();
         let processes = !on_disk.is_empty();
         for ext in on_disk {
             found.extend(process::Process::new(ext).map(|p| Box::new(p) as Box<dyn Extension>));
@@ -823,31 +836,19 @@ impl Registry {
         r
     }
 
-    #[cfg(test)]
-    pub fn empty() -> Registry {
-        Registry::new(Vec::new())
-    }
-
-    pub(crate) fn new(extensions: Vec<Box<dyn Extension>>) -> Registry {
-        let loaded: Vec<_> = extensions
+    pub fn new(extensions: Vec<Box<dyn Extension>>) -> Registry {
+        let mut loaded: Vec<_> = extensions
             .into_iter()
             .map(|mut e| {
                 let manifest = e.initialize();
                 (e, manifest)
             })
             .collect();
-        let editor = loaded
-            .iter()
-            .position(|(_, m)| m.roles.contains(&Role::Editor))
-            .map(ExtId);
-        let mut loaded = loaded;
         let mut refused = Vec::new();
         for (_, m) in &mut loaded {
             refused.extend(leave_out_definitions(m));
         }
-        let manifests = loaded.iter().enumerate().map(|(i, (_, m))| (ExtId(i), m));
-        let (commands, commands_refused) = commands::menu(manifests);
-        refused.extend(commands_refused);
+        let commands_at = refused.len();
         let mut owners: Vec<(String, ExtId)> = Vec::new();
         for (i, (_, m)) in loaded.iter().enumerate() {
             for t in &m.file_types {
@@ -890,11 +891,10 @@ impl Registry {
         }
         Registry {
             loaded,
-            editor,
             next_pane: 0,
             next_view: 0,
-            commands,
             refused,
+            commands_at,
             mistakes: Vec::new(),
             processes: false,
             owners,
@@ -953,12 +953,18 @@ impl Registry {
         Some((ext, t))
     }
 
-    pub fn commands(&self) -> &[Entry<MenuCommand>] {
-        &self.commands
-    }
-
     pub fn refused(&self) -> &[String] {
         &self.refused
+    }
+
+    /// The frontend's command table left these out (a command whose id is outside its
+    /// extension's namespace or taken, a key that is taken or isn't one): they are listed
+    /// with the rest, where a manifest names its commands.
+    pub fn refuse_commands(&mut self, why: Vec<String>) {
+        let after = self.refused.split_off(self.commands_at);
+        self.refused.extend(why);
+        self.commands_at = self.refused.len();
+        self.refused.extend(after);
     }
 
     pub fn has_processes(&self) -> bool {
@@ -986,15 +992,6 @@ impl Registry {
         for (e, _) in &mut self.loaded {
             e.shutdown();
         }
-    }
-
-    pub fn editor(&self) -> Option<ExtId> {
-        self.editor
-    }
-
-    /// No more editor requests: its program couldn't start.
-    pub fn drop_editor(&mut self) {
-        self.editor = None;
     }
 
     pub fn manifest(&self, ext: ExtId) -> &Manifest {
@@ -1052,7 +1049,7 @@ impl Registry {
         self.call(ext, core, |e, host| e.shape(ask, host))
     }
 
-    /// The workspace gateway for one of the menu's screens (`READER`), which may read and
+    /// The workspace gateway for one of the frontend's screens (`READER`), which may read and
     /// edit items. Screens ask for no effects.
     pub fn screen<'a>(&'a mut self, name: &'static str, core: &'a mut Core) -> Host<'a> {
         Host {
@@ -1131,7 +1128,7 @@ mod tests {
         );
         let view = ViewId(4);
         let content = || {
-            Content::List(crate::list::List {
+            Content::List(cold_lava_views::list::List {
                 title: "Open".into(),
                 groups: Vec::new(),
                 keys: Vec::new(),
@@ -1435,7 +1432,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("Plan.md")).unwrap();
         assert!(text.starts_with("- [x] Pay rent ✅ "), "{text}");
         let edited = core.poll().into_iter().find_map(|e| match e {
-            crate::core::Event::ItemEdited { by, what, .. } => Some((by, what)),
+            cold_lava_engine::core::Event::ItemEdited { by, what, .. } => Some((by, what)),
             _ => None,
         });
         assert_eq!(edited, Some(("tick".into(), "ticked".into())), "attributed");
@@ -1636,7 +1633,7 @@ mod tests {
                 (Ok(_), Ok(())) => {
                     assert!(text.contains("visited: yes"), "{text}");
                     let by = core.poll().into_iter().find_map(|e| match e {
-                        crate::core::Event::ItemEdited { by, .. } => Some(by),
+                        cold_lava_engine::core::Event::ItemEdited { by, .. } => Some(by),
                         _ => None,
                     });
                     assert_eq!(by.as_deref(), Some("tally"), "attributed to the extension");
@@ -1883,63 +1880,6 @@ mod tests {
         );
     }
 
-    fn registry(extensions: &[(&'static str, Vec<CommandSpec>)]) -> Registry {
-        let loaded = extensions.iter().map(|(name, commands)| {
-            let commands = commands.clone();
-            Box::new(Commands { name, commands }) as Box<dyn Extension>
-        });
-        Registry::new(loaded.collect())
-    }
-
-    fn ids(r: &Registry) -> Vec<&str> {
-        let ext = r
-            .commands()
-            .iter()
-            .filter(|c| matches!(c.action, MenuCommand::Ext(..)));
-        ext.map(|c| c.id.as_str()).collect()
-    }
-
-    #[test]
-    fn commands_join_the_menu_after_the_cores() {
-        let r = registry(&[("wc", vec![command("wc.show", &["c"])])]);
-        assert!(r.refused().is_empty(), "{:?}", r.refused());
-        let last = r.commands().last().unwrap();
-        assert_eq!(last.id, "wc.show");
-        assert_eq!(last.action, MenuCommand::Ext(ExtId(0), 0));
-        assert_eq!(r.commands().len(), commands::MENU.len() + 1);
-        let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
-        assert_eq!(keys.label("wc.show"), "c");
-        let palette = commands::matching(r.commands(), "wc.show");
-        assert_eq!(palette[0].command.id, "wc.show");
-    }
-
-    #[test]
-    fn commands_outside_the_namespace_or_taken_are_refused() {
-        let r = registry(&[
-            (
-                "wc",
-                vec![
-                    command("graph.open", &[]),
-                    command("wcx.show", &[]),
-                    command("wc.", &[]),
-                    command("wc.show", &[]),
-                    command("wc.show", &[]),
-                ],
-            ),
-            // An extension named like a core namespace can't take a core command.
-            ("note", vec![command("note.rename", &[])]),
-        ]);
-        assert_eq!(ids(&r), ["wc.show"]);
-        let refused = r.refused();
-        assert_eq!(refused.len(), 5, "{refused:?}");
-        assert!(refused[0].contains("\"graph.open\"") && refused[0].contains("\"wc.\""));
-        assert!(refused[3].contains("taken"), "{refused:?}");
-        assert!(refused[4].contains("note.rename"), "{refused:?}");
-        // What a refused command's id was meant to run is still the core's.
-        let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
-        assert_eq!(keys.label("graph.open"), "g");
-    }
-
     #[test]
     fn types_outside_the_namespace_or_taken_are_left_out() {
         let spec = |id: &str| Spec {
@@ -1976,51 +1916,5 @@ mod tests {
             "wc: type \"doc\" was left out: its id must start with \"wc.\""
         );
         assert!(refused[3].ends_with("that id is taken"), "{refused:?}");
-    }
-
-    #[test]
-    fn default_keys_that_are_taken_or_bad_are_dropped() {
-        let r = registry(&[
-            ("a", vec![command("a.one", &["g", "hyper+x", "x"])]),
-            ("b", vec![command("b.two", &["x", "y"])]),
-        ]);
-        assert_eq!(ids(&r), ["a.one", "b.two"]);
-        let refused = r.refused();
-        assert_eq!(refused.len(), 3, "{refused:?}");
-        assert!(refused[0].contains("graph.open"), "{refused:?}");
-        assert!(refused[1].contains("hyper+x"), "{refused:?}");
-        assert!(refused[2].contains("a.one"), "{refused:?}");
-        let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
-        assert_eq!(keys.label("a.one"), "x");
-        assert_eq!(keys.label("b.two"), "y");
-    }
-
-    #[test]
-    fn config_rebinds_extension_commands_like_the_cores() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let r = registry(&[("wc", vec![command("wc.show", &["c"])])]);
-        let press = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-
-        let config = crate::config::parse("[keys]\n\"wc.show\" = \"W\"\n", r.commands());
-        assert!(config.errors.is_empty(), "{:?}", config.errors);
-        let keys = commands::Keymap::with(r.commands(), &config.keys).0;
-        assert_eq!(keys.get(press('W')), Some(MenuCommand::Ext(ExtId(0), 0)));
-        assert_eq!(keys.get(press('c')), None);
-        assert_eq!(keys.label("wc.show"), "W");
-
-        // Clash rules are the core's: both keep their defaults.
-        let config = crate::config::parse("[keys]\n\"wc.show\" = \"g\"\n", r.commands());
-        assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
-        assert!(config.errors[0].contains("wc.show") && config.errors[0].contains("graph.open"));
-        let keys = commands::Keymap::with(r.commands(), &config.keys).0;
-        assert_eq!(keys.label("wc.show"), "c");
-
-        // A typo is still reported, and without the extension its ids are unknown.
-        let config = crate::config::parse("[keys]\n\"wc.shwo\" = \"W\"\n", r.commands());
-        assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
-        assert!(config.errors[0].contains("wc.shwo"));
-        let none = registry(&[]);
-        let config = crate::config::parse("[keys]\n\"wc.show\" = \"W\"\n", none.commands());
-        assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
     }
 }

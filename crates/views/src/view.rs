@@ -1,7 +1,7 @@
 //! The view gateway (docs/extensions.md, "The view gateway, as built"): an extension describes
 //! a declarative view, a list or a table, and the frontend draws it, owns its keys and tells
 //! the extension what the user did with its rows. What crosses derives serde and tests pin its
-//! JSON. The frontend's side, the views it has open, is `crate::views`.
+//! JSON. A frontend's side, the views it has open, is its own (the terminal's is `views.rs`).
 
 use serde::{Deserialize, Serialize};
 
@@ -12,14 +12,14 @@ use crate::{list, table};
 pub struct ViewId(pub u32);
 
 /// What a view shows: `{"kind": "list", ...}` with a `list::List`, `{"kind": "table", ...}`
-/// with a `table::Table`, an image, or `{"kind": "scene", ...}` with a `scene_view::Scene`.
+/// with a `table::Table`, an image, or `{"kind": "scene", ...}` with a `scene::Scene`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Content {
     List(list::List),
     Table(table::Table),
     Image(crate::image::Image),
-    Scene(crate::scene_view::Scene),
+    Scene(crate::scene::Scene),
 }
 
 /// The most rows (a list's groups count too) and columns one view may have, and the most keys
@@ -32,6 +32,8 @@ pub const MAX_KEYS: usize = 32;
 pub const MAX_EDGES_PER_ROW: usize = 4;
 pub const MAX_GROUPS: usize = 64;
 pub const MAX_FLAGS: usize = 8;
+/// The most rows and groups a preview may have: a preview is small, so more is refused.
+pub const PREVIEW_ROWS: usize = 200;
 
 impl Content {
     /// Refused (with why) when it is over the limits.
@@ -88,10 +90,9 @@ impl Content {
             Content::Image(_) => 0,
             Content::Scene(s) => s.nodes.len(),
         };
-        match rows > super::PREVIEW_ROWS {
+        match rows > PREVIEW_ROWS {
             true => Err(format!(
-                "a preview has at most {} rows and groups; this one has {rows}",
-                super::PREVIEW_ROWS
+                "a preview has at most {PREVIEW_ROWS} rows and groups; this one has {rows}"
             )),
             false => Ok(()),
         }
@@ -317,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_scene_is_its_nodes_edges_and_groups_and_is_bounded() {
-        use crate::scene_view::{Edge, Group, Look, Node, Scene};
+        use crate::scene::{Edge, Group, Look, Node, Scene};
         let node = |id: &str, look| Node {
             id: id.into(),
             label: id.rsplit([':', '/']).next().unwrap().into(),

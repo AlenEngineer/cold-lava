@@ -296,8 +296,8 @@ impl Open {
     /// a view that filters as you type.
     pub fn takes(&self, k: &KeyEvent) -> bool {
         match &self.drawn {
-            Drawn::List(v) => v.typing() || v.filters().takes(k),
-            Drawn::Table(v) => v.typing() || v.filters().takes(k),
+            Drawn::List(v) => v.typing() || list::takes(v.filters(), k),
+            Drawn::Table(v) => v.typing() || list::takes(v.filters(), k),
             Drawn::Picture(_) | Drawn::Scene(_) => false,
         }
     }
