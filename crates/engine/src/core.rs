@@ -613,7 +613,7 @@ impl Core {
             owner,
             rev: files::rev(text.as_bytes()),
             text,
-            expect,
+            expect: Some(expect),
             goal,
             stage: Stage::Editing,
         };
@@ -625,17 +625,32 @@ impl Core {
     /// and keep `edit` until it has answered.
     fn ask_edit(&mut self, rel: String, changes: Vec<Change>, edit: Pending) {
         let owner = edit.owner.clone();
-        let built_in = crate::owner::edit(&owner, &rel, &edit.text, &changes);
         let ask = FileEdit {
             path: rel.clone(),
             rev: edit.rev.clone(),
             text: edit.text.clone(),
             changes,
         };
-        self.edits.pending.insert(rel.clone(), edit);
-        match built_in {
-            Some(text) => self.file_edited(&owner, &rel, &ask.rev, text),
-            None => self.edits.asks.push((owner, ask)),
+        self.edits.pending.insert(rel, edit);
+        self.send_edit(&owner, ask);
+    }
+
+    /// `file/edit` goes to `owner`, and its answer comes in through `file_edited`: from an
+    /// extension later, once the frontend has handed it the request (`take_file_edits`); from an
+    /// owner in the engine here, before this returns.
+    fn send_edit(&mut self, owner: &str, ask: FileEdit) {
+        match crate::owner::edit(owner, &ask.path, &ask.text, &ask.changes) {
+            Some(text) => self.file_edited(owner, &ask.path, &ask.rev, text),
+            None => self.edits.asks.push((owner.to_string(), ask)),
+        }
+    }
+
+    /// `file/read` of a new text `owner` made goes to it, and its answer comes in through
+    /// `file_given`: from an extension later (`take_reads`), from an owner in the engine here.
+    fn send_read_back(&mut self, owner: &str, read: FileRead) {
+        match crate::owner::give(owner, &read.path, &read.text) {
+            Some(given) => self.file_given(owner, &read.path, &read.rev, given),
+            None => self.edits.reads.push((owner.to_string(), read)),
         }
     }
 
@@ -667,17 +682,13 @@ impl Core {
             }
             Ok(text) => {
                 let rev = files::rev(text.as_bytes());
-                let built_in = crate::owner::give(owner, path, &text);
                 let read = FileRead {
                     path: path.to_string(),
                     rev: rev.clone(),
                     text: text.clone(),
                 };
                 p.stage = Stage::Reading { rev, text };
-                match built_in {
-                    Some(given) => self.edit_read_back(path, given),
-                    None => self.edits.reads.push((owner.to_string(), read)),
-                }
+                self.send_read_back(owner, read);
             }
         }
     }
@@ -696,13 +707,16 @@ impl Core {
         let owner = p.owner.clone();
         let given = match given {
             Ok(g) => g,
+            // It couldn't read the file before the change either, and gave nothing for it.
+            Err(_) if p.expect.is_none() => Given::default(),
             Err(why) => {
                 let message = format!("{owner} couldn't read its new text for {path}: {why}");
                 return self.edit_failed(path, error(Reason::ReadBack, message));
             }
         };
         let settings = self.index.workspace.item_settings();
-        let asked = given::read(path, &p.expect, settings);
+        let nothing = Given::default();
+        let asked = given::read(path, p.expect.as_ref().unwrap_or(&nothing), settings);
         let gave = given::read(path, &given, settings);
         if let Err(diff) = given::same(&asked, &gave) {
             let message = format!(
@@ -778,13 +792,17 @@ impl Core {
         }
     }
 
-    /// Before a rename or merge moves anything: ask the owner of each file among `edits` that
-    /// another owner reads for its new text (`file/edit`), and have the owner read it back. `None`
-    /// when there is nothing to ask: `edits` are ready. Else the answer comes from
-    /// `take_relinked` under the ticket: every owned file's edit with its new text, or the first
-    /// owner's refusal, after which nothing else is kept. Refused at once when one of them changed
-    /// since it was planned or has an edit waiting.
-    pub fn relink(&mut self, edits: &[crate::rename::FileEdit]) -> Result<Option<Ticket>, String> {
+    /// Before a rename, merge or recipe writes anything: ask the owner of each file among `edits`
+    /// that another owner reads for its new text (`file/edit`), and have the owner read it back.
+    /// `None` when `edits` are ready: there was nothing to ask, or every owner answered inside
+    /// the call (the engine's own do) and `edits` have their new texts. Else the answer comes
+    /// from `take_relinked` under the ticket: every owned file's edit with its new text, or the
+    /// first owner's refusal, after which nothing else is kept. Refused at once when one of them
+    /// changed since it was planned, has an edit waiting, or an owner in the engine refuses.
+    pub fn relink(
+        &mut self,
+        edits: &mut [crate::rename::FileEdit],
+    ) -> Result<Option<Ticket>, String> {
         let owned: Vec<_> = edits
             .iter()
             .filter(|e| e.owned.is_some())
@@ -803,20 +821,38 @@ impl Core {
             }
         }
         let ticket = self.edits.ticket();
-        for e in &owned {
-            let o = e.owned.as_ref().expect("owned");
-            let pending = Pending {
-                owner: o.owner.clone(),
-                rev: files::rev(e.old_text.as_bytes()),
-                text: e.old_text.clone(),
-                expect: given::apply(&o.given, &o.changes),
-                goal: Goal::Relink(ticket),
-                stage: Stage::Editing,
-            };
-            self.ask_edit(e.file.clone(), o.changes.clone(), pending);
-        }
+        let asks: Vec<_> = (owned.iter())
+            .map(|e| {
+                let o = e.owned.as_ref().expect("owned");
+                let pending = Pending {
+                    owner: o.owner.clone(),
+                    rev: files::rev(e.old_text.as_bytes()),
+                    text: e.old_text.clone(),
+                    expect: (o.given.as_ref()).map(|g| given::apply(g, &o.changes)),
+                    goal: Goal::Relink(ticket),
+                    stage: Stage::Editing,
+                };
+                (e.file.clone(), o.changes.clone(), pending)
+            })
+            .collect();
         self.edits.relinks.insert(ticket, Relink { edits: owned });
-        Ok(Some(ticket))
+        for (file, changes, pending) in asks {
+            // An owner in the engine answers inside `ask_edit`, and its refusal ends the wait.
+            if self.edits.relinks.contains_key(&ticket) {
+                self.ask_edit(file, changes, pending);
+            }
+        }
+        let answered = |(t, _): &(Ticket, _)| *t == ticket;
+        let Some(at) = self.edits.relinked.iter().position(answered) else {
+            // The answers that are in go into `edits`, so they say whose are still to come.
+            let relink = self.edits.relinks.get(&ticket);
+            let so_far = relink.map(|r| r.answered()).unwrap_or_default();
+            crate::rename::answered(edits, so_far);
+            return Ok(Some(ticket));
+        };
+        let (_, answers) = self.edits.relinked.remove(at);
+        crate::rename::answered(edits, answers?);
+        Ok(None)
     }
 
     /// Renames and merges whose owners have all answered (`relink`), or one refused.
@@ -933,9 +969,10 @@ impl Core {
         Ok(created)
     }
 
-    /// A recipe planned and applied at once, its notes read again (their events come from the
-    /// next `poll`); its title. Refused when it would change a file another owner reads, which
-    /// needs that owner's answer first (`relink`): such a recipe runs from its own screen.
+    /// A recipe planned and applied at once, the files it wrote read again (their events come
+    /// from the next `poll`); its title. The files other owners read get their new texts from
+    /// their owners first (`relink`). Refused when one of them has to wait for its owner, an
+    /// extension: such a recipe runs from its own screen.
     pub fn run_recipe(
         &mut self,
         id: &str,
@@ -944,19 +981,27 @@ impl Core {
         use crate::recipe;
         let refused = |m: String| gateway::Error::new(Reason::Refused, m);
         let r = recipe::find(id).ok_or_else(|| refused(format!("no recipe called {id}")))?;
-        let plan = recipe::plan(&self.index, r, options).map_err(|e| refused(e.to_string()))?;
-        if let Some(e) = plan.edits.iter().find(|e| e.owned.is_some()) {
+        let mut plan = recipe::plan(&self.index, r, options).map_err(|e| refused(e.to_string()))?;
+        let waiting = (self.relink(&mut plan.edits))
+            .map_err(|why| refused(format!("{}: {why}", plan.title())))?;
+        if let Some(ticket) = waiting {
+            let pending = &self.edits.pending;
+            let waits = plan.edits.iter().find(|e| pending.contains_key(&e.file));
             let message = format!(
                 "{} would change {}, which another owner reads: run it from the recipe screen",
                 plan.title(),
-                e.file
+                waits.map(|e| e.file.as_str()).unwrap_or_default()
             );
+            self.cancel_relink(ticket);
             return Err(refused(message));
         }
         let applied = recipe::apply(&plan)
             .map_err(|e| gateway::Error::new(Reason::Changed, format!("{}: {e}", plan.title())))?;
         let paths: Vec<PathBuf> = plan.edits.iter().map(|e| e.path.clone()).collect();
-        let events = self.refresh(&paths);
+        let mut events = self.refresh(&paths);
+        let owned = plan.edits.iter().filter(|e| e.owned.is_some());
+        let owned: Vec<String> = owned.map(|e| e.file.clone()).collect();
+        events.extend(self.owned_changed(&owned));
         self.broadcast(&events);
         self.unseen.extend(events);
         Ok(applied.title)
@@ -1623,9 +1668,12 @@ mod tests {
         let owned = p.edits.iter().find(|e| e.file == "Eruptions.csv").unwrap();
         assert_eq!(owned.links, 1, "listed in the plan");
         assert!(rename::apply(&p).is_err(), "not before the owner answered");
-        let ticket = core.relink(&p.edits).unwrap().expect("waits for the owner");
+        let ticket = core
+            .relink(&mut p.edits)
+            .unwrap()
+            .expect("waits for the owner");
         assert!(
-            core.relink(&p.edits).is_err(),
+            core.relink(&mut p.edits).is_err(),
             "one edit of a file at a time"
         );
         let ask = answer(
@@ -1662,8 +1710,8 @@ mod tests {
 
         // A link the owner reported, and an owner that doesn't write what was asked, or
         // refuses: the rename is cancelled and nothing changes.
-        let p = plan(&core, "Tambora", "Tambora volcano");
-        let ticket = core.relink(&p.edits).unwrap().unwrap();
+        let mut p = plan(&core, "Tambora", "Tambora volcano");
+        let ticket = core.relink(&mut p.edits).unwrap().unwrap();
         let ask = answer(
             &mut core,
             Ok(csv("Krakatau", "x")),
@@ -1676,7 +1724,7 @@ mod tests {
             matches!(&relinked[..], [(t, Err(m))] if *t == ticket && m.contains("links to x")),
             "{relinked:?}"
         );
-        core.relink(&p.edits).unwrap().unwrap();
+        core.relink(&mut p.edits).unwrap().unwrap();
         answer(&mut core, Err("it is read-only"), None);
         let relinked = core.take_relinked();
         assert!(
@@ -1686,7 +1734,7 @@ mod tests {
         );
 
         // Cancelled while it waits: a late answer is dropped.
-        let ticket = core.relink(&p.edits).unwrap().unwrap();
+        let ticket = core.relink(&mut p.edits).unwrap().unwrap();
         core.cancel_relink(ticket);
         assert!(core.take_file_edits().is_empty(), "not asked after all");
         core.file_edited("csv-table", "Eruptions.csv", &ask.rev, Ok(csv("a", "b")));
@@ -1730,7 +1778,10 @@ mod tests {
         let files: Vec<_> = p.edits.iter().map(|e| e.file.as_str()).collect();
         assert_eq!(files, ["Note.md", "Samples.csv"]);
         assert!(recipe::apply(&p).is_err(), "not before the owner answered");
-        let ticket = core.relink(&p.edits).unwrap().expect("waits for the owner");
+        let ticket = core
+            .relink(&mut p.edits)
+            .unwrap()
+            .expect("waits for the owner");
         let (_, ask) = core.take_file_edits().pop().unwrap();
         assert_eq!(
             ask.changes,
@@ -1814,7 +1865,7 @@ mod tests {
             merge::apply(&m, Some(&bin)).is_err(),
             "not before csv-table answered"
         );
-        core.relink(&m.edits).unwrap().unwrap();
+        core.relink(&mut m.edits).unwrap().unwrap();
         let (_, ask) = core.take_file_edits().pop().unwrap();
         assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
             if link == "Krakatoa" && to == "Krakatau"));
@@ -1954,12 +2005,19 @@ mod tests {
             "{now}"
         );
 
-        // Renamed: the card's path and the sticky's link, in place, through the owner.
-        let lava = core.index.by_rel("Lava").unwrap();
-        crate::rename::apply(&crate::rename::plan(&core.index, lava, "Hot/Lava").unwrap()).unwrap();
-        core.rescan_now();
-        let magma = core.index.by_rel("Magma").unwrap();
-        crate::rename::apply(&crate::rename::plan(&core.index, magma, "Melt").unwrap()).unwrap();
+        // Renamed: the card's path and the sticky's link, in place, through the owner, which
+        // answers inside `relink`.
+        let rename = |core: &mut Core, from: &str, to: &str| {
+            let note = core.index.by_rel(from).unwrap();
+            let mut plan = crate::rename::plan(&core.index, note, to).unwrap();
+            assert!(plan.edits.iter().all(|e| e.owned.is_some()), "its owner's");
+            assert_eq!(core.relink(&mut plan.edits), Ok(None), "answered at once");
+            assert!(core.take_file_edits().is_empty() && core.take_relinked().is_empty());
+            crate::rename::apply(&plan).unwrap();
+            core.rescan_now();
+        };
+        rename(&mut core, "Lava", "Hot/Lava");
+        rename(&mut core, "Magma", "Melt");
         assert_eq!(
             read(&dir.join("Board.canvas")),
             now.replace("\"file\":\"Lava.md\"", "\"file\":\"Hot/Lava.md\"")

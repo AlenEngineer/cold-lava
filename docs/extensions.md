@@ -1087,7 +1087,10 @@ graph all see the new date. None of them knew what a canvas is.
   it was. The menu doesn't wait: the rename dialog stays open saying "waiting for csv-table to
   update its files", and Esc stops waiting (`Core::cancel_relink`) and drops the late answer.
   What each owner read in its new text is kept for the file's new `rev` (`Core::relinked`), so
-  nothing is asked again after the move.
+  nothing is asked again after the move. `Core::relink` answers `None` when the plan is ready:
+  it has no owned file, or every owner answered inside the call, as the engine's canvas owner
+  does, and the plan has the new texts already. So a caller writes one thing, `None` → apply,
+  a ticket → wait, whoever owns the files.
 - **Merges** relink owned files the same way: `merge::plan` lists them with the notes (the
   source is planned as moving onto the target, so each link to it gets `{place, link, to}` or a
   piece's new text), the merge dialog waits for the owners after Enter, and `merge::apply`
@@ -1167,32 +1170,59 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   `RawValue` spans), and `set` replaces those strings in place, so an edit or a rename changes
   that value and keeps every other byte: unknown fields, key order, the nodes' order, Obsidian's
   formatting.
-- **Answering at once.** `owner::BUILT_IN` lists the kinds the engine's owners read
-  (`canvas` → `canvas`); `owner::give` and `owner::edit` answer `file/read` and `file/edit` for
-  them in-process, and `None` for an extension's kind. `workspace::scan` reads canvases with the
-  notes, so every `Index` has them, the command line's included, with no cache and no
-  `set_owners`. In the core, `Owners::owner_of` names the built-in owner first; `owned_read`
-  asks `owner::give` before the owners' cache, so a canvas changed on disk (the watcher's
-  `BoardChanged`, now also an `OwnedChanged`) is read again in the same poll; `set_owners`
-  keeps the built-in owners' files. A canvas that isn't JSON Canvas is in the index with nothing
-  and an `OwnerTrouble` says why; it keeps what it had when it changes into one that doesn't
-  parse.
-- **Edits** take the extensions' path, answered in the same call: `edit_owned` makes the change
-  to the piece as for any owned file, `ask_edit` gets the new text from `owner::edit` (the
-  node's `text` set in place) and `file_edited` reads it back through `owner::give` and
-  compares (`given::same`) before `write::replace` writes it over the text the edit began from.
-  `items/edit` is still answered `Later`, with the answer already in `take_edited`, so the
-  agenda and the table need nothing new. A canvas changed since it was read is refused as
-  `changed`, as for any owned file. A typed field is refused: a canvas gives none.
-- **Renames and merges** rewrite canvases with the notes, through the owner's `relink`: each
+- **One path, answered at once** (#183). A canvas is changed the way an extension's file is:
+  the core asks its owner `file/edit`, has it read the new text back (`file/read`), compares
+  (`given::same`) and only then writes. `owner::BUILT_IN` lists the kinds the engine's owners
+  read (`canvas` → `canvas`); `owner::give` and `owner::edit` answer those two requests for them
+  in-process, and `None` for an extension's kind, whose request goes out instead. The core asks
+  through them in three places (`owned_read`, `send_edit`, `send_read_back`), and hands the
+  answer to `Core::file_edited` and `Core::file_given`, the functions an extension's answer
+  comes in through, so everything after the question is the same code: the pending edit, the
+  read-back, the write, the events, the news. The canvas owner's answer is in before the call
+  that asked returns.
+- **Where the line is.** Three things stay direct, on purpose. Markdown: a note is the
+  engine's own format, the scan's speed depends on reading it without a request, and its edits
+  are made and written by the engine. The scan: `workspace::scan` reads canvases with the notes
+  (through `owner::give`), so every `Index` has them, the command line's included, with no
+  cache and no `set_owners`; it has no core to ask through, and `set_owners` keeps those files.
+  Planning a rename: the canvas owner plans its own changes (`canvas::relink`), because a card
+  holds a workspace path, not a link written in a style, and because it knows the line each
+  change is on; an extension's file is planned by the engine from what its owner gave. The new
+  text comes through the one path either way.
+- **Reading in the core.** `Owners::owner_of` names the built-in owner first. A canvas changed
+  on disk (the watcher's `BoardChanged`, also an `OwnedChanged`) is read again in the same
+  poll. A canvas that isn't JSON Canvas is in the index with nothing and an `OwnerTrouble` says
+  why; it keeps what it had when it changes into one that doesn't parse.
+- **Edits.** `edit_owned` makes the change to the piece as for any owned file and `ask_edit`
+  keeps it pending; the owner sets the node's `text` in place, reads it back, and
+  `write::replace` writes it over the text the edit began from. `items/edit` is answered
+  `Later`, with the answer already in `take_edited`, so the agenda and the table need nothing
+  of their own. A canvas changed since it was read is refused as `changed`, as for any owned
+  file. A typed field is refused: a canvas gives none.
+- **Renames, merges and recipes.** The plan lists a canvas with the notes
+  (`▤ Volcano Venn.canvas  2 links`) as an owned file (`FileEdit::owned`, owner `canvas`): each
   file node's `file` becomes the moved file's new workspace path, and each text node's text goes
-  through the Markdown owner's relink, so a link keeps its style. The plan lists a canvas with the
-  notes (`▤ Volcano Venn.canvas  2 links`), and there is nothing to wait for: the new text
-  is made when planned (`owned_edit` asks a built-in owner at once), and `owned_edits` leaves
-  canvases to `canvas_edit`, since a card holds a path, not a link written in a style. This
-  replaces the regular expression that rewrote `"file"` and `"text"` fields anywhere in the
-  file: only nodes' fields change now. Recipes reach canvas text the same way (a tag renamed on
-  a sticky).
+  through the Markdown owner's relink, so a link keeps its style. Its new text comes from
+  `Core::relink` like a CSV's, read back before anything moves; since the owner answers inside
+  the call, `relink` returns `None` with the text in the plan and the menu applies the rename
+  at once, as before. With an extension's file in the same plan the canvas's text is kept until
+  that owner answers too, and its refusal changes nothing anywhere.
+- **Reading items and rewriting links ask different things of a file.** Reading (`canvas::read`)
+  wants the whole drawing to parse, every node with an id and a type, since an item has to be
+  on a card the whiteboard can show; a canvas that doesn't is in the index with nothing. A
+  rename wants only the nodes' ids and their `text` and `file` strings (`json_canvas::fields`),
+  and rewrites every one of them, whatever the node's type: Obsidian opens a canvas with a
+  node that has no type, and its links must not be left pointing at a note that moved. Such a
+  canvas is planned with no `given` (`Through::given` is `None`), and its read-back expects
+  what was there before: nothing. Every node has a place of its own, its id, and for a later
+  node that repeats an id the id and its number (`canvas::place`, `Field::nth`), so a change
+  reaches the card it is for; two cards with one id are both rewritten, or only the one that
+  links. A file that isn't JSON with nodes that have ids can't be searched at all. It is left
+  as it is, as before, and the plan now says so in a warning that names it; the rename goes on.
+- **Recipes.** A recipe reaches canvas text the same way (a tag renamed on a sticky):
+  its plan shows the sticky's changed lines "through canvas", as for any owned file.
+  `Core::run_recipe`, a shape's step, takes the same path and goes on when no extension has to
+  answer.
 - **Tidy** reads what every owned file's owner gave as written, so a card's image counts as
   used, as before, and a card's note isn't an orphan.
 - **No extension can claim `.canvas`** while the engine owns it: `Registry` leaves out a claim
@@ -1543,7 +1573,11 @@ types and the resolver's links, so a recipe finds what it changes by meaning, no
   a note; the plan lists such a file with the pieces to ask for (`Ask::Text`), and its new text
   comes from its owner through `Core::relink`, exactly as for a rename's links: `file/edit`, then
   `file/read` of the answer, which must read as asked. A file its owner hasn't read as it is now
-  is left out with a warning. Typed items aren't changed by `rename-tag`.
+  is left out with a warning. Typed items aren't changed by `rename-tag`. A canvas is such a
+  file, and its owner answers inside `Core::relink`. `Core::run_recipe` (a shape's step) asks
+  the owners the same way and applies the plan when they all answered inside the call; when an
+  extension has to answer, it stops waiting and refuses, naming the file ("run it from the
+  recipe screen").
 - **Targets by meaning.** A recipe asks the owners where things are; it never matches files
   itself. Tags come from the Markdown owner's `tags_in` (`owner/markdown.rs`): each tag's name
   as a byte range, and for one in the frontmatter, the bytes that take it out of its list. The

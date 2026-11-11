@@ -27,6 +27,11 @@
 //!   queries again on any news of its subscription, and then has them in that order.
 //! - An edit of a file another owner reads is news when the owner has answered and the file is
 //!   written, with the answer in the same batch.
+//! - A file another owner reads is changed one way, whoever owns it (#183): its owner gives the
+//!   new text, reads it back, and only then is it written, over the text the change began from.
+//!   The engine's canvas owner answers inside the call and an extension later, so a canvas's
+//!   edit is done when `edit_item` returns and a rename of canvases alone when `relink` does;
+//!   one owner's refusal, or a file changed meanwhile, writes nothing anywhere.
 
 use super::*;
 use crate::gateway::{Filter, Page};
@@ -273,18 +278,46 @@ impl Harness {
         self.call(|core| core.set_owners(vec![lines_kind()], None));
     }
 
-    /// A rename as the menu makes it: planned, applied, then everything read again.
+    /// A rename as the menu makes it, when no extension has to answer: planned, the files other
+    /// owners read given their new texts (`relink`), applied, then everything read again.
     pub(crate) fn rename(&mut self, from: &str, to: &str) {
+        let mut plan = self.plan_rename(from, to);
+        let waiting = self.relink(&mut plan.edits);
+        assert_eq!(waiting, None, "an extension has to answer: `relinked`");
+        self.renamed(&plan);
+    }
+
+    pub(crate) fn plan_rename(&self, from: &str, to: &str) -> rename::Plan {
         let note = self.core.index.by_rel(from).unwrap();
-        let plan = rename::plan(&self.core.index, note, to).unwrap();
-        rename::apply(&plan).unwrap();
+        rename::plan(&self.core.index, note, to).unwrap()
+    }
+
+    /// Before a rename, a merge or a recipe is made: its owned files' owners are asked for
+    /// their new texts (`Core::relink`). The ticket to wait under, when an extension has to
+    /// answer.
+    pub(crate) fn relink(&mut self, edits: &mut [rename::FileEdit]) -> Option<Ticket> {
+        self.call(|core| core.relink(edits)).unwrap()
+    }
+
+    /// The renames whose owners have all answered, or one refused (`Core::take_relinked`).
+    pub(crate) fn relinked(&mut self) -> Vec<(Ticket, Result<Vec<rename::FileEdit>, String>)> {
+        self.core.take_relinked()
+    }
+
+    /// The rename is made, once its owners have answered, and everything is read again.
+    pub(crate) fn renamed(&mut self, plan: &rename::Plan) {
+        rename::apply(plan).unwrap();
+        self.call(|core| core.relinked(&plan.edits, |path| plan.moved(path)));
         self.rescan();
     }
 
-    /// A recipe as its screen runs it: planned, applied, then everything read again.
+    /// A recipe as its screen runs it, when no extension has to answer: planned, the files
+    /// other owners read given their new texts, applied, then everything read again.
     pub(crate) fn recipe(&mut self, id: &str, options: &[(&str, &str)]) -> recipe::Applied {
         let recipe = recipe::find(id).unwrap();
-        let plan = recipe::plan(&self.core.index, recipe, named(options)).unwrap();
+        let mut plan = recipe::plan(&self.core.index, recipe, named(options)).unwrap();
+        let waiting = self.relink(&mut plan.edits);
+        assert_eq!(waiting, None, "an extension has to answer");
         let applied = recipe::apply(&plan).unwrap();
         self.rescan();
         applied
@@ -297,24 +330,44 @@ impl Harness {
 
     /// A recipe as a shape's step runs it (`Core::run_recipe`).
     pub(crate) fn run_recipe(&mut self, id: &str, options: &[(&str, &str)]) {
-        let run = self.call(|core| core.run_recipe(id, named(options)));
-        run.unwrap();
+        self.try_recipe(id, options).unwrap();
     }
 
-    /// The owner answers the `file/edit` requests waiting for it.
-    pub(crate) fn owner_edits(&mut self) {
+    /// The same, with how it went.
+    pub(crate) fn try_recipe(
+        &mut self,
+        id: &str,
+        options: &[(&str, &str)],
+    ) -> Result<String, gateway::Error> {
+        self.call(|core| core.run_recipe(id, named(options)))
+    }
+
+    /// The owner answers the `file/edit` requests waiting for it. How many there were.
+    pub(crate) fn owner_edits(&mut self) -> usize {
+        let asks = self.core.take_file_edits();
+        for (owner, ask) in &asks {
+            let text = lines_edit(ask);
+            self.call(|core| core.file_edited(owner, &ask.path, &ask.rev, Ok(text)));
+        }
+        asks.len()
+    }
+
+    /// The owner refuses the `file/edit` requests waiting for it.
+    pub(crate) fn owner_refuses(&mut self, why: &str) {
         for (owner, ask) in self.core.take_file_edits() {
-            let text = lines_edit(&ask);
-            self.call(|core| core.file_edited(&owner, &ask.path, &ask.rev, Ok(text)));
+            let refusal = Err(why.to_string());
+            self.call(|core| core.file_edited(&owner, &ask.path, &ask.rev, refusal));
         }
     }
 
-    /// The owner answers the `file/read` requests waiting for it.
-    pub(crate) fn owner_reads(&mut self) {
-        for (owner, read) in self.core.take_reads() {
+    /// The owner answers the `file/read` requests waiting for it. How many there were.
+    pub(crate) fn owner_reads(&mut self) -> usize {
+        let reads = self.core.take_reads();
+        for (owner, read) in &reads {
             let given = lines_given(&read.text);
-            self.call(|core| core.file_given(&owner, &read.path, &read.rev, Ok(given)));
+            self.call(|core| core.file_given(owner, &read.path, &read.rev, Ok(given)));
         }
+        reads.len()
     }
 
     /// Everything the core has to say now. The watcher's events are read without waiting for
@@ -460,6 +513,33 @@ const READING: &str = "- [ ] Read the report 📅 2026-11-20\n";
 const BOARD: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Check the seismograph\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}\n";
 /// `BOARD` with a card before its own, whose task is on that card's second line.
 const BOARD_OF_TWO: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"t\",\"type\":\"text\",\"text\":\"Bolts\\n- [ ] Tighten the bolts\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Check the seismograph\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}\n";
+/// A canvas as another program wrote it, with its own spacing and fields cold-lava doesn't
+/// know: a card of Ash by its path, and a sticky that links to Ash and has a tagged task.
+const LINKED_BOARD: &str = "{\n  \"nodes\": [\n    {\"id\": \"c\", \"type\": \"file\", \"file\": \"Ash.md\", \"x\": 0, \"y\": 0, \"width\": 1, \"height\": 1, \"theirs\": {\"file\": \"Ash.md\"}},\n    {\"id\":\"s\",\"type\":\"text\",\"text\":\"See [[Ash]]\\n- [ ] Check the seismograph #ash\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n  ],\n  \"edges\": [],\n  \"plugin\": [1, 2]\n}\n";
+const STICKY_TASK: &str = "- [ ] Check the seismograph #ash";
+const LINKED_READING: &str = "- [ ] Read the report on [[Ash]]\n";
+
+/// `LINKED_BOARD` after Ash was renamed to Tephra: the card's own path and the sticky's link,
+/// and no other byte.
+fn relinked_board() -> String {
+    let card = (
+        "\"file\": \"Ash.md\", \"x\"",
+        "\"file\": \"Tephra.md\", \"x\"",
+    );
+    let board = LINKED_BOARD.replace(card.0, card.1);
+    board.replace("[[Ash]]", "[[Tephra]]")
+}
+
+/// Two notes, a canvas and a `.lines` file, the last three with a link to Ash.
+fn linked(name: &str) -> Harness {
+    let files = [
+        ("Plan.md", PLAN),
+        ("Ash.md", ASH),
+        ("Board.canvas", LINKED_BOARD),
+        ("Reading.lines", LINKED_READING),
+    ];
+    Harness::with(name, &files)
+}
 
 /// Two notes, a canvas (the engine's own owner) and a `.lines` file (the harness's), with five
 /// tasks between them.
@@ -789,6 +869,289 @@ fn a_canvas_s_edit_is_answered_and_told_in_one_batch() {
     let late = h.deliver();
     assert_eq!(late.events, [Event::BoardChanged("Board.canvas".into())]);
     assert!(late.news.is_empty(), "{late:?}");
+}
+
+/// A tick on a canvas's card is written once, into that card's text, with every other byte of
+/// the file as it was, and heard once. A canvas another program wrote since it was read is left
+/// as that program wrote it.
+#[test]
+fn a_canvas_s_edit_changes_its_card_in_place_or_nothing() {
+    let files = [("Ash.md", ASH), ("Board.canvas", LINKED_BOARD)];
+    let mut h = Harness::with("in-place", &files);
+    h.follow("agenda", tasks());
+    h.follow("table", tasks());
+    let check = h.task("Check the seismograph");
+    let answer = h.edit("agenda", &tick(&check));
+    assert!(matches!(answer, Ok(Answer::Later(_))));
+    let batch = h.deliver();
+    let by = Some(("Board.canvas", "agenda", "ticked"));
+    assert_eq!(batch.events.last().and_then(edited), by);
+    for client in ["agenda", "table"] {
+        assert_eq!(batch.counts(client), [(0, 1, 0)]);
+    }
+    assert!(matches!(&batch.edited[..], [(_, _, Ok(e))] if e.changed));
+    let ticked = h.read("Board.canvas");
+    let (head, tail) = LINKED_BOARD.split_once(STICKY_TASK).unwrap();
+    let card = ticked.strip_prefix(head).and_then(|t| t.strip_suffix(tail));
+    let done = "- [x] Check the seismograph #ash";
+    assert!(card.is_some_and(|c| c.starts_with(done)), "{ticked}");
+
+    // Another program writes the canvas, and the core hasn't read that yet.
+    let theirs = ticked.replace("\"plugin\": [1, 2]", "\"plugin\": [1, 2, 3]");
+    h.write("Board.canvas", &theirs);
+    let check = h.task("Check the seismograph");
+    let refused = h.edit("table", &tick(&check)).unwrap_err();
+    assert_eq!(refused.reason, Reason::Changed, "{refused}");
+    assert_eq!(h.read("Board.canvas"), theirs);
+    assert!(
+        h.deliver().is_empty(),
+        "an edit that wasn't made is no news"
+    );
+
+    // Read again, it can be edited, and what the other program wrote stays.
+    h.saw("Board.canvas");
+    h.deliver();
+    let check = h.task("Check the seismograph");
+    let answer = h.edit("table", &tick(&check));
+    assert!(matches!(answer, Ok(Answer::Later(_))));
+    let batch = h.deliver();
+    assert!(matches!(&batch.edited[..], [(to, _, Ok(e))] if to == "table" && e.changed));
+    let now = h.read("Board.canvas");
+    assert!(now.contains("\"plugin\": [1, 2, 3]") && now.contains("- [ ] Check the seismograph"));
+    assert!(now.contains("\"theirs\": {\"file\": \"Ash.md\"}"), "{now}");
+}
+
+/// #86 with both kinds of owner. A rename's plan lists the canvas and the extension's file with
+/// the notes. Nothing moves until both owners have given their new texts, the engine's own
+/// inside the call and the extension later, each read back; then every file is written.
+#[test]
+fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
+    let mut h = linked("relink");
+    h.follow("agenda", tasks());
+    let mut plan = h.plan_rename("Ash", "Tephra");
+    let files: Vec<&str> = plan.edits.iter().map(|e| e.file.as_str()).collect();
+    assert_eq!(files, ["Plan.md", "Board.canvas", "Reading.lines"]);
+    assert!(
+        rename::apply(&plan).is_err(),
+        "not before the owners answered"
+    );
+
+    let ticket = h
+        .relink(&mut plan.edits)
+        .expect("the extension answers later");
+    let owned = plan.edits.iter().filter_map(|e| e.owned.as_ref());
+    let waits: Vec<&str> = (owned.filter(|o| o.after.is_none()))
+        .map(|o| o.owner.as_str())
+        .collect();
+    assert_eq!(waits, [OWNER], "the canvas's owner has answered");
+    assert!(h.relinked().is_empty(), "not before it answered");
+    assert_eq!(
+        h.owner_edits(),
+        1,
+        "the canvas's owner answered inside the call"
+    );
+    assert!(h.relinked().is_empty(), "nor before it read its new text");
+    h.owner_reads();
+    let relinked = h.relinked();
+    let [(t, Ok(answers))] = &relinked[..] else {
+        panic!("{relinked:?}");
+    };
+    assert_eq!(*t, ticket);
+    assert_eq!(h.read("Board.canvas"), LINKED_BOARD, "nothing written yet");
+    assert_eq!(h.read("Reading.lines"), LINKED_READING);
+    assert!(h.deliver().is_empty(), "nor is anything said");
+
+    rename::answered(&mut plan.edits, answers.clone());
+    h.renamed(&plan);
+    assert_eq!(h.deliver().names("agenda"), ["items/reset"]);
+    assert_eq!(h.read("Board.canvas"), relinked_board());
+    let reading = "- [ ] Read the report on [[Tephra]]\n";
+    assert_eq!(h.read("Reading.lines"), reading);
+    assert!(h.read("Plan.md").contains("[[Tephra]]"));
+    assert_eq!(h.task("Read the report").note, "Reading.lines");
+    assert_eq!(h.owner_reads(), 0, "what the extension read back is kept");
+}
+
+/// One owner's refusal changes nothing anywhere: not the notes, and not the canvas, whose owner
+/// had answered already. Nothing is left waiting either.
+#[test]
+fn a_rename_one_owner_refuses_changes_nothing_anywhere() {
+    let mut h = linked("refused");
+    h.follow("agenda", tasks());
+    let mut plan = h.plan_rename("Ash", "Tephra");
+    let ticket = h
+        .relink(&mut plan.edits)
+        .expect("the extension answers later");
+    h.owner_refuses("it is read-only");
+    let relinked = h.relinked();
+    let [(t, Err(why))] = &relinked[..] else {
+        panic!("{relinked:?}");
+    };
+    assert_eq!(*t, ticket);
+    assert_eq!(why, "lines didn't edit Reading.lines: it is read-only");
+    assert!(
+        rename::apply(&plan).is_err(),
+        "nor can it be made after all"
+    );
+    let before = [
+        ("Ash.md", ASH),
+        ("Plan.md", PLAN),
+        ("Board.canvas", LINKED_BOARD),
+        ("Reading.lines", LINKED_READING),
+    ];
+    for (rel, text) in before {
+        assert_eq!(h.read(rel), text, "{rel}");
+    }
+    assert!(h.deliver().is_empty(), "and nobody hears anything");
+
+    let check = h.task("Check the seismograph");
+    let answer = h.edit("agenda", &tick(&check));
+    assert!(matches!(answer, Ok(Answer::Later(_))), "{:?}", answer.err());
+    assert!(matches!(&h.deliver().edited[..], [(_, _, Ok(_))]));
+}
+
+/// A slow owner. Another program writes the file, and the owner reads that, before it answers
+/// the edit: its answer is for a text that is gone, so nothing is written, and the edit fails
+/// as `changed`. The other program's change is heard once.
+#[test]
+fn an_owner_s_answer_for_a_file_that_changed_meanwhile_writes_nothing() {
+    let mut h = workspace("late-answer");
+    h.follow("agenda", tasks());
+    let report = h.task("Read the report");
+    let Ok(Answer::Later(ticket)) = h.edit("agenda", &tick(&report)) else {
+        panic!("an owned file's item is answered later");
+    };
+    let theirs = format!("{READING}- [ ] Return the book\n");
+    h.write("Reading.lines", &theirs);
+    h.saw("Reading.lines");
+    h.deliver();
+    h.owner_reads();
+    let read = h.deliver();
+    assert_eq!(read.counts("agenda"), [(1, 0, 0)]);
+    assert!(read.edited.is_empty(), "{read:?}");
+
+    assert_eq!(h.owner_edits(), 1);
+    h.owner_reads();
+    let late = h.deliver();
+    let [(to, t, Err(refused))] = &late.edited[..] else {
+        panic!("{late:?}");
+    };
+    assert_eq!((to.as_str(), *t), ("agenda", ticket));
+    assert_eq!(refused.reason, Reason::Changed, "{refused}");
+    assert!(late.events.is_empty() && late.news.is_empty(), "{late:?}");
+    assert_eq!(h.read("Reading.lines"), theirs);
+    assert_eq!(h.count("agenda", "Return the book"), 1);
+
+    // The task as it reads now can be ticked.
+    let report = h.task("Read the report");
+    let answer = h.edit("agenda", &tick(&report));
+    assert!(matches!(answer, Ok(Answer::Later(_))));
+    h.owner_edits();
+    h.owner_reads();
+    assert!(matches!(&h.deliver().edited[..], [(_, _, Ok(_))]));
+    assert!(h.read("Reading.lines").starts_with("- [x] Read the report"));
+    assert!(h.read("Reading.lines").ends_with("- [ ] Return the book\n"));
+}
+
+/// Two edits of one owned file. An extension's file takes one at a time: the second is refused
+/// while the first waits, and goes through once the first is written. A canvas's owner answers
+/// inside the call, so two edits in a row are each written and each heard once.
+#[test]
+fn two_edits_of_one_owned_file_are_each_written_once() {
+    let reading = format!("{READING}- [ ] Return the book\n");
+    let files = [
+        ("Board.canvas", BOARD_OF_TWO),
+        ("Reading.lines", reading.as_str()),
+    ];
+    let mut h = Harness::with("two-edits", &files);
+    h.follow("agenda", tasks());
+    let (report, book) = (h.task("Read the report"), h.task("Return the book"));
+    let Ok(Answer::Later(first)) = h.edit("agenda", &tick(&report)) else {
+        panic!("an owned file's item is answered later");
+    };
+    let busy = h.edit("table", &tick(&book)).unwrap_err();
+    assert_eq!(busy.reason, Reason::Changed, "{busy}");
+    assert_eq!(h.owner_edits(), 1, "the second was never asked");
+    h.owner_reads();
+    let batch = h.deliver();
+    assert!(matches!(&batch.edited[..], [(_, t, Ok(_))] if *t == first));
+    assert_eq!(batch.counts("agenda"), [(0, 1, 0)]);
+
+    let book = h.task("Return the book");
+    let Ok(Answer::Later(second)) = h.edit("table", &tick(&book)) else {
+        panic!("the file is free again");
+    };
+    h.owner_edits();
+    h.owner_reads();
+    let batch = h.deliver();
+    assert!(matches!(&batch.edited[..], [(_, t, Ok(_))] if *t == second));
+    assert_eq!(batch.counts("agenda"), [(0, 1, 0)]);
+    let lines = h.read("Reading.lines");
+    let ticked = |line: &str| line.starts_with("- [x] ");
+    assert!(lines.lines().count() == 2 && lines.lines().all(ticked));
+
+    let (bolts, check) = (h.task("Tighten the bolts"), h.task("Check the seismograph"));
+    for task in [&bolts, &check] {
+        let answer = h.edit("agenda", &tick(task));
+        assert!(matches!(answer, Ok(Answer::Later(_))), "{:?}", answer.err());
+    }
+    let batch = h.deliver();
+    assert!(matches!(&batch.edited[..], [(_, _, Ok(_)), (_, _, Ok(_))]));
+    assert_eq!(batch.counts("agenda"), [(0, 1, 0), (0, 1, 0)]);
+    let said: Vec<_> = batch.events.iter().filter_map(edited).collect();
+    assert_eq!(said, [("Board.canvas", "agenda", "ticked"); 2]);
+    let board = h.read("Board.canvas");
+    assert_eq!(board.matches("- [x] ").count(), 2, "{board}");
+    let (head, rest) = BOARD_OF_TWO.split_once("- [ ] Tighten the bolts").unwrap();
+    let (between, tail) = rest.split_once("- [ ] Check the seismograph").unwrap();
+    assert!(board.starts_with(head) && board.ends_with(tail), "{board}");
+    assert!(board.contains(between), "{board}");
+}
+
+/// A recipe from a shape's step changes a canvas's card through its owner, which answers inside
+/// the call, and the canvas is read again with the notes. A file an extension owns would have
+/// to wait for it, so the recipe is refused and nothing is changed or left waiting.
+#[test]
+fn a_recipe_from_a_step_changes_a_canvas_through_its_owner() {
+    let files = [
+        ("Ash.md", ASH),
+        ("Board.canvas", LINKED_BOARD),
+        ("Reading.lines", READING),
+    ];
+    let mut h = Harness::with("recipe-canvas", &files);
+    h.follow("agenda", tasks());
+    h.run_recipe("rename-tag", &[("from", "ash"), ("to", "tephra")]);
+    let run = h.deliver();
+    let board = Event::OwnedChanged("Board.canvas".into());
+    assert_eq!(run.events, [changed("Ash"), board]);
+    assert_eq!(run.names("agenda"), ["items/changed", "items/changed"]);
+    let renamed = LINKED_BOARD.replace("#ash", "#tephra");
+    assert_eq!(h.read("Board.canvas"), renamed);
+    assert!(h.read("Ash.md").contains("#tephra"));
+    h.saw("Ash.md");
+    h.saw("Board.canvas");
+    let late = h.deliver();
+    assert_eq!(late.events, [Event::BoardChanged("Board.canvas".into())]);
+    assert!(late.news.is_empty(), "{late:?}");
+
+    let tagged = "- [ ] Read the report #tephra\n";
+    h.write("Reading.lines", tagged);
+    h.saw("Reading.lines");
+    h.deliver();
+    h.owner_reads();
+    h.deliver();
+    let again = [("from", "tephra"), ("to", "lapilli")];
+    let refused = h.try_recipe("rename-tag", &again).unwrap_err();
+    assert_eq!(refused.reason, Reason::Refused, "{refused}");
+    assert!(refused.message.contains("Reading.lines"), "{refused}");
+    assert_eq!(h.owner_edits(), 0, "its owner isn't asked after all");
+    assert_eq!(h.read("Board.canvas"), renamed);
+    assert_eq!(h.read("Reading.lines"), tagged);
+    assert!(h.read("Ash.md").contains("#tephra"));
+    assert!(h.deliver().is_empty(), "and nobody hears anything");
+    let check = h.task("Check the seismograph");
+    let answer = h.edit("agenda", &tick(&check));
+    assert!(matches!(answer, Ok(Answer::Later(_))), "{:?}", answer.err());
 }
 
 #[test]
