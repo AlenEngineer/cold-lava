@@ -1790,6 +1790,13 @@ impl Home {
 
     /// Hand the item subscriptions' news to the extensions that hold them. A subscription
     /// nobody holds any more is stopped.
+    ///
+    /// It relies on the core queueing news only inside the call that read a change, in order,
+    /// and never queueing item news behind an `items/reset` of the same subscription within one
+    /// call (the engine's `core/news.rs` pins both). The core doesn't keep a reset apart from
+    /// the next call's news, so this runs after every call that can queue a reset, before the
+    /// next change is read: after `rescan_now` (`reload_tree`) and after each `poll`
+    /// (`sync_with_core`). `rescan-news.drive` checks that from the screen.
     fn deliver_item_news(&mut self) {
         let Some(core) = self.core.as_mut() else {
             return;
