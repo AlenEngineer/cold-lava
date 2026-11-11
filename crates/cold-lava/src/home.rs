@@ -969,6 +969,11 @@ impl Home {
     /// extension's message about it comes after the attribution.
     fn call(&mut self, ext: ExtId, f: impl FnOnce(&mut dyn Extension, &mut Host<'_>)) {
         let effects = self.registry.call(ext, self.core.as_mut(), f);
+        self.asked(ext, effects);
+    }
+
+    /// Do what `ext` asked for in a call to it (`effects`), after reading back what it edited.
+    fn asked(&mut self, ext: ExtId, effects: Vec<Effect>) {
         if !self.catching_up
             && let Some(core) = self.core.as_mut()
             && core.has_unseen()
@@ -1576,7 +1581,17 @@ impl Home {
             b.navigate(nav);
             b.tick(core, &mut self.registry);
         }
+        self.board_asked();
         self.board_heard();
+    }
+
+    /// What extensions asked for while the whiteboard called them about their shapes
+    /// (`shape/region`, a gesture's steps): done as after any other call to an extension.
+    fn board_asked(&mut self) {
+        let asked = self.board.as_mut().map(board::Board::take_asked);
+        for (ext, effect) in asked.unwrap_or_default() {
+            self.asked(ext, vec![effect]);
+        }
     }
 
     /// What the core said while the whiteboard's shape editor ran: the menu hears it now.
@@ -1596,6 +1611,7 @@ impl Home {
         if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
             b.on_key(k, terminal, core, &mut self.registry)?;
         }
+        self.board_asked();
         self.board_heard();
         self.board_left()
     }
@@ -5539,7 +5555,7 @@ impl Home {
             if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
                 b.on_mouse(m, core, &mut self.registry);
             }
-            return;
+            return self.board_asked();
         }
         if let Mode::Peek { view, .. } = &mut self.mode {
             match (m.kind, &mut *view) {

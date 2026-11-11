@@ -14,7 +14,6 @@ base64.workspace = true
 chrono.workspace = true
 indexmap.workspace = true
 flate2.workspace = true
-notify.workspace = true
 portable-pty.workspace = true
 ratatui.workspace = true
 regex.workspace = true

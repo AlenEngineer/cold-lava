@@ -2160,7 +2160,11 @@ zooming wait.
   bound and asked, outside changes to the file merged three ways), draws it over the whole
   screen with the extensions' `ui/status` words in its status line, gives it keys and the
   mouse, and passes it the core's events and the item news of the placed shapes' subscriptions
-  (as `canvas`). So extensions keep being answered while a drawing is open
+  (as `canvas`). The board watches no file: the core's event for its canvas (`BoardChanged`,
+  `OwnedChanged`) makes the next tick read the file and merge, once no card is being typed or
+  dragged, and its own saves merge nothing because the bytes are the ones it wrote. A canvas
+  the core doesn't watch (outside the workspace, in a hidden folder) is read every 2 s. So
+  extensions keep being answered while a drawing is open
   (`board-extensions.drive` checks it with `open-tasks`: a task written by another program and
   one typed on a new card both reach the count). The board is a place in Back's history
   (`Place::Board` with the selected node): Back and Forward leave it and reopen it with that
@@ -2168,7 +2172,11 @@ zooming wait.
   reader. Opened for a task or a backlink, it selects the node it was opened for. Leaving it
   closes it; it saves on every change, so nothing waits. The shape editor (`S`) is still a
   screen with its own loop, lent the core, so extensions wait while it is open, and so does the
-  board picker (`w`). `cold-lava board FILE` runs the same `Board` in a small loop of its own.
+  board picker (`w`). What an extension asks for inside the board's calls to it about its
+  shapes (`shape/region`, a gesture's steps: `ui/notify`, `ui/status`, opening a note) the
+  board keeps (`Board::take_asked`) and the menu does after each tick, key and mouse event, as
+  after any call to an extension, within the same allowance per frame. `cold-lava board FILE`
+  runs the same `Board` in a small loop of its own, where only the notifications show.
 - **Not yet:** a scene's own keys (an extension's scene gets the graph's), fixed layouts,
   `scene/update` deltas, cards, and a scene beside the tree. The whiteboard as a scene on the
   gateway would need all of these, plus input on cards and picking a node to connect; until

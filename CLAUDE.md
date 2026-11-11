@@ -277,7 +277,9 @@ what it needs (`markdown::set_configured` for the chosen flavour).
   through the core and paints it with the canvas engine. The board is a mode of the menu
   (`Mode::Board`, `Home::board`, `Place::Board`): the menu keeps the core and the registry,
   hands them to each `Board` call, ticks and draws it in its loop and gives it the core's
-  events and the `canvas` item news. `cold-lava board` runs it in a small loop of its own.
+  events and the `canvas` item news. It has no file watcher: the core's event for its canvas
+  makes it read the file and merge (`merge3`). `cold-lava board` runs it in a small loop of
+  its own.
 - `table.rs`: the declarative table view (columns, rows by id, events back; serde, so it can
   cross the view gateway). `type_table.rs` is the table as a built-in extension (`Tables`):
   `i` (`table.open`, a core command the menu hands to it) sends the types as a table to pick
