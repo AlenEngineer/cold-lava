@@ -35,36 +35,34 @@ jobs:
         run: |
           cargo build --release -p cold-lava
           python3 scripts/bench-items.py --runs 1 target/release/cold-lava
-      - name: Build the cost tests (main, this branch)
+      - name: "Build the cost tests: main and this branch, each also with the events sized up front"
         run: |
           git worktree add ../main origin/main
           exe() { cargo test --release -p cold-lava-engine --no-run 2>&1 | grep -o 'target/release/deps/cold_lava_engine-[0-9a-f]*' | head -1; }
-          (cd ../main && cp "$(exe)" "$HOME/t-main")
+          presize() { sed -i 's/events: Vec::new(),/events: Vec::with_capacity(text.len() \/ 8 + 16),/' crates/engine/src/cst/block.rs; grep -n 'events: Vec::with_capacity' crates/engine/src/cst/block.rs; }
+          (cd ../main && cp "$(exe)" "$HOME/t-main" && presize && cp "$(exe)" "$HOME/t-main-pre")
           cp "$(exe)" "$HOME/t-branch"
+          presize
+          cp "$(exe)" "$HOME/t-branch-pre"
+          git checkout crates/engine/src/cst/block.rs
       - name: Instructions executed reading 3,000 notes (callgrind), each build
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
           export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
-          for b in main branch; do
+          for b in main branch main-pre branch-pre; do
             echo "== $b"
-            valgrind --tool=callgrind --callgrind-out-file="$HOME/cg-$b" "$HOME/t-$b" read_cost --ignored --nocapture 2>&1 | grep -E 'Collected|refs' || true
+            valgrind --tool=callgrind --callgrind-out-file="$HOME/cg-$b" "$HOME/t-$b" read_cost --ignored --nocapture 2>&1 | grep -E 'Collected' || true
             echo "-- $b, inclusive"
-            callgrind_annotate --inclusive=yes "$HOME/cg-$b" | head -110 | cut -c1-220
+            callgrind_annotate --inclusive=yes "$HOME/cg-$b" | grep -E 'PROGRAM TOTALS|read_cost::\{closure#[3-7]\}|malloc.c:(realloc|malloc|free|_int_realloc|_int_malloc|_int_free) ' | cut -c1-160
+            echo "-- $b, calls into the allocator"
+            callgrind_annotate --tree=caller "$HOME/cg-$b" | grep -E -B14 '\* .*malloc.c:(realloc|malloc|free) \[' | cut -c1-200
           done
       - name: Reading 3,000 notes, each build in turn
         run: |
           export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
           for round in 1 2 3 4 5; do
-            for b in main branch; do
+            for b in main branch main-pre branch-pre; do
               echo "== $b, round $round"
               "$HOME/t-$b" read_cost --ignored --nocapture | grep -A5 'read_cost:'
-            done
-          done
-      - name: One keystroke in a 5,000-line note, each build in turn
-        run: |
-          for round in 1 2 3 4 5; do
-            for b in main branch; do
-              echo "== $b, round $round"
-              "$HOME/t-$b" keystroke --ignored --nocapture | grep 'keystroke:'
             done
           done
