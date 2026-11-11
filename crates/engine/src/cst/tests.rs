@@ -237,7 +237,14 @@ fn a_tag_may_follow_the_markers_that_open_emphasis_and_highlights() {
     let emphasis = "**#bold** _#slanted_ *#star* __#snake_case__ ***#both*** (**#paren**)\n";
     assert_eq!(
         tags(emphasis, obsidian()),
-        ["#bold", "#slanted", "#star", "#snake_case", "#both", "#paren"]
+        [
+            "#bold",
+            "#slanted",
+            "#star",
+            "#snake_case",
+            "#both",
+            "#paren"
+        ]
     );
     let marked = "==#marked== ~~#struck~~ **==#nested==**\n";
     let all = ["#marked", "#struck", "#nested"];
