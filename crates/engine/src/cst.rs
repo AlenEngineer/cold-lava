@@ -486,44 +486,42 @@ impl<'t, F: FnMut(Step<'t>)> Sink<'t> for Steps<F> {
 /// `text` read in `gates`, step by step as `walk` goes through its tree, without making the
 /// tree: for a reader that needs a note once, as the workspace's scan does.
 pub fn read<'t>(text: &'t str, gates: Gates, f: &mut impl FnMut(Step<'t>)) {
-    blocks(text, gates).read(f);
+    let (blocks, defs) = blocks(text, gates);
+    blocks.read(&defs, f);
 }
 
-/// A note whose blocks are found, so its link definitions are known before `read` goes
-/// through its inlines: for a reader that follows reference links, which asks the definitions
-/// where each `LinkLabel` points.
+/// A note whose blocks are found, before `read` goes through its inlines.
 pub struct Blocks<'t> {
     text: &'t str,
     gates: Gates,
     events: Vec<block::Ev>,
-    defs: Definitions,
 }
 
-/// The blocks of `text` read in `gates`.
-pub fn blocks(text: &str, gates: Gates) -> Blocks<'_> {
+/// The blocks of `text` read in `gates`, and the note's link definitions, which are known once
+/// the blocks are: for a reader that follows reference links, which asks the definitions
+/// where each `LinkLabel` points while it reads.
+pub fn blocks(text: &str, gates: Gates) -> (Blocks<'_>, Definitions) {
     let (events, defs) = block::events(text, gates);
-    Blocks {
+    let blocks = Blocks {
         text,
         gates,
         events,
-        defs,
-    }
+    };
+    (blocks, defs)
 }
 
 impl<'t> Blocks<'t> {
-    pub fn definitions(&self) -> &Definitions {
-        &self.defs
-    }
-
-    /// The note, step by step as `walk` goes through its tree.
-    pub fn read(&self, f: &mut impl FnMut(Step<'t>)) {
+    /// The note, step by step as `walk` goes through its tree; `defs` are its definitions.
+    /// It takes the blocks, so they are dropped when the walk ends, before the reader goes
+    /// on with what it read.
+    pub fn read(self, defs: &Definitions, f: &mut impl FnMut(Step<'t>)) {
         let mut steps = Steps {
             at: 0,
             open: Vec::new(),
             f,
         };
         steps.start(Kind::Document);
-        inline::build(self.text, &self.events, self.gates, &self.defs, &mut steps);
+        inline::build(self.text, &self.events, self.gates, defs, &mut steps);
         steps.finish();
     }
 }

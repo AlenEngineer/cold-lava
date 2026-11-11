@@ -322,13 +322,12 @@ fn parse(text: &str) -> (Vec<Ref>, Vec<String>, Vec<String>, style::Links) {
 
     // The note in the syntax every workspace's links are read in, with its link definitions,
     // which say where a reference link points.
-    let note = cst::blocks(text, cst::Gates::INDEX);
-    let defs = note.definitions();
+    let (note, defs) = cst::blocks(text, cst::Gates::INDEX);
     let mut body_tags = Vec::new();
     let mut frontmatter_end = 0;
     let mut links: Vec<Written> = Vec::new();
     let mut wiki: Option<Written> = None;
-    note.read(&mut |step| match step {
+    note.read(&defs, &mut |step| match step {
         Step::Leave(Kind::Frontmatter, at) => frontmatter_end = at,
         Step::Token(Kind::Tag, tag, at) => body_tags.push(body_tag(at, tag)),
         Step::Enter(Kind::WikiLink | Kind::Embed, at) => {

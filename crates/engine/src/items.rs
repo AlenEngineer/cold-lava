@@ -332,9 +332,9 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
     // When a type reads the note's tags, they count whatever the flavour, as they always have.
-    let blocks = cst::blocks(lines.src, gates.set(Syntax::Tags, wants.tags));
-    let mut walk = Walk::new(&lines, &s.flavour, wants, blocks.definitions());
-    blocks.read(&mut |step| walk.step(step));
+    let (blocks, defs) = cst::blocks(lines.src, gates.set(Syntax::Tags, wants.tags));
+    let mut walk = Walk::new(&lines, &s.flavour, wants, &defs);
+    blocks.read(&defs, &mut |step| walk.step(step));
     finish(note, text, s, &source, &lines, walk.pass)
 }
 
