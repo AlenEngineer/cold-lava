@@ -723,10 +723,10 @@ struct Run {
 /// reader finds (an escape, a character reference, `<`, a footnote, a hard break, emphasis) is
 /// held back until it ends: emphasis may close on a later line than it opened on. Its `Text`
 /// tokens are then cut where those are, and it goes on to the sink. Nothing else of it changes.
-struct Held<'s, 't, S> {
+struct Held<'s, 't, B> {
     text: &'t str,
     g: Gates,
-    b: &'s mut S,
+    b: &'s mut B,
     recs: Vec<Rec>,
     hold: bool,
     /// The block being read, and how many lines of its text were read.
@@ -736,7 +736,7 @@ struct Held<'s, 't, S> {
     footnote: Option<usize>,
 }
 
-impl<'t, S: Sink<'t>> Sink<'t> for Held<'_, 't, S> {
+impl<'t, B: Sink<'t>> Sink<'t> for Held<'_, 't, B> {
     fn start(&mut self, kind: Kind) {
         match self.hold {
             true => self.recs.push(Rec::Start(kind)),
@@ -762,8 +762,8 @@ impl<'t, S: Sink<'t>> Sink<'t> for Held<'_, 't, S> {
     }
 }
 
-impl<'s, 't, S: Sink<'t>> Held<'s, 't, S> {
-    fn new(text: &'t str, g: Gates, b: &'s mut S) -> Self {
+impl<'s, 't, B: Sink<'t>> Held<'s, 't, B> {
+    fn new(text: &'t str, g: Gates, b: &'s mut B) -> Self {
         Held {
             text,
             g,
