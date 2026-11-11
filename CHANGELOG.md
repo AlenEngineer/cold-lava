@@ -68,6 +68,15 @@ change commands, keys and file formats; patch versions only fix things.
   it; it is sent at once now, to extensions too.
 - An extension's late answer about one of its shapes on the whiteboard no longer lands on
   another shape after the shape editor saved or the board was reopened (#172).
+- The type table and the agenda keep their rows in one order: notes first, then whiteboards
+  and other owned files, as `cold-lava items` prints them. After a change they sorted every
+  file by name instead, so a whiteboard's tasks moved up among the notes' until the next
+  full read moved them back (#199).
+- A change read right after extensions were restarted is no longer told twice (#199). The
+  restart can queue an `items/reset`, which reached subscribers together with that change's
+  `items/changed`; a subscriber that queried again on the reset and then applied the change
+  had the new item twice. While a reset waits, the core now leaves out the later
+  `items/changed` it already covers, whichever call queued the reset.
 
 ## [0.5.0] - 2026-11-10
 

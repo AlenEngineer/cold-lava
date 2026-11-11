@@ -82,7 +82,7 @@ fn all(host: &mut Host<'_>, select: &Select) -> Result<Vec<Item>, gateway::Error
 pub struct Feed {
     ty: Type,
     sub: SubId,
-    /// By note and line, as `items/query` orders them.
+    /// As `items/query` answered last, in its order.
     items: Vec<Item>,
 }
 
@@ -101,7 +101,7 @@ impl Feed {
         self.sub
     }
 
-    /// By note and line.
+    /// In `items/query`'s order.
     pub fn items(&self) -> &[Item] {
         &self.items
     }
@@ -110,32 +110,13 @@ impl Feed {
         build(&self.ty, &self.items)
     }
 
-    /// Apply news of its subscription.
+    /// News of its subscription: the items are queried again, whichever news it is. Only the
+    /// query knows the order (`items/changed` doesn't say where an added item goes), so the
+    /// rows are the same after a change as after a reset.
     pub fn heard(&mut self, host: &mut Host<'_>, news: News) -> Result<(), gateway::Error> {
-        let (added, updated, removed) = match news {
-            News::Reset { .. } => {
-                self.items = all(host, &select(&self.ty.name))?;
-                return Ok(());
-            }
-            News::Changed {
-                added,
-                updated,
-                removed,
-                ..
-            } => (added, updated, removed),
-            News::LinksChanged { .. } => return Ok(()),
-        };
-        let mut updated: HashMap<String, Item> =
-            (updated.into_iter()).map(|i| (i.id.clone(), i)).collect();
-        self.items.retain(|i| !removed.contains(&i.id));
-        for item in &mut self.items {
-            if let Some(new) = updated.remove(&item.id) {
-                *item = new;
-            }
+        if !matches!(news, News::LinksChanged { .. }) {
+            self.items = all(host, &select(&self.ty.name))?;
         }
-        self.items.extend(added);
-        let note = |i: &Item| i.note.strip_suffix(".md").unwrap_or(&i.note).to_string();
-        self.items.sort_by_cached_key(|i| (note(i), i.line));
         Ok(())
     }
 
@@ -716,6 +697,48 @@ mod tests {
         core.rescan_now();
         let news = core.take_item_news();
         assert!(matches!(news[..], [(_, News::Reset { .. })]), "{news:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tasks_now(registry: &mut Registry, core: &mut Core) -> Vec<Item> {
+        all(&mut registry.screen(TABLE, core), &select("task")).unwrap()
+    }
+
+    fn hear(feed: &mut Feed, registry: &mut Registry, core: &mut Core) {
+        for (_, n) in core.take_item_news() {
+            feed.heard(&mut registry.screen(TABLE, core), n).unwrap();
+        }
+    }
+
+    /// The example workspace has tasks in notes and in canvases. A note that sorts after the
+    /// canvases by name still comes before them, as in `items/query`, whichever news came last.
+    #[test]
+    fn the_rows_are_in_the_query_s_order_after_a_change_and_after_a_reset() {
+        let dir = example("order");
+        let mut core = Core::open(&dir).unwrap();
+        let mut registry = Registry::empty();
+        let mut feed = {
+            let mut host = registry.screen(TABLE, &mut core);
+            Feed::open(&mut host, "task").unwrap().unwrap()
+        };
+        let in_canvas = |i: &Item| i.note == "Welcome.canvas";
+        assert!(feed.items().iter().any(in_canvas), "a canvas has tasks");
+
+        let note = dir.join("Zone map.md");
+        std::fs::write(&note, "- [ ] Map the exclusion zone\n").unwrap();
+        core.note_changed_now(&note);
+        hear(&mut feed, &mut registry, &mut core);
+        let fresh = tasks_now(&mut registry, &mut core);
+        let at = |file: &str| fresh.iter().position(|i| i.note == file).unwrap();
+        assert!(at("Zone map.md") < at("Welcome.canvas"), "notes come first");
+        assert_eq!(feed.items(), fresh, "after items/changed");
+
+        std::fs::write(&note, "- [ ] Map the exclusion zone\n- [ ] Print it\n").unwrap();
+        core.rescan_now();
+        hear(&mut feed, &mut registry, &mut core);
+        let fresh = tasks_now(&mut registry, &mut core);
+        assert_eq!(feed.items(), fresh, "after items/reset");
+        assert_eq!(fresh.iter().filter(|i| i.note == "Zone map.md").count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

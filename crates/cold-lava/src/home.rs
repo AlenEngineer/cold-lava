@@ -1311,8 +1311,9 @@ impl Home {
     }
 
     /// Read the workspace again (after cold-lava itself moved files around), and tell item
-    /// subscribers now: news left in the queue would reach them together with the next change's,
-    /// and a subscriber that queries again on `items/reset` would then count that change twice.
+    /// subscribers now: `rescan_now` gives `poll` no event, so its `items/reset` would wait in
+    /// the queue, and the agenda and the tables show what was there before, until the next
+    /// change.
     fn reload_tree(&mut self) {
         let Some(root) = self.root.clone() else {
             return;
@@ -1792,11 +1793,12 @@ impl Home {
     /// nobody holds any more is stopped.
     ///
     /// It relies on the core queueing news only inside the call that read a change, in order,
-    /// and never queueing item news behind an `items/reset` of the same subscription within one
-    /// call (the engine's `core/news.rs` pins both). The core doesn't keep a reset apart from
-    /// the next call's news, so this runs after every call that can queue a reset, before the
-    /// next change is read: after `rescan_now` (`reload_tree`) and after each `poll`
-    /// (`sync_with_core`). `rescan-news.drive` checks that from the screen.
+    /// and never holding item news behind an `items/reset` of the same subscription, however
+    /// long the reset waited (the engine's `core/news.rs` pins both). So when this runs decides
+    /// only how soon subscribers hear, never whether they count a change twice: after each
+    /// `poll` (`sync_with_core`), which also brings what `set_owners` queued, and after
+    /// `rescan_now` (`reload_tree`), which has no event for `poll`. `rescan-news.drive` checks
+    /// the latter from the screen.
     fn deliver_item_news(&mut self) {
         let Some(core) = self.core.as_mut() else {
             return;

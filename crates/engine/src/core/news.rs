@@ -11,11 +11,20 @@
 //!   a call's item news before its link news.
 //! - A change is news once. A file read again with the text the core already has is no news:
 //!   a watcher's event for the core's own write, or two events for one file.
-//! - One call never queues item news behind an `items/reset` of the same subscription
-//!   (`Harness::call` checks it on every call every test makes). The core queues nothing
-//!   between calls, so a reset shares a batch with a later change only when nobody took the
-//!   news between the two calls. `rescan_now` leaves its reset in the queue without an event
-//!   for `poll` and without `has_unseen`, so whoever calls it takes the news at once.
+//! - The queue never holds item news behind an `items/reset` of the same subscription
+//!   (`Harness::call` checks it after every call every test makes): while a reset waits to be
+//!   taken, the core drops that subscription's later item news, which the subscriber's query on
+//!   the reset finds anyway. So no caller has to take the news between two calls to keep a
+//!   change from being counted twice. `rescan_now` still leaves its reset in the queue without
+//!   an event for `poll` and without `has_unseen`, so whoever calls it takes the news at once,
+//!   for its subscribers to be up to date.
+//! - Not so yet: an item that moves without its own lines changing (a line added above it)
+//!   is no news, since its `rev` is the same. A subscriber that applies `items/changed` keeps
+//!   its old `line`; one that queries again hears nothing to query on. The tests here leave
+//!   every item they keep where it is.
+//! - News carries no order. The order is `items/query`'s: notes by path, then the files other
+//!   owners read by path, each file's items as the file has them. A subscriber that shows rows
+//!   queries again on any news of its subscription, and then has them in that order.
 //! - An edit of a file another owner reads is news when the owner has answered and the file is
 //!   written, with the answer in the same batch.
 
@@ -93,18 +102,24 @@ impl Batch {
     }
 }
 
-/// A subscriber that keeps its items the way `Feed` in the binary does: it queries when it
-/// subscribes and on `items/reset`, and applies `items/changed` to what it has. An item it is
-/// told of twice is there twice.
+/// A subscriber that keeps its items both ways a subscriber can.
 struct Follower {
     client: String,
     select: Select,
     sub: SubId,
+    /// As an extension that applies the news does: queried when it subscribes and on
+    /// `items/reset`, with `items/changed` applied to what it has. An item it is told of twice
+    /// is there twice. In no order, since news carries none.
     items: Vec<Item>,
+    /// As `Feed` in the binary and a bound shape do: queried again on any news.
+    rows: Vec<Item>,
 }
 
 impl Follower {
     fn hear(&mut self, core: &Core, news: &News) {
+        if !matches!(news, News::LinksChanged { .. }) {
+            self.rows = all(core, &self.select);
+        }
         match news {
             News::Reset { .. } => self.items = all(core, &self.select),
             News::Changed {
@@ -175,12 +190,7 @@ impl Harness {
         core._watcher = None;
         core.fs_events = Some(fs_events);
         let channel = core.subscribe();
-        let kind = OwnedKind {
-            extension: "lines".into(),
-            owner: OWNER.into(),
-            version: "1".into(),
-        };
-        core.set_owners(vec![kind], None);
+        core.set_owners(vec![lines_kind()], None);
         let mut harness = Harness {
             core,
             dir,
@@ -194,18 +204,17 @@ impl Harness {
         harness
     }
 
-    /// One call into the core. It must not queue item news behind a reset of the same
+    /// One call into the core. It must leave no item news queued behind a reset of the same
     /// subscription: a subscriber queries again on the reset, and would count that news twice.
     fn call<T>(&mut self, f: impl FnOnce(&mut Core) -> T) -> T {
-        let before = self.core.news.len();
         let out = f(&mut self.core);
-        let queued = &self.core.news[before..];
+        let queued = &self.core.news;
         for (i, (_, news)) in queued.iter().enumerate() {
             let behind = |(_, later): &(String, News)| later.subscription() == news.subscription();
             let reset = matches!(news, News::Reset { .. });
             assert!(
                 !(reset && queued[i + 1..].iter().any(behind)),
-                "one call queued news behind a reset: {queued:?}"
+                "news is queued behind a reset: {queued:?}"
             );
         }
         out
@@ -219,6 +228,7 @@ impl Harness {
             client: client.into(),
             select,
             sub,
+            rows: items.clone(),
             items,
         });
     }
@@ -256,6 +266,11 @@ impl Harness {
 
     pub(crate) fn rescan(&mut self) {
         self.call(Core::rescan_now);
+    }
+
+    /// The menu tells the core who owns which kind of file again, as when extensions restart.
+    pub(crate) fn set_owners(&mut self) {
+        self.call(|core| core.set_owners(vec![lines_kind()], None));
     }
 
     /// A rename as the menu makes it: planned, applied, then everything read again.
@@ -318,18 +333,9 @@ impl Harness {
         }
     }
 
-    /// Hand out what the core has to say. Every follower then has what a fresh query finds.
+    /// Hand out what the core has to say. Every follower then has what a fresh query finds,
+    /// and its rows in the query's order.
     pub(crate) fn deliver(&mut self) -> Batch {
-        let batch = self.deliver_unchecked();
-        for f in &self.followers {
-            let fresh = sorted(all(&self.core, &f.select));
-            assert_eq!(sorted(f.items.clone()), fresh, "what {} has", f.client);
-        }
-        batch
-    }
-
-    /// `deliver`, without checking the followers.
-    pub(crate) fn deliver_unchecked(&mut self) -> Batch {
         let batch = self.take();
         for (to, news) in &batch.news {
             let sub = news.subscription();
@@ -339,6 +345,12 @@ impl Harness {
             }
         }
         self.log.push(batch.clone());
+        for f in &self.followers {
+            let fresh = all(&self.core, &f.select);
+            assert_eq!(f.rows, fresh, "the rows {} shows", f.client);
+            let items = sorted(f.items.clone());
+            assert_eq!(items, sorted(fresh), "what {} has", f.client);
+        }
         batch
     }
 
@@ -352,6 +364,14 @@ impl Harness {
         let mut followers = self.followers.iter();
         let f = followers.find(|f| f.client == client).unwrap();
         sorted(f.items.clone())
+    }
+
+    /// Which of `words` each of `client`'s rows says, in the order it shows them.
+    pub(crate) fn rows<'a>(&self, client: &str, words: &[&'a str]) -> Vec<&'a str> {
+        let mut followers = self.followers.iter();
+        let f = followers.find(|f| f.client == client).unwrap();
+        let said = |i: &Item| words.iter().copied().find(|w| text(i).contains(w));
+        f.rows.iter().map(|i| said(i).unwrap_or("?")).collect()
     }
 
     /// How many of `client`'s items say `words`.
@@ -377,6 +397,14 @@ fn temp(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
     dir
+}
+
+fn lines_kind() -> OwnedKind {
+    OwnedKind {
+        extension: "lines".into(),
+        owner: OWNER.into(),
+        version: "1".into(),
+    }
 }
 
 fn all(core: &Core, select: &Select) -> Vec<Item> {
@@ -430,6 +458,8 @@ const PLAN: &str = "# Plan\nSee [[Ash]].\n\n\
 const ASH: &str = "# Ash\n- [ ] Sweep the ash off the roof #ash\n";
 const READING: &str = "- [ ] Read the report 📅 2026-11-20\n";
 const BOARD: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Check the seismograph\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}\n";
+/// `BOARD` with a card before its own, whose task is on that card's second line.
+const BOARD_OF_TWO: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"t\",\"type\":\"text\",\"text\":\"Bolts\\n- [ ] Tighten the bolts\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"- [ ] Check the seismograph\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}\n";
 
 /// Two notes, a canvas (the engine's own owner) and a `.lines` file (the harness's), with five
 /// tasks between them.
@@ -519,21 +549,76 @@ fn a_rescan_then_a_change_is_a_reset_then_the_change() {
     assert_eq!(h.count("agenda", "Sweep the roof"), 1);
 }
 
-/// #172 at engine level. The core doesn't keep a reset apart from what follows it: news taken
-/// only after the next change holds both, the subscriber's query on the reset already finds the
-/// new task, and the change adds it again. So a frontend takes the news right after
-/// `rescan_now` (`reload_tree` in the menu). If the core ever keeps them apart itself, this
-/// test is the one to turn around.
+/// #172 at engine level. News taken only after the next change holds the reset alone: the
+/// subscriber's query on the reset already finds the new task, so the core doesn't tell of it
+/// again. What is read after the reset was taken is news as ever.
 #[test]
-fn a_reset_left_in_the_queue_shares_a_batch_with_the_next_change() {
+fn a_reset_left_in_the_queue_covers_the_next_change() {
     let mut h = workspace("merged");
     h.follow("agenda", tasks());
     h.rescan();
     h.write("Chores.md", "- [ ] Sweep the roof\n");
     h.saw("Chores.md");
-    let both = h.deliver_unchecked();
-    assert_eq!(both.names("agenda"), ["items/reset", "items/changed"]);
-    assert_eq!(h.count("agenda", "Sweep the roof"), 2, "counted twice");
+    let batch = h.deliver();
+    assert_eq!(batch.events, [Event::NoteCreated("Chores".into())]);
+    assert_eq!(batch.names("agenda"), ["items/reset"]);
+    assert_eq!(h.count("agenda", "Sweep the roof"), 1);
+
+    h.write(
+        "Chores.md",
+        "- [ ] Sweep the roof\n- [ ] Clear the gutters\n",
+    );
+    h.saw("Chores.md");
+    assert_eq!(h.deliver().counts("agenda"), [(1, 0, 0)]);
+    assert_eq!(h.count("agenda", "Clear the gutters"), 1);
+}
+
+/// A note that sorts after the canvas by name comes before it, and a canvas's cards stay in
+/// the file's order, whatever line of its card a task is on.
+#[test]
+fn rows_are_in_the_query_s_order_after_a_change_and_after_a_reset() {
+    let mut h = workspace("order");
+    h.follow("table", tasks());
+    h.write("Zone.md", "- [ ] Map the zone\n");
+    h.saw("Zone.md");
+    h.write("Board.canvas", BOARD_OF_TWO);
+    h.saw("Board.canvas");
+    let batch = h.deliver();
+    assert_eq!(batch.names("table"), ["items/changed", "items/changed"]);
+    let want = [
+        "Sweep the ash",
+        "Pay rent",
+        "Water plants",
+        "Map the zone",
+        "Tighten the bolts",
+        "Check the seismograph",
+        "Read the report",
+    ];
+    assert_eq!(h.rows("table", &want), want, "after items/changed");
+
+    h.rescan();
+    assert_eq!(h.deliver().names("table"), ["items/reset"]);
+    assert_eq!(h.rows("table", &want), want, "after items/reset");
+}
+
+/// #199. `set_owners` queues a reset when the owned files changed (here the `.lines` file is
+/// dropped until its owner reads it again), and its events wait for the next `poll`, which
+/// also reads the new note.
+#[test]
+fn a_reset_from_set_owners_and_the_next_change_are_counted_once() {
+    let mut h = workspace("owners");
+    h.follow("agenda", tasks());
+    h.set_owners();
+    h.write("Chores.md", "- [ ] Sweep the roof\n");
+    h.saw("Chores.md");
+    let batch = h.deliver();
+    assert_eq!(batch.names("agenda"), ["items/reset"]);
+    assert_eq!(h.count("agenda", "Sweep the roof"), 1);
+    assert_eq!(h.count("agenda", "Read the report"), 0, "not read yet");
+
+    h.owner_reads();
+    assert_eq!(h.deliver().counts("agenda"), [(1, 0, 0)]);
+    assert_eq!(h.count("agenda", "Read the report"), 1);
 }
 
 #[test]

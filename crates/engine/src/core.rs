@@ -192,7 +192,7 @@ impl Core {
             })
             .collect();
         let news = self.items.changed(&self.index.workspace, &files);
-        self.news.extend(news);
+        self.tell(news);
         changes.into_iter().map(Event::from).collect()
     }
 
@@ -206,7 +206,7 @@ impl Core {
             self.index.relink();
         }
         let news = self.items.reset(&self.index.workspace);
-        self.news.extend(news);
+        self.tell(news);
     }
 
     /// The extensions that own these kinds of file: their files' items and links join the
@@ -222,7 +222,7 @@ impl Core {
         if dropped || !events.is_empty() {
             self.index.relink();
             let news = self.items.reset(&self.index.workspace);
-            self.news.extend(news);
+            self.tell(news);
         }
         self.broadcast(&events);
         self.unseen.extend(events);
@@ -304,7 +304,7 @@ impl Core {
         if !changed.is_empty() {
             self.index.relink();
             let news = self.items.changed(&self.index.workspace, &changed);
-            self.news.extend(news);
+            self.tell(news);
         }
         events.extend(changed.into_iter().map(Event::OwnedChanged));
         events
@@ -406,7 +406,7 @@ impl Core {
         }
         if any {
             let news = self.items.links_changed(&created, &removed);
-            self.news.extend(news);
+            self.tell(news);
         }
     }
 
@@ -442,9 +442,24 @@ impl Core {
     }
 
     /// `items/changed`, `items/reset` and `links/changed` since the last call, each with its
-    /// subscription's owner, in order.
+    /// subscription's owner, in order. An `items/reset` is the last item news of its
+    /// subscription in it (`tell`), so a subscriber that queries again when it hears one never
+    /// hears of the same change twice, however late the news is taken.
     pub fn take_item_news(&mut self) -> Vec<(String, News)> {
         std::mem::take(&mut self.news)
+    }
+
+    /// Queue what subscribers are to hear. Item news of a subscription whose `items/reset`
+    /// nobody took yet is dropped: the subscriber queries again when it hears the reset, and
+    /// that query finds everything the core read before it.
+    fn tell(&mut self, news: Vec<(String, News)>) {
+        for (owner, told) in news {
+            let subscription = told.subscription();
+            let reset = News::Reset { subscription };
+            if !self.news.iter().any(|(_, waiting)| *waiting == reset) {
+                self.news.push((owner, told));
+            }
+        }
     }
 
     /// `items/edit` on behalf of the extension named `by`. In a note, the edit goes through the
