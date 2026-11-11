@@ -3,7 +3,8 @@
 //! fields, comments, math, tags and block ids; the rest is text. What starts first wins, so a
 //! wikilink inside a code span stays code. Emphasis and the like stay text: nothing reads them
 //! from the tree yet, but a tag may follow their opening markers (`**#tag**`). A link's text
-//! may go on to a later line of its block: its `](destination)` there is read (`LinkEnd`).
+//! may go on to a later line of its block: its `](destination)` there is read (`LinkEnd`). A
+//! link's `)` comes after its destination and its title, either of which may hold parentheses.
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -28,19 +29,23 @@ pub(super) fn build<'t>(
     let mut code: Option<Range<usize>> = None;
     // How many `[` the block's earlier lines left open.
     let mut open = 0;
+    // Whether the text read is a table cell's.
+    let mut cell = false;
     for (k, ev) in events.iter().enumerate() {
         match *ev {
             Ev::Start(kind) => {
                 open = 0;
+                cell = kind == TableCell;
                 b.start(kind)
             }
             Ev::Finish => {
                 open = 0;
+                cell = false;
                 b.finish()
             }
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
             Ev::Inline(a, z) => {
-                let line = Line::new(text, gates, defs, a, z);
+                let line = Line::new(text, gates, defs, cell, a, z);
                 let from = match code.take() {
                     Some(close) if close.start >= z => {
                         token(b, CodeText, text, a, z);
@@ -87,6 +92,7 @@ fn yaml<'t>(
         text,
         g: gates,
         defs,
+        cell: false,
         tags: Vec::new(),
         colons: false,
     };
@@ -111,6 +117,9 @@ struct Line<'t, 'd> {
     g: Gates,
     /// The note's link definitions.
     defs: &'d Definitions,
+    /// Whether the line is a table cell, where the pipe before a wikilink's alias is written
+    /// `\|`, as Obsidian writes it, so that it doesn't end the cell.
+    cell: bool,
     /// The tags on this line, from their `#` to their end, found as they always were: by the
     /// tag pattern over the whole line, the markers before it included.
     tags: Vec<Range<usize>>,
@@ -146,7 +155,14 @@ fn opens(markers: &str, g: Gates) -> bool {
 
 impl<'t, 'd> Line<'t, 'd> {
     /// The line holding `at..z`, the text read.
-    fn new(text: &'t str, g: Gates, defs: &'d Definitions, at: usize, z: usize) -> Self {
+    fn new(
+        text: &'t str,
+        g: Gates,
+        defs: &'d Definitions,
+        cell: bool,
+        at: usize,
+        z: usize,
+    ) -> Self {
         let mut tags = Vec::new();
         if g.has(S::Tags) && text[at..z].contains('#') {
             let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
@@ -176,6 +192,7 @@ impl<'t, 'd> Line<'t, 'd> {
             text,
             g,
             defs,
+            cell,
             tags,
             colons,
         }
@@ -313,10 +330,8 @@ impl<'t, 'd> Line<'t, 'd> {
                 let opener = if kind == Image { ImageOpen } else { LBracket };
                 token(b, opener, text, a, open);
                 if after < z && text.as_bytes()[after] == b'(' {
-                    let paren = text[close..z]
-                        .find(')')
-                        .map(|k| close + k)
-                        .expect("and its `)`");
+                    // `link` ended it at its `)`.
+                    let paren = z - 1;
                     b.start(LinkText);
                     self.run(b, open, close, true, &[], &mut 0);
                     b.finish();
@@ -428,14 +443,15 @@ impl<'t, 'd> Line<'t, 'd> {
     }
 
     /// A wikilink whose `[[` is at `open` (`a` is its `!` for an embed): target, then `#…` or
-    /// `^…`, then `|alias`.
+    /// `^…`, then `|alias`. In a table cell the pipe may be written `\|`.
     fn emit_wikilink(&self, b: &mut impl Sink<'t>, a: usize, open: usize, z: usize) {
         let text = self.text;
         let (inner_a, inner_z) = (open + 2, z - 2);
-        let inner = &text[inner_a..inner_z];
-        let target = inner.find(['|', '#', '^']).unwrap_or(inner.len()) + inner_a;
-        let pipe = text[target..inner_z].find('|').map(|k| target + k);
+        let bar = text[inner_a..inner_z].find('|').map(|k| inner_a + k);
+        let pipe = bar.map(|p| p - (self.cell && text[inner_a..p].ends_with('\\')) as usize);
         let anchor_end = pipe.unwrap_or(inner_z);
+        let named = &text[inner_a..anchor_end];
+        let target = named.find(['#', '^']).unwrap_or(named.len()) + inner_a;
         b.start(if a < open { Embed } else { WikiLink });
         token(
             b,
@@ -446,9 +462,9 @@ impl<'t, 'd> Line<'t, 'd> {
         );
         token(b, Target, text, inner_a, target);
         token(b, Anchor, text, target, anchor_end);
-        if let Some(p) = pipe {
-            token(b, Pipe, text, p, p + 1);
-            token(b, Alias, text, p + 1, inner_z);
+        if let (Some(p), Some(bar)) = (pipe, bar) {
+            token(b, Pipe, text, p, bar + 1);
+            token(b, Alias, text, bar + 1, inner_z);
         }
         token(b, WikiClose, text, inner_z, z);
         b.finish();
@@ -478,8 +494,63 @@ impl<'t, 'd> Line<'t, 'd> {
         if self.text.as_bytes().get(close + 1) != Some(&b'(') || close + 1 >= z {
             return None;
         }
-        let paren = self.text[close + 2..z].find(')')? + close + 2;
-        Some(paren + 1)
+        Some(self.close_paren(close + 2, z)? + 1)
+    }
+
+    /// The `)` that ends a link whose `(` is just before `p`, before `z`: the one after its
+    /// destination (in `<>`, or with its parentheses balanced) and its title (`"…"`, `'…'` or
+    /// `(…)`), as in CommonMark. Where that isn't what is written, the first `)`, as it was
+    /// always read.
+    fn close_paren(&self, p: usize, z: usize) -> Option<usize> {
+        let t = self.text.as_bytes();
+        let first = || self.text[p..z].find(')').map(|k| p + k);
+        let blanks = |mut i: usize| {
+            while i < z && matches!(t[i], b' ' | b'\t') {
+                i += 1;
+            }
+            i
+        };
+        let mut i = blanks(p);
+        if i < z && t[i] == b'<' {
+            match self.text[i..z].find('>') {
+                Some(k) => i += k + 1,
+                None => return first(),
+            }
+        } else {
+            let mut depth = 0usize;
+            while i < z && !matches!(t[i], b' ' | b'\t') {
+                match t[i] {
+                    b'\\' => i += 1,
+                    b'(' => depth += 1,
+                    b')' if depth == 0 => break,
+                    b')' => depth -= 1,
+                    _ => {}
+                }
+                i += 1;
+            }
+            if depth > 0 {
+                return first();
+            }
+        }
+        let after = blanks(i);
+        if after >= z {
+            return first();
+        }
+        let closes = match t[after] {
+            b')' => return Some(after),
+            b'"' | b'\'' if after > i => t[after],
+            b'(' if after > i => b')',
+            _ => return first(),
+        };
+        let mut end = after + 1;
+        while end < z && t[end] != closes {
+            end += 1 + (t[end] == b'\\') as usize;
+        }
+        let paren = blanks(end + 1);
+        match paren < z && t[paren] == b')' {
+            true => Some(paren),
+            false => first(),
+        }
     }
 
     /// `](dest)` with its `]` at `a`, closing a link whose `[` an earlier line left open:
@@ -488,8 +559,7 @@ impl<'t, 'd> Line<'t, 'd> {
         if self.text.as_bytes().get(a + 1) != Some(&b'(') || a + 1 >= z {
             return None;
         }
-        let paren = self.text[a + 2..z].find(')')? + a + 2;
-        Some(paren + 1)
+        Some(self.close_paren(a + 2, z)? + 1)
     }
 
     /// A link by reference with its `[` at `a`, `[text][label]`, `[label][]` or `[label]`,

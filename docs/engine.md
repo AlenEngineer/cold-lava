@@ -259,6 +259,15 @@ change what it shows, never how it works.
     go on to a later line of its block too: a `[` that nothing closed is still open there, and
     the `](destination)` that closes it is a `LinkEnd`, whose destination counts as a link's.
     A link's text may hold an image (`[![alt](pic.png)](Note.md)`), though no other link. A
+    Markdown link ends at the `)` after its destination and its title, as in CommonMark: the
+    destination is bare, with its parentheses balanced, or in `<>`, where it may hold spaces;
+    the title is in `"…"`, `'…'` or `(…)`. The `LinkDest` token holds both, and
+    `cst::link_destination` says where the destination is in it, which is all a rename
+    rewrites. Where that isn't what is written, the link ends at its first `)`, as it always
+    did, and counts as a link only if nothing but a title follows its destination. In a
+    table cell the pipe before a wikilink's alias may be escaped, as Obsidian writes it there:
+    the backslash belongs to the `Pipe` token, not to the target. Outside a table the
+    backslash stays in the target. A
     task's checkbox is a token of its list item. Emphasis, highlights and footnotes stay text, and so do the
     Tasks plugin's emoji fields, which the `task` type reads (its markers are data, not
     syntax). Every one of these is gated by the flavour's `Syntax`.

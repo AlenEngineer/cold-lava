@@ -411,7 +411,8 @@ itself or onto a folder that exists, and hidden folders (`.obsidian`, `.trash`) 
 `N` makes a new, empty folder in the selected one (Obsidian shows empty folders too).
 
 Every link to what moves is updated, the way Obsidian does it: `[[wikilinks]]` with their
-aliases, headings and embeds, Markdown links (relative or workspace paths), reference links
+aliases, headings and embeds (in a table too, where the alias follows `\|`), Markdown links
+(relative or workspace paths, with a title or in `<>`), reference links
 (in their definition: `[ref]: Old.md "Title"` becomes `[ref]: New.md "Title"`), links to
 attachments, wikilinks in frontmatter, and whiteboard file cards and text cards. Each link keeps its style: a
 short `[[Name]]` stays short unless another note has the same name, `[[Folder/Name]]` keeps its

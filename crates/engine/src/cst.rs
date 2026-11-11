@@ -75,7 +75,7 @@ kinds! {
     /// `%%`.
     CommentMarker,
     CommentText,
-    /// `|` between table cells, or before a wikilink's alias.
+    /// `|` between table cells, or before a wikilink's alias (`\|` there in a table cell).
     Pipe,
     /// A cell of a table's delimiter row (`:---:`).
     Delimiter,
@@ -295,6 +295,26 @@ pub(crate) fn destination(written: &str) -> Range<usize> {
         Some(pointy) => 1..1 + pointy.find('>').unwrap_or(pointy.len()),
         None => 0..written.find(char::is_whitespace).unwrap_or(written.len()),
     }
+}
+
+/// Where the destination is in what a Markdown link points to as written (`LinkDest`): without
+/// the blanks around it, its title or its `<>`. `None` when what follows the destination is no
+/// title (`[a](two words)`), which CommonMark reads as text.
+pub(crate) fn link_destination(written: &str) -> Option<Range<usize>> {
+    let start = written.len() - written.trim_start().len();
+    let dest = destination(&written[start..]);
+    let dest = start + dest.start..start + dest.end;
+    let after = match written[start..].starts_with('<') {
+        true => written[dest.end..].strip_prefix('>')?,
+        false => &written[dest.end..],
+    };
+    let title = after.trim();
+    let within = |open: char, close: char| {
+        title.len() > 1 && title.starts_with(open) && title.ends_with(close)
+    };
+    let titled = after.starts_with(char::is_whitespace)
+        && (within('"', '"') || within('\'', '\'') || within('(', ')'));
+    (title.is_empty() || titled).then_some(dest)
 }
 
 /// A label as labels are compared.
