@@ -24,40 +24,29 @@ jobs:
         if: always()
         run: cargo test -p cold-lava-engine
 
-  instructions:
+  bench:
     runs-on: ubuntu-latest
-    env:
-      CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: The bench workspace
-        run: |
-          cargo build --release -p cold-lava
-          python3 scripts/bench-items.py --runs 1 target/release/cold-lava
-      - name: Build the cost tests with line tables (main, this branch)
+      - name: Build main
         run: |
           git worktree add ../main origin/main
+          cd ../main && cargo build --release -p cold-lava
+          cp target/release/cold-lava "$HOME/cold-lava-main"
+      - name: Build this branch
+        run: |
+          cargo build --release -p cold-lava
+          cp target/release/cold-lava "$HOME/cold-lava-branch"
+      - name: Items, agenda, table on 3,000 notes (main, then this branch)
+        run: python3 scripts/bench-items.py --runs 11 "$HOME/cold-lava-main" "$HOME/cold-lava-branch"
+      - name: Build the cost tests (main, this branch)
+        run: |
           exe() { cargo test --release -p cold-lava-engine --no-run 2>&1 | grep -o 'target/release/deps/cold_lava_engine-[0-9a-f]*' | head -1; }
           (cd ../main && cp "$(exe)" "$HOME/t-main")
           cp "$(exe)" "$HOME/t-branch"
-      - name: Instructions by source line in the inline reader (callgrind), each build
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
-          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
-          for b in main branch; do
-            echo "== $b"
-            valgrind --tool=callgrind --callgrind-out-file="$HOME/cg-$b" "$HOME/t-$b" read_cost --ignored --nocapture 2>&1 | grep -E 'Collected' || true
-            callgrind_annotate --inclusive=yes "$HOME/cg-$b" | grep -E 'PROGRAM TOTALS|read_cost::\{closure#[3-7]\}' | cut -c1-160
-            src=crates/engine/src
-            [ "$b" = main ] && src=../main/crates/engine/src
-            for f in cst/inline.rs owner/markdown.rs cst.rs; do
-              echo "-- $b $f"
-              callgrind_annotate --auto=no --show-percs=no "$HOME/cg-$b" "$(realpath "$src/$f")" | grep -E '^ *[0-9,]{9,} ' | cut -c1-170
-            done
-          done
       - name: Reading 3,000 notes, each build in turn
         run: |
           export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
@@ -65,5 +54,22 @@ jobs:
             for b in main branch; do
               echo "== $b, round $round"
               "$HOME/t-$b" read_cost --ignored --nocapture | grep -A5 'read_cost:'
+            done
+          done
+      - name: Items of 3,000 notes, each build in turn
+        run: |
+          export COLD_LAVA_BENCH_WS="$HOME/.cache/cold-lava-bench/ws-3000"
+          for round in 1 2 3; do
+            for b in main branch; do
+              echo "== $b, round $round"
+              "$HOME/t-$b" items_cost --ignored --nocapture | grep -A4 'items_cost:'
+            done
+          done
+      - name: One keystroke in a 5,000-line note, each build in turn
+        run: |
+          for round in 1 2 3 4 5; do
+            for b in main branch; do
+              echo "== $b, round $round"
+              "$HOME/t-$b" keystroke --ignored --nocapture | grep 'keystroke:'
             done
           done
