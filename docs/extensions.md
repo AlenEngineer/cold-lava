@@ -1206,9 +1206,20 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   `Core::relink` like a CSV's, read back before anything moves; since the owner answers inside
   the call, `relink` returns `None` with the text in the plan and the menu applies the rename
   at once, as before. With an extension's file in the same plan the canvas's text is kept until
-  that owner answers too, and its refusal changes nothing anywhere. A node whose id an earlier
-  node has is left alone, since a change names its node by id, and a canvas the owner can't
-  read is not relinked. A recipe reaches canvas text the same way (a tag renamed on a sticky):
+  that owner answers too, and its refusal changes nothing anywhere.
+- **Reading items and rewriting links ask different things of a file.** Reading (`canvas::read`)
+  wants the whole drawing to parse, every node with an id and a type, since an item has to be
+  on a card the whiteboard can show; a canvas that doesn't is in the index with nothing. A
+  rename wants only the nodes' ids and their `text` and `file` strings (`json_canvas::fields`),
+  and rewrites every one of them, whatever the node's type: Obsidian opens a canvas with a
+  node that has no type, and its links must not be left pointing at a note that moved. Such a
+  canvas is planned with no `given` (`Through::given` is `None`), and its read-back expects
+  what was there before: nothing. Every node has a place of its own, its id, and for a later
+  node that repeats an id the id and its number (`canvas::place`, `Field::nth`), so a change
+  reaches the card it is for; two cards with one id are both rewritten, or only the one that
+  links. A file that isn't JSON with nodes that have ids can't be searched at all. It is left
+  as it is, as before, and the plan now says so in a warning that names it; the rename goes on.
+- **Recipes.** A recipe reaches canvas text the same way (a tag renamed on a sticky):
   its plan shows the sticky's changed lines "through canvas", as for any owned file.
   `Core::run_recipe`, a shape's step, takes the same path and goes on when no extension has to
   answer.

@@ -36,8 +36,10 @@ change commands, keys and file formats; patch versions only fix things.
   as before. A recipe's plan now shows a canvas as `Board.canvas (through canvas)` with the
   changed lines of its cards instead of a diff of the file's JSON, in the app and in
   `cold-lava recipe` (`"owner": "canvas"` with `--json`). A recipe run by a shape's step reads
-  the canvases it changed at once, with the notes. A rename leaves alone a canvas that isn't
-  valid JSON Canvas, and a card whose id another card before it has.
+  the canvases it changed at once, with the notes. A canvas that isn't JSON can't be searched
+  for links: a rename used to pass it by without a word, and now its plan names it
+  ("Broken.canvas can't be read (…), so links in it aren't updated"). Cards that share an id,
+  as another program may write them, are now each read and ticked on their own.
 - Items are read from the note's own syntax tree instead of a second Markdown parser (part of
   #140): every task, list item, heading and block keeps its id, rev and fields, and
   `cold-lava items`, `agenda` and `table` print the same, as fast (3,000 notes on a GitHub
