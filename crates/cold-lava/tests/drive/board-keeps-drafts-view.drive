@@ -41,6 +41,9 @@ write Inbox/Chores.md - [ ] Sweep the ash off the roof\n- [ ] Count the masks\n
 wait-for ☐ 18 open tasks
 wait-for 1 of 17 rows · /two per
 expect-not open-tasks wanted to show a view
+screen
+keys esc
+wait-gone /two per
 keys esc
 wait-for closed the list of open tasks
 keys q
