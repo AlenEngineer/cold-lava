@@ -13,7 +13,7 @@ use regex::Regex;
 use rowan::{GreenNode, GreenNodeBuilder, NodeOrToken};
 
 use super::Kind::{self, *};
-use super::{Gates, inline};
+use super::{Definitions, Gates, inline};
 use crate::markdown::Syntax as S;
 
 /// One step of the tree, in byte order.
@@ -28,38 +28,49 @@ pub(super) enum Ev {
     Yaml(usize, usize),
 }
 
-/// The whole note's tree.
-pub(super) fn document(text: &str, gates: Gates) -> GreenNode {
-    build(text, &events(text, gates), gates)
+/// The whole note's tree, and its link definitions.
+pub(super) fn document(text: &str, gates: Gates) -> (GreenNode, Definitions) {
+    let (events, defs) = events(text, gates);
+    (build(text, &events, gates, &defs), defs)
 }
 
-/// The whole note's blocks, as events.
-pub(super) fn events(text: &str, gates: Gates) -> Vec<Ev> {
+/// The whole note's blocks, as events, and its link definitions.
+pub(super) fn events(text: &str, gates: Gates) -> (Vec<Ev>, Definitions) {
     let mut p = Parser::new(text, gates);
     let at = p.prefix();
     p.run(at, |_| false);
-    p.events
+    (p.events, p.defs)
 }
 
 /// The top-level blocks from byte `from`, a line where nothing is open, up to the first fresh
-/// line `stop` accepts (or the end): the blocks, and where they end.
-pub(super) fn blocks(
+/// line `stop` accepts (or the end): their events, where they end, and the link definitions
+/// among them.
+pub(super) fn region(
     text: &str,
     from: usize,
     gates: Gates,
     stop: impl Fn(usize) -> bool,
-) -> (Vec<NodeOrToken<GreenNode, rowan::GreenToken>>, usize) {
+) -> (Vec<Ev>, usize, Definitions) {
     let mut p = Parser::new(text, gates);
     let end = p.run(from, stop);
-    let doc = build(text, &p.events, gates);
-    let children = doc.children().map(|c| c.to_owned()).collect();
-    (children, end)
+    (p.events, end, p.defs)
 }
 
-fn build(text: &str, events: &[Ev], gates: Gates) -> GreenNode {
+/// The top-level blocks `events` make in a note whose link definitions are `defs`.
+pub(super) fn nodes(
+    text: &str,
+    events: &[Ev],
+    gates: Gates,
+    defs: &Definitions,
+) -> Vec<NodeOrToken<GreenNode, rowan::GreenToken>> {
+    let doc = build(text, events, gates, defs);
+    doc.children().map(|c| c.to_owned()).collect()
+}
+
+fn build(text: &str, events: &[Ev], gates: Gates, defs: &Definitions) -> GreenNode {
     let mut b = GreenNodeBuilder::new();
     b.start_node(Document.into());
-    inline::build(text, events, gates, &mut b);
+    inline::build(text, events, gates, defs, &mut b);
     b.finish_node();
     b.finish()
 }
@@ -153,6 +164,8 @@ struct Parser<'t> {
     prefix: Vec<(usize, usize, Kind)>,
     /// How many events at the end are this line's container markers, with nothing after them.
     pending: usize,
+    /// The link definitions found.
+    defs: Definitions,
 }
 
 fn is_ws(b: u8) -> bool {
@@ -169,6 +182,7 @@ impl<'t> Parser<'t> {
             leaf: None,
             prefix: Vec::new(),
             pending: 0,
+            defs: Definitions::default(),
         }
     }
 
@@ -856,6 +870,27 @@ impl<'t> Parser<'t> {
                     return;
                 }
             }
+            // A link definition, where no paragraph is open: a block of its own, which no
+            // paragraph goes on from, as pulldown-cmark reads it.
+            if para.is_none()
+                && t[fp] == b'['
+                && let Some((label, dest)) = self.definition(fp, le)
+            {
+                self.start(LinkDefinition);
+                self.tok(Whitespace, pos, fp);
+                self.tok(LBracket, fp, fp + 1);
+                self.tok(DefinitionLabel, fp + 1, label);
+                self.tok(RBracket, label, label + 1);
+                self.tok(Colon, label + 1, label + 2);
+                self.tok(Whitespace, label + 2, dest.0);
+                self.tok(DefinitionDest, dest.0, dest.1);
+                self.tok(Whitespace, dest.1, le);
+                self.newline(le, next);
+                self.finish();
+                let text = self.text;
+                self.defs.add(&text[fp + 1..label], &text[dest.0..dest.1]);
+                return;
+            }
             // A paragraph's line.
             let last_line = self.para_line(pos, fp, le, next);
             match para {
@@ -884,6 +919,30 @@ impl<'t> Parser<'t> {
             }
             return;
         }
+    }
+
+    /// A link definition, `[label]: destination "title"`, taking the line `fp..le`, which
+    /// starts with `[`: where its label ends, and its destination with its title. With
+    /// footnotes, `[^label]:` is a footnote.
+    fn definition(&self, fp: usize, le: usize) -> Option<(usize, (usize, usize))> {
+        let t = self.bytes();
+        if t.get(fp + 1) == Some(&b'[') || !self.text[fp..le].contains("]:") {
+            return None;
+        }
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| {
+            Regex::new(
+                r#"^\[((?:[^\[\]\\]|\\.)+)\]:[ \t]*((?:<[^<>\n]*>|[^\s<]\S*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^()]*\)))?)[ \t]*$"#,
+            )
+            .unwrap()
+        });
+        let c = re.captures(&self.text[fp..le])?;
+        let (label, dest) = (c.get(1)?, c.get(2)?);
+        let footnote = self.g.has(S::Footnotes) && label.as_str().starts_with('^');
+        if label.as_str().trim().is_empty() || footnote {
+            return None;
+        }
+        Some((fp + label.end(), (fp + dest.start(), fp + dest.end())))
     }
 
     /// `[!type]`, `[!type]+` or `[!type]-` at `pos`: where it ends.

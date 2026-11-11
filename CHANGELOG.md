@@ -62,6 +62,14 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- A tag right after the markers that open emphasis, a strikethrough or a highlight is a tag,
+  as in Obsidian: `**#tag**`, `_#tag_`, `~~#tag~~` and `==#tag==` (#181). Backlinks' tag
+  searches, the graph's tag groups, `rename-tag` and the types that read a note's tags see it.
+  `a#b`, `a**#b**`, a `#` in a URL, `[[#Heading]]` and a link's destination still hold none.
+- Reference links are links (#181): `[text][ref]`, `[ref][]` and `[ref]` point where the note's
+  `[ref]: Note.md` says, so the note they name gets the backlink and the graph's edge, and the
+  types that read a note's links see them. A rename doesn't rewrite a definition's destination
+  yet, and `tidy` doesn't count these links yet.
 - The agenda and the type table no longer list a task twice when it comes in the first change
   after cold-lava created, renamed, moved, merged or deleted files (#172). Those read the
   workspace again, and the `items/reset` that sends waited for the next change and came with

@@ -502,6 +502,18 @@ mod tests {
     }
 
     #[test]
+    fn right_after_emphasis_and_highlight_markers() {
+        assert_eq!(
+            tag(
+                "**#lava** _#lava_ ==#lava/flow== ~~#Lava~~, not a**#lava**.",
+                "lava",
+                "magma"
+            ),
+            "**#magma** _#magma_ ==#magma/flow== ~~#magma~~, not a**#lava**."
+        );
+    }
+
+    #[test]
     fn case_is_ignored_and_to_is_kept_as_typed() {
         assert_eq!(
             tag("#Lava #LAVA/Flow #lava", "lava", "Magma"),

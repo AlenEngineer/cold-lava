@@ -17,14 +17,12 @@ use crate::tasks::{self, FNV_START, TasksSettings, fnv, fnv_from};
 use crate::templates;
 use crate::types::{self, On, Types};
 use crate::workspace::clean_target;
-use regex::Regex;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
-use std::sync::OnceLock;
 
 /// Everything about a workspace that changes how its notes read as items.
 pub struct Settings {
@@ -333,13 +331,10 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let source = s.flavour.source_with(text, |text| code_in(text, gates));
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
-    let mut walk = Walk::new(&lines, &s.flavour, wants);
     // When a type reads the note's tags, they count whatever the flavour, as they always have.
-    cst::read(
-        lines.src,
-        gates.set(Syntax::Tags, wants.tags),
-        &mut |step| walk.step(step),
-    );
+    let (blocks, defs) = cst::blocks(lines.src, gates.set(Syntax::Tags, wants.tags));
+    let mut walk = Walk::new(&lines, &s.flavour, wants, &defs);
+    blocks.read(&defs, &mut |step| walk.step(step));
     finish(note, text, s, &source, &lines, walk.pass)
 }
 
@@ -385,6 +380,8 @@ struct Walk<'a> {
     lines: &'a Lines<'a>,
     flavour: &'a Flavour,
     wants: Wants,
+    /// The note's link definitions, which say where a reference link points.
+    defs: &'a cst::Definitions,
     pass: Pass,
     open: Vec<Open>,
     headings: Vec<(u8, String)>,
@@ -412,11 +409,17 @@ struct Walk<'a> {
 }
 
 impl<'a> Walk<'a> {
-    fn new(lines: &'a Lines<'a>, flavour: &'a Flavour, wants: Wants) -> Walk<'a> {
+    fn new(
+        lines: &'a Lines<'a>,
+        flavour: &'a Flavour,
+        wants: Wants,
+        defs: &'a cst::Definitions,
+    ) -> Walk<'a> {
         Walk {
             lines,
             flavour,
             wants,
+            defs,
             pass: Pass::default(),
             open: vec![Open {
                 start: 0,
@@ -626,12 +629,22 @@ impl<'a> Walk<'a> {
                     Some(pointy) => pointy.split('>').next(),
                     None => text.split_whitespace().next(),
                 };
-                let target = dest.unwrap_or_default().split('#').next();
-                if let Some(target) = target.filter(|t| t.ends_with(".md")) {
-                    self.pass.links.extend(clean_target(target));
+                self.md_link(dest.unwrap_or_default());
+            }
+            Kind::LinkLabel if self.link && self.wants.links => {
+                if let Some(dest) = self.defs.get(text) {
+                    self.md_link(dest);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A Markdown link to `dest`: one of the note's links when it names a note.
+    fn md_link(&mut self, dest: &str) {
+        let target = dest.split('#').next().unwrap_or_default();
+        if target.ends_with(".md") {
+            self.pass.links.extend(clean_target(target));
         }
     }
 
@@ -749,30 +762,12 @@ impl<'a> Walk<'a> {
 
     /// A paragraph ends at `end`; in a list item, it is part of the item.
     fn paragraph(&mut self, end: usize) {
-        let (mut block, before) = self.end();
+        let (block, before) = self.end();
         if self.open.last().is_some_and(|p| p.item.is_some()) {
             return;
         }
         let lines = self.lines;
         let src = lines.src;
-        // The link reference definitions it starts with were no paragraph to pulldown-cmark.
-        let footnotes = self.flavour.has(Syntax::Footnotes);
-        loop {
-            let first = src[block.start..lines.end(block.line)].trim_end();
-            if !definition(first, footnotes) {
-                break;
-            }
-            let next = lines.end(block.line) + 1;
-            let parent = self.open.last_mut().expect("the note holds every block");
-            if next >= end {
-                parent.prev_child = before;
-                return;
-            }
-            block.line += 1;
-            parent.prev_child = Some(block.line);
-            let rest = &src[next..];
-            block.start = next + rest.len() - rest.trim_start_matches([' ', '\t', '>']).len();
-        }
         let mut last = lines.of(end.saturating_sub(1)).max(block.line);
         while last > block.line && lines.blank(last) {
             last -= 1;
@@ -1153,22 +1148,6 @@ fn row_cells(src: &str, start: usize, cols: usize) -> Vec<Range<usize>> {
     cells.truncate(cols);
     cells.resize(cols, after..after);
     cells
-}
-
-/// Whether `line` is a link reference definition, `[label]: destination "title"`, which
-/// pulldown-cmark read as no paragraph's text. With footnotes, `[^label]:` starts a footnote.
-fn definition(line: &str, footnotes: bool) -> bool {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(
-            r#"^\[((?:[^\[\]\\]|\\.)+)\]:[ \t]*(?:<[^<>\n]*>|[^\s<]\S*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^()]*\)))?[ \t]*$"#,
-        )
-        .unwrap()
-    });
-    let Some(c) = re.captures(line) else {
-        return false;
-    };
-    !c[1].trim().is_empty() && !(footnotes && c[1].starts_with('^'))
 }
 
 /// A table cell without its padding and pipes.
@@ -1628,10 +1607,17 @@ fields.w = { capture = "w" }
         // A table that starts with `|` ends the paragraph above it, not a lazy one after a list
         // item; one that doesn't start with `|` doesn't.
         "Caption line\n| a | b |\n|---|---|\n| 1 | the 2 |\n\n> quoted caption\n> | q | r |\n> |---|---|\n> | 3 | 4 |\n\n- item\n| x | y |\n|---|---|\n| 5 | 6 |\n\nNot heavy\nc | d\n---|---\n7 | 8\n\n> [!info] Stats\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+        // Reference links: full, collapsed and shortcut, an image, a label in another case, a
+        // label nothing defines, a label defined twice.
+        "See [the note][n], [N][], [n] and ![pic][n]; [web][w], [missing][y] and [y].\n\n[n]: Note.md\n[w]: https://example.com \"Title\"\n[N]: Other.md\n",
+        // Definitions in a quote and in a list item, and before a paragraph's text.
+        "> [q]: Quoted.md\n> the text with [q]\n\n- [i]: Item.md\n- see [i] and [Q]\n\n[t]: <Top Note.md> 'title'\nSetext after a definition, [t]\n===\n",
+        // Tags right after the markers that open emphasis and a strikethrough.
+        "Read **#bold** and _#slanted_, *#star*, __#under__, ***#both*** and ~~#gone~~, but a#b and http://x.y/#frag are no tags.\n",
     ];
 
-    /// Markdown pulldown-cmark read otherwise than Obsidian shows it, or that the tree doesn't
-    /// read yet, where the items differ from the ones it gave.
+    /// Markdown pulldown-cmark read otherwise than Obsidian shows it, where the items differ
+    /// from the ones it gave.
     const DIFFERENT: &[&str] = &[
         // A frontmatter whose first line is blank, as the Kanban plugin writes it, was a rule
         // and Markdown.
@@ -1641,13 +1627,11 @@ fields.w = { capture = "w" }
         "Intro\n\n---\n- [ ] between the rules\n---\n\n- [ ] after\n",
         // A byte order mark made the first line text.
         "\u{feff}- [ ] first\n- [ ] second\n",
-        // A reference link was a link; the tree has no reference links yet.
-        "See [the note][n].\n\n[n]: Note.md\n",
-        // A tag right after `**` or `_` was a tag, as in Obsidian; the tree needs a space or `(`
-        // before it, as the scan always has.
-        "Read **#bold** and _#slanted_.\n",
         // `[[#Heading]]` held the tag `Heading`.
         "See [[#Heading]].\n",
+        // A highlight was text to pulldown-cmark, so the tag right after its `==` was none. It
+        // is one in Obsidian.
+        "Read ==#marked==.\n",
     ];
 
     /// How the tree's items and pulldown-cmark's differ for one note, if they do.

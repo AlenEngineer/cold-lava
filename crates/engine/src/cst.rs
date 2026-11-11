@@ -113,10 +113,21 @@ kinds! {
     FieldKey,
     /// `::`.
     FieldColons,
+    /// What a reference link names between its brackets: `ref` in `[text][ref]`, `[ref][]` and
+    /// `[ref]`. The note's `Definitions` say where it points.
+    LinkLabel,
+    /// A link definition's label, between its brackets.
+    DefinitionLabel,
+    /// `:` after a link definition's label.
+    Colon,
+    /// What a link definition's label points to, with its title if it has one.
+    DefinitionDest,
 
     // Nodes.
     Document,
     Frontmatter,
+    /// `[label]: destination "title"`, where a paragraph would start.
+    LinkDefinition,
     /// A line with nothing but whitespace.
     BlankLine,
     Paragraph,
@@ -200,9 +211,13 @@ impl Gates {
 
     /// What reading a note's links and tags sees, whatever the workspace's flavour, as it
     /// always has: wikilinks, embeds and tags, outside code and the frontmatter's text. Links in
-    /// comments and math still count.
+    /// comments and math still count. A tag may follow a strikethrough's or a highlight's
+    /// markers, and a footnote's `[^label]:` defines no link, as in Obsidian.
     pub(crate) const INDEX: Gates = Gates(
         (1 << Syntax::Frontmatter as u32)
+            | (1 << Syntax::Strikethrough as u32)
+            | (1 << Syntax::Highlights as u32)
+            | (1 << Syntax::Footnotes as u32)
             | (1 << Syntax::WikiLinks as u32)
             | (1 << Syntax::Embeds as u32)
             | (1 << Syntax::Tags as u32)
@@ -223,11 +238,82 @@ impl Gates {
     }
 }
 
+/// A note's link definitions (`[label]: destination`), in the order written. A reference link
+/// (`[text][label]`, `[label][]`, `[label]`) points where its label's definition says. Labels
+/// match as in CommonMark: case and the amount of whitespace don't count, and a label's first
+/// definition wins.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Definitions(Vec<(String, String)>);
+
+impl Definitions {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Where `label`, as a link writes it between its brackets, points: the destination as
+    /// written, without its title or its `<>`.
+    pub fn get(&self, label: &str) -> Option<&str> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let label = fold(label);
+        let found = self.0.iter().find(|d| d.0 == label);
+        found.map(|d| d.1.as_str())
+    }
+
+    /// Add the definition written with this label and this destination (with its title).
+    fn add(&mut self, label: &str, dest: &str) {
+        let dest = match dest.strip_prefix('<') {
+            Some(pointy) => pointy.split('>').next(),
+            None => dest.split_whitespace().next(),
+        };
+        let dest = dest.unwrap_or_default().to_string();
+        self.0.push((fold(label), dest));
+    }
+
+    /// Add the definitions written in the block `node`: itself, or the blocks a container holds.
+    fn add_from(&mut self, node: &GreenNodeData) {
+        match Kind::of(node.kind()) {
+            Kind::LinkDefinition => {
+                let label = token_of(node, Kind::DefinitionLabel);
+                self.add(label, token_of(node, Kind::DefinitionDest));
+            }
+            Kind::BlockQuote | Kind::Callout | Kind::List | Kind::ListItem => {
+                for child in node.children() {
+                    if let NodeOrToken::Node(n) = child {
+                        self.add_from(n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A label as labels are compared.
+fn fold(label: &str) -> String {
+    let words: Vec<&str> = label.split_whitespace().collect();
+    words.join(" ").to_lowercase()
+}
+
+/// The text of `node`'s first token of `kind`.
+fn token_of(node: &GreenNodeData, kind: Kind) -> &str {
+    for child in node.children() {
+        if let NodeOrToken::Token(t) = child
+            && Kind::of(t.kind()) == kind
+        {
+            return t.text();
+        }
+    }
+    ""
+}
+
 /// A note's syntax tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tree {
     green: GreenNode,
     gates: Gates,
+    defs: Definitions,
 }
 
 impl Tree {
@@ -237,10 +323,13 @@ impl Tree {
     }
 
     pub fn with(text: &str, gates: Gates) -> Tree {
-        Tree {
-            green: block::document(text, gates),
-            gates,
-        }
+        let (green, defs) = block::document(text, gates);
+        Tree { green, gates, defs }
+    }
+
+    /// The note's link definitions, which say where its reference links point.
+    pub fn definitions(&self) -> &Definitions {
+        &self.defs
     }
 
     pub fn green(&self) -> &GreenNode {
@@ -267,20 +356,22 @@ impl Tree {
 
     /// The tree of `text`, which is this tree's text with the bytes `replaced` replaced by
     /// `inserted` bytes. Only the top-level blocks the edit can change are parsed again; the
-    /// others are this tree's, shared.
+    /// others are this tree's, shared. An edit that changes the note's link definitions changes
+    /// how `[label]` reads in every block, so the note is then parsed whole.
     pub fn edit(&self, text: &str, replaced: Range<usize>, inserted: usize) -> Tree {
         debug_assert_eq!(text.len() + replaced.len(), self.len() + inserted);
         match self.reparse(text, &replaced, inserted) {
             Some(green) => Tree {
                 green,
                 gates: self.gates,
+                defs: self.defs.clone(),
             },
             None => Tree::with(text, self.gates),
         }
     }
 
     /// `edit` without a full parse; `None` when the edit reaches the top of the note, where the
-    /// frontmatter is decided.
+    /// frontmatter is decided, or changes the note's link definitions.
     fn reparse(&self, text: &str, replaced: &Range<usize>, inserted: usize) -> Option<GreenNode> {
         // Line 1 decides whether there is a frontmatter, and an unclosed `---` there may be
         // closed by any later line.
@@ -324,13 +415,25 @@ impl Tree {
         let from = starts[k];
         let new_end = replaced.start + inserted;
         let old = |p: usize| (p + replaced.len()).checked_sub(inserted);
-        let (children, end) = block::blocks(text, from, self.gates, |p| {
+        let (events, end, defs) = block::region(text, from, self.gates, |p| {
             p >= new_end && old(p).is_some_and(|o| starts.binary_search(&o).is_ok())
         });
         let j = match end == text.len() {
             true => kids.len(),
             false => starts.binary_search(&old(end)?).ok()?,
         };
+        // The blocks parsed again must define what the blocks they replace defined: every
+        // other block was read with those definitions.
+        let mut were = Definitions::default();
+        for child in self.green.children().skip(k).take(j - k) {
+            if let NodeOrToken::Node(n) = child {
+                were.add_from(n);
+            }
+        }
+        if defs != were {
+            return None;
+        }
+        let children = block::nodes(text, &events, self.gates, &self.defs);
         Some(self.green.splice_children(k..j, children))
     }
 }
@@ -383,15 +486,44 @@ impl<'t, F: FnMut(Step<'t>)> Sink<'t> for Steps<F> {
 /// `text` read in `gates`, step by step as `walk` goes through its tree, without making the
 /// tree: for a reader that needs a note once, as the workspace's scan does.
 pub fn read<'t>(text: &'t str, gates: Gates, f: &mut impl FnMut(Step<'t>)) {
-    let events = block::events(text, gates);
-    let mut steps = Steps {
-        at: 0,
-        open: Vec::new(),
-        f,
+    let (blocks, defs) = blocks(text, gates);
+    blocks.read(&defs, f);
+}
+
+/// A note whose blocks are found, before `read` goes through its inlines.
+pub struct Blocks<'t> {
+    text: &'t str,
+    gates: Gates,
+    events: Vec<block::Ev>,
+}
+
+/// The blocks of `text` read in `gates`, and the note's link definitions, which are known once
+/// the blocks are: for a reader that follows reference links, which asks the definitions
+/// where each `LinkLabel` points while it reads.
+pub fn blocks(text: &str, gates: Gates) -> (Blocks<'_>, Definitions) {
+    let (events, defs) = block::events(text, gates);
+    let blocks = Blocks {
+        text,
+        gates,
+        events,
     };
-    steps.start(Kind::Document);
-    inline::build(text, &events, gates, &mut steps);
-    steps.finish();
+    (blocks, defs)
+}
+
+impl<'t> Blocks<'t> {
+    /// The note, step by step as `walk` goes through its tree; `defs` are its definitions.
+    /// It takes the blocks, so they are dropped when the walk ends, before the reader goes
+    /// on with what it read.
+    pub fn read(self, defs: &Definitions, f: &mut impl FnMut(Step<'t>)) {
+        let mut steps = Steps {
+            at: 0,
+            open: Vec::new(),
+            f,
+        };
+        steps.start(Kind::Document);
+        inline::build(self.text, &self.events, self.gates, defs, &mut steps);
+        steps.finish();
+    }
 }
 
 /// One step of a walk through a green tree, with its byte offset.
@@ -425,7 +557,7 @@ pub fn walk<'a>(node: &'a GreenNodeData, at: usize, f: &mut impl FnMut(Step<'a>)
 /// How many block events `text` makes, for timing the block pass alone.
 #[cfg(test)]
 pub(crate) fn block_events(text: &str, gates: Gates) -> usize {
-    block::events(text, gates).len()
+    block::events(text, gates).0.len()
 }
 
 /// Every Markdown file of the repository: the example workspace, the docs, the fixtures.

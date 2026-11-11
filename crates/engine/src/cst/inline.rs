@@ -1,7 +1,8 @@
 //! A line of a block's text, read left to right into code spans, wikilinks and embeds, Markdown
-//! links and images, Dataview fields, comments, math, tags and block ids; the rest is text.
-//! What starts first wins, so a wikilink inside a code span stays code. Emphasis and the like
-//! stay text: nothing reads them from the tree yet.
+//! links and images (inline, or by reference to one of the note's link definitions), Dataview
+//! fields, comments, math, tags and block ids; the rest is text. What starts first wins, so a
+//! wikilink inside a code span stays code. Emphasis and the like stay text: nothing reads them
+//! from the tree yet, but a tag may follow their opening markers (`**#tag**`).
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -10,11 +11,18 @@ use regex::Regex;
 
 use super::Kind::{self, *};
 use super::block::Ev;
-use super::{Gates, Sink};
+use super::{Definitions, Gates, Sink};
 use crate::markdown::Syntax as S;
 
-/// Build `events` into `b`, reading each line of text as it comes.
-pub(super) fn build<'t>(text: &'t str, events: &[Ev], gates: Gates, b: &mut impl Sink<'t>) {
+/// Build `events` into `b`, reading each line of text as it comes; `defs` are the link
+/// definitions of the whole note, which make a `[label]` a link.
+pub(super) fn build<'t>(
+    text: &'t str,
+    events: &[Ev],
+    gates: Gates,
+    defs: &Definitions,
+    b: &mut impl Sink<'t>,
+) {
     // A code span an earlier line of the paragraph opened: its closing backticks.
     let mut code: Option<Range<usize>> = None;
     for (k, ev) in events.iter().enumerate() {
@@ -23,7 +31,7 @@ pub(super) fn build<'t>(text: &'t str, events: &[Ev], gates: Gates, b: &mut impl
             Ev::Finish => b.finish(),
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
             Ev::Inline(a, z) => {
-                let line = Line::new(text, gates, a, z);
+                let line = Line::new(text, gates, defs, a, z);
                 let from = match code.take() {
                     Some(close) if close.start >= z => {
                         token(b, CodeText, text, a, z);
@@ -46,7 +54,7 @@ pub(super) fn build<'t>(text: &'t str, events: &[Ev], gates: Gates, b: &mut impl
                 };
                 code = line.run(b, from, z, false, &events[k + 1..]);
             }
-            Ev::Yaml(a, z) => yaml(text, gates, b, a, z),
+            Ev::Yaml(a, z) => yaml(text, gates, defs, b, a, z),
         }
     }
 }
@@ -58,10 +66,18 @@ fn token<'t>(b: &mut impl Sink<'t>, kind: Kind, text: &'t str, a: usize, z: usiz
 }
 
 /// A frontmatter line: its wikilinks, which count as the note's links, and text.
-fn yaml<'t>(text: &'t str, gates: Gates, b: &mut impl Sink<'t>, a: usize, z: usize) {
+fn yaml<'t>(
+    text: &'t str,
+    gates: Gates,
+    defs: &Definitions,
+    b: &mut impl Sink<'t>,
+    a: usize,
+    z: usize,
+) {
     let line = Line {
         text,
         g: gates,
+        defs,
         tags: Vec::new(),
         colons: false,
     };
@@ -81,9 +97,11 @@ fn yaml<'t>(text: &'t str, gates: Gates, b: &mut impl Sink<'t>, a: usize, z: usi
     token(b, Yaml, text, plain, z);
 }
 
-struct Line<'t> {
+struct Line<'t, 'd> {
     text: &'t str,
     g: Gates,
+    /// The note's link definitions.
+    defs: &'d Definitions,
     /// The tags on this line, from their `#` to their end, found as they always were: by the
     /// tag pattern over the whole line, the markers before it included.
     tags: Vec<Range<usize>>,
@@ -93,20 +111,54 @@ struct Line<'t> {
 
 fn tag_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(crate::markdown::TAG).unwrap())
+    RE.get_or_init(|| Regex::new(crate::markdown::MARKED_TAG).unwrap())
 }
 
-impl<'t> Line<'t> {
+/// Whether `markers`, written between what a tag may follow and its `#`, open emphasis (`*`,
+/// `_`), a strikethrough (`~~`) or a highlight (`==`) in the syntax `g`. The tag after them is
+/// then a tag, as in Obsidian.
+fn opens(markers: &str, g: Gates) -> bool {
+    let m = markers.as_bytes();
+    let mut i = 0;
+    while i < m.len() {
+        let run = m[i..].iter().take_while(|&&c| c == m[i]).count();
+        let ok = match m[i] {
+            b'*' | b'_' => true,
+            b'~' => run == 2 && g.has(S::Strikethrough),
+            _ => run == 2 && g.has(S::Highlights),
+        };
+        if !ok {
+            return false;
+        }
+        i += run;
+    }
+    true
+}
+
+impl<'t, 'd> Line<'t, 'd> {
     /// The line holding `at..z`, the text read.
-    fn new(text: &'t str, g: Gates, at: usize, z: usize) -> Self {
+    fn new(text: &'t str, g: Gates, defs: &'d Definitions, at: usize, z: usize) -> Self {
         let mut tags = Vec::new();
         if g.has(S::Tags) && text[at..z].contains('#') {
             let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
             let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-            for c in tag_pattern().captures_iter(&text[start..end]) {
+            let line = &text[start..end];
+            for c in tag_pattern().captures_iter(line) {
                 let name = c.get(1).expect("the pattern has a name");
-                if !name.as_str().bytes().all(|b| b.is_ascii_digit()) {
-                    tags.push(start + name.start() - 1..start + name.end());
+                let hash = name.start() - 1;
+                let before = line[..hash].trim_end_matches(['*', '_', '~', '=']);
+                let markers = &line[before.len()..hash];
+                if !opens(markers, g) {
+                    continue;
+                }
+                // After `_`, the `_` that closes the emphasis isn't the name's.
+                let named = match markers.contains('_') {
+                    true => name.as_str().trim_end_matches('_'),
+                    false => name.as_str(),
+                };
+                if !named.bytes().all(|b| b.is_ascii_digit()) {
+                    let hash = start + hash;
+                    tags.push(hash..hash + 1 + named.len());
                 }
             }
         }
@@ -114,6 +166,7 @@ impl<'t> Line<'t> {
         Line {
             text,
             g,
+            defs,
             tags,
             colons,
         }
@@ -154,7 +207,8 @@ impl<'t> Line<'t> {
                     if t.get(i + 2) == Some(&b'[') && self.g.has(S::Embeds) {
                         self.wikilink(i + 1, z).map(|e| (Embed, e))
                     } else if !in_link {
-                        self.link(i + 1, z).map(|e| (Image, e))
+                        let end = self.link(i + 1, z).or_else(|| self.reference(i + 1, z));
+                        end.map(|e| (Image, e))
                     } else {
                         None
                     }
@@ -165,7 +219,10 @@ impl<'t> Line<'t> {
                 },
                 b'[' => (self.field(i, z).map(|e| (InlineField, e))).or_else(|| match in_link {
                     true => None,
-                    false => self.link(i, z).map(|e| (Link, e)),
+                    false => {
+                        let end = self.link(i, z).or_else(|| self.reference(i, z));
+                        end.map(|e| (Link, e))
+                    }
                 }),
                 b'(' => self.field(i, z).map(|e| (InlineField, e)),
                 b'%' if self.g.has(S::Comments) && t.get(i + 1) == Some(&b'%') => {
@@ -231,20 +288,40 @@ impl<'t> Line<'t> {
             Link | Image => {
                 let open = if kind == Image { a + 2 } else { a + 1 };
                 let close = self.close_bracket(open - 1, z).expect("a link has its `]`");
-                let paren = text[close..z]
-                    .find(')')
-                    .map(|k| close + k)
-                    .expect("and its `)`");
+                let after = close + 1;
                 b.start(kind);
                 let opener = if kind == Image { ImageOpen } else { LBracket };
                 token(b, opener, text, a, open);
-                b.start(LinkText);
-                self.run(b, open, close, true, &[]);
-                b.finish();
-                token(b, RBracket, text, close, close + 1);
-                token(b, LParen, text, close + 1, close + 2);
-                token(b, LinkDest, text, close + 2, paren);
-                token(b, RParen, text, paren, paren + 1);
+                if after < z && text.as_bytes()[after] == b'(' {
+                    let paren = text[close..z]
+                        .find(')')
+                        .map(|k| close + k)
+                        .expect("and its `)`");
+                    b.start(LinkText);
+                    self.run(b, open, close, true, &[]);
+                    b.finish();
+                    token(b, RBracket, text, close, after);
+                    token(b, LParen, text, after, after + 1);
+                    token(b, LinkDest, text, after + 1, paren);
+                    token(b, RParen, text, paren, paren + 1);
+                } else if after + 2 < z {
+                    // `[text][label]`.
+                    b.start(LinkText);
+                    self.run(b, open, close, true, &[]);
+                    b.finish();
+                    token(b, RBracket, text, close, after);
+                    token(b, LBracket, text, after, after + 1);
+                    token(b, LinkLabel, text, after + 1, z - 1);
+                    token(b, RBracket, text, z - 1, z);
+                } else {
+                    // `[label]` or `[label][]`: the label is what the link shows.
+                    token(b, LinkLabel, text, open, close);
+                    token(b, RBracket, text, close, after);
+                    if after < z {
+                        token(b, LBracket, text, after, after + 1);
+                        token(b, RBracket, text, after + 1, z);
+                    }
+                }
                 b.finish();
             }
             InlineField | LineField => {
@@ -375,6 +452,30 @@ impl<'t> Line<'t> {
         }
         let paren = self.text[close + 2..z].find(')')? + close + 2;
         Some(paren + 1)
+    }
+
+    /// A link by reference with its `[` at `a`, `[text][label]`, `[label][]` or `[label]`,
+    /// where the note defines the label: where it ends. Without a definition the brackets are
+    /// text, as in CommonMark.
+    fn reference(&self, a: usize, z: usize) -> Option<usize> {
+        if self.defs.is_empty() {
+            return None;
+        }
+        let close = self.close_bracket(a, z)?;
+        let after = close + 1;
+        let own = &self.text[a + 1..close];
+        let rest = &self.text[after..z];
+        if rest.starts_with('[')
+            && let Some(k) = rest[1..].find(']')
+        {
+            if k == 0 {
+                return self.defs.get(own).map(|_| after + 2);
+            }
+            if !rest[1..1 + k].trim().is_empty() {
+                return self.defs.get(&rest[1..1 + k]).map(|_| after + k + 2);
+            }
+        }
+        self.defs.get(own).map(|_| after)
     }
 
     /// Dataview's `[key:: value]` or `(key:: value)` at `a`: where it ends.
