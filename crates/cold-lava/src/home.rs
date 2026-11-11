@@ -4074,7 +4074,7 @@ impl Home {
         let Some(core) = self.core.as_mut() else {
             return;
         };
-        match core.relink(&plan.edits) {
+        match core.relink(&mut plan.edits) {
             Ok(Some(ticket)) => {
                 *waiting = Some(ticket);
                 self.ask_owners();
@@ -4444,7 +4444,7 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                match core.relink(&plan.edits) {
+                match core.relink(&mut plan.edits) {
                     Ok(Some(ticket)) => {
                         *waiting = Some(ticket);
                         self.ask_owners();
@@ -4588,7 +4588,7 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                match core.relink(&plan.edits) {
+                match core.relink(&mut plan.edits) {
                     Ok(Some(ticket)) => {
                         *waiting = Some(ticket);
                         self.mode = Mode::Recipe(view);
@@ -7188,10 +7188,12 @@ fn cut_left(text: &str, width: usize) -> String {
 }
 
 /// A file's rewritten links in a preview: its name, then the first few changed lines.
-/// The hint of a rename or merge dialog waiting for the owners of the files in `edits`.
+/// The hint of a rename or merge dialog waiting for the owners of the files in `edits` that
+/// haven't answered yet.
 fn waiting_for(edits: &[crate::rename::FileEdit]) -> String {
     let mut owners: Vec<&str> = (edits.iter())
-        .filter_map(|e| Some(e.owned.as_ref()?.owner.as_str()))
+        .filter_map(|e| e.owned.as_ref().filter(|o| o.after.is_none()))
+        .map(|o| o.owner.as_str())
         .collect();
     owners.sort();
     owners.dedup();

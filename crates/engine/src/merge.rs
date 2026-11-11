@@ -102,7 +102,7 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
         before,
     };
     let mut warnings = Vec::new();
-    let mut edits = rename::edits(ix, &rw)?;
+    let mut edits = rename::edits(ix, &rw, &mut warnings)?;
     edits.extend(rename::owned_edits(ix, &rw, &mut warnings));
     let mut own = |rel: &str, text: &str| match edits.iter().position(|e| e.file == rel) {
         Some(i) => {
@@ -504,9 +504,12 @@ mod tests {
                 (".obsidian/bookmarks.json", marks),
             ],
         );
-        let m = merge(&ix, "A/Pāhoehoe", "B/Lava");
+        let mut m = merge(&ix, "A/Pāhoehoe", "B/Lava");
         assert_eq!(m.target_edit.links, 1);
         assert_eq!(m.own_links, 1, "./Sib, relative to the source's folder");
+        assert!(apply(&m, None).is_err(), "not before the canvas's owner");
+        let mut core = crate::core::Core::open(&ix.workspace.root).unwrap();
+        assert_eq!(core.relink(&mut m.edits), Ok(None), "it answers at once");
         apply(&m, None).unwrap();
         assert_eq!(
             read(&dir, "Top.md"),

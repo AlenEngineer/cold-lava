@@ -3,9 +3,10 @@
 //! asks the file's owner for the file's new text. Before writing it, the engine asks the owner to
 //! read that text (`file/read`) and checks it reads as asked: what the owner gave before, with the
 //! change made. Only then is it written, with `write::replace`, refused if the file changed since.
-//! Owners answer later, so each edit waits here, one per file, until its owner has answered both.
-//! A rename or merge asks every owned file's owner this way before anything moves, and keeps
-//! each new text that read back until all are in (`Relink`).
+//! An extension answers later, so each edit waits here, one per file, until its owner has
+//! answered both; the engine's canvas owner answers both inside the call, through the same
+//! steps. A rename, merge or recipe asks every owned file's owner this way before anything is
+//! written, and keeps each new text that read back until all are in (`Relink`).
 
 use crate::gateway::{Edited, Error, Ticket};
 use crate::items::Item;
@@ -37,8 +38,9 @@ pub(crate) struct Pending {
     /// The file's version and text the change was made on.
     pub rev: String,
     pub text: String,
-    /// What the owner should give for the file once it is written.
-    pub expect: Given,
+    /// What the owner should give for the file once it is written. `None`: it couldn't read the
+    /// file before the change, and isn't expected to read it after.
+    pub expect: Option<Given>,
     pub goal: Goal,
     pub stage: Stage,
 }
@@ -75,8 +77,18 @@ pub(crate) struct Relink {
 
 impl Relink {
     pub fn done(&self) -> bool {
-        (self.edits.iter()).all(|e| e.owned.as_ref().is_some_and(|o| o.after.is_some()))
+        self.edits.iter().all(is_answered)
     }
+
+    /// The edits whose owners have answered so far.
+    pub fn answered(&self) -> Vec<crate::rename::FileEdit> {
+        let answered = self.edits.iter().filter(|e| is_answered(e));
+        answered.cloned().collect()
+    }
+}
+
+fn is_answered(e: &crate::rename::FileEdit) -> bool {
+    e.owned.as_ref().is_some_and(|o| o.after.is_some())
 }
 
 /// The edits waiting for owners, and what is to be sent and handed out.
