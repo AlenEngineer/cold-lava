@@ -1662,7 +1662,7 @@ fields.w = { capture = "w" }
         // An escape stops a wikilink and a link; a link's text holds no link; a lazy line
         // under a callout's title is the callout's.
         "\\[[Note]] and \\[text](Other.md) and [[Real]] the end ^e1\n",
-        "[a [b](Inner.md) d](Outer.md) and [x [[W]] y](Z.md)\n",
+        "[a [b](Inner.md) d](Outer.md) and [![pic](p.png) e](Third.md)\n",
         "> [!note] Title the first\nlazy line the second ^lz\n\n> [!todo] T\n- [ ] not lazy\n",
         // Tags right after the markers that open emphasis and a strikethrough.
         "Read **#bold** and _#slanted_, *#star*, __#under__, ***#both*** and ~~#gone~~, but a#b and http://x.y/#frag are no tags.\n",
