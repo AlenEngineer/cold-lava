@@ -37,8 +37,12 @@ change commands, keys and file formats; patch versions only fix things.
   paragraph has that backlink, shows in the graph and follows a rename, and a task there is
   in the agenda. A definition also ends the paragraph above it, so `Text ^a` and `[^1]: Note
   ^b` on consecutive lines are two blocks with their own ids, where they were one block named
-  `b`. The ids of headings, list items and tasks elsewhere don't change. In flavours without
-  footnotes nothing changes.
+  `b`. Some ids change with it, all in notes with footnote definitions. A block whose `^id`
+  is on a definition's line right under other text keeps its id and spans that line only. A
+  task or a list item indented under a definition that comes right after a list item was
+  nested in that item and is the footnote's now, with a new id. And `[^1]: text` with `===`
+  or `---` on the next line was a heading for the index, never on screen: that heading is
+  gone. Notes without footnote definitions, and flavours without footnotes, read as before.
 - Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
   of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
   example's count of open tasks keeps up under the picker and shows in the shape editor's

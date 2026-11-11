@@ -1671,6 +1671,11 @@ fields.w = { capture = "w" }
         // Two definitions in a row, right under a paragraph, and definitions in a quote.
         "Para the first ^p\n[^1]: One. ^one\n[^2]: Two. ^two\n",
         "> [^q]: In a quote the note. ^q1\n>\n>     Second in the quote. ^q2\n\n> text\n> [^r]: after quoted text ^r1\n",
+        // A definition right under a list item ends the list, and what is indented under it
+        // is its, not the item's. A `===` or `---` under a definition's line is no setext
+        // underline: the heading the tree read there before #212 never was one.
+        "- item one\n- item two\n[^1]: right after a list item\n    - [ ] continuation task [[Tgt]]\n",
+        "[^1]: def line\n===\n\n[^2]: def two\n---\n\nParagraph above. ^above\n[^n]: Note text ^on\n\n^standalone\n",
         // Tags right after the markers that open emphasis and a strikethrough.
         "Read **#bold** and _#slanted_, *#star*, __#under__, ***#both*** and ~~#gone~~, but a#b and http://x.y/#frag are no tags.\n",
     ];
