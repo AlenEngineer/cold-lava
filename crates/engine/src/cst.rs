@@ -271,17 +271,21 @@ impl Definitions {
         self.0.push((fold(label), dest));
     }
 
-    /// Add the definitions written in `node`.
+    /// Add the definitions written in the block `node`: itself, or the blocks a container holds.
     fn add_from(&mut self, node: &GreenNodeData) {
-        if Kind::of(node.kind()) == Kind::LinkDefinition {
-            let label = token_of(node, Kind::DefinitionLabel);
-            self.add(label, token_of(node, Kind::DefinitionDest));
-            return;
-        }
-        for child in node.children() {
-            if let NodeOrToken::Node(n) = child {
-                self.add_from(n);
+        match Kind::of(node.kind()) {
+            Kind::LinkDefinition => {
+                let label = token_of(node, Kind::DefinitionLabel);
+                self.add(label, token_of(node, Kind::DefinitionDest));
             }
+            Kind::BlockQuote | Kind::Callout | Kind::List | Kind::ListItem => {
+                for child in node.children() {
+                    if let NodeOrToken::Node(n) = child {
+                        self.add_from(n);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
