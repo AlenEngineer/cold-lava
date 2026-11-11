@@ -1,0 +1,47 @@
+# The guard of board-keeps-drafts.drive, for a view brought to the front. tests/drive.rs
+# installs the open-tasks example patched to send view/show for its list whenever the tasks
+# change. The list is opened first, and Enter on a canvas's task puts the whiteboard in front
+# of it. While a card is typed there, a task another program writes makes the extension ask:
+# the card stays, and when the edit ends the status line says what was not done. The notice
+# is the board's, so the menu doesn't repeat it after q. With nothing unsaved, the next
+# view/show brings the list to the front.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys :
+type list the open
+wait-for list the open tasks by note
+keys enter
+wait-for ↑↓ move · x tick · ⏎ open
+keys /
+type two per
+wait-for / two per▏
+keys enter
+wait-for 1 of 16 rows
+keys j enter
+wait-for whiteboard Volcano Venn · 5 cards
+keys n
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type Draft
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+expect whiteboard Volcano Venn · 6 cards
+expect Draft▏
+screen
+keys esc
+wait-for open-tasks wanted to show a view: not while a card is being edited
+expect-not Draft▏
+screen
+keys q
+wait-for cold-lava workspaces
+expect-not open-tasks wanted to show a view
+screen
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n- [ ] Count the masks\n
+wait-for ☐ 18 open tasks
+wait-for 1 of 17 rows · /two per
+expect-not open-tasks wanted to show a view
+keys esc
+wait-for closed the list of open tasks
+keys q
+exits 0

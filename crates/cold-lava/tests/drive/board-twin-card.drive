@@ -1,0 +1,32 @@
+# Another program's canvas may repeat a card's id. The canvas owner gives the second card a
+# place of its own, and the whiteboard opens at it: Enter on a task of the second card, in the
+# agenda, selects that card and not the first one (the status line names the selected card's
+# size). An edit then changes the second card. tests/drive.rs writes Inbox/Twins.canvas and
+# reads it after: the first card and both ids as they were.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for example-workspace
+keys A
+wait-for ↑↓ move · x tick · ⏎ open
+keys /
+type feed the twin
+wait-for / feed the twin▏
+keys enter
+wait-for 1 of 16 rows · /feed the twin
+keys j enter
+wait-for whiteboard Twins · 2 cards
+wait-for text card  320×120
+screen
+keys enter
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type , twice
+wait-for Feed the twin, twice▏
+keys esc
+wait-gone editing · type text
+expect text card  320×120
+screen
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0
