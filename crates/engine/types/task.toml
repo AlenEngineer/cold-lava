@@ -1,7 +1,10 @@
-# The task, as the Obsidian Tasks plugin writes it: a checkbox list item with its dates,
-# recurrence and priority in the plugin's emoji format (`📅 2026-11-12`) or its Dataview format
-# (`[due:: 2026-11-12]`). Built into cold-lava and written in the same language as anyone's types
-# (docs/extensions.md, "Types"). `${tasks.…}` is the workspace's Tasks plugin setting of that name.
+# The task: an item with a checkbox, with its dates, recurrence and priority. Built into
+# cold-lava and written in the same language as anyone's types (docs/extensions.md, "Types").
+#
+# It reads attributes, so it doesn't say how a file writes a checkbox or a due date: the owner
+# of the file does. For Markdown that is `markdown/attributes.toml`, where the Obsidian Tasks
+# plugin's emoji format (`📅 2026-11-12`), its Dataview format (`[due:: 2026-11-12]`) and its
+# global filter live. `${tasks.statuses}` is the workspace's Tasks plugin setting.
 version = 1
 
 [types.task]
@@ -16,7 +19,7 @@ priority = 1
 # The character between the brackets, and what the workspace's statuses say it means.
 status = "text"
 status_type = { type = "enum", values = "${tasks.statuses}" }
-# The words: the text without the checkbox, dates, recurrence, priority and global filter.
+# The words: the text without the checkbox, dates, recurrence and priority.
 text = "text"
 due = "date"
 scheduled = "date"
@@ -38,31 +41,27 @@ status_type = { by-value = { done = { dim = true, strike = true, whole = true },
 priority = { badge = true, by-value = { highest = { colour = "red" }, high = { colour = "orange" }, medium = { colour = "yellow" }, low = { colour = "cyan" }, lowest = { colour = "muted" } } }
 
 [[types.task.from]]
-on = "list-item"
-# A checkbox, a space and words; with a global filter, only lines that carry it.
-match = '^\[[^\n]\]\s+.*${tasks.global-filter}'
+on = "item"
+# An item its owner counts as a task. In Markdown: a checkbox, and with the Tasks plugin's
+# global filter, the filter after it.
+where.attribute = "task"
 # Its words, so ticking, re-dating or re-indenting it keeps its id. A checkbox with no words
 # (`- [ ] 📅 2026-11-12`, a template's empty one) is no task yet.
 key = ["text"]
 required = ["text"]
 
 [types.task.from.fields]
-status = { checkbox = true }
-status_type = { checkbox = true }
-text = { rest = { without = ["${tasks.global-filter}"] } }
-# Dataview's field first: when a line has both, it is the one that counts.
-due = [{ inline = "due" }, { marker = "📅" }, { marker = "📆" }, { marker = "🗓" }]
-scheduled = [{ inline = "scheduled" }, { marker = "⏳" }, { marker = "⌛" }]
-start = [{ inline = "start" }, { marker = "🛫" }]
-created = [{ inline = "created" }, { marker = "➕" }]
-done = [{ inline = "completion" }, { marker = "✅" }]
-cancelled = [{ inline = "cancelled" }, { marker = "❌" }]
-recurrence = [{ inline = "repeat" }, { pattern = '🔁\x{FE0F}?\s*([a-zA-Z0-9, !]*[a-zA-Z0-9,!])' }]
-# Of several priority glyphs, the lowest counts.
-priority = [
-    { flags = { "⏬" = "lowest", "🔽" = "low", "🔼" = "medium", "⏫" = "high", "🔺" = "highest" } },
-    { inline = "priority" },
-]
+status = { attribute = "checkbox" }
+status_type = { attribute = "checkbox" }
+text = { rest = true }
+due = { attribute = "due" }
+scheduled = { attribute = "scheduled" }
+start = { attribute = "start" }
+created = { attribute = "created" }
+done = { attribute = "done" }
+cancelled = { attribute = "cancelled" }
+recurrence = { attribute = "recurrence" }
+priority = { attribute = "priority" }
 tags = { inlines = "tags" }
 links = { inlines = "links" }
 daily_note = { note = "date" }

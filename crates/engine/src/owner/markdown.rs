@@ -17,6 +17,8 @@ use crate::workspace::{Ref, attachment_kind, clean_target};
 use chrono::NaiveDate;
 use std::ops::Range;
 
+pub mod attributes;
+
 /// What reading a note gives besides its items, which are read on first use (`items`).
 pub struct Read {
     /// Its links, with where they are.

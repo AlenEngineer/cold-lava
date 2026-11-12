@@ -30,7 +30,25 @@ change commands, keys and file formats; patch versions only fix things.
   written; `level` and `fold` are read-only. `cold-lava types` lists the new source and
   condition like the others. Reading a note costs what it did: an attribute is read only
   when a type names it. Items over the gateway are unchanged: attributes reach the wire in
-  a later step. The built-in `task` doesn't read attributes yet, and no item changes.
+  a later step.
+- The built-in `task` is defined over attributes (#242). It takes an item its owner counts
+  as a task (the attribute `task`), reads its status from `checkbox`, and reads `due`,
+  `scheduled`, `start`, `created`, `done`, `cancelled`, `recurrence` and `priority` by name;
+  it names no emoji and no bracket. How Markdown writes each one is now a table of readings
+  that belongs to the Markdown owner (`crates/engine/markdown/attributes.toml`): `checkbox`
+  on every item that has one, `task` on those the Tasks plugin's global filter lets through,
+  `📅` and `[due:: …]`, the priority glyphs, `🔁`. You can read it with the new
+  `cold-lava attributes [WORKSPACE]` (`--json` too) and change it in `[attributes]` in
+  config.toml or in `<workspace>/.cold-lava/attributes.toml`, where a later entry replaces an
+  earlier one and an empty list takes one out, which leaves that attribute on no piece.
+  Reading and `set-field` follow the table; ticking a task and its recurrence still write
+  the built-in markers, and `cold-lava attributes` says so beside a changed entry for a
+  date. A broken entry is listed by `cold-lava types` too. An attribute nobody declared is the Dataview
+  field of its name (`[rating:: 5]`), by the table's `"*"` entry, which can be changed or
+  removed like any other. No task changes: every id, rev, field and line is what it was,
+  `agenda`, `items` and `table` print the same bytes, and ticking or setting a field writes
+  the same text. `cold-lava types` lists the task's fields as `attribute due` and so on. A
+  type that extends the task, or reads a checkbox or a marker itself, works as before.
 
 ### Changed
 

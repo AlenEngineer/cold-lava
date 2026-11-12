@@ -19,6 +19,9 @@ pub struct Config {
     pub flavour: Option<Flavour>,
     /// `[types]` as written, for the engine to check (`types::Layer::config`).
     pub types: toml::Table,
+    /// `[attributes]` as written: how Markdown writes attributes, for the engine to check
+    /// (`owner::markdown::attributes::Layer::config`).
+    pub attributes: toml::Table,
     /// `[[shapes]]` and `[glyphs]` as written, for the engine to check (`shapes::Layer::config`).
     pub shapes: Vec<toml::Table>,
     pub glyphs: toml::Table,
@@ -39,6 +42,8 @@ struct File {
     markdown: toml::Table,
     #[serde(default)]
     types: toml::Table,
+    #[serde(default)]
+    attributes: toml::Table,
     #[serde(default)]
     shapes: Vec<toml::Table>,
     #[serde(default)]
@@ -138,6 +143,7 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     }
     config.flavour = markdown(file.markdown, &mut config.errors);
     config.types = file.types;
+    config.attributes = file.attributes;
     config.shapes = file.shapes;
     config.glyphs = file.glyphs;
     match crate::style::Overrides::from_table(file.style) {

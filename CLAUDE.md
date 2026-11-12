@@ -221,17 +221,42 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   item's kinds (`task`, `list`, `heading`, `block`) are not roles and keep their names,
   because ids hash them; `items::KINDS` says how each maps to a role.
   **Attributes** (#242) are what a piece carries beyond its text, a name and a value, given
-  by its owner. Markdown's are `checkbox` (an item), `level` (a section), `callout` and
-  `fold` (an aside). A shape tests one with `where.attribute` and reads one with the source
-  `{ attribute = "name" }`, beside the older sources, which all still read. Nothing keeps an
-  attribute while a note is read: `matcher::Attr` reads it off the block (`matcher::Given`
-  holds what the walk knows that the text doesn't) only when a shape names it, so a
-  workspace whose types name none pays nothing. Keep it that way: don't store attributes on
-  `items::Item`. Items carry none over the gateway yet: that comes when owners give pieces
-  (#243), with the owner's values, not a type's reading of them. An attribute's name is
-  open: an unknown one is no mistake, and matches nothing. A type on `aside` matches a quote
-  or a callout; a typed aside's key is set apart (`items::finish`), so it can never take an
-  id from one of its type's older items.
+  by its owner. A shape tests one with `where.attribute` and reads one with the source
+  `{ attribute = "name" }`, beside the older sources, which all still read. The built-in
+  `task` (`types/task.toml`) is defined over them and names no character of Markdown's.
+  **How Markdown writes each attribute is the Markdown owner's data, not the type's:**
+  `crates/engine/markdown/attributes.toml`, read by `owner/markdown/attributes.rs`
+  (`Readings`; then `[attributes]` in config.toml and `.cold-lava/attributes.toml`, a later
+  entry replacing an earlier one; `cold-lava attributes` lists them). An entry is a list of
+  the text sources (`inline`, `marker`, `flags`, `pattern`, `checkbox`), and
+  `Readings::flat` spells a field's `attribute = …` out into them, in place. The matcher
+  reads through that list and `edit.rs` writes through the same one, so
+  `matcher::Place::sources` means the same to both: never index a shape's sources as
+  written. The Tasks plugin's emoji, Dataview's fields (the `"*"` entry, for every
+  attribute with none of its own) and the global filter live there, so the profile work
+  (#235, #236) moves that file and no type. `checkbox` (the item has one) and `task` (its
+  owner counts it as a task: in Markdown the checkbox `with` the global filter) are two
+  attributes: the task type asks for `task` and reads its status from `checkbox`. Keep them
+  apart, so a type on "an item with a checkbox" sees every checkbox.
+  Don't put a glyph or a `${tasks.…}` reading rule back into `task.toml`, and don't turn a
+  reading into a Rust match arm. `level`, `callout` and `fold` are the tree's
+  (`matcher::Attr`, from `matcher::Given`, which holds what the walk knows that the text
+  doesn't). Nothing keeps an
+  attribute while a note is read: one is read off the block only when a shape names it.
+  Keep it that way: don't store attributes on `items::Item`. Items carry none over the
+  gateway yet: that comes when owners give pieces (#243), with the owner's values, not a
+  type's reading of them. A type on `aside` matches a quote or a callout; a typed aside's
+  key is set apart (`items::finish`), so it can never take an id from one of its type's
+  older items. `types/task.before-242.toml` is the task as it was, kept only for
+  `items::tests::the_task_reads_from_attributes_as_it_did_from_characters`, which reads
+  every note both ways: a change to how a task is read must keep that test passing, or it
+  changes ids. Reading and `set-field` go through the table; ticking and recurrence
+  (`tasks.rs`: `toggle_text`, `next_occurrence`, `strip_field`, `add_field`, `replace_date`,
+  the task-line pattern, the default statuses), `style::TASK_GLYPHS` and the agenda's
+  glyphs (`crates/cold-lava/src/agenda.rs`) still hold the plugin's markers as code
+  (docs/extensions.md, "Attributes in Markdown, as built", lists them). A changed entry for
+  one of `attributes::TICKED` is warned about. An entry emptied (`due = []`) stays in the
+  table with no readings, so the attribute is on no piece and `"*"` doesn't stand in.
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an

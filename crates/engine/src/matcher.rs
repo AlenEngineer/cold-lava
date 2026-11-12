@@ -20,6 +20,7 @@ use crate::daily;
 use crate::frontmatter::{self, Frontmatter};
 use crate::markdown::{self, Flavour, Syntax};
 use crate::owner::markdown as markdown_owner;
+use crate::owner::markdown::attributes::{Flat, Readings};
 use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
 
 /// What this matcher reads; shapes on `verbatim` wait.
@@ -85,26 +86,24 @@ pub struct Matcher {
     daily: daily::Settings,
 }
 
-/// An attribute a shape names, as the owners built into the engine give it (docs/extensions.md,
-/// "The alphabet, as built"). Markdown's are read off the block when a shape asks, so a note
-/// no type asks about costs nothing more to read.
+/// An attribute the note's structure gives a piece (docs/extensions.md, "The alphabet, as
+/// built"), read off the block when a shape asks. The ones Markdown writes in a piece's text
+/// (`checkbox`, `due`, …) are sources like any other by the time they are here: the owner's
+/// table spelled them out (`owner::markdown::attributes`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Attr {
-    /// An item's checkbox: the character between its brackets.
-    Checkbox,
     /// A section's heading level.
     Level,
     /// An aside's callout: its kind, and whether it folds.
     Callout,
     Fold,
-    /// A name no owner here gives: no piece has it.
+    /// A name nothing gives on this piece: it has none.
     Unknown,
 }
 
 impl Attr {
-    fn of(name: &str, flavour: &Flavour) -> Attr {
+    fn of(name: &str) -> Attr {
         match name {
-            "checkbox" if flavour.has(Syntax::TaskLists) => Attr::Checkbox,
             "level" => Attr::Level,
             "callout" => Attr::Callout,
             "fold" => Attr::Fold,
@@ -115,7 +114,6 @@ impl Attr {
     /// Whether the block carries it.
     fn on(self, b: &Block) -> bool {
         match (self, b.on) {
-            (Attr::Checkbox, On::Item) => markdown_owner::checkbox(b.text).is_some(),
             (Attr::Level, On::Section) => b.given.level > 0,
             (Attr::Callout, On::Aside) => b.given.callout.is_some(),
             (Attr::Fold, On::Aside) => matches!(b.given.callout, Some((_, Some(_)))),
@@ -140,8 +138,8 @@ struct Shape {
     index: usize,
     on: On,
     w: crate::types::Where,
-    /// `where.attribute`: the block carries each.
-    attributes: Vec<Attr>,
+    /// `where.attribute`: the block carries each, by one of its readings.
+    attributes: Vec<Vec<Src>>,
     pattern: Option<Regex>,
     key: Vec<usize>,
     required: Vec<usize>,
@@ -167,6 +165,9 @@ enum Src {
     /// The leftover text, without these strings.
     Rest(Vec<String>),
     Checkbox,
+    /// The `checkbox` attribute: a checkbox followed by whitespace or nothing, and, with a
+    /// text, only on an item that holds that text after it. The text is not words.
+    Box(Option<String>),
     Attribute(Attr),
     /// `children` and `info`, not read yet.
     Later,
@@ -200,7 +201,13 @@ fn slot(on: On) -> Option<usize> {
 }
 
 impl Matcher {
-    pub fn new(types: &Types, flavour: &Flavour, daily: &daily::Settings) -> Matcher {
+    /// `written` is how Markdown writes the attributes the types read.
+    pub fn new(
+        types: &Types,
+        written: &Readings,
+        flavour: &Flavour,
+        daily: &daily::Settings,
+    ) -> Matcher {
         let mut m = Matcher {
             daily: daily.clone(),
             ..Matcher::default()
@@ -241,8 +248,8 @@ impl Matcher {
                     .fields
                     .iter()
                     .filter_map(|(name, sources)| {
-                        let srcs = (sources.0.iter())
-                            .map(|s| compile_source(s, flavour))
+                        let srcs = (written.flat(shape.on, &sources.0).iter())
+                            .map(|f| compile_flat(f, flavour))
                             .collect();
                         Some((field(name)?, srcs))
                     })
@@ -268,7 +275,12 @@ impl Matcher {
                     on: shape.on,
                     w: with_inside(w, types),
                     attributes: (w.attribute.iter())
-                        .map(|name| Attr::of(name, flavour))
+                        .map(|name| {
+                            let asked = [Source::Attribute(name.clone())];
+                            (written.flat(shape.on, &asked).iter())
+                                .map(|f| compile_flat(f, flavour))
+                                .collect()
+                        })
                         .collect(),
                     pattern: shape
                         .pattern
@@ -404,7 +416,8 @@ impl Matcher {
                 continue;
             }
             let shape = &self.types[t].shapes[s];
-            if !block_passes(&shape.w, note, b) || !shape.attributes.iter().all(|a| a.on(b)) {
+            let carries = |readings: &Vec<Src>| readings.iter().any(|s| self.carries(s, note, b));
+            if !block_passes(&shape.w, note, b) || !shape.attributes.iter().all(carries) {
                 continue;
             }
             let caps = match &shape.pattern {
@@ -467,6 +480,17 @@ impl Matcher {
         found.into_iter().map(|f| (f.1, f.2, f.3)).collect()
     }
 
+    /// Whether one reading of an attribute finds it on the block (`where.attribute`).
+    fn carries(&self, src: &Src, note: &Note, b: &Block) -> bool {
+        match src {
+            Src::Box(with) => b.on == On::Item && boxed(b.text, with.as_deref()).is_some(),
+            Src::Attribute(attr) => attr.on(b),
+            src => read_source(src, None, note, b, &self.daily, &mut Vec::new())
+                .iter()
+                .any(|p| p.value != Some(Json::Bool(false))),
+        }
+    }
+
     /// Which of two matching (type, shape)s wins.
     fn better(&self, a: (usize, usize), b: (usize, usize)) -> Ordering {
         let (ta, tb) = (&self.types[a.0], &self.types[b.0]);
@@ -520,6 +544,9 @@ impl Matcher {
         };
         // Byte ranges of the block's text that sources read, for `rest`.
         let mut used: Vec<Range<usize>> = Vec::with_capacity(2 * shape.fields.len());
+        if !shape.attributes.is_empty() {
+            self.asked(shape, note, b, &mut used);
+        }
         let mut rest_field = None;
         for (f, sources) in &shape.fields {
             // The first source with a value gives it; a value the others find is still the
@@ -599,6 +626,29 @@ impl Matcher {
         typed.spans.shrink_to_fit();
         typed.place.sources.shrink_to_fit();
         (typed, key)
+    }
+
+    /// What an attribute the shape asked for (`where.attribute`) was read from is the
+    /// attribute's, not words: a task's global filter. Kept out of `read`, which every typed
+    /// item goes through: with this loop in its body, a release build read every item slower,
+    /// a shape that asks for nothing included (measured: #249).
+    #[inline(never)]
+    fn asked(&self, shape: &Shape, note: &Note, b: &Block, used: &mut Vec<Range<usize>>) {
+        for src in shape.attributes.iter().flatten() {
+            match src {
+                Src::Box(with) => {
+                    if let Some((_, end)) = boxed(b.text, with.as_deref()) {
+                        used.push(0..end + 1);
+                    }
+                    if let Some(with) = with {
+                        let held = b.text.match_indices(with.as_str());
+                        used.extend(held.map(|(i, _)| i..i + with.len()));
+                    }
+                }
+                Src::Attribute(_) => {}
+                src => drop(read_source(src, None, note, b, &self.daily, used)),
+            }
+        }
     }
 
     fn parses(&self, value: &Value, p: &Piece) -> bool {
@@ -683,7 +733,33 @@ fn bases(t: &Type, types: &Types) -> Vec<String> {
     is
 }
 
-fn compile_source(s: &Source, flavour: &Flavour) -> Src {
+/// One source of a field, as the owner's table spelled it out. A checkbox that stands for
+/// the `checkbox` attribute is the flavour's: without task lists no item has one.
+fn compile_flat(f: &Flat, flavour: &Flavour) -> Src {
+    match (&*f.source, f.attribute) {
+        (Source::Checkbox(_), Some((_, with))) => match flavour.has(Syntax::TaskLists) {
+            true => Src::Box((!with.is_empty()).then(|| with.to_string())),
+            false => Src::Later,
+        },
+        (s, _) => compile_source(s),
+    }
+}
+
+/// An item's checkbox as the attribute: one character between brackets, then whitespace or
+/// nothing, and with `with`, only when the text holds it after that.
+fn boxed(text: &str, with: Option<&str>) -> Option<(char, usize)> {
+    let (symbol, end) = markdown_owner::checkbox(text)?;
+    if let Some(with) = with {
+        let after = &text[end + 1..];
+        let space = after.chars().next().map_or(0, char::len_utf8);
+        if !after[space..].contains(with) {
+            return None;
+        }
+    }
+    Some((symbol, end))
+}
+
+fn compile_source(s: &Source) -> Src {
     match s {
         Source::Capture(g) => Src::Capture(g.clone()),
         Source::Pattern(p) => match crate::types::compile(p) {
@@ -709,7 +785,7 @@ fn compile_source(s: &Source, flavour: &Flavour) -> Src {
         Source::Section(p) => Src::Section(*p),
         Source::Rest(r) => Src::Rest(r.without.clone()),
         Source::Checkbox(_) => Src::Checkbox,
-        Source::Attribute(name) => Src::Attribute(Attr::of(name, flavour)),
+        Source::Attribute(name) => Src::Attribute(Attr::of(name)),
         Source::Children(_) | Source::Info(_) => Src::Later,
     }
 }
@@ -1151,17 +1227,22 @@ fn read_source<'a>(
                 ..Piece::text(symbol.to_string(), Some(at(1..end)))
             }]
         }
-        Src::Attribute(attr) => match (*attr, b.on) {
-            (Attr::Checkbox, On::Item) => {
-                let Some((symbol, end)) = markdown_owner::checkbox(text) else {
-                    return Vec::new();
-                };
-                used.push(0..end + 1);
-                vec![Piece {
-                    verbatim: true,
-                    ..Piece::text(symbol.to_string(), Some(at(1..end)))
-                }]
+        Src::Box(with) => {
+            let found = (b.on == On::Item).then(|| boxed(text, with.as_deref()));
+            let Some((symbol, end)) = found.flatten() else {
+                return Vec::new();
+            };
+            if let Some(with) = with {
+                let held = text.match_indices(with.as_str());
+                used.extend(held.map(|(i, _)| i..i + with.len()));
             }
+            used.push(0..end + 1);
+            vec![Piece {
+                verbatim: true,
+                ..Piece::text(symbol.to_string(), Some(at(1..end)))
+            }]
+        }
+        Src::Attribute(attr) => match (*attr, b.on) {
             (Attr::Level, On::Section) if b.given.level > 0 => {
                 vec![Piece::text(b.given.level.to_string(), None)]
             }

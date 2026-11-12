@@ -37,6 +37,7 @@ use cold_lava_engine::{
 };
 
 use anyhow::Result;
+use owner::markdown::attributes;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use std::collections::HashMap;
@@ -76,6 +77,10 @@ Usage:
   cold-lava types [WORKSPACE]         every type: where it comes from, what it found, its
                                       shapes and fields;
                                       checks [types] in config.toml and .cold-lava/types.toml
+  cold-lava attributes [WORKSPACE]    how Markdown writes the attributes types read (a
+                                      checkbox, 📅, [due:: …]) and where each reading comes
+                                      from; checks [attributes] in config.toml and
+                                      .cold-lava/attributes.toml
   cold-lava shapes [WORKSPACE]        every shape and glyph: where it comes from, its parts,
                                       regions, inputs and behaviour; checks [[shapes]] in
                                       config.toml and .cold-lava/shapes.toml
@@ -280,6 +285,10 @@ fn run() -> Result<()> {
         layers.push(types::Layer::config(&path, config::get().types.clone()));
     }
     types::set_configured(layers);
+    if let Some(path) = config::path() {
+        let written = config::get().attributes.clone();
+        attributes::set_configured(vec![attributes::Layer::config(&path, written)]);
+    }
     let mut layers: Vec<shapes::Layer> = registry
         .manifests()
         .map(|m| {
@@ -354,6 +363,30 @@ fn run() -> Result<()> {
                     eprintln!("errors:");
                     for e in &found.errors {
                         eprintln!("  {e}");
+                    }
+                }
+            }
+            if !found.errors.is_empty() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some("attributes") => {
+            let root = match args.word(1) {
+                Some(dir) => PathBuf::from(dir),
+                None => workspace::find_workspace_root(Path::new(".")),
+            };
+            let found = attributes::for_workspace(&root);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&found)?);
+            } else {
+                print_attributes(&found);
+                for (title, lines) in [("notes:", &found.notes), ("errors:", &found.errors)] {
+                    if !lines.is_empty() {
+                        eprintln!("{title}");
+                        for line in lines {
+                            eprintln!("  {line}");
+                        }
                     }
                 }
             }
@@ -1420,6 +1453,27 @@ fn type_counts(workspace: &workspace::Workspace) -> HashMap<String, (usize, usiz
         }
     }
     counts
+}
+
+/// `cold-lava attributes`: how Markdown writes each attribute a type can read, with where
+/// each reading comes from.
+fn print_attributes(found: &attributes::Readings) {
+    println!("level, callout, fold  read from the note's structure");
+    for r in &found.readings {
+        let read: Vec<String> = r.read.iter().map(source_label).collect();
+        println!("\n{}  on {} · {}", r.name, r.on.name(), r.origin);
+        match read.is_empty() {
+            true => println!("  taken out: on no piece"),
+            false => println!("  {}", read.join(", then ")),
+        }
+        if !r.with.is_empty() {
+            println!("  only with {}", r.with);
+        }
+        let ticked = attributes::TICKED.contains(&r.name.as_str()) && r.on.name() == "item";
+        if ticked && r.origin != types::Origin::BuiltIn {
+            println!("  but {}", attributes::TICKING);
+        }
+    }
 }
 
 fn value_label(v: &types::Value) -> String {

@@ -749,8 +749,8 @@ fn an_attribute_is_changed_where_its_owner_read_it() {
     assert_eq!(
         refusal(&s, text, 2, "box", "state", Json::Null),
         Refused(
-            "state is the attribute checkbox, which set-field can change but not take out: \
-             edit the note instead"
+            "state is read by a pattern; taking its value out would leave the text around it, \
+             so edit the note instead"
                 .into()
         )
     );
