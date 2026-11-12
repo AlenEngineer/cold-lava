@@ -206,9 +206,9 @@ pub struct Board {
     /// place, `parse`) to the id it has in the file, which `as_written` gives it back. Never
     /// forgotten while the board is open, so an undo finds its node's id again.
     twins: HashMap<String, String>,
-    /// How many refused requests the message tells of (`refused`), 0 when it is about
-    /// something else.
-    refusals: usize,
+    /// The notice of what was asked for and not done (`refused`), kept apart from `msg` so
+    /// that no message takes its place: the status line says it first.
+    refusals: crate::refused::Refused,
     /// Something the user must see, shown until the next key.
     alert: Option<String>,
     /// Left, and how: `exit` says where to.
@@ -438,7 +438,7 @@ impl Board {
             redo: Vec::new(),
             msg: None,
             twins: twins.into_iter().collect(),
-            refusals: 0,
+            refusals: Default::default(),
             alert: None,
             quit: false,
             exit: Exit::Quit,
@@ -1526,31 +1526,29 @@ impl Board {
 
     pub fn flash(&mut self, s: impl Into<String>) {
         let s = s.into();
-        // The shape editor in front shows it now, in the board's place.
+        let now = Instant::now();
+        // The shape editor in front shows it now, in the board's place, after a notice of
+        // refused requests that still shows.
+        let said = self.refusals.line(Some(s.as_str()), now);
         let shown = self.editor.as_mut().map(|editor| {
-            editor.say(s.clone());
-            Instant::now()
+            editor.say(said.unwrap_or_else(|| s.clone()));
+            now
         });
         self.msg = Some((s, shown));
-        self.refusals = 0;
     }
 
     /// Says that something asked for was not done, so that the board keeps what it holds
     /// (`notice`). The user is told of every such request: a notice that comes while the last
-    /// one still shows, or waits to, takes its place and says how many there were.
+    /// one still shows, or waits to, takes its place and says how many there were, and no
+    /// other message takes the notice's place (`refused::Refused`, as the menu's).
     pub fn refused(&mut self, notice: impl Into<String>) {
-        let notice = notice.into();
-        let unread = (self.msg.as_ref())
-            .is_some_and(|(_, shown)| shown.is_none_or(|at| at.elapsed() <= MESSAGE_SHOWS));
-        let n = match unread {
-            true => self.refusals + 1,
-            false => 1,
-        };
-        self.flash(match n {
-            1 => notice,
-            n => format!("{notice} ({n} requests refused)"),
-        });
-        self.refusals = n;
+        let now = Instant::now();
+        self.refusals.add(notice.into(), now);
+        // The shape editor in front shows it now, in the board's place.
+        if let (Some(editor), Some(said)) = (self.editor.as_mut(), self.refusals.shown(now)) {
+            editor.say(said);
+            self.refusals.begin(now);
+        }
     }
 
     /// Place a new card: right of the selection, else in the middle of the view.
@@ -3082,6 +3080,9 @@ impl Board {
             ),
             _ => None,
         };
+        if hint.is_none() && self.alert.is_none() {
+            self.refusals.begin(Instant::now());
+        }
         if hint.is_none()
             && self.alert.is_none()
             && let Some((_, shown)) = &mut self.msg
@@ -3108,12 +3109,15 @@ impl Board {
                     .push(Span::styled(format!("   {hint}"), Style::new().fg(MUTED)));
             }
         }
-        let second = match (&self.alert, hint, &self.msg) {
+        // A notice of refused requests comes first, where no message can push it off.
+        let message = self.msg.as_ref().map(|(m, _)| m.as_str());
+        let said = self.refusals.line(message, Instant::now());
+        let second = match (&self.alert, hint, said) {
             (Some(alert), ..) => {
                 Line::styled(format!(" {alert}"), Style::new().fg(Color::Black).bg(HIT))
             }
             (None, Some(hint), _) => Line::styled(hint, Style::new().fg(HIT)),
-            (None, None, Some((m, _))) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
+            (None, None, Some(m)) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
             (None, None, None) => {
                 let k = |id| self.keys.first_label(id);
                 Line::styled(
@@ -3926,12 +3930,17 @@ mod tests {
         b.asked_alone(&registry, &mut statuses);
         assert_eq!(statuses, [(chatty, "chatty: 1".to_string())]);
         assert_eq!(
-            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            b.refusals.shown(Instant::now()).as_deref(),
             Some(
                 "chatty wanted to run search.open: cold-lava board shows the whiteboard only \
                  (2 requests refused)"
             ),
             "the note and the command, both refused"
+        );
+        assert_eq!(
+            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            Some("chatty counted"),
+            "what it said is kept beside the notice, not replaced by it"
         );
         assert!(b.left().is_none(), "the board stays");
         assert_eq!(b.doc.nodes.len(), 1);
@@ -3976,8 +3985,9 @@ mod tests {
         b.refused("pushy wanted to run search.open: not while a card is being edited");
         let [_, second] = status_lines(&mut b);
         assert!(second.contains("Esc done (saves)"), "the hint: {second}");
-        let waits = |b: &Board| b.msg.as_ref().map(|(_, shown)| shown.is_none());
-        assert_eq!(waits(&b), Some(true), "its 3 seconds haven't begun");
+        // Long after: said still, while its 3 seconds haven't begun.
+        let later = Instant::now() + MESSAGE_SHOWS * 2;
+        assert!(b.refusals.shown(later).is_some(), "it waits");
 
         b.finish_edit();
         let [_, second] = status_lines(&mut b);
@@ -3986,15 +3996,19 @@ mod tests {
             " pushy wanted to run search.open: not while a card is being edited \
              (2 requests refused)"
         );
-        assert_eq!(waits(&b), Some(false), "they begin once it shows");
+        assert!(
+            b.refusals.shown(later).is_none(),
+            "they begin once it shows"
+        );
 
-        // A request refused after that notice had its time is counted from one again.
-        if let Some(long_ago) = Instant::now().checked_sub(MESSAGE_SHOWS * 2) {
-            b.msg = Some(("pushy wanted to open Lava.md".into(), Some(long_ago)));
-            b.refused("pushy wanted to open Ash.md");
-            let said = b.msg.as_ref().map(|(m, _)| m.as_str());
-            assert_eq!(said, Some("pushy wanted to open Ash.md"));
-        }
+        // A message said meanwhile stands after the notice, not in its place.
+        b.flash("saved");
+        let [_, second] = status_lines(&mut b);
+        assert_eq!(
+            second,
+            " pushy wanted to run search.open: not while a card is being edited \
+             (2 requests refused) · saved"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

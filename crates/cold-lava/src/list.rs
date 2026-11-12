@@ -71,6 +71,9 @@ pub struct ListView {
     sel: usize,
     filter: String,
     filtering: bool,
+    /// The last key went into the filter of a list that filters as you type: it is still
+    /// being typed, until a key that isn't text (Enter, an arrow, Esc).
+    typed: bool,
     /// Groups folded or opened by hand, by id, over the sender's `collapsed`.
     folds: HashMap<String, bool>,
     /// A row to select when it shows up (after it was ticked and moved, say).
@@ -85,6 +88,7 @@ impl ListView {
             sel: 0,
             filter: String::new(),
             filtering: false,
+            typed: false,
             folds: HashMap::new(),
             follow: None,
         };
@@ -200,6 +204,15 @@ impl ListView {
         self.filtering
     }
 
+    /// What is being typed in the list, which taking it from the front would cut short, in
+    /// words for the status line: a filter after `/`, or in a list that filters as you type
+    /// one that the last key added to. Enter and the arrows end it, as they end `/`: the
+    /// filter stays with the list, and what Enter asks its owner for is not refused.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        let typing = self.filtering || (self.typed && !self.filter.is_empty());
+        typing.then_some("a filter is being typed")
+    }
+
     pub fn key(&mut self, k: KeyEvent) -> Action {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if self.filtering {
@@ -223,9 +236,11 @@ impl ListView {
         if takes(self.list.filter, &k) {
             let keep = self.at();
             type_into(&mut self.filter, &k);
+            self.typed = true;
             self.reshow(keep);
             return Action::Stay;
         }
+        self.typed = false;
         let last = self.shown.len().saturating_sub(1);
         let here = self.shown.get(self.sel).copied();
         match k.code {
@@ -723,5 +738,38 @@ mod tests {
         let s: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(s.starts_with("  ☐ Look up the 2022 eruption  ⏫ "), "{s}");
         assert!(s.ends_with("  Journal"));
+    }
+
+    #[test]
+    fn a_filter_is_held_while_it_is_typed() {
+        let mut v = ListView::new(list());
+        assert_eq!(v.unsaved(), None);
+        v.key(key(KeyCode::Char('/')));
+        assert_eq!(v.unsaved(), Some("a filter is being typed"));
+        v.key(key(KeyCode::Char('k')));
+        v.key(key(KeyCode::Enter));
+        assert_eq!(v.unsaved(), None, "kept, and no longer typed");
+    }
+
+    #[test]
+    fn a_list_that_filters_as_you_type_holds_its_filter_while_it_is_typed() {
+        let mut v = ListView::new(List {
+            filter: Filter::Typing,
+            ..list()
+        });
+        assert_eq!(v.unsaved(), None);
+        v.key(key(KeyCode::Char('k')));
+        assert_eq!(v.unsaved(), Some("a filter is being typed"));
+        v.key(key(KeyCode::Down));
+        assert_eq!(
+            v.unsaved(),
+            None,
+            "chosen from: it stays, and isn't typed any more"
+        );
+        v.key(key(KeyCode::Char('i')));
+        assert_eq!(v.unsaved(), Some("a filter is being typed"));
+        v.key(key(KeyCode::Backspace));
+        v.key(key(KeyCode::Backspace));
+        assert_eq!(v.unsaved(), None, "nothing typed is left");
     }
 }

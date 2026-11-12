@@ -2997,7 +2997,11 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   `view/update {view, content, select}` replaces what it shows: the frontend keeps the
   selection, the folds, the sort and the filter by row and group id, as the screens always did
   on updates, and `select` (optional) names a row to select now or when it shows up. `view/close
-  {view}` closes it. `view/show {view}` brings one of its open views to the front, in place of
+  {view}` closes it: after it the view sends the extension nothing more, and a `view/closed`
+  for it may follow, which the extension can ignore. (The frontend closes it at once unless
+  the user is typing in it, a filter or a table's cell: then it goes when the typing ends,
+  what Enter was pressed on is not sent, and the status line says it was not saved.)
+  `view/show {view}` brings one of its open views to the front, in place of
   what showed, which Back returns to, as `view/open` does; a view in front already, or not open,
   stays as it is. `workspace/open {note, line}` opens a note (an item's `note`, relative to
   the workspace, or an absolute path inside it; anything else is refused on the status line) at
@@ -3009,8 +3013,12 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   table's events flattened in, by row id: `{"view": 3, "event": "activated", "row": "4f…"}`
   (Enter), `"toggled"` (`x` on a row with a checkbox), `"command"` with `command` and `row` (a
   key the list declares), `"edit"` with `row`, `column` and `value` as typed (a table's cell);
-  and `view/closed {view}` when the user closed it, or the host did to make room. A view's
-  events go only to the extension that opened it.
+  and `view/closed {view}` when the user closed it, the host did to make room, or a
+  `view/close` that had to wait for the user's typing was done. For an extension the rule
+  is: a view is gone once it sent `view/close` for it or heard `view/closed` for it,
+  whichever comes first, and a `view/closed` for a view it already closed needs no answer
+  (the agenda and the table drop a view when they close it, so a later `view/closed`
+  finds nothing). A view's events go only to the extension that opened it.
 - **The frontend owns** layout, drawing and keys. A view shows over the main area, one at a
   time, in place of what showed, which becomes the way back. A view of a file has that file's
   backlinks pane under it. The extension never sees a key: it
@@ -3197,7 +3205,26 @@ design for an extension that needs it, and nothing is built of it.
   as before (`q` in the editor warns once about unsaved changes). `board-keeps-drafts.drive`
   checks the card and the editor with an example patched to open a note unasked,
   `board-keeps-drafts-view.drive` and `board-keeps-drafts-command.drive` a view shown and a
-  command run, and `board-keeps-unsaved.drive` edits a refused save left. What an extension
+  command run, and `board-keeps-unsaved.drive` edits a refused save left. The menu's own
+  prompts and dialogs are kept by the same check (`Mode::unsaved`, #269): a prompt being
+  typed, a dialog waiting for an answer or for owners, and the switcher, the palette, the
+  search, the outline and the bookmarks once something is typed in them. Each mode says
+  what it holds, in a match with no arm for the rest, so a new mode has to answer, and a
+  mode that names a tool asks the tool: link hints (a label begun), Tidy (marks), a recipe
+  (options, a plan). The view in front answers for itself like the board (`Open::unsaved`:
+  a filter being typed, also in a view that filters as you type until Enter or an arrow, a
+  table's cell being edited). Its owner's `view/close` then waits: the view knows it is
+  closing, says so on its last line, sends its owner nothing more, and goes when the typing
+  ends or the user leaves it (`Views::ask_close`, `take_closed`); the status line then says
+  that what Enter was pressed on was not saved. Opening a ninth view closes the oldest that
+  holds nothing typed (when all eight do, there are nine). The notice is kept in a
+  `refused::Refused` by the menu and by the board alike: first on the status line, before
+  any other message, for three seconds from when it shows, naming the last request and
+  how many there were; a line narrower than the notice cuts its end
+  (`prompt-keeps-typed.drive`, `prompt-keeps-typed-command.drive`,
+  `confirm-keeps-waiting.drive`, `view-keeps-typed.drive`,
+  `view-close-keeps-typed.drive`, `refusal-first-80.drive`, `refusal-first-60.drive`,
+  `board-keeps-notice.drive`). What an extension
   asks for inside the board's calls to it about its shapes (`shape/region`, a gesture's steps:
   `ui/notify`, `ui/status`, opening a note) the board keeps (`Board::take_asked`) and the menu
   does after each tick, key and mouse event, as after any call to an extension, within the

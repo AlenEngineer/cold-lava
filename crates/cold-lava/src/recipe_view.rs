@@ -52,6 +52,20 @@ impl RecipeView {
         }
     }
 
+    /// What the dialog holds that closing it would lose, in words for the status line:
+    /// options being filled, or a plan shown or waiting for owners. The list of recipes holds
+    /// nothing.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        match &self.step {
+            Step::Pick { .. } => None,
+            Step::Options { .. } => Some("a recipe's options are being typed"),
+            Step::Plan { waiting: None, .. } => Some("a recipe waits for your answer"),
+            Step::Plan {
+                waiting: Some(_), ..
+            } => Some("a recipe waits for its files' owners"),
+        }
+    }
+
     /// The options step again, saying why the plan was refused.
     pub fn refused(&mut self, why: String) {
         if let Step::Options { error, .. } = &mut self.step {
@@ -256,5 +270,40 @@ impl RecipeView {
                 head
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn options_and_a_plan_are_held_and_the_list_of_recipes_is_not() {
+        let recipe = &recipe::BUILT_IN[0];
+        let mut view = RecipeView::new();
+        assert_eq!(view.unsaved(), None);
+
+        view.step = Step::Options {
+            recipe,
+            values: Vec::new(),
+            at: 0,
+            error: None,
+        };
+        assert_eq!(view.unsaved(), Some("a recipe's options are being typed"));
+
+        let plan = |waiting| Step::Plan {
+            plan: Box::new(Plan {
+                recipe,
+                options: Options::new(),
+                edits: Vec::new(),
+                warnings: Vec::new(),
+            }),
+            scroll: 0,
+            waiting,
+        };
+        view.step = plan(None);
+        assert_eq!(view.unsaved(), Some("a recipe waits for your answer"));
+        view.step = plan(Some(Ticket(1)));
+        assert_eq!(view.unsaved(), Some("a recipe waits for its files' owners"));
     }
 }

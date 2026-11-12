@@ -20,6 +20,7 @@ mod owned;
 mod previews;
 mod reader;
 mod recipe_view;
+mod refused;
 mod scene;
 mod scene_view;
 mod shape_editor;

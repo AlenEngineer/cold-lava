@@ -180,6 +180,29 @@ change commands, keys and file formats; patch versions only fix things.
   take the first. An answer that doesn't read at all now names `Reply` where its message
   named `Answered` (`its answer doesn't read: data did not match any variant of untagged
   enum Reply`). A shape's own steps load and run as before.
+- An extension can no longer close a prompt, a dialog or a typed query (#269). While a new
+  note's or folder's name, a workspace's folder, a new name, a folder to move to, a tag, the
+  notes filter or a recipe's options were being typed, an extension that opened a note,
+  opened or showed a view, or ran a command replaced the prompt and the text was gone. The
+  same closed a rename, merge, delete, undo or recipe waiting for an answer, and a rename
+  that was already waiting for the owners of its files was then never made. Now the request
+  is not done and the status line says why (`open-tasks wanted to open Volcanoes/Krakatoa.md:
+  not while a new note's name is being typed`), as the whiteboard already did for a card
+  being edited. The switcher, the palette, the search, the outline and the bookmarks are
+  kept the same way once something is typed in them, link hints once a label is begun, Tidy
+  while something is marked, and an extension's list or table while a filter is typed or a
+  cell is edited in it (in a view that filters as you type, until Enter or an arrow). When
+  the owner of such a view closes it (`csv-table wanted to close a view: not while a cell is
+  being edited`), the view says on its last line that its extension closed it and goes when
+  the typing ends; what Enter was pressed on is not sent, and the status line says `not
+  saved: csv-table had closed this view`. A notice of a refused request comes first on the
+  status line, before any other message, on the whiteboard too, where a message could take
+  its place; it names the last request and says how many there were (`(2 requests
+  refused)`), and a line narrower than the notice cuts its end. At 80 columns or fewer the
+  notice can also push another message off the line for its three seconds, the engine's
+  message about the user's own edit included. Nothing was lost on disk before either.
+- A rename, merge or recipe whose dialog is gone when the owners of its files answer now
+  says that nothing was changed, where the answer was dropped without a word (#269).
 
 ## [0.6.0] - 2026-11-11
 
