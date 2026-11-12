@@ -156,8 +156,9 @@ pub enum ViewNews {
     Event(Happened),
     /// The user closed it (Esc, `q`), the host did to make room, or the extension's own
     /// `view/close` was done after waiting for the user to finish typing in it: it is gone,
-    /// and an update to it does nothing. A view the extension asked to close while the user
-    /// was typing in it sends no more events, and is closed when this names it.
+    /// and an update to it does nothing. For the extension, a view is gone once it sent
+    /// `view/close` for it or heard this for it, whichever comes first: after `view/close`
+    /// the view sends it nothing more, and this may still follow for it and needs no answer.
     #[serde(rename = "view/closed")]
     Closed { view: ViewId },
 }

@@ -2997,10 +2997,11 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   `view/update {view, content, select}` replaces what it shows: the frontend keeps the
   selection, the folds, the sort and the filter by row and group id, as the screens always did
   on updates, and `select` (optional) names a row to select now or when it shows up. `view/close
-  {view}` closes it, at once unless the user is typing in it (a filter, a table's cell):
-  then it closes when the typing ends, and until `view/closed` names it the view is not
-  closed for the user, though the extension hears nothing more from it (what Enter was
-  pressed on is not sent, and the status line says it was not saved). `view/show {view}` brings one of its open views to the front, in place of
+  {view}` closes it: after it the view sends the extension nothing more, and a `view/closed`
+  for it may follow, which the extension can ignore. (The frontend closes it at once unless
+  the user is typing in it, a filter or a table's cell: then it goes when the typing ends,
+  what Enter was pressed on is not sent, and the status line says it was not saved.)
+  `view/show {view}` brings one of its open views to the front, in place of
   what showed, which Back returns to, as `view/open` does; a view in front already, or not open,
   stays as it is. `workspace/open {note, line}` opens a note (an item's `note`, relative to
   the workspace, or an absolute path inside it; anything else is refused on the status line) at
@@ -3013,9 +3014,11 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   (Enter), `"toggled"` (`x` on a row with a checkbox), `"command"` with `command` and `row` (a
   key the list declares), `"edit"` with `row`, `column` and `value` as typed (a table's cell);
   and `view/closed {view}` when the user closed it, the host did to make room, or a
-  `view/close` that had to wait for the user's typing was done: a view is closed once
-  `view/closed` names it or `view/close` was sent with nothing typed in it. A view's
-  events go only to the extension that opened it.
+  `view/close` that had to wait for the user's typing was done. For an extension the rule
+  is: a view is gone once it sent `view/close` for it or heard `view/closed` for it,
+  whichever comes first, and a `view/closed` for a view it already closed needs no answer
+  (the agenda and the table drop a view when they close it, so a later `view/closed`
+  finds nothing). A view's events go only to the extension that opened it.
 - **The frontend owns** layout, drawing and keys. A view shows over the main area, one at a
   time, in place of what showed, which becomes the way back. A view of a file has that file's
   backlinks pane under it. The extension never sees a key: it

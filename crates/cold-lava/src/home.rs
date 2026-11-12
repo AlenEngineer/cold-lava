@@ -1190,7 +1190,8 @@ impl Home {
 
     /// The views their owners closed while something was typed in them go now that the typing
     /// ended, or that the user left them (`Views::take_closed`). Their owners hear
-    /// `view/closed`, and the status line says what became of what was typed.
+    /// `view/closed`, and the status line says what became of what was typed: as a notice
+    /// (`refused`), first on the line, so that nothing the owner says in answer hides it.
     fn close_asked(&mut self) {
         let front = match self.mode {
             Mode::View { owner, view, .. } => Some((owner, view)),
@@ -1199,7 +1200,7 @@ impl Home {
         for gone in self.views.take_closed(front) {
             self.forget_closed_views();
             let name = self.registry.manifest(gone.owner).name.clone();
-            self.flash(match gone.unsent {
+            self.refused(match gone.unsent {
                 true => format!("not saved: {name} had closed this view"),
                 false => format!("{name} closed the view you were typing in"),
             });

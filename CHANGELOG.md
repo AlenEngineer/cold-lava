@@ -198,8 +198,9 @@ change commands, keys and file formats; patch versions only fix things.
   saved: csv-table had closed this view`. A notice of a refused request comes first on the
   status line, before any other message, on the whiteboard too, where a message could take
   its place; it names the last request and says how many there were (`(2 requests
-  refused)`), and a line narrower than the notice cuts its end. Nothing was lost on disk
-  before either.
+  refused)`), and a line narrower than the notice cuts its end. At 80 columns or fewer the
+  notice can also push another message off the line for its three seconds, the engine's
+  message about the user's own edit included. Nothing was lost on disk before either.
 - A rename, merge or recipe whose dialog is gone when the owners of its files answer now
   says that nothing was changed, where the answer was dropped without a word (#269).
 
