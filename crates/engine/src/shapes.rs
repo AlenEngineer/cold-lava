@@ -21,6 +21,9 @@ pub use crate::types::Origin;
 use crate::types::is_name;
 
 pub mod file;
+mod steps;
+
+pub use steps::{Steps, Way};
 
 /// The only `version` a shapes file can have today.
 pub const VERSION: i64 = 1;
@@ -399,6 +402,15 @@ pub struct Behaviour {
     /// `do` or `edit`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub extension: bool,
+}
+
+impl Behaviour {
+    /// Its steps as written: its one `edit`, then its `do`. A loaded entry has only one of
+    /// the two.
+    pub fn written(&self) -> Vec<Step> {
+        let edit = self.edit.iter().cloned().map(Step::Edit);
+        edit.chain(self.steps.iter().cloned()).collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -784,9 +796,11 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         for (id, (_, d)) in &kept {
             let problem = match &built[id] {
                 Err(e) => Some(e.clone()),
-                Ok(_) => rebinds(d)
-                    .find(|to| !kept.contains_key(*to))
-                    .map(|to| format!("its rebind names shape {to}, which isn't loaded")),
+                Ok(_) => (d.on.iter())
+                    .flat_map(|b| {
+                        steps::unknown_rebinds(&b.written(), &|to: &str| kept.contains_key(to))
+                    })
+                    .next(),
             };
             failed.extend(problem.map(|p| (id.clone(), p)));
         }
@@ -816,15 +830,6 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         errors,
         notes,
     }
-}
-
-fn rebinds(d: &Definition) -> impl Iterator<Item = &str> {
-    (d.on.iter())
-        .flat_map(|b| &b.steps)
-        .filter_map(|s| match s {
-            Step::Rebind(r) => Some(r.shape.as_str()),
-            _ => None,
-        })
 }
 
 /// Builds `id` (and first the shapes it nests) into `built`. `path` is the nesting being built,
@@ -1157,42 +1162,8 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
                 "{at}: give its steps as do = [ … ], or one edit = {{ … }}, or extension = true"
             ));
         }
-        let edits = b.edit.iter().chain(b.steps.iter().filter_map(|s| match s {
-            Step::Edit(e) => Some(e),
-            _ => None,
-        }));
-        for e in edits {
-            let kinds = [
-                e.set_field.is_some(),
-                e.toggle.is_some(),
-                e.recipe.is_some(),
-            ];
-            if kinds.iter().filter(|k| **k).count() != 1 {
-                p.push(format!(
-                    "{at}: an edit is exactly one of set-field, toggle and recipe"
-                ));
-            }
-            match (&e.recipe, &e.item) {
-                (None, None) => p.push(format!(
-                    "{at}: say which item set-field or toggle changes, like item = \"dropped\""
-                )),
-                (Some(_), Some(_)) => p.push(format!(
-                    "{at}: a recipe changes the whole workspace, so it names no item"
-                )),
-                _ => {}
-            }
-            if e.recipe.is_none() && !e.options.is_empty() {
-                p.push(format!("{at}: options are a recipe's"));
-            }
-            if let Some(s) = &e.set_field {
-                let ways = [s.value.is_some(), s.add.is_some(), s.remove.is_some()];
-                if ways.iter().filter(|w| **w).count() != 1 {
-                    p.push(format!(
-                        "{at}: set-field takes exactly one of value, add and remove"
-                    ));
-                }
-            }
-        }
+        let wrong = steps::edits(&b.written());
+        p.extend(wrong.into_iter().map(|e| format!("{at}: {e}")));
     }
     p
 }

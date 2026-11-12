@@ -1200,14 +1200,16 @@ fn bound_shape(
         let ext = binding.extension().map(String::from);
         let refused = |e: gateway::Error| anyhow!("--do: {e}");
         let acted = match &ext {
-            Some(name) => {
-                owners.as_extension(&mut core, name, |host| binding.act(host, &gesture, 0))?
-            }
-            None => binding.act(&mut act::Direct::user(&mut core), &gesture, 0),
+            Some(name) => owners.as_extension(&mut core, name, |host| {
+                binding.act(host, found, &gesture, 0)
+            })?,
+            None => binding.act(&mut act::Direct::user(&mut core), found, &gesture, 0),
         };
         let ran = match (acted.map_err(refused)?, &ext) {
             (act::Acted::Ran(d), _) => d,
-            (act::Acted::Ask(ask), Some(name)) => match owners.ask_shape(&mut core, name, ask)? {
+            (act::Acted::Ask(ask), Some(name)) => match owners
+                .ask_shape(&mut core, found, name, ask)?
+            {
                 act::Answered::Gesture { steps } => owners
                     .as_extension(&mut core, name, |host| binding.run(host, &gesture, &steps))?
                     .map_err(refused)?,
@@ -1251,7 +1253,7 @@ fn bound_shape(
                 continue;
             };
             let region = region.clone();
-            match owners.ask_shape(&mut core, &name, ask) {
+            match owners.ask_shape(&mut core, found, &name, ask) {
                 Ok(act::Answered::Region { items }) => binding.answered(&region, items),
                 Ok(_) => {}
                 Err(e) => eprintln!("{e}"),

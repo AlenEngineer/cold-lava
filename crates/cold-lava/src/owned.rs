@@ -207,8 +207,14 @@ impl<'a> Owners<'a> {
     }
 
     /// Asks the extension `name` about a shape it ships (`shape/region`, `shape/gesture`),
-    /// starting it if it wasn't, and waits for its answer.
-    pub fn ask_shape(&mut self, core: &mut Core, name: &str, ask: Ask) -> Result<Answered> {
+    /// starting it if it wasn't, and waits for its answer, read among the loaded `shapes`.
+    pub fn ask_shape(
+        &mut self,
+        core: &mut Core,
+        shapes: &crate::shapes::Shapes,
+        name: &str,
+        ask: Ask,
+    ) -> Result<Answered> {
         let ext = self
             .start(name, core)
             .ok_or_else(|| anyhow!("{name} isn't installed"))?;
@@ -220,7 +226,7 @@ impl<'a> Owners<'a> {
         }
         let mut answer = None;
         self.serve(core, |c| {
-            answer = c.take_shape_answers().into_iter().next();
+            answer = c.take_shape_answers(shapes).into_iter().next();
             answer.is_some()
         });
         match answer {

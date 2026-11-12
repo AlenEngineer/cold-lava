@@ -18,7 +18,7 @@ use crate::core::Core;
 use crate::files::{Create, Created, NewFile};
 use crate::gateway::{Answer, Edit, Error, Op, Reason};
 use crate::recipe;
-use crate::shapes::{Behaviour, EditStep, Step, fill};
+use crate::shapes::{Behaviour, EditStep, Shapes, Step, Steps, Way, fill};
 use crate::shows::{Member, text_of};
 use crate::workspace::search_key;
 
@@ -178,9 +178,11 @@ pub enum Acted {
 impl Binding {
     /// Runs the steps of the `on` entry `gesture` starts. Refused when none does; handed to
     /// the extension when the entry says so (`placed` names this placed shape in its answer).
+    /// `shapes` are the loaded shapes, which a `rebind` names.
     pub fn act(
         &self,
         gw: &mut dyn Gateway,
+        shapes: &Shapes,
         gesture: &Gesture,
         placed: u64,
     ) -> Result<Acted, Error> {
@@ -197,29 +199,32 @@ impl Binding {
                 inputs: self.data(),
             }));
         }
-        let steps: Vec<Step> = match &b.edit {
-            Some(e) => vec![Step::Edit(e.clone())],
-            None => b.steps.clone(),
-        };
+        // The loader checked them already. `run` takes only `Steps`, so that no path can hand
+        // it steps nobody checked, and an entry's are made here by the same rules.
+        let steps = Steps::checked(b.written(), shapes).map_err(|problems| {
+            let message = format!("{}: {}", self.shape().id, problems.join("; "));
+            Error::new(Reason::Refused, message)
+        })?;
         self.run(gw, gesture, &steps).map(Acted::Ran)
     }
 
     /// Runs `steps` in order for `gesture`, stopping at the first refused. Each one's text has
     /// its placeholders filled: the inputs' (`${b.tag}`), the gesture's member's
     /// (`${dropped.name}`, `${clicked}`), and a note made by an earlier step
-    /// (`${created.path}`, `${created.title}`).
+    /// (`${created.path}`, `${created.title}`). They are `Steps`, so each one passed the
+    /// check, a shape's own and an extension's alike.
     pub fn run(
         &self,
         gw: &mut dyn Gateway,
         gesture: &Gesture,
-        steps: &[Step],
+        steps: &Steps,
     ) -> Result<Done, Error> {
         let mut done = Done {
             steps: Vec::new(),
             rebind: None,
         };
         let mut created: Option<String> = None;
-        for step in steps {
+        for step in steps.iter() {
             let value = |name: &str| self.step_value(gesture, created.as_deref(), name);
             match step {
                 Step::Edit(e) => done.steps.push(self.edit(gw, gesture, e, &value)?),
@@ -289,11 +294,10 @@ impl Binding {
         })?;
         let op = match &e.set_field {
             Some(s) => {
-                let value = match (&s.value, &s.add, &s.remove) {
-                    (Some(v), ..) => Json::String(fill(v, value)),
-                    (_, Some(v), _) => listed(member, &s.field, &fill(v, value), true)?,
-                    (.., Some(v)) => listed(member, &s.field, &fill(v, value), false)?,
-                    _ => unreachable!("checked at load: one of value, add and remove"),
+                let value = match s.way().map_err(|why| Error::new(Reason::Refused, why))? {
+                    Way::Value(v) => Json::String(fill(v, value)),
+                    Way::Add(v) => listed(member, &s.field, &fill(v, value), true)?,
+                    Way::Remove(v) => listed(member, &s.field, &fill(v, value), false)?,
                 };
                 Op::SetField {
                     field: s.field.clone(),
@@ -491,10 +495,11 @@ pub struct ShapeAnswer {
     pub answer: Result<Answered, String>,
 }
 
-/// The extension's answer to an `Ask`.
+/// The extension's answer to an `Ask` as it wrote it. Nothing in it is checked: `read` makes
+/// it an `Answered`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum Answered {
+pub enum Reply {
     /// To `shape/region`: the members it shows, each an id and a label.
     Region { items: Vec<Entry> },
     /// To `shape/gesture`: steps, in the language of `on`'s `do`.
@@ -502,6 +507,57 @@ pub enum Answered {
         #[serde(rename = "do")]
         steps: Vec<Step>,
     },
+}
+
+impl Reply {
+    /// It as the answer to `ask`: only in the form the ask has, and its steps only when they
+    /// pass the rules a loaded shape's steps pass, among the loaded `shapes`. Else why it
+    /// isn't taken.
+    pub fn read(self, ask: &Ask, shapes: &Shapes) -> Result<Answered, String> {
+        match (ask, self) {
+            (Ask::Region { .. }, Reply::Region { items }) => Ok(Answered::Region { items }),
+            (Ask::Gesture { .. }, Reply::Gesture { steps }) => Steps::checked(steps, shapes)
+                .map(|steps| Answered::Gesture { steps })
+                .map_err(|problems| {
+                    format!(
+                        "it answered shape/gesture with steps that can't run: {}",
+                        problems.join("; ")
+                    )
+                }),
+            (Ask::Region { .. }, _) => Err("it answered shape/region with steps".into()),
+            (Ask::Gesture { .. }, _) => Err("it answered shape/gesture with items".into()),
+        }
+    }
+}
+
+/// What the extension `by` replied to `ask`, or why it didn't, as the core keeps it until a
+/// frontend takes it with its loaded shapes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Replied {
+    pub by: String,
+    pub ask: Ask,
+    pub reply: Result<Reply, String>,
+}
+
+impl Replied {
+    /// The answer it makes among the loaded `shapes`.
+    pub fn read(self, shapes: &Shapes) -> ShapeAnswer {
+        let answer = (self.reply).and_then(|reply| reply.read(&self.ask, shapes));
+        ShapeAnswer {
+            by: self.by,
+            ask: self.ask,
+            answer,
+        }
+    }
+}
+
+/// An extension's answer to an `Ask`, read: in the ask's form, its steps checked.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answered {
+    /// To `shape/region`: the members it shows, each an id and a label.
+    Region { items: Vec<Entry> },
+    /// To `shape/gesture`: the steps to run.
+    Gesture { steps: Steps },
 }
 
 #[cfg(test)]

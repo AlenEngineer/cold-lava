@@ -158,6 +158,28 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
+  with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
+  a `set-field` with none of `value`, `add` and `remove` made the app panic when the
+  whiteboard ran it. An answer's steps now pass the same rules as a loaded shape's, a
+  `rebind` to a shape that isn't loaded among them. An answer that breaks one is refused
+  whole before anything is written, none of its steps run, and the whiteboard says why with
+  the extension's name: `tally: it answered shape/gesture with steps that can't run:
+  set-field takes exactly one of value, add and remove`; `cold-lava shapes --do` fails with
+  the same reason. Before, a `create` in front of a bad step made its note first. Every
+  `rebind` in an answer is checked now, though still only the last one is applied. Before,
+  only the last was looked at: when it named a shape that isn't loaded, it was refused after
+  the steps before it had run, and when an earlier one did and the last named a loaded
+  shape, the whole answer ran (a `create`, a `rebind` to `nope`, then a `rebind` to
+  `sticky` made the note and the shape became a sticky). That answer is refused whole now.
+  This also refuses answers that ran before by accident: an `edit` with none of
+  `set-field`, `toggle` and `recipe` used to tick the item, one with a recipe and something
+  else (an item, another kind of edit) used to run the recipe, `options` without a recipe
+  were ignored, an `edit` with a `set-field` and a `toggle` together used to set the field
+  and ignore the toggle, and a `set-field` with two of `value`, `add` and `remove` used to
+  take the first. An answer that doesn't read at all now names `Reply` where its message
+  named `Answered` (`its answer doesn't read: data did not match any variant of untagged
+  enum Reply`). A shape's own steps load and run as before.
 - An extension can no longer close a prompt, a dialog or a typed query (#269). While a new
   note's or folder's name, a workspace's folder, a new name, a folder to move to, a tag, the
   notes filter or a recipe's options were being typed, an extension that opened a note,

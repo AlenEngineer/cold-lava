@@ -124,7 +124,7 @@ fn a_drop_edits_the_dropped_item_as_the_canvas() {
         to: "both".into(),
         item: fuji.clone(),
     };
-    let done = ran(b.act(&mut Direct::user(&mut core), &drop, 1));
+    let done = ran(b.act(&mut Direct::user(&mut core), &shapes, &drop, 1));
     assert_eq!(
         done.steps,
         [Did::Edited {
@@ -148,7 +148,9 @@ fn a_drop_edits_the_dropped_item_as_the_canvas() {
         to: "only-a".into(),
         item: "x".into(),
     };
-    let refused = b.act(&mut Direct::user(&mut core), &other, 1).unwrap_err();
+    let refused = b
+        .act(&mut Direct::user(&mut core), &shapes, &other, 1)
+        .unwrap_err();
     assert_eq!(refused.reason, Reason::Refused);
     assert_eq!(
         refused.message,
@@ -178,7 +180,9 @@ fn the_built_in_venns_drop_is_refused_where_tags_are_in_the_text() {
         item: b.shown().regions[0].items[0].id.clone(),
     };
     let before = std::fs::read_to_string(dir.join("Vesuvius.md")).unwrap();
-    let e = b.act(&mut Direct::user(&mut core), &drop, 1).unwrap_err();
+    let e = b
+        .act(&mut Direct::user(&mut core), &shapes, &drop, 1)
+        .unwrap_err();
     assert_eq!(e.reason, Reason::Refused);
     assert!(e.message.contains("can't be written"), "{}", e.message);
     assert_eq!(
@@ -255,7 +259,7 @@ fn a_click_ticks_the_clicked_task_and_a_key_runs_a_recipe() {
         on: "open".into(),
         item: Some(pack),
     };
-    ran(b.act(&mut Direct::user(&mut core), &click, 1));
+    ran(b.act(&mut Direct::user(&mut core), &shapes, &click, 1));
     let text = std::fs::read_to_string(dir.join("Trip.md")).unwrap();
     assert!(text.starts_with("- [x] Pack ash masks"), "{text}");
     assert_eq!(
@@ -277,6 +281,7 @@ fn a_click_ticks_the_clicked_task_and_a_key_runs_a_recipe() {
     );
     let done = ran(volcanoes.act(
         &mut Direct::user(&mut core),
+        &shapes,
         &Gesture::Key { key: "r".into() },
         2,
     ));
@@ -316,7 +321,7 @@ fn make_it_a_note_creates_the_note_where_obsidian_would_and_rebinds_as_a_card() 
     let make = Gesture::Action {
         name: "make-a-note".into(),
     };
-    let done = ran(sticky.act(&mut Direct::user(&mut core), &make, 3));
+    let done = ran(sticky.act(&mut Direct::user(&mut core), &shapes, &make, 3));
     assert_eq!(
         done.steps,
         [Did::Created {
@@ -342,7 +347,7 @@ fn make_it_a_note_creates_the_note_where_obsidian_would_and_rebinds_as_a_card() 
 
     // A second time, the name is taken: Obsidian's numbering.
     let again = bind(&mut core, &shapes, "sticky", &[("text", "text:Ash masks")]);
-    let done = ran(again.act(&mut Direct::user(&mut core), &make, 4));
+    let done = ran(again.act(&mut Direct::user(&mut core), &shapes, &make, 4));
     assert_eq!(
         done.steps,
         [Did::Created {
@@ -376,7 +381,7 @@ fn a_refused_step_stops_the_rest() {
     let make = Gesture::Action {
         name: "make-a-note".into(),
     };
-    let e = sticky.act(&mut Forbidden, &make, 1).unwrap_err();
+    let e = sticky.act(&mut Forbidden, &shapes, &make, 1).unwrap_err();
     assert_eq!(e.reason, Reason::Forbidden);
     assert!(!dir.join("Inbox/Nothing.md").exists());
     let _ = std::fs::remove_dir_all(dir);
@@ -430,9 +435,9 @@ fn an_extensions_shape_asks_it_for_a_region_and_a_gesture() {
         Vec::<String>::new(),
         "until it answers"
     );
-    let answer: Answered =
+    let reply: Reply =
         serde_json::from_value(json!({"items": [{"label": "2 volcanoes"}]})).unwrap();
-    let Answered::Region { items } = answer else {
+    let Ok(Answered::Region { items }) = reply.read(&asks[0], &shapes) else {
         panic!()
     };
     b.answered("count", items);
@@ -443,15 +448,15 @@ fn an_extensions_shape_asks_it_for_a_region_and_a_gesture() {
         on: "count".into(),
         item: Some(krakatoa),
     };
-    let Acted::Ask(ask) = b.act(&mut Forbidden, &click, 7).unwrap() else {
+    let Acted::Ask(ask) = b.act(&mut Forbidden, &shapes, &click, 7).unwrap() else {
         panic!("its extension decides");
     };
     assert_eq!(ask.placed(), 7);
-    let answer: Answered = serde_json::from_value(json!({"do": [
+    let reply: Reply = serde_json::from_value(json!({"do": [
         {"edit": {"item": "clicked", "set-field": {"field": "visited", "value": "${clicked.name}"}}}
     ]}))
     .unwrap();
-    let Answered::Gesture { steps } = answer else {
+    let Ok(Answered::Gesture { steps }) = reply.read(&ask, &shapes) else {
         panic!()
     };
     let e = b.run(&mut Forbidden, &click, &steps).unwrap_err();
@@ -553,7 +558,7 @@ fn the_messages_on_the_wire() {
         }})
     );
     assert_eq!(
-        serde_json::to_value(Answered::Region {
+        serde_json::to_value(Reply::Region {
             items: vec![Entry {
                 id: "i1".into(),
                 label: "Krakatoa".into()
