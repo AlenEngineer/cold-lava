@@ -377,6 +377,9 @@ impl<'t, 'd> Line<'t, 'd> {
         let t = self.text.as_bytes();
         let mut plain = a;
         let mut i = a;
+        // Where the HTML tag or the autolink being read ends: a `$` in it opens no math, as
+        // pulldown-cmark, which reads the tag first, has it.
+        let mut tag = a;
         while i < z {
             let found = match t[i] {
                 // An escaped character starts nothing and ends nothing.
@@ -438,7 +441,13 @@ impl<'t, 'd> Line<'t, 'd> {
                 b'%' if self.g.has(S::Comments) && t.get(i + 1) == Some(&b'%') => {
                     (self.text[i + 2..z].find("%%")).map(|k| (Comment, i + 2 + k + 2))
                 }
-                b'$' if self.g.has(S::Math) => match self.math(i) {
+                b'<' if self.g.has(S::Math) && i >= tag && self.text[i..z].contains('$') => {
+                    if let Some((_, len)) = angle(&self.text[i..z]) {
+                        tag = i + len;
+                    }
+                    None
+                }
+                b'$' if self.g.has(S::Math) && i >= tag => match self.math(i) {
                     Some(close) if close.end <= z => Some((InlineMath, close.end)),
                     // It closes on a later line of the block.
                     Some(close) if !later.is_empty() => {

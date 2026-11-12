@@ -609,6 +609,11 @@ fn math_is_in_a_blocks_text_as_pulldown_cmark_pairs_it() {
     // What starts first wins: code before math, math before code.
     assert_eq!(math("`$a` $b$\n"), ["$b$"]);
     assert_eq!(math("$a `b$` c\n"), ["$a `b$"]);
+    // An HTML tag that starts before a `$` holds it.
+    assert_eq!(
+        math("<span>$a$</span> <a href=\"$b\">c$</a> $d <i>e$</i>\n"),
+        ["$a$", "$d <i>e$"]
+    );
     // A table's cell is a block's text.
     assert_eq!(math("| $a | b$ |\n| - | - |\n| $c$ | d |\n"), ["$c$"]);
     // Typing the closing `$$` under a paragraph makes math of it, and an edit reads so too.

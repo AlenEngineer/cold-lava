@@ -601,6 +601,8 @@ mod tests {
         "| $a | b$ |\n| - | - |\n| $c$ | $5 and $6 |\n\n# Heading $x$ and $5\n\n- item $a\n  b$ c\n- [ ] task $$d$$\n",
         // Math that opens in a link's text: inside it, and closing after it.
         "[$a$](u.md) and [b $c](u.md) d$ e and [[W $f]] g$ h and ![i $j](p.png) k$\n",
+        // An HTML tag or an autolink that starts before a `$` holds it.
+        "<span>$a$</span> <a href=\"$b\">c</a> <https://x.y/$d> e$ and $f <b>g$</b>\n",
         // What starts first: code before math, math before code.
         "`$a` $b$ and $c `d$` e\n",
         // Comments.
@@ -762,6 +764,11 @@ mod tests {
             "obsidian",
             "> [!note] Title *one\n> two* three\n",
             "Emphasis that opened in a callout's title and closed on its next line made that line part of the title.",
+        ),
+        (
+            "obsidian",
+            "> [!note] Title $a\n> b$ c\n",
+            "Math that opened in a callout's title and closed on its next line made that line part of the title, as emphasis did. The title is its line.",
         ),
         (
             "obsidian",
