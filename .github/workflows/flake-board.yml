@@ -7,13 +7,14 @@ on:
 
 jobs:
   measure:
-    name: ${{ matrix.scripts }}
+    name: ${{ matrix.scripts }} ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         scripts: [main, fix]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,23 +26,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build once
         run: cargo test -p cold-lava --test drive --no-run
-      # Unloaded, neither main's scripts nor the fix failed (0 of 30 suite runs, 0 of 100 alone), so
-      # the machine is loaded here: busy loops on every core while the one test runs.
-      - name: The one test under load, 60 times at each level
+      # The one test alone never failed on main's scripts (0 of 100, and 0 of 120 with busy loops on
+      # every core), so only the whole suite counts: 5 shards of 30 runs for each set of scripts.
+      - name: The whole drive suite, 30 times
         run: |
-          for per_core in 1 3; do
-            hogs=$(( $(nproc) * per_core ))
-            for h in $(seq 1 $hogs); do ( while :; do :; done ) & done
-            fails=0
-            : > lines.txt
-            for i in $(seq 1 60); do
-              if ! cargo test -p cold-lava --test drive the_whiteboard_moves_edits_and_merges_cards > out.txt 2>&1; then
-                fails=$((fails+1))
-                grep -m1 -o 'board.drive:[0-9]*: .*' out.txt >> lines.txt || echo "no drive line" >> lines.txt
-              fi
-            done
-            kill $(jobs -p) || true
-            wait || true
-            echo "LOAD ${{ matrix.scripts }}, $hogs busy loops: failed $fails of 60 runs" | tee -a "$GITHUB_STEP_SUMMARY"
-            sort lines.txt | uniq -c | sed "s/^/LOAD ${{ matrix.scripts }}, $hogs busy loops, where: /"
+          fails=0
+          for i in $(seq 1 30); do
+            cargo test -p cold-lava --test drive > out.txt 2>&1 || true
+            if grep -q "the_whiteboard_moves_edits_and_merges_cards ... FAILED" out.txt; then
+              fails=$((fails+1))
+              echo "suite run $i: $(grep -m1 -o 'board.drive:[0-9]*: .*' out.txt)"
+            fi
+            if grep " ... FAILED" out.txt | grep -qv the_whiteboard_moves; then
+              echo "suite run $i, another test failed:"
+              grep " ... FAILED" out.txt | grep -v the_whiteboard_moves
+              grep -m3 -E '\.drive:[0-9]+: |panicked at' out.txt || true
+            fi
           done
+          echo "SUITE ${{ matrix.scripts }} shard ${{ matrix.shard }}: the whiteboard test failed in $fails of 30 runs" | tee -a "$GITHUB_STEP_SUMMARY"
