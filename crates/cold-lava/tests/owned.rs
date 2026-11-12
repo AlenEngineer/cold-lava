@@ -387,9 +387,20 @@ fn a_made_up_formats_tasks_are_read_and_edited_through_their_owners_process() {
     assert_eq!(chores(), now, "re-dated");
 
     read_again("Scratch 2", "Scratch 3");
+    let file_arg = file.to_str().unwrap();
+    // Words the format can't hold: it ends a link at a space, so a comma after one would
+    // read back as part of the link's target. The read-back catches it, and nothing is written.
+    let comma = "Call the electrician #home about Krakatau, not [[x]]";
+    let refused = cold_lava(&home, &["item", "set", file_arg, id, "text", comma]);
+    let (_, why) = text(&refused);
+    assert!(!refused.status.success(), "{why}");
+    assert!(why.contains("doesn't read back as asked"), "{why}");
+    assert!(why.contains("nothing was written"), "{why}");
+    assert_eq!(chores(), now, "as it was");
+
     let reworded = set(
         "text",
-        "Call the electrician #home about Krakatau, not [[x]]",
+        "Call the electrician #home about Krakatau and not [[x]]",
     );
     assert_eq!(
         (&reworded["item"]["tags"], &reworded["item"]["links"]),
@@ -398,12 +409,11 @@ fn a_made_up_formats_tasks_are_read_and_edited_through_their_owners_process() {
     );
     let now = now.replace(
         "Call the plumber @home about >Krakatau",
-        "Call the electrician @home about >Krakatau, not [[x]]",
+        "Call the electrician @home about >Krakatau and not [[x]]",
     );
     assert_eq!(chores(), now, "reworded, in the format's own marks");
 
     read_again("Scratch 3", "Scratch 4");
-    let file_arg = file.to_str().unwrap();
     let undated = run(&["item", "set", file_arg, id, "due", "--remove", "--json"]);
     let undated: Value = serde_json::from_str(&undated).unwrap();
     assert_eq!(undated["item"]["due"], Value::Null);
