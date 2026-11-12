@@ -1750,6 +1750,35 @@ fn a_views_owner_cant_close_it_while_a_cell_is_typed_in_it() {
 
 /// Needs python3, which CI's runners have.
 #[test]
+fn what_a_views_owner_says_on_view_closed_doesnt_hide_that_a_cell_was_not_saved() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("view-close-says-not-saved");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        let gone = "    if rev is None:\n";
+        let closed = "def view_closed(params):\n";
+        assert!(
+            main.contains(gone) && main.contains(closed),
+            "the example's file/changed or view/closed handler moved"
+        );
+        let speaks = format!("{closed}    ext.show(\"heard view/closed\")\n");
+        main.replace(gone, "    if True:\n")
+            .replace(closed, &speaks)
+    });
+    let out = drive_with(
+        "view-close-says-not-saved.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
 fn a_refusals_notice_comes_first_on_a_narrow_status_line() {
     if !has_python() {
         eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
