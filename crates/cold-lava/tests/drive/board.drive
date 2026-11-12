@@ -24,11 +24,14 @@ keys esc
 wait-for merged changes made outside cold-lava
 expect whiteboard Pin · 3 cards · 0 arrows
 expect Bravo, checked
-# Dragging a card moves it.
+# Dragging a card moves it. The app may be busy with the watcher's report of the save above, so
+# wait until it has read the drag: the press selects Alpha, which gives it the heavy border.
 drag 12 20 20 20
+wait-for ┃Alpha
 expect-in 20 13 21 42 Alpha
-# Dragging empty space pans.
+# Dragging empty space pans. The press there selects nothing, so the heavy border goes.
 drag 2 50 4 60
+wait-gone ┃Alpha
 expect-in 22 20 24 50 │Alpha
 expect-in 13 64 15 100 │Bravo, checked
 # The wheel zooms out and back in.
