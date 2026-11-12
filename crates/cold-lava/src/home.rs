@@ -8049,7 +8049,8 @@ mod tests {
             assert_eq!(mode.unsaved(), Some(why));
         }
 
-        let pickers: [(fn(String) -> Mode, &str); 5] = [
+        type Picker = fn(String) -> Mode;
+        let pickers: [(Picker, &str); 5] = [
             (
                 |query: String| Mode::Switcher {
                     query,
