@@ -49,12 +49,12 @@ pub fn listing_block(text: &str) {
 }
 
 /// A message on stdout.
-pub fn told(words: Arguments<'_>) {
+pub fn message_out(words: Arguments<'_>) {
     println!("{}", lines(&words.to_string(), Level::Message));
 }
 
 /// A message on stderr.
-pub fn problem(words: Arguments<'_>) {
+pub fn message_err(words: Arguments<'_>) {
     eprintln!("{}", lines(&words.to_string(), Level::Message));
 }
 
@@ -104,13 +104,13 @@ macro_rules! out {
 
 /// A message on stdout, written as `println!` is.
 macro_rules! told {
-    () => { $crate::say::told(format_args!("")) };
-    ($($words:tt)*) => { $crate::say::told(format_args!($($words)*)) };
+    () => { $crate::say::message_out(format_args!("")) };
+    ($($words:tt)*) => { $crate::say::message_out(format_args!($($words)*)) };
 }
 
 /// A message on stderr, written as `eprintln!` is.
 macro_rules! problem {
-    ($($words:tt)*) => { $crate::say::problem(format_args!($($words)*)) };
+    ($($words:tt)*) => { $crate::say::message_err(format_args!($($words)*)) };
 }
 
 pub(crate) use {out, problem, told};
