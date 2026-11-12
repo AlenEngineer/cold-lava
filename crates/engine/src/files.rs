@@ -8,7 +8,7 @@
 //! stay inside the workspace. Every type here derives serde and tests pin its JSON. The core
 //! answers them (`Core::read_file`, …); the frontend's `Host` checks permissions first.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
