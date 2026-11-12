@@ -730,7 +730,7 @@ fn an_attribute_is_changed_where_its_owner_read_it() {
     let s = settings(
         "[box]\non = \"item\"\npriority = 2\nwhere.attribute = \"checkbox\"\n\
          fields.state = { attribute = \"checkbox\" }\nfields.words = { rest = true }\n\
-         [note-box]\non = \"aside\"\nfields.kind = { attribute = \"callout\" }\n\
+         [note-box]\non = \"aside\"\nfields.callout = { attribute = \"callout\" }\n\
          [chapter]\non = \"section\"\nfields.depth = { attribute = \"level\", type = \"number\" }\n",
     );
     let text = "# One\n- [ ] sweep\n\n> [!NOTE]- Careful\n> hot\n";
@@ -738,7 +738,7 @@ fn an_attribute_is_changed_where_its_owner_read_it() {
     assert_eq!(after(&s, text, 2, "box", "state", json!("/")), ticked);
     assert_eq!(after(&s, &ticked, 2, "box", "state", json!(" ")), text);
     assert_eq!(
-        after(&s, text, 4, "note-box", "kind", json!("tip")),
+        after(&s, text, 4, "note-box", "callout", json!("tip")),
         text.replace("NOTE", "tip")
     );
     let gone = refusal(&s, text, 2, "box", "state", Json::Null);

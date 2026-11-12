@@ -2261,7 +2261,7 @@ fields.title = { rest = true }
 [note-box]
 on = "aside"
 where.attribute = "callout"
-fields.kind = { attribute = "callout" }
+fields.callout = { attribute = "callout" }
 fields.fold = { attribute = "fold" }
 fields.title = { rest = true }
 
@@ -2313,13 +2313,13 @@ fields.words = { rest = true }
                     "note-box",
                     9,
                     10,
-                    json!({"kind": "warning", "fold": "closed", "title": "Hot lava"})
+                    json!({"callout": "warning", "fold": "closed", "title": "Hot lava"})
                 ),
                 (
                     "note-box",
                     12,
                     13,
-                    json!({"kind": "note", "fold": null, "title": null})
+                    json!({"callout": "note", "fold": null, "title": null})
                 ),
                 ("said", 15, 16, json!({"words": "said first"})),
             ]
@@ -2334,7 +2334,7 @@ fields.words = { rest = true }
         assert_eq!(spans(PIECES, done, "state"), ["x"]);
         let hot = all.iter().find(|i| i.data.kind() == "note-box").unwrap();
         assert_eq!(
-            spans(PIECES, hot, "kind"),
+            spans(PIECES, hot, "callout"),
             ["WARNING"],
             "the kind where it is written"
         );
