@@ -63,6 +63,8 @@ pub const MAX_NAME: usize = 256;
 /// The bytes a place may have, and a link's target.
 pub const MAX_PLACE: usize = 1024;
 pub const MAX_TARGET: usize = 4096;
+/// The links between pieces an answer may have. A label has a target's bound.
+pub const MAX_BETWEEN: usize = 65_536;
 
 /// One unit of what a file holds, in the alphabet's terms (docs/neutral-model.md): what it is
 /// (`role`), what it carries beyond its text (`attributes`), its text, and where it stands
@@ -356,6 +358,8 @@ pub fn typed_id(file: &str, kind: &str, place: &str) -> String {
 #[derive(Default)]
 struct Before<'a> {
     by_place: HashMap<&'a str, usize>,
+    /// The places the answer gives a Markdown piece at.
+    markdown: std::collections::HashSet<&'a str>,
     seen: Vec<Seen>,
 }
 
@@ -439,6 +443,9 @@ fn read_piece<'a>(
             section: &section,
             inside: &inside,
             carried: &carried,
+            words_elsewhere: flat.words.is_empty()
+                && flat.cells.is_empty()
+                && before.markdown.contains(p.place.as_str()),
         };
         s.matcher.piece(&s.types, &asked)
     });
@@ -498,8 +505,8 @@ fn read_piece<'a>(
 }
 
 /// A link the owner says beside its items: *links to*, from one of its places.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum GivenLink {
     /// To a file. A link outside the Markdown pieces (those are read with them): its target
     /// as written, as `[[target]]` would name it.
@@ -519,6 +526,51 @@ pub enum GivenLink {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         label: String,
     },
+}
+
+/// A link to a file, as it is read: every key it can have, and no other.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToFile {
+    target: String,
+    place: String,
+    #[serde(default)]
+    text: String,
+}
+
+/// A link between two pieces, as it is read.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToPiece {
+    from: String,
+    to: String,
+    #[serde(default)]
+    label: String,
+}
+
+/// Which kind of link an entry is shows in its keys: one with `from` or `to` and no `target`
+/// is between two pieces. It is then read as that kind, so a mistake is named (`missing field
+/// `place``, `unknown field `color``), not answered with "it matches no kind".
+impl<'de> Deserialize<'de> for GivenLink {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let entry = Map::<String, Json>::deserialize(d)?;
+        let has = |key: &str| entry.contains_key(key);
+        let between = !has("target") && (has("from") || has("to"));
+        let entry = Json::Object(entry);
+        if between {
+            let l: ToPiece = serde_json::from_value(entry).map_err(D::Error::custom)?;
+            let (from, to, label) = (l.from, l.to, l.label);
+            return Ok(GivenLink::Between { from, to, label });
+        }
+        let l: ToFile = serde_json::from_value(entry).map_err(D::Error::custom)?;
+        let (target, place, text) = (l.target, l.place, l.text);
+        Ok(GivenLink::File {
+            target,
+            place,
+            text,
+        })
+    }
 }
 
 impl GivenLink {
@@ -946,9 +998,15 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
 pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     let mut out = Read::default();
     let mut before = Before::default();
+    for item in &given.items {
+        if let GivenItem::Markdown { place, .. } = item {
+            before.markdown.insert(place.as_str());
+        }
+    }
     // Where each piece stands among the answer's pieces, by its place.
     let mut position: HashMap<&str, usize> = HashMap::new();
     let mut pieces = 0;
+    let mut between = 0;
     for item in &given.items {
         match item {
             GivenItem::Piece(p) => {
@@ -1013,6 +1071,25 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                 out.links.extend(r.map(|r| (r, place.clone())));
             }
             GivenLink::Between { from, to, label } => {
+                // An answer is another program's: past the bounds a link is left out, and the
+                // answer says so once for the count and once for each label.
+                between += 1;
+                if between > MAX_BETWEEN {
+                    if between == MAX_BETWEEN + 1 {
+                        out.problems.push(format!(
+                            "more than {MAX_BETWEEN} links between pieces: the rest are left out"
+                        ));
+                    }
+                    continue;
+                }
+                if label.len() > MAX_TARGET {
+                    out.problems.push(format!(
+                        "a link from {} to {}: its label is longer than {MAX_TARGET} bytes",
+                        short(from),
+                        short(to)
+                    ));
+                    continue;
+                }
                 // Its ends are pieces of this answer that read: a link to a place no piece is
                 // at joins nothing, and is reported and left out.
                 let at = |place: &String| position.get(place.as_str()).copied();
@@ -1568,27 +1645,29 @@ mod tests {
         assert_eq!(after.links[1..], answer.links[1..]);
     }
 
-    /// A piece with no words is nothing to a shape that is about what is written, and
-    /// something to one that tests or reads an attribute: a board's card is placed, and its
-    /// words are the Markdown piece beside it.
+    /// A piece with no words of its own at the place of a Markdown piece, as a board's card,
+    /// is a shape's only when the shape tests for an attribute the piece carries: what is
+    /// written there is the Markdown piece's, and the types match it there. A shape that
+    /// reads text, or reads an attribute without testing for it, gains nothing. Every other
+    /// piece, with words or without, matches as it did.
     #[test]
-    fn a_piece_with_no_words_is_read_only_for_its_attributes() {
+    fn a_piece_whose_words_are_a_markdown_pieces_matches_only_by_where_attribute() {
         let s = settings(
             "[prose]\non = \"text\"\nfields.words = { rest = true }\n\
-             [quoted]\non = \"aside\"\nfields.words = { rest = true }\n\
-             [placed]\non = \"text\"\npriority = -1\n\
-             fields.x = { attribute = \"x\", type = \"number\" }\n\
-             [tested]\non = \"item\"\nwhere.attribute = [\"x\"]\n\
-             fields.words = { rest = true }\n",
+             fields.when = { inline = \"when\", type = \"date\" }\n\
+             fields.x = { attribute = \"x\" }\n\
+             [placed]\non = \"text\"\nwhere.attribute = [\"x\"]\n\
+             fields.x = { attribute = \"x\", type = \"number\" }\n",
         );
         let answer = given(json!({"items": [
             {"place": "a", "role": "text", "attributes": {"x": 40}},
-            {"place": "b", "role": "text", "attributes": {"x": 40}, "text": ["Words"]},
-            {"place": "c", "role": "text"},
-            {"place": "d", "role": "aside", "attributes": {"x": 40}},
-            {"place": "e", "role": "aside", "text": ["Words"]},
-            {"place": "f", "role": "item", "attributes": {"x": 40}},
-            {"place": "g", "role": "row", "cells": [{"name": "A", "text": []}]},
+            {"place": "a", "text": "Words on the card"},
+            {"place": "b", "role": "text", "attributes": {"y": 1}},
+            {"place": "b", "text": ""},
+            {"place": "c", "role": "text", "attributes": {"x": 40}},
+            {"place": "d", "role": "text"},
+            {"place": "e", "role": "text", "text": ["Its own words"]},
+            {"place": "e", "text": ""},
         ]}));
         let read = read("Board.canvas", &answer, &s);
         assert!(read.problems.is_empty(), "{:?}", read.problems);
@@ -1599,13 +1678,55 @@ mod tests {
             kinds,
             [
                 ("a", "placed"),
-                ("b", "prose"),
+                ("a", "prose"),
                 ("c", "placed"),
-                ("e", "quoted"),
-                ("f", "tested")
+                ("d", "prose"),
+                ("e", "prose")
             ],
-            "no `prose` or `quoted` without words, and a row has cells"
+            "the card at a by its x, its Markdown as prose; nothing for the card at b; c, d \
+             and e as any piece"
         );
+    }
+
+    /// A mistake in a link names what is wrong with it, whichever kind it was meant to be,
+    /// and a link between pieces past the bounds is reported and left out.
+    #[test]
+    fn a_bad_link_is_named_and_a_link_past_the_bounds_left_out() {
+        let why = |link: Json| {
+            let wire = json!({"links": [link]});
+            serde_json::from_value::<Given>(wire)
+                .unwrap_err()
+                .to_string()
+        };
+        for (link, says) in [
+            (json!({"target": "Lava"}), "missing field `place`"),
+            (json!({"to": "a"}), "missing field `from`"),
+            (
+                json!({"from": "a", "to": "a", "color": "red"}),
+                "unknown field `color`",
+            ),
+            (
+                json!({"target": "Lava", "place": "a", "from": "a"}),
+                "unknown field `from`",
+            ),
+            (json!({"from": "a", "to": 5}), "invalid type"),
+        ] {
+            let why = why(link);
+            assert!(why.contains(says), "{why}");
+            assert!(!why.contains("untagged"), "{why}");
+        }
+
+        let s = settings("");
+        let long = "L".repeat(MAX_TARGET + 1);
+        let mut links = vec![json!({"from": "a", "to": "a", "label": long})];
+        links.extend((0..MAX_BETWEEN + 5).map(|_| json!({"from": "a", "to": "a"})));
+        let answer = given(json!({"items": [{"place": "a", "role": "text"}], "links": links}));
+        let read = read("Board.canvas", &answer, &s);
+        assert_eq!(read.between.len(), MAX_BETWEEN - 1, "the long one counts");
+        assert_eq!(read.problems.len(), 2, "{:?}", read.problems);
+        assert!(read.problems[0].contains("its label is longer than 4096 bytes"));
+        assert!(read.problems[1].contains("more than 65536 links between pieces"));
+        assert!(read.problems.iter().all(|p| p.len() < 300));
     }
 
     #[test]

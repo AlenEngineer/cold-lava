@@ -2189,7 +2189,9 @@ mod tests {
             "version = 1\n[types.card]\non = \"text\"\nwhere.attribute = [\"x\"]\n\
              where.file-type = [\"canvas\"]\n\
              fields.x = { attribute = \"x\", type = \"number\" }\n\
-             [types.prose]\non = \"text\"\npriority = -1\nfields.words = { rest = true }\n",
+             [types.prose]\non = \"text\"\npriority = -1\nfields.words = { rest = true }\n\
+             fields.when = { inline = \"when\", type = \"date\" }\n\
+             fields.x = { attribute = \"x\" }\n",
         )
         .unwrap();
         std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
@@ -2197,7 +2199,8 @@ mod tests {
             {\"id\":\"a\",\"type\":\"text\",\"text\":\"Trip\\n- [ ] Buy masks #trip, see [[Lava]]\",\"x\":40,\"y\":120,\"width\":250,\"height\":60},\n\
             {\"id\":\"b\",\"type\":\"file\",\"file\":\"Lava.md\",\"x\":400,\"y\":0,\"width\":400,\"height\":400},\n\
             {\"id\":\"g\",\"type\":\"group\",\"label\":\"Trip\",\"x\":0,\"y\":0,\"width\":900,\"height\":900},\n\
-            {\"id\":\"a\",\"type\":\"text\",\"text\":\"- [ ] Twin\",\"x\":7,\"y\":0,\"width\":1,\"height\":1}\n\
+            {\"id\":\"a\",\"type\":\"text\",\"text\":\"- [ ] Twin\",\"x\":7,\"y\":0,\"width\":1,\"height\":1},\n\
+            {\"id\":\"n\",\"type\":\"text\",\"x\":9,\"y\":0,\"width\":1,\"height\":1}\n\
             ],\"edges\":[{\"id\":\"e\",\"fromNode\":\"a\",\"toNode\":\"b\",\"label\":\"needs\"},\
             {\"id\":\"f\",\"fromNode\":\"a\",\"toNode\":\"g\"}]}\n";
         std::fs::write(dir.join("Board.canvas"), canvas).unwrap();
@@ -2214,8 +2217,9 @@ mod tests {
             links: file.given.links.iter().filter(to_file).cloned().collect(),
         };
         let was = given::read("Board.canvas", &before, settings);
-        // The two tasks, and the one paragraph, which a type on every text takes: a card has
-        // no words of its own, so that type takes no card, here or below.
+        // The two tasks, and the one paragraph, which a type on every text takes. That type
+        // reads an inline field and an attribute a card carries, and still takes no card,
+        // here or below, with text or without: a card's words are its Markdown piece's.
         let kinds: Vec<&str> = was.items.iter().map(|i| i.data.kind()).collect();
         assert_eq!(kinds, ["prose", "task", "task"]);
         let apart = |items: &[Item]| -> Vec<serde_json::Value> {
@@ -2232,7 +2236,7 @@ mod tests {
         let arrows = file.given.links.len() - before.links.len();
         assert_eq!(arrows, 1, "the arrow to the group is not given");
 
-        // The cards a type asks for are items: the two text cards, each where it sits.
+        // The cards a type asks for are items: the three text cards, each where it sits.
         let cards = |core: &Core| {
             let select = Select {
                 kind: "card".into(),
@@ -2245,7 +2249,7 @@ mod tests {
         let x = |item: &Item| serde_json::to_value(item).unwrap()["x"].as_f64();
         assert_eq!(
             found.iter().map(x).collect::<Vec<_>>(),
-            [Some(40.0), Some(7.0)]
+            [Some(40.0), Some(7.0), Some(9.0)]
         );
         assert!(
             found
@@ -2290,7 +2294,7 @@ mod tests {
             now.contains("- [x] Buy masks #trip, see [[Lava]] ✅ "),
             "{now}"
         );
-        assert_eq!(cards(&core).len(), 2);
+        assert_eq!(cards(&core).len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

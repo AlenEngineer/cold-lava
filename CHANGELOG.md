@@ -47,12 +47,12 @@ change commands, keys and file formats; patch versions only fix things.
   between its own pieces. Nothing a board gave before moves: what is written on a card is
   still read as Markdown, so its tasks, links and tags have the ids they had, and
   `items`, the agenda, the table, tidy, backlinks and the graph show what they showed. A
-  card shows up as an item only where a type of yours asks for one of its attributes, for
-  example `on = "text"` with `where.attribute = "x"`. A type on every `text` lists what it
-  listed: a piece with no words of its own, as a card is, matches only a shape that tests
-  or reads an attribute. Setting a card's
-  attribute through such a type is refused with the reason: a card is moved on the
-  whiteboard. A group is not given yet, nor an arrow to one. The alphabet's version is 3:
+  card shows up as an item only where a type of yours tests for one of its attributes, for
+  example `on = "text"` with `where.attribute = "x"`. Every other type lists what it
+  listed, also one that reads an inline field or an attribute: a card's words are its
+  Markdown, so its own piece matches only a shape whose `where.attribute` it carries.
+  Setting a card's attribute through such a type is refused with the reason: the canvas
+  owner writes a card's text and file only. A group is not given yet, nor an arrow to one. The alphabet's version is 3:
   give a link between two pieces only when it is 3 or more. `docs/extensions.md`, "The
   canvas owner, as built" and "Pieces, as built".
 - A type's `on` takes the roles of the alphabet (#241, step 1 of the neutral model):
