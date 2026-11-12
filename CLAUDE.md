@@ -505,6 +505,13 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   `gh stack` extension: `gh stack init`, `gh stack add BRANCH`, `gh stack submit` (or
   `gh stack link branch1 branch2 …` for branches made with plain git, bottom first). Merging the
   top PR merges the whole stack; `gh stack rebase` / **Rebase stack** restores linear history.
+- **A refactor and the feature it makes room for go in one stack, the refactor at the
+  bottom.** The refactor PR is behaviour-identical and is checked against `main` (byte for
+  byte); the feature PR on top is checked against the refactor and declares what it changes.
+  The bottom can merge alone. Never the other way round for existing code. When a review
+  finds that a feature's own new code needs reshaping, that is further commits on the same
+  PR. Keep stacks to two or three PRs, one track step per refactor PR. A pushed branch is
+  never rebased or force-pushed: bring a lower PR's changes up with an ordinary merge commit.
 - Every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and the
   README is updated with it.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
