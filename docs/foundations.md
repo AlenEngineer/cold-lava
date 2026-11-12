@@ -113,6 +113,18 @@ Where a thing sits and what colour it has stay in the drawing's file. Nothing is
 geometry. What a bound drawing shows is also saved as plain text, so another tool that opens
 the file shows something readable.
 
+### 13. A closed alphabet, open attributes
+
+What a person can write, in any format, is a small, closed set: pieces of writing with a
+role, the text inside them, and how they stand to one another (inside, after, beside, placed,
+linked). Every piece carries open attributes, and that is where a format's own details go.
+Types are the words written in that alphabet, and anyone can coin a word.
+
+cold-lava can never be shaped for everyone, so each person shapes it for themselves: by
+choosing how a format is read, by declaring what a thing means or looks like in a few lines
+of data, or by installing an owner for the files they use. Only the alphabet itself is the
+engine's. ([neutral-model.md](neutral-model.md) has the design.)
+
 ## Frontends
 
 ### 1. A frontend is a client
@@ -161,8 +173,4 @@ one way of doing each thing, before the next is built on it.
 
 ## Open questions
 
-- **The neutral model.** This is where the standard is: the different things a person can
-  write, and the data they can share, named without reference to any one format. How is a
-  type defined without naming one format's blocks? What do an owner and the engine exchange
-  in place of Markdown text? And can that set of things be extended, or must it be closed?
 - **Proof.** An idea on this page counts as proven once someone has lived in it.
