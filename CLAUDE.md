@@ -197,8 +197,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   caches them per note on first use. Ids are stable (block id, heading path, or text hash under
   the parent), `rev` hashes the item's lines. The walk reads blocks as pulldown-cmark, which
   read them before, did, so ids didn't move; `items/pulldown.rs` keeps that pass for a test
-  that compares the two on every note of the corpus. Read tasks through items, not by scanning
-  lines.
+  that compares the two on every note of the corpus. pulldown-cmark is a dev-dependency of
+  the engine: those two test modules (`items/pulldown.rs`, `markdown/pulldown.rs`) are all
+  that use it, and nothing shipped may. Read tasks through items, not by scanning lines.
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an

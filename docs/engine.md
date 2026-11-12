@@ -442,7 +442,14 @@ change what it shows, never how it works.
     highlight's `==`, which it didn't read. On a GitHub runner, 3,300 notes' items took
     160 ms with no type loaded, the walk and the ids alone, where pulldown-cmark's pass took
     153 ms; with the bench workspace's types, 495 ms and 493 ms, the type matching being most
-    of it.
+    of it. A Markdown link names a note where `cst::link_destination` reads a destination in
+    what the link points to, as for the index: `[a](B.md and more)` names none (#212; the
+    items found the destination with code of their own before, which took `B.md`).
+  - *One parser:* nothing the engine ships uses pulldown-cmark (#212). It is a
+    dev-dependency, the oracle of the two tests above: the reader's `Doc` and the items as it
+    read them. Snapshots of both were the other way to keep those tests. They would be large
+    (the repository's Markdown is 468 KiB, read in three flavours), and a snapshot can't say
+    how pulldown-cmark reads a note added to the corpus tomorrow.
 - **A framework, extracted, not designed up front.** The frontend is built concrete and
   opinionated first. Once its parts have proven themselves (the view host, the document
   layout, embed slots, the scene renderer), they move into a crate others can use, shaped by a

@@ -12,7 +12,6 @@ chrono.workspace = true
 cold-lava-canvas.workspace = true
 indexmap.workspace = true
 notify.workspace = true
-pulldown-cmark.workspace = true
 regex.workspace = true
 rowan.workspace = true
 serde.workspace = true
@@ -20,3 +19,8 @@ serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 toml = { workspace = true, features = ["preserve_order"] }
 unicode-normalization.workspace = true
 walkdir.workspace = true
+
+[dev-dependencies]
+# The oracle of two tests: the reader's `Doc` and the items as pulldown-cmark read them
+# (markdown/pulldown.rs, items/pulldown.rs). Nothing the engine ships uses it.
+pulldown-cmark.workspace = true
