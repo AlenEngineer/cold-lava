@@ -11,8 +11,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The alphabet's version, sent in `initialize` beside `apiVersion`. A letter (a role, a mark, a
 /// relation) is added rarely, by the engine only, and each addition raises this. 1 named the
 /// alphabet. 2 is the first an owner can speak: `file/read` takes pieces, their text as runs
-/// with marks, and the relations written `in` and `cells`.
-pub const VERSION: u32 = 2;
+/// with marks, and the relations written `in` and `cells`. 3 writes one more relation, a link
+/// between two pieces (`{from, to, label}` in `links`): no letter is new, and the number goes
+/// up because a host of version 2 refuses an answer that holds one.
+pub const VERSION: u32 = 3;
 
 /// What a piece of writing is. Closed: a new kind of thing is a type over one of these, with
 /// attributes, never a tenth role.

@@ -497,16 +497,38 @@ fn read_piece<'a>(
     Ok(())
 }
 
-/// A link outside the Markdown pieces (those are read with them): its target as written, as
-/// `[[target]]` would name it.
+/// A link the owner says beside its items: *links to*, from one of its places.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GivenLink {
-    pub target: String,
-    pub place: String,
-    /// What it says around the link, for backlinks.
-    #[serde(default)]
-    pub text: String,
+#[serde(untagged, deny_unknown_fields)]
+pub enum GivenLink {
+    /// To a file. A link outside the Markdown pieces (those are read with them): its target
+    /// as written, as `[[target]]` would name it.
+    File {
+        target: String,
+        place: String,
+        /// What it says around the link, for backlinks.
+        #[serde(default)]
+        text: String,
+    },
+    /// From one piece of the file to another, by their places, with what the link says: a
+    /// board's arrow and its label. Carried and never interpreted. It joins two pieces of one
+    /// file, not two files, so it is no backlink and no edge of the graph.
+    Between {
+        from: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        label: String,
+    },
+}
+
+impl GivenLink {
+    /// The target of a link to a file, as written.
+    pub fn target(&self) -> Option<&str> {
+        match self {
+            GivenLink::File { target, .. } => Some(target),
+            GivenLink::Between { .. } => None,
+        }
+    }
 }
 
 /// One change `file/edit` asks of an owner, at one of the places it gave.
@@ -587,8 +609,13 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
             }
             Change::Link { place, link, to } => {
                 for l in &mut out.links {
-                    if l.place == *place && l.target == *link {
-                        l.target = to.clone();
+                    if let GivenLink::File {
+                        place: p, target, ..
+                    } = l
+                        && p == place
+                        && target == link
+                    {
+                        *target = to.clone();
                     }
                 }
                 for p in pieces_at(&mut out, place) {
@@ -808,6 +835,15 @@ pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
             short(missing)
         ));
     }
+    // No change makes, moves or relabels a link between two pieces: they come back as they
+    // were, in order, each between the pieces at the same positions.
+    if asked.between != gave.between {
+        return Err(format!(
+            "the links between pieces are {} where {} were asked",
+            short(gave.between.clone()),
+            short(asked.between.clone())
+        ));
+    }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
     // attribute, a text or a link moves a piece.
     let (want, got) = (&asked.pieces, &gave.pieces);
@@ -870,6 +906,9 @@ pub struct Read {
     /// says (`piece_key`) with the position of the piece it is in. The read-back check
     /// compares them.
     pub pieces: Vec<(String, String)>,
+    /// Every link between two pieces, in the order given: which pieces it joins, by their
+    /// positions among the answer's pieces, and its label. The read-back check compares them.
+    pub between: Vec<String>,
     /// What didn't read, one line each: a type that isn't loaded, a field it doesn't have.
     pub problems: Vec<String>,
 }
@@ -935,13 +974,43 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
         }
     }
     for l in &given.links {
-        let target = crate::workspace::clean_target(&l.target);
-        let r = target.map(|target| Ref {
-            target,
-            line: 1,
-            context: l.text.trim().chars().take(240).collect(),
-        });
-        out.links.extend(r.map(|r| (r, l.place.clone())));
+        match l {
+            GivenLink::File {
+                target,
+                place,
+                text,
+            } => {
+                let target = crate::workspace::clean_target(target);
+                let r = target.map(|target| Ref {
+                    target,
+                    line: 1,
+                    context: text.trim().chars().take(240).collect(),
+                });
+                out.links.extend(r.map(|r| (r, place.clone())));
+            }
+            GivenLink::Between { from, to, label } => {
+                // Its ends are pieces of this answer that read: a link to a place no piece is
+                // at joins nothing, and is reported and left out.
+                let at = |place: &String| position.get(place.as_str()).copied();
+                let read = |place: &String| before.by_place.contains_key(place.as_str());
+                match (at(from), at(to)) {
+                    (Some(a), Some(b)) if read(from) && read(to) => {
+                        let label = Json::String(label.clone());
+                        let says = format!("piece {} to piece {}: {label}", a + 1, b + 1);
+                        out.between.push(says);
+                    }
+                    _ => {
+                        let missing = if read(from) { to } else { from };
+                        out.problems.push(format!(
+                            "a link from {} to {}: no piece is at {}",
+                            short(from),
+                            short(to),
+                            short(missing)
+                        ));
+                    }
+                }
+            }
+        }
     }
     out
 }
@@ -1392,6 +1461,89 @@ mod tests {
 
     /// The pinned JSON of every change `file/edit` can ask: the three it could before, and
     /// the two in the model's terms. A `text` that is a list is runs; a string is Markdown.
+    /// The pinned JSON of a link between two pieces, beside a link to a file in `links`: the
+    /// two places, and a label when it has one. It is carried and compared, and it is no link
+    /// of the file: no backlink, no item.
+    #[test]
+    fn a_link_between_two_pieces_is_json() {
+        let wire = json!({
+            "items": [
+                {"place": "a", "role": "text", "attributes": {"x": 40, "y": 120}},
+                {"place": "b", "role": "embed"},
+            ],
+            "links": [
+                {"target": "Volcanoes/Lava.md", "place": "b", "text": "Volcanoes/Lava.md"},
+                {"from": "a", "to": "b", "label": "feeds"},
+                {"from": "b", "to": "b"},
+            ],
+        });
+        let answer = given(wire.clone());
+        assert_eq!(serde_json::to_value(&answer).unwrap(), wire);
+        let s = settings("");
+        let read = read("Board.canvas", &answer, &s);
+        assert!(read.problems.is_empty(), "{:?}", read.problems);
+        assert!(read.items.is_empty(), "a text no type matches is no item");
+        let targets: Vec<&str> = read.links.iter().map(|(r, _)| r.target.as_str()).collect();
+        assert_eq!(targets, ["Volcanoes/Lava"], "only the link to a file");
+        assert_eq!(
+            read.between,
+            ["piece 1 to piece 2: \"feeds\"", "piece 2 to piece 2: \"\""]
+        );
+        for wrong in [
+            json!({"from": "a", "to": "b", "colour": "red"}),
+            json!({"from": "a"}),
+            json!({"from": "a", "to": "b", "place": "a"}),
+        ] {
+            let wire = json!({"links": [wrong]});
+            assert!(serde_json::from_value::<Given>(wire).is_err());
+        }
+
+        // An end no piece is at: reported in one short line and left out, the rest read.
+        let long = "z".repeat(5000);
+        let dangling = given(json!({
+            "items": [{"place": "a", "role": "text"}],
+            "links": [{"from": "a", "to": long}, {"from": "nope", "to": "a"}, {"from": "a", "to": "a"}],
+        }));
+        let read = super::read("Board.canvas", &dangling, &s);
+        assert_eq!(read.between, ["piece 1 to piece 1: \"\""]);
+        assert_eq!(read.problems.len(), 2, "{:?}", read.problems);
+        assert!(read.problems.iter().all(|p| p.chars().count() < 300));
+        assert!(read.problems[1].ends_with("no piece is at nope"));
+
+        // The read-back: a link relabelled, turned round, dropped or added is not what was
+        // asked, and a rename's change leaves it as it was.
+        let asked = super::read("Board.canvas", &answer, &s);
+        let differs = |links: Json| {
+            let mut wire = wire.clone();
+            wire["links"] = links;
+            same(&asked, &super::read("Board.canvas", &given(wire), &s)).is_err()
+        };
+        let file =
+            json!({"target": "Volcanoes/Lava.md", "place": "b", "text": "Volcanoes/Lava.md"});
+        let arrow = json!({"from": "a", "to": "b", "label": "feeds"});
+        let own = json!({"from": "b", "to": "b"});
+        assert!(
+            !differs(json!([arrow, file, own])),
+            "among the file's links"
+        );
+        assert!(differs(
+            json!([file, {"from": "a", "to": "b", "label": "starves"}, own])
+        ));
+        assert!(differs(
+            json!([file, {"from": "b", "to": "a", "label": "feeds"}, own])
+        ));
+        assert!(differs(json!([file, arrow])));
+        assert!(differs(json!([file, own, arrow])));
+        let moved = Change::Link {
+            place: "b".into(),
+            link: "Volcanoes/Lava.md".into(),
+            to: "Hot/Lava.md".into(),
+        };
+        let after = apply(&answer, &[moved]);
+        assert_eq!(after.links[0].target(), Some("Hot/Lava.md"));
+        assert_eq!(after.links[1..], answer.links[1..]);
+    }
+
     #[test]
     fn a_change_is_json() {
         let wire = json!([

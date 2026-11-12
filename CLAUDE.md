@@ -183,8 +183,16 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `take_file_edits` and `file_given` run it and never wait; an `items/edit` of an owned file
   is answered `Later` (`take_edited`). Owned files are `Workspace::owned`, beside the notes,
   and the index, the gateway, the graph and tidy read them too. `owner/canvas.rs` is the
-  engine's `.canvas` owner (`owner::BUILT_IN`): text nodes are Markdown pieces and file nodes
-  links, both at the node's id. No extension may claim a built-in owner's kind.
+  engine's `.canvas` owner (`owner::BUILT_IN`). It speaks the alphabet: each card is a piece
+  at the node's place (`text`; `embed` for a file card or a web page; `opaque` for a type it
+  doesn't know), placed by the attributes `x`, `y`, `width`, `height`, and each arrow a link
+  between two pieces (`GivenLink::Between`, `{from, to, label}`), carried and never
+  interpreted. What a board gave before is still given beside them, unchanged: a text
+  card's text as a Markdown piece and a file card's link, both at the same place. **A
+  board's items, links, ids and revs must not move**: a card's piece is an item only when a
+  type matches it, a group is not given (a `section` piece would be a new heading on every
+  board), and the owner gives no piece the engine would report. A card's Markdown becomes a
+  fragment with #244, not before. No extension may claim a built-in owner's kind.
   **One path for owned files** (#183): a file that isn't a note is changed the same way
   whoever owns it. An item edit (`Core::edit_item`) and a rename, merge or recipe
   (`FileEdit::owned`, then `Core::relink`) ask the owner `file/edit`, read its new text back
@@ -244,7 +252,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `alphabet::Role` is the nine roles a piece of writing can have (`document`, `section`,
   `text`, `item`, `row`, `aside`, `verbatim`, `embed`, `opaque`), `alphabet::Mark` the six
   marks a run of text can have, and `alphabet::VERSION` its version (2: owners can give
-  pieces), sent in `initialize`; the whole alphabet (text, the five relations, open
+  pieces; 3: a link between two pieces has a written form), sent in `initialize`; the whole alphabet (text, the five relations, open
   attributes) and what the engine does with each letter today is docs/extensions.md, "The
   alphabet, as built", whose table of roles a test checks against `Role::ALL`. Only the
   engine adds a letter, with a version bump: a new kind of thing is a type, never a role.

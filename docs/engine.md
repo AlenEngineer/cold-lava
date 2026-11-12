@@ -68,7 +68,8 @@ set of types: text, number, date, datetime, link, tag, true/false, list. These a
 bytes and integers. Named without reference to Markdown they are the alphabet: nine roles
 of a piece, the text inside it, five relations and open attributes (extensions.md, "The
 alphabet, as built"; named and versioned, a type's `on` is written in the roles, and an
-extension's owner can give its file as pieces: "Pieces, as built").
+extension's owner can give its file as pieces, as the canvas owner gives a board's cards
+and arrows: "Pieces, as built").
 
 **3. Types** *(designed in extensions.md, "Types"; definitions load and are checked:
 `types.rs`, `cold-lava types`; they match notes, table rows, list items, headings and

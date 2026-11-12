@@ -677,7 +677,7 @@ mod tests {
                 (Some("initialize"), _) => {
                     assert_eq!(
                         (&m["params"]["apiVersion"], &m["params"]["alphabet"]),
-                        (&json!(1), &json!(2)),
+                        (&json!(1), &json!(3)),
                         "the alphabet's version goes with the API's"
                     );
                     vec![answer(m, json!({}))]

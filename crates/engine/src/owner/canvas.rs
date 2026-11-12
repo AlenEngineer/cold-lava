@@ -1,12 +1,21 @@
 //! The owner of `.canvas` files (JSON Canvas, Obsidian's whiteboards), in the engine like
-//! Markdown's: it answers at once, in-process. A canvas joins the workspace through it:
+//! Markdown's: it answers at once, in-process. A canvas joins the workspace through it, in the
+//! alphabet's terms (docs/extensions.md, "The canvas owner, as built"):
 //!
-//! - each `text` node's text is a Markdown piece at the node's id, so a task on a sticky or a
-//!   text card is a `task`, and its links and tags are the canvas's;
+//! - each card is a piece at the node's id, *placed* where the file says: a `text` node a
+//!   `text`, a `file` node and a web page (`link`) an `embed`, a node of a type nobody knows
+//!   an `opaque`. Its position, its size and its colour are attributes, carried and never
+//!   interpreted;
+//! - what is written on a `text` card is Markdown, so it is a Markdown piece at the same
+//!   place, read exactly as before: a task on a sticky or a text card is a `task`, and its
+//!   links and tags are the canvas's;
 //! - each `file` node is a link from the canvas to its file, at the node's id, so the file's
 //!   backlinks list the canvas and the graph draws the edge;
-//! - `link` nodes (web pages) and `group` labels are not workspace links, and neither are edges:
-//!   an arrow joins two nodes of the drawing, not two files.
+//! - each arrow is a link between two pieces, with its label. It joins two cards of the
+//!   drawing, not two files, so it is no workspace link.
+//!
+//! A group is not given: as a `section` it would be a heading among the workspace's items,
+//! which no board had before, so an arrow to or from a group is not given either.
 //!
 //! Edits and renames change one node's `text` or `file` in place (`json_canvas::set`), so every
 //! other byte, unknown fields and the nodes' order included, stays as it was written.
@@ -18,9 +27,11 @@
 //! (`json_canvas::fields`), so it rewrites the links of a canvas `read` gives nothing for:
 //! another program's file must not be left pointing at a note that moved.
 
-use crate::json_canvas::{self, Field};
-use crate::owner::given::{Change, Given, GivenItem, GivenLink};
-use std::collections::HashMap;
+use crate::alphabet::Role;
+use crate::json_canvas::{self, CNode, Field};
+use crate::owner::given::{Change, Given, GivenItem, GivenLink, MAX_PLACE, Piece};
+use serde_json::{Map, Value as Json};
+use std::collections::{HashMap, HashSet};
 
 /// The kind of file it reads, and its name in messages.
 pub const EXTENSION: &str = "canvas";
@@ -50,16 +61,78 @@ pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
         .collect()
 }
 
-/// A canvas's items and links: its text nodes as Markdown pieces, its file nodes as links.
+/// What a node is, in the alphabet. `None` for a group, which is not given.
+fn role(kind: &str) -> Option<Role> {
+    match kind {
+        "text" => Some(Role::Text),
+        "file" | "link" => Some(Role::Embed),
+        "group" => None,
+        _ => Some(Role::Opaque),
+    }
+}
+
+/// A coordinate as an attribute: a whole number as the file writes one.
+fn number(v: f64) -> Option<Json> {
+    match v.fract() == 0.0 && v.abs() < 9e15 {
+        true => Some(Json::from(v as i64)),
+        false => serde_json::Number::from_f64(v).map(Json::Number),
+    }
+}
+
+/// What a card carries beyond its contents, as the file says it. *Placed*: `x`, `y`, `width`
+/// and `height`, 0 where the file leaves one out, which is where the whiteboard draws it.
+/// Then its `color`, a web page's `url` and a file card's `subpath`, when it has one. Every
+/// other field of the node stays in the file and is carried by nobody.
+fn attributes(n: &CNode) -> Map<String, Json> {
+    let mut out = Map::new();
+    let sizes = [
+        ("x", n.x),
+        ("y", n.y),
+        ("width", n.width),
+        ("height", n.height),
+    ];
+    for (name, v) in sizes {
+        out.extend(number(v).map(|v| (name.to_string(), v)));
+    }
+    let subpath = n.extra.get("subpath").and_then(Json::as_str);
+    let texts = [
+        ("color", n.color.as_deref()),
+        ("url", n.url.as_deref()),
+        ("subpath", subpath),
+    ];
+    for (name, text) in texts {
+        out.extend(text.map(|t| (name.to_string(), Json::from(t))));
+    }
+    out
+}
+
+/// A canvas's items and links: each card a piece, placed; a text card's text a Markdown piece
+/// at the same place; a file card a link to its file; an arrow a link between two pieces.
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
     let mut given = Given::default();
     let places = places(doc.nodes.iter().map(|n| n.id.as_str()));
+    // The places that hold a piece. A place the engine would refuse (an empty id, one too
+    // long, one another node's place already is) holds none, and the node's text and file are
+    // read as ever.
+    let mut pieces: HashSet<String> = HashSet::new();
     for (n, place) in doc.nodes.into_iter().zip(places) {
+        let fits = !place.is_empty() && place.len() <= MAX_PLACE && !pieces.contains(&place);
+        if let Some(role) = role(&n.kind).filter(|_| fits) {
+            pieces.insert(place.clone());
+            given.items.push(GivenItem::Piece(Piece {
+                place: place.clone(),
+                role,
+                attributes: attributes(&n),
+                text: Vec::new(),
+                inside: None,
+                cells: Vec::new(),
+            }));
+        }
         match (n.kind.as_str(), n.text, n.file) {
             ("text", Some(text), _) => given.items.push(GivenItem::Markdown { place, text }),
-            ("file", _, Some(file)) => given.links.push(GivenLink {
+            ("file", _, Some(file)) => given.links.push(GivenLink::File {
                 target: file.clone(),
                 place,
                 text: file,
@@ -67,11 +140,23 @@ pub fn read(text: &str) -> Result<Given, String> {
             _ => {}
         }
     }
+    // An arrow names two ids, and the first node of an id has the id as its place. One with an
+    // end that is no piece (a group, a node that isn't there) stays in the file, not given.
+    for e in doc.edges {
+        if pieces.contains(&e.from_node) && pieces.contains(&e.to_node) {
+            given.links.push(GivenLink::Between {
+                from: e.from_node,
+                to: e.to_node,
+                label: e.label.unwrap_or_default(),
+            });
+        }
+    }
     Ok(given)
 }
 
-/// The canvas's new text with `changes` made: a piece's new text is its node's `text`, a link's
-/// new target its node's `file`. A typed item's field is refused: a canvas gives none.
+/// The canvas's new text with `changes` made: a Markdown piece's new text is its node's `text`,
+/// a link's new target its node's `file`. A typed item's field is refused, since a canvas gives
+/// none, and so are a card's attribute and runs: the owner writes a card's text and file only.
 pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
     let fields = json_canvas::fields(text).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
     let find = |place: &str, name: &str| {
@@ -95,9 +180,17 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
                     "node {place} has no fields: a canvas gives no typed items"
                 ));
             }
-            Change::Attribute { place, .. } | Change::Runs { place, .. } => {
+            Change::Attribute {
+                place, attribute, ..
+            } => {
                 return Err(format!(
-                    "node {place} is given as Markdown: a canvas gives no pieces"
+                    "the canvas owner doesn't write a card's {attribute} (node {place}): move \
+                     or restyle the card on the whiteboard"
+                ));
+            }
+            Change::Runs { place, .. } => {
+                return Err(format!(
+                    "a card's text is Markdown and takes no runs (node {place})"
                 ));
             }
         }
@@ -178,19 +271,31 @@ mod tests {
 
     const CANVAS: &str = "{\n\t\"nodes\":[\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"Masks\\n- [ ] Two each [[Lava]]\",\"x\":0,\"y\":0,\"width\":1,\"height\":1,\"cold-lava\":{\"shape\":\"sticky\",\"node\":\"text\"}},\n\t\t{\"id\":\"c\",\"type\":\"file\",\"file\":\"Volcanoes/Lava.md\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"w\",\"type\":\"link\",\"url\":\"https://jsoncanvas.org\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"g\",\"type\":\"group\",\"label\":\"[[Not a link]]\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[{\"id\":\"e\",\"fromNode\":\"s\",\"toNode\":\"c\"}]\n}\n";
 
+    /// What the owner gave before cards were pieces: the Markdown pieces and the links to
+    /// files, which every item, link and id of a board comes from.
+    fn as_before(given: &Given) -> (Vec<GivenItem>, Vec<GivenLink>) {
+        let markdown = |i: &&GivenItem| matches!(i, GivenItem::Markdown { .. });
+        let file = |l: &&GivenLink| matches!(l, GivenLink::File { .. });
+        (
+            given.items.iter().filter(markdown).cloned().collect(),
+            given.links.iter().filter(file).cloned().collect(),
+        )
+    }
+
     #[test]
     fn text_nodes_are_pieces_and_file_nodes_links() {
         let given = read(CANVAS).unwrap();
+        let (items, links) = as_before(&given);
         assert_eq!(
-            given.items,
+            items,
             vec![GivenItem::Markdown {
                 place: "s".into(),
                 text: "Masks\n- [ ] Two each [[Lava]]".into()
             }]
         );
         assert_eq!(
-            given.links,
-            vec![GivenLink {
+            links,
+            vec![GivenLink::File {
                 target: "Volcanoes/Lava.md".into(),
                 place: "c".into(),
                 text: "Volcanoes/Lava.md".into()
@@ -199,6 +304,92 @@ mod tests {
         );
         assert!(read("").unwrap().items.is_empty());
         assert!(read("{\"nodes\": [").is_err());
+    }
+
+    /// The pinned JSON of what the owner gives for a board: each card a piece with its role
+    /// and where it sits, a text card's Markdown at the same place, a file card's link, and
+    /// each arrow between two cards with its label. A group is not given, and neither is an
+    /// arrow to one or to a node that isn't there.
+    #[test]
+    fn a_board_is_given_in_the_alphabet() {
+        let board = r##"{"nodes":[
+            {"id":"a","type":"text","text":"- [ ] Buy masks","x":40,"y":-120.5,"width":250,"height":60,"color":"4","mine":{"x":1}},
+            {"id":"b","type":"file","file":"Volcanoes/Lava.md","subpath":"#Flows","x":400,"y":0,"width":400,"height":400},
+            {"id":"w","type":"link","url":"https://jsoncanvas.org","x":0,"y":500,"width":300,"height":200},
+            {"id":"g","type":"group","label":"Trip","x":-20,"y":-200,"width":900,"height":900},
+            {"id":"u","type":"sparkle","x":1,"y":2},
+            {"id":"a","type":"text","text":"twin","x":0,"y":0,"width":1,"height":1}
+        ],"edges":[
+            {"id":"e1","fromNode":"a","fromSide":"right","toNode":"b","toSide":"left","label":"needs"},
+            {"id":"e2","fromNode":"b","toNode":"w"},
+            {"id":"e3","fromNode":"u","toNode":"u","color":"1"},
+            {"id":"e4","fromNode":"a","toNode":"g","label":"in a group"},
+            {"id":"e5","fromNode":"a","toNode":"gone"}
+        ]}"##;
+        let given = read(board).unwrap();
+        assert_eq!(
+            serde_json::to_value(&given).unwrap(),
+            serde_json::json!({
+                "items": [
+                    {"place": "a", "role": "text",
+                     "attributes": {"x": 40, "y": -120.5, "width": 250, "height": 60, "color": "4"}},
+                    {"place": "a", "text": "- [ ] Buy masks"},
+                    {"place": "b", "role": "embed",
+                     "attributes": {"x": 400, "y": 0, "width": 400, "height": 400, "subpath": "#Flows"}},
+                    {"place": "w", "role": "embed",
+                     "attributes": {"x": 0, "y": 500, "width": 300, "height": 200,
+                                    "url": "https://jsoncanvas.org"}},
+                    {"place": "u", "role": "opaque",
+                     "attributes": {"x": 1, "y": 2, "width": 0, "height": 0}},
+                    {"place": "a\u{1f}1", "role": "text",
+                     "attributes": {"x": 0, "y": 0, "width": 1, "height": 1}},
+                    {"place": "a\u{1f}1", "text": "twin"},
+                ],
+                "links": [
+                    {"target": "Volcanoes/Lava.md", "place": "b", "text": "Volcanoes/Lava.md"},
+                    {"from": "a", "to": "b", "label": "needs"},
+                    {"from": "b", "to": "w"},
+                    {"from": "u", "to": "u"},
+                ],
+            })
+        );
+        // It reads back through its own JSON, as an extension's answer does.
+        let wire = serde_json::to_string(&given).unwrap();
+        assert_eq!(serde_json::from_str::<Given>(&wire).unwrap(), given);
+    }
+
+    /// A canvas is another program's file. Whatever its nodes say, every piece the owner
+    /// gives is one the engine takes: a node whose id can't be a piece's place has no piece,
+    /// and its text is read as ever.
+    #[test]
+    fn a_node_that_cant_be_a_piece_keeps_its_text() {
+        let long = "i".repeat(MAX_PLACE + 1);
+        let board = format!(
+            r##"{{"nodes":[
+                {{"id":"","type":"text","text":"- [ ] No id","x":1e300,"y":-1e300}},
+                {{"id":"{long}","type":"text","text":"- [ ] Long id"}},
+                {{"id":"t","type":"text","text":"one"}},
+                {{"id":"t","type":"text","text":"two"}},
+                {{"id":"t\u001f1","type":"text","text":"three"}},
+                {{"id":"\u001b]0;x\u0007","type":"file","file":""}}
+            ],"edges":[
+                {{"id":"e","fromNode":"","toNode":"t"}},
+                {{"id":"e","fromNode":"t","toNode":"t"}},
+                {{"id":"e","fromNode":"{long}","toNode":"{long}"}}
+            ]}}"##
+        );
+        let given = read(&board).unwrap();
+        let (items, links) = as_before(&given);
+        assert_eq!((items.len(), links.len()), (5, 1), "every text and file");
+        let places: Vec<&str> = (given.items.iter())
+            .filter_map(|i| match i {
+                GivenItem::Piece(p) => Some(p.place.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(places, ["t", "t\u{1f}1", "\u{1b}]0;x\u{7}"]);
+        let between = |l: &&GivenLink| matches!(l, GivenLink::Between { .. });
+        assert_eq!(given.links.iter().filter(between).count(), 1);
     }
 
     #[test]
@@ -233,6 +424,21 @@ mod tests {
             text: "x".into(),
         };
         assert!(edit(CANVAS, &[gone]).is_err());
+        // Where a card sits is carried, and the owner doesn't write it: refused, with the
+        // reason, and nothing made.
+        let moved = Change::Attribute {
+            place: "s".into(),
+            attribute: "x".into(),
+            value: serde_json::json!(40),
+        };
+        let why = edit(CANVAS, &[moved]).unwrap_err();
+        assert!(why.contains("doesn't write a card's x"), "{why}");
+        let runs = Change::Runs {
+            place: "s".into(),
+            cell: None,
+            text: Vec::new(),
+        };
+        assert!(edit(CANVAS, &[runs]).is_err());
     }
 
     fn lava_to_magma(t: &str) -> Option<(String, usize)> {
@@ -271,10 +477,10 @@ mod tests {
         let places = |text: &str| -> Vec<String> {
             let items = read(text).unwrap().items.into_iter();
             let place = |i: GivenItem| match i {
-                GivenItem::Markdown { place, .. } | GivenItem::Typed { place, .. } => place,
-                GivenItem::Piece(p) => p.place,
+                GivenItem::Markdown { place, .. } => Some(place),
+                GivenItem::Typed { .. } | GivenItem::Piece(_) => None,
             };
-            items.map(place).collect()
+            items.filter_map(place).collect()
         };
         assert_eq!(places(&both), ["s", "s\u{1f}1"]);
         let asked = relink(&both, |_| None, lava_to_magma).unwrap().unwrap();

@@ -140,7 +140,7 @@ pub fn report(ix: &Index) -> Report {
         });
         let targets = (pieces.flat_map(|t| link_targets(t)))
             .chain(runs)
-            .chain(owned.given.links.iter().map(|l| l.target.as_str()));
+            .chain(owned.given.links.iter().filter_map(|l| l.target()));
         for raw in targets {
             found(from, dir_of(&owned.rel), raw, &mut used);
         }
