@@ -1014,6 +1014,7 @@ impl Core {
         rel: &str,
         expect: &str,
     ) -> Result<files::Deleted, gateway::Error> {
+        let rel = &files::normal(rel)?;
         let trashed = files::delete(self.root(), rel, expect, self.system_trash.as_ref())?;
         let mut events = self.moved(&trashed.from, trashed.at.is_dir());
         events.push(Event::Deleted {

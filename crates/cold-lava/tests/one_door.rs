@@ -2,6 +2,12 @@
 //! through the core, with the gateway's messages. This reads the app's own source, every file
 //! under `src/`, so a direct call can't come back. Each list below is everything of its kind
 //! the source names: a new one fails here, and a later group of #193 takes its own off.
+//!
+//! It is a guard on the text, not a proof. It can't see a call made through a wrapper or a
+//! re-export in another crate, through a macro, a function pointer or a trait object, a
+//! `std::fs` handle already open (`File`'s own methods), a module of `std` under another name
+//! (`use std::fs as f`), a program the app starts, or anything in the host and the engine,
+//! which are theirs to guard. A reviewer still reads a change that touches files.
 
 use std::path::Path;
 
@@ -26,17 +32,27 @@ fn sources() -> Vec<(String, String)> {
     out
 }
 
-/// A file's text up to its unit tests (`#[cfg(test)]` on a `mod`), without comment lines.
+/// A file's text without its unit tests (each `#[cfg(test)]` on a `mod`, to the brace that
+/// closes it) and without comment lines. What follows a test module is kept.
 fn code(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let is_tests = |i: &usize| {
-        let next = lines.get(i + 1).map(|l| l.trim_start());
-        lines[*i].trim() == "#[cfg(test)]" && next.is_some_and(|l| l.starts_with("mod "))
-    };
-    let end = (0..lines.len()).find(is_tests).unwrap_or(lines.len());
-    let kept = lines[..end].iter();
-    let code = kept.filter(|l| !l.trim_start().starts_with("//"));
-    code.copied().collect::<Vec<_>>().join("\n")
+    let mut kept = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let next = lines.peek().map(|l| l.trim_start());
+        if line.trim() == "#[cfg(test)]" && next.is_some_and(|l| l.starts_with("mod ")) {
+            let mut depth = 0;
+            for inside in lines.by_ref() {
+                depth += inside.matches('{').count() as i32;
+                depth -= inside.matches('}').count() as i32;
+                if depth <= 0 {
+                    break;
+                }
+            }
+        } else if !line.trim_start().starts_with("//") {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
 }
 
 /// The functions of `module` that `code` names, each as often as it is named: by path
@@ -203,8 +219,72 @@ fn the_scan_sees_an_import_and_a_bare_call() {
 /// The ways around the lists above that the scan refuses outright: one of the engine's
 /// file-changing modules under another name or imported whole, and a `std::fs` function that
 /// changes files brought in with `use`, after which its bare name is the call.
-fn sneaked(_code: &str) -> Vec<String> {
-    Vec::new()
+fn sneaked(code: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for module in ["trash", "write", "files"] {
+        let renamed = [
+            format!("::{module} as "),
+            format!("{{{module} as "),
+            format!(", {module} as "),
+        ];
+        if renamed.iter().any(|alias| code.contains(alias.as_str())) {
+            found.push(format!("{module} as"));
+        }
+        if code.contains(&format!("{module}::*")) {
+            found.push(format!("{module}::*"));
+        }
+        let group = format!("{module}::{{");
+        for (at, _) in code.match_indices(&group) {
+            let inside = code[at..].split('}').next().unwrap_or_default();
+            if inside.contains(" as ") {
+                found.push(format!("{module}::{{… as …}}"));
+            }
+        }
+    }
+    let changes = [
+        "write",
+        "rename",
+        "remove_file",
+        "remove_dir",
+        "remove_dir_all",
+        "create_dir",
+        "create_dir_all",
+        "copy",
+        "hard_link",
+    ];
+    for statement in code.split(';') {
+        let is_use = |l: &&str| {
+            let l = l.trim_start();
+            l.starts_with("use ") || l.starts_with("pub use ") || l.starts_with("pub(crate) use ")
+        };
+        let lines: Vec<&str> = statement.lines().skip_while(|l| !is_use(l)).collect();
+        for name in named_in(&lines.join("\n"), "fs::") {
+            if changes.contains(&name.as_str()) {
+                found.push(format!("use std::fs::{name}"));
+            }
+        }
+    }
+    found
+}
+
+/// Nothing goes around the lists: no alias or glob of the engine's `trash`, `write` and
+/// `files` modules, no `std::fs` function that changes files imported by name, none of the
+/// gateway's own file functions (`files::delete` and the rest, which are the core's to call),
+/// and no file made or copied another way.
+#[test]
+fn nothing_goes_around_the_lists() {
+    let own = ["delete", "restore", "create_folder", "create", "replace"];
+    let mut found = Vec::new();
+    for (file, code) in sources() {
+        let around = sneaked(&code).into_iter();
+        found.extend(around.map(|what| format!("{file}: {what}")));
+        let gateway = named_in(&code, "files::").into_iter();
+        let gateway = gateway.filter(|name| own.contains(&name.as_str()));
+        found.extend(gateway.map(|name| format!("{file}: files::{name}")));
+    }
+    assert_eq!(found, Vec::<String>::new());
+    let other = ["File::create", "OpenOptions", "fs::copy(", "fs::hard_link("];
+    assert_eq!(hits(&other), Vec::<String>::new());
 }
 
 #[test]

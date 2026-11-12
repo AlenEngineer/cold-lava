@@ -5266,7 +5266,7 @@ impl Home {
                     });
                 }
                 Err(e) => {
-                    failed = Some(format!("couldn't delete {}: {e}", d.rel));
+                    failed = Some(format!("couldn't delete {e}"));
                     break;
                 }
             }
@@ -5387,7 +5387,7 @@ impl Home {
             match restored {
                 Ok(_) => back.push(to),
                 Err(e) => {
-                    failed.push(format!("couldn't put {} back: {e}", t.from.display()));
+                    failed.push(format!("couldn't put it back: {e}"));
                     self.undo.push(Undo::Delete(vec![t]));
                 }
             }

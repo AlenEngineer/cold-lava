@@ -197,24 +197,32 @@ fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
-/// `rel` under `root`, refused unless it is relative and has no `..`, `.` or hidden part.
-fn named(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let refuse = |why: &str| Error::new(Reason::Refused, format!("{rel}: {why}"));
-    let p = Path::new(rel);
-    if rel.is_empty() || p.is_absolute() {
+/// `rel` in its one spelling: its parts joined by single `/`, with no slash at either end.
+/// Refused unless it is relative and no part is `..`, `.`, hidden or holds a NUL. Every path of
+/// a file message is read through this before any check or system call, so a check and the
+/// call after it see the same path, and no spelling (`Link/`, `Link//`) makes the kernel follow
+/// a symlink the check took for an entry.
+pub fn normal(rel: &str) -> Result<String, Error> {
+    let shown = rel.replace('\0', "\\0");
+    let refuse = |why: &str| Error::new(Reason::Refused, format!("{shown}: {why}"));
+    let parts: Vec<&str> = rel.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() || rel.starts_with('/') || Path::new(rel).is_absolute() {
         return Err(refuse("a path relative to the workspace is needed"));
     }
-    for c in p.components() {
-        match c {
-            Component::Normal(s) if !s.to_string_lossy().starts_with('.') => {}
-            _ => {
-                return Err(refuse(
-                    "a path can't have .., . or hidden folders and files",
-                ));
-            }
-        }
+    let unfit = |part: &&str| {
+        part.starts_with('.') || part.contains('\0') || (cfg!(windows) && part.contains('\\'))
+    };
+    if parts.iter().any(unfit) {
+        return Err(refuse(
+            "a path can't have .., . or hidden folders and files",
+        ));
     }
-    Ok(root.join(p))
+    Ok(parts.join("/"))
+}
+
+/// `rel` under `root`, in its one spelling (`normal`).
+fn named(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+    Ok(root.join(normal(rel)?))
 }
 
 /// Refused unless `path`, or its deepest folder that exists, leads inside the workspace once
@@ -247,6 +255,7 @@ fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
 
 /// `workspace/read`
 pub fn read(root: &Path, rel: &str) -> Result<Text, Error> {
+    let rel = &normal(rel)?;
     let bytes = std::fs::read(resolve(root, rel)?).map_err(io(rel))?;
     let rev = rev(&bytes);
     let text = String::from_utf8(bytes)
@@ -256,6 +265,7 @@ pub fn read(root: &Path, rel: &str) -> Result<Text, Error> {
 
 /// `workspace/write`, through `write::replace`.
 pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Written, Error> {
+    let rel = &normal(rel)?;
     let path = resolve(root, rel)?;
     let now = std::fs::read(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => Error::new(
@@ -278,7 +288,7 @@ pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Writt
 pub fn create(index: &Index, c: &Create) -> Result<Created, Error> {
     let root = &index.workspace.root;
     let rel = match &c.at {
-        NewFile::At { path } => path.clone(),
+        NewFile::At { path } => normal(path)?,
         NewFile::Named { name, extension } => {
             let bad = extension.is_empty() || extension.contains(['/', '.', '\\']);
             if bad || name.trim().is_empty() {
@@ -366,6 +376,7 @@ fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
 
 /// `workspace/stat`
 pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
+    let rel = &normal(rel)?;
     let (path, read) = contents(root, rel)?;
     let mut stat = Stat {
         rev: rev_of(&read),
@@ -374,7 +385,6 @@ pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
         hidden: 0,
     };
     if let Contents::Folder(entries) = &read {
-        let folder = rel.trim_end_matches('/');
         let is_hidden = |entry: &Path| {
             let mut parts = entry.components();
             parts.any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
@@ -384,7 +394,7 @@ pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
         let listed = seen.iter().take(LISTED).map(|entry| {
             let slash = if path.join(entry).is_dir() { "/" } else { "" };
             let entry = entry.to_string_lossy().replace('\\', "/");
-            format!("{folder}/{entry}{slash}")
+            format!("{rel}/{entry}{slash}")
         });
         stat.inside = Some(listed.collect());
         stat.more = seen.len().saturating_sub(LISTED);
@@ -401,6 +411,7 @@ pub fn delete(
     expect: &str,
     system: Option<&Bin>,
 ) -> Result<Trashed, Error> {
+    let rel = &normal(rel)?;
     let (path, now) = contents(root, rel)?;
     if rev_of(&now) != expect {
         let message = format!("{rel} changed since it was read: read it again");
@@ -414,12 +425,13 @@ pub fn delete(
 pub fn restore(root: &Path, trashed: &Trashed, to: Option<&str>) -> Result<Restored, Error> {
     let from = trashed.from.strip_prefix(root).unwrap_or(&trashed.from);
     let from = from.to_string_lossy().replace('\\', "/");
+    let to = to.map(normal).transpose()?;
     let rel = match to {
         // Somewhere else is a new name, under the rules a new folder's has.
         Some(to) if to != from => {
             let unfit = |e: anyhow::Error| Error::new(Reason::Refused, e.to_string());
-            crate::rename::check_path(to).map_err(unfit)?;
-            to.to_string()
+            crate::rename::check_path(&to).map_err(unfit)?;
+            to
         }
         _ => from,
     };
@@ -435,6 +447,7 @@ pub fn restore(root: &Path, trashed: &Trashed, to: Option<&str>) -> Result<Resto
 /// `workspace/create-folder`, through `write::create_dir`, under a name links can point into
 /// (`rename::check_path`).
 pub fn create_folder(root: &Path, rel: &str) -> Result<Folder, Error> {
+    let rel = &normal(rel)?;
     crate::rename::check_path(rel).map_err(|e| Error::new(Reason::Refused, e.to_string()))?;
     let path = resolve(root, rel)?;
     write::create_dir(&path).map_err(moved(rel))?;
@@ -1010,7 +1023,7 @@ mod tests {
             "../Folder",
             ".hidden",
             "Data/.hidden",
-            "Data//x",
+            "Data/./x",
             "a#b",
             "Data/[x]",
         ];

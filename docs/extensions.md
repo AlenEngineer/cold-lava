@@ -1033,8 +1033,25 @@ the same `{reason, message}`.
   trash and leaves its target alone, a file or a folder, inside the workspace or outside,
   there or gone. The folder the link is in still has to lead inside the workspace, so
   nothing is reached *through* a link that leads out. A symlinked folder is treated the
-  same way as a symlinked note, and not refused: the tree shows both, the link is the
-  workspace's own entry, and trashing it is what the menu did before these were messages.
+  same way as a symlinked note, and not refused: the link is the workspace's own entry,
+  and the message should not depend on what a link points to. The menu reaches only the
+  note: its tree lists a symlinked note, opens it and deletes it as the link, but it does
+  not show a symlinked folder at all (the scan doesn't follow links), so the menu can do
+  nothing with one; over the gateway its link is trashed and restored like any entry.
+- **One spelling per path.** Every path of a file message is first brought to one
+  spelling (`files::normal`): parts joined by single `/`, no slash at either end, refused
+  when a part is `.`, `..`, hidden or holds a NUL. Checks and system calls then use that
+  spelling and no other. A trailing slash matters to the kernel: `lstat("Link/")` follows
+  the link, and on macOS so does `rename`, while a check on the path's parent sees an
+  ordinary entry. `stat` and `delete` were open to that for one build that was never
+  merged: `stat "Link/"` listed what the link led to, and on macOS `delete "Link/"` moved
+  that folder, outside the workspace, into the trash (on Linux the `rename` failed). The
+  test that asks with every spelling ran on both systems before the fix and showed it;
+  `read`, `write`, `create`, `create-folder` and a restore's `to` were not, since
+  they follow links on purpose and refuse a path that ends up outside. All of them go
+  through `normal` now, and answers give paths in that spelling. Case and Unicode form
+  are left as written: on a file system that folds them, the check and the call still
+  see the same string, and what is found is decided once, by `lstat`.
   `workspace/read`, `write` and `create` follow links as before and refuse one that
   leads out.
 - **A folder's version** is a hash of its listing: every file and folder in it, at any depth,
