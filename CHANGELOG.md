@@ -7,6 +7,30 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-11
+
+One reading of a note, and one door into the engine. Everything that reads a note (the reader,
+backlinks and the graph, tasks and the agenda, renames, tidy) now reads the same lossless
+syntax tree, so they can no longer disagree about what is a link, a tag or a task, and
+pulldown-cmark is out of the shipped engine. Files that owners read are changed one way,
+whoever owns them. The whiteboard, its shape editor and its picker run inside the menu, so
+extensions are answered whatever is in front. The extension host is a crate of its own that
+every frontend shares, and deleting, restoring and making folders are gateway messages with a
+permission of their own.
+
+- **Markdown**: the reader draws from the tree; reference links, tags after emphasis, links in
+  tables, with titles and in angle brackets, footnote definitions that hold blocks, and
+  backslash escapes are read the same everywhere; a stray `$$` is text and no longer hides the
+  tasks and headings after it.
+- **Renames** reach every link form the tree reads, including a reference link's definition,
+  and change no other byte.
+- **The whiteboard**: one file watcher, extensions' effects shown, nothing an extension does
+  can take away unsaved work, and cards that repeat an id stay apart.
+- **Extensions**: `cold-lava-host` and `cold-lava-views` are their own crates; `workspace/stat`,
+  `workspace/delete`, `workspace/restore` and `workspace/create-folder`, behind `files.delete`.
+- **News**: subscribers hear of every change once and in order, checked by a harness in the
+  engine.
+
 ### Added
 
 - Extensions can delete, restore and make folders (part of #193). `workspace/delete` moves a
