@@ -22,9 +22,11 @@ title = "new CSV table"
 # (`where.header`) matches first: this one's priority is below every type's default. Its id is
 # in csv-table's namespace, as its commands' are. A row's words are its cells with a tab
 # between them, so its name is what stands before the first tab: its first cell.
+# `table-row` is the older name of the role `row`: both read here, and the cold-lava
+# released before roles were named reads only the older one.
 [[types]]
 id = "csv-table.row"
-on = "row"
+on = "table-row"
 where.file-type = ["csv"]
 priority = -1
 fields.name = { pattern = '^([^\t]+)' }

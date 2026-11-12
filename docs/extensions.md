@@ -1595,7 +1595,8 @@ each doesn't invent one:
   header says what else a column holds: `Name (link)` makes each cell a link run to the file
   it names (what follows the name, `#heading` or `|words`, stays in the cell, the words as
   the run's text), and `Name (markdown)` makes each cell a Markdown piece of its own (place:
-  `row#column`) and empty in the row. No two rows share a place, a blank line is no row,
+  `row#column`) and empty in the row. No two rows share a place (rows that start alike are `a (row 3)`, by their number in the
+  file, so that setting one row's first cell never renames another), a blank line is no row,
   and it gives pieces only when `initialize` said `alphabet` 2 or more. `Volcanoes/Eruptions.csv` (`Volcano (link), Year, VEI,
   Notes (markdown)`, with a task in its notes) is then `eruption` rows, matched by a second
   row shape of that type in the example workspace's `types.toml`, two backlinks on Krakatoa

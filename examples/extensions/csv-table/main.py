@@ -135,22 +135,36 @@ def shape(rows):
 
 
 def places(rows):
-    """A place for each row under the header that stays when rows are added above it: its first
-    cell, numbered when another row has the same, or its number when it has none. A blank
-    line is no row and has no place."""
+    """A place for each row under the header. A row whose first cell no other row has is named
+    by it, so its place stays when rows are added above it. Rows that start alike are named
+    by that cell and their own number in the file (`a (row 3)`), and a row with no first cell
+    by its number (`row 3`). A blank line is no row and has no place.
+
+    The number is the row's own, not its count among the rows like it, on purpose. Setting
+    one row's first cell must never hand another row a place a different row had: cold-lava
+    checks an edit by reading the file back, and finding another piece at a place it knows
+    makes it refuse. The price is that rows which start alike change place, and their items
+    change id, when a row is added above them."""
+    keys = [row[0][:LONGEST] if row else None for row in rows[1:]]
+    alike = {}
+    for key in keys:
+        alike[key] = alike.get(key, 0) + 1
     taken = set()
     out = []
-    for n, row in enumerate(rows[1:], 1):
-        if not row:
+    for n, key in enumerate(keys, 1):
+        if key is None:
             out.append(None)
             continue
-        key = row[0][:LONGEST] or f"row {n}"
-        # No two rows share a place, whatever their cells say: a row whose first cell is
-        # literally `a (2)` takes that place, and the second `a` gets the next number free.
-        place, number = key, 1
+        if not key:
+            place = f"row {n}"
+        elif alike[key] > 1:
+            place = f"{key} (row {n})"
+        else:
+            place = key
+        # No two rows share a place, whatever their cells say (one that is literally
+        # `a (row 3)`): the later one is marked.
         while place in taken:
-            number += 1
-            place = f"{key} ({number})"
+            place += "'"
         taken.add(place)
         out.append(place)
     return out

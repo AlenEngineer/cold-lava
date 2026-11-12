@@ -108,7 +108,10 @@ change commands, keys and file formats; patch versions only fix things.
   wrote the whole file out again in its own quoting and line endings. If you already use
   the example, with version 0.2.0:
   - every row gets a new id, since a row is now a piece and no longer a line of a Markdown
-    table. A task in a notes column keeps its id when its row's first cell is unchanged;
+    table. Rows whose first cells are alike are named by their number in the file
+    (`a (row 3)`, where it was `a (2)`), so their ids change when a row is added above
+    them; a row with a first cell of its own keeps its id. That is what lets any row's
+    first cell be set, alike or not. A task in a notes column keeps its id when its row's first cell is unchanged;
   - a `[[link]]`, a `#tag` or a task written in a cell is no longer one. To keep the links
     of a column, name it `Name (link)` and write the bare names (`Krakatoa`, not
     `[[Krakatoa]]`). A heading or the words to show may follow the name, as they did inside

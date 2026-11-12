@@ -457,6 +457,63 @@ fn every_csv_row_has_a_place_and_a_link_cell_keeps_what_follows_the_name() {
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
+/// A row's first cell can be set when other rows start the same, first, middle or last: the
+/// rows like it keep their places, so the read-back finds each where it was. A dated log
+/// repeats its first cell on most lines.
+#[test]
+fn a_csv_rows_first_cell_is_set_among_rows_that_start_alike() {
+    use serde_json::Value;
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    const CELLT: &str = "\n[types.cellt]\non = \"row\"\nwhere.header = [\"K\", \"V\"]\n\
+        fields.k = { column = \"K\" }\nfields.v = { column = \"V\" }\n";
+    for (name, before, v, after) in [
+        ("first", "K,V\na,1\na,2\n", "1", "K,V\nzz,1\na,2\n"),
+        ("last", "K,V\na,1\na,2\n", "2", "K,V\na,1\nzz,2\n"),
+        (
+            "apart",
+            "K,V\na,1\nb,2\na,3\n",
+            "1",
+            "K,V\nzz,1\nb,2\na,3\n",
+        ),
+        (
+            "middle",
+            "K,V\na,1\na,2\na,3\n",
+            "2",
+            "K,V\na,1\nzz,2\na,3\n",
+        ),
+        ("joins", "K,V\na,1\nzz,2\n", "1", "K,V\nzz,1\nzz,2\n"),
+    ] {
+        let (workspace, home) = sandbox(&format!("cli-alike-{name}"), |main| main);
+        let ws = workspace.to_str().unwrap();
+        let file = workspace.join("T.csv");
+        std::fs::write(&file, before).unwrap();
+        let types = workspace.join(".cold-lava/types.toml");
+        let text_before = std::fs::read_to_string(&types).unwrap();
+        std::fs::write(&types, text_before + CELLT).unwrap();
+        let run = |args: &[&str]| -> String {
+            let out = cold_lava(&home, args);
+            let (stdout, stderr) = text(&out);
+            assert!(out.status.success(), "{name}: {args:?}\n{stdout}{stderr}");
+            stdout
+        };
+        // A rename starts the owner, which reads the file.
+        run(&["rename", ws, "Krakatoa", "Krakatau"]);
+        let listed = run(&["items", ws, "cellt", "--json"]);
+        let rows: Vec<Value> = (listed.lines())
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), before.lines().count() - 1, "{name}: {listed}");
+        let row = rows.iter().find(|r| r["v"] == v).expect("the row");
+        let id = row["id"].as_str().unwrap();
+        run(&["item", "set", file.to_str().unwrap(), id, "k", "zz"]);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), after, "{name}");
+        let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+    }
+}
+
 /// A copy of the example workspace with `Home.chores` in it, and a home with the owner of
 /// `tests/chores-owner` installed beside the examples' helper.
 fn chores_sandbox(name: &str, chores: &str) -> (PathBuf, PathBuf) {

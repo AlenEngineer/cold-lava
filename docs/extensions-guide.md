@@ -488,8 +488,16 @@ items.append(piece(place, "row", cells=cells))
   and keeps the rest of the cell.
 - The notes column is the one place the example gives Markdown, because that is what people
   write there. Its task is a `task`, at the place `Krakatoa#Notes`.
-- A row's place is its first cell, numbered when another row starts the same, and never
-  one another row already has: a row is never left out because of what its cells say.
+- A row's place is its first cell when no other row starts the same. Rows that start alike
+  are named by that cell and their own number in the file (`a (row 3)`). No two rows share
+  a place, so a row is never left out because of what its cells say.
+- Choosing a place is a trade. cold-lava checks an edit by reading your new text back, and
+  a place it knows must then hold the piece it expects. So an edit of one piece must never
+  give another piece a place that a different piece had. Numbering alike rows `a`, `a (2)`
+  breaks that: set the first row's first cell and the second row becomes `a`. The row's own
+  number doesn't. What it costs: rows that start alike get new places, and their items new
+  ids, when a row is added above them. A row with a first cell of its own keeps its place
+  wherever it moves. Pick the scheme whose edits always go through.
 - It asks what it may give. `ext.alphabet` is the alphabet's version from `initialize`, and
   the example gives rows as pieces only when it is 2 or more (`given(text, pieces=ext.alphabet
   >= 2)`). To an older cold-lava it gives the Markdown cells alone.
@@ -503,7 +511,7 @@ in `types.toml` ([extensions.md](extensions.md#types)):
 ```toml
 [[types]]
 id = "csv-table.row"
-on = "row"
+on = "table-row"                    # the role `row`, under the name older releases read too
 where.file-type = ["csv"]           # only in .csv files, never a table in a note
 priority = -1                       # below the user's types: their row types win
 fields.name = { pattern = '^([^\t]+)' }    # a row's words are its cells, a tab between them
