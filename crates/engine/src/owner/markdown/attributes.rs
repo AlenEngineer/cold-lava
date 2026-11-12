@@ -27,6 +27,10 @@ pub const WORKSPACE_FILE: &str = ".cold-lava/attributes.toml";
 /// The readings built into the engine.
 pub const BUILT_IN: &str = include_str!("../../../markdown/attributes.toml");
 
+/// The entry for every attribute that has none of its own. In its readings `*` stands for the
+/// attribute's name: `"*" = { inline = "*" }` reads `rating` from `[rating:: 5]`.
+pub const ANY: &str = "*";
+
 /// The attributes the tree gives, which no file can say how to read.
 pub const STRUCTURAL: &[&str] = &["level", "callout", "fold"];
 
@@ -169,11 +173,21 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
                     Ok((read, with)) => {
                         let old =
                             (found.readings.iter()).position(|r| r.on == on && r.name == name);
-                        if let Some(old) = old {
-                            let old = found.readings.remove(old);
+                        let old = old.map(|old| found.readings.remove(old));
+                        // No readings takes the entry out.
+                        let does = if read.is_empty() {
+                            "removes"
+                        } else {
+                            "replaces"
+                        };
+                        if let Some(old) = &old {
+                            let from = &old.origin;
                             found
                                 .notes
-                                .push(format!("{at} {name} replaces the one from {}", old.origin));
+                                .push(format!("{at} {name} {does} the one from {from}"));
+                        }
+                        if read.is_empty() {
+                            continue;
                         }
                         found.readings.push(Reading {
                             on,
@@ -194,8 +208,12 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
 /// One attribute's readings as written: sources like a type's field has, and `with` beside a
 /// checkbox.
 fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>, String), String> {
-    if !types::is_name(name, false) {
-        return Err("not an attribute's name: a letter, then letters, digits, - or _".into());
+    if name != ANY && !types::is_name(name, false) {
+        return Err(
+            "not an attribute's name: a letter, then letters, digits, - or _, or \"*\" for \
+             every attribute with no entry of its own"
+                .into(),
+        );
     }
     if STRUCTURAL.contains(&name) {
         return Err(format!(
@@ -211,9 +229,6 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
     let Sources(read) = written
         .try_into()
         .map_err(|e: toml::de::Error| e.to_string().replace('\n', " ").trim().to_string())?;
-    if read.is_empty() {
-        return Err("no readings: give it at least one, like { marker = \"📅\" }".into());
-    }
     for s in &read {
         let text = matches!(
             s,
@@ -257,6 +272,16 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
     Ok((read, with))
 }
 
+/// A reading of the `*` entry, for the attribute `name`: `*` in what it looks for is the name.
+fn named(reading: &Source, name: &str) -> Source {
+    match reading {
+        Source::Inline(key) => Source::Inline(key.replace(ANY, name)),
+        Source::Marker(glyph) => Source::Marker(glyph.replace(ANY, name)),
+        Source::Flag(glyph) => Source::Flag(glyph.replace(ANY, name)),
+        other => other.clone(),
+    }
+}
+
 /// One source of a field once its attributes are spelled out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Flat<'a> {
@@ -290,8 +315,8 @@ impl Readings {
 
     /// A field's sources on a piece with the role `on`, with each `attribute = "name"` spelled
     /// out as Markdown writes it, in place: its readings from the table; itself when the tree
-    /// gives it (`level`, `callout`, `fold`); else the Dataview field of that name
-    /// (`[name:: value]`), which is how Markdown writes an attribute nobody declared. The
+    /// gives it (`level`, `callout`, `fold`); else the readings of the table's `*` entry for
+    /// that name (built in: the Dataview field, `[name:: value]`). The
     /// matcher reads through this list and `edit.rs` writes through it, so a typed item's
     /// `Place::sources` index means the same to both.
     pub fn flat<'a>(&'a self, on: On, sources: &'a [Source]) -> Vec<Flat<'a>> {
@@ -310,17 +335,22 @@ impl Readings {
                     source: Cow::Borrowed(s),
                     attribute: Some((name, r.with.as_str())),
                 })),
-                None => {
-                    let field = Source::Inline(name.to_string());
-                    let as_field = !STRUCTURAL.contains(&name) && field.on().contains(&on);
-                    flat.push(Flat {
-                        source: match as_field {
-                            true => Cow::Owned(field),
-                            false => Cow::Borrowed(source),
-                        },
+                // The tree's own, then the entry for every attribute that has none, where
+                // `*` is the name; with neither, the source stays and reads nothing.
+                None if STRUCTURAL.contains(&name) => flat.push(Flat {
+                    source: Cow::Borrowed(source),
+                    attribute: Some((name, "")),
+                }),
+                None => match self.reading(on, ANY) {
+                    Some(any) => flat.extend(any.read.iter().map(|s| Flat {
+                        source: Cow::Owned(named(s, name)),
+                        attribute: Some((name, any.with.as_str())),
+                    })),
+                    None => flat.push(Flat {
+                        source: Cow::Borrowed(source),
                         attribute: Some((name, "")),
-                    });
-                }
+                    }),
+                },
             }
         }
         flat
@@ -353,6 +383,7 @@ mod tests {
             names,
             [
                 "checkbox",
+                "task",
                 "due",
                 "scheduled",
                 "start",
@@ -360,13 +391,23 @@ mod tests {
                 "done",
                 "cancelled",
                 "recurrence",
-                "priority"
+                "priority",
+                "*",
+                "*",
+                "*",
+                "*"
             ]
         );
-        assert!(a.readings.iter().all(|r| r.on == On::Item));
-        assert_eq!(a.readings[0].with, "${tasks.global-filter}");
+        let roles: Vec<&str> = a.readings[9..].iter().map(|r| r.on.name()).collect();
+        assert_eq!(roles, ["item", "section", "text", "aside"]);
         assert_eq!(
-            a.readings[1].read,
+            (a.readings[0].with.as_str(), a.readings[1].with.as_str()),
+            ("", "${tasks.global-filter}"),
+            "every checkbox is a checkbox; the filter says which are tasks"
+        );
+        assert_eq!(a.readings[0].read, a.readings[1].read);
+        assert_eq!(
+            a.readings[2].read,
             [
                 Source::Inline("due".into()),
                 Source::Marker("📅".into()),
@@ -401,7 +442,22 @@ mod tests {
         assert_eq!(
             kinds(&a.flat(On::Row, &written[..1])),
             ["attribute:due"],
-            "a row has no readings and no Dataview fields"
+            "a row has no readings and no entry for the rest"
+        );
+        let without = load([Layer::built_in(), config("[item]\n\"*\" = []\n")]);
+        assert_eq!(
+            kinds(&without.flat(On::Item, &written[2..3])),
+            ["attribute:rating"],
+            "with the entry for the rest taken out, an attribute nobody declares reads nothing"
+        );
+        assert_eq!(
+            without.notes,
+            ["config.toml: [item] * removes the one from built in"]
+        );
+        let mine = load([config("[item]\n\"*\" = { marker = \"@*\" }\n")]);
+        assert_eq!(
+            mine.flat(On::Item, &written[2..3])[0].source.as_ref(),
+            &Source::Marker("@rating".into())
         );
     }
 
@@ -409,7 +465,7 @@ mod tests {
     fn a_later_layer_replaces_a_reading_and_a_broken_one_is_dropped() {
         let mine = config(
             "[item]\ndue = { marker = \"@due\" }\nstars = { pattern = 'r(\\d)' }\n\
-             level = { marker = \"#\" }\nbroken = { rest = true }\nempty = []\n\
+             level = { marker = \"#\" }\nbroken = { rest = true }\n\
              filtered = { marker = \"x\", with = \"y\" }\n\
              [note]\ndue = { marker = \"x\" }\n",
         );
@@ -427,13 +483,12 @@ mod tests {
         for wanted in [
             "[item] level: level is read from the note's structure",
             "[item] broken: rest is not a reading of a piece's text",
-            "[item] empty: no readings",
             "[item] filtered: with goes beside checkbox = true",
             "[note] is not a role attributes are read on",
         ] {
             assert!(errors.contains(wanted), "{wanted}\nin\n{errors}");
         }
-        assert_eq!(a.errors.len(), 5, "{errors}");
+        assert_eq!(a.errors.len(), 4, "{errors}");
     }
 
     #[test]
@@ -443,6 +498,6 @@ mod tests {
             global_filter: "#task".into(),
             ..Provided::default()
         });
-        assert_eq!(a.readings[0].with, "#task");
+        assert_eq!(a.readings[1].with, "#task");
     }
 }

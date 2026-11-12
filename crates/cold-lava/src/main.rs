@@ -1459,7 +1459,6 @@ fn type_counts(workspace: &workspace::Workspace) -> HashMap<String, (usize, usiz
 /// each reading comes from.
 fn print_attributes(found: &attributes::Readings) {
     println!("level, callout, fold  read from the note's structure");
-    println!("any other name  a Dataview field of that name: [name:: value]");
     for r in &found.readings {
         let read: Vec<String> = r.read.iter().map(source_label).collect();
         println!("\n{}  on {} · {}", r.name, r.on.name(), r.origin);

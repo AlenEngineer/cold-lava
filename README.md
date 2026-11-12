@@ -667,7 +667,8 @@ pattern anywhere in text. The names `on` had before (`note`, `heading`, `paragra
 `cold-lava types` prints both (`on note · role document`).
 
 A type can also read what a piece carries without saying how Markdown writes it. These are
-**attributes**: a list item's `checkbox`, a heading's `level`, a callout's kind (`callout`) and
+**attributes**: a list item's `checkbox` (and `task`, on the ones that count as tasks), a
+heading's `level`, a callout's kind (`callout`) and
 whether it folds (`fold`), a task's `due`, `scheduled`, `start`, `created`, `done`,
 `cancelled`, `recurrence` and `priority`, and any Dataview field by its name
 (`[rating:: 5]` is `rating`). `where.attribute = "checkbox"` takes the pieces that have one,

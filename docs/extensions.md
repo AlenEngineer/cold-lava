@@ -338,10 +338,11 @@ what is written on a card has them too.
 | Attribute | On | Its value | Written as |
 | --- | --- | --- | --- |
 | `checkbox` | an `item` | the character between the brackets, as written, a space included | `- [x] Pay rent` gives `x`; `- [ ] Pay rent` gives a space |
+| `task` | an `item` | the same character, on an item its owner counts as a task | any checkbox; with the Tasks plugin's global filter `#task`, only `- [ ] Pay rent #task` |
 | `due`, `scheduled`, `start`, `created`, `done`, `cancelled` | an `item` | a date | `📅 2026-11-20` or `[due:: 2026-11-20]`; the others likewise, each with its own glyph and field |
 | `recurrence` | an `item` | the rule, as text | `🔁 every week` or `[repeat:: every week]` |
 | `priority` | an `item` | `highest`, `high`, `medium`, `low` or `lowest` | `⏫`, or `[priority:: high]` |
-| any other name | a `section`, `text`, `item` or `aside` | the value of the Dataview field of that name | `[rating:: 5]` gives `rating` the value `5` |
+| any other name | a `section`, `text`, `item` or `aside` | the value of the Dataview field of that name, while the table keeps its `*` entry | `[rating:: 5]` gives `rating` the value `5` |
 | `level` | a `section` | the heading's level, 1 to 6 | `## Method` gives `2` |
 | `callout` | an `aside` | the callout's kind, in lower case | `> [!WARNING] Hot` gives `warning` |
 | `fold` | an `aside` | `closed` or `open`, when the callout folds | `> [!tip]- More` gives `closed`, `> [!tip]+ More` gives `open` |
@@ -358,10 +359,14 @@ and which reading gives which attribute is data ("Attributes in Markdown, as bui
   are checkboxes at all: `obsidian` and `github` have task lists, `commonmark` has none, so
   no item carries `checkbox` there. It is read from the item's text exactly as the built-in
   `task` has always read it, which is slightly wider than the tree's own checkbox token (any
-  whitespace after the bracket, where the tree takes a space or a tab). With the Tasks
-  plugin's global filter set, only an item that carries the filter after its checkbox has
-  the attribute, which is the plugin's own rule for what a task is; the `checkbox = true`
-  source still reads any checkbox.
+  whitespace after the bracket, where the tree takes a space or a tab). Every item with a
+  checkbox has it, whatever the Tasks plugin's settings say.
+- **`task`** says that the owner counts the item as a task, which is a second fact. In
+  Markdown it is the checkbox, and with the Tasks plugin's global filter set, only on an
+  item that carries the filter after its checkbox. The built-in `task` type asks for this
+  one, and reads the status from `checkbox`. Another owner gives `task` by its own rule (an
+  Org owner for a `TODO` heading), and a type of one's own on "an item with a checkbox"
+  still sees every checkbox.
 - **`level`** is on every heading, in every flavour.
 - **`callout` and `fold`** are on a quote the tree reads as a callout, a GitHub alert
   (`> [!NOTE]`) included. A plain quote has neither. A callout that doesn't fold has no
@@ -393,8 +398,9 @@ base written with the other. A types file's `version` stays `1`, with either spe
   `where.attribute = ["callout", "fold"]` one that carries each. It applies on every role
   but `document`, and not on `inline`. It tests that the attribute is there, not its value:
   read the value into a field, and filter on the field. A name nobody declared is not a
-  mistake, since attributes are open: in Markdown it is the Dataview field of that name, so
-  `where.attribute = "rating"` passes a piece that writes `[rating:: 5]`.
+  mistake, since attributes are open: Markdown's table has an entry for the rest, the
+  Dataview field of that name, so `where.attribute = "rating"` passes a piece that writes
+  `[rating:: 5]`. What the asked attribute was read from is not the piece's words (`rest`).
 - A field's source `{ attribute = "checkbox" }` reads the attribute's value, beside the
   other sources and in the same order of precedence. The type doesn't say how the file
   writes it; the piece's owner does. Every other source still reads, so a type may go on
@@ -457,7 +463,8 @@ file's owner does. For Markdown the answer is a table of readings, and it is dat
 version = 1
 
 [item]
-checkbox = { checkbox = true, with = "${tasks.global-filter}" }
+checkbox = { checkbox = true }
+task = { checkbox = true, with = "${tasks.global-filter}" }
 due = [{ inline = "due" }, { marker = "📅" }, { marker = "📆" }, { marker = "🗓" }]
 scheduled = [{ inline = "scheduled" }, { marker = "⏳" }, { marker = "⌛" }]
 start = [{ inline = "start" }, { marker = "🛫" }]
@@ -469,6 +476,11 @@ priority = [
     { flags = { "⏬" = "lowest", "🔽" = "low", "🔼" = "medium", "⏫" = "high", "🔺" = "highest" } },
     { inline = "priority" },
 ]
+"*" = { inline = "*" }
+
+[section]
+"*" = { inline = "*" }
+# and the same under [text] and [aside]
 ```
 
 - **The shape.** A table per role (`[item]`, `[section]`, `[text]`, `[aside]`), and in it one
@@ -480,9 +492,17 @@ priority = [
   written: Dataview's field before the emoji, the lowest priority glyph first.
 - **`with`** goes beside `checkbox = true` and nowhere else. It names text the item must
   also hold after its checkbox to have the attribute, and that text is not part of the
-  item's words. The built-in table gives it the Tasks plugin's global filter, so the filter
-  is the Markdown owner's rule and no longer the task type's. An empty `with` asks for
-  nothing.
+  item's words. The built-in table gives `task` the Tasks plugin's global filter, so the
+  filter is the Markdown owner's rule and no longer the task type's, and `checkbox` stays
+  free of it. An empty `with` asks for nothing. It reads exactly as the pattern the task
+  had, `^\[[^\n]\]\s+.*FILTER`: the filter counts after the bracket and one whitespace
+  character, so a filter `x` doesn't make `- [x] buy` a task.
+- **`"*"`** is the entry for every attribute that has none of its own on that role, and in
+  its readings `*` stands for the attribute's name. Built in, it is Dataview's field:
+  `[rating:: 5]` gives `rating`. It is a row like the others, so `cold-lava attributes`
+  lists it and a later file can change it or take it out.
+- **Taking an entry out.** An empty list removes the entry of that name
+  (`"*" = []`, `due = []`). With `"*"` out, an attribute nobody declares is on no piece.
 - **Why it is here and not in the type.** The emoji are the Obsidian Tasks plugin's
   convention, the bracketed fields are Dataview's, and the global filter is a setting of the
   plugin. None of them is what a task is. Kept in the type, every other format's owner would
@@ -501,9 +521,8 @@ priority = [
   `cold-lava types` goes on listing a type as it is written, so the task's `due` shows as
   `attribute due`.
 - **What can't be given readings.** `level`, `callout` and `fold` are read from the note's
-  structure, and an entry for one is refused. An attribute with no entry is read as the
-  Dataview field of its name on the roles that have text (`[rating:: 5]`), and is nothing on
-  a row or a fence.
+  structure, and an entry for one is refused. The built-in table has no entry under `[row]`
+  or `[verbatim]`, so no attribute is read there.
 - **`${tasks.…}` settings** are filled in per workspace as in a type: in a `pattern` as
   literal text, in `with` as itself.
 - **How it is used.** `Readings::flat` spells a field's sources out for a role: each
@@ -514,9 +533,10 @@ priority = [
   `[due:: …]`, and adds a missing one the way the line and the workspace write theirs
   ("Writing, as built"). A type that names its sources itself is untouched by the table.
 - **Ticking** is still `tasks.toggle`, native code that writes the done and cancelled dates
-  as the Tasks plugin does (`✅`, `[completion:: …]`). It doesn't read the table yet, so
+  as the Tasks plugin does (`✅`, `❌`, `[completion:: …]`, `[cancelled:: …]`). It is the one
+  place a convention of that plugin is still code. It doesn't read the table yet, so
   changing the reading of `done` changes what is read and what `set-field` writes, not what
-  a tick adds.
+  a tick adds. Its home is this table: the writer's side of `done` and `cancelled`.
 
 ## Types
 
@@ -793,13 +813,13 @@ style.minutes = { badge = true, icon = "⏱" }
 ### The task as a definition, as built
 
 - **The definition** (`crates/engine/types/task.toml`): one shape on `item`, `requires =
-  ["task-lists"]`, `where.attribute = "checkbox"`, `key` and `required` the words. It reads
+  ["task-lists"]`, `where.attribute = "task"`, `key` and `required` the words. It reads
   attributes and names no character of Markdown's (#242): `status` and `status_type` from
   `checkbox` (the type through `${tasks.statuses}`), `text` the rest, each of `due`,
   `scheduled`, `start`, `created`, `done`, `cancelled`, `recurrence` and `priority` from the
   attribute of its name, `tags` and `links` from the text, `daily_note` from `note = "date"`.
   `actions = ["tasks.toggle"]`. How Markdown writes each attribute is the owner's table
-  ("Attributes in Markdown, as built"): the checkbox with the global filter, each date from
+  ("Attributes in Markdown, as built"): `task` is the checkbox with the global filter, each date from
   its Dataview field then its markers (`due` from `[due:: …]`, `📅`, `📆`, `🗓`; `scheduled`
   `⏳` `⌛`; `start` `🛫`; `created` `➕`; `done` `[completion:: …]` `✅`; `cancelled` `❌`),
   `recurrence` from `[repeat:: …]` or a pattern after `🔁`, `priority` from the five glyphs

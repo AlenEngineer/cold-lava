@@ -3,7 +3,7 @@ list, heading, block  built in, read natively
 task  built in
   found 17 items
   priority 1 · requires task-lists · actions tasks.toggle
-  on list-item · role item · where attribute checkbox · key text · required text
+  on list-item · role item · where attribute task · key text · required text
     status       text                                 attribute checkbox    writable
     status_type  enum ${tasks.statuses}               attribute checkbox    writable
     text         text                                 rest                  read-only

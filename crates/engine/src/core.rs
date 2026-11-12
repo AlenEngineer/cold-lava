@@ -548,7 +548,7 @@ impl Core {
         });
         let unchanged = || {
             Answer::Now(Box::new(Edited {
-                item: item.clone(),
+                item: gateway::attributed(&self.index.workspace, item.clone()),
                 changed: false,
                 next: None,
                 warning: None,
@@ -790,10 +790,12 @@ impl Core {
                     .or_else(|| items.iter().find(|i| given::same_data(i, want)))
                     .cloned()
             };
+            let workspace = &self.index.workspace;
+            let wire = |found: Item| gateway::attributed(workspace, found);
             let answer = find(&item).map(|found| Edited {
-                item: found,
+                item: wire(found),
                 changed: true,
-                next: next.as_deref().and_then(find),
+                next: next.as_deref().and_then(find).map(wire),
                 warning,
             });
             let answer = answer.ok_or_else(|| {
@@ -2112,7 +2114,13 @@ mod tests {
         );
         let (by, t, answer) = core.take_edited().pop().expect("answered at once");
         assert_eq!((by.as_str(), t), ("agenda", ticket));
-        assert_eq!(answer.unwrap().item.rev, tasks(&core)[0].rev);
+        let answer = answer.unwrap();
+        assert_eq!(answer.item.rev, tasks(&core)[0].rev);
+        assert_eq!(
+            serde_json::to_value(&answer.item.attributes).unwrap()["checkbox"],
+            "x",
+            "a card's task carries its attributes in the answer, as a note's does"
+        );
         let now = std::fs::read_to_string(dir.join("Board.canvas")).unwrap();
         let (head, tail) = canvas.split_once("- [ ] Two each, see [[Magma]]").unwrap();
         let ticked = now.strip_prefix(head).expect("the bytes before it kept");

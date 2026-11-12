@@ -2012,6 +2012,9 @@ fields.w = { capture = "w" }
         "- [ ] many 🔺 ⏬ 🔼 #task\n- [ ] field wins? ⏫ [priority:: low]\n- [ ] in code `⏫` 🔽\n- [ ] no such [priority:: urgent]\n",
         // The global filter: before the words, after them, twice, missing, and glued.
         "- [ ] #task first\n- [ ] last #task\n- [ ] #task twice #task\n- [ ] none\n- [ ] glued#task\n- [ ] #tasks longer\n- [#] task #task\n- [x] x marks x\n- [ ] ] bracket [ ] again\n",
+        // A filter that is one letter, the status itself; the filter before the checkbox, on
+        // the line above, and in a quote's marker line; the filter and no other words.
+        "- [x] buy\n- [x] buy x\n- [ ] x\n- x [ ] before the box\n- #task [ ] before the box\n#task\n- [ ] under a filter line\n> #task\n> - [ ] quoted under it\n- [ ] #task\n- [ ] #task #task\n- [ ] #task 📅 2026-11-12\n",
         // Custom statuses, known and unknown, and odd characters between the brackets.
         "- [?] question\n- [!] urgent\n- [/] going #task\n- [-] dropped\n- [X] capital\n- [é] accent\n- [📅] emoji\n- [ ]\ttab after\n- [ ]\u{a0}nbsp after\n- [ ]\u{3000}wide space after\n",
         // No words: a bare checkbox, only a date, only the filter, only a tag, only a priority.
@@ -2250,13 +2253,21 @@ fields.what = { rest = true }
         assert_eq!(
             read(
                 json!({"globalFilter": "x"}),
-                "- [x] none here\n- [x] an x after\n"
+                "- [x] buy\n- [x] buy x\n- [ ] x\n- x [ ] before\n"
             ),
-            ["list", "[x] an after due= priority="],
-            "the filter counts after the checkbox, never in it"
+            ["list", "[x] buy due= priority=", "list", "list"],
+            "the filter counts after the checkbox, never in it or before it, and is no word"
         );
         assert_eq!(
-            read(json!({}), TRICKY_TASKS[4]),
+            read(
+                json!({"globalFilter": "#task"}),
+                "- [ ] #task\n- [ ] #task 📅 2026-11-12\n- #task [ ] before\n"
+            ),
+            ["list", "list", "list"],
+            "the filter and no other words is no task"
+        );
+        assert_eq!(
+            read(json!({}), TRICKY_TASKS[5]),
             [
                 "list",
                 "list",

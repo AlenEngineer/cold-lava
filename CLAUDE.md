@@ -232,12 +232,16 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `Readings::flat` spells a field's `attribute = …` out into them, in place. The matcher
   reads through that list and `edit.rs` writes through the same one, so
   `matcher::Place::sources` means the same to both: never index a shape's sources as
-  written. The Tasks plugin's emoji, Dataview's fields and the global filter (`with`, beside
-  the checkbox) live there, so the profile work (#235, #236) moves that file and no type.
+  written. The Tasks plugin's emoji, Dataview's fields (the `"*"` entry, for every
+  attribute with none of its own) and the global filter live there, so the profile work
+  (#235, #236) moves that file and no type. `checkbox` (the item has one) and `task` (its
+  owner counts it as a task: in Markdown the checkbox `with` the global filter) are two
+  attributes: the task type asks for `task` and reads its status from `checkbox`. Keep them
+  apart, so a type on "an item with a checkbox" sees every checkbox.
   Don't put a glyph or a `${tasks.…}` reading rule back into `task.toml`, and don't turn a
   reading into a Rust match arm. `level`, `callout` and `fold` are the tree's
   (`matcher::Attr`, from `matcher::Given`, which holds what the walk knows that the text
-  doesn't); an attribute with no entry is the Dataview field of its name. Nothing keeps an
+  doesn't). Nothing keeps an
   attribute while a note is read: one is read off the block only when a shape names it.
   Keep it that way: don't store attributes on `items::Item` in the scan. Over the gateway an
   item carries the ones its type read (`Item::attributes`, filled in by

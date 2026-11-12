@@ -10,13 +10,16 @@
 # Obsidian Tasks plugin's, and `[key:: value]` is Dataview's. They are built in until profiles
 # (#235) give them a home, and anyone can change them: `[attributes]` in config.toml and
 # `<workspace>/.cold-lava/attributes.toml` are read after this file, each replacing the
-# attributes it names. `${tasks.…}` is the workspace's Tasks plugin setting of that name.
+# attributes it names (an empty list takes one out). `${tasks.…}` is the workspace's Tasks
+# plugin setting of that name.
 version = 1
 
 [item]
-# One character between brackets. With the Tasks plugin's global filter, only an item that
-# carries the filter after its checkbox has one, and the filter is not part of its words.
-checkbox = { checkbox = true, with = "${tasks.global-filter}" }
+# One character between brackets, on every item that has one.
+checkbox = { checkbox = true }
+# The item is a task: it has a checkbox, and with the Tasks plugin's global filter, the filter
+# after it. The filter is not part of the task's words.
+task = { checkbox = true, with = "${tasks.global-filter}" }
 # Dataview's field first: when a line has both, it is the one that counts.
 due = [{ inline = "due" }, { marker = "📅" }, { marker = "📆" }, { marker = "🗓" }]
 scheduled = [{ inline = "scheduled" }, { marker = "⏳" }, { marker = "⌛" }]
@@ -30,3 +33,17 @@ priority = [
     { flags = { "⏬" = "lowest", "🔽" = "low", "🔼" = "medium", "⏫" = "high", "🔺" = "highest" } },
     { inline = "priority" },
 ]
+
+# Any other attribute is Dataview's field of its name: `[rating:: 5]` gives `rating`. `*` stands
+# for the name. Take the entry out (`"*" = []` in a later file) and an attribute nobody
+# declares is on no piece.
+"*" = { inline = "*" }
+
+[section]
+"*" = { inline = "*" }
+
+[text]
+"*" = { inline = "*" }
+
+[aside]
+"*" = { inline = "*" }

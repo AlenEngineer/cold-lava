@@ -31,25 +31,29 @@ change commands, keys and file formats; patch versions only fix things.
   gateway an item carries the attributes its type read under `attributes`, left out when it
   read none. Reading a note costs what it did: an attribute is read only when a type names
   it.
-- The built-in `task` is defined over attributes (#242). It says an item with a `checkbox`
-  is a task and reads `due`, `scheduled`, `start`, `created`, `done`, `cancelled`,
+- The built-in `task` is defined over attributes (#242). It takes an item its owner counts
+  as a task (the attribute `task`), reads its status from `checkbox`, and reads `due`, `scheduled`, `start`, `created`, `done`, `cancelled`,
   `recurrence` and `priority` by name; it names no emoji and no bracket. How Markdown writes
   each one is now a table of readings that belongs to the Markdown owner
-  (`crates/engine/markdown/attributes.toml`): the checkbox with the Tasks plugin's global
-  filter, `📅` and `[due:: …]`, the priority glyphs, `🔁`. You can read it with the new
+  (`crates/engine/markdown/attributes.toml`): `checkbox` on every item that has one, `task`
+  on those the Tasks plugin's global filter lets through, `📅` and `[due:: …]`, the priority
+  glyphs, `🔁`. You can read it with the new
   `cold-lava attributes [WORKSPACE]` (`--json` too) and change it in `[attributes]` in
   config.toml or in `<workspace>/.cold-lava/attributes.toml`, where a later entry replaces an
-  earlier one. An attribute nobody declared is the Dataview field of its name
-  (`[rating:: 5]`). No task changes: every id, rev, field and line is what it was, `agenda`,
+  earlier one and an empty list takes one out. An attribute nobody declared is the Dataview
+  field of its name (`[rating:: 5]`), by the table's `"*"` entry, which can be changed or
+  removed like any other. The answer to an `items/edit` of a canvas card's item carries its
+  `attributes` too. No task changes: every id, rev, field and line is what it was, `agenda`,
   `items` and `table` print the same bytes, and ticking or setting a field writes the same
   text. `cold-lava types` lists the task's fields as `attribute due` and so on. A type that
   extends the task, or reads a checkbox or a marker itself, works as before.
-- A type on `aside` (`quote`) now matches: a quote or a callout is a typed item when a type
-  takes it. Its text is the rest of its first line (a callout's title), and its lines are
-  the whole quote. Such a type loaded before and matched nothing.
 
 ### Changed
 
+- A type on a quote or a callout (`on = "aside"`, or the older `on = "quote"`) now matches.
+  Before, such a type loaded and matched nothing. Now a quote or a callout it takes is an
+  item of that type: its text is the rest of its first line (a callout's title), and its
+  lines are the whole quote.
 - No type may name a field `attributes`: every item can carry that key over the gateway.
 
 - A message about a mistake in a type says the role with the older name beside it

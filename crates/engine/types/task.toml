@@ -4,7 +4,7 @@
 # It reads attributes, so it doesn't say how a file writes a checkbox or a due date: the owner
 # of the file does. For Markdown that is `markdown/attributes.toml`, where the Obsidian Tasks
 # plugin's emoji format (`📅 2026-11-12`), its Dataview format (`[due:: 2026-11-12]`) and its
-# global filter live. `${tasks.…}` is the workspace's Tasks plugin setting of that name.
+# global filter live. `${tasks.statuses}` is the workspace's Tasks plugin setting.
 version = 1
 
 [types.task]
@@ -42,8 +42,9 @@ priority = { badge = true, by-value = { highest = { colour = "red" }, high = { c
 
 [[types.task.from]]
 on = "item"
-# An item that has a checkbox.
-where.attribute = "checkbox"
+# An item its owner counts as a task. In Markdown: a checkbox, and with the Tasks plugin's
+# global filter, the filter after it.
+where.attribute = "task"
 # Its words, so ticking, re-dating or re-indenting it keeps its id. A checkbox with no words
 # (`- [ ] 📅 2026-11-12`, a template's empty one) is no task yet.
 key = ["text"]

@@ -516,7 +516,7 @@ fn answered(workspace: &Workspace, rel: &str, item: Item) -> Item {
 /// The item as it leaves the gateway: with the attributes its type read from its piece under
 /// `attributes`, by name. A note's items don't keep them (reading every note pays nothing for
 /// them): they are the values of the fields that read an attribute.
-fn attributed(workspace: &Workspace, mut item: Item) -> Item {
+pub(crate) fn attributed(workspace: &Workspace, mut item: Item) -> Item {
     if let Data::Typed(t) = &item.data {
         item.attributes = workspace.item_settings().attributes_of(t);
     }
