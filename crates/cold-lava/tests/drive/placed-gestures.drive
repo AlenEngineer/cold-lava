@@ -30,7 +30,7 @@ wait-for  Inbox/Gestures.canvas
 keys s
 wait-for place a shape · type to filter
 type check
-expect checklist  Checklist  · workspace
+wait-for checklist  Checklist  · workspace
 keys enter
 wait-for bind checklist
 type type=task note="Inbox/Field Season.md" title="Field season"
