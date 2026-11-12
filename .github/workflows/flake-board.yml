@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - name: Main's drive scripts
         if: matrix.scripts == 'main'
-        run: git checkout b48cff1dd8e595775d19d9ea20505d828512a429 -- crates/cold-lava/tests/drive
+        run: git checkout 929b07b6faf275db864ce8657f95f440bc0e065c -- crates/cold-lava/tests/drive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build once
