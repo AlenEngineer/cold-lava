@@ -706,12 +706,7 @@ pub fn run(
             Action::Write { file, text } => {
                 let workspace = args.last().map(Path::new).unwrap_or(Path::new("."));
                 let path = workspace.join(file);
-                // As a program that saves safely does: the whole text into a file beside it,
-                // then that file renamed over it. Written in place the file is empty for a
-                // moment, and whoever watches it may read it so.
-                let beside = path.with_file_name(".cold-lava-drive-write.tmp");
-                std::fs::write(&beside, text)
-                    .and_then(|()| std::fs::rename(&beside, &path))
+                write_beside(&path, text.as_bytes())
                     .err()
                     .map(|e| format!("couldn't write {}: {e}", path.display()))
             }
@@ -750,6 +745,30 @@ pub fn run(
     }
     s.kill();
     Ok(true)
+}
+
+/// Write a workspace file as a program that saves safely does: the whole text into a file
+/// beside it, then that file renamed over it. Written in place the file is empty for a moment,
+/// and whoever watches it may read it so. The file beside it has a name of this run's own that
+/// nothing there has, so no file of the workspace is taken for it, and it is removed when the
+/// rename can't be done. A link is written through, as a write in place would: the file it
+/// leads to is the one replaced.
+fn write_beside(path: &Path, text: &[u8]) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let beside = loop {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!(".cold-lava-drive-{}-{n}.tmp", std::process::id());
+        let beside = target.with_file_name(name);
+        if beside.symlink_metadata().is_err() {
+            break beside;
+        }
+    };
+    let written = std::fs::write(&beside, text).and_then(|()| std::fs::rename(&beside, &target));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&beside);
+    }
+    written
 }
 
 /// A left-button drag as SGR mouse reports: the press, a move through every cell on the way
