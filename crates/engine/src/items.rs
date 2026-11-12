@@ -106,53 +106,6 @@ impl Settings {
             matcher,
         }
     }
-
-    /// The attributes `t`'s type read from the piece it is (`{ attribute = "checkbox" }`), by
-    /// name, each with the value of the first field that read it.
-    pub fn attributes_of(&self, t: &Typed) -> Attributes {
-        let mut found = Attributes::default();
-        let shape = (self.types.types.iter())
-            .find(|ty| ty.name == t.kind)
-            .and_then(|ty| ty.definition.from.get(t.place.shape));
-        let Some(shape) = shape else { return found };
-        for (field, source) in &t.place.sources {
-            let Some(written) = shape.fields.get(&**field) else {
-                continue;
-            };
-            let flat = self.readings.flat(shape.on, &written.0);
-            let read = flat.get(*source).and_then(|f| f.attribute);
-            if let (Some((name, _)), Some(value)) = (read, t.fields.get(field))
-                && !value.is_null()
-                && found.get(name).is_none()
-            {
-                found.set(name, value.clone());
-            }
-        }
-        found
-    }
-}
-
-/// A piece's attributes as an item carries them over the gateway: a name and a value each
-/// (docs/extensions.md, "The alphabet, as built"). Empty on an item as a note is read; the
-/// gateway fills it in for the items it hands out.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
-#[serde(transparent)]
-pub struct Attributes(Option<Box<serde_json::Map<String, serde_json::Value>>>);
-
-impl Attributes {
-    pub fn is_empty(&self) -> bool {
-        self.0.as_ref().is_none_or(|m| m.is_empty())
-    }
-
-    pub fn get(&self, name: &str) -> Option<&serde_json::Value> {
-        self.0.as_ref()?.get(name)
-    }
-
-    pub fn set(&mut self, name: &str, value: serde_json::Value) {
-        self.0
-            .get_or_insert_default()
-            .insert(name.to_string(), value);
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -174,9 +127,6 @@ pub struct Item {
     pub rev: String,
     #[serde(flatten)]
     pub data: Data,
-    /// The attributes its type read, as the gateway hands them out; left out when it has none.
-    #[serde(default, skip_serializing_if = "Attributes::is_empty")]
-    pub attributes: Attributes,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -598,10 +548,10 @@ impl<'a> Walk<'a> {
     }
 
     fn enter(&mut self, kind: Kind, at: usize) {
-        if let Some(aside) = self.asides.last_mut()
-            && aside.text.is_none()
-        {
-            aside.text = Some(at);
+        // The first thing in an aside starts its text; a quote inside it is no text, so what
+        // that one holds starts both.
+        if !matches!(kind, Kind::BlockQuote | Kind::Callout) {
+            self.aside_text(at);
         }
         if let Some(end) = self.pending.take() {
             if kind == Kind::Paragraph && self.lines.of(at) == self.lines.of(end) {
@@ -733,12 +683,11 @@ impl<'a> Walk<'a> {
     }
 
     fn token(&mut self, kind: Kind, text: &str, at: usize) {
-        if let Some(aside) = self.asides.last_mut()
-            && aside.text.is_none()
-        {
+        if self.asides.last().is_some_and(|a| a.text.is_none()) {
             match kind {
                 Kind::QuoteMarker | Kind::Whitespace | Kind::Newline => {}
-                // `[!kind]`, `[!kind]+` or `[!kind]-`, as the reader takes it apart.
+                // `[!kind]`, `[!kind]+` or `[!kind]-`, as the reader takes it apart. The
+                // callout's text starts after it; a quote around it starts at it.
                 Kind::CalloutMarker => {
                     let name = text.trim_start_matches("[!");
                     let close = name.find(']').unwrap_or(name.len());
@@ -748,10 +697,13 @@ impl<'a> Walk<'a> {
                         "]+" => Some(false),
                         _ => None,
                     };
-                    aside.callout = Some((start..start + close, fold));
-                    aside.text = Some(at + text.len());
+                    if let Some(aside) = self.asides.last_mut() {
+                        aside.callout = Some((start..start + close, fold));
+                        aside.text = Some(at + text.len());
+                    }
+                    self.aside_text(at);
                 }
-                _ => aside.text = Some(at),
+                _ => self.aside_text(at),
             }
         }
         match kind {
@@ -811,6 +763,13 @@ impl<'a> Walk<'a> {
         self.flavour.has(Syntax::Alerts)
             && kind.is_some_and(is_alert)
             && src[self.marker.end..end].trim().is_empty()
+    }
+
+    /// Text starts at `at` for every aside the walk is inside that has none yet.
+    fn aside_text(&mut self, at: usize) {
+        for aside in &mut self.asides {
+            aside.text.get_or_insert(at);
+        }
     }
 
     /// A quote or a callout ends at `end`: a block for the types on `aside`. Its text is the
@@ -1177,7 +1136,14 @@ fn finish(
                             parent: c.parent,
                             block_id: c.block_id.clone(),
                             data: Data::Typed(Box::new(typed)),
-                            key,
+                            // An aside is a piece of its own kind: its key is set apart, so
+                            // that it never takes the place, among its type's items with the
+                            // same words, of a paragraph or a row that had an id before
+                            // asides matched.
+                            key: match c.on {
+                                On::Aside => format!("aside\u{1f}{key}"),
+                                _ => key,
+                            },
                         });
                     }
                 }
@@ -1285,7 +1251,6 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
             block_id: raw.block_id,
             rev: tasks::line_id(&own),
             data: raw.data,
-            attributes: Attributes::default(),
         });
         keys.push(key);
     }

@@ -27,34 +27,32 @@ change commands, keys and file formats; patch versions only fix things.
   `{ attribute = "checkbox" }`, so it says what a piece is and not how Markdown writes it.
   Every older source (`checkbox = true`, `marker`, `inline`, `pattern`, …) reads as before.
   `items/edit set-field` writes a field read from `checkbox` or `callout` where it is
-  written. `cold-lava types` lists the new source and condition like the others. Over the
-  gateway an item carries the attributes its type read under `attributes`, left out when it
-  read none. Reading a note costs what it did: an attribute is read only when a type names
-  it.
+  written; `level` and `fold` are read-only. `cold-lava types` lists the new source and
+  condition like the others. Reading a note costs what it did: an attribute is read only
+  when a type names it. Items over the gateway are unchanged: attributes reach the wire in
+  a later step.
 - The built-in `task` is defined over attributes (#242). It takes an item its owner counts
-  as a task (the attribute `task`), reads its status from `checkbox`, and reads `due`, `scheduled`, `start`, `created`, `done`, `cancelled`,
-  `recurrence` and `priority` by name; it names no emoji and no bracket. How Markdown writes
-  each one is now a table of readings that belongs to the Markdown owner
-  (`crates/engine/markdown/attributes.toml`): `checkbox` on every item that has one, `task`
-  on those the Tasks plugin's global filter lets through, `📅` and `[due:: …]`, the priority
-  glyphs, `🔁`. You can read it with the new
+  as a task (the attribute `task`), reads its status from `checkbox`, and reads `due`,
+  `scheduled`, `start`, `created`, `done`, `cancelled`, `recurrence` and `priority` by name;
+  it names no emoji and no bracket. How Markdown writes each one is now a table of readings
+  that belongs to the Markdown owner (`crates/engine/markdown/attributes.toml`): `checkbox`
+  on every item that has one, `task` on those the Tasks plugin's global filter lets through,
+  `📅` and `[due:: …]`, the priority glyphs, `🔁`. You can read it with the new
   `cold-lava attributes [WORKSPACE]` (`--json` too) and change it in `[attributes]` in
   config.toml or in `<workspace>/.cold-lava/attributes.toml`, where a later entry replaces an
   earlier one and an empty list takes one out. An attribute nobody declared is the Dataview
   field of its name (`[rating:: 5]`), by the table's `"*"` entry, which can be changed or
-  removed like any other. The answer to an `items/edit` of a canvas card's item carries its
-  `attributes` too. No task changes: every id, rev, field and line is what it was, `agenda`,
-  `items` and `table` print the same bytes, and ticking or setting a field writes the same
-  text. `cold-lava types` lists the task's fields as `attribute due` and so on. A type that
-  extends the task, or reads a checkbox or a marker itself, works as before.
+  removed like any other. No task changes: every id, rev, field and line is what it was,
+  `agenda`, `items` and `table` print the same bytes, and ticking or setting a field writes
+  the same text. `cold-lava types` lists the task's fields as `attribute due` and so on. A
+  type that extends the task, or reads a checkbox or a marker itself, works as before.
 
 ### Changed
 
 - A type on a quote or a callout (`on = "aside"`, or the older `on = "quote"`) now matches.
   Before, such a type loaded and matched nothing. Now a quote or a callout it takes is an
-  item of that type: its text is the rest of its first line (a callout's title), and its
-  lines are the whole quote.
-- No type may name a field `attributes`: every item can carry that key over the gateway.
+  item of that type: its text is its first words (a callout's title), and its lines are the
+  whole quote. The items the type already had keep their ids.
 
 - A message about a mistake in a type says the role with the older name beside it
   (`column can't be read on document (note); only on row (table-row)`, where it said `on note

@@ -357,14 +357,15 @@ and which reading gives which attribute is data ("Attributes in Markdown, as bui
 - **`checkbox`** is one character between brackets at the start of the item's text, followed
   by whitespace or by nothing: `- [x]no space` has none. The flavour decides whether there
   are checkboxes at all: `obsidian` and `github` have task lists, `commonmark` has none, so
-  no item carries `checkbox` there. It is read from the item's text exactly as the built-in
-  `task` has always read it, which is slightly wider than the tree's own checkbox token (any
-  whitespace after the bracket, where the tree takes a space or a tab). Every item with a
-  checkbox has it, whatever the Tasks plugin's settings say.
+  no item carries `checkbox` there. It is read from the item's text, where the built-in
+  `task` looks for its checkbox, which is slightly wider than the tree's own checkbox token
+  (any whitespace after the bracket, where the tree takes a space or a tab). It says that
+  there is a checkbox, whatever the Tasks plugin's settings say, not that the item is a
+  task: `- [ ]`, `- [x]` and `- [ ] 📅 2026-11-20` carry it and are no tasks.
 - **`task`** says that the owner counts the item as a task, which is a second fact. In
   Markdown it is the checkbox, and with the Tasks plugin's global filter set, only on an
   item that carries the filter after its checkbox. The built-in `task` type asks for this
-  one, and reads the status from `checkbox`. Another owner gives `task` by its own rule (an
+  one, reads the status from `checkbox`, and wants words besides (`required = ["text"]`). Another owner gives `task` by its own rule (an
   Org owner for a `TODO` heading), and a type of one's own on "an item with a checkbox"
   still sees every checkbox.
 - **`level`** is on every heading, in every flavour.
@@ -375,12 +376,9 @@ and which reading gives which attribute is data ("Attributes in Markdown, as bui
   The matcher reads one off the block when a shape's `where.attribute` or a field's
   `attribute` source asks for it, so a workspace whose types name none reads its notes
   exactly as before.
-- **Over the gateway**, an item carries the attributes its type read, under `attributes`,
-  each with the value of the first field that read it:
-  `{"kind": "box", "state": "x", …, "attributes": {"checkbox": "x"}}`. The key is left out
-  when the type read none, so the native kinds and every type written before attributes
-  look as they did. `cold-lava items --json` prints items as a note is read and never has
-  the key. No type may name a field `attributes`.
+- **Not over the gateway yet.** An item carries no attributes on the wire: what a type read
+  is in the item's fields, as always. The gateway gets them when owners give pieces (step 3
+  of the neutral model), with the owner's own values and whatever type reads them.
 
 A note's frontmatter and a fence's language are not attributes yet: a type reads them with
 `property` and `info`. A heading item also has its `level` as a field of the native kind.
@@ -404,7 +402,10 @@ base written with the other. A types file's `version` stays `1`, with either spe
 - A field's source `{ attribute = "checkbox" }` reads the attribute's value, beside the
   other sources and in the same order of precedence. The type doesn't say how the file
   writes it; the piece's owner does. Every other source still reads, so a type may go on
-  reading text with a `marker` or a `pattern`.
+  reading text with a `marker` or a `pattern`. `set-field` changes a `checkbox` or a
+  `callout` where it is written (a callout's kind in any case, written in lower case) and
+  can neither add one nor take one out. `level` and `fold` are read-only: they are the
+  note's structure, and `cold-lava types` lists them so.
 - `where.inside` takes `text`, `item`, `row`, `aside` and `verbatim`, or their older names.
   A name that is both a type's and a role's is the type there: with a type called `item`,
   `where.inside = ["item"]` means that type, as it always did.
@@ -728,14 +729,22 @@ style.minutes = { badge = true, icon = "⏱" }
   `verbatim` load but match nothing. A typed aside is a new item, as a typed row is: its
   lines are the whole quote, its parent the list item it is nested in, and its key, without
   a shape `key`, its text. The paragraphs, list items and headings inside it are items of
-  their own, as before, and inline types are found in those, not in the aside.
+  their own, as before, and inline types are found in those, not in the aside. Its id is
+  kept apart from the ids of its type's other items, so a type that also has a shape on a
+  paragraph or a row keeps every id it had before asides matched. What a typed aside isn't
+  yet: a `^id` written in a quote names the paragraph it ends, not the aside, so the aside
+  has no block id; `where.inside` naming an aside's type matches nothing, since the blocks
+  in a quote don't have the aside as their parent (`where.inside = ["aside"]` still says
+  "in a quote"); and its text is one line, so a callout's body is read by the types on the
+  paragraphs in it.
   Tasks are typed blocks like any other, of the built-in `task` type; an `idea` that `extends =
   "task"` with `where.tag = ["idea"]` wins over `task` as its subtype and still answers to
   `task`, so it is in the agenda and `task toggle` ticks it.
 - **What each primitive's text is:** a list item's first line after its marker (without a
   trailing `^id`), a heading's words, a paragraph's text, a whole table row's line, and for
-  an aside the rest of its first line: a callout's title after its `[!kind]`, a quote's
-  first line after its `>`. A note's
+  an aside the rest of the first line that has words: a callout's title after its
+  `[!kind]`, a quote's first words (those of a quote nested in it, when it starts with
+  one). A note's
   `match`, `capture` and `inline` read the text after the frontmatter. `rest` is that text with
   every other source's match taken out (a marker with its value, a whole `[due:: …]`, a flag's
   glyph, every glyph of a `flags` map, a checkbox with its brackets, the whole `match` when a

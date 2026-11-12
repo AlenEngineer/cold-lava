@@ -243,10 +243,11 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   (`matcher::Attr`, from `matcher::Given`, which holds what the walk knows that the text
   doesn't). Nothing keeps an
   attribute while a note is read: one is read off the block only when a shape names it.
-  Keep it that way: don't store attributes on `items::Item` in the scan. Over the gateway an
-  item carries the ones its type read (`Item::attributes`, filled in by
-  `gateway::attributed` from the item's fields, left out when empty); `cold-lava items
-  --json` never has them. `types/task.before-242.toml` is the task as it was, kept only for
+  Keep it that way: don't store attributes on `items::Item`. Items carry none over the
+  gateway yet: that comes when owners give pieces (#243), with the owner's values, not a
+  type's reading of them. A type on `aside` matches a quote or a callout; a typed aside's
+  key is set apart (`items::finish`), so it can never take an id from one of its type's
+  older items. `types/task.before-242.toml` is the task as it was, kept only for
   `items::tests::the_task_reads_from_attributes_as_it_did_from_characters`, which reads
   every note both ways: a change to how a task is read must keep that test passing, or it
   changes ids. `tasks::toggle` still writes `✅` and `❌` itself and doesn't read the table.

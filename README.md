@@ -664,18 +664,20 @@ fields.vei = { capture = "n", type = "number" }
 heading), `text` (a paragraph), `item` (a list item) or `row` (a table row), or `inline` for a
 pattern anywhere in text. The names `on` had before (`note`, `heading`, `paragraph`,
 `list-item`, `table-row`) still work and mean the same, as in the example above.
-`cold-lava types` prints both (`on note · role document`).
+`cold-lava types` prints both (`on note · role document`). `on = "aside"` (or `quote`) takes
+a quote or a callout: its text is its first words, a callout's title.
 
 A type can also read what a piece carries without saying how Markdown writes it. These are
-**attributes**: a list item's `checkbox` (and `task`, on the ones that count as tasks), a
-heading's `level`, a callout's kind (`callout`) and
-whether it folds (`fold`), a task's `due`, `scheduled`, `start`, `created`, `done`,
-`cancelled`, `recurrence` and `priority`, and any Dataview field by its name
-(`[rating:: 5]` is `rating`). `where.attribute = "checkbox"` takes the pieces that have one,
-and `fields.status = { attribute = "checkbox" }` reads it. A type on `aside` takes a quote or
-a callout. How Markdown writes each attribute (`📅 2026-11-20`, `[due:: 2026-11-20]`) is a
-table you can read with `cold-lava attributes ~/workspace` and change in `[attributes]` in
-`config.toml` or in `.cold-lava/attributes.toml`:
+**attributes**: a list item's `checkbox` (the character between the brackets) and `task` (on
+the ones that count as tasks), a heading's `level`, a callout's kind (`callout`) and whether
+it folds (`fold`), a task's `due`, `scheduled`, `start`, `created`, `done`, `cancelled`,
+`recurrence` and `priority`, and any Dataview field by its name (`[rating:: 5]` is `rating`).
+`where.attribute = "checkbox"` takes the pieces that have one, and
+`fields.status = { attribute = "checkbox" }` reads it, beside the sources that read text
+themselves (`checkbox = true`, `marker = "📅"`), which all still work. How Markdown writes
+each attribute (`📅 2026-11-20`, `[due:: 2026-11-20]`) is a table you can read with
+`cold-lava attributes ~/workspace` and change in `[attributes]` in `config.toml` or in
+`.cold-lava/attributes.toml`:
 
 ```toml
 version = 1

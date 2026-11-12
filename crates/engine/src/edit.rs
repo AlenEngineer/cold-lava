@@ -257,6 +257,7 @@ fn describe(s: &Source) -> String {
         Source::Inlines(_) => "the tags or links in the text".into(),
         Source::Children(_) => "the items under it".into(),
         Source::Info(_) => "a fence's info, which isn't read yet".into(),
+        Source::Attribute(name) => format!("the attribute {name}, part of the note's structure"),
         s => format!("{} = …", s.kind()),
     }
 }
@@ -273,6 +274,10 @@ fn input(src: &Source, v: &Value, value: &Json, daily_format: &str) -> Result<Js
     let text = match value {
         Json::Null => return Ok(Json::Null),
         Json::String(s) if s.trim().is_empty() => return Ok(Json::Null),
+        // A callout's kind ignores case and is read in lower case, so it is written so.
+        Json::String(s) if matches!(src, Source::Attribute(a) if a == "callout") => {
+            s.trim().to_lowercase()
+        }
         Json::String(s) => s.trim().to_string(),
         other => other.to_string(),
     };
@@ -383,9 +388,13 @@ impl Writer<'_> {
                     range: span,
                     with: self.written(false)?,
                 }),
-                _ => Err(Refused(format!(
-                    "{field} is the attribute {name}, which can be changed where it is                      written but not {} here",
-                    if remove { "taken out" } else { "added" }
+                Some(_) => Err(Refused(format!(
+                    "{field} is the attribute {name}, which set-field can change but not take \
+                     out: edit the note instead"
+                ))),
+                None => Err(Refused(format!(
+                    "{field} is the attribute {name}, which isn't written here, and set-field \
+                     can't add one: edit the note instead"
                 ))),
             },
             Source::Marker(glyph) => match existing {
