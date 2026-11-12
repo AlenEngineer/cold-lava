@@ -56,6 +56,28 @@ change commands, keys and file formats; patch versions only fix things.
   nested in that item and is the footnote's now, with a new id. And `[^1]: text` with `===`
   or `---` on the next line was a heading for the index, never on screen: that heading is
   gone. Notes without footnote definitions, and flavours without footnotes, read as before.
+- The reader draws from the same syntax tree the index and the items read (#212, part of
+  #140), so what it shows as a link, a tag or a task is what backlinks, the graph and the
+  agenda count. Notes read on screen as before, with these differences. A frontmatter whose
+  first line is blank, as the Kanban plugin writes it, is hidden (it showed as a rule and
+  text). A `---` pair in the middle of a note no longer hides the lines between. A `#` right
+  after a link, closing emphasis or code is no tag, and neither is an escaped `\#` nor one
+  that starts a link's text. `[[A\|B]]` in a table cell links to `A`. Emphasis that opens in a callout's title
+  ends there. One thing shows less than in Obsidian, because the index reads it so: a link
+  definition written over two lines is text.
+- What the index and the items read changes in four places, so that they and the reader
+  read as Obsidian does (#212). A backslash escapes `[`, `]`, `` ` ``, `$`, `%`, `!` and `|`
+  for links, code, math and comments too: `\[[Note]]` and `\[text](Note.md)` are text, so
+  they are no backlink, don't keep a note from being an orphan in `tidy`, and a rename
+  leaves them alone. A link's text holds no link: in `[a [b](Inner.md) d](Outer.md)` the
+  link is `Inner`, where it was `Outer`. Math is what the reader has always shown as math, for
+  `items` and the agenda too: `$…$` and `$$…$$` inside one paragraph, heading, list item or
+  table cell. Tasks, headings, list items and block ids after a stray `$$`
+  now count: `items`, the agenda and tables dropped every line from one that starts with
+  `$$` to the next `$$` anywhere in the note, or to its end, while the reader showed them.
+  Backlinks and tags always counted the links and tags there, and still do. A `$$` block with a blank line in it is two
+  paragraphs of text, as on screen. A line right under a callout's title that has no `>`
+  is the callout's.
 - Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
   of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
   example's count of open tasks keeps up under the picker and shows in the shape editor's

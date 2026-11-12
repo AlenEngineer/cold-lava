@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn relink_rewrites_every_style_in_one_note_and_keeps_every_other_byte() {
-        let text = "---\nup: \"[[B]]\"\n---\r\n# [[B|shown]] and [[B#H]]\r\n  - [ ] ![[B]] [md](B.md#H) ![i](b.png)  \r\n> [a [[B]] b](B.md)\n\n| [[B]] | [y](B.md) |\n| --- | --- |\n| [[B\\|shown]] | ![[B#H\\|part]] |\n\n[t](B.md \"title\") [t](B.md 'title') [t](B.md#H (title)) ![i](b.png \"pic\")\n[p](<B.md>) [p](<B.md#H> \"title\") ![i](<b.png>)\n\n[r]: B.md\nlast [[B]]";
+        let text = "---\nup: \"[[B]]\"\n---\r\n# [[B|shown]] and [[B#H]]\r\n  - [ ] ![[B]] [md](B.md#H) ![i](b.png)  \r\n> [a ![[B]] b](B.md)\n\n| [[B]] | [y](B.md) |\n| --- | --- |\n| [[B\\|shown]] | ![[B#H\\|part]] |\n\n[t](B.md \"title\") [t](B.md 'title') [t](B.md#H (title)) ![i](b.png \"pic\")\n[p](<B.md>) [p](<B.md#H> \"title\") ![i](<b.png>)\n\n[r]: B.md\nlast [[B]]";
         let (new, changes, links) = relink(text, b_to_c);
         assert_eq!(new, text.replace('B', "C").replace("b.png", "c.png"));
         assert_eq!(links, 21);
@@ -733,6 +733,10 @@ mod tests {
             ),
             "a changed line comes without its line ending"
         );
+        // A link's text holds no link: the wikilink inside is the link, and what is around
+        // it is text, which a rename leaves alone.
+        let (nested, _, links) = relink("[a [[B]] b](B.md)\n", b_to_c);
+        assert_eq!((nested.as_str(), links), ("[a [[C]] b](B.md)\n", 1));
     }
 
     #[test]

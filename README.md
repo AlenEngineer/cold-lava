@@ -88,7 +88,9 @@ for a PNG, a thumbnail in half blocks; a file an extension owns shows that exten
 any other embed shows its name. Frontmatter is hidden; typed values are
 drawn with their [looks](#types) (a VEI on an orange chip, done tasks struck through), and the
 note's typed frontmatter fields go on a line above it. Links are
-underlined, dimmer when the note doesn't exist yet. Without Neovim or Vim the pane is always the
+underlined, dimmer when the note doesn't exist yet. The reader reads a note as the index does, so
+what it shows as a link, a tag or a task is what backlinks, the graph and the agenda count.
+Without Neovim or Vim the pane is always the
 reader, and `Enter` on a note goes into it. In the reader, `Tab` selects the next link and
 `Enter` follows it, exactly like `Enter` on a link in Neovim (URLs open in the browser,
 attachments like `[[map.pdf]]` in the system's app, canvases in the whiteboard); a click

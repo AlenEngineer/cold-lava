@@ -659,15 +659,15 @@ style.minutes = { badge = true, icon = "⏱" }
   subtype without a look for a field uses its base's.
 - **From file offsets to the rendered text.** Spans are file offsets; `Source::text_range` maps
   them through removed `%%comments%%` (an end inside one breaks the mark). While reading inlines,
-  each pulldown-cmark event keeps its source range: text whose content is exactly its source
+  each inline read from the note's tree keeps its source range: text whose content is exactly its source
   bytes can be cut at a mark's ends; a container (link, emphasis) a mark covers only in part
   leaves it to the inlines inside, which get their own marks (so a mark can open and close more
   than once, a chip around a link's half and the text beside it); a container a mark covers
   whole is marked around, not again inside. A mark is **broken**, and its look skipped, when it
-  covers only part of anything else (an entity like `&amp;`, code, math, a footnote reference),
-  or a cut would change what the extras read: inside a tag, in a `==`, or a new tag where the
-  second part starts. Marks are placed before the extras run, and the extras look through them
-  (a callout's `[!type]`, a trailing `^id`, an embed alone in its paragraph).
+  covers only part of anything else (an entity like `&amp;`, code, math, a footnote reference,
+  a tag), or a cut would land in a `==` or leave the second part starting like a tag. Marks
+  are placed as each list of inlines is read, and what reads the whole paragraph looks
+  through them (a trailing `^id`, an embed alone in its paragraph).
 - **Drawing.** The reader keeps the marks open around each inline (outermost first) and patches
   the style with each look: `colour` the foreground, `dim` the dim grey (or the dim modifier
   with a colour), `strike`, `bold`; `badge` a chip, the colour on a dark tint of it with a space
@@ -683,7 +683,7 @@ style.minutes = { badge = true, icon = "⏱" }
   first heading's as before. A note type's `whole` is skipped: it would be the whole body.
 - **Cost.** Once per note load and per change on disk, not per frame: the items come from the
   core's cache (`Workspace::items`) when the core's text is the text on disk, else are read once,
-  and the marks are placed in the same pulldown-cmark pass that builds the `Doc`. The reader
+  and the marks are placed in the same walk through the tree that builds the `Doc`. The reader
   lays the marks out with the page, again only when the width or the note changes.
 - **Not yet:** a light terminal's table, and looks in the GUI. The table view and the agenda
   draw the same looks (below).

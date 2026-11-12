@@ -346,7 +346,7 @@ pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     // No item is made of what text itself holds (emphasis and the like), so it isn't read.
     let gates = cst::Gates::of(&s.flavour).plain();
     let gates = gates.set(Syntax::Comments, false);
-    let source = s.flavour.source_with(text, |text| code_in(text, gates));
+    let source = s.flavour.source_with(text, |text| cst::code(text, gates));
     let lines = Lines::new(&source.text);
     let wants = Wants::of(&s.matcher);
     let (blocks, defs) = cst::blocks(lines.src, wants.gates(gates));
@@ -366,25 +366,6 @@ fn own_links(links: Vec<crate::owner::markdown::Link<'_>>) -> Vec<(usize, bool, 
     links
         .filter_map(|l| Some((l.at, l.md(), l.note()?)))
         .collect()
-}
-
-/// The code spans, code blocks and math in `text`, where `%%` is no comment.
-fn code_in(text: &str, gates: cst::Gates) -> Vec<Range<usize>> {
-    let mut code = Vec::new();
-    let mut from = 0;
-    cst::read(text, gates, &mut |step| match step {
-        Step::Enter(kind, at) if is_code(kind) => from = at,
-        Step::Leave(kind, at) if is_code(kind) => code.push(from..at),
-        _ => {}
-    });
-    code
-}
-
-fn is_code(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::CodeSpan | Kind::InlineMath | Kind::MathBlock | Kind::FencedCode | Kind::IndentedCode
-    )
 }
 
 /// A block the walk is inside.
@@ -431,9 +412,8 @@ struct Walk<'a> {
     written: crate::owner::markdown::Links<'a>,
     /// The last callout's `[!type]`.
     marker: Range<usize>,
-    /// The paragraph just read, which pulldown-cmark read on into a paragraph or `$$` math on
-    /// the next line: where it ends, until the next block says whether it goes on. A callout's
-    /// title starts one.
+    /// A callout's title just read, which pulldown-cmark read on into the paragraph on the
+    /// next line, or a paragraph: where it ends, until the next block says whether it goes on.
     pending: Option<usize>,
     /// The table being read: how many rows it has had, where its header starts, its columns.
     rows: usize,
@@ -521,18 +501,14 @@ impl<'a> Walk<'a> {
     }
 
     fn enter(&mut self, kind: Kind, at: usize) {
-        if kind == Kind::MathBlock {
-            self.code_at = at;
-        }
         if let Some(end) = self.pending.take() {
-            let goes_on = matches!(kind, Kind::Paragraph | Kind::MathBlock);
-            if goes_on && self.lines.of(at) == self.lines.of(end) {
+            if kind == Kind::Paragraph && self.lines.of(at) == self.lines.of(end) {
                 return;
             }
             self.paragraph(end);
         }
         match kind {
-            Kind::Paragraph | Kind::MathBlock | Kind::TableRow => self.begin(at, None, true),
+            Kind::Paragraph | Kind::TableRow => self.begin(at, None, true),
             Kind::AtxHeading | Kind::SetextHeading => self.begin(at, None, false),
             Kind::HtmlBlock => self.begin(at, None, false),
             Kind::ListItem => {
@@ -593,13 +569,6 @@ impl<'a> Walk<'a> {
         }
         match kind {
             Kind::Paragraph => self.pending = Some(at),
-            // `$$` math was a paragraph's text to pulldown-cmark.
-            Kind::MathBlock => {
-                if self.wants.typing {
-                    self.pass.code.push(self.code_at..at);
-                }
-                self.pending = Some(at);
-            }
             // A GitHub alert's `[!NOTE]` was no paragraph to pulldown-cmark; any other callout's
             // title was.
             Kind::CalloutTitle => {
@@ -1260,7 +1229,7 @@ fn list_text(first: &str) -> String {
 mod pulldown;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -1617,7 +1586,7 @@ fields.w = { capture = "w" }
     }
 
     /// Markdown whose blocks are easy to read differently from pulldown-cmark.
-    const TRICKY: &[&str] = &[
+    pub(crate) const TRICKY: &[&str] = &[
         // Lazy lines.
         "- [ ] task\nlazy line\n- [ ] next\n\n> quote\nlazy in quote ^q1\n\nPara\nlazy\n    still para ^p1\n",
         // Loose and tight lists.
@@ -1676,6 +1645,23 @@ fields.w = { capture = "w" }
         // underline: the heading the tree read there before #212 never was one.
         "- item one\n- item two\n[^1]: right after a list item\n    - [ ] continuation task [[Tgt]]\n",
         "[^1]: def line\n===\n\n[^2]: def two\n---\n\nParagraph above. ^above\n[^n]: Note text ^on\n\n^standalone\n",
+        // Two `$$` in two paragraphs close nothing: what is between them is read.
+        "$$100 is what it cost ^p0\n\n- [ ] a task the first ^t1\n\n## A heading\n\nPara the middle ^p1\n\n$$ at the end again ^p2\n",
+        // A fence stays code after an open `$$`.
+        "$$ open before fence\n\n```\n$$\n```\n\n- [ ] a task the second ^t2\n\nPara the third ^p3\n",
+        // A price pairs with no later `$`.
+        "cost $12 for [[Note]] #pricetag and $x$ the end ^p4\n\n- [ ] task $5 and $6 [[Other]] #t\n",
+        // `$$` over a blank line, and after spaces.
+        "$$\nx = 1\n\ny = 2\n$$ ^p5\n\n   $$ spaced ^p6\n",
+        // Math over the lines of an item.
+        "- [ ] task with $a\n  b$ math over lines [[L]]\n- $$\n  c\n  $$ ^m1\n",
+        // `$$` that nothing closes is text, and the tasks after it are tasks.
+        "$$ is slang for money\n\n- [ ] a task the first ^t1\n\nPara the last ^p1\n",
+        // An escape stops a wikilink and a link; a link's text holds no link; a lazy line
+        // under a callout's title is the callout's.
+        "\\[[Note]] and \\[text](Other.md) and [[Real]] the end ^e1\n",
+        "[a [b](Inner.md) d](Outer.md) and [![pic](p.png) e](Third.md)\n",
+        "> [!note] Title the first\nlazy line the second ^lz\n\n> [!todo] T\n- [ ] not lazy\n",
         // Tags right after the markers that open emphasis and a strikethrough.
         "Read **#bold** and _#slanted_, *#star*, __#under__, ***#both*** and ~~#gone~~, but a#b and http://x.y/#frag are no tags.\n",
     ];

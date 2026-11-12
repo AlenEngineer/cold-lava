@@ -137,8 +137,14 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `to_bytes`, and `fields`/`set` to change one node's `text` or `file` in place. The whiteboard
   and the canvas owner share it; don't parse `.canvas` anywhere else.
 - `markdown.rs`: Markdown flavours (named sets of `Syntax`, built-in or from `[markdown]` in
-  the config) and `parse()` into a `Doc` the reader draws. Obsidian extras pulldown-cmark lacks
-  are rules in one section, each gated by its `Syntax`; the tag pattern is shared with `workspace.rs`.
+  the config) and `parse()` into a `Doc` the reader draws, built from the note's tree (`cst`),
+  the one the index and the items read, so the reader shows as a link, a tag or a task what
+  they count (#212). `markdown/pulldown.rs` keeps pulldown-cmark's parse for a test that
+  compares the two `Doc`s on every note of the corpus; where they differ is listed there with
+  the reason (`DIFFERENT`: the tree reads what the index counts, or pulldown-cmark wasn't
+  Obsidian; `LESS`: the reader shows less than Obsidian, which is the tree's to change). Don't
+  parse Markdown for the reader anywhere else. `markdown/entities.rs` is HTML5's named
+  character references. The tag pattern is shared with `workspace.rs`.
 - `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
   (every byte a token; printing it gives the note back), blocks found line by line as
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`

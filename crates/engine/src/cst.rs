@@ -146,8 +146,6 @@ kinds! {
     FencedCode,
     IndentedCode,
     HtmlBlock,
-    /// `$$` … `$$` as a block.
-    MathBlock,
     /// `%%` … `%%` across lines.
     CommentBlock,
     Table,
@@ -169,7 +167,7 @@ kinds! {
     LineField,
     /// `%%hidden%%` within a line.
     Comment,
-    /// `$x$` or `$$x$$` within a line.
+    /// `$x$` or `$$x$$` in a block's text. It may go on over the block's lines.
     InlineMath,
 
     // What text holds, after the rest, which keep the numbers they had: its tokens,
@@ -648,6 +646,25 @@ pub fn walk<'a>(node: &'a GreenNodeData, at: usize, f: &mut impl FnMut(Step<'a>)
         }
     }
     at
+}
+
+/// The code spans, code blocks and math of `text` read in `gates`, in order: where a `%%`
+/// opens no comment, and where no inline type matches.
+pub(crate) fn code(text: &str, gates: Gates) -> Vec<Range<usize>> {
+    let is_code = |kind| {
+        matches!(
+            kind,
+            Kind::CodeSpan | Kind::InlineMath | Kind::FencedCode | Kind::IndentedCode
+        )
+    };
+    let mut code = Vec::new();
+    let mut from = 0;
+    read(text, gates, &mut |step| match step {
+        Step::Enter(kind, at) if is_code(kind) => from = at,
+        Step::Leave(kind, at) if is_code(kind) => code.push(from..at),
+        _ => {}
+    });
+    code
 }
 
 /// How many block events `text` makes, for timing the block pass alone.
