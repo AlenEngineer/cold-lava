@@ -374,6 +374,11 @@ impl Matcher {
             };
             let read: Vec<Json> = (given.iter())
                 .filter_map(|v| match v {
+                    // One character is read as written, as `set-field` takes a checkbox's:
+                    // a status symbol may be a space.
+                    Json::String(s) if s.chars().count() == 1 => {
+                        parse_as_written(value, s, &self.daily.format)
+                    }
                     Json::String(s) => parse(value, s, &self.daily.format),
                     v => parse(value, &v.to_string(), &self.daily.format),
                 })

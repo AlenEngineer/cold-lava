@@ -263,7 +263,12 @@ fn describe(s: &Source) -> String {
 }
 
 /// The value asked for, as the field carries it.
-fn input(src: &Source, v: &Value, value: &Json, daily_format: &str) -> Result<Json, String> {
+pub(crate) fn input(
+    src: &Source,
+    v: &Value,
+    value: &Json,
+    daily_format: &str,
+) -> Result<Json, String> {
     // A checkbox holds one character as written, and a space is a status.
     if let (Source::Checkbox(_), Json::String(s)) = (src, value)
         && s.chars().count() == 1

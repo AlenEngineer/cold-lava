@@ -1594,7 +1594,8 @@ each doesn't invent one:
   `items/edit` on an item of an owned file makes the change to what the owner gave: on a
   Markdown piece, the Markdown owner's `edit` on the piece's text (kept on `Owned::given`, so
   `toggle` and `set-field` behave exactly as in a note); on a typed item, `{field, value}`
-  (`toggle` is refused there: a typed item has no checkbox to tick). It is refused at once when
+  (`toggle` sets a task's `status` to the next status symbol); on a piece, a change in the
+  model's terms ("Changes in the model's terms, as built"). It is refused at once when
   the item isn't the version `rev`, the file on disk isn't the version the owner read, or
   another edit of the file is waiting for its owner. Then the owner is asked:
 
@@ -1602,13 +1603,15 @@ each doesn't invent one:
   | --- | --- |
   | `file/edit {path, rev, text, changes}` | `{text}`, the file's new text |
 
-  A change is `{place, text}` (a piece's new text), `{place, field, value}` (a typed item's
-  field) or `{place, link, to}` (a link the owner reported, for a rename), at one of the owner's
-  places (`given::Change`).
+  A change is `{place, text}` with a string (a Markdown piece's new text),
+  `{place, field, value}` (a typed item's field), `{place, link, to}` (a link the owner gave,
+  for a rename), `{place, attribute, value}` (a piece's attribute) or `{place, text}` with a
+  list (a piece's new runs), at one of the owner's places (`given::Change`).
 - **Read back before writing.** The owner's new text is handed back to it as `file/read` with
   its own `rev`, and the answer must read as what the owner gave before with the changes made
-  (`given::apply`): the same items, compared by kind and fields, and the same link targets,
-  ignoring ids and places, since a place can be part of what changed (a CSV row's first cell).
+  (`given::apply`): the same items, compared by kind and fields, the same link targets, and
+  the same pieces, each by what it says, ignoring ids and places, since a place can be part
+  of what changed (a CSV row's first cell).
   Only then is the text written, with `write::replace` against the text the edit began from, so
   a change made meanwhile refuses it as `changed`. Notes are read back before they are written
   too; here it costs the owner one more read, and a mismatch writes nothing. What the owner
@@ -1807,11 +1810,94 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   board's arrow) has no shape: its first user is the canvas owner, which doesn't give
   pieces yet. An inline type (`on = "inline"`) doesn't run over a piece's words. A piece's
   attributes don't reach a client except through a type's fields. A task subtype that
-  reads no status gets none on a piece. A piece can't be changed yet: `items/edit` on one
-  is refused. The csv-table example still gives Markdown, and the guide doesn't cover
-  pieces yet.
+  reads no status gets none on a piece. The csv-table example still gives Markdown, and the
+  guide doesn't cover pieces yet.
 - **The helper.** `cold_lava.py` has `piece`, `marked`, `link`, `label`, `field` and
   `words` for building pieces and for writing a piece's text back as plain characters.
+
+### Changes in the model's terms, as built
+
+An edit of something an owner gave as a piece reaches the owner as a change to the piece,
+never as text in another format to parse. Ticking a task is `checkbox = done` at its place.
+The owner writes that the way its format does and answers `{text}`, the file's new text
+(`file/edit`, as before). `crates/engine/src/owner/change.rs` makes the changes,
+`given.rs` pins their JSON, and `core/pieces.rs` runs a made-up format through all of it.
+
+**What the owner protocol can say.** `file/edit`'s `changes` is a list of these, each at a
+place the owner gave:
+
+| Change | JSON | Sent when |
+| --- | --- | --- |
+| set an attribute | `{"place": "plumber", "attribute": "checkbox", "value": "done"}` | a field a type reads from an attribute is set, or a task is ticked; `"value": null` takes the attribute off |
+| replace a piece's text | `{"place": "plumber", "text": ["Call the electrician ", {"label": "home"}]}` | a field read from the piece's words (`rest`) is set; the list is the piece's new runs |
+| replace a cell's text | `{"place": "r1", "cell": "VEI", "text": ["7"]}` | a field read from a row's cell (`column`) is set |
+| repoint a link | `{"place": "trip", "link": "Krakatoa", "to": "Krakatau"}` | a file a piece links to is renamed or merged; every link run of the piece with that target, and every entry of `links` there, now leads to `to` |
+| set a typed item's field | `{"place": "3", "field": "vei", "value": 7}` | as before, for an item given as `{place, type, fields}` |
+| a Markdown piece's new text | `{"place": "1#task", "text": "- [x] Read the report"}` | as before, for a piece given as `{place, text}` with a string |
+
+A `text` that is a list is runs, and one that is a string is Markdown, as in `file/read`.
+The protocol can't say "add a piece", "move a piece" or "remove a piece": no change has
+that shape yet.
+
+**What the gateway offers.** `items/edit` is unchanged for clients: `set-field` and
+`toggle`, by item id and `rev`. On an item that is an owner's piece each becomes one change.
+
+| `items/edit` | On a piece | Change sent |
+| --- | --- | --- |
+| `toggle` | a task: its `status` goes to the next status symbol, as in a note | `checkbox` set to the word for that symbol's kind: `done`, `open`, `in-progress`, `cancelled` |
+| `set-field` on a field read from an attribute | the value is checked as the field's type and sent in the form items carry it (an ISO date, a number, an enum's name) | the attribute, by the name the type reads it under |
+| `set-field status` or `status_type` | a status symbol, a status type's name or one of the words | `checkbox`, as a word |
+| `set-field` on the words (`text`) | the new words replace the piece's text | the piece's runs (below) |
+| `set-field` on a field read from a cell | the value is checked as the field's type | that cell's runs |
+| `set-field` on `tags`, `links`, a field read by a `pattern`, from the file's name or from its sections | refused: they are derived | none |
+
+- **Where a field is written** is where its type reads it: the source that gave the value,
+  else the first of the field's sources that a piece can hold (`attribute`, and `checkbox`
+  and `inline`, which read the attribute on a piece; `rest`; `column`).
+- **Rewording keeps what is still there.** The gateway takes the new words as a string. The
+  piece's new runs keep every link, label and marked run whose own words are still among the
+  new ones, in order, with the characters between them plain, and keep its fields
+  (`given::reword`). So changing a word around `#home` leaves the label a label, and deleting
+  `#home` takes the label off. What is typed is characters: `#new`, `[[x]]` or `**x**` typed
+  into the words is not a label, a link or a mark, since only runs can say one and
+  `items/edit` takes no runs yet.
+- **A tick is one change.** It sends `checkbox` and nothing else. The done date and the
+  cancelled date a tick adds in a note are how Markdown's tasks are written (`tasks.rs`),
+  and whether an owner's format has a place for them is its own business: it is not sent
+  one. A recurring task (one with a `recurrence`) is refused, with the reason: ticking it
+  would add its next occurrence, a new piece, and nothing adds a piece yet.
+- **The read-back compares pieces.** The engine makes the changes on what the owner gave
+  (`given::apply`), asks the owner to read its own new text, and compares, before anything
+  is written. Besides the items and the links, every piece must say what was asked, whether
+  or not it is an item: its role, its attributes, its text and its cells (`given::same`,
+  `piece_key`). An owner may write the answer its own way, and three things are not compared:
+  where an attribute is written (in `attributes` or as a field of the text), how plain text
+  is cut into runs, and whether a value is text or a number (`"6"` and `6`). Places and `in`
+  are not compared either, since a place can be part of what changed. So an owner that
+  ticks the task and quietly changes another piece, or doesn't make the change, or can't
+  hold it (a format where the new words read back as something else), is refused as
+  `read-back` and nothing is written.
+- **A typed item is ticked too.** Before, `toggle` on a typed item an owner gave was
+  refused. Now it sets the task's `status`, and its `status_type` when it has one, to the
+  next status symbol as `{place, field, value}`. For that a value of exactly one character
+  is read as written (`Matcher::given`, `given::clears`): a status of one space is an open
+  task, where before it was read as no status at all, and such a task was in no agenda.
+  `set-field` there is as it was. A Markdown piece is ticked and set exactly as before,
+  through the Markdown owner.
+- **Renames and merges** repoint a piece's links with `{place, link, to}`, planned and read
+  back like the other owned-file changes (`rename::owned_edits`). A recipe doesn't reach a
+  piece: `rename-tag` renames tags in notes and Markdown pieces, and a piece's labels are
+  left as they are.
+- **Refusals** are immediate and name the reason (`refused`): a field the type doesn't
+  have, a value that isn't the field's type, a status that is none of the four kinds, a
+  derived field, a recurring task. The owner isn't asked. An owner that can't hold a change
+  raises an error from `file/edit`, and the edit fails with its reason and nothing written.
+- **Left out, on purpose.** Adding, moving and removing a piece, in the protocol and in the
+  gateway. Text given as runs through `items/edit`. The done date and recurrence on a tick.
+  Labels in recipes. What an owner can store, declared ahead (#245): today the owner says
+  no when it is asked.
+- **The helper.** `cold_lava.py`'s `change_kind(change)` names what a change asks, and
+  `words(runs)` gives a text change's plain characters.
 
 ### The canvas owner, as built
 

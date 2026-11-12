@@ -22,6 +22,7 @@
 
 pub mod cache;
 pub mod canvas;
+pub mod change;
 pub mod edits;
 pub mod given;
 pub mod markdown;

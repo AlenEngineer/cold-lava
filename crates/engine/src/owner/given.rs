@@ -313,6 +313,14 @@ pub fn piece_id(file: &str, kind: &str, place: &str) -> String {
     format!("{id:016x}")
 }
 
+/// The id of a typed item an owner gave: its file, its type and the owner's place for it.
+pub fn typed_id(file: &str, kind: &str, place: &str) -> String {
+    let id = [file, "\0", kind, "\0", place]
+        .iter()
+        .fold(FNV_START, |h, part| fnv_from(h, part.as_bytes()));
+    format!("{id:016x}")
+}
+
 /// The pieces of an answer read so far, for the ones that say they are `in` one of them.
 #[derive(Default)]
 struct Before<'a> {
@@ -482,12 +490,35 @@ pub enum Change {
         field: String,
         value: Json,
     },
-    /// A link the owner reported: its target as written, and what it becomes (a rename).
+    /// A link the owner gave, among the answer's `links` or as a run of a piece's text: its
+    /// target as written, and what it becomes (a rename).
     Link {
         place: String,
         link: String,
         to: String,
     },
+    /// An attribute of a piece: text, a number, `true` or `false`; `null` takes it off. A
+    /// `checkbox` is one of its words (`CHECKBOX`): ticking a task is `checkbox = done`.
+    Attribute {
+        place: String,
+        attribute: String,
+        value: Json,
+    },
+    /// A piece's new text, as runs, or with `cell` the new text of that cell of a row. A
+    /// `text` that is a list is this change; one that is a string is a Markdown piece's.
+    Runs {
+        place: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<String>,
+        text: Vec<Run>,
+    },
+}
+
+/// Whether a value asked for a typed item's field takes the field off: `null`, or nothing but
+/// space. One character is a value as written, since a status symbol may be a space.
+pub fn clears(value: &Json) -> bool {
+    let blank = |text: &str| text.trim().is_empty() && text.chars().count() != 1;
+    value.is_null() || value.as_str().is_some_and(blank)
 }
 
 /// What the owner should give for the file once `changes` are made to what it gave.
@@ -515,9 +546,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                     } = item
                         && p == place
                     {
-                        let removes =
-                            value.is_null() || value.as_str().is_some_and(|v| v.trim().is_empty());
-                        match removes {
+                        match clears(value) {
                             true => fields.remove(field),
                             false => fields.insert(field.clone(), value.clone()),
                         };
@@ -530,14 +559,161 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                         l.target = to.clone();
                     }
                 }
+                for p in pieces_at(&mut out, place) {
+                    let cells = p.cells.iter_mut().flat_map(|c| c.text.iter_mut());
+                    for run in p.text.iter_mut().chain(cells) {
+                        if let Run::Link(l) = run
+                            && l.link == *link
+                        {
+                            l.link = to.clone();
+                        }
+                    }
+                }
+            }
+            Change::Attribute {
+                place,
+                attribute,
+                value,
+            } => {
+                for p in pieces_at(&mut out, place) {
+                    // Wherever the owner wrote it, it now says this once.
+                    let named = |r: &Run| matches!(r, Run::Field(f) if f.field == *attribute);
+                    p.text.retain(|r| !named(r));
+                    match value.is_null() {
+                        true => p.attributes.remove(attribute),
+                        false => p.attributes.insert(attribute.clone(), value.clone()),
+                    };
+                }
+            }
+            Change::Runs { place, cell, text } => {
+                for p in pieces_at(&mut out, place) {
+                    match cell {
+                        None => p.text = text.clone(),
+                        Some(name) => {
+                            for c in p.cells.iter_mut().filter(|c| c.name == *name) {
+                                c.text = text.clone();
+                            }
+                        }
+                    }
+                }
             }
         }
     }
     out
 }
 
+/// The pieces an owner gave at `place`.
+fn pieces_at<'a>(given: &'a mut Given, place: &'a str) -> impl Iterator<Item = &'a mut Piece> {
+    given.items.iter_mut().filter_map(move |item| match item {
+        GivenItem::Piece(p) if p.place == place => Some(p),
+        _ => None,
+    })
+}
+
+/// A piece's new text when its words become `new`: every link, label and marked run whose
+/// own words are still there, in order, stays what it was, the characters between them are
+/// plain, and its fields stay. A label or a link typed into `new` is characters: only the
+/// owner, or runs, can say one.
+pub fn reword(old: &[Run], new: &str) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::new();
+    let mut at = 0;
+    for run in old {
+        let shown = match run {
+            Run::Plain(_) => continue,
+            Run::Field(_) => {
+                out.push(run.clone());
+                continue;
+            }
+            Run::Marked(m) => m.text.clone(),
+            Run::Link(l) if l.text.is_empty() => l.link.clone(),
+            Run::Link(l) => l.text.clone(),
+            Run::Label(l) => format!("#{}", l.label),
+        };
+        // A label ends where its name does: `#home` is not the start of `#homework`.
+        let whole = |end: usize| {
+            let next = new[end..].chars().next();
+            !matches!(run, Run::Label(_)) || next.is_none_or(char::is_whitespace)
+        };
+        let found = (new[at..].match_indices(shown.as_str()))
+            .map(|(i, _)| at + i)
+            .find(|i| whole(i + shown.len()));
+        if let Some(i) = found.filter(|_| !shown.is_empty()) {
+            if i > at {
+                out.push(Run::Plain(new[at..i].to_string()));
+            }
+            out.push(run.clone());
+            at = i + shown.len();
+        }
+    }
+    if at < new.len() {
+        out.push(Run::Plain(new[at..].to_string()));
+    }
+    out
+}
+
+/// What a piece says, for comparing two answers: its role, its attributes wherever they are
+/// written (`attributes` or a field of its text) as text, and its text and cells with
+/// neighbouring plain runs joined. Not its place and not what it is in: a place can be part
+/// of what changed.
+fn piece_key(p: &Piece) -> String {
+    let mut attributes: std::collections::BTreeMap<&str, String> = Default::default();
+    for (name, value) in &p.attributes {
+        let text = match value {
+            Json::Null => continue,
+            Json::String(text) => text.trim().to_string(),
+            Json::Number(n) => match n.as_f64() {
+                Some(n) => crate::matcher::number(n).to_string(),
+                None => n.to_string(),
+            },
+            other => other.to_string(),
+        };
+        if !text.is_empty() {
+            attributes.insert(name.as_str(), text);
+        }
+    }
+    let mut fields: Vec<(&str, &str)> = Vec::new();
+    let text = normal(&p.text, &mut fields);
+    let mut cells: Vec<(&str, Vec<Run>)> = Vec::new();
+    for c in &p.cells {
+        cells.push((c.name.as_str(), normal(&c.text, &mut fields)));
+    }
+    for (name, value) in fields {
+        if !value.is_empty() && !attributes.contains_key(name) {
+            attributes.insert(name, value.to_string());
+        }
+    }
+    serde_json::to_string(&(p.role, attributes, text, cells)).unwrap_or_default()
+}
+
+/// Runs as two answers must agree on them: neighbouring plain runs joined, a marked run with
+/// no mark plain, and the fields set aside into `fields`, since they are attributes.
+fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::new();
+    for run in runs {
+        let text = match run {
+            Run::Field(f) => {
+                fields.push((f.field.as_str(), f.value.trim()));
+                continue;
+            }
+            Run::Plain(text) => text,
+            Run::Marked(m) if m.marks.is_empty() => &m.text,
+            other => {
+                out.push(other.clone());
+                continue;
+            }
+        };
+        match out.last_mut() {
+            _ if text.is_empty() => {}
+            Some(Run::Plain(last)) => last.push_str(text),
+            _ => out.push(Run::Plain(text.clone())),
+        }
+    }
+    out
+}
+
 /// Whether what an owner gave reads as what was asked of it: the same items (their kinds and
-/// fields, wherever they are and whatever their ids) and the same link targets. Places may
+/// fields, wherever they are and whatever their ids), the same link targets and the same
+/// pieces (`piece_key`), so a piece the change wasn't for says what it said before. Places may
 /// differ, since an owner's place can be part of what changed (a CSV row's first cell). Else
 /// what differs, for a message.
 pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
@@ -587,6 +763,24 @@ pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
             short(missing)
         ));
     }
+    let pieces = |r: &Read| -> Vec<String> {
+        let mut v = r.pieces.clone();
+        v.sort();
+        v
+    };
+    let (want, got) = (pieces(asked), pieces(gave));
+    if want != got {
+        let (missing, extra) = (only(&want, &got), only(&got, &want));
+        return Err(match (missing.is_empty(), extra.is_empty()) {
+            (false, false) => format!(
+                "the piece {} where {} was asked",
+                short(extra),
+                short(missing)
+            ),
+            (false, true) => format!("the piece {} is missing", short(missing)),
+            _ => format!("the piece {} wasn't asked for", short(extra)),
+        });
+    }
     Ok(())
 }
 
@@ -607,6 +801,9 @@ pub struct Read {
     /// By item id.
     pub places: HashMap<String, String>,
     pub links: Vec<(Ref, String)>,
+    /// What each piece says (`piece_key`), whether or not it is an item: the read-back check
+    /// compares them.
+    pub pieces: Vec<String>,
     /// What didn't read, one line each: a type that isn't loaded, a field it doesn't have.
     pub problems: Vec<String>,
 }
@@ -618,6 +815,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     for item in &given.items {
         match item {
             GivenItem::Piece(p) => {
+                out.pieces.push(piece_key(p));
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
                     out.problems.push(format!("{}: {why}", p.place));
                 }
@@ -641,10 +839,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                 fields,
             } => match s.matcher.given(kind, fields) {
                 Ok(typed) => {
-                    let id = [file, "\0", kind, "\0", place]
-                        .iter()
-                        .fold(FNV_START, |h, part| fnv_from(h, part.as_bytes()));
-                    let id = format!("{id:016x}");
+                    let id = typed_id(file, kind, place);
                     out.places.insert(id.clone(), place.clone());
                     out.items.push(Item {
                         id,
@@ -1007,5 +1202,145 @@ mod tests {
         );
         assert_eq!(read.items.len(), 2 + MAX_DEPTH + 1);
         assert!(read.problems[3].contains("one of open, done, in-progress, cancelled"));
+    }
+
+    /// The pinned JSON of every change `file/edit` can ask: the three it could before, and
+    /// the two in the model's terms. A `text` that is a list is runs; a string is Markdown.
+    #[test]
+    fn a_change_is_json() {
+        let wire = json!([
+            {"place": "1#task", "text": "- [x] Read the report"},
+            {"place": "3", "field": "vei", "value": 7},
+            {"place": "3", "link": "Krakatoa", "to": "Krakatau"},
+            {"place": "plumber", "attribute": "checkbox", "value": "done"},
+            {"place": "plumber", "attribute": "due", "value": null},
+            {"place": "plumber", "text": ["Call the electrician ", {"label": "home"}]},
+            {"place": "r1", "cell": "VEI", "text": ["7"]},
+        ]);
+        let changes: Vec<Change> = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&changes).unwrap(), wire);
+        assert!(matches!(&changes[0], Change::Text { .. }));
+        assert!(matches!(&changes[1], Change::Field { .. }));
+        assert!(matches!(&changes[2], Change::Link { .. }));
+        assert!(
+            matches!(&changes[3], Change::Attribute { attribute, .. } if attribute == "checkbox")
+        );
+        assert!(matches!(
+            &changes[4],
+            Change::Attribute {
+                value: Json::Null,
+                ..
+            }
+        ));
+        assert!(matches!(&changes[5], Change::Runs { cell: None, text, .. } if text.len() == 2));
+        assert!(matches!(&changes[6], Change::Runs { cell: Some(c), .. } if c == "VEI"));
+        for wrong in [
+            json!({"place": "1", "attribute": "due"}),
+            json!({"place": "1", "attribute": "due", "value": 1, "field": "due"}),
+            json!({"place": "1", "text": ["x"], "colour": "red"}),
+        ] {
+            assert!(
+                serde_json::from_value::<Change>(wrong.clone()).is_err(),
+                "{wrong}"
+            );
+        }
+    }
+
+    /// The read-back check compares pieces. What the owner gives for its new text must say
+    /// what it gave before with the changes made, piece by piece, however it writes it: an
+    /// attribute as a field of the text, plain runs cut elsewhere, another place.
+    #[test]
+    fn the_read_back_compares_pieces() {
+        let s = settings("");
+        let other = json!({"place": "t2", "role": "item", "text": ["Another"],
+                           "attributes": {"task": true, "checkbox": "open"}});
+        let before = given(json!({"items": [
+            {"place": "t1", "role": "item", "attributes": {"task": true, "checkbox": "open"},
+             "text": ["Call ", {"link": "Krakatoa"}, " ", {"label": "home"},
+                      {"field": "due", "value": "2026-11-20"}]},
+            other,
+            {"place": "o", "role": "opaque", "attributes": {"x": 40}},
+        ]}));
+        let changes: Vec<Change> = serde_json::from_value(json!([
+            {"place": "t1", "attribute": "checkbox", "value": "done"},
+            {"place": "t1", "attribute": "due", "value": "2026-11-21"},
+            {"place": "t1", "link": "Krakatoa", "to": "Krakatau"},
+        ]))
+        .unwrap();
+        let expect = apply(&before, &changes);
+        assert_eq!(
+            serde_json::to_value(&expect).unwrap(),
+            json!({"items": [
+                {"place": "t1", "role": "item",
+                 "attributes": {"task": true, "checkbox": "done", "due": "2026-11-21"},
+                 "text": ["Call ", {"link": "Krakatau"}, " ", {"label": "home"}]},
+                other,
+                {"place": "o", "role": "opaque", "attributes": {"x": 40}},
+            ], "links": []})
+        );
+        let asked = read("Home.chores", &expect, &s);
+        let answer = |t1: Json, t2: Json, o: Json| {
+            let gave = given(json!({"items": [t1, t2, o]}));
+            same(&asked, &read("Home.chores", &gave, &s))
+        };
+        let t1 = json!({"place": "moved", "role": "item",
+            "attributes": {"task": true, "checkbox": "done"},
+            "text": ["Ca", "ll ", {"link": "Krakatau"}, {"text": " "}, {"label": "home"},
+                     {"field": "due", "value": " 2026-11-21"}]});
+        let o = json!({"place": "o", "role": "opaque", "attributes": {"x": "40"}});
+        assert_eq!(answer(t1.clone(), other.clone(), o.clone()), Ok(()));
+
+        // The change not made, another task changed with it, and a piece no type reads
+        // changed: each is caught.
+        let unticked = json!({"place": "t1", "role": "item",
+            "attributes": {"task": true, "checkbox": "open", "due": "2026-11-21"},
+            "text": ["Call ", {"link": "Krakatau"}, " ", {"label": "home"}]});
+        assert!(answer(unticked, other.clone(), o.clone()).is_err());
+        let too = json!({"place": "t2", "role": "item", "text": ["Another"],
+                         "attributes": {"task": true, "checkbox": "done"}});
+        assert!(answer(t1.clone(), too, o.clone()).is_err());
+        let moved = json!({"place": "o", "role": "opaque", "attributes": {"x": 41}});
+        let why = answer(t1.clone(), other.clone(), moved).unwrap_err();
+        assert!(why.starts_with("the piece "), "{why}");
+        let marked = json!({"place": "t2", "role": "item",
+            "text": [{"text": "Another", "marks": ["strong"]}],
+            "attributes": {"task": true, "checkbox": "open"}});
+        let why = answer(t1, marked, o).unwrap_err();
+        assert!(why.starts_with("the piece "), "a mark no item shows: {why}");
+    }
+
+    /// Rewording keeps each link, label and marked run whose words are still there, in order,
+    /// and the fields. What is typed is characters.
+    #[test]
+    fn rewording_keeps_the_runs_whose_words_are_still_there() {
+        let old: Vec<Run> = serde_json::from_value(json!([
+            "Call the plumber ",
+            {"label": "home"},
+            " about ",
+            {"text": "the leak", "marks": ["strong"]},
+            {"field": "due", "value": "2026-11-20"},
+            " ",
+            {"link": "Krakatoa", "text": "as noted"},
+        ]))
+        .unwrap();
+        let runs = |new: &str| serde_json::to_value(reword(&old, new)).unwrap();
+        assert_eq!(
+            runs("Call the electrician #home about the leak today, as noted"),
+            json!([
+                "Call the electrician ",
+                {"label": "home"},
+                " about ",
+                {"text": "the leak", "marks": ["strong"]},
+                {"field": "due", "value": "2026-11-20"},
+                " today, ",
+                {"link": "Krakatoa", "text": "as noted"},
+            ])
+        );
+        assert_eq!(
+            runs("Call nobody #homework [[x]]"),
+            json!([{"field": "due", "value": "2026-11-20"}, "Call nobody #homework [[x]]"]),
+            "`#homework` is not the label `home`, and a typed link is characters"
+        );
+        assert_eq!(runs(""), json!([{"field": "due", "value": "2026-11-20"}]));
     }
 }
