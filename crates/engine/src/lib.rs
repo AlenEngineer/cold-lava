@@ -20,7 +20,6 @@ pub mod links;
 pub mod markdown;
 pub mod matcher;
 pub mod merge;
-pub mod outside;
 pub mod owner;
 pub mod paths;
 pub mod recipe;

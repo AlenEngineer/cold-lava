@@ -29,7 +29,6 @@
 
 use crate::alphabet::Role;
 use crate::json_canvas::{self, CNode, Field};
-use crate::outside::Outside;
 use crate::owner::given::{Between, Change, Given, GivenItem, GivenLink, Piece, Places};
 use serde_json::{Map, Value as Json};
 use std::collections::HashMap;
@@ -178,7 +177,7 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
     let find = |place: &str, name: &str| {
         (fields.iter())
             .find(|f| f.name == name && self::place(&f.node, f.nth) == place)
-            .ok_or_else(|| format!("it has no node {} with a {name}", Outside::whole(place)))
+            .ok_or_else(|| format!("it has no node {place} with a {name}"))
     };
     let mut new: Vec<(&Field, String)> = Vec::new();
     for c in changes {
@@ -187,32 +186,26 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
             Change::Link { place, link, to } => {
                 let f = find(place, "file")?;
                 if f.value != *link {
-                    let (place, shows) = (Outside::whole(place), Outside::whole(&f.value));
-                    let link = Outside::whole(link);
-                    return Err(format!("node {place} shows {shows}, not {link}"));
+                    return Err(format!("node {place} shows {}, not {link}", f.value));
                 }
                 new.push((f, to.clone()));
             }
             Change::Field { place, .. } => {
                 return Err(format!(
-                    "node {} has no fields: a canvas gives no typed items",
-                    Outside::whole(place)
+                    "node {place} has no fields: a canvas gives no typed items"
                 ));
             }
             Change::Attribute {
                 place, attribute, ..
             } => {
                 return Err(format!(
-                    "the canvas owner doesn't write a card's {} (node {}): it writes a \
-                     card's text and its file, and nothing else of a node",
-                    Outside::whole(attribute),
-                    Outside::whole(place)
+                    "the canvas owner doesn't write a card's {attribute} (node {place}): it \
+                     writes a card's text and its file, and nothing else of a node"
                 ));
             }
             Change::Runs { place, .. } => {
                 return Err(format!(
-                    "a card's text is Markdown and takes no runs (node {})",
-                    Outside::whole(place)
+                    "a card's text is Markdown and takes no runs (node {place})"
                 ));
             }
         }
