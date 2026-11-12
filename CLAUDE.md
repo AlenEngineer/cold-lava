@@ -7,14 +7,18 @@ with ratatui). Three things define it:
 - **Shared types.** A task, a date or an address is the same thing wherever it is written (a
   note, a canvas card, a CSV row) and whoever reads it (the engine, an extension, the person
   writing). Owners translate file formats; types are the contract between them all.
-- **Safe beside Obsidian.** It works on a workspace **without the Obsidian app, and safely
-  alongside it**: plain Markdown and JSON Canvas, one safe write path, nothing overwritten.
-  Everything else stands on this, and no feature may break it.
+- **Safe on shared files.** It works on plain Markdown and JSON Canvas that other programs
+  (Obsidian, an editor, git) edit at the same time: one safe write path, nothing overwritten,
+  nothing it doesn't understand dropped. Everything else stands on this, and no feature may
+  break it. How another product reads those files is a profile a workspace can choose, never
+  the core's definition.
 - **One door.** Everything outside the engine reaches it through the gateway. Extensions bring
   data, file formats, types and simple views (lists, tables, scenes). The surfaces you work in
   (the page with the reader and the editor, the whiteboard) are built into the frontend.
 
-The order of work is the first section of roadmap issue #100: the engine-facing work first (one
+The ideas the project is built on are `docs/foundations.md`: read it before designing anything,
+and where it and another document disagree about an idea, it is right. The order of work is
+the first section of roadmap issue #100: the engine-facing work first (one
 path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
 
 cold-lava's word for a folder of notes is **workspace**, in the UI, the CLI, the docs and the

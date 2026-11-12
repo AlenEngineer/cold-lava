@@ -1,5 +1,8 @@
 # The engine
 
+The ideas behind all of this are in [foundations.md](foundations.md). This page describes the
+engine as it is and as it is planned.
+
 Status: **overview**. Parts are built, parts are designed in [extensions.md](extensions.md), and
 parts are still to be designed; each layer says which.
 
@@ -522,8 +525,13 @@ The order, engine-facing work first and the UX last:
 
 ## What stays fixed
 
+The full list is [foundations.md](foundations.md). The three that everything else leans on:
+
 - **A note stays a valid Markdown file** that Obsidian, GitHub and any editor read. New syntax
   is text patterns or fenced blocks, never grammar other tools would choke on.
-- **Obsidian compatibility is the floor:** its files, settings and conventions (Tasks,
-  Dataview, Properties, daily notes, Canvas). The same workspace opens in both at once.
-- **One writer, safe:** nothing overwrites an edit made elsewhere.
+- **File safety is the floor:** nothing overwrites an edit made elsewhere, files are written
+  atomically and deleted only to the trash, and what the engine doesn't understand it keeps.
+  The same workspace can be open in another program at once.
+- **Another product's reading is a profile, never the core.** cold-lava has its own flavour of
+  Markdown. Obsidian's files, settings and conventions (Tasks, Dataview, Properties, daily
+  notes, Canvas) are a profile a workspace can choose.
