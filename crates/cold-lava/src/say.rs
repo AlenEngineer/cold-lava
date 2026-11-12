@@ -1,29 +1,33 @@
-//! What the command line prints. Every line on stdout and stderr goes out here, and each
-//! goes through `outside::escape` on the way, so text a file or an extension chose never
-//! reaches the terminal as it is written. Nothing else in the app prints
-//! (`tests/one_door.rs` reads the source for it).
+//! What the command line prints. Every line on stdout and stderr goes out here, and no text
+//! a file or an extension chose reaches the terminal as it is written: a line is escaped
+//! whole (`shown::escape`) on its way out, whatever it was made of, so nothing has to be
+//! remembered where a line is made. Nothing else in the app prints (`tests/one_door.rs`
+//! reads the source for it).
 //!
-//! How a line is escaped is decided by which of these is called, not where it is called:
+//! Which of these is called says what a line is:
 //!
 //! - `out!`, `Out::listing`, `listing_block`: a **listing**, a line that is the user's own
 //!   content (`items`, `agenda`, `table`, `search`, `tidy`, a shape drawn as text, a diff of
-//!   their notes, the screen `drive` read). Escaped as content, a line break inside a value
-//!   included, so one item is one line.
+//!   their notes, the screen `drive` read). Escaped as content.
 //! - `told!` on stdout and `problem!` on stderr: a **message**, what a command did, what it
-//!   has, or why it didn't. Escaped as a message, line by line: a message may have several
-//!   lines, and outside text put into one was escaped where the message was made
-//!   (`outside::Outside`).
+//!   has, or why it didn't. Escaped as a message.
+//! - `fixed`: the app's own text, known when it was built (the usage), as it is.
 //! - `json`, `json_line`, `Out::json`, `Out::json_pretty`: JSON, which escapes the way JSON
-//!   does. It is written as it is, since it is for a program, not for the terminal.
+//!   does and is for a program to read. It is written as it is.
+//!
+//! One call is one line. A line break inside the text of a listing line or a message is
+//! escaped like any other character a terminal acts on, so text from outside can't begin a
+//! line of its own. What has several lines by the app's own structure says so: one call a
+//! line, a `Lines` for an error, or `listing_block` for a text whose lines are a listing.
 
-use crate::outside::{Level, escape};
+use cold_lava_views::shown::{Level, escape};
 use serde::Serialize;
-use std::fmt::Arguments;
+use std::fmt::{self, Arguments};
 use std::io::{self, StdoutLock, Write};
 
-/// `text` with each of its lines escaped at `level`. The line ends stay as they are, a CR
+/// `text` with each of its lines escaped as content. The line ends stay as they are, a CR
 /// before one included (a note whose lines end in CR LF prints as it did).
-fn lines(text: &str, level: Level) -> String {
+fn lines(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
         let body = line.strip_suffix('\n').unwrap_or(line);
@@ -31,31 +35,50 @@ fn lines(text: &str, level: Level) -> String {
             true => body.strip_suffix('\r').unwrap_or(body),
             false => body,
         };
-        out.push_str(&escape(body, level));
+        out.push_str(&escape(body, Level::Content));
         out.push_str(&line[body.len()..]);
     }
     out
 }
 
+/// The words as one line of a listing.
+fn content(words: Arguments<'_>) -> String {
+    escape(&words.to_string(), Level::Content).into_owned()
+}
+
+/// The words as one line of a message.
+fn message(words: Arguments<'_>) -> String {
+    escape(&words.to_string(), Level::Message).into_owned()
+}
+
+// The entries below print with `println!` and `eprintln!` themselves, and don't go through
+// `Out`, so that a closed stdout ends the program exactly as it did when each command
+// printed with them: the same panic, from the same place in the standard library.
+
 /// One line of a listing on stdout.
 pub fn listing(words: Arguments<'_>) {
-    println!("{}", escape(&words.to_string(), Level::Content));
+    println!("{}", content(words));
 }
 
 /// Lines of a listing that come as one text (a shape drawn as text, a diff), written as
 /// they are but for what is escaped: no line end is added.
 pub fn listing_block(text: &str) {
-    print!("{}", lines(text, Level::Content));
+    print!("{}", lines(text));
 }
 
-/// A message on stdout.
+/// One line of a message on stdout.
 pub fn message_out(words: Arguments<'_>) {
-    println!("{}", lines(&words.to_string(), Level::Message));
+    println!("{}", message(words));
 }
 
-/// A message on stderr.
+/// One line of a message on stderr.
 pub fn message_err(words: Arguments<'_>) {
-    eprintln!("{}", lines(&words.to_string(), Level::Message));
+    eprintln!("{}", message(words));
+}
+
+/// The app's own text on stdout, as it is: only text known when the app was built.
+pub fn fixed(text: &'static str) {
+    println!("{text}");
 }
 
 /// A value as JSON over several lines, on stdout.
@@ -75,14 +98,14 @@ pub fn json_line<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<()> {
 pub struct Out(StdoutLock<'static>);
 
 /// Stdout, held until the `Out` is dropped.
-pub fn stdout() -> Out {
+pub fn held() -> Out {
     Out(io::stdout().lock())
 }
 
 impl Out {
     /// One line of a listing.
     pub fn listing(&mut self, words: Arguments<'_>) -> io::Result<()> {
-        writeln!(self.0, "{}", escape(&words.to_string(), Level::Content))
+        writeln!(self.0, "{}", content(words))
     }
 
     /// A value as JSON on one line.
@@ -96,19 +119,51 @@ impl Out {
     }
 }
 
+/// An error whose message has several lines by the app's own structure: what went wrong,
+/// then the usage or the list it points to. Each line is one message line when it is
+/// printed, so a line break inside one of them is escaped and the breaks between them are
+/// the app's.
+#[derive(Debug)]
+pub struct Lines(Vec<String>);
+
+impl Lines {
+    /// These lines, each made where the error is.
+    pub fn of(lines: impl IntoIterator<Item = String>) -> Lines {
+        Lines(lines.into_iter().collect())
+    }
+
+    /// And after them each line of `text`, the app's own.
+    pub fn then(mut self, text: &'static str) -> Lines {
+        self.0.extend(text.split('\n').map(String::from));
+        self
+    }
+
+    pub fn lines(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl fmt::Display for Lines {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.join("\n"))
+    }
+}
+
+impl std::error::Error for Lines {}
+
 /// One line of a listing on stdout, written as `println!` is.
 macro_rules! out {
     () => { $crate::say::listing(format_args!("")) };
     ($($words:tt)*) => { $crate::say::listing(format_args!($($words)*)) };
 }
 
-/// A message on stdout, written as `println!` is.
+/// One line of a message on stdout, written as `println!` is.
 macro_rules! told {
     () => { $crate::say::message_out(format_args!("")) };
     ($($words:tt)*) => { $crate::say::message_out(format_args!($($words)*)) };
 }
 
-/// A message on stderr, written as `eprintln!` is.
+/// One line of a message on stderr, written as `eprintln!` is.
 macro_rules! problem {
     ($($words:tt)*) => { $crate::say::message_err(format_args!($($words)*)) };
 }
@@ -120,18 +175,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_line_is_escaped_and_its_end_kept() {
+    fn each_line_of_a_block_is_escaped_and_its_end_kept() {
         let text = "one \u{1b}[2J\ntwo\r\nthree \u{202e}\r";
-        assert_eq!(
-            lines(text, Level::Content),
-            "one \\u{1b}[2J\ntwo\r\nthree \u{202e}\\r"
-        );
-        assert_eq!(
-            lines(text, Level::Message),
-            "one \\u{1b}[2J\ntwo\r\nthree \\u{202e}\\r"
-        );
+        assert_eq!(lines(text), "one \\u{1b}[2J\ntwo\r\nthree \u{202e}\\r");
         for plain in ["", "\n", "a\n\nb", "no end", "ends\n", "tab\there\r\n"] {
-            assert_eq!(lines(plain, Level::Message), plain);
+            assert_eq!(lines(plain), plain);
         }
+    }
+
+    #[test]
+    fn a_line_break_inside_a_line_is_escaped() {
+        let forged = "Plan.md\ncold-lava: all is well \u{202e}";
+        assert_eq!(
+            content(format_args!("{forged}: (name matches)")),
+            "Plan.md\\ncold-lava: all is well \u{202e}: (name matches)"
+        );
+        assert_eq!(
+            message(format_args!("warning: {forged}")),
+            "warning: Plan.md\\ncold-lava: all is well \\u{202e}"
+        );
+        assert_eq!(
+            message(format_args!("  {}", "plain\twords")),
+            "  plain\twords"
+        );
+    }
+
+    #[test]
+    fn an_error_of_several_lines_keeps_them_apart() {
+        let e = Lines::of(["no such thing: a\nb".to_string()]).then("usage: x\n  y");
+        assert_eq!(e.lines(), ["no such thing: a\nb", "usage: x", "  y"]);
+        assert_eq!(e.to_string(), "no such thing: a\nb\nusage: x\n  y");
     }
 }

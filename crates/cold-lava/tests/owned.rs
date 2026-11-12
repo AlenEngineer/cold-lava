@@ -713,5 +713,48 @@ fn an_owners_place_is_never_printed_as_written() {
         "{stderr:?}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), CHORES, "as it was");
+    // Only what is printed as text is escaped: for a program the reason is the place as the
+    // owner wrote it, escaped the way JSON escapes.
+    let file = file.to_str().unwrap();
+    let refused = cold_lava(&home, &["item", "set", file, id, "status", "x", "--json"]);
+    let (stdout, _) = text(&refused);
+    assert_eq!(
+        stdout,
+        "{\"error\":\"\\u001b]0;PWNED-place\\u0007p: another piece is at this place\",\
+         \"changed\":false}\n"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
+/// What an extension says is its own words, line breaks included: a notice it shows and
+/// the reason it refuses with each print as one line, so neither can begin a line that
+/// reads as cold-lava's.
+#[test]
+fn an_extensions_notice_and_its_reason_print_as_one_line_each() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let refuses = r#"@ext.on("file/edit")
+def refuse(params):
+    ext.show("csv-table says\ncold-lava: all is well \x1b]0;t\x07")
+    raise ValueError("read-only\ncold-lava: renamed everything")
+
+
+ext.run()"#;
+    let (workspace, home) = sandbox("cli-lines", |main| main.replace("ext.run()", refuses));
+    let ws = workspace.to_str().unwrap();
+    let renamed = cold_lava(&home, &["rename", ws, "Krakatoa", "Krakatau"]);
+    let (out, err) = text(&renamed);
+    assert!(!renamed.status.success(), "{out}");
+    let lines: Vec<&str> = err.lines().collect();
+    let notice = "csv-table says\\ncold-lava: all is well \\u{1b}]0;t\\u{7}";
+    let reason = "cold-lava: csv-table didn't edit Volcanoes/Eruptions.csv: read-only\\ncold-lava: \
+                  renamed everything; nothing was changed";
+    assert!(lines.contains(&notice), "the notice: {err}");
+    assert!(lines.contains(&reason), "the reason: {err}");
+    let forged =
+        |line: &&str| line.starts_with("cold-lava: all") || line.starts_with("cold-lava: renamed");
+    assert!(!lines.iter().any(forged), "{err}");
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }

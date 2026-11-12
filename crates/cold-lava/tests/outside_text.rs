@@ -294,3 +294,72 @@ fn a_listing_cut_short_by_its_reader_ends_quietly() {
     }
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
+
+/// Text from outside can't begin a line of its own: a line break in a file's name or in a
+/// word the user gave is shown as `\n`, in a listing and in a message.
+#[test]
+fn a_line_break_in_outside_text_never_begins_a_line() {
+    let (workspace, home) = sandbox("break");
+    let ws = workspace.to_str().unwrap();
+    let out = cold_lava(&home)
+        .args(["items", ws, "no\nsuch: kind"])
+        .output()
+        .unwrap();
+    let (stdout, stderr) = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(
+        stderr.starts_with("cold-lava: no item kind called no\\nsuch: kind; KIND is one of: "),
+        "{stderr}"
+    );
+    // A file's name, where the file system lets one hold a line break.
+    let note = workspace.join("Line\nBreak.md");
+    if std::fs::write(&note, "- [ ] needle task\n").is_err() {
+        eprintln!("skipped: this file system has no file names with a line break");
+        return;
+    }
+    let (stdout, _) = run(&home, &["search", ws, "needle"]);
+    assert_eq!(stdout, "Line\\nBreak.md:1: - [ ] needle task\n");
+    let task = format!("{}:1", note.display());
+    let (stdout, _) = run(&home, &["task", "toggle", &task]);
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        stdout.contains("Line\\nBreak.md:1  - [x] needle task"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
+/// What has several lines by the app's own structure still has them: a usage after what
+/// went wrong, each on a line of its own, as before.
+#[test]
+fn an_error_of_several_lines_prints_its_lines() {
+    let (workspace, home) = sandbox("usage");
+    let out = cold_lava(&home).args(["items"]).output().unwrap();
+    let (_, stderr) = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert_eq!(stderr.lines().count(), 2, "{stderr}");
+    assert!(
+        stderr.starts_with(
+            "cold-lava: usage: cold-lava items WORKSPACE KIND [--json]\nKIND is one of: "
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.ends_with(" or a type\n"), "{stderr}");
+
+    let out = cold_lava(&home).args(["no\nsuch"]).output().unwrap();
+    let (_, stderr) = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(
+        lines[..3],
+        [
+            "cold-lava: not a folder or command: no\\nsuch",
+            "",
+            "cold-lava — Obsidian's graph view and canvas, in the terminal"
+        ],
+        "{stderr}"
+    );
+    assert!(lines.len() > 10, "the usage follows: {stderr}");
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}

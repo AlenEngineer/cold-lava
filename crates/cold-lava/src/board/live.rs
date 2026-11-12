@@ -358,9 +358,9 @@ fn paint_members(
         }
         let room = Room::inside(&Mask::area(placed, &r.area, view, Res::BRAILLE));
         // A label is an item's words or an extension's: escaped before it is fitted.
-        let escaped = entries
-            .iter()
-            .map(|e| crate::outside::escape(&e.label, crate::outside::Level::Content));
+        let escaped = entries.iter().map(|e| {
+            cold_lava_views::shown::escape(&e.label, cold_lava_views::shown::Level::Content)
+        });
         let escaped: Vec<_> = escaped.collect();
         let labels: Vec<&str> = escaped.iter().map(|label| label.as_ref()).collect();
         let fitted = fit::labels(&room, &labels, Flow::Column, Align::Center);

@@ -1527,7 +1527,8 @@ impl Board {
     pub fn flash(&mut self, s: impl Into<String>) {
         // A notice may quote a file's or an extension's words: escaped as a message is.
         let s: String = s.into();
-        let s = crate::outside::escape(&s, crate::outside::Level::Message).into_owned();
+        let s =
+            cold_lava_views::shown::escape(&s, cold_lava_views::shown::Level::Message).into_owned();
         // The shape editor in front shows it now, in the board's place.
         let shown = self.editor.as_mut().map(|editor| {
             editor.say(s.clone());
@@ -2738,7 +2739,9 @@ impl Board {
             lines.push((ax, ay, bx, by, color, arrow_to, arrow_from));
             if let Some(l) = e.label.as_ref().filter(|l| !l.is_empty()) {
                 // An arrow's label is the file's: escaped before it is measured and drawn.
-                let label = crate::outside::escape(l, crate::outside::Level::Content).into_owned();
+                let label =
+                    cold_lava_views::shown::escape(l, cold_lava_views::shown::Level::Content)
+                        .into_owned();
                 labels.push(((ax + bx) / 2.0, (ay + by) / 2.0, label));
             }
         }

@@ -5,12 +5,12 @@
 //! whole. Every symbol set on a cell goes through `put`, and nothing else in the app sets
 //! one (`tests/one_door.rs` reads the source for it).
 //!
-//! A label is escaped before it is laid out (`outside::escape`), so what a terminal would
+//! A label is escaped before it is laid out (`shown::escape`), so what a terminal would
 //! act on shows as `\u{1b}` and takes the room it needs. `put` is what holds when one wasn't:
 //! a cell has room for one symbol, so a character that is never shown as written becomes
 //! `STAND_IN` there.
 
-use crate::outside::{Level, escape};
+use cold_lava_views::shown::{Level, escape};
 use ratatui::buffer::Cell;
 use std::borrow::Cow;
 

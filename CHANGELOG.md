@@ -161,38 +161,22 @@ change commands, keys and file formats; patch versions only fix things.
 - The command line no longer prints text from a file or an extension as it is written when
   that text holds characters a terminal acts on (#265, track A step A2). A task whose text
   held `ESC ]0;…BEL` retitled the terminal from `cold-lava items`, and an owner's place did
-  the same from a problem line on stderr. Now every line the command line prints goes
-  through one function. It shows a control character (C0 except the tab, DEL, C1) and the
-  separators U+2028 and U+2029 as `\u{1b}`, with the character's number in hexadecimal, and
-  a line break inside a value as `\n` or `\r`, so one item is always one line. Only text
-  that holds such a character prints differently: everything else, a tab, a backslash and
-  the marks of right-to-left scripts included, prints byte for byte as before.
-  - **Listings** (`items`, `agenda`, `table`, `search`, `tidy`, `daily --path`,
-    `shapes --render`, a recipe's diff) keep the characters that embed, override or isolate
-    the direction of text (U+202A to U+202E, U+2066 to U+2069), since they are the user's own
-    content. A `table` or `--render` row that holds an escaped character is wider by the
-    escape.
-  - **Messages** (every line on stderr, and the stdout lines that say what a command did or
-    has: `rename`, `task toggle`, `item set`, `recipe`, `types`, `shapes`, `attributes`,
-    `ext list`, `style`, `keys`) show those nine characters as `\u{202e}` too.
-  - A problem with what an owner gave names its place, its `in` and its links' ends
-    escaped, and so do the canvas owner's refusals (a twin card's place shows as
-    `t\u{1f}1`) and an extension's own error text. These messages are escaped where they
-    are made, so an extension that is refused gets the same text over the gateway, as it
-    already did for the values a reason quotes.
-  - In the terminal app, a label drawn a character at a time was written to the terminal as
-    it is: a note whose file name held an escape sequence retitled the terminal from the
-    graph with its labels on, and an arrow's label or a shape's label on the whiteboard
-    could do the same. Graph labels, arrows' labels and the labels a placed shape shows are
-    now escaped like a listing before they are laid out, and every symbol the app sets on a
-    cell itself goes through one function, which shows `�` for a character a terminal would
-    act on. A notice on the status line of the menu or the whiteboard is escaped like a
-    message, so an extension's words in it show `\u{1b}` and `\u{202e}` where the status
-    line used to drop the control characters without a trace (and a line break in a notice
-    now shows as `\n`). The rest of what the app draws (the tree, the reader, lists, tables,
-    cards) goes through ratatui's text as before, which drops control characters.
-  - `--json` is unchanged, and so is everything kept: files, ids, revs and what the gateway
-    answers hold the text as written.
+  the same from an error on stderr. Every line is now escaped as it is printed: a control
+  character (but the tab) and the separators U+2028 and U+2029 show as `\u{1b}`, and a line
+  break inside a value or a message as `\n` or `\r`, so text from outside never begins a
+  line of its own. Listings of your own content (`items`, `agenda`, `table`, `search`,
+  `tidy`, `daily --path`, `shapes --render`, a recipe's diff) keep the characters that turn
+  the direction of text (U+202A to U+202E, U+2066 to U+2069); every other line, all of
+  stderr included, shows those as `\u{202e}` too. Text with none of these characters
+  prints byte for byte as before, and `--json`, files, ids and what extensions are
+  answered hold the text as written.
+  In the terminal app, a label drawn a character at a time was written to the terminal as
+  it is: a note whose file name held an escape sequence retitled the terminal from the
+  graph with its labels on, and an arrow's or a placed shape's label on the whiteboard
+  could do the same. Those labels are now escaped like a listing, every symbol the app
+  sets on a cell itself goes through one function (which shows `�` for a character a
+  terminal would act on), and a notice on the status line is escaped like a message,
+  where it used to lose its control characters without a trace.
 - An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
   with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the

@@ -29,6 +29,8 @@ pub struct Config {
     pub style: crate::style::Overrides,
     /// One human-readable line per problem in the file.
     pub errors: Vec<String>,
+    /// When the file doesn't parse: that one error as the parser wrote it, line by line.
+    pub unparsed: Vec<String>,
     /// One line per setting that works but should be rewritten, such as an old command name.
     pub warnings: Vec<String>,
 }
@@ -109,8 +111,10 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let file: File = match toml::from_str(text) {
         Ok(f) => f,
         Err(e) => {
+            let error = e.to_string().trim_end().to_string();
             return Config {
-                errors: vec![e.to_string().trim_end().to_string()],
+                unparsed: error.split('\n').map(String::from).collect(),
+                errors: vec![error],
                 ..Config::default()
             };
         }

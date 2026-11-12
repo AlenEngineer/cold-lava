@@ -48,11 +48,17 @@ fn sources() -> Vec<(String, String)> {
     files_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
 }
 
-/// The extension host's source files, each named from here (`../host/src/lib.rs`).
-fn host_sources() -> Vec<(String, String)> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../host/src");
-    let from_here = |(file, code): (String, String)| (format!("../host/src/{file}"), code);
+/// The source files of the crate `name` beside this one, each named from here
+/// (`../host/src/lib.rs`).
+fn crate_sources(name: &str) -> Vec<(String, String)> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../{name}/src"));
+    let from_here = |(file, code): (String, String)| (format!("../{name}/src/{file}"), code);
     files_under(&src).into_iter().map(from_here).collect()
+}
+
+/// The extension host's source files.
+fn host_sources() -> Vec<(String, String)> {
+    crate_sources("host")
 }
 
 /// A file's text without its unit tests (each `#[cfg(test)]` on a `mod`, to the brace that
@@ -138,11 +144,15 @@ fn functions_of(code: &str, modules: &[&str]) -> Vec<String> {
     found
 }
 
-/// Each of `needles` as often as `code` has it.
+/// Each of `needles` as often as `code` has it. One that begins with a name is not counted
+/// in the middle of a longer name: `println!(` is not found in `eprintln!(`.
 fn times(code: &str, needles: &[&str]) -> Vec<String> {
+    let in_a_name = |c: char| c.is_alphanumeric() || c == '_';
     let mut found = Vec::new();
     for needle in needles {
-        let times = code.matches(needle).count();
+        let begins_a_name = needle.starts_with(in_a_name);
+        let own = |&(at, _): &(usize, &str)| !(begins_a_name && code[..at].ends_with(in_a_name));
+        let times = code.match_indices(needle).filter(own).count();
         found.extend((0..times).map(|_| String::from(*needle)));
     }
     found
@@ -178,10 +188,13 @@ fn tally(mut found: Vec<String>) -> Vec<String> {
     counted.into_iter().map(line).collect()
 }
 
+/// What to do about a way around the door that is found and not listed.
+const THROUGH_THE_CORE: &str = "send it through the core, or list it with its reason";
+
 /// Fails unless what was `found` is exactly what is `listed`, and says which entries are new
-/// and which are listed but no longer found, with what to do about each. A count that
-/// changed shows as both.
-fn only_listed(what: &str, found: &[String], listed: &[&str]) {
+/// (with `remedy`, what to do about one) and which are listed but no longer found. A count
+/// that changed shows as both.
+fn only_listed(what: &str, remedy: &str, found: &[String], listed: &[&str]) {
     let found: Vec<&str> = found.iter().map(String::as_str).collect();
     let new: Vec<&str> = (found.iter().copied())
         .filter(|entry| !listed.contains(entry))
@@ -191,9 +204,9 @@ fn only_listed(what: &str, found: &[String], listed: &[&str]) {
         .collect();
     assert!(
         new.is_empty() && gone.is_empty(),
-        "{what}\n  found but not listed: {new:?}\n    send it through the core, or list it \
-         with its reason: this list only shrinks, so a count is never just raised\n  listed \
-         but not found: {gone:?}\n    take it off the list, or lower its count"
+        "{what}\n  found but not listed: {new:?}\n    {remedy}: this list only shrinks, so a \
+         count is never just raised\n  listed but not found: {gone:?}\n    take it off the \
+         list, or lower its count"
     );
     assert_eq!(found, listed, "{what}");
 }
@@ -562,7 +575,7 @@ fn the_index_is_still_read_outside_the_core_here() {
         "main.rs: .index ×3",
         "owned.rs: .index ×2",
     ];
-    only_listed("reads of the core's index", &found, &left);
+    only_listed("reads of the core's index", THROUGH_THE_CORE, &found, &left);
 }
 
 /// A workspace is opened once, as a `Core`, so every command sees the same files, the owned
@@ -583,6 +596,7 @@ fn a_workspace_is_still_opened_beside_the_core_here() {
     ];
     only_listed(
         "a workspace opened beside the core",
+        THROUGH_THE_CORE,
         &tally(hits(&BESIDE)),
         &left,
     );
@@ -695,7 +709,12 @@ fn items_are_still_edited_around_the_core_here() {
         "main.rs: edit::set_field ×1",
         "main.rs: tasks::toggle_in ×1",
     ];
-    only_listed("item edits around Core::edit_item", &found, &left);
+    only_listed(
+        "item edits around Core::edit_item",
+        THROUGH_THE_CORE,
+        &found,
+        &left,
+    );
 }
 
 /// A link is what the Markdown owner and the resolver say is one, never what a pattern of
@@ -742,7 +761,7 @@ fn links_are_still_read_by_pattern_here() {
         "home.rs: markdown_text ×1",
     ];
     let found = tally(hits(&patterns));
-    only_listed("links read by a pattern", &found, &left);
+    only_listed("links read by a pattern", THROUGH_THE_CORE, &found, &left);
 }
 
 /// The extensions the app builds in, the ones `ext.rs`'s `Registry::load` names.
@@ -842,7 +861,12 @@ fn the_built_in_extensions_use_this_beyond_the_gateway() {
         "graph_ext.rs: crate::groups",
         "graph_ext.rs: crate::scene_view",
     ];
-    only_listed("the built-in extensions beyond the gateway", &found, &left);
+    only_listed(
+        "the built-in extensions beyond the gateway",
+        THROUGH_THE_CORE,
+        &found,
+        &left,
+    );
 }
 
 /// A group inside a `use` group doesn't end it: the names after it are read too. The door's
@@ -922,13 +946,18 @@ fn a_tally_counts() {
 #[test]
 #[should_panic(expected = "found but not listed: [\"a: x ×2\"]")]
 fn a_new_use_fails_its_list() {
-    only_listed("sample", &["a: x ×2".to_string()], &["a: x ×1"]);
+    only_listed("sample", "remedy", &["a: x ×2".to_string()], &["a: x ×1"]);
 }
 
 #[test]
 #[should_panic(expected = "listed but not found: [\"b: y ×1\"]")]
 fn an_entry_that_is_gone_fails_its_list() {
-    only_listed("sample", &["a: x ×1".to_string()], &["a: x ×1", "b: y ×1"]);
+    only_listed(
+        "sample",
+        "remedy",
+        &["a: x ×1".to_string()],
+        &["a: x ×1", "b: y ×1"],
+    );
 }
 
 /// Every name a list is about is guarded, the newer lists' as the file-changing ones'.
@@ -982,37 +1011,37 @@ fn the_scan_refuses_the_ways_around_the_operations_the_edits_and_the_scan() {
     assert_eq!(sneaked(no_use), Vec::<String>::new());
 }
 
-/// Each of `needles` as often as `code` has it as a name of its own: `println!(` is not
-/// counted inside `eprintln!(`, nor `out!(` inside another macro's name.
-fn named(code: &str, needles: &[&str]) -> Vec<String> {
-    let mut found = Vec::new();
-    for needle in needles {
-        for (at, _) in code.match_indices(needle) {
-            let before = code[..at].chars().next_back();
-            if !before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
-                found.push(String::from(*needle));
-            }
-        }
-    }
-    found
+/// A name is counted as a name of its own, so the print lists below count what they say.
+#[test]
+fn a_name_is_not_counted_inside_a_longer_one() {
+    let code = "eprintln!(\"a\");\nprintln!(\"b\");\nx.index; say::held();";
+    assert_eq!(times(code, &["println!(", "eprintln!("]).len(), 2);
+    assert_eq!(times(code, &[".index", "held()"]).len(), 2);
 }
 
 /// One door out to the terminal too (#265, track A step A2): text a file or an extension
-/// chose is shown only through `outside::escape`, and on the command line that is `say.rs`,
-/// the one module that prints. Nothing else names a print macro or takes stdout or stderr,
-/// but for the terminal's own protocol, which carries no outside text:
+/// chose is shown only through `shown::escape`, and on the command line that is `say.rs`,
+/// the one module that prints. Nothing else names a print macro, takes stdout or stderr, or
+/// writes bytes of its own to the terminal, but for the terminal's own protocol, which
+/// carries no outside text today and is counted so that it can't grow unseen:
 ///
-/// - `main.rs`: `stdout()` ×4 is `say::stdout()` twice (the long listings of `items` and
-///   `table`) and mouse capture switched on and off around the terminal app.
-/// - `term.rs`: leaving and entering the alternate screen, and `write_raw`, which writes
-///   the Kitty graphics the app made.
-/// - `home.rs`: a picture placed or deleted with Kitty graphics.
+/// - `main.rs`: `stdout()` for mouse capture, switched on and off around the terminal app.
+/// - `term.rs`: `stdout()` to leave and enter the alternate screen, and in `write_raw`,
+///   which writes the Kitty graphics the app made.
+/// - `home.rs`: a picture placed or deleted with Kitty graphics (`stdout()`, `write_raw`).
 ///
-/// It is the same guard on the text as the rest of this file, with the same blind spots: a
-/// print through a macro of another crate, `write!` to a handle taken another way
-/// (`io::stdout` under another name, a `File` on `/dev/tty`), or a child process that
-/// inherits the terminal is not seen. What the terminal app draws is not printed: it goes
-/// into ratatui's cells, which this test doesn't read.
+/// No file of the host, the engine or the views crate prints. The three entries of the
+/// engine's are tests the scan doesn't know for tests: two files that are test modules
+/// whole (`#[cfg(test)]` is on their `mod` line in another file), and `items.rs`, whose test
+/// module `code` loses track of.
+///
+/// It is the same guard on the text as the rest of this file, with the same blind spots. It
+/// doesn't see a print through a macro of another crate, `write!` to a handle taken another
+/// way (`io::stdout` under another name, a `File` on `/dev/tty`), or a child process that
+/// inherits the terminal. A panic's message goes to stderr as the standard library writes
+/// it, and can quote outside text: that is a stated limit, since a hook that escaped it
+/// would change what an ordinary panic prints. What the terminal app draws is not printed:
+/// it goes into ratatui's cells, which this test doesn't read.
 #[test]
 fn the_app_prints_only_through_say() {
     let prints = [
@@ -1023,21 +1052,36 @@ fn the_app_prints_only_through_say() {
         "dbg!(",
         "stdout()",
         "stderr()",
+        "Print(",
+        "SetTitle(",
+        "write_raw(",
     ];
-    let found = tally(per_file(&sources(), |code| named(code, &prints)));
+    let mut files = sources();
+    for name in ["host", "engine", "views"] {
+        files.extend(crate_sources(name));
+    }
+    let found = tally(per_file(&files, |code| times(code, &prints)));
     let listed = [
+        "../engine/src/cst/tests.rs: println!( ×2",
+        "../engine/src/items.rs: println!( ×2",
+        "../engine/src/markdown/pulldown.rs: println!( ×3",
         "home.rs: stdout() ×1",
-        "main.rs: stdout() ×4",
+        "home.rs: write_raw( ×2",
+        "main.rs: stdout() ×2",
         "say.rs: eprintln!( ×1",
         "say.rs: print!( ×1",
-        "say.rs: println!( ×4",
-        "say.rs: stdout() ×2",
+        "say.rs: println!( ×5",
+        "say.rs: stdout() ×1",
         "term.rs: stdout() ×3",
+        "term.rs: write_raw( ×1",
     ];
-    assert_eq!(
-        found, listed,
-        "a print or a handle on the terminal outside say.rs: print through `out!`, `told!` \
-         or `problem!` (src/say.rs says which), so the line is escaped"
+    let remedy = "print through `out!`, `told!` or `problem!` (src/say.rs says which), so the \
+                  line is escaped";
+    only_listed(
+        "prints and handles on the terminal",
+        remedy,
+        &found,
+        &listed,
     );
 }
 
@@ -1049,7 +1093,7 @@ fn the_app_prints_only_through_say() {
 #[test]
 fn the_listings_are_these() {
     let listings = ["out!(", "listing(", "listing_block("];
-    let found = tally(per_file(&sources(), |code| named(code, &listings)));
+    let found = tally(hits(&listings));
     let listed = [
         "drive.rs: out!( ×3",
         "main.rs: listing( ×2",
@@ -1058,11 +1102,9 @@ fn the_listings_are_these() {
         "say.rs: listing( ×4",
         "say.rs: listing_block( ×1",
     ];
-    assert_eq!(
-        found, listed,
-        "a line printed as a listing: it is one only if the line is the user's own content; \
-         what a command did or why it didn't is a message (`told!`, `problem!`)"
-    );
+    let remedy = "a line is a listing only if it is the user's own content; what a command \
+                  did or why it didn't is a message (`told!`, `problem!`)";
+    only_listed("lines printed as listings", remedy, &found, &listed);
 }
 
 /// What the terminal app draws goes into ratatui's cells, and text drawn through ratatui
@@ -1073,11 +1115,13 @@ fn the_listings_are_these() {
 #[test]
 fn the_app_sets_a_cells_symbol_only_through_cells() {
     let sets = ["set_char(", "set_symbol("];
-    let found = tally(per_file(&sources(), |code| named(code, &sets)));
-    assert_eq!(
-        found,
-        ["cells.rs: set_symbol( ×2"],
-        "a symbol set on a cell outside cells.rs: set it with `cells::put` or \
-         `cells::put_char`, so an escape sequence in a label never reaches the terminal"
+    let found = tally(hits(&sets));
+    let remedy = "set it with `cells::put` or `cells::put_char`, so an escape sequence in a \
+                  label never reaches the terminal";
+    only_listed(
+        "symbols set on a cell",
+        remedy,
+        &found,
+        &["cells.rs: set_symbol( ×2"],
     );
 }

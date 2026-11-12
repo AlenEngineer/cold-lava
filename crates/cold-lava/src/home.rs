@@ -2252,7 +2252,8 @@ impl Home {
     fn flash(&mut self, s: impl Into<String>) {
         // A notice may quote a file's or an extension's words: escaped as a message is.
         let s: String = s.into();
-        let s = crate::outside::escape(&s, crate::outside::Level::Message).into_owned();
+        let s =
+            cold_lava_views::shown::escape(&s, cold_lava_views::shown::Level::Message).into_owned();
         if let Some(scene) = self.front_scene_mut() {
             scene.flash(s.clone());
         }
