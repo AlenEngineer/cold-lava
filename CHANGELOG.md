@@ -72,9 +72,10 @@ change commands, keys and file formats; patch versions only fix things.
   leaves them alone. A link's text holds no link: in `[a [b](Inner.md) d](Outer.md)` the
   link is `Inner`, where it was `Outer`. Math is what the reader has always shown as math, for
   `items` and the agenda too: `$…$` and `$$…$$` inside one paragraph, heading, list item or
-  table cell. A line that starts with `$$` used to hide every line up to the next `$$`
-  anywhere in the note from `items` and the agenda (tasks, headings, block ids), while the
-  reader showed them; they are there now. A `$$` block with a blank line in it is two
+  table cell. Tasks, headings, list items and block ids after a stray `$$`
+  now count: `items`, the agenda and tables dropped every line from one that starts with
+  `$$` to the next `$$` anywhere in the note, or to its end, while the reader showed them.
+  Backlinks and tags always counted the links and tags there, and still do. A `$$` block with a blank line in it is two
   paragraphs of text, as on screen. A line right under a callout's title that has no `>`
   is the callout's.
 - Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
