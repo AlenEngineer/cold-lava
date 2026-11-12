@@ -14,6 +14,10 @@ is built, for human notes: formats have owners as languages have language server
 the type system, and extensions are the plugins. The files stay the person's own, and stay
 readable by other tools.
 
+It can be a layer over every kind of file a person uses. No format is privileged in principle:
+whatever a file is written in, an owner can bring what it holds into the same types, links and
+index.
+
 ## The engine
 
 ### 1. Plain files are the store, and they are never harmed
@@ -157,8 +161,8 @@ one way of doing each thing, before the next is built on it.
 
 ## Open questions
 
-- **Who it is for.** One person's notebook, or a layer over the mixed files a group works in.
-  The two share an engine and are different products.
-- **The neutral model.** If the core knows no syntax, how is a type defined without naming one
-  format's blocks, and what do an owner and the engine exchange in place of Markdown text?
+- **The neutral model.** This is where the standard is: the different things a person can
+  write, and the data they can share, named without reference to any one format. How is a
+  type defined without naming one format's blocks? What do an owner and the engine exchange
+  in place of Markdown text? And can that set of things be extended, or must it be closed?
 - **Proof.** An idea on this page counts as proven once someone has lived in it.
