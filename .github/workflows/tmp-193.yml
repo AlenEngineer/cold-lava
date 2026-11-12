@@ -1,0 +1,25 @@
+# Temporary, for #193's third round: every test binary runs on both systems, so the tests
+# written before their fix show as failing, and what macOS does with a trailing slash is seen.
+# Removed before the PR is done.
+name: tmp-193
+
+on:
+  push:
+    branches: [gateway-delete-193]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  all-tests:
+    name: all tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --no-fail-fast

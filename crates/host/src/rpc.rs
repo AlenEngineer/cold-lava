@@ -805,6 +805,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A path that ends in a slash names the entry, and a symlink is not followed for it.
+    #[cfg(unix)]
+    #[test]
+    fn a_trailing_slash_does_not_reach_through_a_symlink_over_the_wire() {
+        use Permission::{FilesDelete, FilesRead};
+        let dir = workspace("slash");
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        let target = outside.join("Target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a.md"), "alpha\n").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("LinkDir")).unwrap();
+        let local = r#"{"trashOption": "local"}"#;
+        std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let may = [FilesRead, FilesDelete];
+        for spelling in ["LinkDir/", "LinkDir//", "LinkDir"] {
+            let at = json!({ "path": spelling });
+            let (stat, _) = served(&mut core, &may, "workspace/stat", at);
+            let stat = stat.unwrap();
+            assert_eq!(
+                stat.get("inside"),
+                None,
+                "{spelling} lists the target: {stat}"
+            );
+            let ask = json!({"path": spelling, "expect": stat["rev"]});
+            let (deleted, _) = served(&mut core, &may, "workspace/delete", ask);
+            let deleted = deleted.unwrap();
+            let kept = std::fs::read_to_string(target.join("a.md")).unwrap();
+            assert_eq!(kept, "alpha\n", "{spelling}: the target is untouched");
+            let trashed = std::fs::read_link(dir.join(".trash/LinkDir")).unwrap();
+            assert_eq!(trashed, target, "{spelling}: the link is what went");
+            let restore = json!({"trashed": deleted["trashed"]});
+            let (restored, _) = served(&mut core, &may, "workspace/restore", restore);
+            assert_eq!(restored.unwrap(), json!({"path": "LinkDir"}));
+        }
+        let dot = json!({"path": "LinkDir/."});
+        let (refused, _) = served(&mut core, &may, "workspace/stat", dot);
+        assert_eq!(reason(&refused.unwrap_err()), "refused");
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn bad_requests_are_json_rpc_errors() {
         let dir = workspace("bad");

@@ -1195,6 +1195,136 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// What a folder holds, for a before and an after: each entry with its bytes and time.
+    #[cfg(unix)]
+    fn fingerprint(dir: &Path) -> Vec<(PathBuf, Vec<u8>, Option<std::time::SystemTime>)> {
+        let walk = walkdir::WalkDir::new(dir).sort_by_file_name();
+        let mut seen = Vec::new();
+        for entry in walk.into_iter().flatten() {
+            let bytes = std::fs::read(entry.path()).unwrap_or_default();
+            let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
+            seen.push((entry.path().to_path_buf(), bytes, modified));
+        }
+        seen
+    }
+
+    /// However a path to a symlinked folder is spelled, what the link leads to is never listed
+    /// and never moved: a trailing slash, an empty part, a `.`, a NUL, another case, another
+    /// Unicode form. The folder it leads to is outside the workspace, in the test's own
+    /// temp folder.
+    #[cfg(unix)]
+    #[test]
+    fn no_spelling_of_a_path_reaches_through_a_symlinked_folder() {
+        let dir = workspace("spellings");
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        let target = outside.join("Target");
+        std::fs::create_dir_all(target.join("Sub")).unwrap();
+        std::fs::write(target.join("a.md"), "alpha\n").unwrap();
+        std::fs::write(target.join("b.bin"), [0u8, 1, 2]).unwrap();
+        std::fs::write(target.join("Sub/c.md"), "gamma\n").unwrap();
+        let links = ["LinkDir", "L\u{ef}nk"];
+        for link in links {
+            std::os::unix::fs::symlink(&target, dir.join(link)).unwrap();
+        }
+        let (mut core, bin) = core_with_bin(&dir);
+        let before = fingerprint(&target);
+        assert_eq!(
+            before.len(),
+            5,
+            "the folder, a folder in it and three files"
+        );
+        let is_link = |name: &&str| {
+            let meta = dir.join(name).symlink_metadata();
+            meta.is_ok_and(|m| m.file_type().is_symlink())
+        };
+
+        let spellings = [
+            "LinkDir/",
+            "LinkDir//",
+            "LinkDir",
+            "LinkDir/.",
+            "./LinkDir",
+            "Data/../LinkDir",
+            "LinkDir ",
+            "LinkDir\0",
+            "LinkDir/\0",
+            "Li\u{308}nk/",
+            "Li\u{308}nk",
+            "linkdir/",
+        ];
+        let mut problems = Vec::new();
+        for spelling in spellings {
+            let stat = core.stat_file(spelling);
+            if let Ok(Stat {
+                inside: Some(listed),
+                ..
+            }) = &stat
+            {
+                problems.push(format!("stat {spelling:?} lists the target: {listed:?}"));
+            }
+            let expect = stat.map(|s| s.rev).unwrap_or_default();
+            let deleted = core.delete_file("tidy", spelling, &expect);
+            let outcome = (deleted.as_ref().map(|d| d.went)).map_err(|e| e.message.clone());
+            if fingerprint(&target) != before {
+                problems.push(format!(
+                    "delete {spelling:?} touched the target: {outcome:?}"
+                ));
+                break;
+            }
+            if let Ok(gone) = deleted {
+                let put = core.restore_file("tidy", &back(&gone.trashed, None));
+                if put.is_err() || !links.iter().all(is_link) {
+                    problems.push(format!("after {spelling:?} a link is not back: {put:?}"));
+                    break;
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
+
+        let link = core.stat_file("LinkDir").unwrap();
+        for names_it in ["LinkDir/", "LinkDir//"] {
+            let stat = core.stat_file(names_it).unwrap();
+            assert_eq!(stat, link, "{names_it:?} is the link, as LinkDir is");
+        }
+        assert_eq!(link.inside, None);
+        for unfit in ["LinkDir/.", "./LinkDir", "Data/../LinkDir", "LinkDir\0"] {
+            let stat = core.stat_file(unfit).unwrap_err();
+            assert_eq!(stat.reason, Reason::Refused, "stat {unfit:?}");
+            let delete = core.delete_file("tidy", unfit, &link.rev).unwrap_err();
+            assert_eq!(delete.reason, Reason::Refused, "delete {unfit:?}");
+        }
+
+        for through in ["LinkDir/a.md", "LinkDir//a.md", "LinkDir/New.md"] {
+            assert!(core.read_file(through).is_err(), "read {through}");
+            let written = core.write_file(through, "lost", "");
+            assert!(written.is_err(), "write {through}");
+            let at = Create {
+                at: NewFile::At {
+                    path: through.into(),
+                },
+                text: "lost".into(),
+            };
+            assert!(core.create_file(&at).is_err(), "create {through}");
+        }
+        for folder in ["LinkDir/", "LinkDir//", "LinkDir/New", "LinkDir/New/"] {
+            let made = core.create_folder("tidy", folder);
+            assert!(made.is_err(), "create-folder {folder}");
+        }
+        let plan = core.stat_file("Plan.md").unwrap();
+        let gone = core.delete_file("tidy", "Plan.md", &plan.rev).unwrap();
+        for to in ["LinkDir/Plan.md", "LinkDir//Plan.md", "LinkDir/"] {
+            let there = core.restore_file("tidy", &back(&gone.trashed, Some(to)));
+            assert!(there.is_err(), "restore to {to}");
+        }
+        assert_eq!(fingerprint(&target), before, "nothing reached the target");
+        assert!(links.iter().all(is_link), "both links are where they were");
+        assert_eq!(names(&bin.join("files")), ["Plan.md"]);
+        let _ = std::fs::remove_dir_all(&bin);
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn writing_a_note_reads_it_again_and_outside_changes_to_files_are_events() {
         let dir = workspace("events");

@@ -199,3 +199,32 @@ fn the_scan_sees_an_import_and_a_bare_call() {
     let kept = "#[cfg(test)]\nfn only_in_tests() {}\nfn g() {\n    trash::restore(a);\n}\n";
     assert_eq!(named_in(&code(kept), "trash::"), ["restore"]);
 }
+
+/// The ways around the lists above that the scan refuses outright: one of the engine's
+/// file-changing modules under another name or imported whole, and a `std::fs` function that
+/// changes files brought in with `use`, after which its bare name is the call.
+fn sneaked(_code: &str) -> Vec<String> {
+    Vec::new()
+}
+
+#[test]
+fn the_scan_refuses_an_alias_a_glob_and_an_imported_std_function() {
+    let alias = "use crate::trash as t;\nfn f() {\n    t::delete(a);\n}\n";
+    assert_eq!(sneaked(alias), ["trash as"]);
+    let grouped = "use crate::{files, write::{self as w}};\n";
+    assert_eq!(sneaked(grouped), ["write::{… as …}"]);
+    let glob = "use cold_lava_engine::write::*;\nfn f() {\n    create_dir(a);\n}\n";
+    assert_eq!(sneaked(glob), ["write::*"]);
+    let std = "use std::fs::{read_to_string, rename};\nfn f() {\n    rename(a, b);\n}\n";
+    assert_eq!(sneaked(std), ["use std::fs::rename"]);
+    let fine = "use crate::trash::{self, TrashOption, Went};\nuse std::fs::read_to_string;\n";
+    assert_eq!(sneaked(fine), Vec::<String>::new());
+}
+
+/// Code after a file's unit tests is the app's code too.
+#[test]
+fn the_scan_reads_on_after_a_test_module() {
+    let text = "fn f() {}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        trash::delete(a);\n    }\n}\n\
+                fn g() {\n    trash::restore(a);\n}\n#[cfg(test)]\nmod more;\nfn h() {\n    trash::free_path(a);\n}\n";
+    assert_eq!(named_in(&code(text), "trash::"), ["free_path", "restore"]);
+}
