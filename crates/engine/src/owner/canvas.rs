@@ -112,9 +112,18 @@ pub fn read(text: &str) -> Result<Given, String> {
     // long, one another node's place already is) holds none, and the node's text and file are
     // read as ever.
     let mut pieces: HashSet<String> = HashSet::new();
+    // The places a text node's own text is at. With ids that repeat, or that look like a
+    // repeated id's place, two nodes can have one place: the text written is what is there.
+    let texts = doc.nodes.iter().zip(&places);
+    let written: HashSet<String> = texts
+        .filter(|(n, _)| n.kind == "text" && n.text.is_some())
+        .map(|(_, place)| place.clone())
+        .collect();
     for (n, place) in doc.nodes.into_iter().zip(places) {
         let fits = !place.is_empty() && place.len() <= MAX_PLACE && !pieces.contains(&place);
-        if let Some(role) = role(&n.kind).filter(|_| fits) {
+        let role = role(&n.kind).filter(|_| fits);
+        let carded = role.is_some();
+        if let Some(role) = role {
             pieces.insert(place.clone());
             given.items.push(GivenItem::Piece(Piece {
                 place: place.clone(),
@@ -126,13 +135,16 @@ pub fn read(text: &str) -> Result<Given, String> {
             }));
         }
         match (n.kind.as_str(), n.text, n.file) {
+            ("text", Some(text), _) => given.items.push(GivenItem::Markdown { place, text }),
             // A text card with no `text` written is given its Markdown too, empty: every text
             // card's words are the Markdown piece at its place, which is what tells the engine
-            // that the card's own piece has none to match.
-            ("text", text, _) => given.items.push(GivenItem::Markdown {
-                place,
-                text: text.unwrap_or_default(),
-            }),
+            // that the card's own piece has none to match. Only beside the card's piece, and
+            // never at a place where a node's written text is: nothing that was read before
+            // may find another piece where it stood.
+            ("text", None, _) if carded && !written.contains(&place) => {
+                let text = String::new();
+                given.items.push(GivenItem::Markdown { place, text });
+            }
             ("file", _, Some(file)) => given.links.push(GivenLink::File {
                 target: file.clone(),
                 place,
@@ -363,6 +375,45 @@ mod tests {
         // It reads back through its own JSON, as an extension's answer does.
         let wire = serde_json::to_string(&given).unwrap();
         assert_eq!(serde_json::from_str::<Given>(&wire).unwrap(), given);
+    }
+
+    /// An empty Markdown piece is given for a text card with no text, and it never stands
+    /// where a node's written text does. Two boards whose ids collide: what a board gave
+    /// before cards were pieces is given as it was, one Markdown piece a place.
+    #[test]
+    fn an_empty_cards_markdown_never_takes_a_written_texts_place() {
+        let markdown = |board: &str| -> Vec<(String, String)> {
+            let items = read(board).unwrap().items.into_iter();
+            let piece = |i: GivenItem| match i {
+                GivenItem::Markdown { place, text } => Some((place, text)),
+                _ => None,
+            };
+            items.filter_map(piece).collect()
+        };
+        let pair = |place: &str, text: &str| (place.to_string(), text.to_string());
+        // A repeated id with no text, then a node whose id is literally that one's place.
+        let first = r##"{"nodes":[
+            {"id":"t","type":"text","text":"- [ ] first"},
+            {"id":"t","type":"text"},
+            {"id":"t\u001f1","type":"text","text":"- [ ] literal"}
+        ]}"##;
+        assert_eq!(
+            markdown(first),
+            [pair("t", "- [ ] first"), pair("t\u{1f}1", "- [ ] literal")]
+        );
+        // The literal one has no text, and no card of its own: its place is the twin's.
+        let second = r##"{"nodes":[
+            {"id":"t","type":"text","text":"- [ ] one"},
+            {"id":"t","type":"text","text":"- [ ] two"},
+            {"id":"t\u001f1","type":"text"}
+        ]}"##;
+        assert_eq!(
+            markdown(second),
+            [pair("t", "- [ ] one"), pair("t\u{1f}1", "- [ ] two")]
+        );
+        // On its own, a card with no text has its empty Markdown, beside its piece.
+        let alone = r##"{"nodes":[{"id":"n","type":"text"},{"id":"","type":"text"}]}"##;
+        assert_eq!(markdown(alone), [pair("n", "")]);
     }
 
     /// A canvas is another program's file. Whatever its nodes say, every piece the owner

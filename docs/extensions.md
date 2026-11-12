@@ -2021,7 +2021,7 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
 
   | In the file | Given as | At |
   | --- | --- | --- |
-  | a `text` node | a piece with the role `text`, and its `text` as a Markdown piece `{place, text}`, empty when the node has none | the node's place, both |
+  | a `text` node | a piece with the role `text`, and its `text` as a Markdown piece `{place, text}`. A node with no `text` gets an empty one beside its card's piece, unless a node's written text already stands at that place (ids that repeat) | the node's place, both |
   | a `file` node | a piece with the role `embed`, and a link `{target, place, text}` to its `file` | the node's place, both |
   | a `link` node (a web page) | a piece with the role `embed`, its `url` an attribute | the node's place |
   | a node of any other type but `group` | a piece with the role `opaque` | the node's place |
