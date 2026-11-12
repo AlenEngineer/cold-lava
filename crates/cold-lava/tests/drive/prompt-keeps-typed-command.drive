@@ -1,0 +1,23 @@
+# The guard of prompt-keeps-typed.drive, for a command an extension asks to run. tests/drive.rs
+# installs the open-tasks example patched to send command/run for search.open whenever the
+# tasks change. While a new note's name is typed, a task another program writes makes it ask:
+# the search doesn't open over the prompt, the status line says why, and Enter makes the note.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys n
+wait-for new note · Tab template · ⏎ create · Esc cancel
+type Half a thought
+wait-for name: Half a thought▏
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+wait-for open-tasks wanted to run search.open: not while a new note's name is being typed
+expect name: Half a thought▏
+screen
+keys enter
+wait-for Concepts/Half a thought  reading
+keys q
+wait-for ? help  q quit
+keys q
+exits 0
