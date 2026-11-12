@@ -1541,10 +1541,10 @@ mod tests {
     }
 
     /// An extension that ships the shape `tally.list` and answers for it: its region says how
-    /// many volcanoes it is bound to, and a click edits the clicked one with `set_field`.
+    /// many volcanoes it is bound to, and a click it answers with `steps`.
     struct Tally {
         permissions: Vec<Permission>,
-        set_field: serde_json::Value,
+        steps: serde_json::Value,
     }
 
     const TALLY: &str = r#"
@@ -1573,8 +1573,7 @@ mod tests {
                 Ask::Region { inputs, .. } => json!({"items": [
                     {"label": format!("{} volcanoes", inputs["a"].members.len())}
                 ]}),
-                Ask::Gesture { .. } => json!({"do": [{"edit": {"item": "clicked",
-                    "set-field": self.set_field}}]}),
+                Ask::Gesture { .. } => json!({"do": self.steps}),
             };
             host.shape_answered(&ask, Ok(serde_json::from_value(answer).unwrap()));
         }
@@ -1646,7 +1645,8 @@ mod tests {
             let mut core = Core::open(&dir).unwrap();
             let mut r = Registry::new(vec![Box::new(Tally {
                 permissions: permissions.clone(),
-                set_field: json!({"field": "visited", "value": "yes"}),
+                steps: json!([{"edit": {"item": "clicked",
+                    "set-field": {"field": "visited", "value": "yes"}}}]),
             })]);
             let source = Source::parse("type=volcano").unwrap();
             let mut b =
@@ -1655,7 +1655,7 @@ mod tests {
             for ask in b.region_asks(1) {
                 r.ask_shape(ExtId(0), Some(&mut core), ask);
             }
-            let answers = core.take_shape_answers();
+            let answers = core.take_shape_answers(&shapes);
             let got = match &answers[..] {
                 [a] => a.answer.clone(),
                 _ => panic!("{answers:?}"),
@@ -1674,13 +1674,13 @@ mod tests {
             let click = click_on_a_volcano(&mut core);
             let mut acted = None;
             r.call(ExtId(0), Some(&mut core), |_, host| {
-                acted = Some(b.act(host, &click, 1))
+                acted = Some(b.act(host, &shapes, &click, 1))
             });
             let Some(Ok(Acted::Ask(ask))) = acted else {
                 panic!("its extension decides: {acted:?}");
             };
             r.ask_shape(ExtId(0), Some(&mut core), ask);
-            let steps = match core.take_shape_answers().remove(0).answer {
+            let steps = match core.take_shape_answers(&shapes).remove(0).answer {
                 Ok(Answered::Gesture { steps }) => steps,
                 a => panic!("{a:?}"),
             };
@@ -1709,43 +1709,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The steps of an answer get the checks a loaded shape's steps get (#268): the frontend
-    /// is handed the reason, never steps to run.
+    /// The steps of an answer pass the rules a loaded shape's steps pass (#268), or the
+    /// frontend is handed the reason and never steps to run: the answer is refused whole, so
+    /// a step that could run before the bad one doesn't.
     #[test]
     fn steps_an_extension_answers_that_cant_run_are_refused() {
         use crate::act::Acted;
         use crate::bind::{Binding, Source};
-        let (dir, shapes) = tally_workspace("ext-shape-unchecked");
-        let mut core = Core::open(&dir).unwrap();
-        let mut r = Registry::new(vec![Box::new(Tally {
-            permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
-            set_field: json!({"field": "visited"}),
-        })]);
-        let source = Source::parse("type=volcano").unwrap();
-        let mut b = Binding::new(&mut core, &shapes, "tally.list", [("a".into(), source)]).unwrap();
-        let click = click_on_a_volcano(&mut core);
-        let mut acted = None;
-        r.call(ExtId(0), Some(&mut core), |_, host| {
-            acted = Some(b.act(host, &click, 1))
-        });
-        let Some(Ok(Acted::Ask(ask))) = acted else {
-            panic!("its extension decides: {acted:?}");
-        };
-        r.ask_shape(ExtId(0), Some(&mut core), ask);
-        let answers = core.take_shape_answers();
-        let [answer] = &answers[..] else {
-            panic!("{answers:?}");
-        };
-        assert_eq!(answer.by, "tally");
-        let refused = "it answered shape/gesture with steps that can't run: set-field takes \
-                       exactly one of value, add and remove";
-        assert_eq!(answer.answer, Err(refused.to_string()));
-        for name in ["Krakatoa", "Vesuvius"] {
-            let text = std::fs::read_to_string(dir.join(format!("{name}.md"))).unwrap();
-            assert!(!text.contains("visited"), "nothing written: {text}");
+        use Permission::{FilesWrite, ItemsEdit, ItemsRead};
+        let cases = [
+            (
+                json!([{"edit": {"item": "clicked", "set-field": {"field": "visited"}}}]),
+                "set-field takes exactly one of value, add and remove",
+            ),
+            (
+                json!([{"create": {"text": "# Made"}}, {"rebind": {"shape": "nope"}}]),
+                "its rebind names shape nope, which isn't loaded",
+            ),
+        ];
+        for (steps, problem) in cases {
+            let (dir, shapes) = tally_workspace("ext-shape-unchecked");
+            let mut core = Core::open(&dir).unwrap();
+            let mut r = Registry::new(vec![Box::new(Tally {
+                permissions: vec![ItemsRead, ItemsEdit, FilesWrite],
+                steps,
+            })]);
+            let source = Source::parse("type=volcano").unwrap();
+            let mut b =
+                Binding::new(&mut core, &shapes, "tally.list", [("a".into(), source)]).unwrap();
+            let click = click_on_a_volcano(&mut core);
+            let mut acted = None;
+            r.call(ExtId(0), Some(&mut core), |_, host| {
+                acted = Some(b.act(host, &shapes, &click, 1))
+            });
+            let Some(Ok(Acted::Ask(ask))) = acted else {
+                panic!("its extension decides: {acted:?}");
+            };
+            r.ask_shape(ExtId(0), Some(&mut core), ask);
+            let answers = core.take_shape_answers(&shapes);
+            let [answer] = &answers[..] else {
+                panic!("{answers:?}");
+            };
+            assert_eq!(answer.by, "tally");
+            let refused = format!("it answered shape/gesture with steps that can't run: {problem}");
+            assert_eq!(answer.answer, Err(refused));
+            let mut files: Vec<String> = (std::fs::read_dir(&dir).unwrap())
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.starts_with('.'))
+                .collect();
+            files.sort();
+            assert_eq!(files, ["Krakatoa.md", "Vesuvius.md"], "nothing created");
+            for name in files {
+                let text = std::fs::read_to_string(dir.join(name)).unwrap();
+                assert!(!text.contains("visited"), "nothing written: {text}");
+            }
+            b.close(&mut core);
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        b.close(&mut core);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn owners(extensions: Vec<Owner>) -> Registry {

@@ -1,18 +1,25 @@
-//! The check of an `on` entry's steps. A shape's definition (`do`, `edit`) and an extension's
-//! answer to `shape/gesture` say steps in one language, so one check reads both, and `Steps`
-//! is what it lets through: the only steps `Binding::run` takes.
+//! The rules of an `on` entry's steps. A shape's definition (`do`, `edit`) and an extension's
+//! answer to `shape/gesture` say steps in one language, so the rules are here once, and `Steps`
+//! is what passed them all: the only steps `Binding::run` takes.
+//!
+//! There are two rules. `edits` is what a step gets wrong on its own. `unknown_rebinds` needs
+//! the loaded shapes, so the loader, which reads every layer before it knows them, asks the
+//! two at two times. `Steps::checked` asks both at once.
 
-use super::{EditStep, SetField, Step};
+use super::{EditStep, SetField, Shapes, Step};
 
-/// Steps that passed `check_steps`. Nothing else makes one, so a step that runs was checked,
+/// Steps that passed both rules. Only `checked` makes one, so a step that runs was checked,
 /// whether a definition or an extension wrote it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Steps(Vec<Step>);
 
 impl Steps {
-    /// `steps`, or what they get wrong, one line each.
-    pub fn checked(steps: Vec<Step>) -> Result<Steps, Vec<String>> {
-        let problems = check_steps(&steps);
+    /// `steps` among the loaded `shapes`, or what they get wrong, one line each.
+    pub fn checked(steps: Vec<Step>, shapes: &Shapes) -> Result<Steps, Vec<String>> {
+        let mut problems = edits(&steps);
+        problems.extend(unknown_rebinds(&steps, &|id: &str| {
+            shapes.get(id).is_some()
+        }));
         match problems.is_empty() {
             true => Ok(Steps(steps)),
             false => Err(problems),
@@ -29,11 +36,24 @@ impl std::ops::Deref for Steps {
 }
 
 /// What steps get wrong on their own, one line each, in the steps' order.
-pub fn check_steps(steps: &[Step]) -> Vec<String> {
+pub(super) fn edits(steps: &[Step]) -> Vec<String> {
     (steps.iter())
         .flat_map(|step| match step {
             Step::Edit(e) => check_edit(e),
             Step::Create(_) | Step::Rebind(_) => Vec::new(),
+        })
+        .collect()
+}
+
+/// A line for each `rebind` to a shape that isn't loaded, as `knows` says, in the steps' order.
+pub(super) fn unknown_rebinds(steps: &[Step], knows: &dyn Fn(&str) -> bool) -> Vec<String> {
+    (steps.iter())
+        .filter_map(|step| match step {
+            Step::Rebind(r) if !knows(&r.shape) => Some(format!(
+                "its rebind names shape {}, which isn't loaded",
+                r.shape
+            )),
+            _ => None,
         })
         .collect()
 }
@@ -89,6 +109,7 @@ impl SetField {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shapes::{Layer, load};
     use serde_json::json;
 
     fn steps(json: serde_json::Value) -> Vec<Step> {
@@ -97,6 +118,7 @@ mod tests {
 
     #[test]
     fn steps_that_can_run_pass_and_the_rest_say_what_is_wrong_in_order() {
+        let shapes = load([Layer::built_in()]);
         let good = steps(json!([
             {"edit": {"item": "dropped", "set-field": {"field": "tags", "add": "seen"}}},
             {"edit": {"item": "clicked", "toggle": true}},
@@ -104,8 +126,11 @@ mod tests {
             {"create": {"text": "# New"}},
             {"rebind": {"shape": "card", "inputs": {"note": "created"}}},
         ]));
-        assert_eq!(Steps::checked(good.clone()).as_deref(), Ok(&good[..]));
-        assert_eq!(Steps::checked(Vec::new()), Ok(Steps::default()));
+        assert_eq!(
+            Steps::checked(good.clone(), &shapes).as_deref(),
+            Ok(&good[..])
+        );
+        assert!(Steps::checked(Vec::new(), &shapes).is_ok_and(|none| none.is_empty()));
 
         let bad = steps(json!([
             {"edit": {"item": "clicked", "set-field": {"field": "visited"}}},
@@ -113,9 +138,12 @@ mod tests {
             {"edit": {"options": {"from": "a"}}},
             {"edit": {"item": "clicked", "recipe": "rename-tag", "toggle": true}},
             {"edit": {"item": "clicked", "set-field": {"field": "tags", "add": "a", "remove": "b"}}},
+            {"rebind": {"shape": "nope"}},
+            {"rebind": {"shape": "card"}},
+            {"rebind": {"shape": "gone"}},
         ]));
         assert_eq!(
-            Steps::checked(bad),
+            Steps::checked(bad, &shapes),
             Err(vec![
                 "set-field takes exactly one of value, add and remove".to_string(),
                 "an edit is exactly one of set-field, toggle and recipe".to_string(),
@@ -124,6 +152,8 @@ mod tests {
                 "an edit is exactly one of set-field, toggle and recipe".to_string(),
                 "a recipe changes the whole workspace, so it names no item".to_string(),
                 "set-field takes exactly one of value, add and remove".to_string(),
+                "its rebind names shape nope, which isn't loaded".to_string(),
+                "its rebind names shape gone, which isn't loaded".to_string(),
             ])
         );
     }

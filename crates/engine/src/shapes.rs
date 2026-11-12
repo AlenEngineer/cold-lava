@@ -23,7 +23,7 @@ use crate::types::is_name;
 pub mod file;
 mod steps;
 
-pub use steps::{Steps, Way, check_steps};
+pub use steps::{Steps, Way};
 
 /// The only `version` a shapes file can have today.
 pub const VERSION: i64 = 1;
@@ -796,9 +796,11 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         for (id, (_, d)) in &kept {
             let problem = match &built[id] {
                 Err(e) => Some(e.clone()),
-                Ok(_) => rebinds(d)
-                    .find(|to| !kept.contains_key(*to))
-                    .map(|to| format!("its rebind names shape {to}, which isn't loaded")),
+                Ok(_) => (d.on.iter())
+                    .flat_map(|b| {
+                        steps::unknown_rebinds(&b.written(), &|to: &str| kept.contains_key(to))
+                    })
+                    .next(),
             };
             failed.extend(problem.map(|p| (id.clone(), p)));
         }
@@ -828,15 +830,6 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         errors,
         notes,
     }
-}
-
-fn rebinds(d: &Definition) -> impl Iterator<Item = &str> {
-    (d.on.iter())
-        .flat_map(|b| &b.steps)
-        .filter_map(|s| match s {
-            Step::Rebind(r) => Some(r.shape.as_str()),
-            _ => None,
-        })
 }
 
 /// Builds `id` (and first the shapes it nests) into `built`. `path` is the nesting being built,
@@ -1169,8 +1162,8 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
                 "{at}: give its steps as do = [ … ], or one edit = {{ … }}, or extension = true"
             ));
         }
-        let steps = check_steps(&b.written());
-        p.extend(steps.into_iter().map(|e| format!("{at}: {e}")));
+        let wrong = steps::edits(&b.written());
+        p.extend(wrong.into_iter().map(|e| format!("{at}: {e}")));
     }
     p
 }

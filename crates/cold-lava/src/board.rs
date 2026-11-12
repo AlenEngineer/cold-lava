@@ -623,7 +623,7 @@ impl Board {
                 self.asking.push(ext);
             }
         }
-        for answer in core.take_shape_answers() {
+        for answer in core.take_shape_answers(&self.live.shapes) {
             let placed = answer.ask.placed();
             let mine = (self.gesturing.as_ref())
                 .is_some_and(|(id, _)| self.live.placed_id(id) == Some(placed));
@@ -652,13 +652,16 @@ impl Board {
             return;
         };
         let acted = match binding.extension() {
-            None => binding.act(&mut act::Direct::user(core), &gesture, placed),
+            None => {
+                let shapes = &self.live.shapes;
+                binding.act(&mut act::Direct::user(core), shapes, &gesture, placed)
+            }
             Some(name) => match registry.by_name(name) {
                 Some(ext) => {
                     let mut out = None;
                     let gw = |_: &mut dyn crate::ext::Extension,
                               host: &mut crate::ext::Host<'_>| {
-                        out = Some(binding.act(host, &gesture, placed))
+                        out = Some(binding.act(host, &self.live.shapes, &gesture, placed))
                     };
                     let effects = registry.call(ext, Some(&mut *core), gw);
                     self.asked.extend(effects.into_iter().map(|e| (ext, e)));

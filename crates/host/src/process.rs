@@ -797,7 +797,8 @@ mod tests {
             r.ask_shape(ExtId(0), Some(&mut core), ask);
         }
         poll_for(&mut r, &mut core, Duration::from_millis(300));
-        let answers: Vec<_> = (core.take_shape_answers().into_iter())
+        let shapes = crate::shapes::Shapes::default();
+        let answers: Vec<_> = (core.take_shape_answers(&shapes).into_iter())
             .map(|a| (a.ask.method(), a.answer))
             .collect();
         assert_eq!(
@@ -815,7 +816,7 @@ mod tests {
                 (
                     "shape/gesture",
                     Ok(Answered::Gesture {
-                        steps: Default::default()
+                        steps: crate::shapes::Steps::checked(Vec::new(), &shapes).unwrap()
                     })
                 ),
                 (
