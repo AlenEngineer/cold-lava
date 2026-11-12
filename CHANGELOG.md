@@ -163,11 +163,16 @@ change commands, keys and file formats; patch versions only fix things.
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the
   whiteboard ran it. An answer's steps now pass the same rules as a loaded shape's, a
   `rebind` to a shape that isn't loaded among them. An answer that breaks one is refused
-  whole before anything is written (a `create` in front of a bad step used to make its note
-  first, and a `rebind` to a missing shape was only refused after the steps before it had
-  run), none of its steps run, and the whiteboard says why with the extension's name:
-  `tally: it answered shape/gesture with steps that can't run: set-field takes exactly one
-  of value, add and remove`; `cold-lava shapes --do` fails with the same reason. This also refuses answers that ran before by accident: an `edit` with none of
+  whole before anything is written, none of its steps run, and the whiteboard says why with
+  the extension's name: `tally: it answered shape/gesture with steps that can't run:
+  set-field takes exactly one of value, add and remove`; `cold-lava shapes --do` fails with
+  the same reason. Before, a `create` in front of a bad step made its note first. Every
+  `rebind` in an answer is checked now, though still only the last one is applied. Before,
+  only the last was looked at: when it named a shape that isn't loaded, it was refused after
+  the steps before it had run, and when an earlier one did and the last named a loaded
+  shape, the whole answer ran (a `create`, a `rebind` to `nope`, then a `rebind` to
+  `sticky` made the note and the shape became a sticky). That answer is refused whole now.
+  This also refuses answers that ran before by accident: an `edit` with none of
   `set-field`, `toggle` and `recipe` used to tick the item, one with a recipe and something
   else (an item, another kind of edit) used to run the recipe, `options` without a recipe
   were ignored, an `edit` with a `set-field` and a `toggle` together used to set the field
