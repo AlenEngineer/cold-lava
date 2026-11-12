@@ -747,23 +747,24 @@ pub fn run(
     Ok(true)
 }
 
-/// Write a workspace file as a program that saves safely does: the whole text into a new file
+/// Write a workspace file as a program that saves safely does: the whole text into a file
 /// beside it, then that file renamed over it. Written in place the file is empty for a moment,
-/// and whoever watches it may read it so. The file beside it has a name of this run's own and
-/// is made new, so no file of the workspace is taken for it, and it is removed when the rename
-/// can't be done. A link is written through, as a write in place would: the file it leads to
-/// is the one replaced.
+/// and whoever watches it may read it so. The file beside it has a name of this run's own that
+/// nothing there has, so no file of the workspace is taken for it, and it is removed when the
+/// rename can't be done. A link is written through, as a write in place would: the file it
+/// leads to is the one replaced.
 fn write_beside(path: &Path, text: &[u8]) -> std::io::Result<()> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let name = format!(".cold-lava-drive-{}-{n}.tmp", std::process::id());
-    let beside = target.with_file_name(name);
-    let mut new = std::fs::OpenOptions::new();
-    let mut file = new.write(true).create_new(true).open(&beside)?;
-    let written = file
-        .write_all(text)
-        .and_then(|()| std::fs::rename(&beside, &target));
+    let beside = loop {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!(".cold-lava-drive-{}-{n}.tmp", std::process::id());
+        let beside = target.with_file_name(name);
+        if beside.symlink_metadata().is_err() {
+            break beside;
+        }
+    };
+    let written = std::fs::write(&beside, text).and_then(|()| std::fs::rename(&beside, &target));
     if written.is_err() {
         let _ = std::fs::remove_file(&beside);
     }

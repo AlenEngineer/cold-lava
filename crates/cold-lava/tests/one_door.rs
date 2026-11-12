@@ -173,7 +173,7 @@ fn the_operations_still_called_directly_are_these() {
 ///
 /// - `board.rs`: the temporary file a card's text is in while `$EDITOR` has it.
 /// - `drive.rs`: the scripted run's own home folder, and its `write` step, which changes a
-///   workspace file "as another program would", on purpose: written into a new file of the
+///   workspace file "as another program would", on purpose: written into a file of the
 ///   run's own beside it and renamed over it, as a program that saves safely does, and that
 ///   file removed when the rename fails.
 /// - `ext/nvim.rs`: the Vim script Neovim is started with, in the temp folder.
@@ -198,6 +198,7 @@ fn std_fs_touches_only_the_apps_own_files() {
         "drive.rs: fs::remove_dir_all(",
         "drive.rs: fs::remove_file(",
         "drive.rs: fs::rename(",
+        "drive.rs: fs::write(",
         "ext/nvim.rs: fs::remove_file(",
         "ext/nvim.rs: fs::write(",
         "home.rs: fs::create_dir",
