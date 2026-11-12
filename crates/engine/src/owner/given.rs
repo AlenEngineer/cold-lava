@@ -1568,6 +1568,46 @@ mod tests {
         assert_eq!(after.links[1..], answer.links[1..]);
     }
 
+    /// A piece with no words is nothing to a shape that is about what is written, and
+    /// something to one that tests or reads an attribute: a board's card is placed, and its
+    /// words are the Markdown piece beside it.
+    #[test]
+    fn a_piece_with_no_words_is_read_only_for_its_attributes() {
+        let s = settings(
+            "[prose]\non = \"text\"\nfields.words = { rest = true }\n\
+             [quoted]\non = \"aside\"\nfields.words = { rest = true }\n\
+             [placed]\non = \"text\"\npriority = -1\n\
+             fields.x = { attribute = \"x\", type = \"number\" }\n\
+             [tested]\non = \"item\"\nwhere.attribute = [\"x\"]\n\
+             fields.words = { rest = true }\n",
+        );
+        let answer = given(json!({"items": [
+            {"place": "a", "role": "text", "attributes": {"x": 40}},
+            {"place": "b", "role": "text", "attributes": {"x": 40}, "text": ["Words"]},
+            {"place": "c", "role": "text"},
+            {"place": "d", "role": "aside", "attributes": {"x": 40}},
+            {"place": "e", "role": "aside", "text": ["Words"]},
+            {"place": "f", "role": "item", "attributes": {"x": 40}},
+            {"place": "g", "role": "row", "cells": [{"name": "A", "text": []}]},
+        ]}));
+        let read = read("Board.canvas", &answer, &s);
+        assert!(read.problems.is_empty(), "{:?}", read.problems);
+        let kinds: Vec<(&str, &str)> = (read.items.iter())
+            .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("a", "placed"),
+                ("b", "prose"),
+                ("c", "placed"),
+                ("e", "quoted"),
+                ("f", "tested")
+            ],
+            "no `prose` or `quoted` without words, and a row has cells"
+        );
+    }
+
     #[test]
     fn a_change_is_json() {
         let wire = json!([

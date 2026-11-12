@@ -10,6 +10,11 @@
 //! plain characters (`pattern`, `marker`, `flag`, `flags`, `rest`), its labels and links
 //! (`inlines`), its cells (`column`), its file (`note`) or its sections (`section`).
 //!
+//! A piece may have no words at all: a board's card, whose words are the Markdown piece beside
+//! it. A shape that neither tests nor reads an attribute is about what is written, so such a
+//! piece is nothing to it, as a paragraph with no words is nothing in a note. A shape that
+//! asks for an attribute (`where.attribute = "x"`, `attribute = "x"`) matches it.
+//!
 //! Nothing here runs for a note: `Matcher::block` and `read_source` are as they were, and the
 //! shapes are compiled for pieces the first time an owner gives one.
 
@@ -63,6 +68,8 @@ pub(super) type Shapes = Vec<Vec<Option<Reads>>>;
 pub(super) struct Reads {
     /// Sources by schema field index, in the order written.
     fields: Vec<(usize, Vec<Reading>)>,
+    /// Whether a field reads an attribute the piece carries.
+    carried: bool,
 }
 
 enum Reading {
@@ -83,13 +90,15 @@ fn compile(m: &Matcher, types: &Types) -> Shapes {
             (ty.shapes.iter())
                 .map(|shape| {
                     let written = definition?.from.get(shape.index)?;
-                    let fields = (written.fields.iter())
+                    let fields: Vec<(usize, Vec<Reading>)> = (written.fields.iter())
                         .filter_map(|(name, sources)| {
                             let sources = sources.0.iter().map(reading).collect();
                             Some((field(name)?, sources))
                         })
                         .collect();
-                    Some(Reads { fields })
+                    let is_carried = |r: &Reading| matches!(r, Reading::Carried(_));
+                    let carried = fields.iter().any(|(_, s)| s.iter().any(is_carried));
+                    Some(Reads { fields, carried })
                 })
                 .collect()
         })
@@ -138,12 +147,17 @@ impl Matcher {
             given: Given::default(),
         };
         let carries = |name: &String| asked.carried.iter().any(|c| c.there && c.name == *name);
+        // No text and no cells: only a shape that asks for an attribute has something to read.
+        let wordless = asked.words.is_empty() && asked.cells.is_empty();
         let mut passing: Vec<(usize, usize, &Reads, Option<regex::Captures>)> = Vec::new();
         for &(t, s) in &self.by_on[slot] {
             let shape = &self.types[t].shapes[s];
             let Some(reads) = shapes.get(t).and_then(|ty| ty.get(s)?.as_ref()) else {
                 continue;
             };
+            if wordless && shape.w.attribute.is_empty() && !reads.carried {
+                continue;
+            }
             if !note_passes(&shape.w, &note)
                 || !block_passes(&shape.w, &note, &block)
                 || !shape.w.attribute.iter().all(carries)
