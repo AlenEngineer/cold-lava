@@ -33,8 +33,8 @@ mod whichkey;
 
 use cold_lava_engine::{
     act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
-    json_canvas, links, markdown, merge, outside, owner, paths, recipe, rename, resolver, search,
-    shapes, style, tasks, templates, tidy, trash, types, workspace, write,
+    json_canvas, links, markdown, merge, owner, paths, recipe, rename, resolver, search, shapes,
+    style, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -235,7 +235,14 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("COLD_LAVA_COM
 
 fn main() {
     if let Err(e) = run() {
-        problem!("cold-lava: {e:#}");
+        // An error of several lines is the app's own (a usage): one message line each.
+        match e.downcast_ref::<say::Lines>().map(say::Lines::lines) {
+            Some([first, rest @ ..]) => {
+                problem!("cold-lava: {first}");
+                rest.iter().for_each(|line| problem!("{line}"));
+            }
+            _ => problem!("cold-lava: {e:#}"),
+        }
         // Exit code 3 means "the task line or item changed": callers can refresh and retry.
         let changed_item = matches!(
             e.downcast_ref::<edit::EditError>(),
@@ -256,7 +263,9 @@ fn run() -> Result<()> {
     }
     let args = Args::parse()?;
     if args.has("help") {
-        told!("{USAGE}\n\nA drive script has one step per line:");
+        say::fixed(USAGE);
+        told!();
+        told!("A drive script has one step per line:");
         for line in drive::SYNTAX.lines() {
             told!("  {line}");
         }
@@ -324,8 +333,12 @@ fn run() -> Result<()> {
             if !errors.is_empty() || !warnings.is_empty() {
                 let path = config::path().unwrap_or_default();
                 problem!("{}:", path.display());
-                for e in errors.iter().chain(warnings) {
-                    problem!("  {}", e.replace('\n', "\n  "));
+                // A file that doesn't parse has that one error, which the parser wrote over
+                // several lines.
+                let unparsed = &config::get().unparsed;
+                match unparsed.is_empty() {
+                    true => (errors.iter().chain(warnings)).for_each(|e| problem!("  {e}")),
+                    false => unparsed.iter().for_each(|line| problem!("  {line}")),
                 }
             }
             if !registry.refused().is_empty() {
@@ -492,15 +505,11 @@ fn run() -> Result<()> {
         }
         Some("items") => {
             let (Some(root), Some(kind)) = (args.word(1), args.word(2)) else {
-                anyhow::bail!(
-                    "usage: cold-lava items WORKSPACE KIND [--json]\nKIND is one of: {} or a type",
-                    types::BUILT_IN
-                        .iter()
-                        .chain(items::KINDS)
-                        .copied()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+                let kinds = types::BUILT_IN.iter().chain(items::KINDS).copied();
+                let kinds = kinds.collect::<Vec<_>>().join(", ");
+                let usage = "usage: cold-lava items WORKSPACE KIND [--json]".to_string();
+                let lines = [usage, format!("KIND is one of: {kinds} or a type")];
+                return Err(say::Lines::of(lines).into());
             };
             let workspace = owned::workspace(Path::new(root), &registry)?;
             let settings = workspace.item_settings();
@@ -521,7 +530,7 @@ fn run() -> Result<()> {
                     kinds.join(", ")
                 );
             }
-            let mut out = say::stdout();
+            let mut out = say::held();
             let notes = (workspace.notes.iter()).map(|n| workspace.items_once(n));
             let owned = (workspace.owned.iter()).map(|f| std::borrow::Cow::Borrowed(&f.items[..]));
             for items in notes.chain(owned) {
@@ -572,7 +581,7 @@ fn run() -> Result<()> {
                 };
                 view.sort_by(c, desc);
             }
-            let mut out = say::stdout();
+            let mut out = say::held();
             let written = match json {
                 true => out.json_pretty(&view.sorted()),
                 false => view
@@ -632,11 +641,11 @@ fn run() -> Result<()> {
         Some("rename") => {
             let (Some(root), Some(note), Some(new)) = (args.word(1), args.word(2), args.word(3))
             else {
-                anyhow::bail!(
-                    "usage: cold-lava rename WORKSPACE NOTE NEW [--dry-run] [--json]\n\
-                     NOTE is a note's name or path, or a folder; NEW is a new name (same \
-                     folder), a folder ending in / (keeps the name), or a full path"
-                );
+                let usage = "usage: cold-lava rename WORKSPACE NOTE NEW [--dry-run] [--json]\n\
+                             NOTE is a note's name or path, or a folder; NEW is a new name \
+                             (same folder), a folder ending in / (keeps the name), or a full \
+                             path";
+                return Err(say::Lines::of([]).then(usage).into());
             };
             let mut core = owned::open(Path::new(root), &registry)?;
             let mut owners = owned::Owners::new(&mut registry, &core);
@@ -690,10 +699,10 @@ fn run() -> Result<()> {
                 return print_recipes(json);
             }
             let (Some(root), Some(id)) = (args.word(1), args.word(2)) else {
-                anyhow::bail!(
-                    "usage: cold-lava recipe WORKSPACE NAME [--OPTION VALUE…] [--dry-run] [--json]\n\
-                     cold-lava recipe --list shows the recipes and their options"
-                );
+                let usage = "usage: cold-lava recipe WORKSPACE NAME [--OPTION VALUE…] [--dry-run] \
+                             [--json]\n\
+                             cold-lava recipe --list shows the recipes and their options";
+                return Err(say::Lines::of([]).then(usage).into());
             };
             let r = recipe::find(id).ok_or_else(|| {
                 anyhow::anyhow!("no recipe called {id}; cold-lava recipe --list shows them")
@@ -892,7 +901,8 @@ fn run() -> Result<()> {
         Some(dir) => {
             let path = PathBuf::from(dir);
             if !path.is_dir() {
-                anyhow::bail!("not a folder or command: {dir}\n\n{USAGE}");
+                let lines = [format!("not a folder or command: {dir}"), String::new()];
+                return Err(say::Lines::of(lines).then(USAGE).into());
             }
             let mut home = home::Home::new(render, Some(path), registry);
             with_terminal(|t| home.run(t))
@@ -938,8 +948,13 @@ fn drive() -> Result<()> {
             ("<stdin>".to_string(), src)
         }
     };
-    let script =
-        drive::parse(&src).map_err(|e| anyhow::anyhow!("{name}:{}: {}", e.line, e.message))?;
+    let script = drive::parse(&src).map_err(|e| {
+        let lines = say::Lines::of([format!("{name}:{}: {}", e.line, e.message)]);
+        match e.then {
+            Some(text) => lines.then(text),
+            None => lines,
+        }
+    })?;
     if !drive::run(&name, &script, &std::env::current_exe()?, &theirs, home)? {
         std::process::exit(1);
     }
@@ -1147,11 +1162,10 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
     if let Some(root) = workspace {
         let (local, _) = ext::installed::load(&root.join(".cold-lava/extensions"));
         for i in local {
+            told!("{}  {}", i.manifest.name, i.launch.dir.display());
             told!(
-                "{}  {}\n  not loaded: extensions inside a workspace aren't loaded yet; \
-                 copy it to the extensions folder in ~/.config/cold-lava to use it",
-                i.manifest.name,
-                i.launch.dir.display()
+                "  not loaded: extensions inside a workspace aren't loaded yet; copy it to the \
+                 extensions folder in ~/.config/cold-lava to use it"
             );
         }
     }
@@ -1345,7 +1359,8 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
     told!("{}  built in, read natively", found.native.join(", "));
     for t in &found.types {
         let d = &t.definition;
-        told!("\n{}  {}", t.name, t.origin);
+        told!();
+        told!("{}  {}", t.name, t.origin);
         if let Some(counts) = counts {
             let (n, unparsed) = counts.get(&t.name).copied().unwrap_or_default();
             let mut line = format!("  found {n} item{}", if n == 1 { "" } else { "s" });
@@ -1435,7 +1450,8 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
         }
     }
     if !found.notes.is_empty() {
-        told!("\nnotes:");
+        told!();
+        told!("notes:");
         for n in &found.notes {
             told!("  {n}");
         }
@@ -1464,7 +1480,8 @@ fn print_attributes(found: &attributes::Readings) {
     told!("level, callout, fold  read from the note's structure");
     for r in &found.readings {
         let read: Vec<String> = r.read.iter().map(source_label).collect();
-        told!("\n{}  on {} · {}", r.name, r.on.name(), r.origin);
+        told!();
+        told!("{}  on {} · {}", r.name, r.on.name(), r.origin);
         match read.is_empty() {
             true => told!("  taken out: on no piece"),
             false => told!("  {}", read.join(", then ")),

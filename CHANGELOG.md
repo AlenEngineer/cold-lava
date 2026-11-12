@@ -161,28 +161,15 @@ change commands, keys and file formats; patch versions only fix things.
 - The command line no longer prints text from a file or an extension as it is written when
   that text holds characters a terminal acts on (#265, track A step A2). A task whose text
   held `ESC ]0;…BEL` retitled the terminal from `cold-lava items`, and an owner's place did
-  the same from a problem line on stderr. Now every line the command line prints goes
-  through one function. It shows a control character (C0 except the tab, DEL, C1) and the
-  separators U+2028 and U+2029 as `\u{1b}`, with the character's number in hexadecimal, and
-  a line break inside a value as `\n` or `\r`, so one item is always one line. Only text
-  that holds such a character prints differently: everything else, a tab, a backslash and
-  the marks of right-to-left scripts included, prints byte for byte as before.
-  - **Listings** (`items`, `agenda`, `table`, `search`, `tidy`, `daily --path`,
-    `shapes --render`, a recipe's diff) keep the characters that embed, override or isolate
-    the direction of text (U+202A to U+202E, U+2066 to U+2069), since they are the user's own
-    content. A `table` or `--render` row that holds an escaped character is wider by the
-    escape.
-  - **Messages** (every line on stderr, and the stdout lines that say what a command did or
-    has: `rename`, `task toggle`, `item set`, `recipe`, `types`, `shapes`, `attributes`,
-    `ext list`, `style`, `keys`) show those nine characters as `\u{202e}` too.
-  - A problem with what an owner gave names its place, its `in` and its links' ends
-    escaped, and so do the canvas owner's refusals (a twin card's place shows as
-    `t\u{1f}1`) and an extension's own error text. These messages are escaped where they
-    are made, so an extension that is refused gets the same text over the gateway, as it
-    already did for the values a reason quotes.
-  - `--json` is unchanged, and so is everything kept: files, ids, revs and what the gateway
-    answers hold the text as written. The terminal app's own drawing is not part of this
-    change.
+  the same from an error on stderr. Every line is now escaped as it is printed: a control
+  character (but the tab) and the separators U+2028 and U+2029 show as `\u{1b}`, and a line
+  break inside a value or a message as `\n` or `\r`, so text from outside never begins a
+  line of its own. Listings of your own content (`items`, `agenda`, `table`, `search`,
+  `tidy`, `daily --path`, `shapes --render`, a recipe's diff) keep the characters that turn
+  the direction of text (U+202A to U+202E, U+2066 to U+2069); every other line, all of
+  stderr included, shows those as `\u{202e}` too. Text with none of these characters
+  prints byte for byte as before, and `--json`, files, ids and what extensions are
+  answered hold the text as written.
 - An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
   with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the

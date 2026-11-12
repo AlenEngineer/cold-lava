@@ -95,6 +95,8 @@ pub enum Input {
 pub struct ParseError {
     pub line: usize,
     pub message: String,
+    /// Lines to say after the message: the steps there are, for a step that isn't one.
+    pub then: Option<&'static str>,
 }
 
 pub const SYNTAX: &str = "\
@@ -128,7 +130,12 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
     };
     for (i, raw) in src.lines().enumerate() {
         let line = i + 1;
-        let err = |message: String| ParseError { line, message };
+        let then = None;
+        let err = |message: String| ParseError {
+            line,
+            message,
+            then,
+        };
         let text = raw.trim();
         if text.is_empty() || text.starts_with('#') {
             continue;
@@ -277,7 +284,15 @@ pub fn parse(src: &str) -> Result<Script, ParseError> {
                     )));
                 }
             },
-            _ => return Err(err(format!("unknown step {word:?}; steps are:\n{SYNTAX}"))),
+            _ => {
+                let message = format!("unknown step {word:?}; steps are:");
+                let then = Some(SYNTAX);
+                return Err(ParseError {
+                    line,
+                    message,
+                    then,
+                });
+            }
         };
         if let Some(action) = action {
             script.steps.push(Step { line, action });
