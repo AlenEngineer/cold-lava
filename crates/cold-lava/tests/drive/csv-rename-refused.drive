@@ -10,7 +10,7 @@ keys /
 type krakatoa
 wait-for Krakatoa
 keys enter
-wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+wait-for ← Eruptions.csv  Krakatoa 1883 6
 keys R
 wait-for rename · ⏎ preview · Esc cancel
 keys ctrl+u
@@ -19,7 +19,7 @@ keys enter
 wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Krakatau.md
 keys enter
 wait-for 12s rename cancelled, nothing was changed: csv-table didn't edit Volcanoes/Eruptions.csv: this copy keeps the old names
-expect ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+expect ← Eruptions.csv  Krakatoa 1883 6
 keys M
 wait-for Merge Krakatoa into…
 type mount fuji
@@ -50,7 +50,7 @@ keys enter
 wait-for waiting for csv-table to update its files · Esc cancel
 keys esc
 wait-for rename cancelled
-expect ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+expect ← Eruptions.csv  Krakatoa 1883 6
 screen
 keys q
 exits 0

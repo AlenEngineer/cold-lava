@@ -1,38 +1,117 @@
 """CSV tables: opens the workspace's .csv files as tables cold-lava draws, saves an edited cell,
 follows changes made elsewhere, and makes new tables. It also tells cold-lava what each file
-says: every row as a one-row Markdown table, so the workspace's table-row types match it and
-its [[links]] are links, and a cell that is Markdown of its own (a task) as Markdown. When an
-item in a file is edited, or a note it links to renamed, cold-lava says what each piece now says
-and it puts that back in its cells. An example cold-lava extension that owns a kind of file
+holds, in cold-lava's alphabet and not as Markdown: every row is a `row` piece whose cells are
+plain characters, so `#42`, `$5`, `[[x]]` and `- [ ] y` in a cell are those characters. What a
+column's cells are beyond that, the header says:
+
+    Volcano (link),Year,VEI,Notes (markdown)
+    Krakatoa,1883,6,- [ ] Read the report on [[Krakatoa]]
+
+- `(link)`: each cell is the name of a file of the workspace, and a link to it. A heading
+  or the words to show may follow the name, as in `Krakatoa#Eruptions` or `Krakatoa|the big one`;
+- `(markdown)`: each cell is Markdown of its own, handed over as a Markdown piece, so a task
+  in it is a task. That is the one place this file speaks Markdown: because the cell does.
+
+When an item of a file is edited, or a note it links to renamed, cold-lava says what changed in
+the model's terms (a cell's new text, a link's new target) and this writes that cell, and no
+other byte of the file. An example cold-lava extension that owns a kind of file
 (docs/extensions-guide.md, "Owning a kind of file", "Giving items and links" and "Writing
 items back")."""
 
-import csv
-import io
 import re
 
-from cold_lava import Extension, Refused
+from cold_lava import Extension, Refused, change_kind, link, piece, words
 
 ext = Extension()
-# Each table on screen, by path: its view, and the version and rows it shows.
+# Each table on screen, by path: its view, and the version and text it shows.
 tables = {}
 paths = {}
 NEW = "name,notes\n,\n"
+# What a header can say its column's cells are, after the column's name.
+KINDS = {" (link)": "link", " (markdown)": "markdown"}
+# cold-lava takes a place of up to 1024 bytes, a name of up to 256 and a link's target of up
+# to 4096: a row's place and a column's name are cut to fit, and a longer link is characters.
+LONGEST = 200
+LONGEST_NAME = 60
+LONGEST_LINK = 1000
+# A first cell that reads like a place made with a row's number: `row 3`, `a (row 3)`.
+NUMBERED = re.compile(r"(^row|.* \(row) \d+\)?$", re.DOTALL)
+
+
+def spans(text):
+    """`(rows, ends)`. `rows` is the file's rows, each a list of cells `(start, end, value)`:
+    where the cell is written in `text`, quotes included, and what it says. A blank line is a
+    row with no cells. `ends` is where each row ends in `text`, before its line break: where
+    a cell added to a short row goes."""
+    rows, ends = [], []
+    i, n = 0, len(text)
+    while i < n:
+        row = []
+        if text[i] not in "\r\n":
+            while True:
+                start = i
+                value = []
+                if i < n and text[i] == '"':
+                    i += 1
+                    while i < n:
+                        if text[i] == '"':
+                            if text[i + 1 : i + 2] == '"':
+                                value.append('"')
+                                i += 2
+                                continue
+                            i += 1
+                            break
+                        value.append(text[i])
+                        i += 1
+                while i < n and text[i] not in ",\r\n":
+                    value.append(text[i])
+                    i += 1
+                row.append((start, i, "".join(value)))
+                if i < n and text[i] == ",":
+                    i += 1
+                    if i == n or text[i] in "\r\n":
+                        row.append((i, i, ""))
+                        break
+                    continue
+                break
+        rows.append(row)
+        ends.append(i)
+        if text[i : i + 2] == "\r\n":
+            i += 2
+        elif i < n:
+            i += 1
+    return rows, ends
 
 
 def parse(text):
-    return list(csv.reader(io.StringIO(text)))
+    """The file's rows as lists of what each cell says."""
+    return [[value for _, _, value in row] for row in spans(text)[0]]
 
 
-def unparse(rows):
-    out = io.StringIO()
-    csv.writer(out, lineterminator="\n").writerows(rows)
-    return out.getvalue()
+def written(value):
+    """A cell as CSV writes it: in quotes only when it has to be."""
+    if any(c in value for c in ',"\r\n'):
+        return '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def set_cell(text, row, column, value):
+    """`text` with one cell saying `value`: that cell's bytes change, and nothing else. A row
+    too short to have the cell gets the commas up to it."""
+    rows, ends = spans(text)
+    cells = rows[row]
+    if column < len(cells):
+        start, end, _ = cells[column]
+        # A row's only cell, emptied, is written `""`: an empty line would be no row.
+        new = written(value) or ('""' if len(cells) == 1 else "")
+        return text[:start] + new + text[end:]
+    commas = column - len(cells) + (1 if cells else 0)
+    return text[: ends[row]] + "," * commas + written(value) + text[ends[row] :]
 
 
 def columns(rows):
-    """The header row's names, each once (a table's edits name their column), and a name for
-    each column past it."""
+    """The header row's names as written, each once (a table's edits name their column), and a
+    name for each column past it."""
     header = rows[0] if rows else []
     width = max([len(r) for r in rows] or [0])
     names = []
@@ -44,83 +123,199 @@ def columns(rows):
     return names
 
 
+def shape(rows):
+    """What each column is, from the header: its name without what follows it in brackets,
+    and `link`, `markdown` or nothing for plain characters."""
+    names, kinds = [], []
+    for name in columns(rows):
+        kind = ""
+        for suffix, said in KINDS.items():
+            if name.endswith(suffix) and len(name) > len(suffix):
+                name, kind = name[: -len(suffix)], said
+        name = name[:LONGEST_NAME]
+        while name in names:
+            name += "'"
+        names.append(name)
+        kinds.append(kind)
+    return names, kinds
+
+
 def places(rows):
-    """A place for each row under the header that stays when rows are added above it: its first
-    cell, numbered when another row has the same."""
-    seen = {}
+    """A place for each row under the header. A row whose first cell no other row has is named
+    by it, so its place stays when rows are added above it. Every other row is named with its
+    own number in the file: rows that start alike (`a (row 3)`), a row with no first cell
+    (`row 3`), and a row whose first cell itself reads like one of those. So a place with a
+    number is its row's alone, a place without one is a first cell no other row has, and no
+    two rows share a place whatever their cells say. A blank line is no row and has no place.
+
+    The number is the row's own, not its count among the rows like it, on purpose. Setting
+    one row's first cell must never hand another row a place a different row had: cold-lava
+    checks an edit by reading the file back, and finding another piece at a place it knows
+    makes it refuse. The price is that rows which start alike change place, and their items
+    change id, when a row is added above them."""
+    keys = [row[0][:LONGEST] if row else None for row in rows[1:]]
+    alike = {}
+    for key in keys:
+        alike[key] = alike.get(key, 0) + 1
     out = []
-    for row in rows[1:]:
-        key = row[0] if row else ""
-        seen[key] = seen.get(key, 0) + 1
-        out.append(key if seen[key] == 1 else f"{key} ({seen[key]})")
+    for n, key in enumerate(keys, 1):
+        if key is None:
+            out.append(None)
+        elif not key:
+            out.append(f"row {n}")
+        elif alike[key] > 1 or NUMBERED.match(key):
+            out.append(f"{key} (row {n})")
+        else:
+            out.append(key)
     return out
 
 
-def is_markdown(value):
-    """A cell that is Markdown of its own: a task or a list."""
-    return value.startswith("- ")
+def cell_place(row_place, name):
+    """The place of a Markdown cell: its row's place and its column's name."""
+    return f"{row_place}#{name}"
 
 
-def table_cell(value):
-    return value.replace("|", "\\|").replace("\n", " ")
+def where(rows):
+    """Where each place the file gives is: a row's place by its row's number, and a Markdown
+    cell's place by its row's number and its column's. The way back from a place cold-lava
+    names to the file is to look it up here, never to take the place apart."""
+    names, kinds = shape(rows)
+    at, cells = {}, {}
+    for n, place in enumerate(places(rows), 1):
+        if place is None:
+            continue
+        at[place] = n
+        for column, (name, kind) in enumerate(zip(names, kinds)):
+            if kind == "markdown":
+                cells.setdefault(cell_place(place, name), (n, column))
+    return at, cells
 
 
-def given(text):
-    """What a file says, for `file/read`: each row as a one-row Markdown table under the header,
-    and each Markdown cell as Markdown of its own, at `<row's place>#<column>`."""
+def link_cell(value):
+    """A link cell's two parts: the file it names, and what follows the name, a heading
+    (`Krakatoa#Eruptions`) or the words to show (`Krakatoa|the 1883 one`). The link is to
+    the file; a rename changes the name and keeps what follows."""
+    cut = min([i for i in (value.find("#"), value.find("|")) if i >= 0] or [len(value)])
+    return value[:cut], value[cut:]
+
+
+def link_run(value):
+    """A link cell as a link run: to the file it names, showing the words after `|` when it
+    has some. `None` for a cell that names no file."""
+    target, rest = link_cell(value)
+    if not target.strip() or len(value) > LONGEST_LINK:
+        return None
+    return link(target, rest.partition("|")[2] or None)
+
+
+def given(text, pieces=True):
+    """What a file holds, for `file/read`: each row a `row` piece with its cells by column, a
+    plain cell as characters and a link cell as a link. A Markdown cell is empty in the row
+    and is a Markdown piece of its own, at `<row's place>#<column>`. A cold-lava that takes
+    no pieces yet (`pieces` false) is given the Markdown cells alone."""
     rows = parse(text)
-    names = columns(rows)
-    header = "| " + " | ".join(table_cell(n) for n in names) + " |"
-    rule = "|" + " --- |" * len(names)
+    names, kinds = shape(rows)
     items = []
     for place, row in zip(places(rows), rows[1:]):
+        if place is None:
+            continue
         row = row + [""] * (len(names) - len(row))
-        cells = ["" if is_markdown(v) else table_cell(v) for v in row]
-        line = "| " + " | ".join(cells) + " |"
-        items.append({"place": place, "text": "\n".join([header, rule, line])})
-        for name, value in zip(names, row):
-            if is_markdown(value):
-                items.append({"place": f"{place}#{name}", "text": value})
+        cells, markdown = [], []
+        for name, kind, value in zip(names, kinds, row):
+            if kind == "markdown":
+                cells.append((name, []))
+                if value.strip():
+                    markdown.append({"place": cell_place(place, name), "text": value})
+            elif kind == "link" and link_run(value):
+                cells.append((name, [link_run(value)]))
+            else:
+                cells.append((name, [value] if value else []))
+        if pieces:
+            items.append(piece(place, "row", cells=cells))
+        items.extend(markdown)
     return {"items": items}
 
 
 @ext.on("file/read")
 def file_read(params):
-    return given(params["text"])
+    # Pieces are for a cold-lava whose alphabet is 2 or more: `initialize` says which it is.
+    return given(params["text"], pieces=ext.alphabet >= 2)
 
 
-def row_cells(piece):
-    """The cells of a one-row Markdown table's row, as `given` wrote it."""
-    line = piece.strip().splitlines()[-1].strip()
-    cells = re.split(r"(?<!\\)\|", line.strip("|"))
-    return [c.strip().replace("\\|", "|") for c in cells]
+def cell_text(name, kind, runs, now):
+    """What a cell that says `now` says once its text is `runs`, as cold-lava asked. A plain
+    cell holds characters and a link cell one link, so runs that say more than the column can
+    hold are refused: cold-lava then writes nothing and shows why."""
+    runs = [run for run in runs if run != ""]
+    if kind == "markdown":
+        raise ValueError(f"{name} holds Markdown: change what is written in it as its own item")
+    if kind == "link":
+        if not runs:
+            return ""
+        # The link it has, or a link to another file with nothing after its name. Words are
+        # not a link, and cold-lava can't yet be given one from a field's new value.
+        if runs == [link_run(now)]:
+            return now
+        one = runs[0] if len(runs) == 1 and isinstance(runs[0], dict) else {}
+        if set(one) != {"link"} or link_run(one["link"]) != one:
+            raise ValueError(
+                f"{name} is a column of links, and each cell is the name of a file: "
+                "set it in the CSV table, or rename the file it names"
+            )
+        return one["link"]
+    if any(not isinstance(run, str) for run in runs):
+        raise ValueError(f"{name} holds plain characters: no link, label or mark")
+    return words(runs)
+
+
+def cells_changed(rows, names, kinds, at, cells_at, asked):
+    """The cells one of `file/edit`'s changes sets, as `(row, column, value)`."""
+    place, kind = asked["place"], change_kind(asked)
+    if kind == "text":
+        # A Markdown cell's new text.
+        if place not in cells_at:
+            raise ValueError(f"no Markdown cell at {place}")
+        row, column = cells_at[place]
+        return [(row, column, asked["text"])]
+    if place not in at:
+        raise ValueError(f"no row at {place}")
+    row = at[place]
+    cells = rows[row] + [""] * (len(names) - len(rows[row]))
+    if kind == "runs" and asked.get("cell") in names:
+        column = names.index(asked["cell"])
+        value = cell_text(names[column], kinds[column], asked["text"], cells[column])
+        if column == 0 and not value:
+            raise ValueError("a row needs its first cell: it names the row")
+        return [(row, column, value)]
+    if kind == "link":
+        # The file a link cell names was renamed: every such cell of the row follows.
+        named = [
+            (c, link_cell(cells[c])[1])
+            for c, k in enumerate(kinds)
+            if k == "link" and link_cell(cells[c])[0] == asked["link"]
+        ]
+        if not named:
+            raise ValueError(f"the row {place} has no link to {asked['link']}")
+        # The file's new name, and what followed the old one (a heading, the words to show).
+        return [(row, column, asked["to"] + rest) for column, rest in named]
+    raise ValueError(f"a CSV row can't hold that change ({kind})")
 
 
 @ext.on("file/edit")
 def file_edit(params):
-    """The file's new text with each piece put back where `given` took it from: a row's cells
-    from its one-row table (its Markdown cells stay, as the row showed them empty), a Markdown
-    cell from its text. A row needs its first cell, since that names it."""
-    rows = parse(params["text"])
-    names = columns(rows)
-    at = dict(zip(places(rows), range(1, len(rows))))
-    for change in params["changes"]:
-        place = change["place"]
-        row_place, _, column = place.rpartition("#") if place not in at else (place, "", "")
-        row = at.get(row_place)
-        if row is None or "text" not in change:
-            raise ValueError(f"nothing at {place} takes this change")
-        rows[row] += [""] * (len(names) - len(rows[row]))
-        if column:
-            rows[row][names.index(column)] = change["text"]
-            continue
-        cells = row_cells(change["text"])
-        if not cells or not cells[0]:
-            raise ValueError("a row needs its first cell: it names the row")
-        for i, value in enumerate(cells[: len(names)]):
-            if not is_markdown(rows[row][i]):
-                rows[row][i] = value
-    return {"text": unparse(rows)}
+    """The file's new text with each change made in the cell it names. Every change names a
+    place of the file as cold-lava read it, so the cells are all found first and written
+    after: one change may set the cell another's row is named by."""
+    text = params["text"]
+    rows = parse(text)
+    names, kinds = shape(rows)
+    at, cells_at = where(rows)
+    cells = []
+    for asked in params["changes"]:
+        cells += cells_changed(rows, names, kinds, at, cells_at, asked)
+    for row, column, value in cells:
+        text = set_cell(text, row, column, value)
+    return {"text": text}
 
 
 def content(path, rows):
@@ -150,16 +345,16 @@ def show(path, place=None):
     `place` names (its own, or one of its cells')."""
     read = ext.read(path)
     rows = parse(read["text"])
-    keys = places(rows)
-    row = place if place in keys else (place or "").rsplit("#", 1)[0]
-    select = str(keys.index(row) + 1) if row in keys else None
+    at, cells_at = where(rows)
+    row = at.get(place) or cells_at.get(place, (None, None))[0]
+    select = str(row) if row else None
     table = tables.get(path)
     if table is None:
         view = ext.open_view(content(path, rows), select, file=path)
-        tables[path] = {"view": view, "rev": read["rev"], "rows": rows}
+        tables[path] = {"view": view, "rev": read["rev"], "text": read["text"]}
         paths[view] = path
     else:
-        table.update(rev=read["rev"], rows=rows)
+        table.update(rev=read["rev"], text=read["text"])
         ext.update_view(table["view"], content(path, rows), select)
 
 
@@ -189,21 +384,19 @@ def save(path, row, column, value):
     meanwhile, read it again and set the cell in what is there now."""
     table = tables[path]
     for _ in range(3):
-        rows = [list(r) for r in table["rows"]]
-        if row >= len(rows):
+        if row >= len(parse(table["text"])):
             return ext.show(f"not saved: row {row} of {path} is gone")
-        rows[row] += [""] * (column + 1 - len(rows[row]))
-        rows[row][column] = value
+        text = set_cell(table["text"], row, column, value)
         try:
-            written = ext.write(path, unparse(rows), table["rev"])
+            saved = ext.write(path, text, table["rev"])
         except Refused as e:
             if e.reason != "changed":
                 return ext.show(f"not saved: {e}")
             read = ext.read(path)
-            table.update(rev=read["rev"], rows=parse(read["text"]))
+            table.update(rev=read["rev"], text=read["text"])
             continue
-        table.update(rev=written["rev"], rows=rows)
-        ext.update_view(table["view"], content(path, rows))
+        table.update(rev=saved["rev"], text=text)
+        ext.update_view(table["view"], content(path, parse(text)))
         return ext.show(f"saved {path}")
     ext.show(f"not saved: {path} keeps changing")
 
@@ -213,7 +406,7 @@ def view_event(params):
     path = paths.get(params["view"])
     if path is None or params["event"] != "edit":
         return
-    names = columns(tables[path]["rows"])
+    names = columns(parse(tables[path]["text"]))
     save(path, int(params["row"]), names.index(params["column"]), params["value"])
 
 

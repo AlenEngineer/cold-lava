@@ -216,7 +216,7 @@ tables. Its manifest claims the kind:
 
 ```toml
 name = "csv-table"
-version = "0.1.0"
+version = "0.2.0"
 run = ["python3", "main.py"]
 permissions = []                 # an owner needs none for its own kind
 
@@ -239,8 +239,8 @@ the file's path, relative to the workspace. What it shows is up to it, as a list
 def file_open(params):
     path = params["path"]
     read = ext.read(path)                       # workspace/read: {"text", "rev"}
-    tables[path] = {"rev": read["rev"], "rows": parse(read["text"])}
-    tables[path]["view"] = ext.open_view(content(path, tables[path]["rows"]), file=path)
+    tables[path] = {"rev": read["rev"], "text": read["text"]}
+    tables[path]["view"] = ext.open_view(content(path, parse(read["text"])), file=path)
 ```
 
 `file=path` says the view shows that file: cold-lava then lists who links to it under the
@@ -350,11 +350,11 @@ card["line"])`, which opens the reader at that line.
 
 ## Giving items and links
 
-An owner can also say what its files mean to the rest of the workspace, so a task in a CSV is a
-task in the agenda, a row is a row of a type's table, and `[[Krakatoa]]` in a cell shows in
-Krakatoa's backlinks and in the graph. cold-lava asks `file/read` with the file's `path`, its
-`text` and its `rev`, and you answer its items and links; you never parse Markdown or know about
-types:
+An owner can also say what its files hold to the rest of the workspace, so a row of a CSV is a
+row of a type's table, a chore in a format of your own is a task in the agenda, and a link in
+a cell shows in the note's backlinks and in the graph. cold-lava asks `file/read` with the
+file's `path`, its `text` and its `rev`, and you answer its items and links. You never know
+about types:
 
 ```python
 @ext.on("file/read")
@@ -362,27 +362,150 @@ def file_read(params):
     return given(params["text"])    # {"items": [...], "links": [...]}
 ```
 
-- **Markdown pieces.** `{"place": "Krakatoa#Notes", "text": "- [ ] Read the report 📅 2026-11-20"}`
-  is read the way a note is, in the workspace's flavour: the built-in `task` type and the user's
-  types match in it, and its `[[links]]` are links. The example hands each row over as a one-row
-  Markdown table under the file's header, so a type whose table-row shape names those columns
-  (`where.header`) matches it as it would a table in a note, and a cell that is a task or a list
-  as Markdown of its own.
-- **Typed items.** `{"place": "4", "type": "eruption", "fields": {"vei": 6}}` is an item of a type
-  the workspace has loaded, for formats without Markdown (`.ics`, `.bib`): each value is read as
-  its field's type (`"6"` or `6` for a number, `"Krakatoa"` or `"[[Krakatoa]]"` for a link). A
-  type that isn't loaded, or a field it doesn't have, is reported and the item left out.
-- **Links.** `{"target": "Krakatoa", "place": "4", "text": "Krakatoa,1883,6"}` for a link outside
-  the Markdown pieces, with the text around it for backlinks. Links in pieces need no entry.
-- **Places.** A place is yours: a row's key, a card's id. Keep it stable when other rows change,
-  since an item's id comes from its file, its kind and its place. When the user opens one of the
-  file's items (in the agenda, a table) or a backlink from it, `file/open` comes with its
-  `place`, and you show the file there: `ext.open_view(content, select=row)`.
+There are three ways to give an item, and one answer may mix them. Which one to use depends on
+what your format holds at that spot, not on what you would like it to become.
+
+| What the file holds there | Give | Why |
+| --- | --- | --- |
+| something in your own format: a row, a chore, a heading, a card | a **piece** | you say what it is, and no character of it is read as anything else |
+| text that *is* Markdown: a notes column, a description field people write Markdown in | a **Markdown piece** | cold-lava reads it as it reads a note, so tasks, tags and links in it work as they do there |
+| a record you have already read into a type the workspace has | a **typed item** | the shortest way when you know the type and its fields by name |
+
+**Give a piece** for everything your format says itself. That is the usual case, and the only
+one where nothing is parsed twice.
+
+```python
+from cold_lava import piece, link, label
+
+piece("plumber", "item", ["Call the plumber ", label("home")],
+      {"task": True, "checkbox": "open", "due": "2026-11-20"})
+piece("Krakatoa", "row", cells=[("Volcano", [link("Krakatoa")]), ("VEI", ["6"])])
+```
+
+- **`place`** is your own name for the spot: a row's key, a chore's name, a card's id. Keep it
+  stable when other things in the file change, since an item's id comes from its file, its kind
+  and its place. One place holds one piece.
+- **`role`** is what it is, one of nine: `document`, `section`, `text`, `item`, `row`, `aside`,
+  `verbatim`, `embed`, `opaque`. A type matches a piece by its role (`on = "item"`), so a chore
+  given as an `item` with `task` and `checkbox` is a `task` with no type of yours.
+- **Text is runs.** A string is plain characters, whatever they are: `#42`, `$5`, `[[x]]`,
+  `**x**` and `- [ ] y` make no tag, no math, no link, no bold and no task. What your format
+  does say, say as a run: `link("Krakatoa")`, `label("home")`, `marked("hot", "strong")`,
+  `field("rating", 5)`. You never escape anything.
+- **Attributes** are what it carries beyond its text, under any names: text, a number, `True`
+  or `False`. A type reads them (`attribute = "due"`). A `checkbox` says `open`, `done`,
+  `in-progress` or `cancelled`, and `task` says that you count the item as a task.
+- **Relations.** `inside=` is the place of the piece this one is in, given before it. `cells=`
+  are a row's, by column name. A position is attributes (`x`, `y`). A link from one piece to
+  another (an arrow, a cross-reference) is an entry of `links`:
+  `{"from": "a", "to": "b", "label": "needs"}`, which cold-lava carries and shows nowhere yet.
+  Give that last one only when `initialize` said `alphabet` 3 or more, and pieces when it said
+  2 or more.
+- What a piece can say, in full, is in [extensions.md](extensions.md#pieces-as-built).
+
+**Give a Markdown piece** only where the text is Markdown already:
+`{"place": "Krakatoa#Notes", "text": "- [ ] Read the report 📅 2026-11-20"}`. It is read in the
+workspace's flavour, so the built-in `task` and the user's types match in it and its
+`[[links]]` are links. Don't build Markdown out of something else to get an item: then you
+have to escape every character that means something in Markdown and parse it all back on an
+edit, and a cell holding `#42` becomes a tag. This is what a *fragment* will be (text in
+another format, handed to that format's owner, #244), for the one format it works for today.
+
+**Give a typed item** when the record maps onto a type by name:
+`{"place": "4", "type": "eruption", "fields": {"vei": 6}}`. Each value is read as its field's
+type (`"6"` or `6` for a number, `"Krakatoa"` or `"[[Krakatoa]]"` for a link). A type that isn't
+loaded, or a field it doesn't have, is reported and the item left out. It says less than a
+piece (no text of its own, no links, nothing a second type could read), so prefer a piece
+when the user's types should be able to match what you give.
+
+Then, for all three:
+
+- **Links.** A link in a piece is a link run. One outside any item is an entry of `links`:
+  `{"target": "Krakatoa", "place": "4", "text": "Krakatoa,1883,6"}`, with the text around it
+  for backlinks. Links in Markdown pieces need no entry.
+- **Opening at a place.** When the user opens one of the file's items (in the agenda, a table)
+  or a backlink from it, `file/open` comes with its `place`, and you show the file there:
+  `ext.open_view(content, select=row)`.
 - **When you're asked.** Only when a file's `rev` is one you haven't answered for: what you gave
   is kept under `~/.cache/cold-lava/owners/`, by workspace, your name and your `version`, so a
   workspace opens with your files' items before you have started. Change `version` when you
   change what you give. Answer within 10 s; an error, a late answer or an answer that doesn't
   read is said on the status line, and the file keeps what you gave before.
+- **An answer is checked.** A piece with an empty place, a place another piece has or a
+  `checkbox` that isn't one of the four words is reported and left out, and the rest is read.
+  A key or a role cold-lava doesn't know refuses the whole answer.
+
+### Two worked examples
+
+**A format of its own: chores** (`crates/cold-lava/tests/chores-owner/main.py`, the owner the
+tests run). A `.chores` file has a chore a line, `name | state | due | words`, where `@word` is
+a label and `>Word` a link:
+
+```
+plumber | todo | 2026-11-20 | Call the plumber @home
+```
+
+Every chore is one piece, and nothing in the file is Markdown, so nothing is given as
+Markdown:
+
+```python
+attributes = {"task": True, "checkbox": STATES.get(state)}    # "todo" is "open"
+if due:
+    attributes["due"] = due
+items.append(piece(name, "item", runs(words), attributes))    # runs: strings, label(), link()
+```
+
+The agenda lists it beside a note's tasks, with its date, and `@home` is the tag `home`.
+
+**A table with a notes column: csv-table** (`examples/extensions/csv-table/main.py`). A CSV is
+rows of cells, so each row is a `row` piece and a cell is plain characters. The header says
+what else a column holds:
+
+```
+Volcano (link),Year,VEI,Notes (markdown)
+Krakatoa,1883,6,- [ ] Read the report on [[Krakatoa]] 📅 2026-11-20
+```
+
+```python
+for name, kind, value in zip(names, kinds, row):
+    if kind == "markdown":                       # the cell is Markdown: hand it over as such
+        cells.append((name, []))
+        if value.strip():
+            markdown.append({"place": f"{place}#{name}", "text": value})
+    elif kind == "link" and value.strip():       # the cell names a file
+        cells.append((name, [link(value)]))
+    else:                                        # characters
+        cells.append((name, [value] if value else []))
+items.append(piece(place, "row", cells=cells))
+```
+
+- A type whose row shape names the columns (`where.header = ["Volcano", "VEI"]`, `column =
+  "VEI"`) matches the row, as it matches a table in a note.
+- `Krakatoa` in the link column is a link: it is in Krakatoa's backlinks, and a rename
+  follows it. `[[Krakatoa]]` typed into a plain column is twelve characters. A link cell
+  may go on after the name, `Krakatoa#Eruptions` or `Krakatoa|the big one`: the link run
+  is to `Krakatoa`, with the words after `|` as its text, and a rename rewrites the name
+  and keeps the rest of the cell.
+- The notes column is the one place the example gives Markdown, because that is what people
+  write there. Its task is a `task`, at the place `Krakatoa#Notes`.
+- A row's place is its first cell when no other row starts the same. Rows that start alike
+  are named by that cell and their own number in the file (`a (row 3)`), and so is a row
+  whose first cell itself reads like such a name. So a place with a number belongs to that
+  row alone, no two rows share a place, and a row is never left out because of what its
+  cells say.
+- A place is looked up, never taken apart. The example keeps one function from a row and a
+  column to a Markdown cell's place, and one table from every place back to its row and
+  column. A column's name may then hold any character.
+- Choosing a place is a trade. cold-lava checks an edit by reading your new text back, and
+  a place it knows must then hold the piece it expects. So an edit of one piece must never
+  give another piece a place that a different piece had. Numbering alike rows `a`, `a (2)`
+  breaks that: set the first row's first cell and the second row becomes `a`. The row's own
+  number doesn't. What it costs: rows that start alike get new places, and their items new
+  ids, when a row is added above them. A row with a first cell of its own keeps its place
+  wherever it moves. Pick the scheme whose edits always go through.
+- It asks what it may give. `ext.alphabet` is the alphabet's version from `initialize`, and
+  the example gives rows as pieces only when it is 2 or more (`given(text, pieces=ext.alphabet
+  >= 2)`). To an older cold-lava it gives the Markdown cells alone.
 
 ## Shipping a type
 
@@ -393,16 +516,19 @@ in `types.toml` ([extensions.md](extensions.md#types)):
 ```toml
 [[types]]
 id = "csv-table.row"
-on = "table-row"
+on = "table-row"                    # the role `row`, under the name older releases read too
 where.file-type = ["csv"]           # only in .csv files, never a table in a note
 priority = -1                       # below the user's types: their row types win
-fields.name = { pattern = '^\|\s*(.*?)\s*\|' }
+fields.name = { pattern = '^([^\t]+)' }    # a row's words are its cells, a tab between them
 fields.links = { inlines = "links", type = "link" }
-fields.tags = { inlines = "tags", type = "tag" }
 ```
 
-- It matches your Markdown pieces by its shapes, like any type, and your typed items name it
-  (`{"place": "4", "type": "csv-table.row", "fields": {…}}`).
+- It matches your pieces and your Markdown pieces by its shapes, like any type, and your typed
+  items name it (`{"place": "4", "type": "csv-table.row", "fields": {…}}`).
+- A field is written back where its type reads it, so read what should be editable from an
+  attribute or from a cell by its column's name. `name` above is read by a `pattern` over the
+  row's words, which shows it and can't set it: the user sets that cell in the CSV table, or
+  through a type of their own that names the column.
 - `where.file-type` keeps a shape to your files. `priority = -1` makes it a fallback: a user's
   type that matches the same row has priority 0, so it wins.
 - It shows in `types/list`, in the table's type picker (`i`) and in `cold-lava types`, with
@@ -533,34 +659,74 @@ workspace: they write). The messages and their JSON are in
 When an extension edits an item of one of your files (`items/edit`), or the user renames a note
 your files link to, cold-lava makes the change to what you gave and asks `file/edit` with the
 file's `path`, `rev` and `text` and a list of `changes`, each at one of your places. You answer
-the file's new `text`; cold-lava writes it. Again you never parse Markdown or know about types:
+the file's new `text`; cold-lava writes it.
 
 ```python
 @ext.on("file/edit")
 def file_edit(params):
-    rows = parse(params["text"])
+    text = params["text"]
     for change in params["changes"]:
-        ...                          # put change["text"] back at change["place"]
-    return {"text": unparse(rows)}
+        ...                          # write what change asks, at change["place"]
+    return {"text": text}
 ```
 
-- **A Markdown piece's new text.** `{"place": "Krakatoa#Notes", "text": "- [x] Read the report
-  📅 2026-11-20 ✅ 2026-11-08"}`: cold-lava ticked or set it the way it edits a note, Tasks'
-  done dates and all, or rewrote its links for a rename. Put the text back where the piece came
-  from. The example parses a row's one-row table back into its cells.
-- **A typed item's field.** `{"place": "4", "field": "vei", "value": 7}`, in the form items carry
-  it or as text its type reads; `null` removes it.
-- **A link you reported.** `{"place": "4", "link": "Krakatoa", "to": "Krakatau"}`: the target as
-  you gave it, and what it becomes.
+A change comes in the terms you gave the thing in. For a piece it is in the model's terms,
+never text in another format to parse. `change_kind(change)` in `cold_lava.py` names which one
+it is:
+
+| `change_kind` | The change | Asked when | You |
+| --- | --- | --- | --- |
+| `"attribute"` | `{"place": "plumber", "attribute": "checkbox", "value": "done"}` | a task is ticked, or a field a type reads from an attribute is set; `"value": null` takes the attribute off | write that attribute your format's way (`todo` becomes `done`) |
+| `"runs"` | `{"place": "plumber", "text": ["Call the electrician ", {"label": "home"}]}` | a piece's words are set | write the runs as your format writes text, a label and a link your own way; `words(runs)` gives the plain characters |
+| `"runs"`, with `cell` | `{"place": "Krakatoa", "cell": "VEI", "text": ["7"]}` | a field read from a row's cell is set | write that cell |
+| `"link"` | `{"place": "Krakatoa", "link": "Krakatoa", "to": "Krakatau"}` | a file you link to there was renamed or merged | make every link with that target at the place lead to `to` |
+| `"field"` | `{"place": "4", "field": "vei", "value": 7}` | a typed item's field is set; `null` removes it | write the field |
+| `"text"` | `{"place": "Krakatoa#Notes", "text": "- [x] Read the report ✅ 2026-11-08"}` | a Markdown piece was ticked, set or relinked, the way a note is | put the string back where the piece came from |
+
+- **Every change names a place of the file as you read it.** One request may hold several
+  (a rename sends one per link), and one of them may change what a later one's place is
+  named by. Find every spot first, in the text you were sent, then write.
+- **Change only what was asked.** Write the one cell, the one word, the one line, and leave
+  every other byte of the file as it is: its quoting, its line endings, its blank lines. The
+  user's file is theirs, and other programs read it too. The example finds each cell where
+  it is written and replaces those bytes; it never writes the whole file out again.
+- **Refuse what your format can't hold.** Raise an error and the edit is refused with your
+  message, with nothing written. A chore's words can hold a label and a link and no bold, so
+  runs with a mark are refused. A CSV row has no attributes, so an attribute is refused. A
+  link column's cell is one link, so words there are refused. Don't squeeze a change into a
+  shape that reads back as something else: the next step would refuse it anyway.
 - **Read back, then written.** cold-lava asks `file/read` for your new text before it writes it,
-  and writes it only when it reads as what you gave before with the changes made: the same items
-  and links, wherever they are. Otherwise nothing is written and whoever asked hears why. It
-  writes the text itself, refused if the file changed since `rev`, so don't write the file
-  yourself; `file/changed` then comes with the new `rev`, like after your own saves.
-- **Refusing.** Raise an error (the example refuses a row without its first cell) and the edit
-  is refused with your message. Answer within 10 s, else it is refused as not answered.
+  and writes it only when it reads as what you gave before with the changes made: the same
+  items and links, and the same pieces in the same order, each saying what was asked and
+  inside the same piece. Otherwise nothing is written and whoever asked hears why. So an edit
+  that also changes another piece, or lands on the wrong one of two that look alike, never
+  reaches the file. cold-lava writes the text itself, refused if the file changed since `rev`,
+  so don't write the file yourself; `file/changed` then comes with the new `rev`, like after
+  your own saves.
 - **Places can change.** A rename can change a row's key, and so its place; cold-lava compares
-  what you give, not where.
+  what you give, not what you call it.
+- **Not asked yet.** No change adds, moves or removes a piece, so ticking a recurring task in a
+  piece is refused before you are asked. Answer within 10 s, else the edit is refused as not
+  answered.
+
+The two examples, again. The chores owner writes each change into one part of one line:
+
+```python
+if kind == "attribute" and change["attribute"] == "checkbox":
+    lines[i] = with_part(lines[i], 1, WORDS[change["value"]])    # "done" is written `done`
+elif kind == "attribute" and change["attribute"] == "due":
+    lines[i] = with_part(lines[i], 2, change["value"] or "")
+elif kind == "runs" and "cell" not in change:
+    lines[i] = with_part(lines[i], 3, written(change["text"]))   # @label, >Link, else refuse
+elif kind == "link":
+    lines[i] = lines[i].replace(">" + change["link"], ">" + change["to"])
+else:
+    raise ValueError(f"a chore can't hold that change ({kind})")
+```
+
+csv-table writes each into one cell: a plain cell takes characters, a link cell takes one
+link (the rename's `to`), a Markdown cell takes the Markdown piece's new string, and a row
+that would lose its first cell is refused, since that cell names it.
 
 ## When something goes wrong
 

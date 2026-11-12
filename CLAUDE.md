@@ -399,7 +399,11 @@ another host or check in a frontend:
   each kind to the first claimant (`owner_of`; never `md` or `canvas`). The tree, the switcher,
   links and bookmarks hand an owned file to its owner as `file/open`, and the core's
   `FileChanged` reaches it as `file/changed`. `Host` lets an owner read and write its own kinds;
-  other files need `files.read`/`files.write`. The example is `examples/extensions/csv-table`.
+  other files need `files.read`/`files.write`. The example is `examples/extensions/csv-table`:
+  it gives each row as a `row` piece with plain cells, a `Name (link)` column as link runs
+  and a `Name (markdown)` column as Markdown pieces, and writes a change into the one cell
+  it names (never the whole file again). `docs/extensions-guide.md` uses it and the chores
+  owner (`crates/cold-lava/tests/chores-owner`) as its two worked examples.
 - The view gateway's messages (`Content` is a list or a table with a `kind`, `Event`,
   `ViewNews`) and its bounds are `cold-lava-views`' `view.rs`, named in the host as `view`.
 - `tests/permissions.rs` runs the `open-tasks` example with and without `items.edit` and the

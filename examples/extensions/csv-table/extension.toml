@@ -1,6 +1,8 @@
 name = "csv-table"
 title = "CSV tables"
-version = "0.1.0"
+# 0.2.0 gives rows as pieces, not Markdown. What an owner gave is kept by its version, so a
+# new one makes cold-lava ask again for every file.
+version = "0.2.0"
 description = "Opens .csv files as tables, saves edited cells, follows changes made elsewhere, and makes new ones"
 run = ["python3", "main.py"]
 # Owners read and write files of their own kinds without asking, and it needs nothing else.
@@ -16,14 +18,16 @@ id = "csv-table.new"
 title = "new CSV table"
 
 # A row of any CSV file that none of your types matches. csv-table hands each row over as a
-# one-row Markdown table, so your type whose table-row shape names the file's columns
+# `row` piece with its cells by column, so your type whose row shape names the file's columns
 # (`where.header`) matches first: this one's priority is below every type's default. Its id is
-# in csv-table's namespace, as its commands' are.
+# in csv-table's namespace, as its commands' are. A row's words are its cells with a tab
+# between them, so its name is what stands before the first tab: its first cell.
+# `table-row` is the older name of the role `row`: both read here, and the cold-lava
+# released before roles were named reads only the older one.
 [[types]]
 id = "csv-table.row"
 on = "table-row"
 where.file-type = ["csv"]
 priority = -1
-fields.name = { pattern = '^\|\s*(.*?)\s*\|' }
+fields.name = { pattern = '^([^\t]+)' }
 fields.links = { inlines = "links", type = "link" }
-fields.tags = { inlines = "tags", type = "tag" }

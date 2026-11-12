@@ -1119,7 +1119,7 @@ mod tests {
             [Kind {
                 extension: "csv".into(),
                 owner: "csv-table".into(),
-                version: "0.1.0".into(),
+                version: "0.2.0".into(),
             }]
         );
         let reads = core.take_reads();
@@ -1162,7 +1162,26 @@ mod tests {
         let csv = owned.iter().find(|f| f.rel == "Volcanoes/Eruptions.csv");
         let places = &csv.unwrap().places;
         let place = places.get(&tasks[0].id).map(String::as_str);
-        assert_eq!(place, Some("[[Krakatoa]]#Notes"));
+        assert_eq!(place, Some("Krakatoa#Notes"));
+        // What the example gives for a row, as it came over the wire: a `row` piece with its
+        // cells by column, the link column's cell a link run, the Markdown column's cell empty
+        // in the row and a Markdown piece of its own after it.
+        let given = serde_json::to_value(&csv.unwrap().given).unwrap();
+        assert_eq!(
+            given["items"][1],
+            json!({"place": "Krakatoa", "role": "row", "cells": [
+                {"name": "Volcano", "text": [{"link": "Krakatoa"}]},
+                {"name": "Year", "text": ["1883"]},
+                {"name": "VEI", "text": ["6"]},
+                {"name": "Notes", "text": []},
+            ]})
+        );
+        let task = "- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20";
+        assert_eq!(
+            given["items"][2],
+            json!({"place": "Krakatoa#Notes", "text": task})
+        );
+        assert_eq!(given["items"].as_array().map(Vec::len), Some(5));
         let rows = found(&core, "eruption");
         let volcanoes: Vec<String> = (rows.iter())
             .map(|i| serde_json::to_value(i).unwrap()["volcanoes"][0].to_string())
@@ -1223,7 +1242,8 @@ mod tests {
         let Effect::OpenView { view, .. } = opened else {
             unreachable!()
         };
-        let elsewhere = "Volcano,Year,VEI,Notes\nTambora,1815,7,\nKrakatoa,1883,6,\n";
+        let elsewhere =
+            "Volcano (link),Year,VEI,Notes (markdown)\nTambora,1815,7,\nKrakatoa,1883,6,\n";
         std::fs::write(root.join(path), elsewhere).unwrap();
         let event = Event::Edit {
             row: "2".into(),
@@ -1238,7 +1258,7 @@ mod tests {
         });
         let text = std::fs::read_to_string(root.join(path)).unwrap();
         assert_eq!(
-            text, "Volcano,Year,VEI,Notes\nTambora,1815,7,\nKrakatoa,1883,6.5,\n",
+            text, "Volcano (link),Year,VEI,Notes (markdown)\nTambora,1815,7,\nKrakatoa,1883,6.5,\n",
             "refused as changed, read again, and the cell set in what was there"
         );
         r.shutdown();

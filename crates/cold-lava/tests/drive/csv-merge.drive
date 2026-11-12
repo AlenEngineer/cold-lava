@@ -9,7 +9,7 @@ type vesuvius
 wait-for 1 notes
 keys enter
 wait-for Volcanoes/Vesuvius  reading
-wait-for ← Eruptions.csv  | Vesuvius | 79 | 5 |
+wait-for ← Eruptions.csv  Vesuvius 79 5
 keys M
 wait-for Merge Vesuvius into…
 type mauna loa
@@ -19,11 +19,10 @@ wait-for Volcanoes/Vesuvius  into  Volcanoes/Mauna Loa
 expect 8 links in 8 files will lead to Mauna Loa:
 keys j j j j j j j j
 wait-for ▤ Volcanoes/Eruptions.csv  1 link
-expect | [[Mauna Loa]] | 79 | 5 |  |
 screen
 keys enter
 wait-for 12s merged Vesuvius into Mauna Loa
-wait-for 12s ← Eruptions.csv  | Mauna Loa | 79 | 5 |
+wait-for 12s ← Eruptions.csv  Mauna Loa 79 5
 screen
 keys esc
 wait-for ? help  q quit

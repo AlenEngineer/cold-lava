@@ -14,7 +14,7 @@ wait-for ▤ Volcanoes/Eruptions.csv
 keys enter j
 wait-for CSV table · ⏎ to open it in csv-table
 keys enter
-wait-for [[Mount St. Helens]]  1980
+wait-for Mount St. Helens  1980
 expect Volcanoes/Eruptions.csv
 expect 4 rows
 keys j l e
@@ -23,8 +23,8 @@ keys ctrl+u
 type 1884
 keys enter
 wait-for saved Volcanoes/Eruptions.csv
-expect [[Krakatoa]]          1884
-write Volcanoes/Eruptions.csv Volcano,Year,VEI,Notes\n[[Vesuvius]],79,5,\n[[Krakatoa]],1884,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n[[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n[[Tambora]],1816,7,\n
+expect Krakatoa          1884
+write Volcanoes/Eruptions.csv Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1884,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\nMount St. Helens,1980,5,\nEyjafjallajökull,2010,4,\nTambora,1816,7,\n
 wait-for Volcanoes/Eruptions.csv changed: showing it as it is now
 wait-for 5 rows
 keys j j j e
@@ -33,7 +33,7 @@ keys ctrl+u
 type 1815
 keys enter
 wait-for saved Volcanoes/Eruptions.csv
-expect [[Tambora]]           1815
+expect Tambora           1815
 screen
 keys esc esc
 wait-for cold-lava workspaces

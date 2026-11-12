@@ -1,7 +1,8 @@
 # A type an owner ships (docs/extensions.md, "Owners and types, as built"). csv-table, installed
 # in the empty home by tests/drive.rs, ships csv-table.row in its manifest for the CSV rows none
-# of the workspace's types matches: Volcanoes/Observatories.csv's rows are csv-table.row, while
-# Eruptions.csv's stay eruptions, which the workspace's own type matches by their columns.
+# of the workspace's types matches: Volcanoes/Observatories.csv's rows, which it gives as row
+# pieces, are csv-table.row, while Eruptions.csv's stay eruptions, which the workspace's own
+# type matches by their columns.
 size 140x30
 env COLD_LAVA_EDITOR=none
 wait-for example-workspace
@@ -23,13 +24,16 @@ wait-for 3 rows
 expect Hawaiian Volcano Observatory  Kīlauea
 expect-not Krakatoa
 screen
-# Its fields are written back like any type's: through csv-table, read back before it is saved.
+# Its name is the row's first cell, read by a pattern over the row's words. A piece's words are
+# not the type's to rewrite, so the table refuses and says why, and tests/drive.rs reads the CSV
+# unchanged. A cell is set in csv-table's own table, or through a type that reads its column by
+# name (csv-edit.drive).
 keys e
 wait-for name: Vesuvius Observatory▏
 keys ctrl+u
 type Osservatorio Vesuviano
 keys enter
-wait-for 12s Volcanoes/Observatories.csv: name set to Osservatorio Vesuviano
+wait-for not saved: name of a csv-table.row is read from what a piece doesn't hold as a value
 keys esc
 wait-for cold-lava workspaces
 keys q
