@@ -646,7 +646,9 @@ cold-lava then asks you, with the shape's inputs and their members:
 - `shape/gesture` (`placed`, `shape`, `gesture`, `inputs`): answer `{"do": [ … ]}`, steps in
   the language of `on`, such as `{"edit": {"item": "clicked", "set-field": {"field": "status",
   "value": "done"}}}`. They run as you, within your permissions: `items.edit` to edit an item,
-  `files.write` to create a note.
+  `files.write` to create a note. They are checked as a shape's own `do` is: if one can't
+  run (a `set-field` with no `value`, `add` or `remove`, say), none runs and the user is told
+  what is wrong with your answer.
 
 Being asked needs `items.read`, since the inputs come with the question. Check yours without a
 canvas: `cold-lava shapes WORKSPACE --render csv-table.tally --bind rows='type=eruption'` asks

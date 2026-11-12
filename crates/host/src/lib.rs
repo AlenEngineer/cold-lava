@@ -28,7 +28,7 @@ pub mod transport;
 
 pub use cold_lava_views::view;
 
-use cold_lava_engine::act::{self, Answered, Ask};
+use cold_lava_engine::act::{self, Ask, Reply};
 use cold_lava_engine::core::{Core, Jump};
 use cold_lava_engine::files::{
     self, Create, Created, Deleted, Folder, Listed, Restore, Restored, Stat, Text, Written,
@@ -616,7 +616,7 @@ impl Host<'_> {
 
     /// The answer to `shape/region` or `shape/gesture` about a shape it ships: the core keeps
     /// it for the frontend's bindings (`Core::take_shape_answers`).
-    pub fn shape_answered(&mut self, ask: &Ask, answer: Result<Answered, String>) {
+    pub fn shape_answered(&mut self, ask: &Ask, answer: Result<Reply, String>) {
         let name = self.name;
         if let Some(core) = self.core.as_deref_mut() {
             core.shape_answered(name, ask, answer);
@@ -1541,9 +1541,10 @@ mod tests {
     }
 
     /// An extension that ships the shape `tally.list` and answers for it: its region says how
-    /// many volcanoes it is bound to, and a click marks the clicked one visited.
+    /// many volcanoes it is bound to, and a click it answers with `steps`.
     struct Tally {
         permissions: Vec<Permission>,
+        steps: serde_json::Value,
     }
 
     const TALLY: &str = r#"
@@ -1572,22 +1573,16 @@ mod tests {
                 Ask::Region { inputs, .. } => json!({"items": [
                     {"label": format!("{} volcanoes", inputs["a"].members.len())}
                 ]}),
-                Ask::Gesture { .. } => json!({"do": [{"edit": {"item": "clicked",
-                    "set-field": {"field": "visited", "value": "yes"}}}]}),
+                Ask::Gesture { .. } => json!({"do": self.steps}),
             };
             host.shape_answered(&ask, Ok(serde_json::from_value(answer).unwrap()));
         }
     }
 
-    #[test]
-    fn an_extension_answers_for_its_shape_within_its_permissions() {
-        use crate::act::{Acted, Answered, Gesture};
-        use crate::bind::{Binding, Source};
+    /// A workspace of two volcanoes whose `visited` an edit can set, and Tally's shape loaded.
+    fn tally_workspace(name: &str) -> (PathBuf, crate::shapes::Shapes) {
         use crate::shapes::{Layer, load};
-        use ItemsEdit as E;
-        use ItemsRead as R;
-        use Permission::{ItemsEdit, ItemsRead};
-        let dir = std::env::temp_dir().join(format!("cold-lava-ext-shape-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cold-lava-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
         std::fs::write(
@@ -1609,6 +1604,32 @@ mod tests {
             Layer::extension("tally", [("tally.list".to_string(), table)]),
         ]);
         assert!(shapes.errors.is_empty(), "{:?}", shapes.errors);
+        (dir, shapes)
+    }
+
+    /// A click on the first volcano, in the region Tally answers for.
+    fn click_on_a_volcano(core: &mut Core) -> crate::act::Gesture {
+        let q = crate::gateway::Query {
+            select: Select {
+                kind: "volcano".into(),
+                ..Default::default()
+            },
+            page: Default::default(),
+        };
+        crate::act::Gesture::Click {
+            on: "count".into(),
+            item: Some(core.query_items(&q).unwrap().items.remove(0).id),
+        }
+    }
+
+    #[test]
+    fn an_extension_answers_for_its_shape_within_its_permissions() {
+        use crate::act::{Acted, Answered};
+        use crate::bind::{Binding, Source};
+        use ItemsEdit as E;
+        use ItemsRead as R;
+        use Permission::{ItemsEdit, ItemsRead};
+        let (dir, shapes) = tally_workspace("ext-shape");
 
         for (permissions, region, clicked) in [
             (
@@ -1624,6 +1645,8 @@ mod tests {
             let mut core = Core::open(&dir).unwrap();
             let mut r = Registry::new(vec![Box::new(Tally {
                 permissions: permissions.clone(),
+                steps: json!([{"edit": {"item": "clicked",
+                    "set-field": {"field": "visited", "value": "yes"}}}]),
             })]);
             let source = Source::parse("type=volcano").unwrap();
             let mut b =
@@ -1632,7 +1655,7 @@ mod tests {
             for ask in b.region_asks(1) {
                 r.ask_shape(ExtId(0), Some(&mut core), ask);
             }
-            let answers = core.take_shape_answers();
+            let answers = core.take_shape_answers(&shapes);
             let got = match &answers[..] {
                 [a] => a.answer.clone(),
                 _ => panic!("{answers:?}"),
@@ -1648,29 +1671,16 @@ mod tests {
             let Some(clicked) = clicked else {
                 continue;
             };
-            let item = {
-                let q = crate::gateway::Query {
-                    select: Select {
-                        kind: "volcano".into(),
-                        ..Default::default()
-                    },
-                    page: Default::default(),
-                };
-                core.query_items(&q).unwrap().items.remove(0).id
-            };
-            let click = Gesture::Click {
-                on: "count".into(),
-                item: Some(item),
-            };
+            let click = click_on_a_volcano(&mut core);
             let mut acted = None;
             r.call(ExtId(0), Some(&mut core), |_, host| {
-                acted = Some(b.act(host, &click, 1))
+                acted = Some(b.act(host, &shapes, &click, 1))
             });
             let Some(Ok(Acted::Ask(ask))) = acted else {
                 panic!("its extension decides: {acted:?}");
             };
             r.ask_shape(ExtId(0), Some(&mut core), ask);
-            let steps = match core.take_shape_answers().remove(0).answer {
+            let steps = match core.take_shape_answers(&shapes).remove(0).answer {
                 Ok(Answered::Gesture { steps }) => steps,
                 a => panic!("{a:?}"),
             };
@@ -1697,6 +1707,65 @@ mod tests {
             b.close(&mut core);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The steps of an answer pass the rules a loaded shape's steps pass (#268), or the
+    /// frontend is handed the reason and never steps to run: the answer is refused whole, so
+    /// a step that could run before the bad one doesn't.
+    #[test]
+    fn steps_an_extension_answers_that_cant_run_are_refused() {
+        use crate::act::Acted;
+        use crate::bind::{Binding, Source};
+        use Permission::{FilesWrite, ItemsEdit, ItemsRead};
+        let cases = [
+            (
+                json!([{"edit": {"item": "clicked", "set-field": {"field": "visited"}}}]),
+                "set-field takes exactly one of value, add and remove",
+            ),
+            (
+                json!([{"create": {"text": "# Made"}}, {"rebind": {"shape": "nope"}}]),
+                "its rebind names shape nope, which isn't loaded",
+            ),
+        ];
+        for (steps, problem) in cases {
+            let (dir, shapes) = tally_workspace("ext-shape-unchecked");
+            let mut core = Core::open(&dir).unwrap();
+            let mut r = Registry::new(vec![Box::new(Tally {
+                permissions: vec![ItemsRead, ItemsEdit, FilesWrite],
+                steps,
+            })]);
+            let source = Source::parse("type=volcano").unwrap();
+            let mut b =
+                Binding::new(&mut core, &shapes, "tally.list", [("a".into(), source)]).unwrap();
+            let click = click_on_a_volcano(&mut core);
+            let mut acted = None;
+            r.call(ExtId(0), Some(&mut core), |_, host| {
+                acted = Some(b.act(host, &shapes, &click, 1))
+            });
+            let Some(Ok(Acted::Ask(ask))) = acted else {
+                panic!("its extension decides: {acted:?}");
+            };
+            r.ask_shape(ExtId(0), Some(&mut core), ask);
+            let answers = core.take_shape_answers(&shapes);
+            let [answer] = &answers[..] else {
+                panic!("{answers:?}");
+            };
+            assert_eq!(answer.by, "tally");
+            let refused = format!("it answered shape/gesture with steps that can't run: {problem}");
+            assert_eq!(answer.answer, Err(refused));
+            let mut files: Vec<String> = (std::fs::read_dir(&dir).unwrap())
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.starts_with('.'))
+                .collect();
+            files.sort();
+            assert_eq!(files, ["Krakatoa.md", "Vesuvius.md"], "nothing created");
+            for name in files {
+                let text = std::fs::read_to_string(dir.join(name)).unwrap();
+                assert!(!text.contains("visited"), "nothing written: {text}");
+            }
+            b.close(&mut core);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     fn owners(extensions: Vec<Owner>) -> Registry {
