@@ -5,7 +5,7 @@
 //! parses and writes its own format, and it never writes or reads a character of Markdown.
 
 use super::*;
-use crate::gateway::{Page, Query, Select};
+use crate::gateway::{Op, Page, Query, Select};
 use crate::owner::given::{GivenItem, Run};
 use serde_json::{Value as Json, json};
 

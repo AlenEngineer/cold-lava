@@ -1,0 +1,11 @@
+name = "chores"
+title = "Chores"
+version = "0.1.0"
+description = "Owns .chores files, a made-up format that isn't Markdown, and gives them as pieces: the extension of tests/owned.rs"
+run = ["python3", "main.py"]
+# An owner reads and writes files of its own kind without asking.
+permissions = []
+
+[[file-types]]
+extension = "chores"
+title = "Chores"

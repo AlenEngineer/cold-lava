@@ -6,8 +6,7 @@ use crate::act::{Answered, Ask, ShapeAnswer};
 use crate::bookmarks::Bookmarks;
 use crate::files;
 use crate::gateway::{
-    self, Answer, Edit, Edited, Found, News, Op, Query, Reason, Select, SubId, Subscriptions,
-    Ticket,
+    self, Answer, Edit, Edited, Found, News, Query, Reason, Select, SubId, Subscriptions, Ticket,
 };
 use crate::index::Index;
 use crate::items::Item;
@@ -1339,6 +1338,7 @@ mod pieces;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::Op;
 
     /// The events seen until `want` holds for them. A `Rescanned` also satisfies it: the
     /// watcher may report the folders a test just made (macOS does, late), and the rescan that
