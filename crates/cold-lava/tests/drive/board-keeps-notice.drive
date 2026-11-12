@@ -1,0 +1,27 @@
+# On the whiteboard too, no message takes the place of a refused request's notice (#269).
+# tests/drive.rs installs the open-tasks example patched to send workspace/open and then a
+# notification whenever the tasks change. A card is typed when it asks: when the edit ends,
+# the status line says what was not done first, and the notification after it.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type Drafts
+keys enter
+wait-for whiteboard Drafts · 0 cards
+keys n
+wait-for editing · type text · ⏎ new line · Esc done (saves)
+type Draft
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 17 open tasks
+wait-for Draft▏
+keys esc
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while a card is being edited · so there
+expect whiteboard Drafts · 1 cards
+screen
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

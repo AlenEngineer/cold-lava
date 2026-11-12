@@ -1740,6 +1740,51 @@ fn a_views_owner_cant_close_it_while_a_cell_is_typed_in_it() {
         &["--home".as_ref(), home.as_os_str()],
     );
     assert_passed(&out);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("example-workspace/Volcanoes/Eruptions.csv")).unwrap(),
+        "Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1883,6,\n",
+        "as the other program wrote it: neither year typed was saved"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn a_refusals_notice_comes_first_on_a_narrow_status_line() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    for script in ["refusal-first-80.drive", "refusal-first-60.drive"] {
+        let dir = sandbox(script);
+        let home = dir.join("home");
+        let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    \
+                    ext.show(\"a long message from the same extension, which would fill \
+                    the whole status line and more if it came first\")\n";
+        install_pushy_open_tasks(&dir, &home, push);
+        let out = drive_with(script, &dir, &["--home".as_ref(), home.as_os_str()]);
+        assert_passed(&out);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn a_message_doesnt_take_the_place_of_a_refusals_notice_on_the_whiteboard() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("board-keeps-notice");
+    let home = dir.join("home");
+    let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    ext.show(\"so there\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "board-keeps-notice.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
     let _ = std::fs::remove_dir_all(dir);
 }
 

@@ -1,9 +1,10 @@
 # The guard of prompt-keeps-typed.drive, for what a view or a layer holds (#269): a filter
-# being typed in a list, a cell being edited in a table, the notes marked in Tidy. Each
+# being typed in a list, in the table's type picker, which filters as you type, a cell
+# being edited in a table, the notes marked in Tidy. Each
 # answers for itself. tests/drive.rs installs the open-tasks example patched to send
 # workspace/open twice and a notification whenever the tasks change. The first time, both
 # requests are counted and the notification that came after them doesn't take the notice's
-# place.
+# place: it comes first on the line.
 size 160x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
@@ -18,7 +19,7 @@ type two per
 wait-for / two per▏
 write Inbox/Chores.md - [ ] One\n
 wait-for ☐ 17 open tasks
-wait-for so there · open-tasks wanted to open Volcanoes/Vesuvius.md: not while a filter is being typed (2 requests refused)
+wait-for open-tasks wanted to open Volcanoes/Vesuvius.md: not while a filter is being typed (2 requests refused) · so there
 expect / two per▏
 screen
 keys esc
@@ -29,6 +30,11 @@ keys i
 wait-for Table of…
 type erup
 wait-for 1 of 4 rows · /erup
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n
+wait-for ☐ 18 open tasks
+wait-for open-tasks wanted to open Volcanoes/Vesuvius.md: not while a filter is being typed
+expect 1 of 4 rows · /erup
+screen
 keys enter
 wait-for 4 rows
 keys j j l e
@@ -36,8 +42,8 @@ wait-for example: [[Krakatoa]] 1883▏
 keys ctrl+u
 type [[Krakatoa]] 1883, Sunda Strait
 wait-for example: [[Krakatoa]] 1883, Sunda Strait▏
-write Inbox/Chores.md - [ ] One\n- [ ] Two\n
-wait-for ☐ 18 open tasks
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n- [ ] Three\n
+wait-for ☐ 19 open tasks
 wait-for open-tasks wanted to open Volcanoes/Vesuvius.md: not while a cell is being edited
 expect example: [[Krakatoa]] 1883, Sunda Strait▏
 screen
@@ -49,8 +55,8 @@ keys T
 wait-for Orphans: no links in or out
 keys space
 wait-for Tidy · 1 marked
-write Inbox/Chores.md - [ ] One\n- [ ] Two\n- [ ] Three\n
-wait-for ☐ 19 open tasks
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n- [ ] Three\n- [ ] Four\n
+wait-for ☐ 20 open tasks
 wait-for open-tasks wanted to open Volcanoes/Vesuvius.md: not while something is marked in Tidy
 expect Tidy · 1 marked
 screen

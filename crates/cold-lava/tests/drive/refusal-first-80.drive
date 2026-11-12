@@ -1,0 +1,21 @@
+# A refused request's notice comes first on the status line, where no other message can
+# push it off (#269): here in a terminal 80 columns wide. tests/drive.rs installs the
+# open-tasks example patched to send workspace/open and then a long notification whenever
+# the tasks change. The notice's start shows; a line this narrow cuts its end.
+size 80x24
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys n
+wait-for new note
+type Half
+wait-for Half▏
+write Inbox/Chores.md - [ ] One\n
+wait-for ☐ 17 open tasks
+wait-for  open-tasks wanted to open Volcanoes/Krakatoa.md: not while
+expect Half▏
+screen
+keys esc
+wait-gone Half▏
+keys q
+exits 0
