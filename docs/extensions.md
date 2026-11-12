@@ -1874,7 +1874,13 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   piece has, `in` a place no earlier piece is at, or with cells where it can have none is
   reported (`Event::OwnerTrouble`, on the status line; the place is cut to 80 characters and
   the reason, which may quote a value, to 200) and
-  left out, and the rest of the answer is read. A message is at most 64 MB, as before. The
+  left out, and the rest of the answer is read. A place, an `in`, a link's end or an
+  extension's error text in a message is written through `outside::Outside`
+  (`crates/engine/src/outside.rs`), which shows a control character or one that turns the
+  direction of text as `\u{1b}` and never as written: an answer is not trusted to be safe
+  to print, and what the command line prints goes through the same `outside::escape` again
+  on its way out (`crates/cold-lava/src/say.rs`). Escaping is for showing only: the place
+  kept, hashed into an id and sent back in `file/edit` is the owner's, byte for byte. A message is at most 64 MB, as before. The
   number of pieces in an answer has no bound of its own.
 - **The older answers are unchanged.** A Markdown piece and a typed item read exactly as
   they did, with the ids they had. An answer may mix all three.

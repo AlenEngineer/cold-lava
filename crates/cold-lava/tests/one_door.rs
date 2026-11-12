@@ -981,3 +981,86 @@ fn the_scan_refuses_the_ways_around_the_operations_the_edits_and_the_scan() {
                   let s = \"a, rename as before\";\n}\n";
     assert_eq!(sneaked(no_use), Vec::<String>::new());
 }
+
+/// Each of `needles` as often as `code` has it as a name of its own: `println!(` is not
+/// counted inside `eprintln!(`, nor `out!(` inside another macro's name.
+fn named(code: &str, needles: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    for needle in needles {
+        for (at, _) in code.match_indices(needle) {
+            let before = code[..at].chars().next_back();
+            if !before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                found.push(String::from(*needle));
+            }
+        }
+    }
+    found
+}
+
+/// One door out to the terminal too (#265, track A step A2): text a file or an extension
+/// chose is shown only through `outside::escape`, and on the command line that is `say.rs`,
+/// the one module that prints. Nothing else names a print macro or takes stdout or stderr,
+/// but for the terminal's own protocol, which carries no outside text:
+///
+/// - `main.rs`: `stdout()` ×4 is `say::stdout()` twice (the long listings of `items` and
+///   `table`) and mouse capture switched on and off around the terminal app.
+/// - `term.rs`: leaving and entering the alternate screen, and `write_raw`, which writes
+///   the Kitty graphics the app made.
+/// - `home.rs`: a picture placed or deleted with Kitty graphics.
+///
+/// It is the same guard on the text as the rest of this file, with the same blind spots: a
+/// print through a macro of another crate, `write!` to a handle taken another way
+/// (`io::stdout` under another name, a `File` on `/dev/tty`), or a child process that
+/// inherits the terminal is not seen. What the terminal app draws is not printed: it goes
+/// into ratatui's cells, which this test doesn't read.
+#[test]
+fn the_app_prints_only_through_say() {
+    let prints = [
+        "println!(",
+        "eprintln!(",
+        "print!(",
+        "eprint!(",
+        "dbg!(",
+        "stdout()",
+        "stderr()",
+    ];
+    let found = tally(per_file(&sources(), |code| named(code, &prints)));
+    let listed = [
+        "home.rs: stdout() ×1",
+        "main.rs: stdout() ×4",
+        "say.rs: eprintln!( ×1",
+        "say.rs: print!( ×1",
+        "say.rs: println!( ×4",
+        "say.rs: stdout() ×2",
+        "term.rs: stdout() ×3",
+    ];
+    assert_eq!(
+        found, listed,
+        "a print or a handle on the terminal outside say.rs: print through `out!`, `told!` \
+         or `problem!` (src/say.rs says which), so the line is escaped"
+    );
+}
+
+/// Which lines are listings, the user's own content, where a character that turns the
+/// direction of text stays as written: `items`, `table`, `search`, `tidy`, `agenda`,
+/// `daily --path`, a shape drawn as text and a recipe's diff in `main.rs`, and the screen
+/// `drive` read. Every other line is a message (`told!`, `problem!`), where such a character
+/// is escaped. A listing is chosen by calling one of these, so a new one shows here.
+#[test]
+fn the_listings_are_these() {
+    let listings = ["out!(", "listing(", "listing_block("];
+    let found = tally(per_file(&sources(), |code| named(code, &listings)));
+    let listed = [
+        "drive.rs: out!( ×3",
+        "main.rs: listing( ×2",
+        "main.rs: listing_block( ×2",
+        "main.rs: out!( ×19",
+        "say.rs: listing( ×4",
+        "say.rs: listing_block( ×1",
+    ];
+    assert_eq!(
+        found, listed,
+        "a line printed as a listing: it is one only if the line is the user's own content; \
+         what a command did or why it didn't is a message (`told!`, `problem!`)"
+    );
+}

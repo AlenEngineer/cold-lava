@@ -3,6 +3,7 @@
 //! terminal setup, mouse mode and an embedded Neovim's own pty are all part of what's tested.
 
 use crate::commands::Key;
+use crate::say::{out, told};
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 use std::io::Write;
@@ -537,11 +538,11 @@ impl Session {
 
     fn print_screen(&self, title: &str) {
         let (rows, cols) = self.parser.screen().size();
-        println!("--- {title} ({cols}x{rows}) ---");
+        out!("--- {title} ({cols}x{rows}) ---");
         for row in self.text().lines() {
-            println!("{}", row.trim_end());
+            out!("{}", row.trim_end());
         }
-        println!("---");
+        out!("---");
     }
 
     fn exited(&self) -> String {
@@ -637,7 +638,7 @@ pub fn run(
         let home = empty.as_ref().map(|h| h.0.clone());
         std::thread::spawn(move || {
             std::thread::sleep(OVERALL_TIMEOUT);
-            println!("{name}: gave up after {}", secs(OVERALL_TIMEOUT));
+            told!("{name}: gave up after {}", secs(OVERALL_TIMEOUT));
             kill_group(pid);
             if let Some(home) = home {
                 let _ = std::fs::remove_dir_all(home);
@@ -737,7 +738,7 @@ pub fn run(
             }
         };
         if let Some(message) = failure {
-            println!("{name}:{}: {message}", step.line);
+            told!("{name}:{}: {message}", step.line);
             s.print_screen(&format!("screen at {name}:{}", step.line));
             s.kill();
             return Ok(false);

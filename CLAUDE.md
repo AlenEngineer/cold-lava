@@ -370,6 +370,16 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `outside.rs`: text from outside, for showing (#265, A2). `escape(text, Level)` is the one
+  function that makes text a file or an extension chose safe to show: control characters
+  (but the tab) and U+2028/2029 become `\u{1b}`, `\n`, `\r`; at `Level::Message` the nine
+  characters that turn the direction of text too, at `Level::Content` (the user's own
+  content, listed) they stay. `Outside` is such text on its way into a message: its only use
+  is `Display`, which escapes it as a message and cuts it (`place` 80 characters, `value`
+  200, `whole` uncut). A message that quotes a place, an `in`, a label or an extension's
+  words puts it in as an `Outside`; never format one in as it is, and never escape for
+  showing with anything else. It is for showing only: nothing kept, written, sent, hashed
+  or compared is escaped.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
 what it needs (`markdown::set_configured` for the chosen flavour).
@@ -500,6 +510,13 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
   everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
+- `say.rs`: the only module that prints to stdout and stderr, each line through
+  `outside::escape`. Which entry is called says what the line is: `out!` (and `Out::listing`,
+  `listing_block`) for a listing, a line that is the user's own content; `told!` (stdout)
+  and `problem!` (stderr) for a message, what a command did or why it didn't; `say::json`
+  for JSON, written as it is. Never `println!` or take `stdout()` elsewhere:
+  `tests/one_door.rs` lists every print site and every listing, and
+  `tests/outside_text.rs` runs the binary on text with escape sequences planted.
 - `drive.rs`: `cold-lava drive`, scripted UI runs (its `write` step changes a workspace file
   with `std::fs` on purpose, as another program would: the one exception `tests/one_door.rs`
   lists for it): the real binary in a pty, screen read back

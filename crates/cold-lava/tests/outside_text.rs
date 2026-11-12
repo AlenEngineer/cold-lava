@@ -248,12 +248,18 @@ fn ordinary_text_prints_as_it_is_written() {
         "- [ ] tab\there \\n and \\u{1b} as typed, Parícutin 👨\u{200d}👩\u{200d}👧 \u{200e}ok\r\n",
     )
     .unwrap();
+    // An item's text holds a tab as a space; a line of the note holds it as it is.
     let (stdout, _) = run(&home, &["items", ws, "task"]);
     assert!(
         stdout.contains(
-            "Plain.md:1  [ ] tab\there \\n and \\u{1b} as typed, Parícutin 👨\u{200d}👩\u{200d}👧 \u{200e}ok\n"
+            "Plain.md:1  [ ] tab here \\n and \\u{1b} as typed, Parícutin 👨\u{200d}👩\u{200d}👧 \u{200e}ok\n"
         ),
         "{stdout:?}"
+    );
+    let (stdout, _) = run(&home, &["search", ws, "typed"]);
+    assert_eq!(
+        stdout,
+        "Plain.md:1: - [ ] tab\there \\n and \\u{1b} as typed, Parícutin 👨\u{200d}👩\u{200d}👧 \u{200e}ok\n"
     );
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }

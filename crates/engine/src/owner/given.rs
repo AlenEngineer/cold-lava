@@ -16,6 +16,7 @@ use crate::alphabet::{Mark, Role};
 use crate::gateway;
 use crate::items::{Data, Item, Settings};
 use crate::matcher::{Asked, Carried};
+use crate::outside::Outside;
 use crate::owner::markdown;
 use crate::tasks::{FNV_START, StatusType, TasksSettings, fnv_from, line_id};
 use crate::types::On;
@@ -390,20 +391,6 @@ fn carried(p: &Piece, flat: &Flat, tasks: &TasksSettings) -> Result<Vec<Carried>
     Ok(out)
 }
 
-/// A place for a message: its first characters, since an owner may give one of any length.
-fn short(place: &str) -> String {
-    cut(place, 80)
-}
-
-/// The first `most` characters of what an owner gave, for a message. Every problem with a
-/// piece goes through this, so no value an owner sends is repeated whole.
-fn cut(text: &str, most: usize) -> String {
-    match text.char_indices().nth(most) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_string(),
-    }
-}
-
 /// The id of the item a piece is: its file, its kind and the owner's place for it, set apart
 /// from a typed item's id at the same place, so neither can take the other's.
 pub fn piece_id(file: &str, kind: &str, place: &str) -> String {
@@ -468,7 +455,7 @@ impl<'a> Places<'a> {
                 "more than {MAX_BETWEEN} links between pieces: the rest are left out"
             ));
         }
-        let (from, to) = (short(&l.from), short(&l.to));
+        let (from, to) = (Outside::place(&l.from), Outside::place(&l.to));
         if l.label.len() > MAX_LABEL {
             return Err(format!(
                 "a link from {from} to {to}: its label is longer than {MAX_LABEL} bytes"
@@ -478,7 +465,7 @@ impl<'a> Places<'a> {
         match ends.find(|place| self.at(place).is_none()) {
             Some(missing) => Err(format!(
                 "a link from {from} to {to}: no piece is at {}",
-                short(missing)
+                Outside::place(missing)
             )),
             None => Ok(()),
         }
@@ -512,7 +499,7 @@ fn read_piece<'a>(
             None => {
                 return Err(format!(
                     "it is in {}, and no piece before it is at that place",
-                    short(place)
+                    Outside::place(place)
                 ));
             }
         },
@@ -921,13 +908,7 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
         }
         out
     };
-    let short = |v: Vec<String>| -> String {
-        let s = v.join(", ");
-        match s.chars().count() > 200 {
-            true => format!("{}…", s.chars().take(200).collect::<String>()),
-            false => s,
-        }
-    };
+    let short = |v: Vec<String>| Outside::value(&v.join(", ")).to_string();
     let (want, got) = (items(asked), items(gave));
     if want != got {
         let (missing, extra) = (only(&want, &got), only(&got, &want));
@@ -987,7 +968,7 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
         if let Some((_, gave)) = there.filter(|(_, gave)| gave != asked) {
             return Err(format!(
                 "the piece at {} is {} where {} was asked",
-                cut(place, 80),
+                Outside::place(place),
                 short(vec![gave.clone()]),
                 short(vec![asked.clone()])
             ));
@@ -1072,8 +1053,8 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
             GivenItem::Piece(p) => {
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
                     // One short line, whatever the owner sent: a reason may quote a value.
-                    out.problems
-                        .push(format!("{}: {}", short(&p.place), cut(&why, 200)));
+                    let (place, why) = (Outside::place(&p.place), Outside::value(&why));
+                    out.problems.push(format!("{place}: {why}"));
                 }
             }
             GivenItem::Markdown { place, text } => {
@@ -1109,7 +1090,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                         data: Data::Typed(Box::new(typed)),
                     });
                 }
-                Err(e) => out.problems.push(format!("{place}: {e}")),
+                Err(e) => out.problems.push(format!("{}: {e}", Outside::whole(place))),
             },
         }
     }

@@ -606,6 +606,11 @@ cold-lava items ~/workspace task                  # Journal/2026-11-05.md:9  [ ]
 cold-lava items ~/workspace heading --json        # one JSON object per line
 ```
 
+What the command line prints is safe to show in a terminal: a control character in a note, a
+card or a file's name (an escape sequence, say) is printed as `\u{1b}`, and a line break
+inside a value as `\n`, so one item is one line. Text without such characters prints as it is
+written, and `--json` always gives the text itself.
+
 Each item has an `id` that stays the same when a task is ticked, re-dated, re-indented or moved
 down by lines added above it (an author's `^block-id` keeps it even when the words change), the
 `section` (headings) it sits under, its `parent` list item, and a `rev` that changes whenever its

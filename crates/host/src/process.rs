@@ -20,6 +20,7 @@ use crate::act::Ask;
 use crate::gateway::{self, Edited, News, SubId, Ticket};
 use crate::owner::cache::FileRead;
 use crate::owner::edits::{FileEdit, NewText};
+use cold_lava_engine::outside::Outside;
 
 /// At most this many messages are read from one extension per frame; the rest wait for the next.
 const PER_POLL: usize = 64;
@@ -204,21 +205,20 @@ impl Process {
         let Some((asked, _)) = id.as_u64().and_then(|id| live.waiting.remove(&id)) else {
             return;
         };
+        // What an extension says went wrong is its own words: escaped here, where they arrive,
+        // so no message made of them holds them as written.
+        let outcome = outcome.map_err(|e| Outside::whole(&e.message).to_string());
         match (asked, outcome) {
-            (Asked::Initialize, Err(e)) => {
-                self.fail(host, format!("it refused initialize: {}", e.message))
-            }
-            (Asked::Command(_), Err(e)) => {
-                host.notify(format!("{}: {}", self.manifest.name, e.message))
-            }
+            (Asked::Initialize, Err(e)) => self.fail(host, format!("it refused initialize: {e}")),
+            (Asked::Command(_), Err(e)) => host.notify(format!("{}: {e}", self.manifest.name)),
             (Asked::Read { path, rev }, outcome) => {
-                let given = outcome.map_err(|e| e.message).and_then(|v| {
+                let given = outcome.and_then(|v| {
                     serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
                 });
                 host.file_given(&path, &rev, given);
             }
             (Asked::Edit { path, rev }, outcome) => {
-                let text = outcome.map_err(|e| e.message).and_then(|v| {
+                let text = outcome.and_then(|v| {
                     serde_json::from_value::<NewText>(v)
                         .map(|t| t.text)
                         .map_err(|e| format!("its answer doesn't read: {e}"))
@@ -226,13 +226,13 @@ impl Process {
                 host.file_edited(&path, &rev, text);
             }
             (Asked::Preview { path, rev }, outcome) => {
-                let content = outcome.map_err(|e| e.message).and_then(|v| {
+                let content = outcome.and_then(|v| {
                     serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
                 });
                 host.file_previewed(&path, &rev, content);
             }
             (Asked::Shape(ask), outcome) => {
-                let answer = outcome.map_err(|e| e.message).and_then(|v| {
+                let answer = outcome.and_then(|v| {
                     serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
                 });
                 host.shape_answered(&ask, answer);
