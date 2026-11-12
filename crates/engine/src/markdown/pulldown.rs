@@ -601,6 +601,8 @@ mod tests {
         "| $a | b$ |\n| - | - |\n| $c$ | $5 and $6 |\n\n# Heading $x$ and $5\n\n- item $a\n  b$ c\n- [ ] task $$d$$\n",
         // Math that opens in a link's text: inside it, and closing after it.
         "[$a$](u.md) and [b $c](u.md) d$ e and [[W $f]] g$ h and ![i $j](p.png) k$\n",
+        // Math that opens in a Dataview field and closes after it.
+        "[k:: $a] b$ and (j:: $c$) and (m:: $d) e$\n",
         // An HTML tag or an autolink that starts before a `$` holds it.
         "<span>$a$</span> <a href=\"$b\">c</a> <https://x.y/$d> e$ and $f <b>g$</b>\n",
         // What starts first: code before math, math before code.

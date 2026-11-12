@@ -470,8 +470,8 @@ impl<'t, 'd> Line<'t, 'd> {
                 b'^' if self.g.has(S::BlockIds) => self.block_id(a, i, z).map(|e| (BlockId, e)),
                 _ => None,
             };
-            // Math that opens in a link's text and closes after the link is the math, and the
-            // link is none.
+            // Math that opens in a link's text or a field and closes after it is the math,
+            // and the link or the field is none.
             let found = found.filter(|&(kind, end)| !self.math_leaves(kind, i, end));
             match found {
                 Some((kind, end)) => {
@@ -894,10 +894,12 @@ impl<'t, 'd> Line<'t, 'd> {
         closes.then_some(d[k].at..d[k].at + 1 + display as usize)
     }
 
-    /// Whether math opens in the text of the link or the embed `kind` at `a..z` and closes
-    /// after it: then the math is read, as pulldown-cmark reads it, and the brackets are text.
+    /// Whether math opens in the text of the link, the embed or the Dataview field `kind` at
+    /// `a..z` and closes after it: then the math is read, as pulldown-cmark reads it, and the
+    /// brackets are text.
     fn math_leaves(&self, kind: Kind, a: usize, z: usize) -> bool {
-        if !self.g.has(S::Math) || !matches!(kind, Link | Image | WikiLink | Embed) {
+        let holds = matches!(kind, Link | Image | WikiLink | Embed | InlineField);
+        if !self.g.has(S::Math) || !holds {
             return false;
         }
         // A link's destination is the link's: only its text may open math.
