@@ -398,7 +398,7 @@ mod tests {
                 "*"
             ]
         );
-        let roles: Vec<&str> = a.readings[9..].iter().map(|r| r.on.name()).collect();
+        let roles: Vec<&str> = a.readings[10..].iter().map(|r| r.on.name()).collect();
         assert_eq!(roles, ["item", "section", "text", "aside"]);
         assert_eq!(
             (a.readings[0].with.as_str(), a.readings[1].with.as_str()),
