@@ -126,6 +126,16 @@ pub enum Data {
     Typed(Box<Typed>),
 }
 
+/// The native kinds. They are older than the alphabet's roles (`alphabet::Role`) and are not
+/// roles: an item's id hashes its kind, so the kinds keep their names. Where the two meet:
+///
+/// - `list`, and a `task` (a type on a list item): an `item`.
+/// - `heading`: a `section`. The item is the section's title; its body is every item whose
+///   `section` path runs through that title.
+/// - `block`: whatever a `^id` names, most often a `text`, also a table or an `aside`. It
+///   says that a block has a name, not what the block is.
+/// - a typed item: the role its shape is `on` (`types::On::role`); an inline type's item is a
+///   reading of a piece's text and has no role of its own.
 pub const KINDS: &[&str] = &["list", "heading", "block"];
 
 impl Data {
@@ -269,10 +279,10 @@ impl Wants {
         let want = |on: On| typing && m.reads(on);
         Wants {
             typing,
-            rows: want(On::TableRow),
-            paragraphs: want(On::Paragraph),
-            lists: want(On::ListItem),
-            headings: want(On::Heading),
+            rows: want(On::Row),
+            paragraphs: want(On::Text),
+            lists: want(On::Item),
+            headings: want(On::Section),
             inline: want(On::Inline),
             tags: m.needs_tags || m.reads_tags,
             links: m.needs_links,
@@ -692,7 +702,7 @@ impl<'a> Walk<'a> {
         if self.wants.headings || self.wants.inline {
             let words = heading_range(src, range);
             self.pass.candidates.push(Candidate {
-                on: On::Heading,
+                on: On::Section,
                 typeable: self.wants.headings,
                 own: words.clone(),
                 text: words,
@@ -754,7 +764,7 @@ impl<'a> Walk<'a> {
             let end = block.start + first.trim_end().len();
             let own_end = start + src[start..lines.end(last)].trim_end().len();
             self.pass.candidates.push(Candidate {
-                on: On::ListItem,
+                on: On::Item,
                 typeable: self.wants.lists,
                 own: start..own_end.max(start),
                 text: start..end.max(start),
@@ -824,7 +834,7 @@ impl<'a> Walk<'a> {
             }
             let text = block.start..block.start + text.len();
             self.pass.candidates.push(Candidate {
-                on: On::Paragraph,
+                on: On::Text,
                 typeable: self.wants.paragraphs,
                 own: text.clone(),
                 text,
@@ -862,7 +872,7 @@ impl<'a> Walk<'a> {
             .collect();
         let (section, parent) = (self.names(), self.enclosing());
         self.pass.candidates.push(Candidate {
-            on: On::TableRow,
+            on: On::Row,
             typeable: self.wants.rows,
             own: text.clone(),
             text,
@@ -942,14 +952,17 @@ fn finish(
         // a table) doesn't find it twice.
         let mut inline_seen: std::collections::HashSet<(String, usize)> = Default::default();
         for c in candidates {
-            // What it sits inside, when some type asks.
+            // What it sits inside, when some type asks. A piece is there under the name it had
+            // before the roles were named (`On::alias`), since this list also holds kinds and
+            // type names: `where.inside = ["item"]` must still mean a type called `item`. The
+            // matcher maps a role written there to that name.
             let ask = m.needs_inside;
             let mut inside = if ask { note_is.clone() } else { Vec::new() };
             if ask && c.in_quote {
-                inside.push("quote".into());
+                inside.push(On::Aside.alias().into());
             }
             if let Some(p) = c.parent.filter(|_| ask) {
-                inside.push("list-item".into());
+                inside.push(On::Item.alias().into());
                 inside.push(raws[p].data.kind().to_string());
                 if let Data::Typed(t) = &raws[p].data {
                     inside.extend(t.is.iter().cloned());
@@ -1000,7 +1013,7 @@ fn finish(
                 continue;
             }
             if ask {
-                inside.push(c.on.name().into());
+                inside.push(c.on.alias().into());
             }
             if let Some(h) = host.filter(|_| ask) {
                 inside.push(raws[h].data.kind().to_string());
@@ -1351,6 +1364,53 @@ Setext
         );
         let ids: std::collections::HashSet<&str> = all.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids.len(), all.len(), "ids are unique");
+    }
+
+    /// A section is a title with its body (docs/extensions.md, "The alphabet, as built"): a
+    /// heading closes every open section of its level or deeper and opens its own, and
+    /// `section` is the titles still open, outermost first.
+    #[test]
+    fn a_section_is_a_title_and_its_body_by_heading_levels() {
+        let note = "\
+- before any heading
+# One
+- under one
+### Three
+- under three
+> #### Quoted
+> - in the quote
+## Two
+- under two
+### Three again
+# Other
+- under other
+";
+        let all = items(note);
+        let section = |text: &str| by_text(&all, text).section.clone();
+        let none: [&str; 0] = [];
+        assert_eq!(section("before any heading"), none);
+        assert_eq!(section("One"), none, "a title is not in its own section");
+        assert_eq!(section("under one"), ["One"]);
+        assert_eq!(
+            section("Three"),
+            ["One"],
+            "a skipped level nests all the same"
+        );
+        assert_eq!(section("under three"), ["One", "Three"]);
+        assert_eq!(
+            section("in the quote"),
+            ["One", "Three", "Quoted"],
+            "a heading in a quote opens a section like any other"
+        );
+        assert_eq!(
+            section("Two"),
+            ["One"],
+            "a shallower heading closes the deeper ones"
+        );
+        assert_eq!(section("under two"), ["One", "Two"]);
+        assert_eq!(section("Three again"), ["One", "Two"]);
+        assert_eq!(section("Other"), none, "the same level closes its sibling");
+        assert_eq!(section("under other"), ["Other"]);
     }
 
     #[test]

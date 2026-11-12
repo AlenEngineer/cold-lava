@@ -3,7 +3,7 @@ list, heading, block  built in, read natively
 task  built in
   found 17 items
   priority 1 · requires task-lists · actions tasks.toggle
-  on list-item · match '^\[[^\n]\]\s+.*${tasks.global-filter}' · key text · required text
+  on list-item · role item · match '^\[[^\n]\]\s+.*${tasks.global-filter}' · key text · required text
     status       text                                 checkbox                                                                writable
     status_type  enum ${tasks.statuses}               checkbox                                                                writable
     text         text                                 rest without ${tasks.global-filter}                                     read-only
@@ -24,7 +24,7 @@ task  built in
 
 volcano  workspace example-workspace/.cold-lava/types.toml
   found 9 items
-  on note · where tag volcano
+  on note · role document · where tag volcano
     name       text    note name             read-only
     country    text    property country      writable
     elevation  number  property elevation_m  writable
@@ -34,11 +34,11 @@ volcano  workspace example-workspace/.cold-lava/types.toml
 
 eruption  workspace example-workspace/.cold-lava/types.toml
   found 4 items
-  shape 1: on table-row · where header VEI, Example · key vei
+  shape 1: on table-row · role row · where header VEI, Example · key vei
     vei        number  column VEI      writable
     example    text    column Example  writable
     volcanoes  link    inlines links   read-only
-  shape 2: on table-row · where header Volcano, VEI · key volcanoes
+  shape 2: on table-row · role row · where header Volcano, VEI · key volcanoes
     vei        number  column VEI     writable
     example    text    -              not read here
     volcanoes  link    inlines links  read-only

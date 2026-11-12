@@ -116,7 +116,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                         if want_headings || want_inline {
                             let words = heading_range(src, range.clone());
                             candidates.push(Candidate {
-                                on: On::Heading,
+                                on: On::Section,
                                 typeable: want_headings,
                                 own: words.clone(),
                                 text: words,
@@ -241,7 +241,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                             let end = frame.start + first.trim_end().len();
                             let own_end = start + src[start..line_end(last)].trim_end().len();
                             candidates.push(Candidate {
-                                on: On::ListItem,
+                                on: On::Item,
                                 typeable: want_lists,
                                 own: start..own_end.max(start),
                                 text: start..end.max(start),
@@ -300,7 +300,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                             }
                             let text = frame.start..frame.start + text.len();
                             candidates.push(Candidate {
-                                on: On::Paragraph,
+                                on: On::Text,
                                 typeable: want_paragraphs,
                                 own: text.clone(),
                                 text,
@@ -325,7 +325,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                         let row = src[frame.start..range.end].trim_end();
                         let text = frame.start..frame.start + row.len();
                         candidates.push(Candidate {
-                            on: On::TableRow,
+                            on: On::Row,
                             typeable: want_rows,
                             own: text.clone(),
                             text,

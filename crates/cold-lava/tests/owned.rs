@@ -129,7 +129,7 @@ fn the_cli_reads_owned_files_from_the_cache_and_renames_through_their_owner() {
     let row = out.split("\n\n").find(|t| t.starts_with("csv-table.row"));
     let row = row.unwrap_or_else(|| panic!("{out}"));
     assert!(
-        row.starts_with("csv-table.row  extension csv-table\n  found 3 items\n  priority -1\n  on table-row · where file-type csv"),
+        row.starts_with("csv-table.row  extension csv-table\n  found 3 items\n  priority -1\n  on table-row · role row · where file-type csv"),
         "{row}"
     );
     let eruptions = out.split("\n\n").find(|t| t.starts_with("eruption"));

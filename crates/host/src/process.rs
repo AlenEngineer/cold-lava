@@ -120,6 +120,7 @@ impl Process {
         let name = root.file_name().map(|n| n.to_string_lossy().into_owned());
         let params = json!({
             "apiVersion": rpc::API_VERSION,
+            "alphabet": cold_lava_engine::alphabet::VERSION,
             "name": self.manifest.name,
             "workspace": {"root": root, "name": name},
             "permissions": self.manifest.permissions,
@@ -673,7 +674,14 @@ mod tests {
                        "rows": (0..n).map(row).collect::<Vec<_>>()})
             };
             Some(match (m["method"].as_str(), m["params"]["path"].as_str()) {
-                (Some("initialize"), _) => vec![answer(m, json!({}))],
+                (Some("initialize"), _) => {
+                    assert_eq!(
+                        (&m["params"]["apiVersion"], &m["params"]["alphabet"]),
+                        (&json!(1), &json!(1)),
+                        "the alphabet's version goes with the API's"
+                    );
+                    vec![answer(m, json!({}))]
+                }
                 (Some("file/preview"), Some("Data.csv")) => {
                     assert_eq!(
                         (

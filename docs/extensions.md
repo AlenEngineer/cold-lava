@@ -242,6 +242,147 @@ then a query and a view, not a parser of its own.
   `set-cell`, `replace` and `insert-after`. `set-field` already sets a status, a date, a
   property or a cell of a typed item; the others wait until an extension needs one.
 
+### The alphabet, as built
+
+The alphabet is the closed set of things a file can be said to hold, whatever its format:
+pieces with a role, the text inside them, the relations between them, and attributes on each.
+An owner translates its format into these, and a type is written over them, so a type never
+has to know which format a thing was written in. The design, with its reasons, is
+[neutral-model.md](neutral-model.md). This section is the reference for someone who writes an
+owner or a type, and it says for each letter what the engine does with it today.
+
+Today the alphabet is named and versioned, and a type's `on` is written in its roles. No
+owner gives pieces yet: the Markdown owner and the canvas owner still give items of the
+native kinds, and an extension's owner still gives Markdown pieces ("Owners and types, as
+built"). The column "Today" below is exact about each letter.
+
+The alphabet's version is **1** (`alphabet::VERSION`, `crates/engine/src/alphabet.rs`). An
+extension gets it in `initialize` as `alphabet`, beside `apiVersion`. A letter (a role, a
+mark, a relation) is added rarely, by the engine only, and each addition raises the version.
+No extension, type or setting can add one. Attributes are open, so a new attribute changes
+no version.
+
+**Roles.** A piece is one unit of written content, and its role says what it is. There are
+nine:
+
+| Role | What it is | Older name | In Markdown | Today |
+| --- | --- | --- | --- | --- |
+| `document` | the whole file | `note` | the note | a type matches on it: frontmatter, name, tags, and the body's text |
+| `section` | a title and what is under it | `heading` | a heading and its body | a type matches on the title; the native kind `heading` is the title, and `section` on every item is the body ("Sections" below) |
+| `text` | a run of prose | `paragraph` | a paragraph | a type matches on a paragraph outside list items |
+| `item` | one entry in a list; it may hold more | `list-item` | a list item | a type matches on it; the native kind `list`, and the built-in `task` |
+| `row` | one record, in cells | `table-row` | a table row | a type matches on it; a row no type matches is no item |
+| `aside` | set apart from the flow | `quote` | a quote, a callout | a type on it loads and matches nothing; `where.inside` can name it |
+| `verbatim` | text kept exactly | `code` | a code block | a type on it loads and matches nothing |
+| `embed` | something from elsewhere, shown here | none | `![[x]]`, an image | named only: `on = "embed"` is refused, and `![[x]]` is read as a link |
+| `opaque` | kept, not understood | none | an HTML block | named only: `on = "opaque"` is refused, and the block stays in the file unread |
+
+One example of each, as Markdown writes it, with the attributes its owner would give once
+owners give attributes:
+
+| Role | Written as | Attributes |
+| --- | --- | --- |
+| document | `Volcanoes/Krakatoa.md` | its frontmatter: `country = Indonesia` |
+| section | `## Eruptions`, and the lines down to the next heading of level 1 or 2 | `level = 2` |
+| text | `Krakatoa is a caldera in the Sunda Strait.` | |
+| item | `- [ ] Refill the gas masks 📅 2026-11-20` | `checkbox = open`, `due = 2026-11-20` |
+| row | <code>&#124; Krakatoa &#124; 6 &#124;</code> under the header <code>&#124; Volcano &#124; VEI &#124;</code> | |
+| aside | `> [!warning] Hot` | `callout = warning` |
+| verbatim | a fence opened with ```` ```python ```` | `language = python` |
+| embed | `![[Crater.png]]` | |
+| opaque | `<details>…</details>` on lines of its own | |
+
+A callout is an `aside` with an attribute, not a role of its own. A slide, a recipe or a
+meeting is a type over one of the nine, never a tenth role.
+
+**Text.** Text is what is inside a piece:
+
+- plain runs;
+- runs with a mark: emphasis, strong, struck, highlighted, code, math;
+- a **link**, to a file, to a piece, or out to the web;
+- a **label**, which Markdown writes as a tag;
+- a **field**, a named value written inline, as Dataview's `due:: 2026-11-20`.
+
+Today the Markdown tree reads all six marks (`cst.rs`), and the reader draws them, but no
+message carries runs or marks: an item's text is the string as written. Links, labels and
+fields are read and reported, each its own way: links by `links/query` and by a type's
+`inlines = "links"`, labels by `where.tag` and `inlines = "tags"`, a field by a type's
+`inline = "due"`.
+
+A type's `on = "inline"` is not a role. It is a reading of text: its `match` runs over the
+text of every piece the pass collects, whatever the piece's role, and each match is an item
+whose parent is that piece ("Matching, as built").
+
+**Relations.** A relation says how two pieces stand to one another. There are five:
+
+| Relation | Meaning | Today |
+| --- | --- | --- |
+| contains | a piece is inside another | an item's `parent` (the list item it is nested in) and `section` (the sections it is in); `where.inside`, `where.section` |
+| follows | a piece comes after another | the order of a file's items in `items/query`, by line; no field says it |
+| beside | pieces are cells of one record | a row's cells under their header: `where.header`, the `column` source |
+| placed | a piece sits at a position | a canvas node's `x`, `y`, `width` and `height` stay in the `.canvas` file; no message carries them |
+| links to | a piece points at another | `links/query`, backlinks, a type's `inlines = "links"` |
+
+*Placed* is carried and never interpreted: the engine will hand a position to whoever draws,
+and reads no meaning from it.
+
+**Attributes.** Any piece can carry attributes: a name and a typed value. The set is open.
+An owner may attach any attribute, and that is where a format's own details go: a list
+item's checkbox, a heading's level, a callout's kind, a card's position. Values will have
+the value types fields have (text, number, date, datetime, duration, bool, link, tag, enum).
+
+Today no owner gives attributes. What will be attributes is read by a type's sources from
+the piece's own characters: `checkbox = true`, `marker = "📅"`, `property`, `info`. A heading
+item has its `level`, as a field of the native kind.
+
+**In the type language.** A shape's `on` takes a role. The older names still read, so a
+type file written before the roles were named means what it meant: `on = "list-item"` and
+`on = "item"` load the same type, in any origin, and a subtype written with one may extend a
+base written with the other. A types file's `version` stays `1`, with either spelling.
+
+- `embed` and `opaque` are refused by name, with the reason: nothing is read as one yet, so
+  a type on one could never match. Any other unknown `on` is refused as before, on one line,
+  and the line lists the roles and the older names. The broken type is dropped and the rest
+  load.
+- `where.inside` takes a role or its older name too. A name that is both a type's and a
+  role's is the type there: with a type called `item`, `where.inside = ["item"]` means that
+  type, as it always did.
+- A definition's JSON (`types/list`, `cold-lava types --json`) keeps `on` under the older
+  name, so a client written before keeps working, and adds `role` beside it:
+  `{"on": "list-item", "role": "item", …}`. An `inline` shape has no `role`. Read back, `role`
+  must be `on`'s role; in TOML, leave it out.
+- `cold-lava types` prints both: `on list-item · role item`.
+- A message about a mistake names the role: `column can't be read on document (only on
+  row)`.
+
+**Native kinds and roles.** The kinds an item reports (`task`, `list`, `heading`, `block`,
+or a type's name) are older than the roles and are not roles. An item's id hashes its kind,
+so the kinds keep their names. Each maps to a role:
+
+| An item of kind | Is a piece with the role |
+| --- | --- |
+| `list`, `task` | `item` |
+| `heading` | `section`: the item is the title, and its body is every item whose `section` path runs through that title |
+| `block` | whatever the `^id` names: most often a `text`, also a table or an `aside`. The kind says that a block has a name, not what the block is |
+| a type's name | the role its shape is `on`; an inline type's item is a reading of a piece's text and has no role |
+
+**Sections.** A `section` is a title with its body. Markdown writes only the title, so the
+Markdown owner derives the body from the headings' levels, in one rule: a heading closes
+every open section of its own level or deeper, then opens its own. A section's body runs
+from its heading to the next heading of the same level or a shallower one, or to the end of
+the file.
+
+- An item's `section` is the titles of the sections open where it is written, outermost
+  first. A heading's own `section` is the path of the section it is in, without its own
+  title.
+- A skipped level nests all the same: a `###` after a `#` is in that `#`.
+- What is written before the first heading has an empty `section`.
+- A heading inside a quote opens a section like any other, and the next heading of its
+  level or shallower closes it, wherever that one is written.
+
+`items.rs` pins the rule (`a_section_is_a_title_and_its_body_by_heading_levels`), against the
+`section` path items already carry.
+
 ## Types
 
 *(design; definitions load, are checked and are listed: `crates/engine/src/types.rs`,
@@ -272,14 +413,14 @@ fields = { title = "text", author = "link", rating = "number",
 style.rating = { icon = "★" }
 
 [[types.book.from]]                  # a row of any table whose header has Title and Author
-on = "table-row"
+on = "row"
 where.header = ["Title", "Author"]
 key = ["title"]
 fields = { title = { column = "Title" }, author = { column = "Author" },
            rating = { column = "Rating" }, status = { column = "Status" } }
 
 [[types.book.from]]                  # or a note whose frontmatter says type: book
-on = "note"
+on = "document"
 where.property = { type = "book" }
 fields = { title = { property = "title", note = "name" }, author = { property = "author" },
            rating = { property = "rating" }, status = { property = "status" } }
@@ -292,7 +433,7 @@ write = " ~{minutes}"
 style.minutes = { badge = true, icon = "⏱" }
 ```
 
-- **Shapes** say which primitive (`on`), cheap conditions (`where`: table header, frontmatter
+- **Shapes** say which piece, by its role (`on`; "The alphabet, as built"), cheap conditions (`where`: table header, frontmatter
   property, tag, folder, section, fence language, inside another type), an optional pattern,
   and where each field is read. A note's types are found in the one pass that already reads it.
 - **Sources know how to write.** `marker = "📅"` (a glyph and a value), `inline = "due"`
@@ -348,7 +489,9 @@ style.minutes = { badge = true, icon = "⏱" }
 ### Loading, as built
 
 - **Every shape names its `on`**, even in a subtype: `[types.idea] extends = "task"` also says
-  `on = "list-item"`. Inheriting shapes from a base waits for typed blocks.
+  `on = "item"`. Inheriting shapes from a base waits for typed blocks. `on` is a role of the
+  alphabet or `inline`, and the names it had before (`note`, `heading`, `paragraph`,
+  `list-item`, `table-row`, `quote`, `code`) still read ("The alphabet, as built").
 - **A field can have several sources in one shape**, read in the order written; the first with
   a value wins (`title = { property = "title", note = "name" }`). TOML writes them as one
   table; the JSON of a definition writes them as a list (`[{"property": "title"}, {"note":
@@ -367,12 +510,13 @@ style.minutes = { badge = true, icon = "⏱" }
   of the daily note the block is in (the workspace's Daily notes folder and format). `capture`,
   `pattern`, `marker`, `inline`, `flag`, `flags`, `checkbox`, `column`, `property` and `info`
   are writable (a checkbox is replaced only, like a capture); the rest are read-only. Each
-  source can only be read on some primitives (`column` on `table-row`, `property` on `note`,
-  `info` on `code`, `marker` and `rest` on text blocks, …), and `Source::on` in types.rs is that
-  table.
+  source can only be read on some roles (`column` on `row`, `property` on `document`,
+  `info` on `verbatim`, `marker` and `rest` on `section`, `text`, `item` and `aside`, …), and
+  `Source::on` in types.rs is that table.
 - **`where`** has `header`, `property` (string values), `tag` (a nested tag counts),
   `folder`, `file-type` (the file's extension: `md` for a note, `csv` for a file an owner
-  reads), `section`, `language` (the fence's) and `inside` (a type, native kind or primitive).
+  reads), `section`, `language` (the fence's) and `inside` (a type, a native kind, or a role or its
+  older name; a name that is both a type's and a role's is the type).
 - **Looks:** `colour` (or `color`): `red`, `orange`, `yellow`, `green`, `cyan`, `purple`,
   `accent`, `muted`; `badge`, `icon`, `dim`, `strike`, `bold`, `hide`, `link` (the value is
   followed as a link), `whole` (the look covers the whole item), and `by-value` (looks by enum
@@ -422,9 +566,9 @@ style.minutes = { badge = true, icon = "⏱" }
   only against the shapes on its primitive that passed. No `RegexSet` prefilter yet; that is for
   the performance step. `matcher.rs` holds the matching, `frontmatter.rs` the line-by-line
   frontmatter reader.
-- **Primitives so far:** `note`, `table-row`, `list-item`, `heading`, `paragraph` (a
-  paragraph outside list items) and `inline`. Shapes on `code` and `quote` load but match
-  nothing.
+- **Roles matched so far:** `document`, `row`, `item`, `section`, `text` (a paragraph
+  outside list items), and the `inline` reading. Shapes on `verbatim` and `aside` load but
+  match nothing.
   Tasks are typed blocks like any other, of the built-in `task` type; an `idea` that `extends =
   "task"` with `where.tag = ["idea"]` wins over `task` as its subtype and still answers to
   `task`, so it is in the agenda and `task toggle` ticks it.
@@ -1986,8 +2130,8 @@ during the call, and `view/open` names its view at once; the rest are queued.
 
 ### Over the wire, as built
 
-- **Host → extension.** `initialize` is a request, with `apiVersion` (1), the extension's
-  `name`, `workspace` (`root`, absolute, and `name`), its `permissions`, and
+- **Host → extension.** `initialize` is a request, with `apiVersion` (1), `alphabet` (1, the
+  alphabet's version: "The alphabet, as built"), the extension's `name`, `workspace` (`root`, absolute, and `name`), its `permissions`, and
   `capabilities.methods`, the methods it may call; its answer is not read, but an error stops
   it. `command/run` (`id`, `args`) is a request, so a refusal (the error's message) and a
   missing answer show on the status line. `shutdown` is a request, then `exit` a notification,

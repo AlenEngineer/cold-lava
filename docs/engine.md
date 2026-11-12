@@ -65,7 +65,9 @@ plain text, so the same file reads the same way everywhere in cold-lava.
 of, as CommonMark defines them: blocks (paragraph, heading, list item, quote, code, table,
 frontmatter) and inlines (text, link, emphasis, code span, tag). Values inside them have a small
 set of types: text, number, date, datetime, link, tag, true/false, list. These are a note's
-bytes and integers.
+bytes and integers. Named without reference to Markdown they are the alphabet: nine roles
+of a piece, the text inside it, five relations and open attributes (extensions.md, "The
+alphabet, as built"; named and versioned so far, and a type's `on` is written in the roles).
 
 **3. Types** *(designed in extensions.md, "Types"; definitions load and are checked:
 `types.rs`, `cold-lava types`; they match notes, table rows, list items, headings and

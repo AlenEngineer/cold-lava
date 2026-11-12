@@ -659,6 +659,12 @@ match = '\bVEI (?<n>\d)\b'
 fields.vei = { capture = "n", type = "number" }
 ```
 
+`on` says what a type is found on, by its role: `document` (the whole note), `section` (a
+heading), `text` (a paragraph), `item` (a list item) or `row` (a table row), or `inline` for a
+pattern anywhere in text. The names `on` had before (`note`, `heading`, `paragraph`,
+`list-item`, `table-row`) still work and mean the same, as in the example above.
+`cold-lava types` prints both (`on note · role document`).
+
 Every note and block a type matches is an item of that kind, so `cold-lava items` lists them
 with their fields:
 

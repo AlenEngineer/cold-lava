@@ -2,6 +2,7 @@
 //! and frontend" in docs/engine.md.
 
 pub mod act;
+pub mod alphabet;
 pub mod bind;
 pub mod bookmarks;
 pub mod core;

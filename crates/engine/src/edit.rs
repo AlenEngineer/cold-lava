@@ -139,7 +139,7 @@ pub fn plan(
         return Err(Refused(format!(
             "this {} is a {} that doesn't read {field}",
             typed.kind,
-            shape.on.name()
+            shape.on.alias()
         )));
     }
     let dataview = || {
@@ -401,7 +401,7 @@ impl Writer<'_> {
                     range: span,
                     with: self.written(false)?,
                 }),
-                None if self.on == On::Note => {
+                None if self.on == On::Document => {
                     let nl = newline(self.text);
                     let at = block.start;
                     let gap = if at > 0 && !self.text[..at].ends_with('\n') {
