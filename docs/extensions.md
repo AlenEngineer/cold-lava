@@ -187,7 +187,8 @@ then a query and a view, not a parser of its own.
   writing), `refused` (an unknown kind or field, a read-only source, a value that doesn't fit,
   a toggle on no task), `read-back` (the note wouldn't read back as asked; nothing was
   written), `io`, `forbidden` (the manifest doesn't ask for the permission), `no-workspace` and
-  `exists` (`workspace/create` at a path where a file is).
+  `exists` (`workspace/create`, `workspace/create-folder` or `workspace/restore` at a path
+  where something is).
 - **Edits are made during the call, not queued.** An extension's reads and edits both need an
   answer (the new `rev`, or why it was refused), and a later edit in the same call must see the
   first one, so the core edits and reads the note again before `edit_item` returns. An item of
@@ -217,7 +218,9 @@ then a query and a view, not a parser of its own.
   `rpc::serve` reads each as a `gateway::Request` and answers it through the same `Host`, so
   the permission gate is the same; news goes out as notifications ("Transport, as built").
 - **Files.** `workspace/read`, `workspace/write`, `workspace/create` and `workspace/files`
-  read and write whole files ("File types, as built" below).
+  read and write whole files ("File types, as built" below). `workspace/stat`,
+  `workspace/delete`, `workspace/restore` and `workspace/create-folder` are there too
+  ("Deleting, restoring and making folders").
 - **The link graph.** `links/query` (no params, `items.read`) answers every file links come
   from and where each link leads, whatever owns the file (`crates/engine/src/links.rs`, pinned
   there): `{"files": [{"path": "Volcanoes/Kīlauea.md", "name": "Kīlauea", "tags":
@@ -967,6 +970,194 @@ graph all see the new date. None of them knew what a canvas is.
   *(decided 2026-11-11; docs/engine.md, "Direction and order")*: `.canvas` has the engine's
   owner for its items and links ("The canvas owner, as built"), and the whiteboard is a mode of
   the menu's loop ("Scenes, as built"). Images have a view kind ("The image view, as built").
+
+### Deleting, restoring and making folders
+
+*(design of 2026-11-11, written before the code; the first group of #193, "one door into the
+engine". Built: `crates/engine/src/files.rs`, `Core::stat_file`, `delete_file`,
+`restore_file` and `create_folder`, `Host`'s methods of the same names, `rpc.rs`. Revised
+after an independent check of the first build: whose a token is, what `to` may do, symlinks,
+what `stat` lists, and the menu's undo across workspaces.)*
+
+The menu deleted, restored and made folders by calling the engine's functions itself, so an
+extension, `cold-lava lsp` (#195) or the GUI could do none of it. These are now file messages,
+beside the four above and shaped like them: a path is workspace-relative and goes through
+`files::resolve`, a change names the version it was decided on as `expect`, and a refusal is
+the same `{reason, message}`.
+
+| Request | Answer |
+| --- | --- |
+| `workspace/stat {path}` | `{rev}` for a file or a symlink, `{rev, inside, more, hidden}` for a folder; `changed` when nothing is there |
+| `workspace/delete {path, expect}` | `{trashed, went}`; `changed` unless the file or folder is still the version `expect`, or when it is gone |
+| `workspace/restore {trashed, to}` | `{path}`, where it is now; `to` is optional; `exists` when something is there, `changed` when the caller was given no such token or the trash no longer has it |
+| `workspace/create-folder {path}` | `{path}`; `exists` when something is there; missing parents are made |
+
+```json
+{"method": "workspace/stat", "params": {"path": "Concepts"}}
+{"rev": "9c1d0a52e17b3f04", "inside": ["Concepts/Lava.md", "Concepts/Old/", "Concepts/Old/Ash.md"], "hidden": 2}
+
+{"method": "workspace/delete", "params": {"path": "Concepts/Lava.md", "expect": "af63dc4c8601ec8c"}}
+{"trashed": "3f9c1b7e02a44d18c6e5a09b7d21f4e3", "went": "system"}
+
+{"method": "workspace/restore", "params": {"trashed": "3f9c1b7e02a44d18c6e5a09b7d21f4e3"}}
+{"method": "workspace/restore", "params": {"trashed": "3f9c1b7e02a44d18c6e5a09b7d21f4e3", "to": "Concepts/Lava 1.md"}}
+{"path": "Concepts/Lava.md"}
+
+{"method": "workspace/create-folder", "params": {"path": "Guide/Field Notes"}}
+{"path": "Guide/Field Notes"}
+```
+
+- **Names.** `workspace/…`, as the other file messages. The version parameter is `expect`, the
+  word `workspace/write` has, not `rev`: `rev` is what an answer gives, `expect` what a
+  change is checked against. `create-folder` and not a `folder` flag on `workspace/create`:
+  that one answers a `rev` and takes `text`, and a folder has neither.
+- **A delete is never for good.** It goes through `trash::delete`, to the trash the
+  workspace's `trashOption` names: the system trash, or the workspace's `.trash` (also when
+  Obsidian would delete permanently, and when the system trash can't take it). `went` says
+  which: `system` or `workspace`. No message deletes permanently, and none empties a trash.
+- **`workspace/stat`** is the read a delete needs. `workspace/read` gives a `rev` only with a
+  file's text, so it has none for an image and none for a folder. `stat` gives the `rev` of
+  any file (the same 16 hex digits `workspace/read` gives, of the file's bytes) and of a
+  folder.
+- **What `stat` lists.** `inside` is what the caller shows before it asks: the folder's
+  entries at any depth, workspace-relative, sorted, a folder ending in `/`. It leaves out
+  every entry under a hidden name (`.git/objects/…`, `.DS_Store`), which `workspace/read`
+  would refuse too, and says how many there are as `hidden`, so a dialog can say "and 40
+  hidden entries" without naming them. It stops at 1000 entries (`files::LISTED`) and
+  counts the rest as `more`. Both counts are left out when zero. The `rev` still covers
+  every entry, hidden and unlisted ones too, so the delete's check loses nothing. Listing a
+  folder needs `files.read` whatever the folder is called: an owner's kind is a kind of
+  file, and a folder named `Old.csv` is not one.
+- **Symlinks.** `stat` and `delete` take the entry itself. A symlink is never followed: its
+  `rev` is of where it points, it has no `inside`, and a delete moves the link to the
+  trash and leaves its target alone, a file or a folder, inside the workspace or outside,
+  there or gone. The folder the link is in still has to lead inside the workspace, so
+  nothing is reached *through* a link that leads out. A symlinked folder is treated the
+  same way as a symlinked note, and not refused: the link is the workspace's own entry,
+  and the message should not depend on what a link points to. The menu reaches only the
+  note: its tree lists a symlinked note, opens it and deletes it as the link, but it does
+  not show a symlinked folder at all (the scan doesn't follow links), so the menu can do
+  nothing with one; over the gateway its link is trashed and restored like any entry.
+- **One spelling per path.** Every path of a file message is first brought to one
+  spelling (`files::normal`): parts joined by single `/`, no slash at either end, refused
+  when a part is `.`, `..`, hidden or holds a NUL. Checks and system calls then use that
+  spelling and no other. A trailing slash matters to the kernel: `lstat("Link/")` follows
+  the link, and on macOS so does `rename`, while a check on the path's parent sees an
+  ordinary entry. `stat` and `delete` were open to that for one build that was never
+  merged: `stat "Link/"` listed what the link led to, and on macOS `delete "Link/"` moved
+  that folder, outside the workspace, into the trash (on Linux the `rename` failed). The
+  test that asks with every spelling ran on both systems before the fix and showed it;
+  `read`, `write`, `create`, `create-folder` and a restore's `to` were not, since
+  they follow links on purpose and refuse a path that ends up outside. All of them go
+  through `normal` now, and answers give paths in that spelling. Case and Unicode form
+  are left as written: on a file system that folds them, the check and the call still
+  see the same string, and what is found is decided once, by `lstat`.
+  `workspace/read`, `write` and `create` follow links as before and refuse one that
+  leads out.
+- **A folder's version** is a hash of its listing: every file and folder in it, at any depth,
+  hidden ones too, each with its size and modified time. `stat` answers it with the listing
+  (`inside`: workspace-relative, sorted, a folder ending in `/`), which is what the caller
+  shows and the user confirms, as the menu's dialog does ("It holds 13 notes, and everything
+  else in it"). A delete with that `expect` is refused as `changed` when a file was added,
+  removed or written since. Each file's own `rev` is not asked for: a caller would have to read
+  every file to delete a folder, the bytes of an attachment folder are large, and the listing
+  with sizes and times is what the menu has checked since folders could be deleted. A write
+  that keeps a file's size and puts its old time back is not seen; it is not seen by any
+  editor's "changed on disk" either.
+- **Several at once** is the caller's loop, one `workspace/delete` each, each checked on its
+  own. A caller that wants none to go when one changed asks `workspace/stat` for all of them
+  first, as the menu does for marked notes; a change between that check and a delete still
+  stops at that one, with the ones before it in the trash and their tokens in hand.
+- **The restore token.** `trash::restore` needs where the file was, where it is in the trash,
+  and on Linux its `.trashinfo`. The core keeps that and hands out `trashed`, a token.
+  `workspace/restore` puts the file back where it was, or at `to`, never over something:
+  that is `exists`, and the token still works. Once restored the token is spent.
+  - **A token is the client's it was given to.** The core keeps who deleted what, and
+    another client's token answers exactly as one nobody was given: `changed`. An extension
+    can't put back, or put elsewhere, what the user or another extension deleted.
+  - **A token says nothing about any other.** It is 32 hex digits, 128 bits of a hash keyed
+    at random when the core opens (the standard library's `RandomState`), of a counter no
+    client sees. Nothing in one token, or in a token of an earlier run, helps to work out
+    another.
+  - **It does not survive a restart of the core, in either trash.** The core's memory is
+    the only record that a token is real, and whose it is. The workspace's `.trash` and
+    macOS's `~/.Trash` are plain folders that record nothing of where a file came from, so
+    a token that outlived the core would have to carry both paths itself, as data the
+    client sends, and then the core could not tell a real one from a forged one: any client
+    could move any file out of the user's trash into the workspace and read it. A token
+    that is only a random name for something the core holds can't be forged, and the price
+    is that it goes with the core. After a restart the file is still in the trash, and the
+    desktop's own "restore" puts it back on Linux (the `.trashinfo` is written for that).
+  - The core keeps the last 256 deletes of each client; an older token is `changed`.
+- **`to` is a new name.** Putting a file back somewhere else makes a file there, so over the
+  gateway `to` needs `files.write` as well as `files.delete`, and a `to` other than where the
+  file was follows the rules a new folder's name does: `files::resolve` (inside the
+  workspace, no hidden part) and `rename::check_path` (no `[ ] | # ^`, which links can't
+  point to). Without `to` the file goes back under the name it had, whatever that was.
+  `to` is for the free name a frontend offers when the old path is taken; it is not a move.
+  A move that keeps the links to a note right is `rename`'s, in the next group.
+- **A frontend's undo across cores.** The menu drops its core when another workspace is
+  opened, and its undo has to outlive that. `Core::take_trashed(by)` hands a client's
+  deletes out of a core, and `Core::keep_trashed(by, kept)` gives them to the next core on
+  that workspace, under the tokens they had. Only a core makes the value that travels
+  (`files::Kept`), and it never crosses the wire, so this is for a frontend that holds the
+  core, not for extensions. The menu keeps it per workspace while it is away. An undo asked
+  for while another workspace is open says which workspace to open, and stays on the stack.
+- **Permissions.** `workspace/delete` and `workspace/restore` need **`files.delete`**, a
+  permission of its own that `files.write` does not include; a restore with `to` needs
+  `files.write` too; `workspace/create-folder` needs
+  `files.write` (creating is a write); `workspace/stat` is a read (`files.read`, or the owner
+  of a file's kind; `files.read` for any folder). A manifest is where the user sees what an extension may do, and the trust
+  prompt (#89) will list the same words: "may delete files" is a line worth its own, and an
+  extension that writes tables should not get it by asking to write. It guards against an
+  extension that deletes by mistake, not against a hostile one: `files.write` can already
+  empty any file, with no copy in a trash. Owning a kind of file does not allow deleting it:
+  opening and saving are what an owner is for, a folder has no kind, and the rule stays one
+  line.
+- **Who made it.** Each change is made inside the call, the files it touched are read again
+  at once (a note as the watcher would, a folder with a rescan), and the core emits what
+  changed and then `Deleted {path, by}`, `Restored {path, by}` or `FolderCreated {path, by}`,
+  with `by` the client's name, as `ItemEdited` does for edits. The menu's status line says
+  `<extension>: deleted <path>`. Item and link subscribers hear the removal and the return
+  once each, in that order (`core/news.rs`). That holds for the menu's own deletes too: it
+  no longer reads the workspace again after one, since the core has (`delete-news.drive`
+  counts what an extension hears). A folder is the exception, on purpose: the core reads
+  the workspace again inside the call, which is one `items/reset`, and the watcher's own
+  report of a folder is a second one a little later, as for any folder that changes.
+  Telling the core's own move from someone else's in the watcher's report would risk
+  missing a real change, and a reset only costs a query.
+- **No plan for a delete.** A plan is for a change the engine computes and the user reads
+  before it happens: a rename's link edits. A delete computes nothing. What the menu shows
+  first, the notes that link to what goes, is a question any client already asks:
+  `links/query`, or the backlinks the index has. So a delete is `stat`, the frontend's own
+  dialog, then `delete` with the `rev` the user saw. That `rev` is the ticket.
+- **The menu is a client.** It asks the core directly, in-process and with no JSON, with the
+  same request types, as `menu` (a name no extension can take). It needs no permission: it is
+  the user. Nothing in the terminal app calls `trash::delete`, `trash::restore` or
+  `write::create_dir` any more, and `tests/one_door.rs` reads its source to keep it so:
+  it lists every engine write, every whole-workspace operation and every `std::fs` change
+  the app still makes itself, and why.
+
+**The pattern for the next groups** (rename, move and merge; recipes; undo; bookmarks), so
+each doesn't invent one:
+
+- One message per engine operation, named `area/verb`, its types in the engine with pinned
+  JSON, answered by `Core`, reached through a `Host` method that checks one permission, and
+  listed in `rpc.rs`. The menu calls the same `Core` method as `menu`.
+- A change the engine computes is two messages. `rename/plan {…}` answers the edits as data
+  (per file: path, `rev`, changed lines, what its owner has to answer) with a `ticket`;
+  `rename/apply {ticket}` makes it, refused as `changed` when any file is no longer the
+  version the plan read, with nothing written. Any frontend draws the preview from the plan.
+  A plan that waits for owners answers later under the same ticket, as `items/edit` does.
+- What the core keeps for a client (a plan, something in the trash, what an apply wrote) is
+  named by a token it hands out: a string, new each run, kept per client up to a bound, gone
+  with the core. Undo is `…/undo {ticket}` on the ticket an apply answered, the way
+  `workspace/restore` takes `trashed`.
+- Every change ends with an event that names the client, after the events of the files it
+  touched.
+- Permissions name what the user would say: `files.write` for a change to text (rename,
+  merge and recipes rewrite links), `files.delete` when something leaves the workspace (a
+  merge trashes its source, so it needs both).
 
 ### Owners and types, as built
 
@@ -1787,7 +1978,8 @@ Built-in extensions already use, in-process (`crates/host/src/lib.rs`): `initial
 `view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
 `workspace/saved`, `workspace/open`, `pane/open`, `pane/input`, `items/query`,
 `items/subscribe`, `items/unsubscribe`, `items/edit`, `types/list`, `workspace/style`,
-`workspace/read`, `workspace/write`, `workspace/create`, `workspace/files`, `view/open`,
+`workspace/read`, `workspace/write`, `workspace/create`, `workspace/files`,
+`workspace/stat`, `workspace/delete`, `workspace/restore`, `workspace/create-folder`, `view/open`,
 `view/update`, `view/close` and `view/show` from the extension. The `items/*`, `types/list`,
 `workspace/style` and file requests are answered
 during the call, and `view/open` names its view at once; the rest are queued.
@@ -1880,7 +2072,7 @@ keys = ["W"]                     # default keys; config.toml can change them
   be named as the extension. `run` is what the sketch called `command`: a word apart from
   `[[commands]]`.
 - **Mistakes** are collected like config.toml's: an unknown field, a bad name, a name
-  cold-lava keeps (`nvim`, `table`, `agenda`, `reader`), a folder named otherwise, a second
+  cold-lava keeps (`nvim`, `table`, `agenda`, `reader`, `menu`), a folder named otherwise, a second
   extension of the same name, an `api` other than 1, a transport cold-lava doesn't have, an empty
   `run`, a permission it doesn't know, a file type with a bad extension or a `new` that isn't
   one of its commands, or types written as `[types.NAME]` instead of `[[types]]` leave that
@@ -1909,17 +2101,22 @@ runs the `open-tasks` example with and without `items.edit`.)*
 | --- | --- |
 | `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`, `workspace/style` |
 | `items.edit` | `items/edit` |
-| `files.read` | `workspace/read` and `workspace/files` for kinds of file it doesn't own |
-| `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own |
+| `files.read` | `workspace/read`, `workspace/files` and `workspace/stat` for kinds of file it doesn't own, and `workspace/stat` of any folder |
+| `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own, and `workspace/create-folder` |
+| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too; a restore to another path needs `files.write` as well |
 
 A request without its permission is refused as `forbidden`, with the permission it needs in
 the message. An owner needs no permission for files of its own kinds ("File types, as built").
 Creating is a write, so there is no `files.create`, and a manifest that names it doesn't load.
+Deleting is not: `files.write` doesn't include `files.delete`, and owning a kind doesn't
+either ("Deleting, restoring and making folders").
 An extension changes notes only through the gateway (`items/edit`, or `workspace/write` with
 `files.write`), never by writing files itself. The built-in Neovim declares `permissions = []`: it edits
 notes as text in its pane, which the core watches like any other editor. The menu's own
 screens (the table, the reader's `x`) read and edit as `table` and `reader`; the built-in
-agenda asks for `items.read` and `items.edit` like any extension.
+agenda asks for `items.read` and `items.edit` like any extension. The menu itself deletes,
+restores and makes folders as `menu`, straight on the core: it is the user, so no permission
+is checked.
 
 Views need no permission. Like `ui/notify` and `pane/open`, a view is the frontend's to draw,
 size and close: the user closes it with Esc or `q`, it takes no keys but the ones its list

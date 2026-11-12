@@ -859,7 +859,8 @@ every overdue open task to today* and *list the open tasks by note* to the palet
 list is its own view: `x` ticks a task, `t` makes it due today, Enter opens its note (`Ctrl-o`
 comes back to the list), Esc closes it. Its `extension.toml` names the program
 to run, its commands and its permissions: `items.read` (the default) to read items,
-`items.edit` to change them. An extension runs as you, like an Obsidian or Neovim plugin, so
+`items.edit` to change them, `files.read` and `files.write` for whole files, and
+`files.delete` to move a file or folder to the trash and put it back. An extension runs as you, like an Obsidian or Neovim plugin, so
 install only ones you trust; permissions limit what cold-lava does for it, not what the program
 can do on its own. Extensions inside a workspace (`.cold-lava/extensions/`) are never run. A
 crashed extension is reported once on the status line, with the last line of its log
