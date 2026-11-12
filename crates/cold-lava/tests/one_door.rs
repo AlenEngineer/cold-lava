@@ -1064,3 +1064,20 @@ fn the_listings_are_these() {
          what a command did or why it didn't is a message (`told!`, `problem!`)"
     );
 }
+
+/// What the terminal app draws goes into ratatui's cells, and text drawn through ratatui
+/// (`Span`, `Line`, `Paragraph`, `set_string`) loses its control characters there. A symbol
+/// set on a cell itself does not, so only `cells.rs` sets one, and it shows the stand-in
+/// for what a terminal would act on. A cell reached another way (`Buffer::content_mut`, a
+/// widget of another crate that sets symbols itself) is not seen.
+#[test]
+fn the_app_sets_a_cells_symbol_only_through_cells() {
+    let sets = ["set_char(", "set_symbol("];
+    let found = tally(per_file(&sources(), |code| named(code, &sets)));
+    assert_eq!(
+        found,
+        ["cells.rs: set_symbol( ×2"],
+        "a symbol set on a cell outside cells.rs: set it with `cells::put` or \
+         `cells::put_char`, so an escape sequence in a label never reaches the terminal"
+    );
+}

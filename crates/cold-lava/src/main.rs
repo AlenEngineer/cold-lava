@@ -1,6 +1,7 @@
 mod agenda;
 mod app;
 mod board;
+mod cells;
 mod commands;
 mod config;
 mod drive;

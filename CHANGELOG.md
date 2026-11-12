@@ -180,9 +180,19 @@ change commands, keys and file formats; patch versions only fix things.
     `t\u{1f}1`) and an extension's own error text. These messages are escaped where they
     are made, so an extension that is refused gets the same text over the gateway, as it
     already did for the values a reason quotes.
+  - In the terminal app, a label drawn a character at a time was written to the terminal as
+    it is: a note whose file name held an escape sequence retitled the terminal from the
+    graph with its labels on, and an arrow's label or a shape's label on the whiteboard
+    could do the same. Graph labels, arrows' labels and the labels a placed shape shows are
+    now escaped like a listing before they are laid out, and every symbol the app sets on a
+    cell itself goes through one function, which shows `�` for a character a terminal would
+    act on. A notice on the status line of the menu or the whiteboard is escaped like a
+    message, so an extension's words in it show `\u{1b}` and `\u{202e}` where the status
+    line used to drop the control characters without a trace (and a line break in a notice
+    now shows as `\n`). The rest of what the app draws (the tree, the reader, lists, tables,
+    cards) goes through ratatui's text as before, which drops control characters.
   - `--json` is unchanged, and so is everything kept: files, ids, revs and what the gateway
-    answers hold the text as written. The terminal app's own drawing is not part of this
-    change.
+    answers hold the text as written.
 - An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
   with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the

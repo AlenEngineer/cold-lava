@@ -893,8 +893,11 @@ impl SceneView {
             if !(show_all || near || hit(i) || important || Some(i) == sel) {
                 continue;
             }
-            let mut text: String = n.label.chars().take(28).collect();
-            if n.label.chars().count() > 28 {
+            // A node's label is a file's name or an extension's words: escaped before it
+            // is cut and drawn.
+            let label = crate::outside::escape(&n.label, crate::outside::Level::Content);
+            let mut text: String = label.chars().take(28).collect();
+            if label.chars().count() > 28 {
                 text.push('…');
             }
             let style = if Some(i) == sel {

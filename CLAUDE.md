@@ -510,6 +510,14 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
   everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
+- `cells.rs`: the only module that sets a symbol on a screen cell (`cells::put`,
+  `put_char`). Text drawn through ratatui (`Span`, `Line`, `Paragraph`, `set_string`) loses
+  its control characters there, but a symbol set on a cell is written to the terminal as it
+  is, so never call `set_char` or `set_symbol` elsewhere (`tests/one_door.rs` lists them).
+  A label drawn a character at a time (graph, arrow, shape) is escaped with
+  `outside::escape` at `Level::Content` before it is laid out; `cells::put` shows `�` for
+  what still gets there. `Home::flash` and `Board::flash` escape a notice at
+  `Level::Message`.
 - `say.rs`: the only module that prints to stdout and stderr, each line through
   `outside::escape`. Which entry is called says what the line is: `out!` (and `Out::listing`,
   `listing_block`) for a listing, a line that is the user's own content; `told!` (stdout)

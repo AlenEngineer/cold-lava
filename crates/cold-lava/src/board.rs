@@ -1525,7 +1525,9 @@ impl Board {
     // ---------- editing operations ----------
 
     pub fn flash(&mut self, s: impl Into<String>) {
-        let s = s.into();
+        // A notice may quote a file's or an extension's words: escaped as a message is.
+        let s: String = s.into();
+        let s = crate::outside::escape(&s, crate::outside::Level::Message).into_owned();
         // The shape editor in front shows it now, in the board's place.
         let shown = self.editor.as_mut().map(|editor| {
             editor.say(s.clone());
@@ -2694,7 +2696,7 @@ impl Board {
                     && r < (a.y + a.height) as i32
                 {
                     let cell = &mut buf[(c as u16, r as u16)];
-                    cell.set_char('·');
+                    crate::cells::put_char(cell, '·');
                     cell.set_fg(GRID);
                 }
                 x += step;
@@ -2735,7 +2737,9 @@ impl Board {
             let arrow_from = e.from_end.as_deref() == Some("arrow");
             lines.push((ax, ay, bx, by, color, arrow_to, arrow_from));
             if let Some(l) = e.label.as_ref().filter(|l| !l.is_empty()) {
-                labels.push(((ax + bx) / 2.0, (ay + by) / 2.0, l.clone()));
+                // An arrow's label is the file's: escaped before it is measured and drawn.
+                let label = crate::outside::escape(l, crate::outside::Level::Content).into_owned();
+                labels.push(((ax + bx) / 2.0, (ay + by) / 2.0, label));
             }
         }
         // Preview arrow while connecting.
@@ -2805,7 +2809,7 @@ impl Board {
                 let at = (a.x + p.col as u16 + col, a.y + p.row as u16 + row);
                 let cell = &mut buf[at];
                 if c.ch != ' ' || c.fg != Token::NONE {
-                    cell.set_char(c.ch);
+                    crate::cells::put_char(cell, c.ch);
                     cell.set_fg(match c.fg {
                         ink::TEXT => NOTE,
                         ink::LABEL => ACCENT_SOFT,
@@ -2871,7 +2875,7 @@ impl Board {
             for y in rect.top()..rect.bottom() {
                 for x in rect.left()..rect.right() {
                     let cell = &mut buf[(x, y)];
-                    cell.set_char(if is_group { '░' } else { '█' });
+                    crate::cells::put_char(cell, if is_group { '░' } else { '█' });
                     cell.set_fg(border_color);
                 }
             }
@@ -3534,7 +3538,7 @@ fn put_str(f: &mut Frame, area: Rect, col: i32, row: i32, s: &str, style: Style)
         let c = col + k as i32;
         if c >= area.x as i32 && c < (area.x + area.width) as i32 {
             let cell = &mut buf[(c as u16, row as u16)];
-            cell.set_char(ch);
+            crate::cells::put_char(cell, ch);
             cell.set_style(style);
         }
     }
@@ -4337,5 +4341,35 @@ mod tests {
             sides(&n(0.0, 0.0), &n(400.0, 0.0), Some("top"), None),
             ("top", "left")
         );
+    }
+
+    /// An arrow's label is the file's words and a notice may quote an extension's: what a
+    /// terminal would act on in them is shown as `\u{…}`, and no cell of the board holds it.
+    #[test]
+    fn an_arrows_label_and_a_notice_reach_no_cell_as_written() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (dir, path, _core) = workspace("board-outside", vec![]);
+        let nodes = [card("a", 0, "Alpha"), card("b", 600, "Beta")];
+        let edge = json!({"id": "e", "fromNode": "a", "toNode": "b", "label": "go\u{1b}]0;t\u{7}"});
+        let file = json!({"nodes": nodes, "edges": [edge]});
+        std::fs::write(&path, file.to_string()).unwrap();
+        let mut b = Board::open(&dir, path, None).unwrap();
+        b.flash("tally: no\u{1b}]0;t\u{7}\u{202e}pe");
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| b.draw(f, &[])).unwrap();
+        let cells = t.backend().buffer().content().iter();
+        let shown: String = cells.map(|cell| cell.symbol()).collect();
+        let acts = |c: char| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}');
+        assert!(!shown.contains(acts), "{shown:?}");
+        assert!(
+            shown.contains("go\\u{1b}]0;t\\u{7}"),
+            "the label: {shown:?}"
+        );
+        assert!(
+            shown.contains("tally: no\\u{1b}]0;t\\u{7}\\u{202e}pe"),
+            "the notice: {shown:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

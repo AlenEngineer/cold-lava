@@ -357,7 +357,12 @@ fn paint_members(
             continue;
         }
         let room = Room::inside(&Mask::area(placed, &r.area, view, Res::BRAILLE));
-        let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+        // A label is an item's words or an extension's: escaped before it is fitted.
+        let escaped = entries
+            .iter()
+            .map(|e| crate::outside::escape(&e.label, crate::outside::Level::Content));
+        let escaped: Vec<_> = escaped.collect();
+        let labels: Vec<&str> = escaped.iter().map(|label| label.as_ref()).collect();
         let fitted = fit::labels(&room, &labels, Flow::Column, Align::Center);
         fitted.paint(grid, draw::TEXT);
         for (entry, line) in fitted.lines.iter().take(fitted.shown).enumerate() {

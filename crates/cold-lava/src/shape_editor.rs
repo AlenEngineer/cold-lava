@@ -1431,7 +1431,7 @@ impl Editor {
                 }
                 let b = &mut buf[(c.x + col, c.y + row)];
                 if cell.ch != ' ' || cell.fg != canvas::Style::NONE {
-                    b.set_char(cell.ch);
+                    crate::cells::put_char(b, cell.ch);
                     b.set_fg(match cell.fg {
                         ink::TEXT => NOTE,
                         ink::LABEL => ACCENT_SOFT,
@@ -1613,7 +1613,7 @@ impl Editor {
                     continue;
                 }
                 let b = &mut buf[(area.x + col, area.y + row)];
-                b.set_char(cell.ch);
+                crate::cells::put_char(b, cell.ch);
                 b.set_fg(match cell.fg {
                     ink::LABEL => ACCENT_SOFT,
                     _ => NOTE,
@@ -1721,7 +1721,7 @@ fn describe(b: &shapes::Behaviour) -> String {
 fn put(f: &mut Frame, col: u16, row: u16, s: &str, style: Style) {
     let area = f.area();
     if col < area.x + area.width && row < area.y + area.height {
-        f.buffer_mut()[(col, row)].set_symbol(s).set_style(style);
+        crate::cells::put(&mut f.buffer_mut()[(col, row)], s).set_style(style);
     }
 }
 
