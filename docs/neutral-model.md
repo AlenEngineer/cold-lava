@@ -267,18 +267,30 @@ No step needs the ones after it, and Markdown keeps working throughout.
   syntax. The model makes every format's *content* shared. It doesn't make every format
   pleasant to write in.
 
-## Decisions for you
+## Decisions
 
-1. **Closed alphabet, open attributes.** Is that the right place for the line?
-2. **The roles.** Is the list of nine right? In particular: is a callout an `aside` with an
-   attribute (as proposed), or a role of its own? Is a heading a `section` (a title and its
-   body, as proposed), or a piece of its own with the body beside it?
-3. **Relations in the alphabet.** Should *placed* and *links to* be letters, so a board is a
-   first-class way of writing, or should a board stay "a file of cards", with position kept
-   as the board's private detail?
-4. **Naming a pattern.** Is a type enough for "I want a slide", or should a person be able to
-   name a role of their own (`slide`) as shorthand for a role plus attributes?
-5. **How strict is "what an owner can store"?** Refuse an edit the format can't hold
-   (proposed), or let the owner store it the best it can and say what was lost?
-6. **The proof.** Which second format, and when: before the notebook, or only when someone
-   needs it?
+**Decided by the user (2026-11-11):**
+
+1. **Closed alphabet, open attributes.** The line is in the right place.
+
+**Still open, each with a recommendation:**
+
+2. **The roles.** *Recommended: keep the nine.* A callout is an `aside` with an attribute: it
+   is a quote that says what kind of aside it is, and every format's "note box" maps to it. A
+   heading is a `section`, a title with its body: outlines, LaTeX and word processors all think
+   in sections, and the engine already works out which heading an item is under. The Markdown
+   owner derives the body from the headings' levels.
+3. **Relations in the alphabet.** *Recommended: yes, all five.* It is the reason for the whole
+   model: a board or a table is a way of thinking, not an exception to prose. *Links to* is
+   already the heart of the index. *Placed* is carried, never interpreted: the engine stores
+   where a piece sits and hands it to whoever draws, and no meaning is read from position.
+4. **Naming a pattern.** *Recommended: a type is enough.* One way to coin a word is easier to
+   learn and to keep working than two. If "I want a slide" turns out to need more than a type
+   and a shape, that is the moment to add it, with a real case in hand.
+5. **How strict is "what an owner can store"?** *Recommended: refuse, with the reason.* A file
+   is never mangled to fit. An owner may offer a named downgrade ("store it as plain text"),
+   which happens only when the person chooses it.
+6. **The proof.** *Recommended: Org-mode, as a small example extension, after step 3.* It has
+   tasks, headings, tags and links of its own, so it tests every part of the model, and it is
+   plain text, so its owner is short. Not a supported format: an example, like the CSV one,
+   there to show the boundary holds before more is built on it.
