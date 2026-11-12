@@ -1741,12 +1741,24 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
 - **A piece's words** are what a type reads as its text: the runs' characters joined as
   given, a link by its `text` (else its target), a label as `#name`, and a field not at
   all. A row's words are its cells', a tab between them.
-- **`attributes`** are open: any name, with text, a number, `true` or `false`. `null` is
-  the same as leaving the name out, and a list or a table is refused. `false` is a value a
-  field can read, and `where.attribute` doesn't count it as carried. The engine gives a
-  meaning to one name only, the next.
+- **`attributes`** are open: any name, with text, a number, `true` or `false`. A list or a
+  table is refused. The engine gives a meaning to one name only, `checkbox`, below.
+- **What counts as carrying an attribute** (`where.attribute`). A piece carries a name when
+  it gives it any value but `false`: `true`, `0`, `"yes"` and `"no"` all carry it, since the
+  test is that the attribute is there, not what it says. `null`, an empty string and a
+  string of only spaces are the same as leaving the name out. `false` is not carried, and
+  a field can still read it as a value. So `"task": true` makes a task, and so do
+  `"task": 0` and `"task": "no"`: say `false`, or leave it out, for an item that is none.
+- **A link-typed field takes an owner's value as written.** For a field of type `link`
+  read from an attribute, a cell or a pattern over a piece's words, the value is the
+  target, exactly as given: `"ref": "[[Secret]]"` is the eleven characters, not a link to
+  `Secret`. An attribute is a value and never a link of the file: say a link as a link run.
 - **`checkbox`** is said in words: `open`, `done`, `in-progress` or `cancelled`. Any other
-  value is refused. A type reads it as the status symbol the workspace writes for that
+  value, in `attributes` or as a field run, is a mistake: an empty or blank string, `true`,
+  `x`, `DONE`. The piece is then reported and left out. Only `null`, or no `checkbox` at
+  all, is no checkbox. A piece with `task` and no `checkbox` is a task with no status: it
+  is in `items/query`, it is in no agenda, and it can't be ticked, so give both.
+  A type reads the word as the status symbol the workspace writes for that
   kind of status (`open` is a space, `done` is `x`, with the Tasks plugin's own symbols
   unless the workspace's settings gave them another meaning), so the built-in `task` gives
   an owner's task the same `status` and `status_type` a note's has, and the agenda and the
@@ -1797,10 +1809,12 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   ids. Its `rev` hashes everything the piece says. Its `line` and `end_line` are 1.
   `given.rs` pins one id of each kind of answer.
 - **Bounds.** An answer is another program's. A piece nested more than 64 deep, with more
-  than 4096 runs or 256 attributes, with a name over 256 bytes, at a place another piece
-  has, `in` a place no earlier piece is at, or with cells where it can have none is
-  reported (`Event::OwnerTrouble`, on the status line) and left out, and the rest of the
-  answer is read. A message is at most 64 MB, as before.
+  than 4096 runs or 256 attributes, with a name over 256 bytes, with an empty place or one
+  over 1024 bytes, with a link whose target is empty or over 4096 bytes, at a place another
+  piece has, `in` a place no earlier piece is at, or with cells where it can have none is
+  reported (`Event::OwnerTrouble`, on the status line, the place cut to 80 characters) and
+  left out, and the rest of the answer is read. A message is at most 64 MB, as before. The
+  number of pieces in an answer has no bound of its own.
 - **The older answers are unchanged.** A Markdown piece and a typed item read exactly as
   they did, with the ids they had. An answer may mix all three.
 - **Left out, on purpose.** A link from one piece to another piece of the same file (a

@@ -60,6 +60,9 @@ pub const MAX_RUNS: usize = 4096;
 pub const MAX_ATTRIBUTES: usize = 256;
 /// The bytes a name may have: an attribute's, a text field's, a label's, a cell's.
 pub const MAX_NAME: usize = 256;
+/// The bytes a place may have, and a link's target.
+pub const MAX_PLACE: usize = 1024;
+pub const MAX_TARGET: usize = 4096;
 
 /// One unit of what a file holds, in the alphabet's terms (docs/neutral-model.md): what it is
 /// (`role`), what it carries beyond its text (`attributes`), its text, and where it stands
@@ -182,6 +185,18 @@ impl Piece {
 
     /// Whether it is within the bounds, and says nothing two ways.
     fn check(&self) -> Result<(), String> {
+        if self.place.is_empty() || self.place.len() > MAX_PLACE {
+            return Err(format!(
+                "its place is empty or longer than {MAX_PLACE} bytes"
+            ));
+        }
+        let long =
+            |r: &Run| matches!(r, Run::Link(l) if l.link.is_empty() || l.link.len() > MAX_TARGET);
+        if self.runs().any(long) {
+            return Err(format!(
+                "a link's target is empty or longer than {MAX_TARGET} bytes"
+            ));
+        }
         if self.runs().count() > MAX_RUNS {
             return Err(format!("its text has more than {MAX_RUNS} runs"));
         }
@@ -286,14 +301,16 @@ fn carried(p: &Piece, flat: &Flat, tasks: &TasksSettings) -> Result<Vec<Carried>
                 ));
             }
         };
-        if !value.is_empty() {
+        // A checkbox says one of its words: a blank one is not "no checkbox", it is a mistake.
+        if !value.is_empty() || name == "checkbox" {
             let name = name.clone();
             out.push(Carried { name, value, there });
         }
     }
     for (name, value) in &flat.fields {
         let value = value.trim().to_string();
-        if !value.is_empty() && !out.iter().any(|c| c.name == *name) {
+        let says = !value.is_empty() || name == "checkbox";
+        if says && !out.iter().any(|c| c.name == *name) {
             let (name, there) = (name.clone(), true);
             out.push(Carried { name, value, there });
         }
@@ -302,6 +319,14 @@ fn carried(p: &Piece, flat: &Flat, tasks: &TasksSettings) -> Result<Vec<Carried>
         c.value = checkbox_symbol(&c.value, tasks)?.to_string();
     }
     Ok(out)
+}
+
+/// A place for a message: its first characters, since an owner may give one of any length.
+fn short(place: &str) -> String {
+    match place.chars().count() > 80 {
+        true => format!("{}…", place.chars().take(80).collect::<String>()),
+        false => place.to_string(),
+    }
 }
 
 /// The id of the item a piece is: its file, its kind and the owner's place for it, set apart
@@ -349,7 +374,8 @@ fn read_piece<'a>(
             Some(i) => Some(*i),
             None => {
                 return Err(format!(
-                    "it is in {place}, and no piece before it is at that place"
+                    "it is in {}, and no piece before it is at that place",
+                    short(place)
                 ));
             }
         },
@@ -619,7 +645,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
         match item {
             GivenItem::Piece(p) => {
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
-                    out.problems.push(format!("{}: {why}", p.place));
+                    out.problems.push(format!("{}: {why}", short(&p.place)));
                 }
             }
             GivenItem::Markdown { place, text } => {
@@ -962,6 +988,102 @@ mod tests {
         assert_eq!(
             fields(&read.items[0]),
             json!({"vei": 6, "name": "Krakatoa #1 of $5", "tags": ["sunda"], "links": ["Krakatoa"]})
+        );
+    }
+
+    /// A place and a link's target are bounded like the rest, a blank `checkbox` is a mistake
+    /// and not "no checkbox", and `task` is carried by any value but `false`, `null` and
+    /// nothing.
+    #[test]
+    fn places_targets_and_a_blank_checkbox_are_checked() {
+        let s = settings("");
+        let task = |place: &str, attributes: Json| json!({"place": place, "role": "item", "attributes": attributes, "text": [place]});
+        let long = "L".repeat(MAX_PLACE + 1);
+        let far = "t".repeat(MAX_TARGET + 1);
+        let answer = given(json!({"items": [
+            task("", json!({})),
+            task(&long, json!({})),
+            task(&"p".repeat(MAX_PLACE), json!({})),
+            {"place": "link", "role": "item", "text": [{"link": ""}]},
+            {"place": "far", "role": "item", "text": [{"link": far}]},
+            task("blank", json!({"task": true, "checkbox": " "})),
+            task("empty", json!({"task": true, "checkbox": ""})),
+            {"place": "run", "role": "item", "attributes": {"task": true},
+             "text": ["x", {"field": "checkbox", "value": ""}]},
+            task("none", json!({"task": true, "checkbox": null})),
+            task("zero", json!({"task": 0, "checkbox": "open"})),
+            task("yes", json!({"task": "yes", "checkbox": "open"})),
+            task("no", json!({"task": false, "checkbox": "open"})),
+            task("nothing", json!({"task": "", "checkbox": "open"})),
+        ]}));
+        let read = read("Home.chores", &answer, &s);
+        let places: Vec<&str> = (read.problems.iter())
+            .map(|p| p.split(':').next().unwrap())
+            .collect();
+        let shown = format!("{}…", "L".repeat(80));
+        assert_eq!(
+            places,
+            ["", shown.as_str(), "link", "far", "blank", "empty", "run"],
+            "{:?}",
+            read.problems
+        );
+        assert!(
+            read.problems.iter().all(|p| p.len() < 300),
+            "a problem is one short line"
+        );
+        assert!(read.problems[4].contains("one of open, done, in-progress, cancelled"));
+        let kinds: Vec<(&str, &str)> = (read.items.iter())
+            .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
+            .collect();
+        assert_eq!(
+            &kinds[1..],
+            [
+                ("none", "task"),
+                ("zero", "task"),
+                ("yes", "task"),
+                ("no", "list"),
+                ("nothing", "list")
+            ],
+            "task is carried by 0 and by any text, not by false or nothing; with no checkbox it has no status"
+        );
+        assert_eq!(kinds[0].1, "list");
+    }
+
+    /// A link-typed field takes what an owner gave as the target as written: `[[x]]` in an
+    /// attribute or a cell is characters, never a Markdown link to read.
+    #[test]
+    fn a_link_field_takes_an_owners_value_as_written() {
+        let s = settings(
+            "[chore]\non = \"item\"\nwhere.attribute = \"chore\"\n\
+             fields.text = { rest = true }\n\
+             fields.ref = { attribute = \"ref\", type = \"link\" }\n",
+        );
+        let answer = given(json!({"items": [
+            {"place": "a", "role": "item", "attributes": {"chore": true, "ref": "[[Secret]]"},
+             "text": ["one"]},
+            {"place": "b", "role": "item", "text": ["two"],
+             "attributes": {"chore": true, "ref": "[x](../../etc/passwd)"}},
+            {"place": "c", "role": "item", "attributes": {"chore": true, "ref": "Secret"},
+             "text": ["three"]},
+        ]}));
+        let read = read("Home.chores", &answer, &s);
+        assert_eq!(read.problems, Vec::<String>::new());
+        let refs: Vec<Json> = read
+            .items
+            .iter()
+            .map(|i| fields(i)["ref"].clone())
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                json!("[[Secret]]"),
+                json!("[x](../../etc/passwd)"),
+                json!("Secret")
+            ]
+        );
+        assert!(
+            read.links.is_empty(),
+            "an attribute is a value, not a link of the file"
         );
     }
 

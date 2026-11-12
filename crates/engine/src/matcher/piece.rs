@@ -23,7 +23,7 @@ use super::{
     compile_source, note_passes, read_source, rest_of, slot,
 };
 use crate::markdown;
-use crate::types::{On, Source, Types};
+use crate::types::{On, Source, Types, Value};
 
 /// A piece, as the matcher is asked about it: its words as plain text, and where its labels,
 /// links and cells are in them.
@@ -221,6 +221,14 @@ impl Matcher {
                         .into_iter()
                         .collect(),
                 };
+                // A link's target is what the owner gave, as written: reading a value as a
+                // link's type does would read `[[x]]` in it as Markdown.
+                let mut found = found;
+                if matches!(ty.schema[*f].1, Value::Link) {
+                    for p in found.iter_mut().filter(|p| p.value.is_none()) {
+                        p.value = Some(Json::String(p.text.trim().to_string()));
+                    }
+                }
                 if pieces.is_empty() {
                     if !found.is_empty() {
                         pieces = found;
