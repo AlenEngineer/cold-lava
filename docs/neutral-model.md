@@ -1,9 +1,9 @@
 # The neutral model
 
-Status: **a design note for review.** Nothing here is decided or built. It answers the open
-question in [foundations.md](foundations.md): the different things a person can write and the
-data they can share, named without reference to any one format, and whether that set can be
-extended.
+Status: **a design, decided, not built.** It is the model behind the fourth and thirteenth
+ideas of [foundations.md](foundations.md): the different things a person can write and the
+data they can share, named without reference to any one format, and how that set is
+extended. The decisions are at the end.
 
 ## Why
 
@@ -269,28 +269,23 @@ No step needs the ones after it, and Markdown keeps working throughout.
 
 ## Decisions
 
-**Decided by the user (2026-11-11):**
+Decided by the user on 2026-11-11.
 
 1. **Closed alphabet, open attributes.** The line is in the right place.
-
-**Still open, each with a recommendation:**
-
-2. **The roles.** *Recommended: keep the nine.* A callout is an `aside` with an attribute: it
-   is a quote that says what kind of aside it is, and every format's "note box" maps to it. A
-   heading is a `section`, a title with its body: outlines, LaTeX and word processors all think
-   in sections, and the engine already works out which heading an item is under. The Markdown
-   owner derives the body from the headings' levels.
-3. **Relations in the alphabet.** *Recommended: yes, all five.* It is the reason for the whole
-   model: a board or a table is a way of thinking, not an exception to prose. *Links to* is
-   already the heart of the index. *Placed* is carried, never interpreted: the engine stores
-   where a piece sits and hands it to whoever draws, and no meaning is read from position.
-4. **Naming a pattern.** *Recommended: a type is enough.* One way to coin a word is easier to
-   learn and to keep working than two. If "I want a slide" turns out to need more than a type
-   and a shape, that is the moment to add it, with a real case in hand.
-5. **How strict is "what an owner can store"?** *Recommended: refuse, with the reason.* A file
-   is never mangled to fit. An owner may offer a named downgrade ("store it as plain text"),
-   which happens only when the person chooses it.
-6. **The proof.** *Recommended: Org-mode, as a small example extension, after step 3.* It has
-   tasks, headings, tags and links of its own, so it tests every part of the model, and it is
-   plain text, so its owner is short. Not a supported format: an example, like the CSV one,
-   there to show the boundary holds before more is built on it.
+2. **The roles: the nine.** A callout is an `aside` with an attribute: it is a quote that says
+   what kind of aside it is, and every format's "note box" maps to it. A heading is a
+   `section`, a title with its body: outlines, LaTeX and word processors all think in
+   sections. The Markdown owner derives the body from the headings' levels.
+3. **Relations are in the alphabet, all five.** It is the reason for the whole model: a board
+   or a table is a way of thinking, not an exception to prose. *Placed* is carried, never
+   interpreted: the engine stores where a piece sits and hands it to whoever draws, and no
+   meaning is read from position.
+4. **A type is enough to name a pattern.** There are no roles of a person's own. If "I want a
+   slide" turns out to need more than a type and a shape, that is the moment to add it, with
+   a real case in hand.
+5. **An edit a format can't hold is refused, with the reason.** A file is never mangled to
+   fit. An owner may offer a named downgrade ("store it as plain text"), which happens only
+   when the person chooses it.
+6. **The proof is Org-mode, as a small example extension, after owners can emit pieces.** It
+   has tasks, headings, tags and links of its own, so it tests every part of the model, and
+   it is plain text, so its owner is short. An example, not a supported format.
