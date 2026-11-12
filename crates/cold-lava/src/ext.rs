@@ -216,14 +216,17 @@ mod tests {
         // Clash rules are the core's: both keep their defaults.
         let config = crate::config::parse("[keys]\n\"wc.show\" = \"g\"\n", r.commands());
         assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
-        assert!(config.errors[0].contains("wc.show") && config.errors[0].contains("graph.open"));
+        assert!(
+            config.errors[0].first().contains("wc.show")
+                && config.errors[0].first().contains("graph.open")
+        );
         let keys = commands::Keymap::with(r.commands(), &config.keys).0;
         assert_eq!(keys.label("wc.show"), "c");
 
         // A typo is still reported, and without the extension its ids are unknown.
         let config = crate::config::parse("[keys]\n\"wc.shwo\" = \"W\"\n", r.commands());
         assert_eq!(config.errors.len(), 1, "{:?}", config.errors);
-        assert!(config.errors[0].contains("wc.shwo"));
+        assert!(config.errors[0].first().contains("wc.shwo"));
         let none = registry(&[]);
         let config = crate::config::parse("[keys]\n\"wc.show\" = \"W\"\n", none.commands());
         assert_eq!(config.errors.len(), 1, "{:?}", config.errors);

@@ -376,13 +376,6 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
-- `outside.rs`: `Outside`, text from outside on its way into a message (#265, A2): an
-  owner's place, a label, a value, an extension's words. Its only use is `Display`, which
-  writes the text as it is, cut with `…` (`place` 80 characters, `value` 200, `whole`
-  uncut). A message that quotes such text puts it in as an `Outside`. The engine and the
-  host never escape for showing: what they keep, compose, answer over the gateway, hash or
-  compare is the text as written, and `--json` prints it so. Escaping is the frontends',
-  where text is shown (`cold_lava_views::shown::escape`).
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
 what it needs (`markdown::set_configured` for the chosen flavour).

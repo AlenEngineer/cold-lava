@@ -333,13 +333,8 @@ fn run() -> Result<()> {
             if !errors.is_empty() || !warnings.is_empty() {
                 let path = config::path().unwrap_or_default();
                 problem!("{}:", path.display());
-                // A file that doesn't parse has that one error, which the parser wrote over
-                // several lines.
-                let unparsed = &config::get().unparsed;
-                match unparsed.is_empty() {
-                    true => (errors.iter().chain(warnings)).for_each(|e| problem!("  {e}")),
-                    false => unparsed.iter().for_each(|line| problem!("  {line}")),
-                }
+                let lines = errors.iter().flat_map(|e| e.lines());
+                lines.chain(warnings).for_each(|line| problem!("  {line}"));
             }
             if !registry.refused().is_empty() {
                 problem!("extensions:");
@@ -732,8 +727,10 @@ fn run() -> Result<()> {
             } else {
                 print_style(&found);
             }
-            let config = (config::get().errors.iter()).filter(|e| e.starts_with("[style]"));
-            let config: Vec<String> = config.map(|e| format!("config.toml {e}")).collect();
+            let config = (config::get().errors.iter()).filter(|e| e.first().starts_with("[style]"));
+            let config: Vec<String> = config
+                .map(|e| format!("config.toml {}", e.first()))
+                .collect();
             for e in found.errors.iter().chain(&config) {
                 problem!("{e}");
             }

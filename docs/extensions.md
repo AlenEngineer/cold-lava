@@ -1875,8 +1875,8 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   reported (`Event::OwnerTrouble`, on the status line; the place is cut to 80 characters and
   the reason, which may quote a value, to 200) and
   left out, and the rest of the answer is read. A message holds what an owner gave as it
-  is written (`outside::Outside` marks and cuts it, and changes nothing else), so the reason
-  an extension gets over the gateway and the `error` of `--json` quote the owner's bytes.
+  is written, so the reason an extension gets over the gateway and the `error` of `--json`
+  quote the owner's bytes.
   An answer is not trusted to be safe to show: each frontend escapes text where it shows
   it (`cold_lava_views::shown::escape`; the command line on every line it prints,
   `crates/cold-lava/src/say.rs`), so a place that holds an escape sequence or a line break

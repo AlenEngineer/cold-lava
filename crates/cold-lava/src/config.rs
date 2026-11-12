@@ -27,12 +27,59 @@ pub struct Config {
     pub glyphs: toml::Table,
     /// `[style]`, for the engine (`style::set_configured`).
     pub style: crate::style::Overrides,
-    /// One human-readable line per problem in the file.
-    pub errors: Vec<String>,
-    /// When the file doesn't parse: that one error as the parser wrote it, line by line.
-    pub unparsed: Vec<String>,
+    /// The problems in the file, each in words a person reads.
+    pub errors: Vec<Problem>,
     /// One line per setting that works but should be rewritten, such as an old command name.
     pub warnings: Vec<String>,
+}
+
+/// One problem in the file: a line, or the several a file that doesn't parse is shown with.
+/// A problem says its own lines, so that whoever prints it never has to find them in a
+/// string: each is printed as one line, whatever it quotes from the file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem(Vec<String>);
+
+impl Problem {
+    /// Its lines, in order.
+    pub fn lines(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Its first line: all of it, but for a file that doesn't parse.
+    pub fn first(&self) -> &str {
+        self.0.first().map_or("", String::as_str)
+    }
+}
+
+impl From<String> for Problem {
+    fn from(line: String) -> Problem {
+        Problem(vec![line])
+    }
+}
+
+/// Each line as a problem of its own.
+fn problems(lines: Vec<String>) -> impl Iterator<Item = Problem> {
+    lines.into_iter().map(Problem::from)
+}
+
+/// Why the file doesn't parse, as the parser shows it: where (a header, the line of the
+/// file and a caret under it), then what is wrong. The parser writes the place first and
+/// its message last, so the place is what is left of its text without the message, and
+/// the message stays one line whatever it quotes. The line of the file is given without
+/// the CR of a CR LF line end.
+fn unparsed(e: &toml::de::Error) -> Problem {
+    let (whole, message) = (e.to_string(), e.message().trim_end());
+    let whole = whole.trim_end();
+    let lines = match whole.strip_suffix(message) {
+        Some(place) => {
+            let line = |l: &str| l.strip_suffix('\r').unwrap_or(l).to_string();
+            let place = place.split_terminator('\n').map(line);
+            place.chain([message.to_string()]).collect()
+        }
+        // No place the parser's text ends with its message in: all of it, as one line.
+        None => vec![whole.to_string()],
+    };
+    Problem(lines)
 }
 
 /// The file as written. Other top-level sections are ignored, for later use.
@@ -88,7 +135,7 @@ fn read(path: Option<PathBuf>, menu: &[Entry<MenuCommand>]) -> Config {
     match path.map(std::fs::read_to_string) {
         Some(Ok(text)) => parse(&text, menu),
         Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Config {
-            errors: vec![format!("can't read it: {e}")],
+            errors: vec![format!("can't read it: {e}").into()],
             ..Config::default()
         },
         _ => Config::default(),
@@ -111,10 +158,8 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     let file: File = match toml::from_str(text) {
         Ok(f) => f,
         Err(e) => {
-            let error = e.to_string().trim_end().to_string();
             return Config {
-                unparsed: error.split('\n').map(String::from).collect(),
-                errors: vec![error],
+                errors: vec![unparsed(&e)],
                 ..Config::default()
             };
         }
@@ -132,45 +177,53 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
         if !ids.contains(id.as_str()) {
             config
                 .errors
-                .push(format!("[keys] {id:?} is not a command"));
+                .push(format!("[keys] {id:?} is not a command").into());
             continue;
         }
         match parse_keys(&value) {
-            Ok(keys) if keys.is_empty() && id == "pane.leave" => config.errors.push(format!(
-                "[keys] {id:?} = [] would leave no way out of a pane; it keeps its default keys"
-            )),
+            Ok(keys) if keys.is_empty() && id == "pane.leave" => config.errors.push(
+                format!(
+                    "[keys] {id:?} = [] would leave no way out of a pane; it keeps its default \
+                     keys"
+                )
+                .into(),
+            ),
             Ok(keys) => {
                 config.keys.insert(id, keys);
             }
-            Err(e) => config.errors.push(format!("[keys] {id:?}: {e}")),
+            Err(e) => config.errors.push(format!("[keys] {id:?}: {e}").into()),
         }
     }
-    config.flavour = markdown(file.markdown, &mut config.errors);
+    let mut said = Vec::new();
+    config.flavour = markdown(file.markdown, &mut said);
+    config.errors.extend(problems(said));
     config.types = file.types;
     config.attributes = file.attributes;
     config.shapes = file.shapes;
     config.glyphs = file.glyphs;
     match crate::style::Overrides::from_table(file.style) {
         Ok(o) => config.style = o,
-        Err(e) => config.errors.push(format!("[style] {e}")),
+        Err(e) => config.errors.push(format!("[style] {e}").into()),
     }
-    config.errors.extend(Keymap::with(menu, &config.keys).1);
+    config
+        .errors
+        .extend(problems(Keymap::with(menu, &config.keys).1));
     let keys = &config.keys;
     config
         .errors
-        .extend(Keymap::with(&commands::entries(GRAPH), keys).1);
+        .extend(problems(Keymap::with(&commands::entries(GRAPH), keys).1));
     config
         .errors
-        .extend(Keymap::with(&commands::entries(BOARD), keys).1);
+        .extend(problems(Keymap::with(&commands::entries(BOARD), keys).1));
     config
         .errors
-        .extend(Keymap::with(&commands::entries(READER), keys).1);
+        .extend(problems(Keymap::with(&commands::entries(READER), keys).1));
     config
         .errors
-        .extend(Keymap::with(&commands::entries(PANE), keys).1);
-    config
-        .errors
-        .extend(Keymap::with(&commands::entries(commands::SHAPE_EDITOR), keys).1);
+        .extend(problems(Keymap::with(&commands::entries(PANE), keys).1));
+    config.errors.extend(problems(
+        Keymap::with(&commands::entries(commands::SHAPE_EDITOR), keys).1,
+    ));
     config
 }
 
@@ -271,7 +324,39 @@ mod tests {
         super::parse(text, &commands::menu([]).0)
     }
 
-    fn menu(text: &str) -> (Keymap<MenuCommand>, Vec<String>) {
+    /// A file that doesn't parse is shown as the parser shows it, line for line (but for
+    /// the CR of a CR LF line end), and its message is one line whatever it quotes.
+    #[test]
+    fn a_file_that_doesnt_parse_keeps_the_parsers_lines_and_its_message_whole() {
+        let texts = [
+            "[keys\n",
+            "[keys]\n\"graph.open\" = [\n",
+            "keys = 7\n",
+            "[keys]\n\"graph.open\" = \"g\"\n[markdown]\nflavour = [",
+            "[keys]\n\t\"graph.open\" = = 1\n",
+            "[keys]\n\"日本語のキー\" = = 1\n",
+            "[keys]\r\n\"graph.open\" = [\r\n",
+            "[keys]\n\"a\\nb\" = 1\n\"a\\nb\" = 2\n",
+        ];
+        for text in texts {
+            let Err(e) = toml::from_str::<File>(text) else {
+                panic!("{text:?} parses");
+            };
+            let problem = unparsed(&e);
+            let as_written = e.to_string().trim_end().replace("\r\n", "\n");
+            assert_eq!(problem.lines().join("\n"), as_written, "{text:?}");
+            let (message, place) = problem.lines().split_last().expect("lines");
+            assert_eq!(message, e.message(), "{text:?}");
+            assert_eq!(
+                place.len(),
+                4,
+                "a header, a gutter, the line, a caret: {text:?}"
+            );
+            assert!(place.iter().all(|line| !line.contains('\n')), "{text:?}");
+        }
+    }
+
+    fn menu(text: &str) -> (Keymap<MenuCommand>, Vec<Problem>) {
         let c = parse(text);
         (Keymap::with(&commands::menu([]).0, &c.keys).0, c.errors)
     }
@@ -309,7 +394,7 @@ mod tests {
     fn unknown_command_is_reported_and_the_rest_applies() {
         let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"workspace.add\" = \"V\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("graph.opne"));
+        assert!(errors[0].first().contains("graph.opne"));
         assert_eq!(keys.label("graph.open"), "g");
         assert_eq!(keys.label("workspace.add"), "V");
     }
@@ -336,7 +421,7 @@ mod tests {
     fn bad_key_is_reported_and_the_default_kept() {
         let (keys, errors) = menu("[keys]\n\"graph.open\" = [\"G\", \"hyper+g\"]\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("hyper+g"));
+        assert!(errors[0].first().contains("hyper+g"));
         assert_eq!(keys.label("graph.open"), "g");
         let (_, errors) = menu("[keys]\n\"graph.open\" = 7\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
@@ -346,7 +431,9 @@ mod tests {
     fn clash_in_one_screen_keeps_both_defaults() {
         let (keys, errors) = menu("[keys]\n\"graph.open\" = \"x\"\n\"boards.open\" = \"x\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("graph.open") && errors[0].contains("boards.open"));
+        assert!(
+            errors[0].first().contains("graph.open") && errors[0].first().contains("boards.open")
+        );
         assert_eq!(keys.label("graph.open"), "g");
         assert_eq!(keys.label("boards.open"), "w");
 
@@ -388,7 +475,7 @@ mod tests {
 
         let c = parse("[keys]\n\"pane.leave\" = []\n");
         assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
-        assert!(c.errors[0].contains("pane.leave"), "{:?}", c.errors);
+        assert!(c.errors[0].first().contains("pane.leave"), "{:?}", c.errors);
         let keys = Keymap::with(&commands::entries(PANE), &c.keys).0;
         assert_eq!(keys.get(ctrl('q')), Some(PaneAction::Leave));
     }
@@ -454,7 +541,11 @@ mod tests {
         ] {
             let c = parse(text);
             assert_eq!(c.errors.len(), 1, "{text}: {:?}", c.errors);
-            assert!(c.errors[0].contains(needle), "{text}: {:?}", c.errors);
+            assert!(
+                c.errors[0].first().contains(needle),
+                "{text}: {:?}",
+                c.errors
+            );
             assert_eq!(c.flavour, None, "{text}");
         }
         // A shadowing flavour is ignored: `github` stays the built-in one.

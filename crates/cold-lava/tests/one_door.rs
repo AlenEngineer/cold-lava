@@ -23,7 +23,48 @@
 
 use std::path::Path;
 
-/// Every `.rs` file under `dir` by its path there, as `code` keeps it, sorted.
+/// What follows `mod ` on a line that declares a module, whatever its visibility
+/// (`mod x`, `pub mod x`, `pub(crate) mod x`).
+fn declares_mod(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    let rest = match line.strip_prefix("pub") {
+        None => line,
+        Some(after) => {
+            let after = match after.strip_prefix('(') {
+                Some(inside) => inside.split_once(')')?.1,
+                None => after,
+            };
+            after.strip_prefix(' ')?
+        }
+    };
+    rest.strip_prefix("mod ")
+}
+
+/// The modules that are tests whole, each as the path of its file without `.rs`: every
+/// `#[cfg(test)]` on a `mod name;`, whose file is beside the one that declares it or in the
+/// folder of its name.
+fn test_modules(files: &[(String, String)]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, text) in files {
+        let (dir, name) = file.rsplit_once('/').unwrap_or(("", file.as_str()));
+        let base = match ["lib.rs", "main.rs", "mod.rs"].contains(&name) {
+            true => dir,
+            false => file.trim_end_matches(".rs"),
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        for pair in lines.windows(2) {
+            let declared = declares_mod(pair[1]).and_then(|rest| rest.strip_suffix(';'));
+            if let (true, Some(module)) = (pair[0].trim() == "#[cfg(test)]", declared) {
+                let path = format!("{base}/{module}");
+                found.push(path.trim_start_matches('/').to_string());
+            }
+        }
+    }
+    found
+}
+
+/// Every `.rs` file under `dir` by its path there, as `code` keeps it, sorted. A file that
+/// is a test module whole (`test_modules`) is left out, with what is under it.
 fn files_under(dir: &Path) -> Vec<(String, String)> {
     fn walk(dir: &Path, src: &Path, out: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -33,12 +74,22 @@ fn files_under(dir: &Path) -> Vec<(String, String)> {
             } else if path.extension().is_some_and(|x| x == "rs") {
                 let rel = path.strip_prefix(src).unwrap().to_string_lossy();
                 let text = std::fs::read_to_string(&path).unwrap();
-                out.push((rel.replace('\\', "/"), code(&text)));
+                out.push((rel.replace('\\', "/"), text));
             }
         }
     }
     let mut out = Vec::new();
     walk(dir, dir, &mut out);
+    let tests = test_modules(&out);
+    let is_test = |file: &str| {
+        let within = |test: &String| file.strip_prefix(test.as_str());
+        let mut rests = tests.iter().filter_map(within);
+        rests.any(|rest| rest == ".rs" || rest.starts_with('/'))
+    };
+    out.retain(|(file, _)| !is_test(file.as_str()));
+    for (_, text) in &mut out {
+        *text = code(text);
+    }
     out.sort();
     out
 }
@@ -61,14 +112,14 @@ fn host_sources() -> Vec<(String, String)> {
     crate_sources("host")
 }
 
-/// A file's text without its unit tests (each `#[cfg(test)]` on a `mod`, to the brace that
-/// closes it) and without comment lines. What follows a test module is kept.
+/// A file's text without its unit tests (each `#[cfg(test)]` on a `mod`, whatever its
+/// visibility, to the brace that closes it) and without comment lines. What follows a test module is kept.
 fn code(text: &str) -> String {
     let mut kept = Vec::new();
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
         let next = lines.peek().map(|l| l.trim_start());
-        if line.trim() == "#[cfg(test)]" && next.is_some_and(|l| l.starts_with("mod ")) {
+        if line.trim() == "#[cfg(test)]" && next.is_some_and(|l| declares_mod(l).is_some()) {
             let mut depth = 0;
             for inside in lines.by_ref() {
                 depth += inside.matches('{').count() as i32;
@@ -538,6 +589,27 @@ fn the_scan_refuses_an_alias_a_glob_and_an_imported_std_function() {
     assert_eq!(sneaked(std), ["use std::fs::rename"]);
     let fine = "use crate::trash::{self, TrashOption, Went};\nuse std::fs::read_to_string;\n";
     assert_eq!(sneaked(fine), Vec::<String>::new());
+}
+
+/// A unit test module is one whatever its visibility, and a module that is tests whole is
+/// known by the `#[cfg(test)]` where it is declared.
+#[test]
+fn the_scan_knows_a_test_module_by_any_visibility_and_in_a_file_of_its_own() {
+    let text = "fn f() {\n    a::one();\n}\n#[cfg(test)]\npub(crate) mod tests {\n    fn t() {\n        \
+                a::two();\n    }\n}\n#[cfg(test)]\npub mod more {\n    fn t() {\n        a::three();\n    }\n}\n";
+    assert_eq!(named_in(&code(text), "a::"), ["one"]);
+    assert_eq!(declares_mod("    pub(in crate::x) mod y {"), Some("y {"));
+    assert_eq!(declares_mod("public_mod x"), None);
+    let file = |path: &str, text: &str| (path.to_string(), text.to_string());
+    let files = [
+        file("lib.rs", "mod a;\n#[cfg(test)]\nmod checks;\n"),
+        file(
+            "core.rs",
+            "#[cfg(test)]\npub(crate) mod news;\n#[cfg(test)]\nmod inline {\n}\n",
+        ),
+        file("owner/mod.rs", "#[cfg(test)]\nmod tests;\n"),
+    ];
+    assert_eq!(test_modules(&files), ["checks", "core/news", "owner/tests"]);
 }
 
 /// Code after a file's unit tests is the app's code too.
@@ -1030,10 +1102,7 @@ fn a_name_is_not_counted_inside_a_longer_one() {
 ///   which writes the Kitty graphics the app made.
 /// - `home.rs`: a picture placed or deleted with Kitty graphics (`stdout()`, `write_raw`).
 ///
-/// No file of the host, the engine or the views crate prints. The three entries of the
-/// engine's are tests the scan doesn't know for tests: two files that are test modules
-/// whole (`#[cfg(test)]` is on their `mod` line in another file), and `items.rs`, whose test
-/// module `code` loses track of.
+/// No file of the host, the engine or the views crate prints outside its tests.
 ///
 /// It is the same guard on the text as the rest of this file, with the same blind spots. It
 /// doesn't see a print through a macro of another crate, `write!` to a handle taken another
@@ -1062,9 +1131,6 @@ fn the_app_prints_only_through_say() {
     }
     let found = tally(per_file(&files, |code| times(code, &prints)));
     let listed = [
-        "../engine/src/cst/tests.rs: println!( ×2",
-        "../engine/src/items.rs: println!( ×2",
-        "../engine/src/markdown/pulldown.rs: println!( ×3",
         "home.rs: stdout() ×1",
         "home.rs: write_raw( ×2",
         "main.rs: stdout() ×2",
