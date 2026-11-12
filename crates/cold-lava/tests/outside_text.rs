@@ -388,5 +388,24 @@ fn a_config_problem_of_two_lines_prints_its_lines() {
         ],
         "{stderr}"
     );
+    // A key of the file that holds a line break is quoted in what is wrong: it stays inside
+    // its line, and nothing of it begins a line.
+    std::fs::write(
+        config.join("config.toml"),
+        "[markdown.flavours.x]\n\"a\\nFAKE\" = 1\n",
+    )
+    .unwrap();
+    let out = cold_lava(&home).args(["keys"]).output().unwrap();
+    let (_, stderr) = text(&out);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    let lines: Vec<&str> = stderr.lines().skip(1).collect();
+    assert!(
+        lines[0].starts_with("  [markdown.flavours.x] unknown field `a\\nFAKE`"),
+        "{stderr}"
+    );
+    assert!(
+        lines.iter().all(|line| line.starts_with("  ")) && lines.len() <= 2,
+        "{stderr}"
+    );
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
