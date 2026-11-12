@@ -1,0 +1,11 @@
+name = "trash-can"
+title = "Trash can"
+version = "0.1.0"
+description = "Deletes the file it is told to: the extension of tests/permissions.rs"
+run = ["python3", "main.py"]
+# files.read for workspace/stat, files.delete for workspace/delete.
+permissions = ["files.read", "files.delete"]
+
+[[commands]]
+id = "trash-can.delete"
+title = "move a file to the trash"

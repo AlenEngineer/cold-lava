@@ -412,9 +412,8 @@ struct Walk<'a> {
     written: crate::owner::markdown::Links<'a>,
     /// The last callout's `[!type]`.
     marker: Range<usize>,
-    /// The paragraph just read, which pulldown-cmark read on into a paragraph or `$$` math on
-    /// the next line: where it ends, until the next block says whether it goes on. A callout's
-    /// title starts one.
+    /// A callout's title just read, which pulldown-cmark read on into the paragraph on the
+    /// next line, or a paragraph: where it ends, until the next block says whether it goes on.
     pending: Option<usize>,
     /// The table being read: how many rows it has had, where its header starts, its columns.
     rows: usize,
@@ -502,18 +501,14 @@ impl<'a> Walk<'a> {
     }
 
     fn enter(&mut self, kind: Kind, at: usize) {
-        if kind == Kind::MathBlock {
-            self.code_at = at;
-        }
         if let Some(end) = self.pending.take() {
-            let goes_on = matches!(kind, Kind::Paragraph | Kind::MathBlock);
-            if goes_on && self.lines.of(at) == self.lines.of(end) {
+            if kind == Kind::Paragraph && self.lines.of(at) == self.lines.of(end) {
                 return;
             }
             self.paragraph(end);
         }
         match kind {
-            Kind::Paragraph | Kind::MathBlock | Kind::TableRow => self.begin(at, None, true),
+            Kind::Paragraph | Kind::TableRow => self.begin(at, None, true),
             Kind::AtxHeading | Kind::SetextHeading => self.begin(at, None, false),
             Kind::HtmlBlock => self.begin(at, None, false),
             Kind::ListItem => {
@@ -574,13 +569,6 @@ impl<'a> Walk<'a> {
         }
         match kind {
             Kind::Paragraph => self.pending = Some(at),
-            // `$$` math was a paragraph's text to pulldown-cmark.
-            Kind::MathBlock => {
-                if self.wants.typing {
-                    self.pass.code.push(self.code_at..at);
-                }
-                self.pending = Some(at);
-            }
             // A GitHub alert's `[!NOTE]` was no paragraph to pulldown-cmark; any other callout's
             // title was.
             Kind::CalloutTitle => {
@@ -1660,6 +1648,16 @@ fields.w = { capture = "w" }
         // underline: the heading the tree read there before #212 never was one.
         "- item one\n- item two\n[^1]: right after a list item\n    - [ ] continuation task [[Tgt]]\n",
         "[^1]: def line\n===\n\n[^2]: def two\n---\n\nParagraph above. ^above\n[^n]: Note text ^on\n\n^standalone\n",
+        // Two `$$` in two paragraphs close nothing: what is between them is read.
+        "$$100 is what it cost ^p0\n\n- [ ] a task the first ^t1\n\n## A heading\n\nPara the middle ^p1\n\n$$ at the end again ^p2\n",
+        // A fence stays code after an open `$$`.
+        "$$ open before fence\n\n```\n$$\n```\n\n- [ ] a task the second ^t2\n\nPara the third ^p3\n",
+        // A price pairs with no later `$`.
+        "cost $12 for [[Note]] #pricetag and $x$ the end ^p4\n\n- [ ] task $5 and $6 [[Other]] #t\n",
+        // `$$` over a blank line, and after spaces.
+        "$$\nx = 1\n\ny = 2\n$$ ^p5\n\n   $$ spaced ^p6\n",
+        // Math over the lines of an item.
+        "- [ ] task with $a\n  b$ math over lines [[L]]\n- $$\n  c\n  $$ ^m1\n",
         // `$$` that nothing closes is text, and the tasks after it are tasks.
         "$$ is slang for money\n\n- [ ] a task the first ^t1\n\nPara the last ^p1\n",
         // An escape stops a wikilink and a link; a link's text holds no link; a lazy line

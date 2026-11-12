@@ -99,6 +99,7 @@ const EDGES: &[&str] = &[
     "***a** b* *c **d*** ****e**** _f__g__h_ snake_case_word 2*3*4 **==#t==** [*x*](y) *z [w* v](u)\n",
     "\u{feff}*emphasis after a BOM*\r\n**strong  \r\nover a CRLF**\\\r\n&#x1F30B; &nope <a href=\"x\">\r\n",
     "$$ never closed\n\n- [ ] task\n\n$$\nclosed\n\nmath\n$$\n> $$\n> quoted\n\n    code\n$$\n\\[[Esc]] \\`c\\` [a [b](c) d](e)\n> [!note] T\nlazy\n",
+    "$$100 cost\n\ntext $5 and $x$\n\n$$ again\n> $$\n>   x = 1\n> $$ after\n- $a\n  b$ c $d$\n  \t$$\n\ty {$} \\$\n  $$\n| $p \\| q$ | $r |\n| - | - |\n| $ | s$ |\n",
     "[^a]: one\n\n    two [[L]]\n\n    - [ ] t\n[^b]: three\n> [^c]: in a quote\n>     more\n\nafter\n- [^d]: in an item\n\n      under it\n\t[^e]: tabbed\n",
 ];
 
@@ -542,13 +543,14 @@ fn a_footnote_definition_holds_the_blocks_indented_under_it() {
 }
 
 #[test]
-fn math_needs_its_closing_marker() {
+fn math_is_in_a_blocks_text_as_pulldown_cmark_pairs_it() {
     let ob = obsidian();
     let top = |text: &str| -> Vec<Kind> {
         let root = Tree::with(text, ob).root();
         root.children().map(|n| n.kind()).collect()
     };
-    // `$$` that nothing closes is text, and what follows it reads as it would.
+    let math = |text: &str| texts(text, ob, Kind::InlineMath);
+    // `$$` starts no block and ends no paragraph: what follows it reads as it would.
     let open = "$$ is slang for money\n\n- [ ] a task [[Link]]\n\n# Heading\n";
     assert_eq!(
         top(open),
@@ -561,34 +563,71 @@ fn math_needs_its_closing_marker() {
     );
     assert_eq!(texts(open, ob, Kind::Target), ["Link"]);
     assert_eq!(texts(open, ob, Kind::TaskMarker), ["[ ]"]);
+    assert!(math(open).is_empty());
+    // Math never goes on past its block: two `$$` in two paragraphs close nothing, whatever
+    // is between them, and neither does one in code, in HTML or in a heading.
     for none in [
+        "$$100 is what it cost\n\n- [ ] task\n\n# Heading\n\n$$ at the end again\n",
+        "$$ open before fence\n\n```\n$$\n```\n\n- [ ] task\n\nafter\n",
+        "$$ open\n\n    $$\n\n<div>$$</div>\n\n# $$\n\n- [ ] $$\n",
+        "$$\nx = 1\n\ny = 2\n$$\n",
+        "   $$ spaced\n\ntext\n\n$$\n",
         "$$$\n\ntext\n",
-        "text\n$$\nnever closed\n",
         "> $$\n> in a quote\n\n$$\n",
-        "- $$\n  in an item\n\nafter\n",
-        "    code\n$$\nafter code\n",
+        "- $$\n  in an item\n\nafter $$\n",
     ] {
-        assert!(!kinds(none, ob).contains(&Kind::MathBlock), "{none:?}");
+        assert!(math(none).is_empty(), "{none:?}");
     }
-    // With its closing `$$`, on its line or a later one, over blank lines too, it is math.
-    let closed = "$$\nx\n\ny\n$$\nafter\n";
-    assert_eq!(top(closed), [Kind::MathBlock, Kind::Paragraph]);
-    assert_eq!(texts(closed, ob, Kind::MathBlock), ["$$\nx\n\ny\n$$\n"]);
-    assert_eq!(texts("$$x$$\n", ob, Kind::MathBlock), ["$$x$$\n"]);
-    // The first of two unclosed ones takes the second as its end.
-    let two = "$$ a\n\nb\n\n$$ c\n\nd\n";
+    let fenced = "$$ open before fence\n\n```\n$$\n```\n\n- [ ] task\n";
+    assert_eq!(texts(fenced, ob, Kind::CodeText), ["$$"]);
+    assert_eq!(texts(fenced, ob, Kind::TaskMarker), ["[ ]"]);
+    // Over the lines of one paragraph it is math, with the lines' indentation and without
+    // their containers' markers.
+    assert_eq!(top("$$\nx\n$$\nafter\n"), [Kind::Paragraph]);
+    assert_eq!(math("$$\nx\n$$\nafter\n"), ["$$\nx\n$$"]);
+    assert_eq!(math("a $b\nc$ d\n"), ["$b\nc$"]);
+    let quoted = "> $$\n>   x\n> $$ after\n";
+    assert_eq!(math(quoted), ["$$\n>   x\n> $$"]);
+    assert_eq!(texts(quoted, ob, Kind::MathText), ["  ", "x"]);
+    // A price: the block's next `$` closes a `$`, or nothing does. One closes with
+    // something before it on its line, and opens with something after it.
+    let price = "cost $12 for [[Note]] #pricetag and $x$ end\n";
+    assert_eq!(math(price), ["$x$"]);
+    assert_eq!(texts(price, ob, Kind::Target), ["Note"]);
+    assert_eq!(texts(price, ob, Kind::Tag), ["#pricetag"]);
+    assert_eq!(math("$a $b$\n"), ["$b$"]);
+    assert!(math("$5 and $6\n").is_empty());
+    assert!(math("$x\n$\n").is_empty());
+    assert_eq!(math("a $$x$$ b $y$$ c\n"), ["$$x$$", "$y$"]);
+    assert!(math("$$ a $ b $$\n").is_empty());
+    assert_eq!(math("$$$ x $$\n"), ["$$ x $$"]);
+    // An escaped `$` neither opens nor closes.
+    assert_eq!(math("\\$x$ and $y\\$ z$\n"), ["$y\\$ z$"]);
+    // Math opens and closes in the same braces.
+    assert_eq!(math("$a{$}b$\n"), ["$a{$}b$"]);
+    assert!(math("$}$\n").is_empty());
+    // What starts first wins: code before math, math before code.
+    assert_eq!(math("`$a` $b$\n"), ["$b$"]);
+    assert_eq!(math("$a `b$` c\n"), ["$a `b$"]);
+    // An HTML tag that starts before a `$` holds it.
     assert_eq!(
-        top(two),
-        [Kind::MathBlock, Kind::BlankLine, Kind::Paragraph]
+        math("<span>$a$</span> <a href=\"$b\">c$</a> $d <i>e$</i>\n"),
+        ["$a$", "$d <i>e$"]
     );
-    // Typing the closing `$$` far below makes math of what is above: such an edit parses
-    // the note whole.
-    let tree = Tree::with(open, ob);
-    let more = format!("{open}$$\n");
-    let edited = tree.edit(&more, open.len()..open.len(), 3);
+    // A table's cell is a block's text.
+    assert_eq!(math("| $a | b$ |\n| - | - |\n| $c$ | d |\n"), ["$c$"]);
+    // Typing the closing `$$` under a paragraph makes math of it, and an edit reads so too.
+    let before = "text\n\n$$\nx\n";
+    let tree = Tree::with(before, ob);
+    let more = format!("{before}$$\n");
+    let edited = tree.edit(&more, before.len()..before.len(), 3);
     assert_eq!(edited, Tree::with(&more, ob));
-    assert_eq!(texts(&more, ob, Kind::MathBlock), [more.as_str()]);
-    assert_eq!(edited.edit(open, open.len()..more.len(), 0), tree);
+    assert_eq!(math(&more), ["$$\nx\n$$"]);
+    assert_eq!(edited.edit(before, before.len()..more.len(), 0), tree);
+    // Without math in the flavour, and for the index, there is none.
+    for gates in [github(), Gates::INDEX] {
+        assert!(texts(price, gates, Kind::InlineMath).is_empty());
+    }
 }
 
 #[test]
@@ -850,6 +889,9 @@ const PIECES: &[&str] = &[
     "%%",
     "$$",
     "$",
+    "$x",
+    "{",
+    "}",
     "<div>",
     "<!--",
     "-->",

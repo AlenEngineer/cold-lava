@@ -9,6 +9,19 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Extensions can delete, restore and make folders (part of #193). `workspace/delete` moves a
+  file or a folder to the trash the workspace uses, never for good, and is refused if it
+  changed since the extension read it; `workspace/restore` puts it back, never over a file
+  that is there now; `workspace/create-folder` makes a folder; `workspace/stat` gives the
+  version of any file or folder, with a folder's contents to show first. Deleting and
+  restoring need the new permission `files.delete` in the extension's manifest, which
+  `files.write` does not include. An extension restores only what it deleted itself. The status line says who deleted what
+  (`trash-can: deleted Inbox/Old.md`). The menu's own `d`, `u` and `N` now go the same way,
+  and behave as before, except that `u` pressed while another workspace is open now says
+  which workspace the delete was in instead of restoring into a workspace you aren't
+  looking at, and that the agenda and other views hear of a delete once instead of reading
+  everything again. The Python helper has `ext.stat`, `ext.delete`, `ext.restore` and
+  `ext.create_folder`.
 - Whiteboards join the workspace (part of #92). A `.canvas` file is read by the engine's own
   canvas owner: a task on a sticky or a text card is a task in the agenda, the type table,
   `cold-lava items` and `items/query`, and its links and tags count; a note card is a link from
@@ -49,8 +62,7 @@ change commands, keys and file formats; patch versions only fix things.
   first line is blank, as the Kanban plugin writes it, is hidden (it showed as a rule and
   text). A `---` pair in the middle of a note no longer hides the lines between. A `#` right
   after a link, closing emphasis or code is no tag, and neither is an escaped `\#` nor one
-  that starts a link's text. `[[A\|B]]` in a table cell links to `A`. `$$` math with a
-  blank line in it is math (it showed as text). Emphasis that opens in a callout's title
+  that starts a link's text. `[[A\|B]]` in a table cell links to `A`. Emphasis that opens in a callout's title
   ends there. One thing shows less than in Obsidian, because the index reads it so: a link
   definition written over two lines is text.
 - What the index and the items read changes in four places, so that they and the reader
@@ -58,10 +70,14 @@ change commands, keys and file formats; patch versions only fix things.
   for links, code, math and comments too: `\[[Note]]` and `\[text](Note.md)` are text, so
   they are no backlink, don't keep a note from being an orphan in `tidy`, and a rename
   leaves them alone. A link's text holds no link: in `[a [b](Inner.md) d](Outer.md)` the
-  link is `Inner`, where it was `Outer`. `$$` at the start of a line that nothing closes is
-  text: it used to make the rest of the note math, so tasks and block ids after it were
-  missing from the agenda and `items`, and they are there now. A line right under a
-  callout's title that has no `>` is the callout's.
+  link is `Inner`, where it was `Outer`. Math is what the reader has always shown as math, for
+  `items` and the agenda too: `$…$` and `$$…$$` inside one paragraph, heading, list item or
+  table cell. Tasks, headings, list items and block ids after a stray `$$`
+  now count: `items`, the agenda and tables dropped every line from one that starts with
+  `$$` to the next `$$` anywhere in the note, or to its end, while the reader showed them.
+  Backlinks and tags always counted the links and tags there, and still do. A `$$` block with a blank line in it is two
+  paragraphs of text, as on screen. A line right under a callout's title that has no `>`
+  is the callout's.
 - Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
   of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
   example's count of open tasks keeps up under the picker and shows in the shape editor's

@@ -632,8 +632,8 @@ impl<'a> Reader<'a> {
     fn block(&mut self, kind: Kind, at: usize, out: &mut Vec<Block>) {
         let line = self.line(at);
         let kind = match kind {
-            Kind::Paragraph | Kind::MathBlock => {
-                self.paragraph(kind, at, out);
+            Kind::Paragraph => {
+                self.paragraph(at, out);
                 return;
             }
             Kind::AtxHeading | Kind::SetextHeading => {
@@ -670,10 +670,8 @@ impl<'a> Reader<'a> {
         out.push(Block { line, kind });
     }
 
-    /// The paragraph or the `$$` math just entered at `at`, with the paragraphs and the math
-    /// that start on the lines right under it: no blank line parts them, so they are one
-    /// paragraph on screen, as they always were.
-    fn paragraph(&mut self, kind: Kind, at: usize, out: &mut Vec<Block>) {
+    /// The paragraph just entered at `at`.
+    fn paragraph(&mut self, at: usize, out: &mut Vec<Block>) {
         let mut read = Vec::new();
         self.start_list();
         if let Some(checkbox) = self.checkbox.take() {
@@ -681,59 +679,26 @@ impl<'a> Reader<'a> {
             let text = at + rest.len() - rest.trim_start_matches([' ', '\t']).len();
             read.push(written(self.src, checkbox..text));
         }
-        self.leaf(kind, at, &mut read);
-        self.joined(&mut read);
+        self.open.clear();
+        self.pieces(&mut read);
         let inlines = self.finish(read, true);
         out.extend(self.shown(inlines, at));
     }
 
-    /// The text of the paragraph or the `$$` math just entered at `at`, onto `read`.
-    fn leaf(&mut self, kind: Kind, at: usize, read: &mut Vec<Read>) {
-        self.open.clear();
-        if kind != Kind::MathBlock {
-            return self.pieces(read);
-        }
-        // `$$`, the math, `$$`, and what its last line goes on with: the block's own text,
-        // without its containers' markers.
-        let end = self.end();
-        let mut body = String::new();
-        while let Some(step) = self.next() {
-            match step {
-                Step::Leave(..) => break,
-                Step::Token(Kind::MathText | Kind::Newline, text, _) => body.push_str(text),
-                _ => {}
-            }
-        }
-        let close = body.find("$$");
-        let math = close.map_or(body.trim_end_matches(['\n', '\r']), |k| &body[..k]);
-        read.push((Inline::Math(math.to_string()), at..end, Piece::Atom));
-        let rest = close.map_or("", |k| &body[k + 2..]);
-        let rest = rest.trim_end_matches(['\n', '\r', ' ', '\t']);
-        if !rest.is_empty() {
-            read.push((Inline::Text(rest.to_string()), end..end, Piece::Atom));
-        }
-        // Its line break, should a paragraph go on under it.
-        read.push((Inline::SoftBreak, end..end, Piece::Atom));
-    }
-
-    /// Reads on, onto `read`, into the paragraphs and the `$$` math that start on the line
-    /// right under the block just read. Whether any did.
+    /// Reads on, onto `read`, into the paragraph that starts on the line right under a
+    /// callout's title, just read. Whether there was one.
     fn joined(&mut self, read: &mut Vec<Read>) -> bool {
-        let mut any = false;
-        loop {
-            let mut k = self.at;
-            while matches!(self.steps.get(k), Some(Step::Token(..))) {
-                k += 1;
-            }
-            let Some(&Step::Enter(kind @ (Kind::Paragraph | Kind::MathBlock), at)) =
-                self.steps.get(k)
-            else {
-                return any;
-            };
-            self.at = k + 1;
-            self.leaf(kind, at, read);
-            any = true;
+        let mut k = self.at;
+        while matches!(self.steps.get(k), Some(Step::Token(..))) {
+            k += 1;
         }
+        if !matches!(self.steps.get(k), Some(Step::Enter(Kind::Paragraph, _))) {
+            return false;
+        }
+        self.at = k + 1;
+        self.open.clear();
+        self.pieces(read);
+        true
     }
 
     /// A paragraph's inlines as the block the reader shows, if they show anything; `start` is
@@ -1126,7 +1091,7 @@ impl<'a> Reader<'a> {
                 out.push((Inline::Code(self.in_cell(code)), range, Piece::Atom));
             }
             Kind::InlineMath => {
-                let math = self.only(Kind::MathText);
+                let math = self.math();
                 out.push((Inline::Math(self.in_cell(math)), range, Piece::Atom));
             }
             Kind::WikiLink | Kind::Embed => {
@@ -1169,6 +1134,20 @@ impl<'a> Reader<'a> {
             // A node the reader has nothing of its own for: what it holds.
             _ => self.pieces(out),
         }
+    }
+
+    /// The math just entered, as written: over a paragraph's lines it keeps their line
+    /// breaks and their indentation, without their containers' markers.
+    fn math(&mut self) -> String {
+        let mut math = String::new();
+        while let Some(step) = self.next() {
+            match step {
+                Step::Leave(..) => break,
+                Step::Token(Kind::MathText | Kind::Newline, text, _) => math.push_str(text),
+                _ => {}
+            }
+        }
+        math
     }
 
     /// Code or math as a table's cell shows it: the pipe a cell escapes, so that it doesn't
@@ -2088,6 +2067,28 @@ mod tests {
                     inlines: vec![t("Heading")]
                 },
             ]
+        );
+        // Math is a paragraph's: two `$$` in two paragraphs close nothing between them.
+        assert_eq!(
+            kinds(obsidian("$$100 it cost\n\n# Heading\n\n$$ again\n")),
+            [
+                K::Paragraph(vec![t("$$100 it cost")]),
+                K::Heading {
+                    level: 1,
+                    inlines: vec![t("Heading")]
+                },
+                K::Paragraph(vec![t("$$ again")]),
+            ]
+        );
+        // A price pairs with no later `$`.
+        assert_eq!(
+            para(obsidian("$5 and $x$ end")),
+            [t("$5 and "), I::Math("x".into()), t(" end")]
+        );
+        // Math over a paragraph's lines keeps their indentation.
+        assert_eq!(
+            kinds(obsidian("$$\n  x\n$$\n")),
+            [K::Math("\n  x\n".into())]
         );
         // A lazy line under a callout's title is the callout's.
         let [K::Callout { title, blocks, .. }] = one(obsidian("> [!note] Title\nlazy line\n"))

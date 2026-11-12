@@ -1,0 +1,29 @@
+# What a subscriber hears of the menu's own delete and undo: one items/changed each, and no
+# items/reset, since the core reads the note again inside the call and the menu doesn't rescan.
+# tests/drive.rs installs the news-count extension of tests/, which follows headings and keeps
+# what it heard in the status line.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+wait-for heard 0 changed, 0 reset
+keys p lava
+wait-for Lava
+keys enter
+wait-for Concepts/Lava  reading
+keys d
+wait-for Delete Concepts/Lava?
+keys y
+wait-for deleted Lava · u undo
+wait-for heard 1 changed, 0 reset
+keys u
+wait-for restored Concepts/Lava.md
+wait-for heard 2 changed, 0 reset
+wait-for Concepts/Lava  reading
+keys d
+wait-for Delete Concepts/Lava?
+keys y
+wait-for deleted Lava · u undo
+wait-for heard 3 changed, 0 reset
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0
