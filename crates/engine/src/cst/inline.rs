@@ -5,6 +5,10 @@
 //! block: its `](destination)` there is read (`LinkEnd`). A link's `)` comes after its
 //! destination and its title, either of which may hold parentheses.
 //!
+//! Math is what pulldown-cmark reads as math (`Dollars`): `$…$` and `$$…$$` in one block's
+//! text, on one line or over several, closed by the block's next `$` in the same braces or
+//! not at all. It is never a block of its own, and never goes on past its block.
+//!
 //! What is left as text is then read for what text itself holds (`Held`, below): escapes,
 //! character references, autolinks, inline HTML, footnotes, hard line breaks, and emphasis, a
 //! block at a time, since emphasis may open on one line and close on a later one. That reading
@@ -14,6 +18,7 @@
 //! for it (`Gates::plain`) reads the same links and tags. A tag may follow the markers that
 //! open emphasis (`**#tag**`) either way.
 
+use std::cell::OnceCell;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -48,8 +53,10 @@ fn lines<'t>(
     defs: &Definitions,
     b: &mut impl Sink<'t>,
 ) {
-    // A code span an earlier line of the paragraph opened: its closing backticks.
-    let mut code: Option<Range<usize>> = None;
+    // The code span or the math an earlier line of the paragraph opened.
+    let mut code: Option<Unclosed> = None;
+    // The `$`s of the block being read, once one is asked about.
+    let mut dollars = Dollars::default();
     // How many `[` the block's earlier lines left open.
     let mut open = 0;
     // Whether the text read is a table cell's.
@@ -59,30 +66,42 @@ fn lines<'t>(
             Ev::Start(kind) => {
                 open = 0;
                 cell = kind == TableCell;
+                dollars = Dollars::default();
                 b.block();
                 b.start(kind)
             }
             Ev::Finish => {
                 open = 0;
                 cell = false;
+                dollars = Dollars::default();
                 b.block();
                 b.finish()
             }
             Ev::Tok(kind, a, z) => b.token(kind, &text[a..z]),
+            // Math keeps the indentation of the lines it goes on over, as written.
+            Ev::Indent(a, z) => match &code {
+                Some(math) if math.text == MathText => b.token(MathText, &text[a..z]),
+                _ => b.token(Whitespace, &text[a..z]),
+            },
             Ev::Inline(a, z) => {
                 b.line(a, z);
-                let line = Line::new(text, gates, defs, cell, a, z);
+                let block = Block {
+                    events,
+                    at: k,
+                    dollars: &dollars,
+                };
+                let line = Line::new(text, gates, defs, cell, block, a, z);
                 let from = match code.take() {
-                    Some(close) if close.start >= z => {
-                        token(b, CodeText, text, a, z);
-                        code = Some(close);
+                    Some(left) if left.close.start >= z => {
+                        token(b, left.text, text, a, z);
+                        code = Some(left);
                         continue;
                     }
-                    Some(close) => {
-                        token(b, CodeText, text, a, close.start);
-                        token(b, Backticks, text, close.start, close.end);
+                    Some(left) => {
+                        token(b, left.text, text, a, left.close.start);
+                        token(b, left.marker, text, left.close.start, left.close.end);
                         b.finish();
-                        close.end
+                        left.close.end
                     }
                     None => match line.line_field(a, z) {
                         Some(end) => {
@@ -120,6 +139,11 @@ fn yaml<'t>(
         g: gates,
         defs,
         cell: false,
+        block: Block {
+            events: &[],
+            at: 0,
+            dollars: &Dollars::default(),
+        },
         tags: Vec::new(),
         colons: false,
     };
@@ -139,11 +163,120 @@ fn yaml<'t>(
     token(b, Yaml, text, plain, z);
 }
 
+/// A code span or math that its line left open: the kinds of its text and of its closing
+/// marker, and where that marker is, on a later line of the block.
+struct Unclosed {
+    text: Kind,
+    marker: Kind,
+    close: Range<usize>,
+}
+
+/// The block a line is in: the note's events, where the line is among them, and the block's
+/// `$`s.
+#[derive(Clone, Copy)]
+struct Block<'d> {
+    events: &'d [Ev],
+    at: usize,
+    dollars: &'d Dollars,
+}
+
+/// A `$` of a block's text that no backslash escapes.
+#[derive(Clone, Copy)]
+struct Dollar {
+    at: usize,
+    /// Something that isn't blank follows it, so it may open math.
+    opens: bool,
+    /// Something that isn't blank comes before it on its line, so it may close math.
+    closes: bool,
+    /// The braces it is in: math opens and closes in the same ones.
+    braces: u8,
+}
+
+/// The `$`s of one block's text, found the first time one is asked about, and the braces
+/// around each, numbered as pulldown-cmark numbers them (its `brace_context`). A block with
+/// no `$` outside what starts before it (code, a link's destination) never pays for this.
+#[derive(Default)]
+struct Dollars(OnceCell<Vec<Dollar>>);
+
+impl Block<'_> {
+    fn dollars(&self, text: &str) -> &[Dollar] {
+        self.dollars.0.get_or_init(|| {
+            // The block's text is the lines around this one that no node's start or end
+            // parts from it.
+            let part = |ev: &&Ev| matches!(ev, Ev::Inline(..) | Ev::Tok(..) | Ev::Indent(..));
+            let (before, after) = self.events.split_at(self.at.min(self.events.len()));
+            let from = self.at - before.iter().rev().take_while(part).count();
+            let to = self.at + after.iter().take_while(part).count();
+            Dollars::find(text, &self.events[from..to])
+        })
+    }
+}
+
+impl Dollars {
+    /// How deep pulldown-cmark tells braces apart; deeper, it only counts them.
+    const DEEP: usize = 25;
+
+    fn find(text: &str, block: &[Ev]) -> Vec<Dollar> {
+        let t = text.as_bytes();
+        let blank = |c: Option<&u8>| c.is_none_or(|&c| matches!(c, b'\t'..=b'\r' | b' '));
+        let mut found = Vec::new();
+        // The braces open, each by its number, under the block's own, and the next number.
+        let (mut stack, mut next): (Vec<u8>, usize) = (Vec::new(), 0);
+        for ev in block {
+            let &Ev::Inline(a, z) = ev else { continue };
+            let mut i = a;
+            while i < z {
+                match t[i] {
+                    b'\\' if i + 1 < z && t[i + 1].is_ascii_punctuation() => i += 1,
+                    b'$' => {
+                        // Braces count from the block's first `$` on.
+                        if stack.is_empty() {
+                            stack.push(!0);
+                        }
+                        let braces = match stack.len() > Self::DEEP {
+                            true => next as u8,
+                            false => stack[stack.len() - 1],
+                        };
+                        found.push(Dollar {
+                            at: i,
+                            opens: !blank(t.get(i + 1)),
+                            closes: i > a && !blank(t.get(i - 1)),
+                            braces,
+                        });
+                    }
+                    b'{' => {
+                        if stack.len() == Self::DEEP {
+                            stack.push(next as u8);
+                            next = Self::DEEP;
+                        } else if stack.len() > Self::DEEP {
+                            next += 1;
+                        } else if !stack.is_empty() {
+                            stack.push(next as u8);
+                            next += 1;
+                        }
+                    }
+                    // One that closes nothing parts what is before it from what is after.
+                    b'}' if stack.len() == 1 => stack[0] = stack[0].wrapping_sub(1),
+                    b'}' if stack.len() > Self::DEEP && next > Self::DEEP => next -= 1,
+                    b'}' => {
+                        stack.pop();
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        found
+    }
+}
+
 struct Line<'t, 'd> {
     text: &'t str,
     g: Gates,
     /// The note's link definitions.
     defs: &'d Definitions,
+    /// The block the line is in.
+    block: Block<'d>,
     /// Whether the line is a table cell, where the pipe before a wikilink's alias is written
     /// `\|`, as Obsidian writes it, so that it doesn't end the cell.
     cell: bool,
@@ -187,6 +320,7 @@ impl<'t, 'd> Line<'t, 'd> {
         g: Gates,
         defs: &'d Definitions,
         cell: bool,
+        block: Block<'d>,
         at: usize,
         z: usize,
     ) -> Self {
@@ -220,14 +354,15 @@ impl<'t, 'd> Line<'t, 'd> {
             g,
             defs,
             cell,
+            block,
             tags,
             colons,
         }
     }
 
     /// Read `a..z`; `in_link` inside a link's text, where no other link starts. A code span
-    /// that the line doesn't close may close on one of the block's `later` lines: then it is
-    /// left open at the line's end, and its closing backticks are what this returns. `open`
+    /// or math that the line doesn't close may close on one of the block's `later` lines: then
+    /// it is left open at the line's end, and its closing marker is what this returns. `open`
     /// counts the `[` that nothing closed yet, on this line and the block's earlier ones: a
     /// `](destination)` closes one as a link.
     fn run(
@@ -238,7 +373,7 @@ impl<'t, 'd> Line<'t, 'd> {
         in_link: bool,
         later: &[Ev],
         open: &mut usize,
-    ) -> Option<Range<usize>> {
+    ) -> Option<Unclosed> {
         let t = self.text.as_bytes();
         let mut plain = a;
         let mut i = a;
@@ -258,7 +393,11 @@ impl<'t, 'd> Line<'t, 'd> {
                         b.start(CodeSpan);
                         token(b, Backticks, self.text, i, i + run);
                         token(b, CodeText, self.text, i + run, z);
-                        return Some(close);
+                        return Some(Unclosed {
+                            text: CodeText,
+                            marker: Backticks,
+                            close,
+                        });
                     } else {
                         i += run;
                         continue;
@@ -299,13 +438,32 @@ impl<'t, 'd> Line<'t, 'd> {
                 b'%' if self.g.has(S::Comments) && t.get(i + 1) == Some(&b'%') => {
                     (self.text[i + 2..z].find("%%")).map(|k| (Comment, i + 2 + k + 2))
                 }
-                b'$' if self.g.has(S::Math) => self.math(i, z).map(|e| (InlineMath, e)),
+                b'$' if self.g.has(S::Math) => match self.math(i) {
+                    Some(close) if close.end <= z => Some((InlineMath, close.end)),
+                    // It closes on a later line of the block.
+                    Some(close) if !later.is_empty() => {
+                        let run = close.len();
+                        token(b, Text, self.text, plain, i);
+                        b.start(InlineMath);
+                        token(b, MathMarker, self.text, i, i + run);
+                        token(b, MathText, self.text, i + run, z);
+                        return Some(Unclosed {
+                            text: MathText,
+                            marker: MathMarker,
+                            close,
+                        });
+                    }
+                    _ => None,
+                },
                 b'#' => (self.tags.iter())
                     .find(|r| r.start == i && r.end <= z)
                     .map(|r| (Tag, r.end)),
                 b'^' if self.g.has(S::BlockIds) => self.block_id(a, i, z).map(|e| (BlockId, e)),
                 _ => None,
             };
+            // Math that opens in a link's text and closes after the link is the math, and the
+            // link is none.
+            let found = found.filter(|&(kind, end)| !self.math_leaves(kind, i, end));
             match found {
                 Some((kind, end)) => {
                     // A link ends the brackets open before it: none of them is a link's.
@@ -339,7 +497,7 @@ impl<'t, 'd> Line<'t, 'd> {
                         i += n.max(1);
                     }
                 }
-                Ev::Tok(..) => {}
+                Ev::Tok(..) | Ev::Indent(..) => {}
                 _ => return None,
             }
         }
@@ -703,27 +861,56 @@ impl<'t, 'd> Line<'t, 'd> {
         self.key(a, z).map(|_| z)
     }
 
-    /// `$x$` or `$$x$$` at `a`: where it ends.
-    fn math(&self, a: usize, z: usize) -> Option<usize> {
-        let t = self.text.as_bytes();
-        if t.get(a + 1) == Some(&b'$') {
-            return self.text[a + 2..z].find("$$").map(|k| a + 2 + k + 2);
-        }
-        if t.get(a + 1).is_none_or(|c| c.is_ascii_whitespace()) || a + 1 >= z {
+    /// Math opened by the `$` at `a`, `$x$` or `$$x$$`: its closing marker, which may be on
+    /// a later line of the block. As pulldown-cmark pairs them: the `$` may open, and the
+    /// block's next `$` in the same braces closes it or nothing does. `$$` is closed by `$$`;
+    /// a single `$` by one with something before it on its line.
+    fn math(&self, a: usize) -> Option<Range<usize>> {
+        let d = self.block.dollars(self.text);
+        let n = d.binary_search_by_key(&a, |d| d.at).ok()?;
+        if !d[n].opens {
             return None;
         }
-        let mut i = a + 1;
-        while i < z {
-            if t[i] == b'$' {
-                let before = t[i - 1];
-                let after = t.get(i + 1).filter(|_| i + 1 < z);
-                if !before.is_ascii_whitespace() && after.is_none_or(|c| !c.is_ascii_digit()) {
-                    return Some(i + 1);
-                }
-            }
-            i += 1;
+        let double = |n: usize| d.get(n + 1).is_some_and(|next| next.at == d[n].at + 1);
+        let display = double(n);
+        let from = n + 1 + display as usize;
+        let k = from
+            + d.get(from..)?
+                .iter()
+                .position(|c| c.braces == d[n].braces)?;
+        let closes = match display {
+            true => double(k),
+            false => d[k].closes,
+        };
+        closes.then_some(d[k].at..d[k].at + 1 + display as usize)
+    }
+
+    /// Whether math opens in the text of the link or the embed `kind` at `a..z` and closes
+    /// after it: then the math is read, as pulldown-cmark reads it, and the brackets are text.
+    fn math_leaves(&self, kind: Kind, a: usize, z: usize) -> bool {
+        if !self.g.has(S::Math) || !matches!(kind, Link | Image | WikiLink | Embed) {
+            return false;
         }
-        None
+        // A link's destination is the link's: only its text may open math.
+        let text = match kind {
+            Link => self.close_bracket(a, z),
+            Image => self.close_bracket(a + 1, z),
+            _ => None,
+        };
+        let end = text.unwrap_or(z);
+        if !self.text[a..end].contains('$') {
+            return false;
+        }
+        let d = self.block.dollars(self.text);
+        let mut n = d.partition_point(|d| d.at < a);
+        while n < d.len() && d[n].at < end {
+            match self.math(d[n].at) {
+                Some(close) if close.start >= end => return true,
+                Some(close) => n = d.partition_point(|d| d.at < close.end),
+                None => n += 1,
+            }
+        }
+        false
     }
 
     /// A block id, ` ^id` closing the line, with its `^` at `i`: where the id ends.

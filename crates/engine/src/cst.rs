@@ -146,8 +146,6 @@ kinds! {
     FencedCode,
     IndentedCode,
     HtmlBlock,
-    /// `$$` … `$$` as a block.
-    MathBlock,
     /// `%%` … `%%` across lines.
     CommentBlock,
     Table,
@@ -169,7 +167,7 @@ kinds! {
     LineField,
     /// `%%hidden%%` within a line.
     Comment,
-    /// `$x$` or `$$x$$` within a line.
+    /// `$x$` or `$$x$$` in a block's text. It may go on over the block's lines.
     InlineMath,
 
     // What text holds, after the rest, which keep the numbers they had: its tokens,
@@ -467,17 +465,6 @@ impl Tree {
         if !text[..replaced.start].contains('\n') {
             return None;
         }
-        // A `$$` closes math that may have opened far above, and one that goes leaves that
-        // math unclosed, which is text: the lines an edit touches hold none, or the note is
-        // parsed whole.
-        if self.gates.has(Syntax::Math) {
-            let end = replaced.start + inserted;
-            let from = text[..replaced.start].rfind('\n').map_or(0, |i| i + 1);
-            let to = text[end..].find('\n').map_or(text.len(), |i| end + i);
-            if text[from..to].contains("$$") {
-                return None;
-            }
-        }
         let kids: Vec<(Kind, usize)> = (self.green.children())
             .map(|c| (Kind::of(c.kind()), u32::from(c.text_len()) as usize))
             .collect();
@@ -667,11 +654,7 @@ pub(crate) fn code(text: &str, gates: Gates) -> Vec<Range<usize>> {
     let is_code = |kind| {
         matches!(
             kind,
-            Kind::CodeSpan
-                | Kind::InlineMath
-                | Kind::MathBlock
-                | Kind::FencedCode
-                | Kind::IndentedCode
+            Kind::CodeSpan | Kind::InlineMath | Kind::FencedCode | Kind::IndentedCode
         )
     };
     let mut code = Vec::new();

@@ -582,6 +582,27 @@ mod tests {
         "Text with a note[^1] and another[^long note], and none[^missing].\n\n[^1]: The first *note*.\n[^long note]: The second,\nlazily continued.\n\nAfter.\n",
         // Math.
         "Inline $x^2$ and $$y$$ and a price of $5 and $6.\n\n$$\n\\frac{a}{b}\n$$\n\nText\n$$\nz\n$$\nmore text\n",
+        // Two `$$` in two paragraphs close nothing, whatever is between them.
+        "$$100 is what it cost\n\n- [ ] a task\n\n## A heading\n\nA [[Link]] and a #tag\n\n$$ at the end again\n",
+        // A `$$` in code, in HTML, in a comment, in a heading, in a task or after a backslash closes none
+        // either.
+        "$$ open\n\nA `echo $$` span\n\n    $$\n\n```\n$$\n```\n\n<div>$$</div>\n\n%% $$ %%\n\n# Heading $$\n\n- [ ] task $$\n\nescaped \\$$\n",
+        // A fence stays code after an open `$$`.
+        "$$ open before fence\n\n```\n$$\n```\n\n- [ ] a task\n\nA paragraph\n",
+        // A price pairs with no later `$`.
+        "cost $12 for [[Note]] #pricetag and $x$ end\n\n$5 and $6, $a $b$, $c$$ d\n",
+        // `$$` after spaces, and over a blank line.
+        "   $$ spaced\n\ntext\n\n$$\n\n$$\nx = 1\n\ny = 2\n$$\n",
+        // Math over a paragraph's lines, in a quote and in a list item, with indentation.
+        "> $$\n>   x = 1\n> $$\n\n- $$\n  a\n    b\n  $$\n\n$$\n\tc\n$$ after\n\nText $d\ne$ f $g\n$ h\n",
+        // Braces, escapes, and runs of `$`.
+        "$a{b$c}d$ and $x\\$y$ and \\$z$ and $$$ w $$ and $$$$ and $$ p $ q $$\n\n$}$ then $r$\n",
+        // Math in a table's cells, a heading and list items.
+        "| $a | b$ |\n| - | - |\n| $c$ | $5 and $6 |\n\n# Heading $x$ and $5\n\n- item $a\n  b$ c\n- [ ] task $$d$$\n",
+        // Math that opens in a link's text: inside it, and closing after it.
+        "[$a$](u.md) and [b $c](u.md) d$ e and [[W $f]] g$ h and ![i $j](p.png) k$\n",
+        // What starts first: code before math, math before code.
+        "`$a` $b$ and $c `d$` e\n",
         // Comments.
         "Shown %%hidden%% shown.\n\n%%\nA hidden block\nwith **markup**\n%%\n\nAfter `%%code%%` and %%two%% %%comments%%.\n",
         // Embeds.
@@ -746,11 +767,6 @@ mod tests {
             "obsidian",
             "| a | b |\n|---|---|\n| c | d \\\\| e |\n",
             "`\\\\|` in a table cell: an escaped backslash, then a pipe that ends the cell. pulldown-cmark read a pipe in the cell.",
-        ),
-        (
-            "obsidian",
-            "$$\nx\n\ny\n$$\n",
-            "`$$` math over a blank line was two paragraphs of text. It is one block of math for the tree and the items, as in Obsidian.",
         ),
     ];
 

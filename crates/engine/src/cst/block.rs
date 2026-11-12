@@ -25,6 +25,9 @@ pub(super) enum Ev {
     Tok(Kind, usize, usize),
     /// A line of a block's text, read by `inline`.
     Inline(usize, usize),
+    /// The indentation of a paragraph's later line: whitespace, or math's text where math
+    /// goes on over it.
+    Indent(usize, usize),
     /// A frontmatter line, where only wikilinks are read.
     Yaml(usize, usize),
 }
@@ -118,7 +121,6 @@ enum Leaf {
         end: usize,
     },
     Html(HtmlEnd),
-    Math,
     Comment,
     Table,
 }
@@ -169,27 +171,7 @@ struct Parser<'t> {
     pending: usize,
     /// The link definitions found.
     defs: Definitions,
-    /// Where the line being read starts, and where the line whose `$$` nothing closed does:
-    /// that one opens no math.
-    at_line: usize,
-    no_math: usize,
-    /// The parse as it was before the line being read, when that line may open `$$` math. It
-    /// is kept (`math`) while the math it opened is open, and handed back (`unclosed`) when
-    /// the math ends with nothing closing it.
-    before: Option<Before>,
-    math: Option<Before>,
-    unclosed: Option<Before>,
     /// The line read was a callout's title, which the next may go on from lazily.
-    titled: bool,
-}
-
-/// The parse before a line that may open `$$` math, to go back to if nothing closes it.
-struct Before {
-    line: usize,
-    events: usize,
-    stack: Vec<Open>,
-    leaf: Option<Leaf>,
-    defs: usize,
     titled: bool,
 }
 
@@ -208,11 +190,6 @@ impl<'t> Parser<'t> {
             prefix: Vec::new(),
             pending: 0,
             defs: Definitions::default(),
-            at_line: 0,
-            no_math: usize::MAX,
-            before: None,
-            math: None,
-            unclosed: None,
             titled: false,
         }
     }
@@ -224,6 +201,13 @@ impl<'t> Parser<'t> {
     fn tok(&mut self, kind: Kind, a: usize, z: usize) {
         if a < z {
             self.push(Ev::Tok(kind, a, z));
+        }
+    }
+
+    /// The indentation `a..z` of a paragraph's later line.
+    fn indent(&mut self, a: usize, z: usize) {
+        if a < z {
+            self.push(Ev::Indent(a, z));
         }
     }
 
@@ -342,55 +326,23 @@ impl<'t> Parser<'t> {
     /// accepts, or the end; where they stop.
     fn run(&mut self, from: usize, stop: impl Fn(usize) -> bool) -> usize {
         let mut ls = from;
-        loop {
-            while ls < self.text.len() {
-                if ls > from && self.stack.is_empty() && self.leaf.is_none() && stop(ls) {
-                    return ls;
-                }
-                ls = self.line(ls);
-                if let Some(before) = self.unclosed.take() {
-                    ls = self.back_to(before);
-                }
+        while ls < self.text.len() {
+            if ls > from && self.stack.is_empty() && self.leaf.is_none() && stop(ls) {
+                return ls;
             }
-            self.close_leaf();
-            match self.unclosed.take() {
-                Some(before) => ls = self.back_to(before),
-                None => break,
-            }
+            ls = self.line(ls);
         }
+        self.close_leaf();
         while self.stack.pop().is_some() {
             self.finish();
         }
         ls
     }
 
-    /// The parse as it was `before` a line opened `$$` math that nothing closed: the line is
-    /// read again from where this returns, as text, and so is what followed it.
-    fn back_to(&mut self, before: Before) -> usize {
-        // The indented code open before that line was ended by it, with a `Finish` put in
-        // after its last line.
-        if let Some(Leaf::Indented { end }) = before.leaf {
-            self.events.remove(end);
-        }
-        self.events.truncate(before.events);
-        self.stack = before.stack;
-        self.leaf = before.leaf;
-        self.defs.0.truncate(before.defs);
-        self.titled = before.titled;
-        (self.before, self.math) = (None, None);
-        self.no_math = before.line;
-        before.line
-    }
-
     fn close_leaf(&mut self) {
         match self.leaf.take() {
             None => {}
             Some(Leaf::Indented { end }) => self.events.insert(end, Ev::Finish),
-            // Math that ends here without its closing `$$` was none.
-            Some(Leaf::Math) => {
-                self.unclosed = self.math.take();
-                self.close()
-            }
             Some(_) => self.close(),
         }
     }
@@ -403,24 +355,7 @@ impl<'t> Parser<'t> {
     fn line(&mut self, ls: usize) -> usize {
         let (le, next) = self.line_at(ls);
         let t = self.bytes();
-        self.at_line = ls;
         let titled = std::mem::take(&mut self.titled);
-        let may_open_math = self.g.has(S::Math)
-            && ls != self.no_math
-            && !matches!(self.leaf, Some(Leaf::Math))
-            && self.text[ls..le].contains("$$");
-        if may_open_math {
-            self.before = Some(Before {
-                line: ls,
-                events: self.events.len(),
-                stack: self.stack.clone(),
-                leaf: self.leaf,
-                defs: self.defs.0.len(),
-                titled,
-            });
-        } else if self.before.is_some() {
-            self.before = None;
-        }
         let mut prefix = std::mem::take(&mut self.prefix);
         prefix.clear();
         self.pending = 0;
@@ -520,16 +455,11 @@ impl<'t> Parser<'t> {
                     }
                     return self.done(prefix, next);
                 }
-                Some(Leaf::Math) | Some(Leaf::Comment) => {
+                Some(Leaf::Comment) => {
                     self.emit_prefix(&prefix);
-                    let (kind, mark) = match self.leaf {
-                        Some(Leaf::Math) => (MathText, "$$"),
-                        _ => (CommentText, "%%"),
-                    };
-                    self.tok(kind, pos, le);
+                    self.tok(CommentText, pos, le);
                     self.newline(le, next);
-                    if self.text[pos..le].contains(mark) {
-                        self.math = None;
+                    if self.text[pos..le].contains("%%") {
                         self.close_leaf();
                     }
                     return self.done(prefix, next);
@@ -550,7 +480,7 @@ impl<'t> Parser<'t> {
             // A lazy line: the paragraph goes on without its containers' markers.
             self.emit_prefix(&prefix);
             let last_line = self.para_line(pos, fp, le, next);
-            self.tok(Whitespace, pos, fp);
+            self.indent(pos, fp);
             self.push(Ev::Inline(fp, le));
             self.newline(le, next);
             self.leaf = Some(Leaf::Para {
@@ -732,7 +662,6 @@ impl<'t> Parser<'t> {
             || self.atx(fp, le).is_some()
             || self.fence(fp, le).is_some()
             || html_start(&self.text[fp..le], true).is_some()
-            || self.math_start(fp, le)
             || self.comment_start(fp, le)
             || (t[fp] == b'[' && self.footnote(fp, le).is_some())
     }
@@ -749,10 +678,6 @@ impl<'t> Parser<'t> {
         let t = label.as_bytes();
         let named = t[k] == b']' && !label[..k].trim().is_empty();
         (named && t.get(k + 1) == Some(&b':')).then_some(fp + 2 + k)
-    }
-
-    fn math_start(&self, fp: usize, le: usize) -> bool {
-        self.g.has(S::Math) && self.at_line != self.no_math && self.text[fp..le].starts_with("$$")
     }
 
     fn comment_start(&self, fp: usize, le: usize) -> bool {
@@ -996,38 +921,14 @@ impl<'t> Parser<'t> {
                     }
                     return;
                 }
-                for (kind, inner, mark, starts) in [
-                    (MathBlock, MathText, MathMarker, self.math_start(fp, le)),
-                    (
-                        CommentBlock,
-                        CommentText,
-                        CommentMarker,
-                        self.comment_start(fp, le),
-                    ),
-                ] {
-                    if !starts {
-                        continue;
-                    }
+                if self.comment_start(fp, le) {
                     self.close_leaf();
-                    self.start(kind);
+                    self.start(CommentBlock);
                     self.tok(Whitespace, pos, fp);
-                    self.tok(mark, fp, fp + 2);
-                    self.tok(inner, fp + 2, le);
+                    self.tok(CommentMarker, fp, fp + 2);
+                    self.tok(CommentText, fp + 2, le);
                     self.newline(le, next);
-                    let closed = kind == MathBlock && self.text[fp + 2..le].contains("$$");
-                    self.leaf = Some(match kind {
-                        MathBlock => Leaf::Math,
-                        _ => Leaf::Comment,
-                    });
-                    if kind == MathBlock {
-                        self.math = match closed {
-                            true => None,
-                            false => self.before.take(),
-                        };
-                    }
-                    if closed {
-                        self.close_leaf();
-                    }
+                    self.leaf = Some(Leaf::Comment);
                     return;
                 }
             }
@@ -1056,7 +957,7 @@ impl<'t> Parser<'t> {
             let last_line = self.para_line(pos, fp, le, next);
             match para {
                 Some((start, lines, _)) => {
-                    self.tok(Whitespace, pos, fp);
+                    self.indent(pos, fp);
                     self.push(Ev::Inline(fp, le));
                     self.newline(le, next);
                     self.leaf = Some(Leaf::Para {
