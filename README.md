@@ -62,6 +62,7 @@ cold-lava recipe ~/workspace rename-tag --from a --to b   # a whole-workspace ch
 cold-lava task toggle FILE:LINE          # tick / untick a task
 cold-lava item set FILE ID FIELD VALUE   # set one field of a typed item, checked by reading back
 cold-lava types ~/workspace              # the workspace's types, and what's wrong with them
+cold-lava attributes ~/workspace         # how Markdown writes what types read: a checkbox, 📅, [due:: …]
 cold-lava style ~/workspace              # how the notes are written, which new text follows
 cold-lava table ~/workspace volcano      # a type's items as a table (--sort FIELD, --json)
 ```
@@ -664,6 +665,23 @@ heading), `text` (a paragraph), `item` (a list item) or `row` (a table row), or 
 pattern anywhere in text. The names `on` had before (`note`, `heading`, `paragraph`,
 `list-item`, `table-row`) still work and mean the same, as in the example above.
 `cold-lava types` prints both (`on note · role document`).
+
+A type can also read what a piece carries without saying how Markdown writes it. These are
+**attributes**: a list item's `checkbox`, a heading's `level`, a callout's kind (`callout`) and
+whether it folds (`fold`), a task's `due`, `scheduled`, `start`, `created`, `done`,
+`cancelled`, `recurrence` and `priority`, and any Dataview field by its name
+(`[rating:: 5]` is `rating`). `where.attribute = "checkbox"` takes the pieces that have one,
+and `fields.status = { attribute = "checkbox" }` reads it. A type on `aside` takes a quote or
+a callout. How Markdown writes each attribute (`📅 2026-11-20`, `[due:: 2026-11-20]`) is a
+table you can read with `cold-lava attributes ~/workspace` and change in `[attributes]` in
+`config.toml` or in `.cold-lava/attributes.toml`:
+
+```toml
+version = 1
+
+[item]
+due = [{ inline = "due" }, { marker = "📅" }, { marker = "@due" }]   # also read "@due 2026-11-20"
+```
 
 Every note and block a type matches is an item of that kind, so `cold-lava items` lists them
 with their fields:

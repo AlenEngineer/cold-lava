@@ -743,7 +743,7 @@ fn an_attribute_is_changed_where_its_owner_read_it() {
     );
     let gone = refusal(&s, text, 2, "box", "state", Json::Null);
     assert!(
-        matches!(&gone, Refused(m) if m.contains("attribute checkbox") && m.contains("taken out")),
+        matches!(&gone, Refused(m) if m.contains("taking its value out")),
         "{gone:?}"
     );
     let deeper = refusal(&s, text, 1, "chapter", "depth", json!(3));

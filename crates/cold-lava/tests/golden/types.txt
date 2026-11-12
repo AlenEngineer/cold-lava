@@ -3,21 +3,21 @@ list, heading, block  built in, read natively
 task  built in
   found 17 items
   priority 1 · requires task-lists · actions tasks.toggle
-  on list-item · role item · match '^\[[^\n]\]\s+.*${tasks.global-filter}' · key text · required text
-    status       text                                 checkbox                                                                writable
-    status_type  enum ${tasks.statuses}               checkbox                                                                writable
-    text         text                                 rest without ${tasks.global-filter}                                     read-only
-    due          date                                 inline due or marker 📅 or marker 📆 or marker 🗓                          writable
-    scheduled    date                                 inline scheduled or marker ⏳ or marker ⌛                                writable
-    start        date                                 inline start or marker 🛫                                                writable
-    created      date                                 inline created or marker ➕                                              writable
-    done         date                                 inline completion or marker ✅                                           writable
-    cancelled    date                                 inline cancelled or marker ❌                                            writable
-    recurrence   text                                 inline repeat or pattern '🔁\x{FE0F}?\s*([a-zA-Z0-9, !]*[a-zA-Z0-9,!])'  writable
-    priority     enum highest|high|medium|low|lowest  flags ⏬ lowest, 🔽 low, 🔼 medium, ⏫ high, 🔺 highest or inline priority   writable
-    tags         tag                                  inlines tags                                                            read-only
-    links        link                                 inlines links                                                           read-only
-    daily_note   date                                 note date                                                               read-only
+  on list-item · role item · where attribute checkbox · key text · required text
+    status       text                                 attribute checkbox    writable
+    status_type  enum ${tasks.statuses}               attribute checkbox    writable
+    text         text                                 rest                  read-only
+    due          date                                 attribute due         writable
+    scheduled    date                                 attribute scheduled   writable
+    start        date                                 attribute start       writable
+    created      date                                 attribute created     writable
+    done         date                                 attribute done        writable
+    cancelled    date                                 attribute cancelled   writable
+    recurrence   text                                 attribute recurrence  writable
+    priority     enum highest|high|medium|low|lowest  attribute priority    writable
+    tags         tag                                  inlines tags          read-only
+    links        link                                 inlines links         read-only
+    daily_note   date                                 note date             read-only
   looks
     status_type  done: dim, strike, whole, cancelled: dim, strike, whole
     priority     badge, highest: red, high: orange, medium: yellow, low: cyan, lowest: muted

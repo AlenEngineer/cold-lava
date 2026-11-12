@@ -13,6 +13,7 @@ use crate::cst::{self, Kind, Step};
 use crate::daily;
 use crate::markdown::{self, Flavour, Source, Syntax};
 use crate::matcher::{self, Matcher, Typed};
+use crate::owner::markdown::attributes::{self, Readings};
 use crate::tasks::{self, FNV_START, TasksSettings, fnv, fnv_from};
 use crate::templates;
 use crate::types::{self, On, Types};
@@ -33,6 +34,8 @@ pub struct Settings {
     pub templates: templates::Settings,
     /// The types its notes are matched against, and what was wrong with the rest.
     pub types: Types,
+    /// How Markdown writes the attributes those types read (`owner::markdown::attributes`).
+    pub readings: Readings,
     pub matcher: Matcher,
 }
 
@@ -43,21 +46,35 @@ impl Settings {
 
     /// The workspace's settings, with these types.
     pub fn load_with(root: &Path, types: Types) -> Settings {
-        Settings::new(
+        Settings::with(
             markdown::flavour_for(root),
             TasksSettings::load(root),
             daily::Settings::load(root),
             templates::Settings::load(root),
             types,
+            attributes::for_workspace(root),
         )
     }
 
+    /// Settings with the attribute readings built into the engine.
     pub fn new(
         flavour: Flavour,
         tasks: TasksSettings,
         daily: daily::Settings,
         templates: templates::Settings,
+        types: Types,
+    ) -> Settings {
+        let built_in = Readings::built_in();
+        Settings::with(flavour, tasks, daily, templates, types, built_in)
+    }
+
+    pub fn with(
+        flavour: Flavour,
+        tasks: TasksSettings,
+        daily: daily::Settings,
+        templates: templates::Settings,
         mut types: Types,
+        mut readings: Readings,
     ) -> Settings {
         // The plugin's core symbols first, so a status set by its type is written as they are.
         let mut statuses: Vec<(&char, &tasks::StatusType)> = tasks.statuses.iter().collect();
@@ -67,7 +84,7 @@ impl Settings {
                 .position(|k| k == *c)
                 .unwrap_or(usize::MAX)
         });
-        types.fill(&types::Provided {
+        let provided = types::Provided {
             statuses: statuses
                 .into_iter()
                 .map(|(c, t)| (c.to_string(), t.name().to_string()))
@@ -75,14 +92,17 @@ impl Settings {
             global_filter: tasks.global_filter.clone(),
             tasks_format: if tasks.dataview { "dataview" } else { "emoji" }.into(),
             daily_format: daily.format.clone(),
-        });
-        let matcher = Matcher::new(&types, &flavour, &daily);
+        };
+        types.fill(&provided);
+        readings.fill(&provided);
+        let matcher = Matcher::new(&types, &readings, &flavour, &daily);
         Settings {
             flavour,
             tasks,
             daily,
             templates,
             types,
+            readings,
             matcher,
         }
     }
@@ -96,8 +116,12 @@ impl Settings {
             .and_then(|ty| ty.definition.from.get(t.place.shape));
         let Some(shape) = shape else { return found };
         for (field, source) in &t.place.sources {
-            let read = shape.fields.get(&**field).and_then(|s| s.0.get(*source));
-            if let (Some(types::Source::Attribute(name)), Some(value)) = (read, t.fields.get(field))
+            let Some(written) = shape.fields.get(&**field) else {
+                continue;
+            };
+            let flat = self.readings.flat(shape.on, &written.0);
+            let read = flat.get(*source).and_then(|f| f.attribute);
+            if let (Some((name, _)), Some(value)) = (read, t.fields.get(field))
                 && !value.is_null()
                 && found.get(name).is_none()
             {
@@ -1976,6 +2000,273 @@ fields.w = { capture = "w" }
             "{} read differently:\n{}",
             differ.len(),
             differ.join("\n")
+        );
+    }
+
+    /// Tasks that are easy to read differently once a task is found by its attributes and not
+    /// by its characters.
+    const TRICKY_TASKS: &[&str] = &[
+        // A marker and a Dataview field for one date: the field counts, both leave the words.
+        "- [ ] both [due:: 2026-11-20] 📅 2026-11-21 📆 2026-11-22 #task\n- [ ] (due:: 2026-11-23) round 📅 2026-11-24\n",
+        // Several priority glyphs, with a Dataview priority, and one in code.
+        "- [ ] many 🔺 ⏬ 🔼 #task\n- [ ] field wins? ⏫ [priority:: low]\n- [ ] in code `⏫` 🔽\n- [ ] no such [priority:: urgent]\n",
+        // The global filter: before the words, after them, twice, missing, and glued.
+        "- [ ] #task first\n- [ ] last #task\n- [ ] #task twice #task\n- [ ] none\n- [ ] glued#task\n- [ ] #tasks longer\n- [#] task #task\n- [x] x marks x\n- [ ] ] bracket [ ] again\n",
+        // Custom statuses, known and unknown, and odd characters between the brackets.
+        "- [?] question\n- [!] urgent\n- [/] going #task\n- [-] dropped\n- [X] capital\n- [é] accent\n- [📅] emoji\n- [ ]\ttab after\n- [ ]\u{a0}nbsp after\n- [ ]\u{3000}wide space after\n",
+        // No words: a bare checkbox, only a date, only the filter, only a tag, only a priority.
+        "- [ ] \n- [x]\n- [ ] 📅 2026-11-12\n- [ ] #task\n- [ ] ⏫\n- [ ] [due:: 2026-11-12]\n- [ ] ^id\n",
+        // Not a checkbox: no space after, two characters, none, a link, an escaped bracket.
+        "- [x]no space\n- [  ] two\n- [] none\n- [x](link.md) a link\n- \\[ ] escaped\n- [ ]x\n- [ ]] bracket\n",
+        // In a quote, a callout, a nested list, an ordered list, a footnote.
+        "> - [ ] quoted 📅 2026-11-18 #task\n> > - [x] deeper ✅ 2026-11-01\n\n> [!todo]- Folded\n> - [ ] in a callout ⏳ 2026-11-19 #task\n\n- parent\n  - [ ] nested 🛫 2026-11-20 #task\n    - [/] deeper [scheduled:: 2026-11-22] #task\n1. [ ] numbered ➕ 2026-11-01\n2) [x] other delimiter ❌ 2026-11-02\n\n[^1]: Note:\n\n    - [ ] in a footnote 📅 2026-11-23 #task\n",
+        // Recurrence with odd characters, a variation selector, a Dataview repeat, both.
+        "- [ ] odd 🔁 every week, on Monday! 📅 2026-11-16\n- [ ] selector 🔁\u{fe0f} every 2 days when done ⏳\u{fe0f} 2026-11-25\n- [ ] dv [repeat:: every month on the 1st]\n- [ ] both 🔁 every day [repeat:: every week]\n- [ ] stops 🔁 every day; not this\n- [ ] bare 🔁\n",
+        // Dates that aren't dates, and dates glued to words.
+        "- [ ] someday 📅 tomorrow\n- [ ] short 📅 2026-1-2\n- [ ] impossible 📅 2026-02-30\n- [ ] glued 📅2026-11-12\n- [ ] empty [due:: ]\n- [ ] late 📅 later 📆 2026-11-12\n- [ ] twice 📅 2026-11-12 📅 2026-11-13\n- [ ] ✅ 2026-11-01 done first ❌ nope\n",
+        // Code, comments and math around the markers; a second line; a block id.
+        "- [ ] code `📅 2026-01-01` real 📅 2026-11-12\n- [ ] comment %%📅 2026-01-02%% after\n- [ ] math $📅$ ⏫\n- [ ] first line 📅 2026-11-12\n  second line ⏳ 2026-11-13\n- [ ] anchored 📅 2026-11-12 ^t1\n- [ ] links [[Ana]] and #tag ⏬\n",
+        // A daily note's task, a line field, a task under a heading with the same words twice.
+        "# Day\n- [ ] same words\n- [ ] same words\n  - [ ] same words\ndue:: 2026-11-12\n- [ ] after a field\n",
+        // Line breaks and tabs.
+        "- [ ] crlf 📅 2026-11-12 #task\r\n- [x] crlf done ✅ 2026-11-11\r\n",
+        "-\t[ ] tab marker 📅 2026-11-12\n*   [ ] wide marker\n+ [ ] plus\n10. [ ] ten\n",
+    ];
+
+    /// User types beside the task: one that extends it, and one on a list item that reads the
+    /// checkbox and a marker itself, as types written before attributes do.
+    const TYPES_ON_TASKS: &str = r#"
+[idea]
+extends = "task"
+on = "list-item"
+where.tag = ["task"]
+match = '^\[[^\n]\]\s'
+fields.status = { checkbox = true }
+fields.text = { rest = true }
+fields.scheduled = { marker = "⏳", type = "date" }
+
+[chore]
+on = "list-item"
+priority = 2
+where.tag = ["tag"]
+fields.state = { checkbox = true }
+fields.when = { marker = "📅", type = "date" }
+fields.what = { rest = true }
+"#;
+
+    /// Settings with the task as it is defined now, or as it was before it read attributes.
+    fn with_task(before: bool, flavour: &str, plugin: &serde_json::Value, more: &str) -> Settings {
+        let mut layers = vec![match before {
+            true => types::Layer::built_in_before_attributes(),
+            false => types::Layer::built_in(),
+        }];
+        if !more.is_empty() {
+            let table: toml::Table = toml::from_str(more).unwrap();
+            layers.push(types::Layer::config(Path::new("config.toml"), table));
+        }
+        let found = types::load(layers);
+        assert!(found.errors.is_empty(), "{:?}", found.errors);
+        Settings::new(
+            Flavour::built_in(flavour).unwrap(),
+            TasksSettings::from_json(plugin),
+            daily::Settings::load(Path::new("/nonexistent-cold-lava-workspace")),
+            templates::Settings::default(),
+            found,
+        )
+    }
+
+    /// The first items that differ between two readings of one note.
+    fn unlike(what: &str, now: &[Item], then: &[Item]) -> Option<String> {
+        if now == then {
+            return None;
+        }
+        let short = |i: Option<&Item>| format!("{i:?}").chars().take(600).collect::<String>();
+        let mut out = format!("{what}: {} items now, {} before", now.len(), then.len());
+        let n = now.len().max(then.len());
+        for k in (0..n).filter(|&k| now.get(k) != then.get(k)).take(2) {
+            out += &format!(
+                "\n  now:  {}\n  then: {}",
+                short(now.get(k)),
+                short(then.get(k))
+            );
+        }
+        Some(out)
+    }
+
+    /// The task found by its attributes is the task found by Markdown's characters (#242):
+    /// every item of every note is equal, whole (id, rev, lines, fields, spans, and where each
+    /// field was read), with the definition as it is and as it was. Over the example workspace
+    /// with its own types, every Markdown file of the repository, the tricky notes and the
+    /// tricky tasks; in each flavour; with the Tasks plugin's settings unset, with a global
+    /// filter, with a filter that is also a status character, and with custom statuses in the
+    /// Dataview format; with the built-in types alone, with types on every kind of block, and
+    /// with user types that extend the task or read a checkbox themselves. And on a canvas
+    /// card, whose text goes through the same reading.
+    #[test]
+    fn the_task_reads_from_attributes_as_it_did_from_characters() {
+        let mut differ = Vec::new();
+        let mut compared = 0;
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        let of_workspace = |before: bool| {
+            let built_in = match before {
+                true => types::Layer::built_in_before_attributes(),
+                false => types::Layer::built_in(),
+            };
+            let layers = std::iter::once(built_in).chain(types::Layer::workspace(&workspace));
+            Settings::load_with(&workspace, types::load(layers))
+        };
+        let (now, then) = (of_workspace(false), of_workspace(true));
+        assert!(now.matcher.names().any(|n| n == "volcano"));
+        for e in walkdir::WalkDir::new(&workspace).into_iter().flatten() {
+            let p = e.path();
+            let name = p.strip_prefix(&workspace).unwrap().to_string_lossy();
+            if p.extension().is_some_and(|x| x == "md") {
+                let text = std::fs::read_to_string(p).unwrap();
+                let (a, b) = (extract(&name, &text, &now), extract(&name, &text, &then));
+                differ.extend(unlike(&name, &a, &b));
+                compared += a.len();
+            } else if p.extension().is_some_and(|x| x == "canvas") {
+                let text = std::fs::read_to_string(p).unwrap();
+                let given = crate::owner::canvas::read(&text).unwrap();
+                let read = |s: &Settings| crate::owner::given::read(&name, &given, s).items;
+                let (a, b) = (read(&now), read(&then));
+                differ.extend(unlike(&name, &a, &b));
+                compared += a.len();
+            }
+        }
+        assert!(compared > 30, "the example workspace was read: {compared}");
+
+        let corpus = cst::corpus();
+        let plugins = [
+            json!({}),
+            json!({"globalFilter": "#task"}),
+            json!({"globalFilter": "x"}),
+            json!({"globalFilter": "] "}),
+            json!({"taskFormat": "dataview", "statusSettings": {"customStatuses": [
+                {"symbol": "?", "name": "Question", "nextStatusSymbol": "!", "type": "TODO"},
+                {"symbol": "!", "name": "Urgent", "nextStatusSymbol": "x", "type": "IN_PROGRESS"},
+                {"symbol": "é", "name": "Accent", "nextStatusSymbol": " ", "type": "NON_TASK"},
+            ]}}),
+        ];
+        let mut tasks = 0;
+        for flavour in ["obsidian", "github", "commonmark"] {
+            for plugin in &plugins {
+                for more in ["", EVERY_TYPE, TYPES_ON_TASKS] {
+                    let now = with_task(false, flavour, plugin, more);
+                    let then = with_task(true, flavour, plugin, more);
+                    let mut read = |name: &str, text: &str| {
+                        let (a, b) = (extract(name, text, &now), extract(name, text, &then));
+                        let what = format!("{name} ({flavour}, {plugin}, {} types)", more.len());
+                        differ.extend(unlike(&what, &a, &b));
+                        tasks += a.iter().filter(|i| i.data.answers_to("task")).count();
+                    };
+                    for (k, text) in TRICKY_TASKS.iter().enumerate() {
+                        read(&format!("2026-11-{:02}.md", k + 1), text);
+                    }
+                    for (k, text) in TRICKY.iter().enumerate() {
+                        read(&format!("Tricky {k}.md"), text);
+                    }
+                    // The whole repository once per flavour and plugin setting is enough.
+                    if more.is_empty() {
+                        for (name, text) in &corpus {
+                            read(name, text);
+                        }
+                    }
+                    let card = TRICKY_TASKS.concat();
+                    let canvas = json!({"nodes": [
+                        {"id": "a", "type": "text", "text": card, "x": 0, "y": 0, "width": 9, "height": 9},
+                        {"id": "a", "type": "text", "text": TRICKY_TASKS[0], "x": 0, "y": 9, "width": 9, "height": 9},
+                    ], "edges": []});
+                    let given = crate::owner::canvas::read(&canvas.to_string()).unwrap();
+                    let cards = |s: &Settings| crate::owner::given::read("B.canvas", &given, s);
+                    let (a, b) = (cards(&now).items, cards(&then).items);
+                    differ.extend(unlike(&format!("a card ({flavour}, {plugin})"), &a, &b));
+                    tasks += a.iter().filter(|i| i.data.answers_to("task")).count();
+                }
+            }
+        }
+        assert!(tasks > 500, "the tricky notes hold tasks: {tasks}");
+        assert!(
+            differ.is_empty(),
+            "{} read differently:\n{}",
+            differ.len(),
+            differ.join("\n")
+        );
+    }
+
+    /// What the tricky tasks are, pinned for a few of them, so the comparison above is not two
+    /// readings that agree on nothing being a task.
+    #[test]
+    fn the_tricky_tasks_read_as_the_tasks_plugin_reads_them() {
+        let read = |plugin: serde_json::Value, text: &str| {
+            let s = with_task(false, "obsidian", &plugin, "");
+            extract("Note.md", text, &s)
+                .iter()
+                .map(|i| match &i.data {
+                    Data::Typed(t) if t.kind == "task" => format!(
+                        "[{}] {} due={} priority={}",
+                        field(i, "status"),
+                        field(i, "text"),
+                        field(i, "due"),
+                        field(i, "priority")
+                    ),
+                    d => d.kind().to_string(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            read(json!({}), TRICKY_TASKS[0]),
+            [
+                "[ ] both #task due=2026-11-20 priority=",
+                "[ ] round due=2026-11-23 priority="
+            ],
+            "the Dataview field wins, and every form leaves the words"
+        );
+        assert_eq!(
+            read(json!({}), TRICKY_TASKS[1]),
+            [
+                "[ ] many #task due= priority=lowest",
+                "[ ] field wins? due= priority=high",
+                "[ ] in code `⏫` due= priority=low",
+                "[ ] no such due= priority="
+            ],
+            "of several glyphs the lowest counts, a glyph before a field, never in code"
+        );
+        assert_eq!(
+            read(json!({"globalFilter": "#task"}), TRICKY_TASKS[2]),
+            [
+                "[ ] first due= priority=",
+                "[ ] last due= priority=",
+                "[ ] twice due= priority=",
+                "list",
+                "[ ] glued due= priority=",
+                "[ ] s longer due= priority=",
+                "[#] task due= priority=",
+                "list",
+                "list"
+            ],
+            "with a global filter, only the items that carry it, without it in their words"
+        );
+        assert_eq!(
+            read(
+                json!({"globalFilter": "x"}),
+                "- [x] none here\n- [x] an x after\n"
+            ),
+            ["list", "[x] an after due= priority="],
+            "the filter counts after the checkbox, never in it"
+        );
+        assert_eq!(
+            read(json!({}), TRICKY_TASKS[4]),
+            [
+                "list",
+                "list",
+                "list",
+                "[ ] #task due= priority=",
+                "list",
+                "list",
+                "list"
+            ],
+            "a checkbox with no words is no task"
         );
     }
 

@@ -20,7 +20,7 @@ use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
 use crate::style::{Lazy, Style, TaskFields};
-use crate::types::{On, Shape, Source, Value};
+use crate::types::{On, Source, Value};
 use crate::{daily, workspace, write};
 
 /// Why an edit wasn't made. Nothing was written.
@@ -134,7 +134,15 @@ pub fn plan(
         ))
     })?;
     let shape = &def.from[typed.place.shape];
-    let sources: &[Source] = shape.fields.get(field).map_or(&[], |s| &s.0);
+    // A field's sources as Markdown writes them: an attribute stands for its readings
+    // (`Readings::flat`), which is the list the matcher read through.
+    let flat = |name: &str| -> Vec<Source> {
+        let written = shape.fields.get(name).map_or(&[][..], |w| w.0.as_slice());
+        (s.readings.flat(shape.on, written).into_iter())
+            .map(|f| f.source.into_owned())
+            .collect()
+    };
+    let sources = flat(field);
     if sources.is_empty() {
         return Err(Refused(format!(
             "this {} is a {} that doesn't read {field}",
@@ -146,7 +154,8 @@ pub fn plan(
         text[typed.place.text.clone()].contains("::")
             || style.get().task_fields.value == TaskFields::Dataview
     };
-    let (src, existing) = target(typed, shape, field, sources, &dataview)?;
+    let kind_of = |name: &str, j: usize| flat(name).get(j).map(Source::kind);
+    let (src, existing) = target(typed, &kind_of, field, &sources, &dataview)?;
     let value = input(src, value_type, &req.value, &s.daily.format)
         .map_err(|e| Refused(format!("{field}: {e}")))?;
     let unchanged = || Set {
@@ -192,7 +201,7 @@ pub fn plan(
 /// are written (`dataview`), else the first.
 fn target<'a>(
     typed: &Typed,
-    shape: &Shape,
+    kind_of: &dyn Fn(&str, usize) -> Option<&'static str>,
     field: &str,
     sources: &'a [Source],
     dataview: &dyn Fn() -> bool,
@@ -214,8 +223,7 @@ fn target<'a>(
     let candidates: Vec<&Source> = sources[..before].iter().filter(|s| writable(s)).collect();
     let used: Vec<&str> = (typed.place.sources.iter())
         .filter(|(f, _)| &**f != field && !typed.fields[&**f].is_null())
-        .filter_map(|(f, j)| shape.fields.get(&**f)?.0.get(*j))
-        .map(Source::kind)
+        .filter_map(|(f, j)| kind_of(f, *j))
         .collect();
     let pick = (candidates.iter().find(|s| used.contains(&s.kind())))
         .or_else(|| {
@@ -256,13 +264,7 @@ fn describe(s: &Source) -> String {
 /// The value asked for, as the field carries it.
 fn input(src: &Source, v: &Value, value: &Json, daily_format: &str) -> Result<Json, String> {
     // A checkbox holds one character as written, and a space is a status.
-    let checkbox = match src {
-        Source::Checkbox(_) => true,
-        Source::Attribute(name) => name == "checkbox",
-        _ => false,
-    };
-    if let Json::String(s) = value
-        && checkbox
+    if let (Source::Checkbox(_), Json::String(s)) = (src, value)
         && s.chars().count() == 1
     {
         return matcher::parse_as_written(v, s, daily_format)
@@ -374,8 +376,8 @@ impl Writer<'_> {
                      read, not where to add one"
                 ))),
             },
-            // An attribute's value is where its owner read it: a checkbox's character, a
-            // callout's kind. The engine doesn't know how the file writes one that isn't there.
+            // An attribute the note's structure gives (a callout's kind) is changed where it
+            // is written. Nothing says how to write one that isn't there, or a heading's level.
             Source::Attribute(name) => match existing {
                 Some(span) if !remove => Ok(Splice {
                     range: span,

@@ -1,0 +1,32 @@
+# How Markdown writes attributes: for a piece with a role, the readings of its text that give
+# each attribute its value, and through which a value is written back (docs/extensions.md,
+# "Attributes in Markdown, as built"). A type says `{ attribute = "due" }`; this file says that
+# in Markdown `due` is `[due:: 2026-11-12]` or `📅 2026-11-12`.
+#
+# The readings are the sources a type's field can have (`inline`, `marker`, `flags`, `pattern`,
+# `flag`, `checkbox`), tried in the order written: the first with a value gives it.
+#
+# These are conventions, not Markdown: the checkbox is GitHub's task list, the emoji are the
+# Obsidian Tasks plugin's, and `[key:: value]` is Dataview's. They are built in until profiles
+# (#235) give them a home, and anyone can change them: `[attributes]` in config.toml and
+# `<workspace>/.cold-lava/attributes.toml` are read after this file, each replacing the
+# attributes it names. `${tasks.…}` is the workspace's Tasks plugin setting of that name.
+version = 1
+
+[item]
+# One character between brackets. With the Tasks plugin's global filter, only an item that
+# carries the filter after its checkbox has one, and the filter is not part of its words.
+checkbox = { checkbox = true, with = "${tasks.global-filter}" }
+# Dataview's field first: when a line has both, it is the one that counts.
+due = [{ inline = "due" }, { marker = "📅" }, { marker = "📆" }, { marker = "🗓" }]
+scheduled = [{ inline = "scheduled" }, { marker = "⏳" }, { marker = "⌛" }]
+start = [{ inline = "start" }, { marker = "🛫" }]
+created = [{ inline = "created" }, { marker = "➕" }]
+done = [{ inline = "completion" }, { marker = "✅" }]
+cancelled = [{ inline = "cancelled" }, { marker = "❌" }]
+recurrence = [{ inline = "repeat" }, { pattern = '🔁\x{FE0F}?\s*([a-zA-Z0-9, !]*[a-zA-Z0-9,!])' }]
+# Of several priority glyphs, the lowest counts.
+priority = [
+    { flags = { "⏬" = "lowest", "🔽" = "low", "🔼" = "medium", "⏫" = "high", "🔺" = "highest" } },
+    { inline = "priority" },
+]

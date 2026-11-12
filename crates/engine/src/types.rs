@@ -73,6 +73,12 @@ pub const ACTIONS: &[&str] = &["tasks.toggle"];
 /// The task, written in the same language as anyone's types (docs/extensions.md, "Types").
 pub const BUILT_IN_TASK: &str = include_str!("../types/task.toml");
 
+/// The task as it was defined before it read attributes (#242): by Markdown's own characters.
+/// Kept for the test that reads every note both ways and finds the same items
+/// (`items::tests::the_task_reads_from_attributes_as_it_did_from_characters`).
+#[cfg(test)]
+pub(crate) const TASK_BEFORE_ATTRIBUTES: &str = include_str!("../types/task.before-242.toml");
+
 /// What one pattern may compile to, so no definition can make matching slow.
 const REGEX_LIMIT: usize = 256 * 1024;
 
@@ -1097,6 +1103,12 @@ impl Layer {
         Layer::from_file(Origin::BuiltIn, Ok(BUILT_IN_TASK.to_string()))
     }
 
+    /// The built-in layer with the task as it was before it read attributes.
+    #[cfg(test)]
+    pub(crate) fn built_in_before_attributes() -> Layer {
+        Layer::from_file(Origin::BuiltIn, Ok(TASK_BEFORE_ATTRIBUTES.to_string()))
+    }
+
     /// A types file: `version = 1`, then `[types.NAME]` tables.
     fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
         let place = origin.place();
@@ -1283,7 +1295,7 @@ pub struct Provided {
 impl Provided {
     /// What `${name}` is in a pattern: the setting as literal text; the statuses as any one of
     /// their symbols.
-    fn in_pattern(&self, name: &str) -> String {
+    pub(crate) fn in_pattern(&self, name: &str) -> String {
         match name {
             "tasks.statuses" => {
                 let symbols: Vec<String> = self.statuses.keys().map(|s| regex::escape(s)).collect();
@@ -1297,7 +1309,7 @@ impl Provided {
     }
 
     /// What `${name}` is in plain text (`rest`'s `without`).
-    fn in_text(&self, name: &str) -> String {
+    pub(crate) fn in_text(&self, name: &str) -> String {
         match name {
             "tasks.statuses" => String::new(),
             "tasks.global-filter" => self.global_filter.clone(),
@@ -1347,7 +1359,7 @@ impl Types {
 }
 
 /// `text` with each `${name}` replaced; in a pattern, escapes are kept whole.
-fn fill(text: &str, pattern: bool, value: impl Fn(&str) -> String) -> String {
+pub(crate) fn fill(text: &str, pattern: bool, value: impl Fn(&str) -> String) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(c) = rest.chars().next() {

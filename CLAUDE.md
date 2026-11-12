@@ -221,16 +221,31 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   item's kinds (`task`, `list`, `heading`, `block`) are not roles and keep their names,
   because ids hash them; `items::KINDS` says how each maps to a role.
   **Attributes** (#242) are what a piece carries beyond its text, a name and a value, given
-  by its owner. Markdown's are `checkbox` (an item), `level` (a section), `callout` and
-  `fold` (an aside). A shape tests one with `where.attribute` and reads one with the source
-  `{ attribute = "name" }`, beside the older sources, which all still read. Nothing keeps an
-  attribute while a note is read: `matcher::Attr` reads it off the block (`matcher::Given`
-  holds what the walk knows that the text doesn't) only when a shape names it, so a
-  workspace whose types name none pays nothing. Keep it that way: don't store attributes on
-  `items::Item` in the scan. Over the gateway an item carries the ones its type read
-  (`Item::attributes`, filled in by `gateway::attributed` from the item's fields, left out
-  when empty); `cold-lava items --json` never has them. An attribute's name is open: an
-  unknown one is no mistake, and matches nothing.
+  by its owner. A shape tests one with `where.attribute` and reads one with the source
+  `{ attribute = "name" }`, beside the older sources, which all still read. The built-in
+  `task` (`types/task.toml`) is defined over them and names no character of Markdown's.
+  **How Markdown writes each attribute is the Markdown owner's data, not the type's:**
+  `crates/engine/markdown/attributes.toml`, read by `owner/markdown/attributes.rs`
+  (`Readings`; then `[attributes]` in config.toml and `.cold-lava/attributes.toml`, a later
+  entry replacing an earlier one; `cold-lava attributes` lists them). An entry is a list of
+  the text sources (`inline`, `marker`, `flags`, `pattern`, `checkbox`), and
+  `Readings::flat` spells a field's `attribute = …` out into them, in place. The matcher
+  reads through that list and `edit.rs` writes through the same one, so
+  `matcher::Place::sources` means the same to both: never index a shape's sources as
+  written. The Tasks plugin's emoji, Dataview's fields and the global filter (`with`, beside
+  the checkbox) live there, so the profile work (#235, #236) moves that file and no type.
+  Don't put a glyph or a `${tasks.…}` reading rule back into `task.toml`, and don't turn a
+  reading into a Rust match arm. `level`, `callout` and `fold` are the tree's
+  (`matcher::Attr`, from `matcher::Given`, which holds what the walk knows that the text
+  doesn't); an attribute with no entry is the Dataview field of its name. Nothing keeps an
+  attribute while a note is read: one is read off the block only when a shape names it.
+  Keep it that way: don't store attributes on `items::Item` in the scan. Over the gateway an
+  item carries the ones its type read (`Item::attributes`, filled in by
+  `gateway::attributed` from the item's fields, left out when empty); `cold-lava items
+  --json` never has them. `types/task.before-242.toml` is the task as it was, kept only for
+  `items::tests::the_task_reads_from_attributes_as_it_did_from_characters`, which reads
+  every note both ways: a change to how a task is read must keep that test passing, or it
+  changes ids. `tasks::toggle` still writes `✅` and `❌` itself and doesn't read the table.
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an
