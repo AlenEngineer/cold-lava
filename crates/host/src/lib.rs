@@ -1541,9 +1541,10 @@ mod tests {
     }
 
     /// An extension that ships the shape `tally.list` and answers for it: its region says how
-    /// many volcanoes it is bound to, and a click marks the clicked one visited.
+    /// many volcanoes it is bound to, and a click edits the clicked one with `set_field`.
     struct Tally {
         permissions: Vec<Permission>,
+        set_field: serde_json::Value,
     }
 
     const TALLY: &str = r#"
@@ -1573,21 +1574,16 @@ mod tests {
                     {"label": format!("{} volcanoes", inputs["a"].members.len())}
                 ]}),
                 Ask::Gesture { .. } => json!({"do": [{"edit": {"item": "clicked",
-                    "set-field": {"field": "visited", "value": "yes"}}}]}),
+                    "set-field": self.set_field}}]}),
             };
             host.shape_answered(&ask, Ok(serde_json::from_value(answer).unwrap()));
         }
     }
 
-    #[test]
-    fn an_extension_answers_for_its_shape_within_its_permissions() {
-        use crate::act::{Acted, Answered, Gesture};
-        use crate::bind::{Binding, Source};
+    /// A workspace of two volcanoes whose `visited` an edit can set, and Tally's shape loaded.
+    fn tally_workspace(name: &str) -> (PathBuf, crate::shapes::Shapes) {
         use crate::shapes::{Layer, load};
-        use ItemsEdit as E;
-        use ItemsRead as R;
-        use Permission::{ItemsEdit, ItemsRead};
-        let dir = std::env::temp_dir().join(format!("cold-lava-ext-shape-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cold-lava-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
         std::fs::write(
@@ -1609,6 +1605,32 @@ mod tests {
             Layer::extension("tally", [("tally.list".to_string(), table)]),
         ]);
         assert!(shapes.errors.is_empty(), "{:?}", shapes.errors);
+        (dir, shapes)
+    }
+
+    /// A click on the first volcano, in the region Tally answers for.
+    fn click_on_a_volcano(core: &mut Core) -> crate::act::Gesture {
+        let q = crate::gateway::Query {
+            select: Select {
+                kind: "volcano".into(),
+                ..Default::default()
+            },
+            page: Default::default(),
+        };
+        crate::act::Gesture::Click {
+            on: "count".into(),
+            item: Some(core.query_items(&q).unwrap().items.remove(0).id),
+        }
+    }
+
+    #[test]
+    fn an_extension_answers_for_its_shape_within_its_permissions() {
+        use crate::act::{Acted, Answered};
+        use crate::bind::{Binding, Source};
+        use ItemsEdit as E;
+        use ItemsRead as R;
+        use Permission::{ItemsEdit, ItemsRead};
+        let (dir, shapes) = tally_workspace("ext-shape");
 
         for (permissions, region, clicked) in [
             (
@@ -1624,6 +1646,7 @@ mod tests {
             let mut core = Core::open(&dir).unwrap();
             let mut r = Registry::new(vec![Box::new(Tally {
                 permissions: permissions.clone(),
+                set_field: json!({"field": "visited", "value": "yes"}),
             })]);
             let source = Source::parse("type=volcano").unwrap();
             let mut b =
@@ -1648,20 +1671,7 @@ mod tests {
             let Some(clicked) = clicked else {
                 continue;
             };
-            let item = {
-                let q = crate::gateway::Query {
-                    select: Select {
-                        kind: "volcano".into(),
-                        ..Default::default()
-                    },
-                    page: Default::default(),
-                };
-                core.query_items(&q).unwrap().items.remove(0).id
-            };
-            let click = Gesture::Click {
-                on: "count".into(),
-                item: Some(item),
-            };
+            let click = click_on_a_volcano(&mut core);
             let mut acted = None;
             r.call(ExtId(0), Some(&mut core), |_, host| {
                 acted = Some(b.act(host, &click, 1))
@@ -1696,6 +1706,51 @@ mod tests {
             }
             b.close(&mut core);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The steps of an answer get the checks a loaded shape's steps get (#268).
+    #[test]
+    fn steps_an_extension_answers_that_cant_run_are_refused() {
+        use crate::act::{Acted, Answered};
+        use crate::bind::{Binding, Source};
+        let (dir, shapes) = tally_workspace("ext-shape-unchecked");
+        let mut core = Core::open(&dir).unwrap();
+        let mut r = Registry::new(vec![Box::new(Tally {
+            permissions: vec![Permission::ItemsRead, Permission::ItemsEdit],
+            set_field: json!({"field": "visited"}),
+        })]);
+        let source = Source::parse("type=volcano").unwrap();
+        let mut b = Binding::new(&mut core, &shapes, "tally.list", [("a".into(), source)]).unwrap();
+        let click = click_on_a_volcano(&mut core);
+        let mut acted = None;
+        r.call(ExtId(0), Some(&mut core), |_, host| {
+            acted = Some(b.act(host, &click, 1))
+        });
+        let Some(Ok(Acted::Ask(ask))) = acted else {
+            panic!("its extension decides: {acted:?}");
+        };
+        r.ask_shape(ExtId(0), Some(&mut core), ask);
+        let refused = match core.take_shape_answers().remove(0).answer {
+            Ok(Answered::Gesture { steps }) => {
+                let mut ran = None;
+                r.call(ExtId(0), Some(&mut core), |_, host| {
+                    ran = Some(b.run(host, &click, &steps))
+                });
+                ran.unwrap().unwrap_err().to_string()
+            }
+            Ok(answer) => panic!("{answer:?}"),
+            Err(why) => why,
+        };
+        assert!(
+            refused.contains("set-field takes exactly one of value, add and remove"),
+            "{refused}"
+        );
+        for name in ["Krakatoa", "Vesuvius"] {
+            let text = std::fs::read_to_string(dir.join(format!("{name}.md"))).unwrap();
+            assert!(!text.contains("visited"), "nothing written: {text}");
+        }
+        b.close(&mut core);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
