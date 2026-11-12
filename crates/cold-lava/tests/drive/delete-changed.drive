@@ -1,0 +1,34 @@
+# Another program rewrites a note while the delete prompt is open: y doesn't delete it but asks
+# again, about the new version. n leaves it as they wrote it. Asked afresh, y sends that version
+# to the trash and u puts it back. tests/drive.rs checks the file and the trash.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+keys p lava
+wait-for Lava
+keys enter
+wait-for Concepts/Lava  reading
+keys d
+wait-for Delete Concepts/Lava?
+write Concepts/Lava.md Rewritten in Obsidian while the prompt was open.\n
+keys y
+wait-for ! It changed on disk since you asked: this is the new version.
+expect Delete Concepts/Lava?
+expect example-workspace 35 notes
+keys n
+wait-for delete cancelled
+expect example-workspace 35 notes
+keys d
+wait-for Delete Concepts/Lava?
+expect-not It changed on disk
+keys y
+wait-for deleted Lava · u undo
+wait-for example-workspace 34 notes
+keys u
+wait-for restored Concepts/Lava.md
+wait-for example-workspace 35 notes
+wait-for Concepts/Lava  reading
+expect Rewritten in Obsidian while the prompt was open.
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

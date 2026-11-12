@@ -10,7 +10,13 @@ use super::{CommandSpec, FileType, Manifest, Permission, Shows, Spec, read_only,
 
 /// Names an installed extension can't take: the built-in ones and the frontend's screens, which
 /// edits are attributed to.
-const RESERVED: &[&str] = &[super::NVIM, super::TABLE, super::AGENDA, super::READER];
+const RESERVED: &[&str] = &[
+    super::NVIM,
+    super::TABLE,
+    super::AGENDA,
+    super::READER,
+    super::MENU,
+];
 
 /// An extension found on disk, ready to start.
 #[derive(Clone, Debug, PartialEq)]

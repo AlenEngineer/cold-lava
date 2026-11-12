@@ -102,7 +102,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   changed since it was read), `create`, `move_file`. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
-  changed since it was read; `restore` puts it back.
+  changed since it was read; `restore` puts it back. Frontends and extensions don't call
+  these: they ask the core (`Core::delete_file`, `restore_file`: `workspace/delete`,
+  `workspace/restore`). `Core::set_system_trash` names the system trash; a test that
+  deletes sets one under its own folder.
 - `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text, each read by its owner. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
@@ -202,7 +205,17 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `workspace/write` refused unless the file is still that version, `workspace/create` where
   Obsidian puts a new file, `workspace/files`) and their pinned JSON; `resolve` keeps a path
   inside the workspace and out of hidden folders. `Core` answers them, and its watcher reports
-  other files as `Event::FileChanged`.
+  other files as `Event::FileChanged`. Also here (#193, docs/extensions.md "Deleting,
+  restoring and making folders"): `workspace/stat` (the `rev` of any file, or of a folder's
+  listing, which leaves out hidden entries and is bounded), `workspace/delete` (to the
+  trash, refused unless still that `rev`; answers a random token that only the client it
+  was given to can use, kept in the core's `Trash` and gone with the core),
+  `workspace/restore` (never over something; `to` is a new name) and
+  `workspace/create-folder`. `stat` and `delete` never follow a symlink: the link is what
+  goes (`resolve_entry`). A frontend that drops a core carries its own deletes to the next
+  one with `Core::take_trashed` / `keep_trashed`. The core reads what moved at once and emits
+  `Event::Deleted`, `Restored` or `FolderCreated` naming the client. The next groups of #193
+  (rename, merge, recipes, undo, bookmarks) follow the pattern that section ends with.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
   `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
   notes settings, moment.js date formats.
@@ -249,7 +262,9 @@ another host or check in a frontend:
   - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
     returns, so extensions never hold `&mut Home`. The gateway's `items/*` and `types/list` are
     answered during the call by the core, after `Host` checks the manifest's `permissions`
-    (`items.read` by default, `items.edit`). The reader's `x` uses the same `Host`, as
+    (`items.read` by default, `items.edit`; `files.read` and `files.write` for whole files;
+    `files.delete` for `workspace/delete` and `workspace/restore`, which `files.write` and
+    owning a kind don't include). The reader's `x` uses the same `Host`, as
     `Registry::screen`; the agenda and the table are built-in `Extension`s.
 - `process.rs`, `transport.rs`, `rpc.rs`, `frame.rs`, `installed.rs`: extensions in their own
   process. `installed` reads `~/.config/cold-lava/extensions/*/extension.toml`; `Process` is the
@@ -286,7 +301,13 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
 **Features / UI** (`crates/cold-lava/src`):
 
 - `home.rs`: the main menu (workspaces, note tree, the right pane with the reader or an extension's
-  program, backlinks, switcher, search). It applies the extensions' `Effect`s.
+  program, backlinks, switcher, search). It applies the extensions' `Effect`s. It deletes,
+  restores and makes folders by asking the core as `MENU` (`Core::delete_file`,
+  `restore_file`, `create_folder`), never `trash::delete`, `trash::restore` or
+  `write::create_dir`, and doesn't rescan afterwards (`after_core_change`): the core read
+  what moved. `tests/one_door.rs` reads every file under `src/` and lists the engine
+  writes, the whole-workspace operations and the `std::fs` changes the app still makes
+  itself, lists that only shrink (#193).
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
   plans, applies and undoes through `recipe.rs`, asking owners as the merge dialog does.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a

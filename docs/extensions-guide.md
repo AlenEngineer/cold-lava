@@ -62,7 +62,7 @@ keys = ["R"]                     # optional default keys; config.toml can change
 
 | Field | Meaning |
 | --- | --- |
-| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` and `links/query`, `links/subscribe`, `links/unsubscribe`; `items.edit` for `items/edit`; `files.read` and `files.write` to read and write files of kinds it doesn't own. A request without its permission is refused as `forbidden`. |
+| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` and `links/query`, `links/subscribe`, `links/unsubscribe`; `items.edit` for `items/edit`; `files.read` and `files.write` to read and write files of kinds it doesn't own; `files.delete` to move a file or folder to the trash and put it back. A request without its permission is refused as `forbidden`. |
 | `[[file-types]]` | Kinds of file it opens: `extension`, `title`, and `new`, one of its commands that makes one ([Owning a kind of file](#owning-a-kind-of-file)). |
 | `transport` | How cold-lava talks to it. Only `stdio` exists, and it is the default. |
 | `api` | The protocol version it was written for. Only `1` exists, and it is the default. |
@@ -258,6 +258,17 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
   answers its `path` and `rev`. `ext.create(text, path="Data/New.csv")` makes it exactly there,
   refused as `exists` when something is. Nothing is ever overwritten.
 - **Listing.** `ext.files("csv")` (`workspace/files`) lists every file of a kind, for a picker.
+- **Deleting.** `ext.delete(path, rev)` (`workspace/delete`) moves a file or a folder to the
+  trash the workspace uses, never for good, and is refused as `changed` unless it is still
+  the version `rev`. `ext.stat(path)` (`workspace/stat`) gives that `rev` for any file, an
+  image too, and for a folder, with `inside`, what is in it, to show before you ask (up to
+  1000 entries, `more` counting the rest and `hidden` the ones under hidden names, which
+  are never listed). A symlink is deleted as the link it is. The
+  answer's `trashed` is a token, yours alone: `ext.restore(trashed)` (`workspace/restore`)
+  puts the file back where it was, refused as `exists` when something is there; with `to`
+  it goes under another name, which needs `files.write` too. The token is
+  gone once cold-lava restarts; the file stays in the trash. `ext.create_folder(path)`
+  (`workspace/create-folder`) makes an empty folder.
 - **Previews.** A note that embeds one of your files (`![[Eruptions.csv]]`) shows a small view
   of it in the reader. cold-lava asks `file/preview` with the `path`, its `rev` and the room it
   has (`width` columns, `height` lines), and draws what you answer: a list or a table, as you
@@ -280,8 +291,10 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
   of that kind, with a line on the status line and in `cold-lava keys`. `.md` and `.canvas`
   can't be claimed. `cold-lava ext list` prints who opens what.
 - **Permissions.** An owner reads, writes, creates and lists its own kind without asking.
-  Reading any other file, a note included, needs `files.read`; writing or creating one needs
-  `files.write`. Paths are relative to the workspace and can't leave it: `..`, absolute paths,
+  Reading any other file, a note included, needs `files.read`; writing or creating one, or
+  making a folder, needs `files.write`. Deleting and restoring need `files.delete`, for your
+  own kind too: `files.write` doesn't include it.
+  Paths are relative to the workspace and can't leave it: `..`, absolute paths,
   hidden folders (`.obsidian`) and symlinks that lead outside are refused.
 
 ## Showing Markdown notes
