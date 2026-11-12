@@ -84,7 +84,7 @@ fn a_broken_types_file_exits_1_and_keeps_the_good_types() {
             "errors:\n  \
              {config_file}: [types.task] task is built in: it can be extended (extends = \"task\") but not redefined\n  \
              {file}: [types.estimate] fields.minutes: the match has no group named \"m\"\n  \
-             {file}: [types.book] fields.title: column can't be read on note (only on table-row)\n"
+             {file}: [types.book] fields.title: column can't be read on document (note); only on row (table-row)\n"
         )
     );
     let stdout = String::from_utf8(out.stdout).unwrap();

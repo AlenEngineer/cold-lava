@@ -204,6 +204,22 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   that compares the two on every note of the corpus. pulldown-cmark is a dev-dependency of
   the engine: those two test modules (`items/pulldown.rs`, `markdown/pulldown.rs`) are all
   that use it, and nothing shipped may. Read tasks through items, not by scanning lines.
+- `alphabet.rs`, `types.rs`, `matcher.rs`: the alphabet and the type language.
+  `alphabet::Role` is the nine roles a piece of writing can have (`document`, `section`,
+  `text`, `item`, `row`, `aside`, `verbatim`, `embed`, `opaque`) and `alphabet::VERSION` its
+  version, sent in `initialize`; the whole alphabet (text, the five relations, open
+  attributes) and what the engine does with each letter today is docs/extensions.md, "The
+  alphabet, as built", whose table of roles a test checks against `Role::ALL`. Only the
+  engine adds a letter, with a version bump: a new kind of thing is a type, never a role.
+  `types.rs` reads and checks type definitions (`[types.NAME]`: a schema and `from` shapes)
+  from every origin; `matcher.rs` matches them. A shape's `on` (`types::On`) is a role or
+  `inline` (a reading of a piece's text, not a role). The names `on` had before (`note`,
+  `heading`, `paragraph`, `list-item`, `table-row`, `quote`, `code`) are aliases
+  (`On::alias`): they always read, a definition's JSON still says `on` in them with `role`
+  beside it, and a block's `inside` holds them, since that list also holds kinds and type
+  names. Never drop an alias or print a role where a client reads the older name. An
+  item's kinds (`task`, `list`, `heading`, `block`) are not roles and keep their names,
+  because ids hash them; `items::KINDS` says how each maps to a role.
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an

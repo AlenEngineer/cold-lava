@@ -7,6 +7,25 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Added
+
+- A type's `on` takes the roles of the alphabet (#241, step 1 of the neutral model):
+  `document`, `section`, `text`, `item`, `row`, `aside` and `verbatim`, and `inline` as
+  before. The names it had (`note`, `heading`, `paragraph`, `list-item`, `table-row`, `quote`,
+  `code`) still read and mean the same, so no types file changes. `where.inside` takes either,
+  except `section` and `document`, which it can't test yet and refuses with the reason. `cold-lava types` prints the role beside the name (`on list-item · role item`), and
+  a definition's JSON (`cold-lava types --json`, `types/list`) keeps `on` as it was and adds
+  `role`. `embed` and `opaque` are named and refused in `on` until something is read as one.
+  The alphabet (nine roles, text, five relations, open attributes) is written down in
+  `docs/extensions.md`, "The alphabet, as built", with a version that extensions get in
+  `initialize` as `alphabet`. No item changes: every id, rev, field and kind is what it was.
+
+### Changed
+
+- A message about a mistake in a type says the role with the older name beside it
+  (`column can't be read on document (note); only on row (table-row)`, where it said `on note
+  (only on table-row)`), and an unknown `on` lists the roles and the older names.
+
 ## [0.6.0] - 2026-11-11
 
 One reading of a note, and one door into the engine. Everything that reads a note (the reader,

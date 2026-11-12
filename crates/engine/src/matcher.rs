@@ -21,13 +21,13 @@ use crate::frontmatter::{self, Frontmatter};
 use crate::markdown::{self, Flavour, Syntax};
 use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
 
-/// The primitives this matcher reads; shapes on the others (code, quote) wait.
+/// What this matcher reads; shapes on the other roles (aside, verbatim) wait.
 const READ: &[On] = &[
-    On::Note,
-    On::Heading,
-    On::Paragraph,
-    On::ListItem,
-    On::TableRow,
+    On::Document,
+    On::Section,
+    On::Text,
+    On::Item,
+    On::Row,
     On::Inline,
 ];
 
@@ -136,6 +136,21 @@ fn is_list(s: &Source) -> bool {
     )
 }
 
+/// A shape's conditions, with each role in `where.inside` under the name a block's `inside`
+/// holds, the one it had before the roles were named (`On::alias`). A name some type has is
+/// that type's: a type called `item` keeps meaning itself there.
+fn with_inside(w: &crate::types::Where, types: &Types) -> crate::types::Where {
+    let mut w = w.clone();
+    for name in &mut w.inside {
+        if types.types.iter().all(|t| t.name != *name)
+            && let Some(on) = On::from_name(name)
+        {
+            *name = on.alias().to_string();
+        }
+    }
+    w
+}
+
 fn slot(on: On) -> Option<usize> {
     READ.iter().position(|o| *o == on)
 }
@@ -174,7 +189,7 @@ impl Matcher {
                     continue;
                 }
                 let w = &shape.conditions;
-                let whole_note = matches!(shape.on, On::Note | On::Inline);
+                let whole_note = matches!(shape.on, On::Document | On::Inline);
                 m.needs_tags |= whole_note && !w.tag.is_empty();
                 m.reads_tags |= !whole_note && !w.tag.is_empty();
                 m.needs_inside |= !w.inside.is_empty();
@@ -192,7 +207,7 @@ impl Matcher {
                             matches!(s, Src::Inlines(InlineKind::Tags)),
                             matches!(s, Src::Inlines(InlineKind::Links)),
                         );
-                        if shape.on == On::Note {
+                        if shape.on == On::Document {
                             m.needs_tags |= tags;
                             m.needs_links |= links;
                         } else {
@@ -205,7 +220,7 @@ impl Matcher {
                 shapes.push(Shape {
                     index,
                     on: shape.on,
-                    w: w.clone(),
+                    w: with_inside(w, types),
                     pattern: shape
                         .pattern
                         .as_deref()
@@ -318,7 +333,7 @@ impl Matcher {
     /// The note's own type, if one matches.
     pub fn note(&self, gate: &[Vec<bool>], note: &Note) -> Option<(Typed, String)> {
         let block = Block {
-            on: On::Note,
+            on: On::Document,
             text: note.body.0,
             at: note.body.1,
             section: &[],
@@ -482,7 +497,7 @@ impl Matcher {
         if let Some((f, without)) = rest_field {
             // A list item's text comes without its block id; a `^x` left on its first line,
             // when more lines follow, names nothing and is words.
-            if b.on != On::ListItem {
+            if b.on != On::Item {
                 used.extend(markdown::block_id_pattern().find(b.text).map(|m| m.range()));
             }
             for w in without {
@@ -502,12 +517,12 @@ impl Matcher {
         }
         let key = if shape.key.is_empty() {
             match b.on {
-                On::TableRow => b
+                On::Row => b
                     .cells
                     .first()
                     .map(|c| note.src[c.clone()].to_string())
                     .unwrap_or_default(),
-                On::Note => String::new(),
+                On::Document => String::new(),
                 On::Inline => caps
                     .as_ref()
                     .and_then(|c| c.get(0))
@@ -837,7 +852,7 @@ fn passes(w: &crate::types::Where, path: &str, fm: Option<&Frontmatter>) -> bool
 fn block_passes(w: &crate::types::Where, note: &Note, b: &Block) -> bool {
     (w.tag.is_empty()
         || w.tag.iter().any(|t| match b.on {
-            On::Note | On::Inline => note.has_tag(t),
+            On::Document | On::Inline => note.has_tag(t),
             _ => (note.written.tags_in(b.range()).iter())
                 .any(|tag| tag_under(&note.src[tag.clone()], t)),
         }))
@@ -1010,12 +1025,12 @@ fn read_source<'a>(
                 _ => Vec::new(),
             }
         }
-        Src::Inlines(InlineKind::Tags) if b.on == On::Note => note
+        Src::Inlines(InlineKind::Tags) if b.on == On::Document => note
             .tags
             .iter()
             .map(|t| Piece::text(t.as_str(), None))
             .collect(),
-        Src::Inlines(InlineKind::Links) if b.on == On::Note => note
+        Src::Inlines(InlineKind::Links) if b.on == On::Document => note
             .links
             .iter()
             .map(|l| Piece {
@@ -1714,6 +1729,57 @@ Survey the rim ~3h, not `~4h`, not~6h.
         assert_eq!(
             minutes("where.inside = [\"list-item\"]\n", "N.md", text),
             [json!(30), json!(60)]
+        );
+        assert_eq!(
+            minutes("where.inside = [\"text\"]\n", "N.md", text),
+            [json!(120)],
+            "a role reads as its older name"
+        );
+        assert_eq!(
+            minutes("where.inside = [\"item\"]\n", "N.md", text),
+            [json!(30), json!(60)]
+        );
+        assert_eq!(
+            minutes(
+                "where.inside = [\"item\"]\n[item]\non = \"paragraph\"\n",
+                "N.md",
+                text
+            ),
+            [json!(120)],
+            "a type called item is what its name means there, not the role"
+        );
+    }
+
+    /// `heading` in `where.inside` is a pattern in a heading's own words, as it always was. The
+    /// body of a section is `where.section`, and `section` is refused there (`types.rs`).
+    #[test]
+    fn inside_a_heading_is_its_own_words_and_under_it_is_where_section() {
+        let text = "# Title ~7m\n\nBody under title ~20m\n\n- item under title ~3m\n";
+        let minutes = |toml: &str| -> Vec<Json> {
+            extract("N.md", text, &settings(&format!("{ESTIMATE}{toml}")))
+                .iter()
+                .filter(|i| i.data.kind() == "estimate")
+                .map(|i| fields(i)["minutes"].clone())
+                .collect()
+        };
+        assert_eq!(minutes(""), [json!(7), json!(20), json!(3)]);
+        assert_eq!(minutes("where.inside = [\"heading\"]\n"), [json!(7)]);
+        assert_eq!(
+            minutes("where.section = [\"Title ~7m\"]\n"),
+            [json!(20), json!(3)]
+        );
+        let refused = load([
+            Layer::built_in(),
+            Layer::config(
+                Path::new("config.toml"),
+                toml::from_str(&format!("{ESTIMATE}where.inside = [\"section\"]\n")).unwrap(),
+            ),
+        ]);
+        assert_eq!(refused.types.len(), 1, "only the task loads");
+        assert!(
+            refused.errors[0].contains("where.inside names \"section\", which where.inside can't"),
+            "{:?}",
+            refused.errors
         );
     }
 

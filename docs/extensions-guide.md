@@ -86,7 +86,7 @@ Content-Length: 52\r\n
 `cold_lava.py` does the framing. Copy it next to your `main.py`. A run of the example goes like
 this:
 
-1. cold-lava sends `initialize` with `apiVersion`, the workspace's `root` and `name`, the
+1. cold-lava sends `initialize` with `apiVersion`, `alphabet`, the workspace's `root` and `name`, the
    extension's `permissions`, and `capabilities.methods`, the methods it may call.
 2. The extension subscribes to open tasks (`items/subscribe`), counts them (`items/query`, a
    page at a time), shows the count (`ui/status`), and answers `initialize`.

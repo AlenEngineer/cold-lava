@@ -1347,7 +1347,10 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
         let values: Vec<String> = d.fields.values().map(value_label).collect();
         let value_width = values.iter().map(|v| v.chars().count()).max().unwrap_or(0);
         for (i, shape) in d.from.iter().enumerate() {
-            let mut line = format!("on {}", shape.on.name());
+            let mut line = format!("on {}", shape.on.alias());
+            if let Some(role) = shape.on.role() {
+                line += &format!(" · role {}", role.name());
+            }
             let conditions = where_label(&shape.conditions);
             if !conditions.is_empty() {
                 line += &format!(" · where {conditions}");

@@ -52,7 +52,7 @@ pub fn read(text: &str, flavour: &Flavour, items: &[Item], types: &Types) -> (Do
         let note = own
             .from
             .get(t.place.shape)
-            .is_some_and(|shape| shape.on == On::Note);
+            .is_some_and(|shape| shape.on == On::Document);
         for (field, value) in &t.fields {
             let Some(look) = chain.iter().find_map(|d| d.style.get(&**field)) else {
                 continue;

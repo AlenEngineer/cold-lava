@@ -3,10 +3,11 @@
 //! them; `matcher.rs` matches them against notes.
 //!
 //! A `Definition` is one type, normalised: its schema (`fields` and their value types) and its
-//! shapes (`from`), each saying which primitive it is found on and where each field is read. It
-//! reads the TOML people write, the one-shape shorthand included, and serialises to JSON that
-//! reads back the same, for extension manifests and `types/list`. `load` takes the definitions
-//! from every origin in load order and keeps the ones that check out.
+//! shapes (`from`), each saying what it is found on (`on`: a role of the alphabet, or
+//! `inline`) and where each field is read. It reads the TOML people write, the one-shape
+//! shorthand included, and serialises to JSON that reads back the same, for extension manifests
+//! and `types/list`. `load` takes the definitions from every origin in load order and keeps the
+//! ones that check out.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -18,6 +19,7 @@ use regex::{Regex, RegexBuilder};
 use serde::de::{self, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::alphabet::Role;
 use crate::daily;
 use crate::markdown::Syntax;
 
@@ -96,81 +98,229 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// One way a type shows up: a primitive, cheap conditions, an optional pattern, and where each
-/// field is read.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// One way a type shows up: what it is found on, cheap conditions, an optional pattern, and
+/// where each field is read.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(try_from = "WrittenShape")]
 pub struct Shape {
     pub on: On,
-    #[serde(default, rename = "where", skip_serializing_if = "Where::is_empty")]
     pub conditions: Where,
-    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
     /// The fields that tell two items of this shape apart, for their ids.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key: Vec<String>,
     /// Fields a block must have a value for to be of this shape: a task needs words.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
     /// Where each field is read, by field name; the first source with a value wins.
-    #[serde(default)]
     pub fields: IndexMap<String, Sources>,
 }
 
-/// The primitive a shape is found on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// `on` is printed under the name it always had, so a client that reads a definition's JSON
+/// keeps working, and the role is printed beside it.
+impl Serialize for Shape {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(None)?;
+        map.serialize_entry("on", self.on.alias())?;
+        if let Some(role) = self.on.role() {
+            map.serialize_entry("role", role.name())?;
+        }
+        if !self.conditions.is_empty() {
+            map.serialize_entry("where", &self.conditions)?;
+        }
+        if let Some(pattern) = &self.pattern {
+            map.serialize_entry("match", pattern)?;
+        }
+        if !self.key.is_empty() {
+            map.serialize_entry("key", &self.key)?;
+        }
+        if !self.required.is_empty() {
+            map.serialize_entry("required", &self.required)?;
+        }
+        map.serialize_entry("fields", &self.fields)?;
+        map.end()
+    }
+}
+
+/// A shape as written, in TOML or in the JSON a definition is printed as.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenShape {
+    on: WrittenOn,
+    /// Printed beside `on`, so it is read back, and must be `on`'s role.
+    role: Option<String>,
+    #[serde(default, rename = "where")]
+    conditions: Where,
+    #[serde(default, rename = "match")]
+    pattern: Option<String>,
+    #[serde(default)]
+    key: Vec<String>,
+    #[serde(default)]
+    required: Vec<String>,
+    #[serde(default)]
+    fields: IndexMap<String, Sources>,
+}
+
+impl TryFrom<WrittenShape> for Shape {
+    type Error = String;
+
+    fn try_from(w: WrittenShape) -> Result<Shape, String> {
+        w.on.check_role(w.role.as_deref())?;
+        Ok(Shape {
+            on: w.on.on,
+            conditions: w.conditions,
+            pattern: w.pattern,
+            key: w.key,
+            required: w.required,
+            fields: w.fields,
+        })
+    }
+}
+
+/// What a shape is found on: a piece, by its role in the alphabet (docs/extensions.md, "The
+/// alphabet, as built"), or `inline`. The variants are the roles some reading exists for; `embed`
+/// and `opaque` are refused by name until something is read as one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum On {
     /// A whole note, read from its frontmatter, name and tags.
-    Note,
-    Heading,
-    Paragraph,
-    ListItem,
-    TableRow,
-    Code,
-    Quote,
-    /// A pattern anywhere in a block's text.
+    Document,
+    Section,
+    Text,
+    Item,
+    Row,
+    Aside,
+    Verbatim,
+    /// Not a role: a pattern found in the text of a piece, whatever the piece's role.
     Inline,
 }
 
 use On as O;
 
-const TEXT: &[On] = &[O::Heading, O::Paragraph, O::ListItem, O::Quote];
-const BLOCKS: &[On] = &[
-    O::Heading,
-    O::Paragraph,
-    O::ListItem,
-    O::TableRow,
-    O::Code,
-    O::Quote,
-];
+const TEXT: &[On] = &[O::Section, O::Text, O::Item, O::Aside];
+const BLOCKS: &[On] = &[O::Section, O::Text, O::Item, O::Row, O::Aside, O::Verbatim];
 const ALL: &[On] = &[
-    O::Note,
-    O::Heading,
-    O::Paragraph,
-    O::ListItem,
-    O::TableRow,
-    O::Code,
-    O::Quote,
+    O::Document,
+    O::Section,
+    O::Text,
+    O::Item,
+    O::Row,
+    O::Aside,
+    O::Verbatim,
     O::Inline,
 ];
 
 impl On {
-    pub fn name(self) -> &'static str {
+    pub fn role(self) -> Option<Role> {
         match self {
-            O::Note => "note",
-            O::Heading => "heading",
-            O::Paragraph => "paragraph",
-            O::ListItem => "list-item",
-            O::TableRow => "table-row",
-            O::Code => "code",
-            O::Quote => "quote",
-            O::Inline => "inline",
+            O::Document => Some(Role::Document),
+            O::Section => Some(Role::Section),
+            O::Text => Some(Role::Text),
+            O::Item => Some(Role::Item),
+            O::Row => Some(Role::Row),
+            O::Verbatim => Some(Role::Verbatim),
+            O::Aside => Some(Role::Aside),
+            O::Inline => None,
         }
     }
 
-    fn from_name(name: &str) -> Option<On> {
-        ALL.iter().copied().find(|o| o.name() == name)
+    /// Its name: the role's, or `inline`.
+    pub fn name(self) -> &'static str {
+        self.role().map_or("inline", Role::name)
+    }
+
+    /// The name it had before the roles were named (`list-item` for `item`). It is still read,
+    /// it is what a definition's JSON says as `on`, and it is what a block's `inside` holds,
+    /// where it shares a list with kinds and type names.
+    pub fn alias(self) -> &'static str {
+        self.role().and_then(Role::alias).unwrap_or("inline")
+    }
+
+    /// A role's name or its older one.
+    pub(crate) fn from_name(name: &str) -> Option<On> {
+        (ALL.iter().copied()).find(|o| o.name() == name || o.alias() == name)
+    }
+
+    /// The role with the older name beside it, for a message: whoever reads it wrote one of
+    /// the two.
+    fn both(self) -> String {
+        match self.role() {
+            Some(_) => format!("{} ({})", self.name(), self.alias()),
+            None => self.name().to_string(),
+        }
+    }
+
+    /// Why `name` can't be an `on`. The TOML reader adds "in `on`" after it.
+    fn unknown(name: &str) -> String {
+        let names = |of: fn(On) -> &'static str| {
+            let roles = ALL.iter().filter(|o| o.role().is_some());
+            roles.map(|o| of(*o)).collect::<Vec<_>>().join(", ")
+        };
+        match Role::from_name(name) {
+            Some(_) => format!(
+                "nothing is read as {name:?} yet, so no type can be on it: use {} or inline",
+                names(On::name)
+            ),
+            None => format!(
+                "{name:?} is not a role ({}), inline, or an older name ({})",
+                names(On::name),
+                names(On::alias)
+            ),
+        }
+    }
+
+    /// Why `where.inside` can't name this piece, when it can't: nothing a block's `inside`
+    /// holds says it. The older `heading` there is a pattern in a heading's own words, which is
+    /// not what being inside a section means, so `section` is not read as it.
+    fn not_inside(name: &str) -> Option<&'static str> {
+        match name {
+            "section" => Some(
+                "which where.inside can't test yet: for a block under a heading use \
+                 where.section = [\"Its title\"], and for a pattern in a heading's own words \
+                 \"heading\"",
+            ),
+            "document" => Some(
+                "which where.inside can't test yet: every block is inside its document, so \
+                 name the note's type instead",
+            ),
+            _ => None,
+        }
+    }
+}
+
+/// An `on` as written (a role, its older name, or `inline`), with the name it was written as,
+/// so a message quotes what the person wrote.
+struct WrittenOn {
+    on: On,
+    written: String,
+}
+
+impl<'de> Deserialize<'de> for WrittenOn {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<WrittenOn, D::Error> {
+        let written = String::deserialize(d)?;
+        match On::from_name(&written) {
+            Some(on) => Ok(WrittenOn { on, written }),
+            None => Err(de::Error::custom(On::unknown(&written))),
+        }
+    }
+}
+
+impl WrittenOn {
+    /// `role` is what a definition's JSON prints beside `on`. It is read wherever `on` is, so
+    /// the JSON reads back, and it must say what `on` already says.
+    fn check_role(&self, role: Option<&str>) -> Result<(), String> {
+        let Some(role) = role else { return Ok(()) };
+        let written = &self.written;
+        match self.on.role() {
+            Some(r) if r.name() == role => Ok(()),
+            Some(r) => Err(format!(
+                "role = {role:?} is not the role of on = {written:?}, which is {}: leave role \
+                 out, since `on` gives it",
+                r.name()
+            )),
+            None => Err(format!(
+                "role = {role:?}: on = {written:?} is a reading of text and has no role, so \
+                 leave role out"
+            )),
+        }
     }
 }
 
@@ -178,7 +328,7 @@ impl On {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Where {
-    /// A table's header has all of these columns (table-row only).
+    /// A table's header has all of these columns (`row` only).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub header: Vec<String>,
     /// The note's frontmatter has these values.
@@ -197,10 +347,11 @@ pub struct Where {
     /// The block is under a heading with one of these names.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub section: Vec<String>,
-    /// The fence's language is one of these (code only).
+    /// The fence's language is one of these (`verbatim` only).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub language: Vec<String>,
-    /// The block sits inside one of these: a type, a native kind or a primitive.
+    /// The block sits inside one of these: a type, a native kind, or a piece by its role or its
+    /// older name. A name that is both a type's and a role's is the type.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub inside: Vec<String>,
 }
@@ -547,33 +698,26 @@ impl Source {
         )
     }
 
-    /// The primitives it can be read on.
+    /// What it can be read on.
     pub fn on(&self) -> &'static [On] {
         match self {
             Source::Capture(_) | Source::Note(_) => ALL,
             Source::Pattern(_) => BLOCKS,
             Source::Marker(_) | Source::Flag(_) | Source::Flags(_) | Source::Rest(_) => TEXT,
-            Source::Inline(_) => &[O::Note, O::Heading, O::Paragraph, O::ListItem, O::Quote],
-            Source::Column(_) => &[O::TableRow],
-            Source::Property(_) => &[O::Note],
-            Source::Info(_) => &[O::Code],
-            Source::Checkbox(_) => &[O::ListItem],
-            Source::Inlines(_) => &[
-                O::Note,
-                O::Heading,
-                O::Paragraph,
-                O::ListItem,
-                O::TableRow,
-                O::Quote,
-            ],
-            Source::Children(_) => &[O::Note, O::Heading, O::ListItem],
+            Source::Inline(_) => &[O::Document, O::Section, O::Text, O::Item, O::Aside],
+            Source::Column(_) => &[O::Row],
+            Source::Property(_) => &[O::Document],
+            Source::Info(_) => &[O::Verbatim],
+            Source::Checkbox(_) => &[O::Item],
+            Source::Inlines(_) => &[O::Document, O::Section, O::Text, O::Item, O::Row, O::Aside],
+            Source::Children(_) => &[O::Document, O::Section, O::Item],
             Source::Section(_) => &[
-                O::Heading,
-                O::Paragraph,
-                O::ListItem,
-                O::TableRow,
-                O::Code,
-                O::Quote,
+                O::Section,
+                O::Text,
+                O::Item,
+                O::Row,
+                O::Verbatim,
+                O::Aside,
                 O::Inline,
             ],
         }
@@ -741,7 +885,8 @@ struct Written {
     fields: IndexMap<String, FieldEntry>,
     #[serde(default)]
     from: Vec<Shape>,
-    on: Option<On>,
+    on: Option<WrittenOn>,
+    role: Option<String>,
     #[serde(rename = "where")]
     conditions: Option<Where>,
     #[serde(rename = "match")]
@@ -764,6 +909,7 @@ impl TryFrom<Written> for Definition {
 
     fn try_from(w: Written) -> Result<Definition, String> {
         let shorthand = w.on.is_some()
+            || w.role.is_some()
             || w.conditions.is_some()
             || w.pattern.is_some()
             || w.key.is_some()
@@ -773,6 +919,8 @@ impl TryFrom<Written> for Definition {
         if from.is_empty() {
             let on =
                 w.on.ok_or("no shape: give it `on`, or [[from]] shapes each with their `on`")?;
+            on.check_role(w.role.as_deref())?;
+            let on = on.on;
             let mut shape = Shape {
                 on,
                 conditions: w.conditions.unwrap_or_default(),
@@ -1220,8 +1368,17 @@ fn references(
     }
     for shape in &t.definition.from {
         for inside in &shape.conditions.inside {
-            if !known(inside) && On::from_name(inside).is_none() {
+            if known(inside) {
+                continue;
+            }
+            // A role's name that a dropped type had still names that type.
+            let piece = On::from_name(inside)
+                .is_some_and(|on| on.alias() == inside || !dropped.contains(inside));
+            if !piece {
                 return Err(missing("where.inside names", inside));
+            }
+            if let Some(why) = On::not_inside(inside) {
+                return Err(format!("where.inside names {inside:?}, {why}"));
             }
         }
         for sources in shape.fields.values() {
@@ -1349,13 +1506,13 @@ fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
         }
     }
     for (set, key, ok) in [
-        (!w.header.is_empty(), "header", on == On::TableRow),
-        (!w.language.is_empty(), "language", on == On::Code),
-        (!w.section.is_empty(), "section", on != On::Note),
-        (!w.inside.is_empty(), "inside", on != On::Note),
+        (!w.header.is_empty(), "header", on == On::Row),
+        (!w.language.is_empty(), "language", on == On::Verbatim),
+        (!w.section.is_empty(), "section", on != On::Document),
+        (!w.inside.is_empty(), "inside", on != On::Document),
     ] {
         if set && !ok {
-            p.push(format!("{at}where.{key} doesn't apply on {}", on.name()));
+            p.push(format!("{at}where.{key} doesn't apply on {}", on.both()));
         }
     }
     let groups: Option<Vec<String>> = match &shape.pattern {
@@ -1389,11 +1546,11 @@ fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
         };
         for s in &sources.0 {
             if !s.on().contains(&on) {
-                let allowed: Vec<&str> = s.on().iter().map(|o| o.name()).collect();
+                let allowed: Vec<String> = s.on().iter().map(|o| o.both()).collect();
                 p.push(format!(
-                    "{at}{} can't be read on {} (only on {})",
+                    "{at}{} can't be read on {}; only on {}",
                     s.kind(),
-                    on.name(),
+                    on.both(),
                     allowed.join(", ")
                 ));
             }
@@ -1686,7 +1843,10 @@ mod tests {
                 "on = \"paragraph\"\nfields.a = { rest = false }",
                 "rest = false",
             ),
-            ("on = \"row\"", "row"),
+            (
+                "on = \"rows\"",
+                "\"rows\" is not a role (document, section, text, item, row, aside, verbatim), inline, or an older name",
+            ),
             ("on = \"note\"\nsytle = 1", "sytle"),
         ] {
             let t = load([config(&format!("[x]\n{text}"))]);
@@ -1726,15 +1886,15 @@ mod tests {
             ),
             (
                 "on = \"note\"\nfields.a = { column = \"A\" }",
-                "column can't be read on note",
+                "column can't be read on document (note); only on row (table-row)",
             ),
             (
                 "on = \"list-item\"\nfields.a = { property = \"a\" }",
-                "property can't be read on list-item",
+                "property can't be read on item (list-item); only on document (note)",
             ),
             (
                 "on = \"paragraph\"\nfields.a = { info = \"language\" }",
-                "info can't be read on paragraph",
+                "info can't be read on text (paragraph); only on verbatim (code)",
             ),
             (
                 "on = \"paragraph\"\nfields.a = { rest = true }\nfields.b = { rest = true }",
@@ -1794,7 +1954,7 @@ mod tests {
             ),
             (
                 "on = \"note\"\nwhere.header = [\"A\"]",
-                "where.header doesn't apply on note",
+                "where.header doesn't apply on document (note)",
             ),
             (
                 "on = \"paragraph\"\nwhere.language = [\"rust\"]",
@@ -1837,7 +1997,7 @@ mod tests {
         assert_eq!(
             t.errors,
             [
-                "config.toml: [types.x] shape 2: fields.a: column can't be read on note (only on table-row)"
+                "config.toml: [types.x] shape 2: fields.a: column can't be read on document (note); only on row (table-row)"
             ]
         );
     }
@@ -1959,7 +2119,7 @@ mod tests {
             )]
         );
         assert_eq!(t.types[3].origin, Origin::Workspace { path: file });
-        assert_eq!(t.types[3].definition.from[0].on, On::TableRow);
+        assert_eq!(t.types[3].definition.from[0].on, On::Row);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2038,12 +2198,14 @@ mod tests {
             "from": [
                 {
                     "on": "table-row",
+                    "role": "row",
                     "where": {"header": ["Title", "Author"]},
                     "key": ["title"],
                     "fields": {"title": [{"column": "Title"}], "author": [{"column": "Author"}]},
                 },
                 {
                     "on": "note",
+                    "role": "document",
                     "where": {"property": {"type": "book"}},
                     "fields": {
                         "title": [{"property": "title"}, {"note": "name"}],
@@ -2071,6 +2233,155 @@ mod tests {
         let list = serde_json::to_value(&t).unwrap();
         assert_eq!(list["native"], json!(["list", "heading", "block"]));
         assert_eq!(list["errors"], json!([]));
+    }
+
+    const OLDER_NAMES: [(&str, &str); 7] = [
+        ("note", "document"),
+        ("heading", "section"),
+        ("paragraph", "text"),
+        ("list-item", "item"),
+        ("table-row", "row"),
+        ("quote", "aside"),
+        ("code", "verbatim"),
+    ];
+
+    #[test]
+    fn an_older_name_and_its_role_load_the_same_type() {
+        for (older, role) in OLDER_NAMES {
+            let written = |on: &str| definition(&format!("on = \"{on}\"\nfields.a = \"text\""));
+            assert_eq!(written(older), written(role), "{older} and {role}");
+            let on = written(older).from[0].on;
+            assert_eq!((on.name(), on.alias()), (role, older));
+            let json = serde_json::to_value(written(role)).unwrap();
+            assert_eq!(
+                json["from"][0],
+                json!({"on": older, "role": role, "fields": {}}),
+                "a definition's JSON keeps the older name as `on` and adds the role"
+            );
+            assert_eq!(
+                serde_json::from_value::<Definition>(json).unwrap(),
+                written(older),
+                "and reads back"
+            );
+        }
+        let inline = definition("on = \"inline\"\nmatch = 'x'");
+        assert_eq!(
+            serde_json::to_value(&inline).unwrap()["from"][0],
+            json!({"on": "inline", "match": "x", "fields": {}}),
+            "inline is no role"
+        );
+    }
+
+    #[test]
+    fn roles_and_older_names_mix_across_origins() {
+        let table = |toml: &str| toml::from_str::<toml::Table>(toml).unwrap();
+        let layers = |row: &str, item: &str, other: &str, document: &str| {
+            let root = workspace(
+                &format!("mix-{document}"),
+                &format!("version = 1\n[types.volcano]\non = \"{document}\"\n"),
+            );
+            let record = table(&format!("on = \"{row}\"\nwhere.file-type = [\"csv\"]"));
+            let found = load(
+                [
+                    Some(Layer::built_in()),
+                    Some(Layer::extension(
+                        "csv",
+                        [("csv.record".to_string(), record)],
+                    )),
+                    Some(config(&format!(
+                        "[idea]\nextends = \"task\"\non = \"{item}\"\nwhere.tag = [\"idea\"]\n\
+                         [plan]\nextends = \"idea\"\non = \"{other}\"\n"
+                    ))),
+                    Layer::workspace(&root),
+                ]
+                .into_iter()
+                .flatten(),
+            );
+            let _ = std::fs::remove_dir_all(root);
+            assert_eq!(found.errors, Vec::<String>::new());
+            (found.types.into_iter())
+                .map(|t| (t.name, t.definition))
+                .collect::<Vec<(String, Definition)>>()
+        };
+        let older = layers("table-row", "list-item", "list-item", "note");
+        assert_eq!(older.len(), 5);
+        assert_eq!(
+            older,
+            layers("row", "item", "item", "document"),
+            "an extension's manifest, config.toml and a version 1 workspace file, in roles"
+        );
+        assert_eq!(
+            older,
+            layers("row", "list-item", "item", "note"),
+            "a subtype in a role extends a base written with the older name"
+        );
+        assert_eq!(older, layers("table-row", "item", "list-item", "document"));
+    }
+
+    #[test]
+    fn an_unknown_on_names_the_roles_and_drops_only_its_type() {
+        let t = load([config(
+            "[good]\non = \"item\"\n[bad]\non = \"bullet\"\n[later]\non = \"embed\"\n\
+             [[split.from]]\non = \"opaque\"\n\
+             [[same.from]]\non = \"list-item\"\nrole = \"item\"\n\
+             [short]\non = \"row\"\nrole = \"row\"\n\
+             [[other.from]]\non = \"list-item\"\nrole = \"row\"\n\
+             [top]\non = \"note\"\nrole = \"item\"\n\
+             [reading]\non = \"inline\"\nmatch = 'x'\nrole = \"inline\"\n\
+             [both]\nrole = \"item\"\n[[both.from]]\non = \"item\"\n\
+             [body]\non = \"text\"\nwhere.inside = [\"section\"]\n\
+             [whole]\non = \"text\"\nwhere.inside = [\"document\"]\n\
+             [words]\non = \"inline\"\nmatch = 'x'\nwhere.inside = [\"heading\", \"note\"]\n",
+        )]);
+        assert_eq!(names(&t), ["good", "same", "short", "words"]);
+        assert_eq!(t.errors.len(), 9, "{:?}", t.errors);
+        for (name, needle) in [
+            (
+                "bad",
+                "\"bullet\" is not a role (document, section, text, item, row, aside, verbatim), \
+                 inline, or an older name (note, heading, paragraph, list-item, table-row, quote, \
+                 code)",
+            ),
+            (
+                "later",
+                "nothing is read as \"embed\" yet, so no type can be on it: use document, \
+                 section, text, item, row, aside, verbatim or inline",
+            ),
+            ("split", "nothing is read as \"opaque\" yet"),
+            (
+                "other",
+                "role = \"row\" is not the role of on = \"list-item\", which is item: leave \
+                 role out, since `on` gives it",
+            ),
+            (
+                "top",
+                "role = \"item\" is not the role of on = \"note\", which is document",
+            ),
+            (
+                "reading",
+                "role = \"inline\": on = \"inline\" is a reading of text and has no role, so \
+                 leave role out",
+            ),
+            ("both", "go in each shape"),
+            (
+                "body",
+                "where.inside names \"section\", which where.inside can't test yet: for a block \
+                 under a heading use where.section = [\"Its title\"], and for a pattern in a \
+                 heading's own words \"heading\"",
+            ),
+            (
+                "whole",
+                "where.inside names \"document\", which where.inside can't test yet: every \
+                 block is inside its document, so name the note's type instead",
+            ),
+        ] {
+            let start = format!("config.toml: [types.{name}] ");
+            let line = (t.errors.iter())
+                .find(|e| e.starts_with(&start))
+                .unwrap_or_else(|| panic!("{name}: {:?}", t.errors));
+            assert!(line.contains(needle), "{line}");
+            assert!(!line.contains('\n'), "{line}");
+        }
     }
 
     #[test]
