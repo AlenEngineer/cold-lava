@@ -62,8 +62,7 @@ change commands, keys and file formats; patch versions only fix things.
   first line is blank, as the Kanban plugin writes it, is hidden (it showed as a rule and
   text). A `---` pair in the middle of a note no longer hides the lines between. A `#` right
   after a link, closing emphasis or code is no tag, and neither is an escaped `\#` nor one
-  that starts a link's text. `[[A\|B]]` in a table cell links to `A`. `$$` math with a
-  blank line in it is math (it showed as text). Emphasis that opens in a callout's title
+  that starts a link's text. `[[A\|B]]` in a table cell links to `A`. Emphasis that opens in a callout's title
   ends there. One thing shows less than in Obsidian, because the index reads it so: a link
   definition written over two lines is text.
 - What the index and the items read changes in four places, so that they and the reader
@@ -71,10 +70,13 @@ change commands, keys and file formats; patch versions only fix things.
   for links, code, math and comments too: `\[[Note]]` and `\[text](Note.md)` are text, so
   they are no backlink, don't keep a note from being an orphan in `tidy`, and a rename
   leaves them alone. A link's text holds no link: in `[a [b](Inner.md) d](Outer.md)` the
-  link is `Inner`, where it was `Outer`. `$$` at the start of a line that nothing closes is
-  text: it used to make the rest of the note math, so tasks and block ids after it were
-  missing from the agenda and `items`, and they are there now. A line right under a
-  callout's title that has no `>` is the callout's.
+  link is `Inner`, where it was `Outer`. Math is what the reader has always shown as math, for
+  `items` and the agenda too: `$…$` and `$$…$$` inside one paragraph, heading, list item or
+  table cell. A line that starts with `$$` used to hide every line up to the next `$$`
+  anywhere in the note from `items` and the agenda (tasks, headings, block ids), while the
+  reader showed them; they are there now. A `$$` block with a blank line in it is two
+  paragraphs of text, as on screen. A line right under a callout's title that has no `>`
+  is the callout's.
 - Extensions are answered while the shape editor (`S`) or the board picker (`w`) is open (part
   of #173): both run in the menu's loop now, as the whiteboard does. A status word such as the
   example's count of open tasks keeps up under the picker and shows in the shape editor's

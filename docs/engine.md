@@ -262,7 +262,7 @@ change what it shows, never how it works.
   - *Blocks* are found line by line as CommonMark does: a line first continues the open
     containers it can (block quotes and callouts, lists and their items), then closes the rest,
     then opens new blocks (frontmatter, ATX and setext headings, thematic breaks, fenced and
-    indented code, HTML blocks as opaque text, tables, `$$` math and `%%` comment blocks,
+    indented code, HTML blocks as opaque text, tables, `%%` comment blocks,
     paragraphs with lazy lines). A container's marker on a later line (`>`, an item's
     indentation) is a token of the innermost block that holds that line. A lazy line, which the
     paragraph's containers don't go on to, ends the paragraph at any block that starts there,
@@ -280,11 +280,9 @@ change what it shows, never how it works.
     the links, tags and tasks in a footnote's indented lines count (they were indented code
     in the tree until #212), and a `^id` on a definition's line names the footnote's text
     without its `[^label]:`. An edit inside a definition, or on the line right after one,
-    reparses the definition: it is one top-level block, as a list is. `$$` math needs its
-    closing `$$`, on its line or any later line its containers reach, blank lines between
-    included. Without one the `$$` line is text and what follows reads as it would: the
-    parse goes back to that line and reads on. So a `$$` typed far below can make math of
-    what is above it, and an edit whose lines hold a `$$` parses the note whole. A line
+    reparses the definition: it is one top-level block, as a list is. Math is no block: a
+    line that starts with `$$` is a paragraph's line like any other, starts nothing and
+    hides nothing after it (math is read in a block's text, below). A line
     right under a callout's title that doesn't go on the quote is the callout's first
     paragraph, lazily, as the title is a paragraph's line to CommonMark. With wikilinks, a
     destination that starts one is none either: `[Source]: [[Book]]` is a line of text with a
@@ -293,7 +291,15 @@ change what it shows, never how it works.
     wikilinks and embeds (target, `#heading` or `^block`, `|alias`), Markdown links and images,
     Dataview fields (`[key:: value]`, `(key:: value)`, a `key:: value` line), `%%comments%%`,
     `$math$`, tags and block ids. A code span its line doesn't close goes on into the next
-    lines of its paragraph when one of them closes it, as CommonMark has it. A link's text may
+    lines of its paragraph when one of them closes it, as CommonMark has it. Math (`$…$`,
+    `$$…$$`) is what pulldown-cmark read as math, which is what the reader always showed: it
+    is in one block's text, on one line or over several lines of a paragraph (keeping their
+    indentation, not their containers' markers), and never goes on past its block. A `$`
+    opens with something that isn't blank after it; the block's next `$` in the same braces
+    (`{}`) closes it, with something that isn't blank before it on its line, or nothing
+    does. `$$` is closed by `$$`. A backslash before a `$` takes it out. So a price pairs
+    with no later `$`, and two `$$` in two paragraphs are text. Math that opens in a link's
+    text and closes after the link is the math, and the link none. A link's text may
     go on to a later line of its block too: a `[` that nothing closed is still open there, and
     the `](destination)` that closes it is a `LinkEnd`, whose destination counts as a link's.
     A link's text may hold an image (`[![alt](pic.png)](Note.md)`), though no other link. A
@@ -394,23 +400,23 @@ change what it shows, never how it works.
     (`cst::read`, in the workspace's flavour with what text holds, over the note without its
     `%%comments%%`, as the items read it) and makes the same `Doc` the reader always drew. So
     what the reader shows as a link, a tag or a task is what the index and the items count.
-    What isn't a node is put together on the way: paragraphs and `$$` math on consecutive lines
-    are one paragraph, a `LinkEnd` takes the inlines since its `[` as the link's text, a `^id` names
+    What isn't a node is put together on the way: a paragraph that holds only `$$` math
+    is shown as a block of math, a `LinkEnd` takes the inlines since its `[` as the link's text, a `^id` names
     its block only at the block's end, a checkbox that is no `[ ]` or `[x]` is text, and a
     character reference is looked up (`markdown/entities.rs`). pulldown-cmark's parse stays
     in `markdown/pulldown.rs`, for tests only: one compares the two `Doc`s on every note of
-    the corpus, the example workspace, some eighty tricky notes and a 5,000-line one, in
+    the corpus, the example workspace, some ninety tricky notes and a 5,000-line one, in
     each flavour. They are equal but for two lists kept there with the reason for each row.
     `DIFFERENT`: the tree reads what the index counts (a `#` right after a link, or one
-    that starts a link's text, is no tag; `$$` math may hold a blank line), or pulldown-cmark
+    that starts a link's text, is no tag), or pulldown-cmark
     wasn't Obsidian (a frontmatter whose first line is blank, YAML in the middle of a note, a
     byte order mark, `[[A\|B]]` in a table, an escaped `\#`). `LESS`: the reader shows less
     than Obsidian does, because the tree reads it so and the index with it (a link
     definition over two lines is text). Four more differences were the tree's to mend, and
-    are mended in it, for the index and the items too: a backslash escapes what the line
-    reader finds (`\[[Note]]` is text), a link's text holds no link (the inner one is the
-    link), `$$` needs its closing `$$`, and a lazy line under a callout's title is the
-    callout's.
+    are mended in it, for the items too and, but for math, the index: a backslash escapes
+    what the line reader finds (`\[[Note]]` is text), a link's text holds no link (the inner
+    one is the link), math is read as pulldown-cmark read it (above), and a lazy line under
+    a callout's title is the callout's.
   - *Renames:* `relink` rewrites the bytes of a target and nothing else: a link by reference
     is rewritten once, in its definition (`[ref]: Old.md "Title"` keeps its label, its title
     and its `<>`), whether a link uses it or not. Two tests hold "nothing else": every note of
@@ -422,7 +428,7 @@ change what it shows, never how it works.
     it read pulldown-cmark's events before. Ids, revs and spans hang on the blocks, so the walk
     reads them as pulldown-cmark had them: a paragraph, a table row or a fence starts at its
     first character; a callout's title is the first line of a paragraph that the next line
-    goes on (a GitHub alert's `[!NOTE]` is none); `$$` math is a paragraph's text; link
+    goes on (a GitHub alert's `[!NOTE]` is none); link
     definitions are no paragraph (the tree has them as blocks); a table row's cells are
     split at every `|` not escaped and cut or filled to the table's columns. A test keeps the
     pulldown-cmark pass and checks both give the same items on every note of the corpus, with
