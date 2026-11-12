@@ -37,8 +37,9 @@ keys ctrl+u
 type 1885
 wait-for Year: 1885▏
 write Volcanoes/Eruptions.csv Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1883,6,\n
+wait-for its extension closed this view: what you type is not saved
 wait-for csv-table wanted to close a view: not while a cell is being edited
-wait-for Year: 1885▏
+expect Year: 1885▏
 keys esc
 wait-for csv-table closed the view you were typing in
 wait-for CSV table · ⏎ to open it in csv-table
