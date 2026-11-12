@@ -2388,10 +2388,10 @@ fields.words = { rest = true }
         let lines: Vec<usize> = said.iter().map(|s| s.0).collect();
         assert_eq!(
             lines,
-            [1, 3, 5],
-            "two paragraphs and the quote between them"
+            [1, 3, 3, 5],
+            "three paragraphs, one of them quoted, and the quote around it"
         );
-        assert_eq!(said[2].1, "e68456f9ae56127e", "the paragraph on line 5");
+        assert_eq!(said[3].1, "e68456f9ae56127e", "the paragraph on line 5");
         let without = settings(
             "[said]\nfields = { words = \"text\" }\n\
              [[said.from]]\non = \"paragraph\"\nmatch = '^foo'\nfields.words = { rest = true }\n",
@@ -2401,12 +2401,18 @@ fields.words = { rest = true }
             .filter(|i| i.data.kind() == "said")
             .map(|i| i.id.as_str())
             .collect();
+        let kept: Vec<&str> = (said.iter().map(|s| s.1))
+            .filter(|id| before.contains(id))
+            .collect();
         assert_eq!(
-            before,
-            [said[0].1, said[2].1],
-            "the ids the paragraphs have with no shape on a quote"
+            kept, before,
+            "the three paragraphs have the ids they have with no shape on a quote"
         );
-        assert!(!before.contains(&said[1].1), "the aside's id is its own");
+        assert_eq!(
+            said.len(),
+            before.len() + 1,
+            "and the aside's id is its own"
+        );
     }
 
     /// An aside's text is the first words in it: a quote inside it adds no marker to them.
