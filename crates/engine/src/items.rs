@@ -1384,6 +1384,9 @@ Setext
 ### Three again
 # Other
 - under other
+- holds a heading
+  ## Listed
+- after the list item
 ";
         let all = items(note);
         let section = |text: &str| by_text(&all, text).section.clone();
@@ -1411,6 +1414,11 @@ Setext
         assert_eq!(section("Three again"), ["One", "Two"]);
         assert_eq!(section("Other"), none, "the same level closes its sibling");
         assert_eq!(section("under other"), ["Other"]);
+        assert_eq!(
+            section("after the list item"),
+            ["Other", "Listed"],
+            "a heading in a list item opens a section that outlasts the list item"
+        );
     }
 
     #[test]

@@ -344,16 +344,24 @@ base written with the other. A types file's `version` stays `1`, with either spe
   a type on one could never match. Any other unknown `on` is refused as before, on one line,
   and the line lists the roles and the older names. The broken type is dropped and the rest
   load.
-- `where.inside` takes a role or its older name too. A name that is both a type's and a
-  role's is the type there: with a type called `item`, `where.inside = ["item"]` means that
-  type, as it always did.
+- `where.inside` takes `text`, `item`, `row`, `aside` and `verbatim`, or their older names.
+  A name that is both a type's and a role's is the type there: with a type called `item`,
+  `where.inside = ["item"]` means that type, as it always did.
+- `where.inside` refuses `section` and `document`, with the reason. Nothing it can test
+  says that a block is in a section's body, and every block is in its document. For a block
+  under a heading, use `where.section = ["Its title"]`. The older `heading` keeps its
+  meaning there, which is narrower than a section: an inline type's match in a heading's own
+  words. The older `note` still loads there and matches nothing, as before.
 - A definition's JSON (`types/list`, `cold-lava types --json`) keeps `on` under the older
   name, so a client written before keeps working, and adds `role` beside it:
-  `{"on": "list-item", "role": "item", …}`. An `inline` shape has no `role`. Read back, `role`
-  must be `on`'s role; in TOML, leave it out.
+  `{"on": "list-item", "role": "item", …}`. An `inline` shape has no `role`.
+- `role` is printed, not written: leave it out of TOML. It is read wherever `on` is, in a
+  `[[from]]` shape and in the one-shape shorthand, only so that the JSON reads back, and it
+  must be the role of the `on` beside it. A `role` that disagrees, or one beside
+  `on = "inline"`, is refused.
 - `cold-lava types` prints both: `on list-item · role item`.
-- A message about a mistake names the role: `column can't be read on document (only on
-  row)`.
+- A message about a mistake in a type says both names, since the person wrote one of them:
+  `column can't be read on document (note); only on row (table-row)`.
 
 **Native kinds and roles.** The kinds an item reports (`task`, `list`, `heading`, `block`,
 or a type's name) are older than the roles and are not roles. An item's id hashes its kind,
@@ -377,8 +385,9 @@ the file.
   title.
 - A skipped level nests all the same: a `###` after a `#` is in that `#`.
 - What is written before the first heading has an empty `section`.
-- A heading inside a quote opens a section like any other, and the next heading of its
-  level or shallower closes it, wherever that one is written.
+- A heading inside a quote or a list item opens a section like any other. The section
+  outlasts the quote or the list item, and the next heading of its level or shallower closes
+  it, wherever that one is written.
 
 `items.rs` pins the rule (`a_section_is_a_title_and_its_body_by_heading_levels`), against the
 `section` path items already carry.

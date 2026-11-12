@@ -1750,6 +1750,39 @@ Survey the rim ~3h, not `~4h`, not~6h.
         );
     }
 
+    /// `heading` in `where.inside` is a pattern in a heading's own words, as it always was. The
+    /// body of a section is `where.section`, and `section` is refused there (`types.rs`).
+    #[test]
+    fn inside_a_heading_is_its_own_words_and_under_it_is_where_section() {
+        let text = "# Title ~7m\n\nBody under title ~20m\n\n- item under title ~3m\n";
+        let minutes = |toml: &str| -> Vec<Json> {
+            extract("N.md", text, &settings(&format!("{ESTIMATE}{toml}")))
+                .iter()
+                .filter(|i| i.data.kind() == "estimate")
+                .map(|i| fields(i)["minutes"].clone())
+                .collect()
+        };
+        assert_eq!(minutes(""), [json!(7), json!(20), json!(3)]);
+        assert_eq!(minutes("where.inside = [\"heading\"]\n"), [json!(7)]);
+        assert_eq!(
+            minutes("where.section = [\"Title ~7m\"]\n"),
+            [json!(20), json!(3)]
+        );
+        let refused = load([
+            Layer::built_in(),
+            Layer::config(
+                Path::new("config.toml"),
+                toml::from_str(&format!("{ESTIMATE}where.inside = [\"section\"]\n")).unwrap(),
+            ),
+        ]);
+        assert_eq!(refused.types.len(), 1, "only the task loads");
+        assert!(
+            refused.errors[0].contains("where.inside names \"section\", which where.inside can't"),
+            "{:?}",
+            refused.errors
+        );
+    }
+
     #[test]
     fn inline_items_sit_in_typed_blocks_and_keep_their_spans_through_comments() {
         let s = settings(&format!(
