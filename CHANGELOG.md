@@ -179,7 +179,7 @@ change commands, keys and file formats; patch versions only fix things.
   and a notice on the status line is escaped like a message, where it used to lose its
   control characters without a trace. Text the app draws as running text (the tree, the
   reader, lists, tables, cards) still loses control characters and can still hold the
-  separators U+2028 and U+2029.
+  separators U+2028 and U+2029 and, in titles and single lines, direction characters.
 - An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
   with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the

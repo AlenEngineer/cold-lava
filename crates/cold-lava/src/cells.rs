@@ -10,9 +10,10 @@
 //! cell has room for one symbol, so a character that is never shown as written becomes
 //! `STAND_IN` there.
 //!
-//! What this does not reach: text drawn through ratatui keeps the separators U+2028 and
-//! U+2029 and whatever else ratatui lets through (the tests below pin what that is), since
-//! ratatui drops only what `char::is_control` names and what has no width.
+//! What this does not reach: text drawn through ratatui. It loses what `char::is_control`
+//! names, and keeps the separators U+2028 and U+2029 however it is drawn. A character that
+//! turns the direction of text is dropped by `set_string` and a `Paragraph`, and kept by a
+//! `Line` drawn on its own and by a block's title. The tests below pin all of it.
 
 use cold_lava_views::shown::{Level, escape};
 use ratatui::buffer::Cell;
@@ -138,10 +139,11 @@ mod tests {
     }
 
     /// What ratatui does with the characters it doesn't call control characters, drawn
-    /// each of the ways above: which of them reach a cell. A character that turns the
-    /// direction of text has no width and reaches none. The two separators that end a line
-    /// are kept, so text drawn through ratatui can hold them: that is the limit of what the
-    /// terminal app escapes, stated in this module's doc.
+    /// each of the ways above: which of them reach a cell. The two separators that end a
+    /// line always do. A character that turns the direction of text does through a `Line`
+    /// drawn on its own and a block's title, and not through `set_string` or a `Paragraph`.
+    /// So text drawn through ratatui can hold them: that is the limit of what the terminal
+    /// app escapes, stated in this module's doc.
     #[test]
     fn what_ratatui_keeps_of_the_characters_that_are_not_control_characters() {
         let area = Rect::new(0, 0, 20, 3);
@@ -173,14 +175,15 @@ mod tests {
             kept(&|text, buf| Block::bordered().title(text.to_string()).render(area, buf)),
         ];
         let separators = vec!["U+2028", "U+2029"];
+        let all = vec!["U+202E", "U+2066", "U+2028", "U+2029"];
         assert_eq!(
             found,
             [
                 separators.clone(),
+                all.clone(),
                 separators.clone(),
-                separators.clone(),
-                separators.clone(),
-                separators
+                separators,
+                all
             ],
             "set_string, a line, a paragraph, a wrapped paragraph, a block's title"
         );

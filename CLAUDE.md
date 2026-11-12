@@ -515,7 +515,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   through `cells::label` before it is measured or fitted: escaped at `Level::Content`,
   tabs as spaces. A shape's own and bound text is not a label and gets the `�`.
   `Home::flash` and `Board::flash` escape a notice at `Level::Message`. Text drawn through
-  ratatui still holds U+2028 and U+2029 (`cells.rs` pins what ratatui keeps).
+  ratatui still holds U+2028 and U+2029, and direction characters where it is a `Line`
+  drawn on its own or a block's title (`cells.rs` pins what ratatui keeps).
 - `say.rs`: the only module that prints to stdout and stderr. A line is escaped whole as it
   goes out (`cold_lava_views::shown::escape`), a line break in it included, so nothing has
   to be remembered where a line is made. Which entry is called says what the line is:
