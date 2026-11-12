@@ -526,7 +526,7 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   written as it is. One call is one line: what has several lines by the app's own
   structure makes one call a line, or is a `say::Lines` error (a usage after what went
   wrong). Never `println!` or take `stdout()` elsewhere: `tests/one_door.rs` lists every
-  print site (the host's and the engine's too) and every listing, and
+  print site (the host's, the engine's and the views crate's too) and every listing, and
   `tests/outside_text.rs` runs the binary on text with escape sequences planted.
 - `drive.rs`: `cold-lava drive`, scripted UI runs (its `write` step changes a workspace file
   with `std::fs` on purpose, as another program would: the one exception `tests/one_door.rs`
