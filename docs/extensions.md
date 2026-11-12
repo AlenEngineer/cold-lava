@@ -3082,6 +3082,9 @@ after its call returns, so it never holds the menu's state.
 
 ## Order of work
 
+*This list records the order the extension API was built in. It is history: the open work,
+in order, is roadmap issue #100.*
+
 1. Core: safe writes, live workspace, events. *(done)*
 2. Commands, command palette, configurable keys. The Markdown reader can land alongside, since
    it's core.

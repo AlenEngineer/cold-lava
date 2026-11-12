@@ -26,8 +26,15 @@ simple loop, all the way down"): every unit is a caller (it only calls its tools
 a leaf (it needs nothing but a dependency the project doesn't control); a tool owns its
 state; complexity for speed is a stated decision, written where it is. Write new code that
 way. When you meet a unit that is neither, split it; don't add to it. Much of the existing
-code doesn't meet this yet (`home.rs`, `board.rs`, `owner/given.rs`; #264, #265): don't copy
+code doesn't meet this yet (`Core`, `home.rs`, `board.rs`, `owner/given.rs`): don't copy
 their shape, and don't refactor them inside a feature PR.
+
+**Refactor before adding a feature somewhere** (decided 2026-11-12). The whole codebase was
+read against that standard, and the work to meet it is seven tracks of small,
+behaviour-identical steps (issues #265 A, #270 B, #271 C, #272 D, #264 E, #273 F, #274 G).
+A track goes before the feature that lands on its code: the roadmap (#100) says which track
+each feature waits for. Before starting a feature, check its line there; if it says "after
+track X" and that step isn't merged, do the step first or stop and ask.
 
 cold-lava's word for a folder of notes is **workspace**, in the UI, the CLI, the docs and the
 code. "Vault" is only for Obsidian's own concept (an Obsidian vault, Obsidian's vault list,
@@ -535,10 +542,13 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - The direction and the order of work were decided on 2026-11-11 (`docs/engine.md`, "Direction
-  and order"; roadmap issue #100): finish the half-done migrations, one door into the engine
-  (#179, #180, #193), `cold-lava lsp` (#195), types and identity (#190, #191, #186), the
-  terminal views, drawings, then the notebook.
+  and order"): finish the half-done migrations, one door into the engine, `cold-lava lsp`,
+  types and identity, the terminal views, drawings, then the notebook. On 2026-11-12 the
+  refactor tracks were put in front of the features they underlie. **Roadmap issue #100 is the
+  one list of open work**: every open issue is on it exactly once, in order. When you open
+  an issue, add it there; an order written anywhere else is history.
 - The `Extension` interface exists and Neovim runs on it, and so do the agenda, the table and
   the graph (over the view gateway). The menu, the page and the whiteboard stay built into the
   frontend: they are not meant to become extensions.
-- The project's issues are tracked on GitHub (#2 agenda and #3 daily/toggle are done).
+- The project's issues are tracked on GitHub. Don't leave a TODO in code or in a doc: open an
+  issue and put it on the roadmap.
