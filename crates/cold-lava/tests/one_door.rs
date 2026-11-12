@@ -4,21 +4,27 @@
 //! the source names: a new one fails here, and a later group of #193 takes its own off.
 //!
 //! The same for what else still goes around the door (#270, track B): reads of the core's
-//! index, item edits that don't go through `Core::edit_item`, links and tags read by a pattern
-//! instead of by the Markdown owner, and what the built-in extensions use beyond the gateway.
-//! Those lists say how wide the gap is today and fail when it grows, and they fail too when an
-//! entry is gone and still listed, so they stay true as they shrink.
+//! index, a workspace opened beside the core, item edits that don't go through
+//! `Core::edit_item`, links read by a pattern instead of by the Markdown owner, and what the
+//! built-in extensions use beyond the gateway. Those lists say how wide the gap is today and
+//! fail when it grows, and they fail too when an entry is gone and still listed, so they stay
+//! true as they shrink.
 //!
 //! It is a guard on the text, not a proof. It can't see a call made through a wrapper or a
 //! re-export in another crate, through a macro, a function pointer or a trait object, a
 //! `std::fs` handle already open (`File`'s own methods), a module of `std` under another name
-//! (`use std::fs as f`), a program the app starts, or anything in the host and the engine,
-//! which are theirs to guard. A reviewer still reads a change that touches files.
+//! (`use std::fs as f`), or a program the app starts. A reviewer still reads a change that
+//! touches files.
+//!
+//! It reads the terminal app, and the host only for its reads of the core's index. Nothing
+//! else guards the host or the engine's own feature modules (#226's test isn't written), and
+//! nothing here reads `crates/gui`, which is outside the Cargo workspace and scans a
+//! workspace itself (`crates/gui/src/main.rs`, `workspace::scan`).
 
 use std::path::Path;
 
-/// Every source file of the binary by its path under `src/`, as `code` keeps it, sorted.
-fn sources() -> Vec<(String, String)> {
+/// Every `.rs` file under `dir` by its path there, as `code` keeps it, sorted.
+fn files_under(dir: &Path) -> Vec<(String, String)> {
     fn walk(dir: &Path, src: &Path, out: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
@@ -31,11 +37,22 @@ fn sources() -> Vec<(String, String)> {
             }
         }
     }
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out = Vec::new();
-    walk(&src, &src, &mut out);
+    walk(dir, dir, &mut out);
     out.sort();
     out
+}
+
+/// Every source file of the binary by its path under `src/`, as `code` keeps it, sorted.
+fn sources() -> Vec<(String, String)> {
+    files_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+}
+
+/// The extension host's source files, each named from here (`../host/src/lib.rs`).
+fn host_sources() -> Vec<(String, String)> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../host/src");
+    let from_here = |(file, code): (String, String)| (format!("../host/src/{file}"), code);
+    files_under(&src).into_iter().map(from_here).collect()
 }
 
 /// A file's text without its unit tests (each `#[cfg(test)]` on a `mod`, to the brace that
@@ -107,8 +124,45 @@ fn group(inside: &str) -> Option<Vec<&str>> {
     None
 }
 
-/// Sorted entries, each once with how often it was there: `home.rs: .index ×39`.
-fn tally(found: Vec<String>) -> Vec<String> {
+/// `module::name` for each function of `modules` that `code` names.
+fn functions_of(code: &str, modules: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    for module in modules {
+        let names = named_in(code, module).into_iter();
+        found.extend(names.map(|name| format!("{module}{name}")));
+    }
+    found
+}
+
+/// Each of `needles` as often as `code` has it.
+fn times(code: &str, needles: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    for needle in needles {
+        let times = code.matches(needle).count();
+        found.extend((0..times).map(|_| String::from(*needle)));
+    }
+    found
+}
+
+/// `file: what` for everything `found` gives of each file's code, sorted.
+fn per_file(files: &[(String, String)], found: impl Fn(&str) -> Vec<String>) -> Vec<String> {
+    let mut all = Vec::new();
+    for (file, code) in files {
+        let whats = found(code).into_iter();
+        all.extend(whats.map(|what| format!("{file}: {what}")));
+    }
+    all.sort();
+    all
+}
+
+/// `file: what` for every time a file's code has one of `needles`, sorted.
+fn hits(needles: &[&str]) -> Vec<String> {
+    per_file(&sources(), |code| times(code, needles))
+}
+
+/// The entries sorted, each once with how often it was there: `home.rs: .index ×39`.
+fn tally(mut found: Vec<String>) -> Vec<String> {
+    found.sort();
     let mut counted: Vec<(String, usize)> = Vec::new();
     for entry in found {
         match counted.last_mut() {
@@ -121,8 +175,8 @@ fn tally(found: Vec<String>) -> Vec<String> {
 }
 
 /// Fails unless what was `found` is exactly what is `listed`, and says which entries are new
-/// (send that use through the core, or list it with its reason) and which are listed but no
-/// longer found (take them off: a list here only shrinks). A count that changed shows as both.
+/// and which are listed but no longer found, with what to do about each. A count that
+/// changed shows as both.
 fn only_listed(what: &str, found: &[String], listed: &[&str]) {
     let found: Vec<&str> = found.iter().map(String::as_str).collect();
     let new: Vec<&str> = (found.iter().copied())
@@ -133,23 +187,18 @@ fn only_listed(what: &str, found: &[String], listed: &[&str]) {
         .collect();
     assert!(
         new.is_empty() && gone.is_empty(),
-        "{what}\n  found but not listed: {new:?}\n  listed but not found: {gone:?}"
+        "{what}\n  found but not listed: {new:?}\n    send it through the core, or list it \
+         with its reason: this list only shrinks, so a count is never just raised\n  listed \
+         but not found: {gone:?}\n    take it off the list, or lower its count"
     );
     assert_eq!(found, listed, "{what}");
 }
 
-/// `file: what` for every time a file's code has one of `needles`, sorted.
-fn hits(needles: &[&str]) -> Vec<String> {
-    let mut found = Vec::new();
-    for (file, code) in sources() {
-        for needle in needles {
-            let times = code.matches(needle).count();
-            found.extend((0..times).map(|_| format!("{file}: {needle}")));
-        }
-    }
-    found.sort();
-    found
-}
+/// The engine's modules whose functions change files.
+const WRITES: [&str; 2] = ["trash::", "write::"];
+
+/// The gateway's file messages, which are the core's to call.
+const GATEWAY_FILES: &str = "files::";
 
 /// Deleting, restoring and making a folder are `Core::delete_file`, `restore_file` and
 /// `create_folder`, asked as `menu`: nothing in the app names `trash::delete`,
@@ -163,14 +212,7 @@ fn hits(needles: &[&str]) -> Vec<String> {
 /// - `write::create_if_missing`, `replace` in `board.rs`: the whiteboard saves its canvas.
 #[test]
 fn the_app_deletes_restores_and_makes_folders_through_the_core() {
-    let mut named = Vec::new();
-    for (file, code) in sources() {
-        for module in ["trash::", "write::"] {
-            let names = named_in(&code, module).into_iter();
-            named.extend(names.map(|name| format!("{file}: {module}{name}")));
-        }
-    }
-    named.sort();
+    let named = per_file(&sources(), |code| functions_of(code, &WRITES));
     let left = [
         "board.rs: write::create_if_missing",
         "board.rs: write::replace",
@@ -281,6 +323,89 @@ fn the_scan_sees_an_import_and_a_bare_call() {
     assert_eq!(named_in(&code(kept), "trash::"), ["restore"]);
 }
 
+/// A workspace read without the core: scanned, or an index built, by the app itself.
+const BESIDE: [&str; 2] = ["workspace::scan(", "Index::build("];
+
+/// The engine's modules that edit an item or a tag, each with the names the app may take
+/// from it that edit nothing (readers, and the modules inside it). Anything else named from
+/// one of them counts as an edit: a function a module gains is listed until it is named
+/// here.
+const ITEM_EDITS: [(&str, &[&str]); 5] = [
+    ("edit::", &[]),
+    (
+        "tasks::",
+        &[
+            "agenda",
+            "first_of_month",
+            "last_of_month",
+            "locate",
+            "today",
+        ],
+    ),
+    ("frontmatter::", &["is_tag"]),
+    ("owner::", &["built_in", "canvas", "markdown"]),
+    ("owner::markdown::", &["attributes"]),
+];
+
+/// The engine's modules the lists are about, each once: the ones of `WRITES`, the gateway's
+/// files, and the ones `OPERATIONS`, `BESIDE` and `ITEM_EDITS` name. A list's module is
+/// guarded against a way around because the list names it, not because it is written here.
+fn guarded() -> Vec<&'static str> {
+    let writes = WRITES.into_iter().chain([GATEWAY_FILES]);
+    let calls = OPERATIONS.into_iter().chain(BESIDE);
+    let calls = calls.filter_map(|call| call.split_once("::"));
+    let calls = calls.map(|(module, _)| module);
+    let edits = ITEM_EDITS.into_iter().map(|(module, _)| module);
+    let mut modules: Vec<&str> = Vec::new();
+    for module in writes.chain(calls).chain(edits) {
+        let module = module.trim_end_matches("::");
+        if module.starts_with(char::is_lowercase) && !modules.contains(&module) {
+            modules.push(module);
+        }
+    }
+    modules
+}
+
+/// `module as`, when `code` gives the module another name: after a path, in a group, or on a
+/// line of its own in one.
+fn renamed(code: &str, module: &str) -> Option<String> {
+    let alias = format!("{module} as ");
+    let is_one = |at: usize| {
+        let before = &code[..at];
+        let line = before.rsplit('\n').next().unwrap_or_default();
+        let after_path = before.ends_with("::") || before.ends_with('{');
+        after_path || before.ends_with(", ") || line.trim().is_empty()
+    };
+    let found = code.match_indices(&alias).any(|(at, _)| is_one(at));
+    found.then(|| format!("{module} as"))
+}
+
+/// `module::*`, when `code` imports the module whole.
+fn globbed(code: &str, module: &str) -> Option<String> {
+    let glob = format!("{module}::*");
+    code.contains(&glob).then_some(glob)
+}
+
+/// Whether an entry of a `use` group renames the module (`self as m`) or a function of it
+/// (`delete as d`). A type under another name (`Entry as Bookmark`) is not a call.
+fn renames(entry: &str) -> bool {
+    let word = |c: &char| c.is_alphanumeric() || *c == '_';
+    entry.match_indices(" as ").any(|(at, _)| {
+        let backwards = entry[..at].chars().rev().take_while(word);
+        backwards.last().is_some_and(char::is_lowercase)
+    })
+}
+
+/// `module::{… as …}`, when a `use` group of the module renames it or one of its functions.
+fn renamed_inside(code: &str, module: &str) -> Option<String> {
+    let open = format!("{module}::{{");
+    let found = code.match_indices(&open).any(|(at, _)| {
+        let entries = group(&code[at + open.len()..]).unwrap_or_default();
+        entries.into_iter().any(renames)
+    });
+    found.then(|| format!("{module}::{{… as …}}"))
+}
+
 /// The functions of `module` that a `use` in `code` brings in.
 fn imported(code: &str, module: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -295,32 +420,9 @@ fn imported(code: &str, module: &str) -> Vec<String> {
     found
 }
 
-/// The ways around the lists that the scan refuses outright: one of the engine's modules the
-/// lists are about (the file-changing ones, `edit`, `tasks`, `merge` and `index`) under
-/// another name or imported whole, and a `std::fs` function that changes files or one of the
-/// `OPERATIONS` brought in with `use`, after which its bare name is the call.
-fn sneaked(code: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    for module in ["trash", "write", "files", "edit", "tasks", "merge", "index"] {
-        let renamed = [
-            format!("::{module} as "),
-            format!("{{{module} as "),
-            format!(", {module} as "),
-        ];
-        if renamed.iter().any(|alias| code.contains(alias.as_str())) {
-            found.push(format!("{module} as"));
-        }
-        if code.contains(&format!("{module}::*")) {
-            found.push(format!("{module}::*"));
-        }
-        let group = format!("{module}::{{");
-        for (at, _) in code.match_indices(&group) {
-            let inside = code[at..].split('}').next().unwrap_or_default();
-            if inside.contains(" as ") {
-                found.push(format!("{module}::{{… as …}}"));
-            }
-        }
-    }
+/// `use std::fs::name` for each `std::fs` function that changes files and is brought in with
+/// `use`, after which its bare name is the call.
+fn imported_std(code: &str) -> Vec<String> {
     let changes = [
         "write",
         "rename",
@@ -332,13 +434,18 @@ fn sneaked(code: &str) -> Vec<String> {
         "copy",
         "hard_link",
     ];
-    for name in imported(code, "fs::") {
-        if changes.contains(&name.as_str()) {
-            found.push(format!("use std::fs::{name}"));
-        }
-    }
-    for call in OPERATIONS {
-        let (module, name) = call.trim_end_matches('(').split_once("::").unwrap();
+    let names = imported(code, "fs::").into_iter();
+    let names = names.filter(|name| changes.contains(&name.as_str()));
+    names.map(|name| format!("use std::fs::{name}")).collect()
+}
+
+/// `use module::name` for each call of `OPERATIONS` and `BESIDE` brought in with `use`, after
+/// which its bare name is the call and the lists' `module::name(` doesn't find it.
+fn imported_calls(code: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for call in OPERATIONS.into_iter().chain(BESIDE) {
+        let path = call.trim_end_matches('(').split_once("::");
+        let (module, name) = path.unwrap_or_default();
         let names = imported(code, &format!("{module}::"));
         if names.iter().any(|n| n == name) {
             found.push(format!("use {module}::{name}"));
@@ -347,22 +454,36 @@ fn sneaked(code: &str) -> Vec<String> {
     found
 }
 
-/// Nothing goes around the lists: no alias or glob of the engine's `trash`, `write`, `files`,
-/// `edit`, `tasks`, `merge` and `index` modules, no `std::fs` function that changes files and
-/// none of the `OPERATIONS` imported by name, none of the gateway's own file functions
-/// (`files::delete` and the rest, which are the core's to call), no file made or copied
-/// another way, and no `Core` taken apart for its `index` (`let Core { index, .. } = …`).
+/// The ways around the lists that the scan refuses outright: a guarded module under another
+/// name, imported whole, or renamed in its own `use` group, and a `std::fs` function that
+/// changes files or a listed call brought in with `use`.
+fn sneaked(code: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for module in guarded() {
+        found.extend(renamed(code, module));
+        found.extend(globbed(code, module));
+        found.extend(renamed_inside(code, module));
+    }
+    found.extend(imported_std(code));
+    found.extend(imported_calls(code));
+    found
+}
+
+/// Nothing goes around the lists: no alias or glob of a module a list is about (`guarded`),
+/// no `std::fs` function that changes files and no listed call imported by name, none of the
+/// gateway's own file functions (`files::delete` and the rest, which are the core's to call),
+/// no file made or copied another way, and no `Core` taken apart for its `index`
+/// (`let Core { index, .. } = …`).
 #[test]
 fn nothing_goes_around_the_lists() {
     let own = ["delete", "restore", "create_folder", "create", "replace"];
-    let mut found = Vec::new();
-    for (file, code) in sources() {
-        let around = sneaked(&code).into_iter();
-        found.extend(around.map(|what| format!("{file}: {what}")));
-        let gateway = named_in(&code, "files::").into_iter();
+    let found = per_file(&sources(), |code| {
+        let gateway = named_in(code, GATEWAY_FILES).into_iter();
         let gateway = gateway.filter(|name| own.contains(&name.as_str()));
-        found.extend(gateway.map(|name| format!("{file}: files::{name}")));
-    }
+        let mut found = sneaked(code);
+        found.extend(gateway.map(|name| format!("{GATEWAY_FILES}{name}")));
+        found
+    });
     assert_eq!(found, Vec::<String>::new());
     let other = [
         "File::create",
@@ -396,12 +517,11 @@ fn the_scan_reads_on_after_a_test_module() {
     assert_eq!(named_in(&code(text), "trash::"), ["free_path", "restore"]);
 }
 
-/// The core's index is read from outside the core here: every `.index` in the app's code,
-/// whatever it is written on (`self.core.index`, `c.index`, a `&Core` under any name), and
-/// every path into the engine's `index` module (`index::Index::build`, a second index beside
-/// the core's, and the types a function takes one as). Today each `.index` is a `Core`'s
-/// field: a field of that name on anything else would count too, and is to be named
-/// otherwise. The index becomes private when the list is empty (#270, B6).
+/// The core's index is read from outside the core here: every `.index` in the app's code
+/// and in the host's, whatever it is written on (`self.core.index`, `c.index`, a `&Core`
+/// under any name). Today each one is a `Core`'s field: a field of that name on anything
+/// else would count too, and is to be named otherwise. The field can become private when
+/// the list is empty (#270, B6), the host's two reads included.
 ///
 /// What is counted is the reach, not the use: `let ix = &core.index`, then `ix` forty times,
 /// is one. A reach the text doesn't show is not seen: through a function of the engine that
@@ -409,98 +529,106 @@ fn the_scan_reads_on_after_a_test_module() {
 ///
 /// - `home.rs`: the menu reads the tree, the switcher, search, backlinks, tags, the reader's
 ///   task and what a rename, a merge, a recipe or a delete would change, all from the index.
-/// - `main.rs`: `cold-lava rename` and `recipe` plan on the core's index, `graph` asks it
-///   whether there are notes; `tidy` and `search` build an index of their own.
+/// - `main.rs`: `cold-lava rename` and `recipe` plan on the core's index, and `graph` asks it
+///   whether there are notes.
 /// - `owned.rs`: the command line's workspace with its owned files, and `item set`'s item.
+/// - The host's `lib.rs`: `Host` answers `types/list` and `workspace/style` from it.
 #[test]
 fn the_index_is_still_read_outside_the_core_here() {
-    let found = tally(hits(&[".index", "index::"]));
+    let mut files = sources();
+    files.extend(host_sources());
+    let found = tally(per_file(&files, |code| times(code, &[".index"])));
     let left = [
+        "../host/src/lib.rs: .index ×2",
         "home.rs: .index ×39",
-        "home.rs: index:: ×2",
         "main.rs: .index ×3",
-        "main.rs: index:: ×2",
         "owned.rs: .index ×2",
     ];
     only_listed("reads of the core's index", &found, &left);
 }
 
-/// What `code` names of the engine's `edit` and `tasks` modules, which change a note's items
-/// themselves or make the text to change them with, apart from the functions of `tasks` that
-/// only read. A function those modules gain counts until it is named a reader here.
-fn item_writes(code: &str) -> Vec<String> {
-    let reads = [
-        "agenda",
-        "first_of_month",
-        "last_of_month",
-        "locate",
-        "today",
+/// A workspace is opened once, as a `Core`, so every command sees the same files, the owned
+/// ones too. Where the app still scans one itself or builds an index of its own (#270, B3):
+///
+/// - `main.rs`: `tidy` and `search` scan and build an index; `style` scans.
+/// - `owned.rs`: the command line's workspace when no extension owns a kind of file.
+///
+/// A type of the engine's `index` module that a function takes (`index::Backlink`) is not
+/// counted: it is data the core gave. `Index::build` reached through another name for the
+/// type (`use crate::index::Index as I`) is not seen.
+#[test]
+fn a_workspace_is_still_opened_beside_the_core_here() {
+    let left = [
+        "main.rs: Index::build( ×2",
+        "main.rs: workspace::scan( ×3",
+        "owned.rs: workspace::scan( ×1",
     ];
+    only_listed(
+        "a workspace opened beside the core",
+        &tally(hits(&BESIDE)),
+        &left,
+    );
+}
+
+/// What `code` names of the modules of `ITEM_EDITS` apart from what edits nothing.
+fn item_edits(code: &str) -> Vec<String> {
     let mut found = Vec::new();
-    for module in ["edit::", "tasks::"] {
+    for (module, apart) in ITEM_EDITS {
         let names = named_in(code, module).into_iter();
-        let names = names.filter(|name| !reads.contains(&name.as_str()));
+        let names = names.filter(|name| !apart.contains(&name.as_str()));
         found.extend(names.map(|name| format!("{module}{name}")));
     }
     found
 }
 
 /// An item is changed with `items/edit` (`Core::edit_item`, or `Host::edit_item` for an
-/// extension), which asks the file's owner and tells subscribers. What still writes a note's
-/// item itself, both on the command line (#270, B3):
+/// extension), which asks the file's owner and tells subscribers. What still makes an
+/// item's or a tag's new text itself, or writes it:
 ///
-/// - `edit::set_field`: `cold-lava item set` on a note.
-/// - `tasks::toggle_in`: `cold-lava task toggle`.
+/// - `edit::set_field`: `cold-lava item set` on a note (#270, B3).
+/// - `tasks::toggle_in`: `cold-lava task toggle` (#270, B3).
+/// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it with
+///   `write::replace` itself.
+///
+/// The owners' `edit` functions (`owner::edit`, `owner::markdown::edit`) would be listed;
+/// the app names neither.
 #[test]
 fn items_are_still_edited_around_the_core_here() {
-    let mut found = Vec::new();
-    for (file, code) in sources() {
-        let names = item_writes(&code).into_iter();
-        found.extend(names.map(|name| format!("{file}: {name}")));
-    }
-    found.sort();
+    let found = tally(per_file(&sources(), item_edits));
     let left = [
+        "home.rs: frontmatter::edit_tag ×1",
         "main.rs: edit::set_field ×1",
         "main.rs: tasks::toggle_in ×1",
     ];
-    only_listed("item edits around Core::edit_item", &tally(found), &left);
+    only_listed("item edits around Core::edit_item", &found, &left);
 }
 
-/// A link or a tag is what the Markdown owner and the resolver say is one, never what a
-/// pattern of the app's finds. This lists every place the app's code spells the syntax to look
-/// for it: a regular expression at all (`regex::`, `Regex::new(`), a wikilink's or a Markdown
-/// link's brackets escaped for one (`\[\[`, `\]\(`), the brackets as a string or a character
-/// to find (`"[["`, `"]("`, `'['`), a tag's `#` (`'#'`, `"#"`), and the two readers there are
-/// by name, wherever they are named. It can't tell a pattern from another use of the same
-/// characters, so those are listed too, and it doesn't see a scan spelled another way (a
-/// byte, `'\u{5b}'`, a longer string that holds the brackets).
-///
-/// The readers:
+/// A link is what the Markdown owner and the resolver say is one, never what a pattern of
+/// the app's finds. This lists where the app's code spells a link's syntax to look for it: a
+/// regular expression at all (`regex::`, `Regex::new(`), a wikilink's or a Markdown link's
+/// brackets escaped for one (`\[\[`, `\]\(`), the brackets as a string to find (`"[["`,
+/// `"]]"`, `"]("`), and the two readers there are by name, wherever they are named:
 ///
 /// - `agenda.rs`: `links_as_text`, two regular expressions that turn `[[Note|alias]]` and
 ///   `[text](url)` into the words shown; `home.rs` calls it for the reader's tick messages.
-/// - `board.rs`: `markdown_text`, a card's Markdown styled by hand: `"[["`, `"]("`, one `'['`,
-///   a heading's `'#'` three times and a link's `#heading` cut off at one; `home.rs` draws a
+/// - `board.rs`: `markdown_text`, a card's Markdown styled by hand; `home.rs` draws a
 ///   backlink's context with it.
 /// - `ext/nvim.rs`: the Vim script's pattern for the link under the cursor.
 ///
-/// The same characters, not a note being read: a key (`'['` in `board.rs`, `"#"` in
-/// `commands.rs`), a colour (`'#'` in `board.rs` and `scene_view.rs`), an escape sequence
-/// (`embed.rs`), a comment in a drive script (`drive.rs`), a `#tag` in the graph's filter
-/// (`groups.rs`), a tag as the user typed it (`home.rs`), and a heading's or a tag's marker
-/// written out (`main.rs`, `reader.rs`, `scene_view.rs`).
+/// What it doesn't see: a tag read by its `#`; a scan by character (`'['`, a byte) or by a
+/// longer string that holds the brackets; and the parts of a link read without its brackets,
+/// which today are `reader.rs`'s `embed_label` (`split('|')` on an embed's target) and, in
+/// `board.rs`, what `markdown_text` does past the brackets, on the list only by its name.
 #[test]
-fn links_and_tags_are_still_read_by_pattern_here() {
+fn links_are_still_read_by_pattern_here() {
     let patterns = [
         "regex::",
         "Regex::new(",
         r"\[\[",
         r"\]\(",
         r#""[[""#,
+        r#""]]""#,
         r#""](""#,
-        "'['",
-        "'#'",
-        r##""#""##,
         "links_as_text",
         "markdown_text",
     ];
@@ -512,29 +640,26 @@ fn links_and_tags_are_still_read_by_pattern_here() {
         "agenda.rs: regex:: ×2",
         r#"board.rs: "[[" ×1"#,
         r#"board.rs: "](" ×1"#,
-        "board.rs: '#' ×5",
-        "board.rs: '[' ×2",
+        r#"board.rs: "]]" ×1"#,
         "board.rs: markdown_text ×3",
-        r##"commands.rs: "#" ×1"##,
-        "drive.rs: '#' ×1",
-        "embed.rs: '[' ×1",
         r"ext/nvim.rs: \[\[ ×1",
-        "groups.rs: '#' ×2",
-        "home.rs: '#' ×3",
         "home.rs: links_as_text ×2",
         "home.rs: markdown_text ×1",
-        r##"main.rs: "#" ×1"##,
-        r##"reader.rs: "#" ×1"##,
-        "reader.rs: '#' ×1",
-        r##"scene_view.rs: "#" ×1"##,
-        "scene_view.rs: '#' ×1",
     ];
     let found = tally(hits(&patterns));
-    only_listed("links and tags read by a pattern", &found, &left);
+    only_listed("links read by a pattern", &found, &left);
 }
 
 /// The extensions the app builds in, the ones `ext.rs`'s `Registry::load` names.
 const BUILT_IN: [&str; 4] = ["agenda.rs", "ext/nvim.rs", "graph_ext.rs", "type_table.rs"];
+
+/// The door, as a built-in extension names it: `ext` is the host (`pub use
+/// cold_lava_host::*`) and `gateway` the messages; `items`, `types` and `links` are the
+/// engine's types the gateway's answers hold (`Item`, a type's `Definition`, `LinkGraph`);
+/// `list` and `table` are where the terminal names the views' data, re-exported from
+/// `cold_lava_views`. It allows by module: `list.rs` and `table.rs` also hold how the
+/// terminal draws them, which a built-in could name without this seeing it.
+const DOOR: [&str; 7] = ["ext", "gateway", "items", "links", "list", "table", "types"];
 
 /// One file's code, by its path under `src/`.
 fn file<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
@@ -542,34 +667,32 @@ fn file<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
     &found.unwrap_or_else(|| panic!("no {path} under src/")).1
 }
 
-/// What `code` uses beyond the gateway: every module of the app it names (`crate::…`, or
-/// `super::…`, a glob of either) other than `ext`, the host, and `gateway`, the messages; a
-/// crate of the project named directly; a terminal crate. Each once.
-fn beyond_the_gateway(code: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    for root in ["crate::", "super::"] {
-        let through =
-            |module: &String| root == "crate::" && ["ext", "gateway"].contains(&module.as_str());
-        let modules = named_in(code, root).into_iter();
-        let modules = modules.filter(|module| !through(module));
-        found.extend(modules.map(|module| format!("{root}{module}")));
-        if code.contains(&format!("{root}*")) {
-            found.push(format!("{root}*"));
-        }
+/// What the code of the file at `path` uses beyond the door, each once: every module it
+/// names that isn't one of `DOOR`, from the app (`crate::…`; `super::…` too in a file at the
+/// top of `src/`, where it is the same) or from the engine by its crate's name, a glob of
+/// either, another crate of the project, a terminal crate. `cold_lava_views` and
+/// `cold_lava_host` are the door under their own names. In a file inside a module
+/// (`ext/nvim.rs`) `super::` is that module, here `ext`, and isn't read.
+fn beyond_the_gateway(path: &str, code: &str) -> Vec<String> {
+    let mut roots = vec!["crate::", "cold_lava_engine::"];
+    if !path.contains('/') {
+        roots.push("super::");
     }
-    for other in [
-        "cold_lava_engine",
-        "cold_lava_host",
-        "cold_lava_views",
+    let mut found = Vec::new();
+    for root in roots {
+        let modules = named_in(code, root).into_iter();
+        let modules = modules.filter(|module| !DOOR.contains(&module.as_str()));
+        found.extend(modules.map(|module| format!("{root}{module}")));
+        found.extend(globbed(code, root.trim_end_matches("::")));
+    }
+    let others = [
         "cold_lava_editor",
         "cold_lava_canvas",
         "ratatui",
         "crossterm",
-    ] {
-        if code.contains(other) {
-            found.push(other.to_string());
-        }
-    }
+    ];
+    let others = others.into_iter().filter(|other| code.contains(other));
+    found.extend(others.map(String::from));
     found.sort();
     found.dedup();
     found
@@ -577,20 +700,19 @@ fn beyond_the_gateway(code: &str) -> Vec<String> {
 
 /// A built-in extension is meant to reach a workspace as an installed one does, through the
 /// gateway with `Host`, so it could move to the host and every frontend have it. What each
-/// uses beyond that today, by module (`crate::items` in `main.rs` is the engine's `items`):
+/// uses beyond the door (`DOOR`) today, by module:
 ///
-/// - `agenda.rs`, `type_table.rs`: `items` and `types`, the engine's types that the
-///   gateway's answers hold; `list` and `table`, the terminal's names for the views' data;
-///   `looks`, how a value is drawn; `tasks`, for today's date; `type_table`, whose `Feed` the
-///   agenda follows items with.
-/// - `graph_ext.rs`: `links`, the engine's types in `links/query`'s answer; `graph`, `groups`
-///   and `scene_view`, the graph's layout, its colour groups and the terminal's scene, which
-///   bring ratatui with them; `commands`, the graph's command table.
+/// - `agenda.rs`: `looks`, how a value is drawn; `tasks`, for today's date; `type_table`,
+///   whose `Feed` it follows items with.
+/// - `graph_ext.rs`: `graph`, `groups` and `scene_view`, the graph's layout, its colour
+///   groups and the terminal's scene, which bring ratatui with them; `commands`, the graph's
+///   command table.
 /// - `ext/nvim.rs`: `core`, for `Jump`. Neovim runs in a terminal pane, so it stays here.
 ///
 /// It reads the names, not what is done with them: a module listed here can be used for
 /// more without this failing, and a path that names the crate root another way
-/// (`use crate as app`) is not seen.
+/// (`use crate as app`) is not seen. This is not #226's test, which is about the engine's
+/// feature modules reaching the core's internals and isn't written yet.
 #[test]
 fn the_built_in_extensions_use_this_beyond_the_gateway() {
     let all = sources();
@@ -602,31 +724,24 @@ fn the_built_in_extensions_use_this_beyond_the_gateway() {
         let module = path.trim_end_matches(".rs").rsplit('/').next().unwrap();
         let named = ext.contains(&format!("{module}::"));
         assert!(named, "Registry::load names {module}");
-        let uses = beyond_the_gateway(file(&all, path)).into_iter();
+        let uses = beyond_the_gateway(path, file(&all, path)).into_iter();
         found.extend(uses.map(|what| format!("{path}: {what}")));
     }
     let left = [
-        "agenda.rs: crate::items",
-        "agenda.rs: crate::list",
         "agenda.rs: crate::looks",
         "agenda.rs: crate::tasks",
         "agenda.rs: crate::type_table",
-        "agenda.rs: crate::types",
         "ext/nvim.rs: crate::core",
         "graph_ext.rs: crate::commands",
         "graph_ext.rs: crate::graph",
         "graph_ext.rs: crate::groups",
-        "graph_ext.rs: crate::links",
         "graph_ext.rs: crate::scene_view",
-        "type_table.rs: crate::items",
-        "type_table.rs: crate::list",
-        "type_table.rs: crate::table",
-        "type_table.rs: crate::types",
     ];
     only_listed("the built-in extensions beyond the gateway", &found, &left);
 }
 
-/// A group inside a `use` group doesn't end it: the names after it are read too.
+/// A group inside a `use` group doesn't end it: the names after it are read too. The door's
+/// own modules are not beyond it, under the app's name or their crate's.
 #[test]
 fn the_scan_reads_a_nested_group_to_its_end() {
     let nested = "use crate::{agenda, ext::{self, Host}, items::Item, looks};\n";
@@ -634,23 +749,38 @@ fn the_scan_reads_a_nested_group_to_its_end() {
         named_in(nested, "crate::"),
         ["agenda", "ext", "items", "looks"]
     );
-    let beyond = ["crate::agenda", "crate::items", "crate::looks"];
-    assert_eq!(beyond_the_gateway(nested), beyond);
-    let around = "use super::tasks;\nuse crate::*;\nuse ratatui::text::Line;\n";
-    let beyond = ["crate::*", "ratatui", "super::tasks"];
-    assert_eq!(beyond_the_gateway(around), beyond);
+    let beyond = ["crate::agenda", "crate::looks"];
+    assert_eq!(beyond_the_gateway("agenda.rs", nested), beyond);
+    let around = "use super::tasks;\nuse crate::*;\nuse ratatui::text::Line;\n\
+                  use cold_lava_views::list::List;\nuse cold_lava_engine::{items, write};\n";
+    let beyond = [
+        "cold_lava_engine::write",
+        "crate::*",
+        "ratatui",
+        "super::tasks",
+    ];
+    assert_eq!(beyond_the_gateway("agenda.rs", around), beyond);
+    let inside = ["cold_lava_engine::write", "crate::*", "ratatui"];
+    assert_eq!(beyond_the_gateway("ext/nvim.rs", around), inside);
     let open = "use crate::trash::{delete, restore";
     assert_eq!(named_in(open, "trash::"), Vec::<String>::new());
 }
 
-/// An item edit is seen imported or by its path, a reader of `tasks` is not one, and a
-/// tally says how often.
+/// An item edit is seen imported or by its path, in an owner or the frontmatter too; a
+/// reader is not one; and a tally sorts and says how often.
 #[test]
 fn the_scan_sees_an_item_edit_and_counts() {
     let sample = "use crate::tasks::{toggle, today};\nfn f() {\n    edit::plan(a);\n    \
-                  tasks::agenda(w);\n    toggle(p);\n}\n";
-    assert_eq!(item_writes(sample), ["edit::plan", "tasks::toggle"]);
-    let twice = ["a: x", "a: x", "b: y"].map(String::from).to_vec();
+                  tasks::agenda(w);\n    toggle(p);\n    owner::markdown::edit(x);\n    \
+                  owner::built_in(r);\n    frontmatter::edit_tag(t);\n}\n";
+    let edits = [
+        "edit::plan",
+        "tasks::toggle",
+        "frontmatter::edit_tag",
+        "owner::markdown::edit",
+    ];
+    assert_eq!(item_edits(sample), edits);
+    let twice = ["b: y", "a: x", "a: x"].map(String::from).to_vec();
     assert_eq!(tally(twice), ["a: x ×2", "b: y ×1"]);
 }
 
@@ -666,15 +796,47 @@ fn an_entry_that_is_gone_fails_its_list() {
     only_listed("sample", &["a: x ×1".to_string()], &["a: x ×1", "b: y ×1"]);
 }
 
-/// The ways around the lists of #270 are refused as the file-changing modules' are.
+/// Every module a list is about is guarded, the newer lists' as the file-changing ones'.
 #[test]
-fn the_scan_refuses_the_ways_around_the_index_the_edits_and_the_operations() {
-    let alias = "use crate::{index as ix, tasks as t};\n";
-    assert_eq!(sneaked(alias), ["tasks as", "index as"]);
-    let glob = "use crate::edit::*;\nfn f() {\n    set_field(a);\n}\n";
-    assert_eq!(sneaked(glob), ["edit::*"]);
+fn every_lists_module_is_guarded() {
+    let modules = [
+        "trash",
+        "write",
+        "files",
+        "merge",
+        "rename",
+        "recipe",
+        "bookmarks",
+        "daily",
+        "workspace",
+        "edit",
+        "tasks",
+        "frontmatter",
+        "owner",
+        "owner::markdown",
+    ];
+    assert_eq!(guarded(), modules);
+}
+
+/// The ways around the lists of #270 and around the operations are refused as the
+/// file-changing modules' are, and a type under another name is not one.
+#[test]
+fn the_scan_refuses_the_ways_around_the_operations_the_edits_and_the_scan() {
+    let alias = "use crate::rename as r;\nfn f() {\n    r::apply(p);\n}\n";
+    assert_eq!(sneaked(alias), ["rename as"]);
+    let lines = "use crate::{\n    frontmatter,\n    tasks as t,\n};\n";
+    assert_eq!(sneaked(lines), ["tasks as"]);
+    let glob = "use crate::recipe::*;\nfn f() {\n    apply(p);\n}\n";
+    assert_eq!(sneaked(glob), ["recipe::*"]);
+    let edit = "use crate::edit::{set_field as set, SetField};\n";
+    assert_eq!(sneaked(edit), ["edit::{… as …}"]);
+    let deep = "use crate::{owner::{self, markdown::{self as md}}, workspace::{Note, scan}};\n";
+    assert_eq!(sneaked(deep), ["owner::{… as …}", "use workspace::scan"]);
+    let path = "use crate::owner::markdown::{self as md};\n";
+    assert_eq!(sneaked(path), ["owner::markdown::{… as …}"]);
     let bare = "use crate::merge::{self, undo};\nfn f() {\n    undo(m);\n}\n";
     assert_eq!(sneaked(bare), ["use merge::undo"]);
-    let fine = "use crate::merge::{self, Merged};\nuse crate::{index, tasks};\n";
+    let fine = "use crate::bookmarks::{self, Entry as Bookmark, Target};\n\
+                use crate::merge::{self, Merged};\nuse crate::{rename, tasks, workspace};\n";
     assert_eq!(sneaked(fine), Vec::<String>::new());
 }

@@ -440,10 +440,11 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   `write::create_dir`, and doesn't rescan afterwards (`after_core_change`): the core read
   what moved. `tests/one_door.rs` reads every file under `src/` and lists the engine
   writes, the whole-workspace operations and the `std::fs` changes the app still makes
-  itself (#193), and what else still goes around the door (#270): reads of `core.index`, item
-  edits around `Core::edit_item`, links and tags read by a pattern, and what the built-in
-  extensions use beyond the gateway. The lists only shrink: a new use fails, and so does an
-  entry that is gone and still listed.
+  itself (#193), and what else still goes around the door (#270): reads of `core.index` (the
+  host's too), a workspace scanned or indexed beside the core, item and tag edits around
+  `Core::edit_item`, links read by a pattern, and what the built-in extensions use beyond
+  the gateway. The lists only shrink: a new use fails, and so does an entry that is gone
+  and still listed.
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
   plans, applies and undoes through `recipe.rs`, asking owners as the merge dialog does.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a
