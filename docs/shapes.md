@@ -748,6 +748,9 @@ engine/frontend split again: the model is general, each frontend draws it as wel
 
 ## Order of work
 
+*This list records the order shapes were built in. It is history: the open work, in order,
+is roadmap issue #100 (#138 for the document view, #227 for one renderer).*
+
 1. This design, and the Obsidian test for unknown canvas fields.
 2. The canvas engine crate: geometry, regions, fitting, rasterizing, hit testing, all pure and
    tested without a terminal. *(as built: `crates/canvas`, #133; snapshots of the Venn with its

@@ -515,7 +515,9 @@ What was decided:
   types, links and renames into the editor you already use, and cold-lava's own editor later
   builds on the same pieces.
 
-The order, engine-facing work first and the UX last:
+The order, engine-facing work first and the UX last. Since 2026-11-12, a refactor goes before
+the feature that lands on its code (`docs/foundations.md`, "How the code is built"); roadmap
+issue #100 is the one list of open work and says which step each feature waits for.
 
 1. Finish the half-done migrations, so there is one path for each thing: one Markdown reading
    (the tree), one path for owned files, the whiteboard's screens in the menu's loop.
