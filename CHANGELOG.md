@@ -161,15 +161,20 @@ change commands, keys and file formats; patch versions only fix things.
 - An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
   with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the
-  whiteboard ran it. An answer's steps now get the same check as a loaded shape's. One that
-  fails it is refused whole, none of its steps run, and the whiteboard says why with the
-  extension's name: `tally: it answered shape/gesture with steps that can't run: set-field
-  takes exactly one of value, add and remove`; `cold-lava shapes --do` fails with the same
-  reason. This also refuses answers that ran before by accident: an `edit` with none of
+  whiteboard ran it. An answer's steps now pass the same rules as a loaded shape's, a
+  `rebind` to a shape that isn't loaded among them. An answer that breaks one is refused
+  whole before anything is written (a `create` in front of a bad step used to make its note
+  first, and a `rebind` to a missing shape was only refused after the steps before it had
+  run), none of its steps run, and the whiteboard says why with the extension's name:
+  `tally: it answered shape/gesture with steps that can't run: set-field takes exactly one
+  of value, add and remove`; `cold-lava shapes --do` fails with the same reason. This also refuses answers that ran before by accident: an `edit` with none of
   `set-field`, `toggle` and `recipe` used to tick the item, one with a recipe and something
   else (an item, another kind of edit) used to run the recipe, `options` without a recipe
-  were ignored, and a `set-field` with two of `value`, `add` and `remove` used to take the
-  first. A shape's own steps load and run as before.
+  were ignored, an `edit` with a `set-field` and a `toggle` together used to set the field
+  and ignore the toggle, and a `set-field` with two of `value`, `add` and `remove` used to
+  take the first. An answer that doesn't read at all now names `Reply` where its message
+  named `Answered` (`its answer doesn't read: data did not match any variant of untagged
+  enum Reply`). A shape's own steps load and run as before.
 
 ## [0.6.0] - 2026-11-11
 

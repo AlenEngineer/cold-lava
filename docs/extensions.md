@@ -2931,11 +2931,12 @@ with two requests (host → extension; `crate::act::Ask` in the engine pins thei
   bound and again when an input changes.
 - **`shape/gesture`** is answered with `{"do": [ … ]}`: steps in the language of `on` (`edit`,
   `create`, `rebind`), run through the extension's `Host`, so its permissions hold and the
-  edits are its own (`ItemEdited`'s `by`). `{"do": []}` does nothing. The steps get the check
-  a shape's own `do` gets when it is loaded (`shapes::check_steps`: an edit is exactly one of
-  `set-field`, `toggle` and a recipe, a `set-field` has exactly one of `value`, `add` and
-  `remove`, and so on). An answer with a step that fails it is refused whole, with what is
-  wrong: none of its steps run.
+  edits are its own (`ItemEdited`'s `by`). `{"do": []}` does nothing. The steps pass the
+  rules a shape's own `do` passes when it is loaded (`shapes::Steps::checked`: an edit is
+  exactly one of `set-field`, `toggle` and a recipe, a `set-field` has exactly one of
+  `value`, `add` and `remove`, a `rebind` names a loaded shape, and so on). An answer with a
+  step that breaks one is refused whole, with what is wrong: none of its steps run, so
+  nothing is written before the bad step is found.
 - **Permissions.** The asks carry the inputs' data, so an extension without `items.read` isn't
   asked: the answer is that refusal, at once. Its steps need what they would need from it
   directly: `items.edit` for `edit`, `files.write` for `create` and a recipe.
@@ -2943,10 +2944,12 @@ with two requests (host → extension; `crate::act::Ask` in the engine pins thei
   one not answered in time is an error saying so) and wait in the core
   (`Core::take_shape_answers`) for the frontend's bindings: a region's go to
   `Binding::answered`, a gesture's steps to `Binding::run`. An answer from another extension
-  isn't taken. What the extension wrote is an `act::Reply`, and the core keeps only what
-  `Reply::read` makes of it: an answer in the wrong form, or with steps that fail the check,
-  is kept as the reason, which the frontend says with the extension's name. `Binding::run`
-  takes `shapes::Steps`, which only the check makes, so no step runs unchecked.
+  isn't taken. What the extension wrote is an `act::Reply`, and it waits unread. The
+  frontend takes the answers with its loaded shapes (`take_shape_answers(&shapes)`), and
+  gets only what `Reply::read` makes of each: an answer in the wrong form, or with steps
+  that break a rule, is the reason instead, which the frontend says with the extension's
+  name. `Binding::run` takes `shapes::Steps`, which only `Steps::checked` makes, so no step
+  runs unchecked.
 
 *(Exists: `Extension::shape`, `Registry::ask_shape`, `Process` over JSON-RPC, and `cold-lava
 shapes --render ID --bind … [--do GESTURE]` asking an installed extension, and the whiteboard,
