@@ -21,6 +21,14 @@ and where it and another document disagree about an idea, it is right. The order
 the first section of roadmap issue #100: the engine-facing work first (one
 path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
 
+**How code is built** is the last section of `docs/foundations.md` ("Tools, called by a
+simple loop, all the way down"): every unit is a caller (it only calls its tools in order) or
+a leaf (it needs nothing but a dependency the project doesn't control); a tool owns its
+state; complexity for speed is a stated decision, written where it is. Write new code that
+way. When you meet a unit that is neither, split it; don't add to it. Much of the existing
+code doesn't meet this yet (`home.rs`, `board.rs`, `owner/given.rs`; #264, #265): don't copy
+their shape, and don't refactor them inside a feature PR.
+
 cold-lava's word for a folder of notes is **workspace**, in the UI, the CLI, the docs and the
 code. "Vault" is only for Obsidian's own concept (an Obsidian vault, Obsidian's vault list,
 `obsidian://open?vault=`).
@@ -497,6 +505,11 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,
   patch = fixes only.
 - Commit messages: a short summary line, then what changed and why.
+- **Two reviews before a merge, by two different agents.** One checks behaviour (CI's
+  binaries against main's, trying to break the claim). The other checks design: the
+  `design-reviewer` agent (`.claude/agents/design-reviewer.md`), which reads the diff against
+  `docs/foundations.md` and runs nothing. Neither is the PR's author. A design finding marked
+  "must fix" blocks the merge as a behaviour finding does.
 
 ## Testing the UI
 
