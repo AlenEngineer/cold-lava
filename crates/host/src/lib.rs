@@ -28,7 +28,7 @@ pub mod transport;
 
 pub use cold_lava_views::view;
 
-use cold_lava_engine::act::{self, Answered, Ask};
+use cold_lava_engine::act::{self, Ask, Reply};
 use cold_lava_engine::core::{Core, Jump};
 use cold_lava_engine::files::{
     self, Create, Created, Deleted, Folder, Listed, Restore, Restored, Stat, Text, Written,
@@ -616,7 +616,7 @@ impl Host<'_> {
 
     /// The answer to `shape/region` or `shape/gesture` about a shape it ships: the core keeps
     /// it for the frontend's bindings (`Core::take_shape_answers`).
-    pub fn shape_answered(&mut self, ask: &Ask, answer: Result<Answered, String>) {
+    pub fn shape_answered(&mut self, ask: &Ask, answer: Result<Reply, String>) {
         let name = self.name;
         if let Some(core) = self.core.as_deref_mut() {
             core.shape_answered(name, ask, answer);
@@ -1709,10 +1709,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The steps of an answer get the checks a loaded shape's steps get (#268).
+    /// The steps of an answer get the checks a loaded shape's steps get (#268): the frontend
+    /// is handed the reason, never steps to run.
     #[test]
     fn steps_an_extension_answers_that_cant_run_are_refused() {
-        use crate::act::{Acted, Answered};
+        use crate::act::Acted;
         use crate::bind::{Binding, Source};
         let (dir, shapes) = tally_workspace("ext-shape-unchecked");
         let mut core = Core::open(&dir).unwrap();
@@ -1731,21 +1732,14 @@ mod tests {
             panic!("its extension decides: {acted:?}");
         };
         r.ask_shape(ExtId(0), Some(&mut core), ask);
-        let refused = match core.take_shape_answers().remove(0).answer {
-            Ok(Answered::Gesture { steps }) => {
-                let mut ran = None;
-                r.call(ExtId(0), Some(&mut core), |_, host| {
-                    ran = Some(b.run(host, &click, &steps))
-                });
-                ran.unwrap().unwrap_err().to_string()
-            }
-            Ok(answer) => panic!("{answer:?}"),
-            Err(why) => why,
+        let answers = core.take_shape_answers();
+        let [answer] = &answers[..] else {
+            panic!("{answers:?}");
         };
-        assert!(
-            refused.contains("set-field takes exactly one of value, add and remove"),
-            "{refused}"
-        );
+        assert_eq!(answer.by, "tally");
+        let refused = "it answered shape/gesture with steps that can't run: set-field takes \
+                       exactly one of value, add and remove";
+        assert_eq!(answer.answer, Err(refused.to_string()));
         for name in ["Krakatoa", "Vesuvius"] {
             let text = std::fs::read_to_string(dir.join(format!("{name}.md"))).unwrap();
             assert!(!text.contains("visited"), "nothing written: {text}");

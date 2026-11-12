@@ -689,7 +689,7 @@ impl Board {
         &mut self,
         id: &str,
         gesture: &Gesture,
-        steps: &[crate::shapes::Step],
+        steps: &crate::shapes::Steps,
         core: &mut Core,
         registry: &mut Registry,
     ) {
@@ -3802,7 +3802,8 @@ mod tests {
     }
 
     /// An extension that ships the shape `chatty.box` and has things to say when asked what
-    /// its region shows. A `pushy` one also asks for a note and a command, unasked.
+    /// its region shows. A `pushy` one also asks for a note and a command, unasked. A click
+    /// on its region it answers with a step that can't run.
     struct Chatty {
         pushy: bool,
     }
@@ -3822,7 +3823,16 @@ mod tests {
                 host.open_note("Krakatoa.md".into(), None, None);
                 host.run_command("search.open", Value::Null);
             }
-            host.shape_answered(&ask, Err("nothing to show".into()));
+            let answer: Result<act::Reply, String> = match &ask {
+                act::Ask::Region { .. } => Err("nothing to show".into()),
+                act::Ask::Gesture { .. } => Ok(act::Reply::Gesture {
+                    steps: serde_json::from_value(json!([
+                        {"edit": {"item": "clicked", "set-field": {"field": "visited"}}}
+                    ]))
+                    .unwrap(),
+                }),
+            };
+            host.shape_answered(&ask, answer);
         }
     }
 
@@ -3840,6 +3850,9 @@ mod tests {
             inputs = ["a"]
             parts = [{ rect = { id = "box", from = [0, 0], to = [1, 1] } }]
             regions = [{ id = "count", area = "box", extension = true }]
+            [[on]]
+            click = "count"
+            extension = true
             "#,
         )
         .unwrap();
@@ -3875,6 +3888,29 @@ mod tests {
         assert_eq!(b.take_asked(), [(chatty, said), (chatty, status)]);
         b.tick(&mut core, &mut registry);
         assert!(b.take_asked().is_empty(), "asked once, said once");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Such steps took the app down (#268). They are the extension's mistake, and said so.
+    #[test]
+    fn steps_an_extension_answers_that_cant_run_are_a_notice_naming_it() {
+        let (dir, mut core, mut registry, _, mut b) = chatty_board("board-bad-steps", false);
+        b.tick(&mut core, &mut registry);
+        let click = Gesture::Click {
+            on: "count".into(),
+            item: None,
+        };
+        b.gesture("n", click, &mut core, &mut registry);
+        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None, "it is asked");
+        b.tick(&mut core, &mut registry);
+        assert_eq!(
+            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            Some(
+                "chatty: it answered shape/gesture with steps that can't run: set-field takes \
+                 exactly one of value, add and remove"
+            )
+        );
+        assert!(b.gesturing.is_none(), "the gesture is over");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -812,7 +812,12 @@ mod tests {
                         }]
                     })
                 ),
-                ("shape/gesture", Ok(Answered::Gesture { steps: Vec::new() })),
+                (
+                    "shape/gesture",
+                    Ok(Answered::Gesture {
+                        steps: Default::default()
+                    })
+                ),
                 (
                     "shape/region",
                     Err("it didn't answer shape/region in 0.1 s".into())

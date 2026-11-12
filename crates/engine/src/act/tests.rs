@@ -430,9 +430,9 @@ fn an_extensions_shape_asks_it_for_a_region_and_a_gesture() {
         Vec::<String>::new(),
         "until it answers"
     );
-    let answer: Answered =
+    let reply: Reply =
         serde_json::from_value(json!({"items": [{"label": "2 volcanoes"}]})).unwrap();
-    let Answered::Region { items } = answer else {
+    let Ok(Answered::Region { items }) = reply.read(&asks[0]) else {
         panic!()
     };
     b.answered("count", items);
@@ -447,11 +447,11 @@ fn an_extensions_shape_asks_it_for_a_region_and_a_gesture() {
         panic!("its extension decides");
     };
     assert_eq!(ask.placed(), 7);
-    let answer: Answered = serde_json::from_value(json!({"do": [
+    let reply: Reply = serde_json::from_value(json!({"do": [
         {"edit": {"item": "clicked", "set-field": {"field": "visited", "value": "${clicked.name}"}}}
     ]}))
     .unwrap();
-    let Answered::Gesture { steps } = answer else {
+    let Ok(Answered::Gesture { steps }) = reply.read(&ask) else {
         panic!()
     };
     let e = b.run(&mut Forbidden, &click, &steps).unwrap_err();
@@ -553,7 +553,7 @@ fn the_messages_on_the_wire() {
         }})
     );
     assert_eq!(
-        serde_json::to_value(Answered::Region {
+        serde_json::to_value(Reply::Region {
             items: vec![Entry {
                 id: "i1".into(),
                 label: "Krakatoa".into()

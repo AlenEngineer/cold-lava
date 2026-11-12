@@ -2,7 +2,7 @@
 //! re-reads just the notes that change, and tells subscribers what changed, whatever caused it
 //! (cold-lava, Obsidian, Neovim, git…).
 
-use crate::act::{Answered, Ask, ShapeAnswer};
+use crate::act::{Ask, Reply, ShapeAnswer};
 use crate::bookmarks::Bookmarks;
 use crate::files;
 use crate::gateway::{
@@ -943,17 +943,13 @@ impl Core {
     }
 
     /// The answer of the extension named `by` to `ask` (`shape/region`, `shape/gesture`). Only
-    /// the extension that ships the shape may answer, and only in the form the ask has.
-    pub fn shape_answered(&mut self, by: &str, ask: &Ask, answer: Result<Answered, String>) {
+    /// the extension that ships the shape may answer, and what it wrote is kept only as
+    /// `Reply::read` takes it: in the form the ask has, with steps that passed the check.
+    pub fn shape_answered(&mut self, by: &str, ask: &Ask, answer: Result<Reply, String>) {
         if !ask.shape().starts_with(&format!("{by}.")) {
             return;
         }
-        let answer = answer.and_then(|a| match (ask, a) {
-            (Ask::Region { .. }, a @ Answered::Region { .. })
-            | (Ask::Gesture { .. }, a @ Answered::Gesture { .. }) => Ok(a),
-            (Ask::Region { .. }, _) => Err("it answered shape/region with steps".into()),
-            (Ask::Gesture { .. }, _) => Err("it answered shape/gesture with items".into()),
-        });
+        let answer = answer.and_then(|reply| reply.read(ask));
         self.shape_answers.push(ShapeAnswer {
             by: by.to_string(),
             ask: ask.clone(),
