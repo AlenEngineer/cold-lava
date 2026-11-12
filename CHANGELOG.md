@@ -30,8 +30,12 @@ change commands, keys and file formats; patch versions only fix things.
   row's cell), and renaming a note repoints the links a piece says (`{place, link, to}`).
   The agenda, the table and `items/edit` work on these items as on any other. Before
   anything is written the owner reads its new text back, and now every piece must say what
-  was asked, so an owner that quietly changes another piece is refused. Ticking a recurring
-  task in a piece is refused for now, and a tick adds no done date there.
+  was asked and stand where it stood, so an owner that quietly changes another piece,
+  ticks the wrong one of two identical chores or moves one is refused. New words are
+  refused when another field of the item is read from the piece's words (a type's `marker`
+  or `pattern`), since they would drop its value. With custom Tasks statuses a tick goes on
+  to the next status that is another of the four words. Ticking a recurring task in a piece
+  is refused for now, and a tick adds no done date there.
   `docs/extensions.md`, "Changes in the model's terms, as built".
 - A type's `on` takes the roles of the alphabet (#241, step 1 of the neutral model):
   `document`, `section`, `text`, `item`, `row`, `aside` and `verbatim`, and `inline` as

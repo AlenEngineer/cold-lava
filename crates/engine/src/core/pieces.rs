@@ -138,9 +138,19 @@ pub(super) fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
 
 /// A workspace with `Home.chores` in it, read by its owner.
 pub(super) fn open(name: &str) -> Core {
+    open_with(name, None)
+}
+
+/// `open`, in a workspace with these settings of the Obsidian Tasks plugin.
+fn open_with(name: &str, tasks: Option<Json>) -> Core {
     let dir = std::env::temp_dir().join(format!("cold-lava-pieces-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    if let Some(tasks) = tasks {
+        let plugin = dir.join(".obsidian/plugins/obsidian-tasks-plugin");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("data.json"), tasks.to_string()).unwrap();
+    }
     std::fs::write(dir.join("Home.chores"), HOME).unwrap();
     let mut core = Core::open(&dir).unwrap();
     let kind = OwnedKind {
@@ -570,4 +580,58 @@ fn a_typed_task_an_owner_gave_is_ticked_as_a_field() {
         assert_eq!(now(&core), file(to));
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A piece's checkbox says one of four words, and a workspace's statuses may be more. A tick
+/// follows them to the first status that is another word, so it always does something or says
+/// why not: it never answers "unchanged".
+#[test]
+fn a_tick_follows_custom_statuses_to_the_next_word() {
+    let status = |symbol: &str, kind: &str, next: &str| json!({"symbol": symbol, "name": kind, "type": kind, "nextStatusSymbol": next});
+    // Open goes to `!`, which is open too, then to done.
+    let bang = json!({"statusSettings": {
+        "coreStatuses": [status(" ", "TODO", "!"), status("x", "DONE", " ")],
+        "customStatuses": [status("!", "TODO", "x")],
+    }});
+    let mut core = open_with("bang", Some(bang));
+    let plumber = |core: &Core| tasks(core).remove(0);
+    let (asked, answer) = through_the_owner(&tick(&plumber(&core)), &mut core);
+    assert_eq!(
+        asked,
+        json!([{"place": "plumber", "attribute": "checkbox", "value": "done"}]),
+        "past the status that is the same word"
+    );
+    let ticked = answer.unwrap();
+    assert!(ticked.changed);
+    assert_eq!(field(&ticked.item, "status_type"), "done");
+    let (asked, answer) = through_the_owner(&tick(&plumber(&core)), &mut core);
+    assert_eq!(asked[0]["value"], "open");
+    assert!(answer.unwrap().changed);
+    assert_eq!(home(&core), HOME);
+    let _ = std::fs::remove_dir_all(core.root());
+
+    // Done goes to `-`, which this workspace says is no task: no word says that.
+    let dash = json!({"statusSettings": {
+        "coreStatuses": [status(" ", "TODO", "x"), status("x", "DONE", "-")],
+        "customStatuses": [status("-", "NON_TASK", " "), status("c", "CANCELLED", " ")],
+    }});
+    let mut core = open_with("dash", Some(dash));
+    let rent = tasks(&core).remove(1);
+    assert_eq!(field(&rent, "status"), "x");
+    let (asked, answer) = through_the_owner(&tick(&rent), &mut core);
+    let refused = answer.unwrap_err();
+    assert_eq!((asked, refused.reason), (json!([]), Reason::Refused));
+    assert!(
+        refused
+            .message
+            .contains("Tasks settings send the status 'x' on to '-'"),
+        "{refused}"
+    );
+    assert_eq!(home(&core), HOME);
+    // It can still be set, and the other way is as ever.
+    let (asked, _) = through_the_owner(&set(&rent, "status_type", json!("todo")), &mut core);
+    assert_eq!(asked[0]["value"], "open");
+    let (asked, _) = through_the_owner(&tick(&plumber(&core)), &mut core);
+    assert_eq!(asked[0]["value"], "done");
+    let _ = std::fs::remove_dir_all(core.root());
 }

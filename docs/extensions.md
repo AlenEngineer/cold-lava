@@ -1858,11 +1858,12 @@ that shape yet.
 
 | `items/edit` | On a piece | Change sent |
 | --- | --- | --- |
-| `toggle` | a task: its `status` goes to the next status symbol, as in a note | `checkbox` set to the word for that symbol's kind: `done`, `open`, `in-progress`, `cancelled` |
+| `toggle` | a task: its status goes on to the workspace's next status that is another of the four words ("A tick" below) | `checkbox` set to that word: `done`, `open`, `in-progress`, `cancelled` |
 | `set-field` on a field read from an attribute | the value is checked as the field's type and sent in the form items carry it (an ISO date, a number, an enum's name) | the attribute, by the name the type reads it under |
 | `set-field status` or `status_type` | a status symbol, a status type's name or one of the words | `checkbox`, as a word |
-| `set-field` on the words (`text`) | the new words replace the piece's text | the piece's runs (below) |
-| `set-field` on a field read from a cell | the value is checked as the field's type | that cell's runs |
+| `set-field` on the words (`text`) | the new words replace the piece's text; refused when another field of the item is read from those words (below) | the piece's runs (below) |
+| `set-field` on a field read from a cell | the value is checked as the field's type; refused like the words | that cell's runs |
+| `set-field` on a `link` field read from an attribute | the value is the target as written, with no Markdown read in it | the attribute, as that text |
 | `set-field` on `tags`, `links`, a field read by a `pattern`, from the file's name or from its sections | refused: they are derived | none |
 
 - **Where a field is written** is where its type reads it: the source that gave the value,
@@ -1875,22 +1876,53 @@ that shape yet.
   `#home` takes the label off. What is typed is characters: `#new`, `[[x]]` or `**x**` typed
   into the words is not a label, a link or a mark, since only runs can say one and
   `items/edit` takes no runs yet.
+- **New words never drop another field's value.** New words replace a piece's text whole.
+  When another field of the item has its value from those words, through a `marker`, a
+  `pattern`, a `capture`, a `flag` or `flags` (a type's own readings of text, such as
+  `due = { marker = "📅" }` over an owner's piece), the new words would take that value away
+  and the read-back couldn't tell, since the engine made the change itself. So `set-field`
+  on the words, or on a cell of a row, is refused there, naming the fields: "text is the
+  piece's words, and due, cost of this chore are read from those words". A note refuses to
+  set its words for the same reason. The built-in `task` reads only attributes, labels and
+  links, so its words are always settable.
+- **A tick moves between the words.** A piece's checkbox says one of four words, and a
+  workspace may have more statuses than that (the Tasks plugin's custom ones, each with a
+  next status). A tick follows the workspace's next statuses from the task's status to the
+  first that is another word, and sends that word. A next status of the same kind is passed
+  over: with open ` ` going to `!` (also open) and then to `x`, ticking an open piece sends
+  `done`. A next status that is none of the four kinds (a `NON_TASK` one) is refused, and
+  the message names the two statuses and the setting, since no word says it. A tick never
+  answers "unchanged". `set-field status` takes any symbol whose kind has a word.
 - **A tick is one change.** It sends `checkbox` and nothing else. The done date and the
   cancelled date a tick adds in a note are how Markdown's tasks are written (`tasks.rs`),
   and whether an owner's format has a place for them is its own business: it is not sent
   one. A recurring task (one with a `recurrence`) is refused, with the reason: ticking it
   would add its next occurrence, a new piece, and nothing adds a piece yet.
-- **The read-back compares pieces.** The engine makes the changes on what the owner gave
-  (`given::apply`), asks the owner to read its own new text, and compares, before anything
-  is written. Besides the items and the links, every piece must say what was asked, whether
-  or not it is an item: its role, its attributes, its text and its cells (`given::same`,
-  `piece_key`). An owner may write the answer its own way, and three things are not compared:
-  where an attribute is written (in `attributes` or as a field of the text), how plain text
-  is cut into runs, and whether a value is text or a number (`"6"` and `6`). Places and `in`
-  are not compared either, since a place can be part of what changed. So an owner that
-  ticks the task and quietly changes another piece, or doesn't make the change, or can't
-  hold it (a format where the new words read back as something else), is refused as
-  `read-back` and nothing is written.
+- **The read-back compares pieces, in order.** The engine makes the changes on what the
+  owner gave (`given::apply`), asks the owner to read its own new text, and compares, before
+  anything is written (`given::same`). Besides the items and the links, the answer's pieces
+  must be the expected ones, one by one in the order given. What is compared, for the piece
+  at each position:
+  - what it says: its role, its attributes, its text and its cells (`piece_key`);
+  - where it stands: its position among the answer's pieces (*follows*), and the position of
+    the piece it is `in` (*contains*), or that it is in none.
+
+  What is not compared:
+  - places. An owner's place can be part of what changed (a row named by its first cell),
+    so a new answer may name every piece anew;
+  - where an attribute is written, in `attributes` or as a field of the text;
+  - how plain text is cut into runs, and a marked run with no mark against a plain one;
+  - whether a value is text or a number (`"6"` and `6`);
+  - where pieces stand among the answer's Markdown pieces and typed items.
+
+  No change the engine sends moves a piece, so the order and `in` must come back as they
+  were. That is what catches a change made to another piece that says the same: both
+  answers hold the same pieces, and the ticked one is at the wrong position. So an owner
+  that ticks the wrong one of two identical chores, moves a piece into or out of another,
+  swaps two pieces, quietly changes a piece the edit wasn't for, doesn't make the change,
+  or can't hold it (a format where the new words read back as something else) is refused
+  as `read-back` and nothing is written. An owner whose format reorders on an edit (a file
+  kept sorted by date) is refused too: nothing can say "and it moved" yet.
 - **A typed item is ticked too.** Before, `toggle` on a typed item an owner gave was
   refused. Now it sets the task's `status`, and its `status_type` when it has one, to the
   next status symbol as `{place, field, value}`. For that a value of exactly one character

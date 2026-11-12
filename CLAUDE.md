@@ -220,7 +220,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   marked runs whose words are still there. A rename repoints a piece's links with
   `Change::Link`. Never make a Markdown line for a piece, and never read one back: the
   Markdown owner's `edit` is for Markdown pieces only. The read-back compares pieces too
-  (`given::same`, `piece_key`): role, attributes, text and cells, not places. A typed item
+  (`given::same`, `piece_key`), in the order given: what each says (role, attributes, text,
+  cells) and where it stands (its position, and the position of the piece it is `in`), not
+  its place. Order is what catches a change made to an identical twin: don't sort them.
+  New words are refused when another field of the item is read from the piece's words (a
+  `marker`, a `pattern`): they would drop its value. A piece's tick follows the workspace's
+  next statuses to the first that is another of the four words (`change::next_for_a_piece`)
+  and never answers "unchanged". A `link` field on a piece is the owner's value as written. A typed item
   an owner gave is ticked as `Change::Field` on `status`. The protocol has no change that
   adds, moves or removes a piece yet, and `items/edit` takes no runs.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)

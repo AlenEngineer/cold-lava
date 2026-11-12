@@ -679,8 +679,9 @@ pub fn reword(old: &[Run], new: &str) -> Vec<Run> {
 
 /// What a piece says, for comparing two answers: its role, its attributes wherever they are
 /// written (`attributes` or a field of its text) as text, and its text and cells with
-/// neighbouring plain runs joined. Not its place and not what it is in: a place can be part
-/// of what changed.
+/// neighbouring plain runs joined. Not its place, which can be part of what changed: `read`
+/// puts where it stands beside this (its position in the answer, and the position of the
+/// piece it is in).
 fn piece_key(p: &Piece) -> String {
     let mut attributes: std::collections::BTreeMap<&str, String> = Default::default();
     for (name, value) in &p.attributes {
@@ -738,10 +739,12 @@ fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run>
 }
 
 /// Whether what an owner gave reads as what was asked of it: the same items (their kinds and
-/// fields, wherever they are and whatever their ids), the same link targets and the same
-/// pieces (`piece_key`), so a piece the change wasn't for says what it said before. Places may
-/// differ, since an owner's place can be part of what changed (a CSV row's first cell). Else
-/// what differs, for a message.
+/// fields, wherever they are and whatever their ids), the same link targets, and the same
+/// pieces in the same order, each saying what was asked and inside the same piece. So a piece
+/// the change wasn't for says what it said and stands where it stood, and a change that
+/// lands on another piece that says the same is caught by where it is. Places may differ,
+/// since an owner's place can be part of what changed (a CSV row's first cell). Else what
+/// differs, for a message.
 pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
     let items = |r: &Read| -> Vec<String> {
         let mut v: Vec<String> = r.items.iter().map(data_key).collect();
@@ -789,22 +792,24 @@ pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
             short(missing)
         ));
     }
-    let pieces = |r: &Read| -> Vec<String> {
-        let mut v = r.pieces.clone();
-        v.sort();
-        v
-    };
-    let (want, got) = (pieces(asked), pieces(gave));
+    // Pieces are compared in the order given: *follows* is a relation, and no change to an
+    // attribute, a text or a link moves a piece.
+    let (want, got) = (&asked.pieces, &gave.pieces);
     if want != got {
-        let (missing, extra) = (only(&want, &got), only(&got, &want));
-        return Err(match (missing.is_empty(), extra.is_empty()) {
-            (false, false) => format!(
-                "the piece {} where {} was asked",
-                short(extra),
-                short(missing)
+        let differs = want.iter().zip(got).position(|(a, b)| a != b);
+        return Err(match differs {
+            Some(i) => format!(
+                "the piece {} of {} is {} where {} was asked",
+                i + 1,
+                got.len(),
+                short(vec![got[i].clone()]),
+                short(vec![want[i].clone()])
             ),
-            (false, true) => format!("the piece {} is missing", short(missing)),
-            _ => format!("the piece {} wasn't asked for", short(extra)),
+            None => format!(
+                "the pieces are {} where {} were asked",
+                got.len(),
+                want.len()
+            ),
         });
     }
     Ok(())
@@ -827,8 +832,9 @@ pub struct Read {
     /// By item id.
     pub places: HashMap<String, String>,
     pub links: Vec<(Ref, String)>,
-    /// What each piece says (`piece_key`), whether or not it is an item: the read-back check
-    /// compares them.
+    /// Every piece in the order given, whether or not it is an item: what it says
+    /// (`piece_key`) and the position of the piece it is in. The read-back check compares
+    /// them.
     pub pieces: Vec<String>,
     /// What didn't read, one line each: a type that isn't loaded, a field it doesn't have.
     pub problems: Vec<String>,
@@ -838,10 +844,18 @@ pub struct Read {
 pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     let mut out = Read::default();
     let mut before = Before::default();
+    // Where each piece stands among the answer's pieces, by its place.
+    let mut position: HashMap<&str, usize> = HashMap::new();
     for item in &given.items {
         match item {
             GivenItem::Piece(p) => {
-                out.pieces.push(piece_key(p));
+                let inside = match p.inside.as_deref().map(|place| position.get(place)) {
+                    None => "in nothing".to_string(),
+                    Some(Some(i)) => format!("in piece {}", i + 1),
+                    Some(None) => "in a place no piece is at".to_string(),
+                };
+                position.entry(&p.place).or_insert(out.pieces.len());
+                out.pieces.push(format!("{inside}: {}", piece_key(p)));
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
                     out.problems.push(format!("{}: {why}", short(&p.place)));
                 }
@@ -1427,8 +1441,139 @@ mod tests {
         let marked = json!({"place": "t2", "role": "item",
             "text": [{"text": "Another", "marks": ["strong"]}],
             "attributes": {"task": true, "checkbox": "open"}});
-        let why = answer(t1, marked, o).unwrap_err();
-        assert!(why.starts_with("the piece "), "a mark no item shows: {why}");
+        let why = answer(t1.clone(), marked, o.clone()).unwrap_err();
+        assert!(
+            why.starts_with("the piece 2 of 3 "),
+            "a mark no item shows: {why}"
+        );
+
+        // Where a piece stands is compared too: the same pieces in another order, one moved
+        // into another, and one that left the piece it was in are each caught.
+        let why = answer(t1.clone(), o.clone(), other.clone()).unwrap_err();
+        assert!(why.starts_with("the piece 2 of 3 "), "swapped: {why}");
+        let mut inside = other.clone();
+        inside["in"] = json!("moved");
+        let why = answer(t1.clone(), inside, o.clone()).unwrap_err();
+        assert!(
+            why.contains("in piece 1") && why.contains("in nothing"),
+            "{why}"
+        );
+        let gave = given(json!({"items": [t1, other]}));
+        let why = same(&asked, &read("Home.chores", &gave, &s)).unwrap_err();
+        assert!(why.starts_with("the pieces are 2 where 3 "), "{why}");
+    }
+
+    /// A change that lands on another piece that says the same is caught by where it is,
+    /// though both answers hold the same pieces: places need not be stable for that.
+    #[test]
+    fn the_read_back_catches_a_change_made_to_a_twin() {
+        let s = settings("");
+        let twin = |place: &str, word: &str, inside: Json| {
+            json!({"place": place, "role": "item", "in": inside, "text": ["Water plants"],
+                   "attributes": {"task": true, "checkbox": word}})
+        };
+        let section = json!({"place": "sec", "role": "section", "text": ["House"]});
+        let before = given(json!({"items": [
+            section, twin("a", "open", json!("sec")), twin("b", "open", json!("sec")),
+        ]}));
+        let tick: Vec<Change> = serde_json::from_value(json!([
+            {"place": "a", "attribute": "checkbox", "value": "done"},
+        ]))
+        .unwrap();
+        let asked = read("Home.chores", &apply(&before, &tick), &s);
+        let gives = |a: Json, b: Json| {
+            let gave = given(json!({"items": [section, a, b]}));
+            same(&asked, &read("Home.chores", &gave, &s))
+        };
+        let (sec, top) = (json!("sec"), Json::Null);
+        assert_eq!(
+            gives(
+                twin("a", "done", sec.clone()),
+                twin("b", "open", sec.clone())
+            ),
+            Ok(())
+        );
+        // New places are fine: a place can be part of what changed.
+        assert_eq!(
+            gives(
+                twin("a2", "done", sec.clone()),
+                twin("b2", "open", sec.clone())
+            ),
+            Ok(())
+        );
+        let wrong = gives(
+            twin("a", "open", sec.clone()),
+            twin("b", "done", sec.clone()),
+        );
+        assert!(wrong.unwrap_err().starts_with("the piece 2 of 3 "));
+        let out = gives(twin("a", "done", sec.clone()), twin("b", "open", top));
+        assert!(out.unwrap_err().starts_with("the piece 3 of 3 "));
+    }
+
+    /// New words replace a piece's text whole, so they are refused when another field has its
+    /// value from those words: the date after a marker and the number a pattern finds would be
+    /// dropped without a word. A piece that reads nothing from its words is reworded, and a
+    /// link-typed attribute is set as written.
+    #[test]
+    fn rewording_is_refused_when_another_field_is_read_from_the_words() {
+        use crate::gateway::{Op, Reason};
+        use crate::owner::change;
+        let s = settings(
+            r#"
+[chore]
+on = "item"
+where.attribute = "chore"
+fields.text = { rest = true }
+fields.due = { marker = "📅", type = "date" }
+fields.cost = { pattern = '\$(\d+)', type = "number" }
+fields.ref = { attribute = "ref", type = "link" }
+"#,
+        );
+        let answer = given(json!({"items": [
+            {"place": "c1", "role": "item", "attributes": {"chore": true},
+             "text": ["Fix the roof 📅 2026-03-04 for $50 ", {"label": "home"}]},
+            {"place": "c2", "role": "item", "attributes": {"chore": true}, "text": ["Third"]},
+        ]}));
+        let read = read("Home.chores", &answer, &s);
+        assert_eq!(read.problems, Vec::<String>::new());
+        let piece = |n: usize| match &answer.items[n] {
+            GivenItem::Piece(p) => p,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            fields(&read.items[0]),
+            json!({"text": "Fix the roof for #home", "due": "2026-03-04", "cost": 50, "ref": null})
+        );
+        let set = |field: &str, value: &str| Op::SetField {
+            field: field.into(),
+            value: json!(value),
+        };
+        let words = set("text", "Fix the whole roof");
+        let refused = change::piece(piece(0), &read.items[0], &words, &s)
+            .err()
+            .unwrap();
+        assert_eq!(refused.reason, Reason::Refused);
+        assert!(
+            refused
+                .message
+                .contains("due, cost of this chore are read from those words"),
+            "{refused}"
+        );
+        let made = change::piece(piece(1), &read.items[1], &words, &s)
+            .ok()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&made.changes).unwrap(),
+            json!([{"place": "c2", "text": ["Fix the whole roof"]}])
+        );
+        let link = set("ref", " [[Other]] ");
+        let made = change::piece(piece(1), &read.items[1], &link, &s)
+            .ok()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&made.changes).unwrap(),
+            json!([{"place": "c2", "attribute": "ref", "value": "[[Other]]"}])
+        );
     }
 
     /// Rewording keeps each link, label and marked run whose words are still there, in order,

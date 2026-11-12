@@ -13,13 +13,17 @@
 //! - `column = "VEI"`: `{place, cell, text}`, the cell's new runs.
 //!
 //! Every other source is derived (a label, a link, the file's name) and is refused.
+//!
+//! New words replace a piece's text whole, so they are refused when another field of the item
+//! has its value from those words (a `marker`, a `pattern`, a `flag`): the edit would drop
+//! that value without saying so.
 
 use crate::gateway::{Error, Op, Reason};
 use crate::items::{Data, Item, Settings};
 use crate::matcher::Typed;
 use crate::owner::given::{CHECKBOX, Change, Piece, clears, reword};
 use crate::tasks::StatusType;
-use crate::types::Source;
+use crate::types::{Source, Value};
 use serde_json::Value as Json;
 
 /// The changes an edit asks of an owner, and what the edit did, for `Event::ItemEdited`.
@@ -40,9 +44,9 @@ fn what(field: &str, value: &Json) -> String {
     }
 }
 
-/// The task `item` is and its status symbol, for a tick: refused when it is no task, has no
-/// status, or recurs. Ticking a recurring task adds its next occurrence, a new piece, and
-/// nothing adds a piece yet.
+/// The task `item` is and its status symbol as it is now, for a tick: refused when it is no
+/// task, has no status, or recurs. Ticking a recurring task adds its next occurrence, a new
+/// piece, and nothing adds a piece yet.
 fn ticked<'a>(item: &'a Item, s: &Settings) -> Result<(&'a Typed, char), Error> {
     let typed: &Typed = match &item.data {
         Data::Typed(typed) if item.data.answers_to("task") => typed,
@@ -66,14 +70,51 @@ fn ticked<'a>(item: &'a Item, s: &Settings) -> Result<(&'a Typed, char), Error> 
         let message = format!("{} has no status to tick: set one with set-field", item.id);
         refused(message)
     })?;
-    Ok((typed, s.tasks.next_symbol(symbol)))
+    Ok((typed, symbol))
+}
+
+/// The word a piece's `checkbox` says for a status symbol of the workspace.
+fn word_of(symbol: char, s: &Settings) -> Option<&'static str> {
+    let status = s.tasks.status_type(symbol);
+    let word = CHECKBOX.iter().find(|(_, t)| *t == status);
+    word.map(|(word, _)| *word)
+}
+
+/// The status a tick moves a piece's task to. A piece's checkbox says one of four words, so a
+/// tick follows the workspace's statuses (the Tasks plugin's `nextStatusSymbol`) to the first
+/// one that is another word: a next status of the same kind (`!`, another open one) would
+/// change nothing in the piece and is passed over. A next status that is no kind a checkbox
+/// can say is refused, and names the setting.
+fn next_for_a_piece(symbol: char, s: &Settings) -> Result<char, String> {
+    let from = word_of(symbol, s);
+    let mut at = symbol;
+    for _ in 0..=s.tasks.statuses.len() {
+        let next = s.tasks.next_symbol(at);
+        match word_of(next, s) {
+            None => {
+                return Err(format!(
+                    "the workspace's Tasks settings send the status {at:?} on to {next:?}, \
+                     which is none of the kinds a piece's checkbox can say (open, done, \
+                     in-progress, cancelled): set its status with set-field, or change that \
+                     status's next symbol"
+                ));
+            }
+            Some(word) if Some(word) != from => return Ok(next),
+            Some(_) => at = next,
+        }
+    }
+    Err(format!(
+        "every status the workspace's Tasks settings go to from {symbol:?} is the same kind, \
+         so a tick would change nothing: set its status with set-field"
+    ))
 }
 
 /// `edit` on the item `item` that the piece `p` is.
 pub fn piece(p: &Piece, item: &Item, op: &Op, s: &Settings) -> Result<Made, Error> {
     match op {
         Op::Toggle => {
-            let (typed, next) = ticked(item, s)?;
+            let (typed, now) = ticked(item, s)?;
+            let next = next_for_a_piece(now, s).map_err(refused)?;
             let next = Json::String(next.to_string());
             let changes = vec![set(p, typed, "status", &next, s)?];
             let what = "ticked".to_string();
@@ -126,6 +167,35 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
              its links, its file or a pattern over its words), so it can't be set"
         )));
     };
+    // The other fields of the item whose values are read from the piece's words: new words
+    // would take them away.
+    let in_words = |s: &Source| {
+        matches!(
+            s,
+            Source::Pattern(_) | Source::Capture(_) | Source::Marker(_) | Source::Flags(_)
+        )
+    };
+    let from_words: Vec<&str> = (typed.place.sources.iter())
+        .filter(|(name, _)| &**name != field)
+        .filter(|(name, i)| {
+            let source = shape.fields.get(&**name).and_then(|s| s.0.get(*i));
+            let value = typed.fields.get(name);
+            let set = value.is_some_and(|v| !v.is_null() && *v != Json::Bool(false));
+            let flag = matches!(source, Some(Source::Flag(_)));
+            set && (flag || source.is_some_and(in_words))
+        })
+        .map(|(name, _)| &**name)
+        .collect();
+    let keeps_words = |what: &str| match from_words.is_empty() {
+        true => Ok(()),
+        false => Err(refused(format!(
+            "{field} is {what}, and {} of this {kind} {} read from those words: new words \
+             would drop {}. Change the words in the file itself",
+            from_words.join(", "),
+            if from_words.len() == 1 { "is" } else { "are" },
+            if from_words.len() == 1 { "it" } else { "them" },
+        ))),
+    };
     let place = p.place.clone();
     let format = &s.daily.format;
     let text_of = |value: &Json| match value {
@@ -135,7 +205,15 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
     };
     match source {
         Source::Attribute(name) | Source::Inline(name) if name != "checkbox" => {
-            let value = crate::edit::input(source, value_type, value, format).map_err(refused)?;
+            let value = match value_type {
+                // A link an owner holds is its target as written: `[[x]]` in the value is
+                // characters, not a Markdown link to read.
+                Value::Link => match text_of(value) {
+                    text if text.is_empty() => Json::Null,
+                    text => Json::String(text),
+                },
+                _ => crate::edit::input(source, value_type, value, format).map_err(refused)?,
+            };
             let attribute = name.clone();
             Ok(Change::Attribute {
                 place,
@@ -162,17 +240,21 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
         Source::Rest(_) if !p.cells.is_empty() => Err(refused(format!(
             "{field} is all of a row's words: set the field of the cell instead"
         ))),
-        Source::Rest(_) => Ok(Change::Runs {
-            place,
-            cell: None,
-            text: reword(&p.text, &text_of(value)),
-        }),
+        Source::Rest(_) => {
+            keeps_words("the piece's words")?;
+            Ok(Change::Runs {
+                place,
+                cell: None,
+                text: reword(&p.text, &text_of(value)),
+            })
+        }
         Source::Column(name) => {
             let cell = p.cells.iter().find(|c| c.name == *name).ok_or_else(|| {
                 refused(format!(
                     "{field} is read from the cell {name}, which this row doesn't have"
                 ))
             })?;
+            keeps_words("a cell of the row's words")?;
             let text = text_of(value);
             let reads = crate::matcher::parse(value_type, &text, format).is_some();
             if !text.is_empty() && !reads {
@@ -230,7 +312,8 @@ pub fn typed(place: &str, item: &Item, op: &Op, s: &Settings) -> Result<Made, Er
             Ok(Made { changes, what })
         }
         Op::Toggle => {
-            let (typed, next) = ticked(item, s)?;
+            let (typed, now) = ticked(item, s)?;
+            let next = s.tasks.next_symbol(now);
             let has = |name: &str| typed.fields.get(name).is_some_and(|v| !v.is_null());
             let fields = ["status", "status_type"].into_iter().filter(|f| has(f));
             let changes = fields
