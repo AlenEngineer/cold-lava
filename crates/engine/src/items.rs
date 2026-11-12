@@ -443,6 +443,9 @@ struct Walk<'a> {
     quotes: usize,
     /// The quotes and callouts it is inside, innermost last, when some type is on `aside`.
     asides: Vec<Aside>,
+    /// Some aside it is inside has no text yet. The one thing a step checks for asides, so a
+    /// note costs a walk nothing more when no type is on `aside`.
+    seeking: bool,
     /// Inside a code block or the frontmatter.
     verbatim: usize,
     /// The level of the heading being read.
@@ -491,6 +494,7 @@ impl<'a> Walk<'a> {
             headings: Vec::new(),
             quotes: 0,
             asides: Vec::new(),
+            seeking: false,
             verbatim: 0,
             level: 0,
             code_at: 0,
@@ -550,7 +554,7 @@ impl<'a> Walk<'a> {
     fn enter(&mut self, kind: Kind, at: usize) {
         // The first thing in an aside starts its text; a quote inside it is no text, so what
         // that one holds starts both.
-        if !matches!(kind, Kind::BlockQuote | Kind::Callout) {
+        if self.seeking && !matches!(kind, Kind::BlockQuote | Kind::Callout) {
             self.aside_text(at);
         }
         if let Some(end) = self.pending.take() {
@@ -598,6 +602,7 @@ impl<'a> Walk<'a> {
                         callout: None,
                         text: None,
                     });
+                    self.seeking = true;
                 }
             }
             Kind::FootnoteDefinition => self.begin(at, None, false),
@@ -647,6 +652,7 @@ impl<'a> Walk<'a> {
                 self.quotes = self.quotes.saturating_sub(1);
                 let (block, _) = self.end();
                 if let Some(aside) = self.asides.pop() {
+                    self.seeking = self.asides.iter().any(|a| a.text.is_none());
                     self.aside(block, aside, at);
                 }
             }
@@ -683,7 +689,7 @@ impl<'a> Walk<'a> {
     }
 
     fn token(&mut self, kind: Kind, text: &str, at: usize) {
-        if self.asides.last().is_some_and(|a| a.text.is_none()) {
+        if self.seeking {
             match kind {
                 Kind::QuoteMarker | Kind::Whitespace | Kind::Newline => {}
                 // `[!kind]`, `[!kind]+` or `[!kind]-`, as the reader takes it apart. The
@@ -770,6 +776,7 @@ impl<'a> Walk<'a> {
         for aside in &mut self.asides {
             aside.text.get_or_insert(at);
         }
+        self.seeking = false;
     }
 
     /// A quote or a callout ends at `end`: a block for the types on `aside`. Its text is the
