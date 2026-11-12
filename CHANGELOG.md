@@ -156,6 +156,21 @@ change commands, keys and file formats; patch versions only fix things.
   (`column can't be read on document (note); only on row (table-row)`, where it said `on note
   (only on table-row)`), and an unknown `on` lists the roles and the older names.
 
+### Fixed
+
+- An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
+  with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
+  a `set-field` with none of `value`, `add` and `remove` made the app panic when the
+  whiteboard ran it. An answer's steps now get the same check as a loaded shape's. One that
+  fails it is refused whole, none of its steps run, and the whiteboard says why with the
+  extension's name: `tally: it answered shape/gesture with steps that can't run: set-field
+  takes exactly one of value, add and remove`; `cold-lava shapes --do` fails with the same
+  reason. This also refuses answers that ran before by accident: an `edit` with none of
+  `set-field`, `toggle` and `recipe` used to tick the item, one with a recipe and something
+  else (an item, another kind of edit) used to run the recipe, `options` without a recipe
+  were ignored, and a `set-field` with two of `value`, `add` and `remove` used to take the
+  first. A shape's own steps load and run as before.
+
 ## [0.6.0] - 2026-11-11
 
 One reading of a note, and one door into the engine. Everything that reads a note (the reader,
