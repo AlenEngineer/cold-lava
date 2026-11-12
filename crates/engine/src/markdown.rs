@@ -156,6 +156,17 @@ pub struct Source<'t> {
     pieces: Vec<(usize, usize)>,
 }
 
+impl<'t> Source<'t> {
+    /// `text` exactly as it is, with nothing taken out: the words of a piece an owner gave,
+    /// which are not Markdown and hold no comments.
+    pub fn as_written(text: &'t str) -> Source<'t> {
+        Source {
+            text: Cow::Borrowed(text),
+            pieces: Vec::new(),
+        }
+    }
+}
+
 impl Source<'_> {
     /// Where `range` of this text is in the file. Text removed inside the range stays inside.
     pub fn file_range(&self, range: Range<usize>) -> Range<usize> {

@@ -155,7 +155,7 @@ impl<'a> Draft<'a> {
                     let now = changed.and_then(|c| c.get(place)).unwrap_or(text);
                     Some((place.clone(), now.clone()))
                 }
-                GivenItem::Typed { .. } => None,
+                GivenItem::Typed { .. } | GivenItem::Piece(_) => None,
             })
             .collect()
     }

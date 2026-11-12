@@ -267,6 +267,7 @@ mod tests {
             let items = read(text).unwrap().items.into_iter();
             let place = |i: GivenItem| match i {
                 GivenItem::Markdown { place, .. } | GivenItem::Typed { place, .. } => place,
+                GivenItem::Piece(p) => p.place,
             };
             items.map(place).collect()
         };

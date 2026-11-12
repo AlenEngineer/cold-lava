@@ -251,17 +251,21 @@ has to know which format a thing was written in. The design, with its reasons, i
 [neutral-model.md](neutral-model.md). This section is the reference for someone who writes an
 owner or a type, and it says for each letter what the engine does with it today.
 
-Today the alphabet is named and versioned, and a type's `on` is written in its roles. No
-owner gives pieces yet: the Markdown owner and the canvas owner still give items of the
-native kinds, and an extension's owner still gives Markdown pieces ("Owners and types, as
-built"). The Markdown owner gives the first attributes, which a type can test and read
-("Attributes" below). The column "Today" below is exact about each letter.
+Today the alphabet is named and versioned, a type's `on` is written in its roles, and an
+extension's owner can give pieces in it ("Pieces, as built"). The Markdown owner and the
+canvas owner still give items of the native kinds, and the Markdown owner reads its
+attributes off a note's text ("Attributes" below). The column "Today" below is exact about
+each letter.
 
-The alphabet's version is **1** (`alphabet::VERSION`, `crates/engine/src/alphabet.rs`). An
-extension gets it in `initialize` as `alphabet`, beside `apiVersion`. A letter (a role, a
-mark, a relation) is added rarely, by the engine only, and each addition raises the version.
-No extension, type or setting can add one. Attributes are open, so a new attribute changes
-no version.
+The alphabet's version is **2** (`alphabet::VERSION`, `crates/engine/src/alphabet.rs`). An
+extension gets it in `initialize` as `alphabet`, beside `apiVersion`. Version 1 named the
+alphabet. Version 2 is the first an owner can speak: `file/read` takes pieces, with their
+text in runs and the relations written as `in` and `cells`. No role, mark or relation was
+added, and an extension written for version 1 works unchanged, since it gives no pieces and
+is sent no change it didn't already know. An owner gives pieces only when `alphabet` is 2 or
+more. A letter (a role, a mark, a relation) is added rarely, by the engine only, and each
+addition raises the version. No extension, type or setting can add one. Attributes are open,
+so a new attribute changes no version.
 
 **Roles.** A piece is one unit of written content, and its role says what it is. There are
 nine:
@@ -304,11 +308,12 @@ meeting is a type over one of the nine, never a tenth role.
 - a **label**, which Markdown writes as a tag;
 - a **field**, a named value written inline, as Dataview's `due:: 2026-11-20`.
 
-Today the Markdown tree reads all six marks (`cst.rs`), and the reader draws them, but no
-message carries runs or marks: an item's text is the string as written. Links, labels and
-fields are read and reported, each its own way: links by `links/query` and by a type's
-`inlines = "links"`, labels by `where.tag` and `inlines = "tags"`, a field by a type's
-`inline = "due"`.
+Today the Markdown tree reads all six marks (`cst.rs`), and the reader draws them. An
+owner's piece carries its text as runs with these marks, links, labels and fields ("Pieces,
+as built"). No message to a client carries runs or marks yet: an item's text is a string,
+as written in a note and as plain characters from a piece. Links, labels and fields are read
+and reported, each its own way: links by `links/query` and by a type's `inlines = "links"`,
+labels by `where.tag` and `inlines = "tags"`, a field by a type's `inline = "due"`.
 
 A type's `on = "inline"` is not a role. It is a reading of text: its `match` runs over the
 text of every piece the pass collects, whatever the piece's role, and each match is an item
@@ -318,22 +323,24 @@ whose parent is that piece ("Matching, as built").
 
 | Relation | Meaning | Today |
 | --- | --- | --- |
-| contains | a piece is inside another | an item's `parent` (the list item it is nested in) and `section` (the sections it is in); `where.inside`, `where.section` |
-| follows | a piece comes after another | the order of a file's items in `items/query`, by line; no field says it |
-| beside | pieces are cells of one record | a row's cells under their header: `where.header`, the `column` source |
-| placed | a piece sits at a position | a canvas node's `x`, `y`, `width` and `height` stay in the `.canvas` file; no message carries them |
-| links to | a piece points at another | `links/query`, backlinks, a type's `inlines = "links"` |
+| contains | a piece is inside another | an item's `parent` (the list item it is nested in) and `section` (the sections it is in); `where.inside`, `where.section`. A piece says it as `in` |
+| follows | a piece comes after another | the order of a file's items in `items/query`: a note's by line, an owner's pieces in the order given. No field says it |
+| beside | pieces are cells of one record | a row's cells under their header: `where.header`, the `column` source. A `row` piece says it as `cells` |
+| placed | a piece sits at a position | a canvas node's `x`, `y`, `width` and `height` stay in the `.canvas` file. A piece carries a position as attributes, which nothing reads |
+| links to | a piece points at another | `links/query`, backlinks, a type's `inlines = "links"`. A piece says a link to a file as a run of its text. A link from one piece to another piece has no shape yet |
 
 *Placed* is carried and never interpreted: the engine will hand a position to whoever draws,
 and reads no meaning from it.
 
 **Attributes.** Any piece can carry attributes: a name and a typed value. The set is open.
 An owner may attach any attribute, and that is where a format's own details go: a list
-item's checkbox, a heading's level, a callout's kind, a card's position. Values will have
-the value types fields have (text, number, date, datetime, duration, bool, link, tag, enum).
+item's checkbox, a heading's level, a callout's kind, a card's position. An attribute an
+owner gives on a piece is text, a number, `true` or `false`, and the field that reads it
+gives it its type (date, duration, enum, …).
 
-Today the Markdown owner gives these. The canvas owner's text cards are Markdown pieces, so
-what is written on a card has them too.
+The Markdown owner gives the ones below. The canvas owner's text cards are Markdown pieces,
+so what is written on a card has them too. An extension's owner gives its own on its pieces,
+under any names, and says `checkbox` in words instead of a character ("Pieces, as built").
 
 | Attribute | On | Its value | Written as |
 | --- | --- | --- | --- |
@@ -377,8 +384,10 @@ and which reading gives which attribute is data ("Attributes in Markdown, as bui
   `attribute` source asks for it, so a workspace whose types name none reads its notes
   exactly as before.
 - **Not over the gateway yet.** An item carries no attributes on the wire: what a type read
-  is in the item's fields, as always. The gateway gets them when owners give pieces (step 3
-  of the neutral model), with the owner's own values and whatever type reads them.
+  is in the item's fields, as always. That holds for an owner's pieces too: the attributes it
+  gave are kept with its answer (`Owned::given`) and reach a client only through the fields
+  of the type that read them. Putting them on an item needs a place in `items/query` and in
+  the news that costs a note's items nothing, and it waits for its first reader.
 
 A note's frontmatter and a fence's language are not attributes yet: a type reads them with
 `property` and `info`. A heading item also has its `level` as a field of the native kind.
@@ -1519,12 +1528,14 @@ each doesn't invent one:
   says what each link becomes). The engine writes what `edit` made with `write::replace`, so a
   note is written in one place. `scripts/bench-items.py` measured no change.
 - **`file/read`** (host → owner, a request) `{path, rev, text}` answers `{items, links}`
-  (`owner/given.rs`, pinned by tests). An item is a Markdown piece `{place, text}`, read by the
-  Markdown owner in the workspace's flavour, so `task` and the user's types match in it as in a
-  note, or a typed item `{place, type, fields}` of a loaded type, each value read as its
-  field's type (`Matcher::given`). A link is `{target, place, text}`; the links in pieces are
-  read with them. Unknown keys are refused, and a type that isn't loaded or a field it doesn't
-  have is reported and that item left out.
+  (`owner/given.rs`, pinned by tests). An item is given one of three ways. A piece
+  `{place, role, attributes, text, …}` says what the file holds in the alphabet's terms and
+  is never Markdown ("Pieces, as built"). A Markdown piece `{place, text}`, its `text` a
+  string, is read by the Markdown owner in the workspace's flavour, so `task` and the user's
+  types match in it as in a note. A typed item `{place, type, fields}` is of a loaded type,
+  each value read as its field's type (`Matcher::given`). A link is `{target, place, text}`;
+  the links in pieces are read with them. Unknown keys are refused, and a type that isn't
+  loaded or a field it doesn't have is reported and that item left out.
 - **Where an owned file lives.** `Workspace::owned`, beside the notes: each file with its owner,
   the `rev` its items and links were read from, its items and its links, and the owner's place
   for each (`Owned::places` by item id, `Owned::links`), kept off the items so notes' items
@@ -1687,6 +1698,120 @@ each doesn't invent one:
   through the menu: the type picker lists it, its table shows those rows, and a name edited
   there is saved in the CSV through csv-table; `tests/owned.rs` checks `cold-lava types` and
   `cold-lava items` from the cache.
+
+### Pieces, as built
+
+An owner whose format isn't Markdown says what its file holds in the alphabet's terms: a
+list of **pieces** in `file/read`'s `items`. The engine never reads a piece's text as
+Markdown, and the owner never writes or escapes any. This is step 3 of the neutral model
+(#243); `crates/engine/src/owner/given.rs` reads it and pins the JSON below.
+
+```json
+{"items": [
+  {"place": "chores", "role": "section", "text": ["Chores"]},
+  {"place": "plumber", "role": "item", "in": "chores",
+   "attributes": {"task": true, "checkbox": "open", "due": "2026-11-20"},
+   "text": ["Call the plumber about ",
+            {"text": "the leak", "marks": ["strong"]},
+            ", ", {"link": "Krakatoa", "text": "as noted"},
+            " ", {"label": "home"},
+            {"field": "scheduled", "value": "2026-11-18"}]},
+  {"place": "r1", "role": "row",
+   "cells": [{"name": "Volcano", "text": ["Krakatoa"]}, {"name": "VEI", "text": ["6"]}]},
+  {"place": "card", "role": "text", "attributes": {"x": 40, "y": 120}, "text": ["A card"]}
+]}
+```
+
+- **`place`** is the owner's own name for the spot in its file, which it keeps stable (a
+  row's key, a node's id). The engine hands it back with a change and with `file/open`. It
+  is an address in memory and in messages: the engine never writes one into a file. One
+  place holds one piece.
+- **`role`** is one of the nine. Any other name is refused, and the whole answer with it.
+- **`text`** is a list of runs, never a string: a string there is the older Markdown piece.
+  A run is one of five things.
+
+  | Run | Written | Is |
+  | --- | --- | --- |
+  | plain | `"Pay #42 for $5"` | those characters. `#42`, `$5`, `[[x]]`, `**x**`, `- [ ]` and `%%` are characters: no tag, no math, no link, no mark, no checkbox, no comment |
+  | marked | `{"text": "hot", "marks": ["strong"]}` | characters with marks: `emphasis`, `strong`, `struck`, `highlighted`, `code`, `math` |
+  | link | `{"link": "Krakatoa", "text": "the 1883 one"}` | a link, its target as `[[target]]` would name it (a file of the workspace, or a web address), showing `text`, or its target with none; it may have `marks` |
+  | label | `{"label": "volcano"}` | a label, which Markdown writes as a tag; its name has no `#` and no space |
+  | field | `{"field": "rating", "value": "5"}` | a named value written in the text: the piece's attribute of that name unless `attributes` has one, and not among its words |
+
+- **A piece's words** are what a type reads as its text: the runs' characters joined as
+  given, a link by its `text` (else its target), a label as `#name`, and a field not at
+  all. A row's words are its cells', a tab between them.
+- **`attributes`** are open: any name, with text, a number, `true` or `false`. `null` is
+  the same as leaving the name out, and a list or a table is refused. `false` is a value a
+  field can read, and `where.attribute` doesn't count it as carried. The engine gives a
+  meaning to one name only, the next.
+- **`checkbox`** is said in words: `open`, `done`, `in-progress` or `cancelled`. Any other
+  value is refused. A type reads it as the status symbol the workspace writes for that
+  kind of status (`open` is a space, `done` is `x`, with the Tasks plugin's own symbols
+  unless the workspace's settings gave them another meaning), so the built-in `task` gives
+  an owner's task the same `status` and `status_type` a note's has, and the agenda and the
+  table need nothing of their own. `task` is a second attribute, as in Markdown: the owner
+  says which items it counts as tasks (`"task": true`), and an item with only a `checkbox`
+  is a `list` with a box.
+- **Relations.** *Contains* is `in`: the place of the piece this one is inside, which must
+  come before it in the answer. From it come an item's `parent` (the nearest `item` it is
+  in), its `section` (the words of the sections it is in, outermost first) and what
+  `where.inside` and `where.section` test. *Follows* is the order of `items`, and
+  `items/query` lists a file's items in that order. *Beside* is `cells` on a `row`: each
+  cell a name (its column) and its text, read by a type's `column` source and
+  `where.header`. A row has cells and no `text`, and only a row has cells. *Placed* has no
+  key of its own: a position is attributes (`x`, `y`, `width`, `height`), kept with the
+  owner's answer and never interpreted. *Links to* a file is a link run, or an entry of the
+  answer's `links` as before; both are backlinks and edges of the graph, at the piece's
+  place.
+- **Types match a piece as they match a note's block**: the same shapes, conditions,
+  precedence, `required` and value parsing (`matcher/piece.rs`, which reuses the matcher's
+  own). What differs is where a source reads:
+
+  | In a shape | On a piece |
+  | --- | --- |
+  | `on` | the piece's role: `section`, `text`, `item`, `row` or `aside`. No shape reads a `document`, `verbatim`, `embed` or `opaque` piece |
+  | `where.attribute` | the piece carries each name, in `attributes` or as a field run |
+  | `attribute = "due"` | the value the owner gave under that name |
+  | `checkbox = true`, `inline = "due"` | the attribute too (`checkbox`, `due`): how Markdown writes one is not read |
+  | `rest` | the piece's words that no other source read |
+  | `inlines = "tags"`, `where.tag` | its labels |
+  | `inlines = "links"` | the targets of its link runs |
+  | `column`, `where.header` | a row's cells, by name |
+  | `note`, `where.folder`, `where.file-type` | the piece's file |
+  | `section`, `where.section`, `where.inside` | what it is `in` |
+  | `match`, `capture`, `pattern`, `marker`, `flag`, `flags` | the piece's words, as plain characters: a type's own reading of text |
+  | `property` | nothing: a piece's file has no frontmatter |
+
+  So the built-in `task` (`where.attribute = "task"`, `status` from `checkbox`, `due` from
+  `due`) matches an owner's piece with no change and no Markdown anywhere.
+- **Items.** A piece a type matches is an item of that type. Else an `item` is a `list` and
+  a `section` a `heading` (its level the attribute `level`, 1 to 6, else its depth in
+  sections), as in a note, and any other piece is no item, as a paragraph or a row no type
+  matches is none in a note. Every piece is kept with the owner's answer whether or not it
+  is an item.
+- **Ids.** A piece's item hashes its file, its kind and its place, like a typed item's, and
+  then the word `piece` (`given::piece_id`). So it is stable across processes and restarts,
+  it doesn't change when the piece is reworded, and a piece can never have the id a typed
+  item or a Markdown piece has at the same place: the three answers keep three sets of
+  ids. Its `rev` hashes everything the piece says. Its `line` and `end_line` are 1.
+  `given.rs` pins one id of each kind of answer.
+- **Bounds.** An answer is another program's. A piece nested more than 64 deep, with more
+  than 4096 runs or 256 attributes, with a name over 256 bytes, at a place another piece
+  has, `in` a place no earlier piece is at, or with cells where it can have none is
+  reported (`Event::OwnerTrouble`, on the status line) and left out, and the rest of the
+  answer is read. A message is at most 64 MB, as before.
+- **The older answers are unchanged.** A Markdown piece and a typed item read exactly as
+  they did, with the ids they had. An answer may mix all three.
+- **Left out, on purpose.** A link from one piece to another piece of the same file (a
+  board's arrow) has no shape: its first user is the canvas owner, which doesn't give
+  pieces yet. An inline type (`on = "inline"`) doesn't run over a piece's words. A piece's
+  attributes don't reach a client except through a type's fields. A task subtype that
+  reads no status gets none on a piece. A piece can't be changed yet: `items/edit` on one
+  is refused. The csv-table example still gives Markdown, and the guide doesn't cover
+  pieces yet.
+- **The helper.** `cold_lava.py` has `piece`, `marked`, `link`, `label`, `field` and
+  `words` for building pieces and for writing a piece's text back as plain characters.
 
 ### The canvas owner, as built
 
@@ -2337,7 +2462,7 @@ during the call, and `view/open` names its view at once; the rest are queued.
 
 ### Over the wire, as built
 
-- **Host → extension.** `initialize` is a request, with `apiVersion` (1), `alphabet` (1, the
+- **Host → extension.** `initialize` is a request, with `apiVersion` (1), `alphabet` (2, the
   alphabet's version: "The alphabet, as built"), the extension's `name`, `workspace` (`root`, absolute, and `name`), its `permissions`, and
   `capabilities.methods`, the methods it may call; its answer is not read, but an error stops
   it. `command/run` (`id`, `args`) is a request, so a refusal (the error's message) and a
