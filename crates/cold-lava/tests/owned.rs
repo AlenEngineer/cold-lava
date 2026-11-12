@@ -676,3 +676,42 @@ fn a_made_up_formats_tasks_are_read_and_edited_through_their_owners_process() {
     );
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
+
+/// An owner's place is its own words: one that holds an escape sequence is shown as `\u{…}`
+/// in the problem line that names it, and never reaches the terminal as written.
+#[test]
+fn an_owners_place_is_never_printed_as_written() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the test extension needs it");
+        return;
+    }
+    // Two chores share a place, so the second is a problem, named by its place.
+    const CHORES: &str = "\u{1b}]0;PWNED-place\u{7}p | todo | | first words\n\
+        \u{1b}]0;PWNED-place\u{7}p | todo | | second words\n\
+        ok | todo | | fine\n";
+    let (workspace, home) = chores_sandbox("place", CHORES);
+    let ws = workspace.to_str().unwrap();
+    let file = workspace.join("Home.chores");
+    // A rename starts the owner, which reads the file.
+    let renamed = cold_lava(&home, &["rename", ws, "Scratch", "Scratch 2"]);
+    assert!(renamed.status.success(), "{:?}", text(&renamed));
+    let listed = cold_lava(&home, &["items", ws, "task", "--json"]);
+    let (listed, _) = text(&listed);
+    let fine = (listed.lines())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|item| item["note"] == "Home.chores" && item["text"] == "fine")
+        .expect("the third chore");
+    let id = fine["id"].as_str().unwrap();
+    let refused = cold_lava(
+        &home,
+        &["item", "set", file.to_str().unwrap(), id, "status", "x"],
+    );
+    let (stdout, stderr) = text(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{stdout}{stderr}");
+    assert_eq!(
+        stderr, "cold-lava: \\u{1b}]0;PWNED-place\\u{7}p: another piece is at this place\n",
+        "{stderr:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), CHORES, "as it was");
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
