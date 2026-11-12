@@ -254,7 +254,8 @@ owner or a type, and it says for each letter what the engine does with it today.
 Today the alphabet is named and versioned, and a type's `on` is written in its roles. No
 owner gives pieces yet: the Markdown owner and the canvas owner still give items of the
 native kinds, and an extension's owner still gives Markdown pieces ("Owners and types, as
-built"). The column "Today" below is exact about each letter.
+built"). The Markdown owner gives the first attributes, which a type can test and read
+("Attributes" below). The column "Today" below is exact about each letter.
 
 The alphabet's version is **1** (`alphabet::VERSION`, `crates/engine/src/alphabet.rs`). An
 extension gets it in `initialize` as `alphabet`, beside `apiVersion`. A letter (a role, a
@@ -272,13 +273,13 @@ nine:
 | `text` | a run of prose | `paragraph` | a paragraph | a type matches on a paragraph outside list items |
 | `item` | one entry in a list; it may hold more | `list-item` | a list item | a type matches on it; the native kind `list`, and the built-in `task` |
 | `row` | one record, in cells | `table-row` | a table row | a type matches on it; a row no type matches is no item |
-| `aside` | set apart from the flow | `quote` | a quote, a callout | a type on it loads and matches nothing; `where.inside` can name it |
+| `aside` | set apart from the flow | `quote` | a quote, a callout | a type matches on it: its text is the rest of its first line (a callout's title, a quote's first words) and its lines are all of it; an aside no type matches is no item; `where.inside` can name it |
 | `verbatim` | text kept exactly | `code` | a code block | a type on it loads and matches nothing |
 | `embed` | something from elsewhere, shown here | none | `![[x]]`, an image | named only: `on = "embed"` is refused, and `![[x]]` is read as a link |
 | `opaque` | kept, not understood | none | an HTML block | named only: `on = "opaque"` is refused, and the block stays in the file unread |
 
-One example of each, as Markdown writes it, with the attributes its owner would give once
-owners give attributes:
+One example of each, as Markdown writes it, with the attributes its owner gives, or would
+give ("Attributes" below says which are given today):
 
 | Role | Written as | Attributes |
 | --- | --- | --- |
@@ -287,7 +288,7 @@ owners give attributes:
 | text | `Krakatoa is a caldera in the Sunda Strait.` | |
 | item | `- [ ] Refill the gas masks 📅 2026-11-20` | `checkbox = open`, `due = 2026-11-20` |
 | row | <code>&#124; Krakatoa &#124; 6 &#124;</code> under the header <code>&#124; Volcano &#124; VEI &#124;</code> | |
-| aside | `> [!warning] Hot` | `callout = warning` |
+| aside | `> [!warning]- Hot` | `callout = warning`, `fold = closed` |
 | verbatim | a fence opened with ```` ```python ```` | `language = python` |
 | embed | `![[Crater.png]]` | |
 | opaque | `<details>…</details>` on lines of its own | |
@@ -331,9 +332,44 @@ An owner may attach any attribute, and that is where a format's own details go: 
 item's checkbox, a heading's level, a callout's kind, a card's position. Values will have
 the value types fields have (text, number, date, datetime, duration, bool, link, tag, enum).
 
-Today no owner gives attributes. What will be attributes is read by a type's sources from
-the piece's own characters: `checkbox = true`, `marker = "📅"`, `property`, `info`. A heading
-item has its `level`, as a field of the native kind.
+Today the Markdown owner gives four, read from a note's structure. The canvas owner's text
+cards are Markdown pieces, so what is written on a card has them too.
+
+| Attribute | On | Its value | Written as |
+| --- | --- | --- | --- |
+| `checkbox` | an `item` | the character between the brackets, as written, a space included | `- [x] Pay rent` gives `x`; `- [ ] Pay rent` gives a space |
+| `level` | a `section` | the heading's level, 1 to 6 | `## Method` gives `2` |
+| `callout` | an `aside` | the callout's kind, in lower case | `> [!WARNING] Hot` gives `warning` |
+| `fold` | an `aside` | `closed` or `open`, when the callout folds | `> [!tip]- More` gives `closed`, `> [!tip]+ More` gives `open` |
+
+- **A value is typed by the field that reads it.** The owner gives the text as written and
+  where it is written. A field of type `number` reads `level` as a number, and an `enum`
+  field maps a `checkbox` character to a name. The value types of attributes themselves wait
+  for owners that give pieces.
+- **`checkbox`** is one character between brackets at the start of the item's text, followed
+  by whitespace or by nothing: `- [x]no space` has none. The flavour decides whether there
+  are checkboxes at all: `obsidian` and `github` have task lists, `commonmark` has none, so
+  no item carries `checkbox` there. It is read from the item's text exactly as the built-in
+  `task` has always read it, which is slightly wider than the tree's own checkbox token (any
+  whitespace after the bracket, where the tree takes a space or a tab).
+- **`level`** is on every heading, in every flavour.
+- **`callout` and `fold`** are on a quote the tree reads as a callout, a GitHub alert
+  (`> [!NOTE]`) included. A plain quote has neither. A callout that doesn't fold has no
+  `fold`.
+- **They cost nothing until a type names one.** The walk through a note keeps no attribute.
+  The matcher reads one off the block when a shape's `where.attribute` or a field's
+  `attribute` source asks for it, so a workspace whose types name none reads its notes
+  exactly as before.
+- **Over the gateway**, an item carries the attributes its type read, under `attributes`,
+  each with the value of the first field that read it:
+  `{"kind": "box", "state": "x", …, "attributes": {"checkbox": "x"}}`. The key is left out
+  when the type read none, so the native kinds and every type written before attributes
+  look as they did. `cold-lava items --json` prints items as a note is read and never has
+  the key. No type may name a field `attributes`.
+
+The rest of what will be attributes is still read by a type's sources from the piece's own
+characters: `marker = "📅"`, `inline = "due"`, `property`, `info`. A heading item also has
+its `level` as a field of the native kind.
 
 **In the type language.** A shape's `on` takes a role. The older names still read, so a
 type file written before the roles were named means what it meant: `on = "list-item"` and
@@ -344,6 +380,15 @@ base written with the other. A types file's `version` stays `1`, with either spe
   a type on one could never match. Any other unknown `on` is refused as before, on one line,
   and the line lists the roles and the older names. The broken type is dropped and the rest
   load.
+- `where.attribute = "checkbox"` passes a piece that carries the attribute, and
+  `where.attribute = ["callout", "fold"]` one that carries each. It applies on every role
+  but `document`, and not on `inline`. It tests that the attribute is there, not its value:
+  read the value into a field, and filter on the field. A name no owner gives is not a
+  mistake, since attributes are open; no piece has it, so the shape matches nothing.
+- A field's source `{ attribute = "checkbox" }` reads the attribute's value, beside the
+  other sources and in the same order of precedence. The type doesn't say how the file
+  writes it; the piece's owner does. Every other source still reads, so a type may go on
+  reading text with a `marker` or a `pattern`.
 - `where.inside` takes `text`, `item`, `row`, `aside` and `verbatim`, or their older names.
   A name that is both a type's and a role's is the type there: with a type called `item`,
   `where.inside = ["item"]` means that type, as it always did.
@@ -443,11 +488,13 @@ style.minutes = { badge = true, icon = "⏱" }
 ```
 
 - **Shapes** say which piece, by its role (`on`; "The alphabet, as built"), cheap conditions (`where`: table header, frontmatter
-  property, tag, folder, section, fence language, inside another type), an optional pattern,
-  and where each field is read. A note's types are found in the one pass that already reads it.
+  property, tag, folder, section, fence language, inside another type, an attribute the piece
+  carries), an optional pattern, and where each field is read. A note's types are found in
+  the one pass that already reads it.
 - **Sources know how to write.** `marker = "📅"` (a glyph and a value), `inline = "due"`
   (Dataview's `due::`, `[due:: …]`, `(due:: …)`), `flags` (which glyph is present), `column`,
-  `property`, `capture` (a pattern's group), the fence's `info`. Each can put a value back: only
+  `property`, `capture` (a pattern's group), the fence's `info`, and `attribute` (what the
+  piece's owner says it carries: `checkbox`, `callout`; "The alphabet, as built"). Each can put a value back: only
   the value's span changes, glyphs and brackets stay as written, a missing field is added the
   way the line already writes them, a table is never re-padded, frontmatter is edited line by
   line and never re-serialised. Some are read-only (`rest`, the leftover text; tags and links in
@@ -576,13 +623,18 @@ style.minutes = { badge = true, icon = "⏱" }
   the performance step. `matcher.rs` holds the matching, `frontmatter.rs` the line-by-line
   frontmatter reader.
 - **Roles matched so far:** `document`, `row`, `item`, `section`, `text` (a paragraph
-  outside list items), and the `inline` reading. Shapes on `verbatim` and `aside` load but
-  match nothing.
+  outside list items), `aside` (a quote or a callout), and the `inline` reading. Shapes on
+  `verbatim` load but match nothing. A typed aside is a new item, as a typed row is: its
+  lines are the whole quote, its parent the list item it is nested in, and its key, without
+  a shape `key`, its text. The paragraphs, list items and headings inside it are items of
+  their own, as before, and inline types are found in those, not in the aside.
   Tasks are typed blocks like any other, of the built-in `task` type; an `idea` that `extends =
   "task"` with `where.tag = ["idea"]` wins over `task` as its subtype and still answers to
   `task`, so it is in the agenda and `task toggle` ticks it.
 - **What each primitive's text is:** a list item's first line after its marker (without a
-  trailing `^id`), a heading's words, a paragraph's text, a whole table row's line. A note's
+  trailing `^id`), a heading's words, a paragraph's text, a whole table row's line, and for
+  an aside the rest of its first line: a callout's title after its `[!kind]`, a quote's
+  first line after its `>`. A note's
   `match`, `capture` and `inline` read the text after the frontmatter. `rest` is that text with
   every other source's match taken out (a marker with its value, a whole `[due:: …]`, a flag's
   glyph, every glyph of a `flags` map, a checkbox with its brackets, the whole `match` when a

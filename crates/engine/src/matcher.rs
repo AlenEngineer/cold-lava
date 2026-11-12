@@ -19,15 +19,17 @@ use serde_json::Value as Json;
 use crate::daily;
 use crate::frontmatter::{self, Frontmatter};
 use crate::markdown::{self, Flavour, Syntax};
+use crate::owner::markdown as markdown_owner;
 use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
 
-/// What this matcher reads; shapes on the other roles (aside, verbatim) wait.
+/// What this matcher reads; shapes on `verbatim` wait.
 const READ: &[On] = &[
     On::Document,
     On::Section,
     On::Text,
     On::Item,
     On::Row,
+    On::Aside,
     On::Inline,
 ];
 
@@ -83,6 +85,45 @@ pub struct Matcher {
     daily: daily::Settings,
 }
 
+/// An attribute a shape names, as the owners built into the engine give it (docs/extensions.md,
+/// "The alphabet, as built"). Markdown's are read off the block when a shape asks, so a note
+/// no type asks about costs nothing more to read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Attr {
+    /// An item's checkbox: the character between its brackets.
+    Checkbox,
+    /// A section's heading level.
+    Level,
+    /// An aside's callout: its kind, and whether it folds.
+    Callout,
+    Fold,
+    /// A name no owner here gives: no piece has it.
+    Unknown,
+}
+
+impl Attr {
+    fn of(name: &str, flavour: &Flavour) -> Attr {
+        match name {
+            "checkbox" if flavour.has(Syntax::TaskLists) => Attr::Checkbox,
+            "level" => Attr::Level,
+            "callout" => Attr::Callout,
+            "fold" => Attr::Fold,
+            _ => Attr::Unknown,
+        }
+    }
+
+    /// Whether the block carries it.
+    fn on(self, b: &Block) -> bool {
+        match (self, b.on) {
+            (Attr::Checkbox, On::Item) => markdown_owner::checkbox(b.text).is_some(),
+            (Attr::Level, On::Section) => b.given.level > 0,
+            (Attr::Callout, On::Aside) => b.given.callout.is_some(),
+            (Attr::Fold, On::Aside) => matches!(b.given.callout, Some((_, Some(_)))),
+            _ => false,
+        }
+    }
+}
+
 struct Compiled {
     name: String,
     is: Vec<String>,
@@ -99,6 +140,8 @@ struct Shape {
     index: usize,
     on: On,
     w: crate::types::Where,
+    /// `where.attribute`: the block carries each.
+    attributes: Vec<Attr>,
     pattern: Option<Regex>,
     key: Vec<usize>,
     required: Vec<usize>,
@@ -124,6 +167,7 @@ enum Src {
     /// The leftover text, without these strings.
     Rest(Vec<String>),
     Checkbox,
+    Attribute(Attr),
     /// `children` and `info`, not read yet.
     Later,
 }
@@ -197,7 +241,9 @@ impl Matcher {
                     .fields
                     .iter()
                     .filter_map(|(name, sources)| {
-                        let srcs = sources.0.iter().map(compile_source).collect();
+                        let srcs = (sources.0.iter())
+                            .map(|s| compile_source(s, flavour))
+                            .collect();
                         Some((field(name)?, srcs))
                     })
                     .collect::<Vec<(usize, Vec<Src>)>>();
@@ -221,6 +267,9 @@ impl Matcher {
                     index,
                     on: shape.on,
                     w: with_inside(w, types),
+                    attributes: (w.attribute.iter())
+                        .map(|name| Attr::of(name, flavour))
+                        .collect(),
                     pattern: shape
                         .pattern
                         .as_deref()
@@ -341,6 +390,7 @@ impl Matcher {
             cells: &[],
             inside: Vec::new(),
             code: &[],
+            given: Given::default(),
         };
         self.block(gate, note, &block)
     }
@@ -354,7 +404,7 @@ impl Matcher {
                 continue;
             }
             let shape = &self.types[t].shapes[s];
-            if !block_passes(&shape.w, note, b) {
+            if !block_passes(&shape.w, note, b) || !shape.attributes.iter().all(|a| a.on(b)) {
                 continue;
             }
             let caps = match &shape.pattern {
@@ -633,7 +683,7 @@ fn bases(t: &Type, types: &Types) -> Vec<String> {
     is
 }
 
-fn compile_source(s: &Source) -> Src {
+fn compile_source(s: &Source, flavour: &Flavour) -> Src {
     match s {
         Source::Capture(g) => Src::Capture(g.clone()),
         Source::Pattern(p) => match crate::types::compile(p) {
@@ -659,6 +709,7 @@ fn compile_source(s: &Source) -> Src {
         Source::Section(p) => Src::Section(*p),
         Source::Rest(r) => Src::Rest(r.without.clone()),
         Source::Checkbox(_) => Src::Checkbox,
+        Source::Attribute(name) => Src::Attribute(Attr::of(name, flavour)),
         Source::Children(_) | Source::Info(_) => Src::Later,
     }
 }
@@ -803,6 +854,19 @@ pub struct Block<'a> {
     /// The note's code spans, code blocks and math (ranges in `src`, in order), where no source
     /// reads and no inline type matches.
     pub code: &'a [Range<usize>],
+    /// The attributes its owner read off the file's structure, not off its text.
+    pub given: Given,
+}
+
+/// The attributes of a piece that its text doesn't hold, as the walk through the note found
+/// them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Given {
+    /// A section's heading level; 0 on any other piece.
+    pub level: u8,
+    /// An aside's callout: where its kind is written in `src` (`warning` in `[!warning]`), and
+    /// whether it folds: closed (`-`), open (`+`) or not at all.
+    pub callout: Option<(Range<usize>, Option<bool>)>,
 }
 
 impl Block<'_> {
@@ -1087,6 +1151,36 @@ fn read_source<'a>(
                 ..Piece::text(symbol.to_string(), Some(at(1..end)))
             }]
         }
+        Src::Attribute(attr) => match (*attr, b.on) {
+            (Attr::Checkbox, On::Item) => {
+                let Some((symbol, end)) = markdown_owner::checkbox(text) else {
+                    return Vec::new();
+                };
+                used.push(0..end + 1);
+                vec![Piece {
+                    verbatim: true,
+                    ..Piece::text(symbol.to_string(), Some(at(1..end)))
+                }]
+            }
+            (Attr::Level, On::Section) if b.given.level > 0 => {
+                vec![Piece::text(b.given.level.to_string(), None)]
+            }
+            (Attr::Callout, On::Aside) => match &b.given.callout {
+                // Callout kinds ignore case: `[!NOTE]` is `note`.
+                Some((kind, _)) => vec![Piece::text(
+                    note.src[kind.clone()].to_lowercase(),
+                    Some(note.file(kind.clone())),
+                )],
+                None => Vec::new(),
+            },
+            (Attr::Fold, On::Aside) => match b.given.callout {
+                Some((_, Some(closed))) => {
+                    vec![Piece::text(if closed { "closed" } else { "open" }, None)]
+                }
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        },
         Src::Section(SectionPart::Heading) => b
             .section
             .last()
@@ -2147,5 +2241,155 @@ Survey the rim ~3h, not `~4h`, not~6h.
         assert!(!note_meets(&tagged, "Elsewhere/Board.md", board, &tags));
         assert!(!note_meets(&tagged, "Projects/Board.md", board, &[]));
         assert_eq!((kanban.conditions(), tagged.conditions()), (1, 2));
+    }
+
+    /// Types of a person's own that read what a piece is, not how Markdown writes it.
+    const ATTRIBUTES: &str = r#"
+[box]
+on = "item"
+priority = 2
+where.attribute = "checkbox"
+fields.state = { attribute = "checkbox" }
+fields.words = { rest = true }
+
+[chapter]
+on = "section"
+where.attribute = "level"
+fields.depth = { attribute = "level", type = "number" }
+fields.title = { rest = true }
+
+[note-box]
+on = "aside"
+where.attribute = "callout"
+fields.kind = { attribute = "callout" }
+fields.fold = { attribute = "fold" }
+fields.title = { rest = true }
+
+[said]
+on = "aside"
+fields.words = { rest = true }
+"#;
+
+    const PIECES: &str = "\
+# One
+## Two ##
+- [x] done thing
+- [ ]\ttabbed
+- [/]
+- [x]no space
+- plain
+
+> [!WARNING]- Hot lava
+> body
+
+> [!note]
+> alone
+
+> said first
+> more
+";
+
+    /// (kind, line, end_line, fields) of each typed item.
+    fn read(items: &[Item]) -> Vec<(&str, usize, usize, Json)> {
+        (items.iter())
+            .filter(|i| matches!(i.data, Data::Typed(_)))
+            .map(|i| (i.data.kind(), i.line, i.end_line, fields(i)))
+            .collect()
+    }
+
+    #[test]
+    fn a_type_reads_the_attributes_of_an_item_a_section_and_an_aside() {
+        let s = settings(ATTRIBUTES);
+        let all = extract("Note.md", PIECES, &s);
+        assert_eq!(
+            read(&all),
+            [
+                ("chapter", 1, 1, json!({"depth": 1, "title": "One"})),
+                ("chapter", 2, 2, json!({"depth": 2, "title": "Two"})),
+                ("box", 3, 3, json!({"state": "x", "words": "done thing"})),
+                ("box", 4, 4, json!({"state": " ", "words": "tabbed"})),
+                ("box", 5, 5, json!({"state": "/", "words": null})),
+                (
+                    "note-box",
+                    9,
+                    10,
+                    json!({"kind": "warning", "fold": "closed", "title": "Hot lava"})
+                ),
+                (
+                    "note-box",
+                    12,
+                    13,
+                    json!({"kind": "note", "fold": null, "title": null})
+                ),
+                ("said", 15, 16, json!({"words": "said first"})),
+            ]
+        );
+        let kinds: Vec<&str> = all.iter().map(|i| i.data.kind()).collect();
+        assert_eq!(
+            kinds.iter().filter(|k| **k == "list").count(),
+            2,
+            "a bracket with no space after it is no checkbox, and a plain item has none: {kinds:?}"
+        );
+        let done = all.iter().find(|i| i.line == 3).unwrap();
+        assert_eq!(spans(PIECES, done, "state"), ["x"]);
+        let hot = all.iter().find(|i| i.data.kind() == "note-box").unwrap();
+        assert_eq!(
+            spans(PIECES, hot, "kind"),
+            ["WARNING"],
+            "the kind where it is written"
+        );
+    }
+
+    /// An attribute is the owner's reading in the workspace's flavour: one without task lists
+    /// has no checkboxes, so nothing carries `checkbox` there, and a heading has its level in
+    /// every flavour.
+    #[test]
+    fn attributes_follow_the_flavour() {
+        let table: toml::Table = toml::from_str(ATTRIBUTES).unwrap();
+        let kinds = |flavour: &str| {
+            let found = load(vec![
+                Layer::built_in(),
+                Layer::config(Path::new("config.toml"), table.clone()),
+            ]);
+            let nowhere = Path::new("/nonexistent-cold-lava-workspace");
+            let s = Settings::new(
+                Flavour::built_in(flavour).unwrap(),
+                TasksSettings::load(nowhere),
+                daily::Settings::load(nowhere),
+                crate::templates::Settings::default(),
+                found,
+            );
+            let all = extract("Note.md", "# One\n- [x] done thing\n", &s);
+            all.iter()
+                .map(|i| i.data.kind().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kinds("obsidian"), ["chapter", "box"]);
+        assert_eq!(kinds("github"), ["chapter", "box"]);
+        assert_eq!(kinds("commonmark"), ["chapter", "list"]);
+    }
+
+    /// No type that reads an attribute, no attribute read: the built-in types alone find the
+    /// same items whether or not the walk could give a piece's attributes.
+    #[test]
+    fn an_attribute_nobody_names_is_on_no_item() {
+        let s = settings_with(vec![Layer::built_in()]);
+        let all = extract("Note.md", PIECES, &s);
+        assert!(all.iter().all(|i| i.attributes.is_empty()));
+        assert!(
+            all.iter()
+                .all(|i| !serde_json::to_string(i).unwrap().contains("attributes"))
+        );
+        let typed = settings(ATTRIBUTES);
+        let done = extract("Note.md", PIECES, &typed)
+            .into_iter()
+            .find(|i| i.line == 3)
+            .unwrap();
+        let Data::Typed(t) = &done.data else { panic!() };
+        assert_eq!(
+            serde_json::to_value(typed.attributes_of(t)).unwrap(),
+            json!({"checkbox": "x"}),
+            "what the gateway adds to the item"
+        );
     }
 }

@@ -721,3 +721,34 @@ fn set_field_writes_only_when_the_file_is_as_read() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A field read from an attribute is written where the file's owner read it: a checkbox's
+/// character, a callout's kind. One the file doesn't write as text (a heading's level) can't
+/// be set, and none can be taken out.
+#[test]
+fn an_attribute_is_changed_where_its_owner_read_it() {
+    let s = settings(
+        "[box]\non = \"item\"\npriority = 2\nwhere.attribute = \"checkbox\"\n\
+         fields.state = { attribute = \"checkbox\" }\nfields.words = { rest = true }\n\
+         [note-box]\non = \"aside\"\nfields.kind = { attribute = \"callout\" }\n\
+         [chapter]\non = \"section\"\nfields.depth = { attribute = \"level\", type = \"number\" }\n",
+    );
+    let text = "# One\n- [ ] sweep\n\n> [!NOTE]- Careful\n> hot\n";
+    let ticked = text.replace("[ ]", "[/]");
+    assert_eq!(after(&s, text, 2, "box", "state", json!("/")), ticked);
+    assert_eq!(after(&s, &ticked, 2, "box", "state", json!(" ")), text);
+    assert_eq!(
+        after(&s, text, 4, "note-box", "kind", json!("tip")),
+        text.replace("NOTE", "tip")
+    );
+    let gone = refusal(&s, text, 2, "box", "state", Json::Null);
+    assert!(
+        matches!(&gone, Refused(m) if m.contains("attribute checkbox") && m.contains("taken out")),
+        "{gone:?}"
+    );
+    let deeper = refusal(&s, text, 1, "chapter", "depth", json!(3));
+    assert!(
+        matches!(&deeper, Refused(m) if m.contains("attribute level") && m.contains("added")),
+        "{deeper:?}"
+    );
+}

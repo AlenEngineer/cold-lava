@@ -86,6 +86,49 @@ impl Settings {
             matcher,
         }
     }
+
+    /// The attributes `t`'s type read from the piece it is (`{ attribute = "checkbox" }`), by
+    /// name, each with the value of the first field that read it.
+    pub fn attributes_of(&self, t: &Typed) -> Attributes {
+        let mut found = Attributes::default();
+        let shape = (self.types.types.iter())
+            .find(|ty| ty.name == t.kind)
+            .and_then(|ty| ty.definition.from.get(t.place.shape));
+        let Some(shape) = shape else { return found };
+        for (field, source) in &t.place.sources {
+            let read = shape.fields.get(&**field).and_then(|s| s.0.get(*source));
+            if let (Some(types::Source::Attribute(name)), Some(value)) = (read, t.fields.get(field))
+                && !value.is_null()
+                && found.get(name).is_none()
+            {
+                found.set(name, value.clone());
+            }
+        }
+        found
+    }
+}
+
+/// A piece's attributes as an item carries them over the gateway: a name and a value each
+/// (docs/extensions.md, "The alphabet, as built"). Empty on an item as a note is read; the
+/// gateway fills it in for the items it hands out.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(transparent)]
+pub struct Attributes(Option<Box<serde_json::Map<String, serde_json::Value>>>);
+
+impl Attributes {
+    pub fn is_empty(&self) -> bool {
+        self.0.as_ref().is_none_or(|m| m.is_empty())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&serde_json::Value> {
+        self.0.as_ref()?.get(name)
+    }
+
+    pub fn set(&mut self, name: &str, value: serde_json::Value) {
+        self.0
+            .get_or_insert_default()
+            .insert(name.to_string(), value);
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -107,6 +150,9 @@ pub struct Item {
     pub rev: String,
     #[serde(flatten)]
     pub data: Data,
+    /// The attributes its type read, as the gateway hands them out; left out when it has none.
+    #[serde(default, skip_serializing_if = "Attributes::is_empty")]
+    pub attributes: Attributes,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -239,6 +285,8 @@ struct Candidate {
     /// A table row's table, and its cells in the source.
     table: usize,
     cells: Vec<Range<usize>>,
+    /// The attributes its text doesn't hold: a heading's level, a callout's kind.
+    given: matcher::Given,
 }
 
 /// What a pass through a note finds before types match.
@@ -266,6 +314,7 @@ struct Wants {
     paragraphs: bool,
     lists: bool,
     headings: bool,
+    asides: bool,
     inline: bool,
     tags: bool,
     links: bool,
@@ -283,6 +332,7 @@ impl Wants {
             paragraphs: want(On::Text),
             lists: want(On::Item),
             headings: want(On::Section),
+            asides: want(On::Aside),
             inline: want(On::Inline),
             tags: m.needs_tags || m.reads_tags,
             links: m.needs_links,
@@ -394,6 +444,16 @@ struct Open {
     leading: bool,
 }
 
+/// A quote or a callout the walk is inside, kept when some type is on `aside`.
+struct Aside {
+    section: Vec<String>,
+    parent: Option<usize>,
+    /// Its `[!kind]`: where the kind is written, and whether it folds.
+    callout: Option<(Range<usize>, Option<bool>)>,
+    /// Where its text starts: after its `[!kind]`, else at the first thing in it.
+    text: Option<usize>,
+}
+
 /// A walk through a note's tree, step by step, reading the blocks as pulldown-cmark had them:
 /// a block id, a list item's own lines and the line of the block before a lone `^id` all come
 /// out the same.
@@ -407,6 +467,8 @@ struct Walk<'a> {
     open: Vec<Open>,
     headings: Vec<(u8, String)>,
     quotes: usize,
+    /// The quotes and callouts it is inside, innermost last, when some type is on `aside`.
+    asides: Vec<Aside>,
     /// Inside a code block or the frontmatter.
     verbatim: usize,
     /// The level of the heading being read.
@@ -454,6 +516,7 @@ impl<'a> Walk<'a> {
             }],
             headings: Vec::new(),
             quotes: 0,
+            asides: Vec::new(),
             verbatim: 0,
             level: 0,
             code_at: 0,
@@ -511,6 +574,11 @@ impl<'a> Walk<'a> {
     }
 
     fn enter(&mut self, kind: Kind, at: usize) {
+        if let Some(aside) = self.asides.last_mut()
+            && aside.text.is_none()
+        {
+            aside.text = Some(at);
+        }
         if let Some(end) = self.pending.take() {
             if kind == Kind::Paragraph && self.lines.of(at) == self.lines.of(end) {
                 return;
@@ -548,6 +616,15 @@ impl<'a> Walk<'a> {
             Kind::BlockQuote | Kind::Callout => {
                 self.quotes += 1;
                 self.begin(at, None, false);
+                if self.wants.asides {
+                    let (section, parent) = (self.names(), self.enclosing());
+                    self.asides.push(Aside {
+                        section,
+                        parent,
+                        callout: None,
+                        text: None,
+                    });
+                }
             }
             Kind::FootnoteDefinition => self.begin(at, None, false),
             Kind::FencedCode | Kind::IndentedCode | Kind::Frontmatter => {
@@ -594,7 +671,10 @@ impl<'a> Walk<'a> {
             Kind::TableDelimiterRow => self.header(),
             Kind::BlockQuote | Kind::Callout => {
                 self.quotes = self.quotes.saturating_sub(1);
-                self.end();
+                let (block, _) = self.end();
+                if let Some(aside) = self.asides.pop() {
+                    self.aside(block, aside, at);
+                }
             }
             Kind::FencedCode | Kind::IndentedCode => {
                 self.verbatim = self.verbatim.saturating_sub(1);
@@ -629,6 +709,27 @@ impl<'a> Walk<'a> {
     }
 
     fn token(&mut self, kind: Kind, text: &str, at: usize) {
+        if let Some(aside) = self.asides.last_mut()
+            && aside.text.is_none()
+        {
+            match kind {
+                Kind::QuoteMarker | Kind::Whitespace | Kind::Newline => {}
+                // `[!kind]`, `[!kind]+` or `[!kind]-`, as the reader takes it apart.
+                Kind::CalloutMarker => {
+                    let name = text.trim_start_matches("[!");
+                    let close = name.find(']').unwrap_or(name.len());
+                    let start = at + (text.len() - name.len());
+                    let fold = match &name[close..] {
+                        "]-" => Some(true),
+                        "]+" => Some(false),
+                        _ => None,
+                    };
+                    aside.callout = Some((start..start + close, fold));
+                    aside.text = Some(at + text.len());
+                }
+                _ => aside.text = Some(at),
+            }
+        }
         match kind {
             Kind::Whitespace => {
                 if let Some(top) = self.open.last_mut()
@@ -688,6 +789,46 @@ impl<'a> Walk<'a> {
             && src[self.marker.end..end].trim().is_empty()
     }
 
+    /// A quote or a callout ends at `end`: a block for the types on `aside`. Its text is the
+    /// rest of its first line, a callout's title or a quote's first words, and its lines are
+    /// all of it.
+    fn aside(&mut self, block: Open, aside: Aside, end: usize) {
+        let lines = self.lines;
+        let mut last = lines.of(end.saturating_sub(1)).max(block.line);
+        while last > block.line && lines.blank(last) {
+            last -= 1;
+        }
+        let text = match aside.text {
+            Some(start) => {
+                let stop = lines.end(lines.of(start)).max(start);
+                let words = &lines.src[start..stop];
+                let lead = words.len() - words.trim_start().len();
+                start + lead..start + words.trim_end().len().max(lead)
+            }
+            None => block.start..block.start,
+        };
+        self.pass.candidates.push(Candidate {
+            on: On::Aside,
+            typeable: true,
+            // The types in its text are found in the paragraphs it holds.
+            own: text.start..text.start,
+            text,
+            raw: None,
+            line: block.line,
+            end_line: last,
+            section: aside.section,
+            parent: aside.parent,
+            block_id: None,
+            in_quote: self.quotes > 0,
+            table: 0,
+            cells: Vec::new(),
+            given: matcher::Given {
+                level: 0,
+                callout: aside.callout,
+            },
+        });
+    }
+
     fn heading(&mut self, end: usize) {
         let (block, _) = self.end();
         let level = self.level;
@@ -715,6 +856,10 @@ impl<'a> Walk<'a> {
                 in_quote: self.quotes > 0,
                 table: 0,
                 cells: Vec::new(),
+                given: matcher::Given {
+                    level,
+                    callout: None,
+                },
             });
         }
         self.pass.raws.push(Raw {
@@ -777,6 +922,7 @@ impl<'a> Walk<'a> {
                 in_quote: self.quotes > 0,
                 table: 0,
                 cells: Vec::new(),
+                given: matcher::Given::default(),
             });
         }
         let raw = &mut self.pass.raws[at];
@@ -847,6 +993,7 @@ impl<'a> Walk<'a> {
                 in_quote: self.quotes > 0,
                 table: 0,
                 cells: Vec::new(),
+                given: matcher::Given::default(),
             });
         }
     }
@@ -885,6 +1032,7 @@ impl<'a> Walk<'a> {
             in_quote: self.quotes > 0,
             table: self.pass.tables.len().saturating_sub(1),
             cells,
+            given: matcher::Given::default(),
         });
     }
 
@@ -983,6 +1131,7 @@ fn finish(
                             cells: &c.cells,
                             inside: inside.iter().map(String::as_str).collect(),
                             code: &code,
+                            given: c.given.clone(),
                         },
                     )
                 })
@@ -1030,6 +1179,7 @@ fn finish(
                 cells: &[],
                 inside: inside.iter().map(String::as_str).collect(),
                 code: &code,
+                given: matcher::Given::default(),
             };
             for (mut typed, key, r) in m.inline(&gate, &found, &block) {
                 let written = &block.text[r.clone()];
@@ -1111,6 +1261,7 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
             block_id: raw.block_id,
             rev: tasks::line_id(&own),
             data: raw.data,
+            attributes: Attributes::default(),
         });
         keys.push(key);
     }

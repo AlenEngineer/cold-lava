@@ -220,6 +220,17 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   names. Never drop an alias or print a role where a client reads the older name. An
   item's kinds (`task`, `list`, `heading`, `block`) are not roles and keep their names,
   because ids hash them; `items::KINDS` says how each maps to a role.
+  **Attributes** (#242) are what a piece carries beyond its text, a name and a value, given
+  by its owner. Markdown's are `checkbox` (an item), `level` (a section), `callout` and
+  `fold` (an aside). A shape tests one with `where.attribute` and reads one with the source
+  `{ attribute = "name" }`, beside the older sources, which all still read. Nothing keeps an
+  attribute while a note is read: `matcher::Attr` reads it off the block (`matcher::Given`
+  holds what the walk knows that the text doesn't) only when a shape names it, so a
+  workspace whose types name none pays nothing. Keep it that way: don't store attributes on
+  `items::Item` in the scan. Over the gateway an item carries the ones its type read
+  (`Item::attributes`, filled in by `gateway::attributed` from the item's fields, left out
+  when empty); `cold-lava items --json` never has them. An attribute's name is open: an
+  unknown one is no mistake, and matches nothing.
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an

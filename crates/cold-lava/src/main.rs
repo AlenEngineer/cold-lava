@@ -1453,6 +1453,7 @@ fn where_label(w: &types::Where) -> String {
         ("section", &w.section),
         ("language", &w.language),
         ("inside", &w.inside),
+        ("attribute", &w.attribute),
     ] {
         if !list.is_empty() {
             parts.push(format!("{key} {}", list.join(", ")));
@@ -1474,7 +1475,8 @@ fn source_label(s: &types::Source) -> String {
         | S::Flag(t)
         | S::Column(t)
         | S::Property(t)
-        | S::Children(t) => t.clone(),
+        | S::Children(t)
+        | S::Attribute(t) => t.clone(),
         S::Flags(glyphs) => glyphs
             .iter()
             .map(|(g, n)| format!("{g} {n}"))

@@ -503,13 +503,24 @@ pub(crate) fn answer_line<'a>(s: &Settings, line: &str, item: &'a Item) -> Cow<'
 /// `answer`, for an item of the note at `rel` (workspace-relative, with `.md`).
 fn answered(workspace: &Workspace, rel: &str, item: Item) -> Item {
     let rel = rel.strip_suffix(".md").unwrap_or(rel);
-    match workspace
+    let item = match workspace
         .notes
         .binary_search_by(|n| n.rel.as_str().cmp(rel))
     {
         Ok(i) => answer(workspace, &workspace.notes[i], &item).into_owned(),
         Err(_) => item,
+    };
+    attributed(workspace, item)
+}
+
+/// The item as it leaves the gateway: with the attributes its type read from its piece under
+/// `attributes`, by name. A note's items don't keep them (reading every note pays nothing for
+/// them): they are the values of the fields that read an attribute.
+fn attributed(workspace: &Workspace, mut item: Item) -> Item {
+    if let Data::Typed(t) = &item.data {
+        item.attributes = workspace.item_settings().attributes_of(t);
     }
+    item
 }
 
 impl Page {
@@ -532,7 +543,9 @@ pub fn query(workspace: &Workspace, q: &Query) -> Result<Found, Error> {
         return Err(Error::new(Reason::Changed, message));
     }
     let limit = q.page.limit.unwrap_or(usize::MAX).max(1);
-    let items: Vec<Item> = all.by_ref().take(limit).map(Cow::into_owned).collect();
+    let items: Vec<Item> = (all.by_ref().take(limit))
+        .map(|i| attributed(workspace, i.into_owned()))
+        .collect();
     let next = match items.len() == limit && all.next().is_some() {
         true => items.last().map(|i| i.id.clone()),
         false => None,
@@ -650,9 +663,10 @@ impl Subscriptions {
                         .cloned(),
                 );
                 for item in &now {
+                    let wire = || attributed(workspace, item.as_ref().clone());
                     match old.get(&item.id) {
-                        None => added.push(item.as_ref().clone()),
-                        Some(rev) if *rev != item.rev => updated.push(item.as_ref().clone()),
+                        None => added.push(wire()),
+                        Some(rev) if *rev != item.rev => updated.push(wire()),
                         Some(_) => {}
                     }
                 }
@@ -1224,6 +1238,45 @@ fields.text = { rest = true }
         let stale = refused(&mut core, &tick(&water));
         assert_eq!(stale.reason, Reason::Changed, "{stale}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An item leaves the gateway with the attributes its type read, by name, under
+    /// `attributes`, after its fields. An item whose type read none has no such key, so a client
+    /// written before attributes sees what it always saw.
+    #[test]
+    fn an_item_carries_the_attributes_its_type_read() {
+        let dir = std::env::temp_dir().join(format!(
+            "cold-lava-gateway-attributes-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        let types = "version = 1\n[types.box]\non = \"item\"\npriority = 2\n\
+                     where.attribute = \"checkbox\"\n\
+                     fields.state = { attribute = \"checkbox\" }\n\
+                     fields.words = { rest = true }\n";
+        std::fs::write(dir.join(".cold-lava/types.toml"), types).unwrap();
+        std::fs::write(dir.join("Note.md"), "- [x] sweep\n- plain\n").unwrap();
+        let core = Core::open(&dir).unwrap();
+        let of = |kind: &str| {
+            let found = core.query_items(&all(select(kind, Filter::default())));
+            found.unwrap().items.remove(0)
+        };
+        let item = of("box");
+        let json = json!({
+            "id": item.id, "note": "Note.md", "line": 1, "end_line": 1, "section": [],
+            "parent": null, "block_id": null, "rev": item.rev,
+            "kind": "box", "state": "x", "words": "sweep",
+            "attributes": {"checkbox": "x"},
+        });
+        assert_eq!(serde_json::to_value(&item).unwrap(), json);
+        let back: Item = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(back).unwrap(), json, "it reads back");
+        let plain = serde_json::to_value(of("list")).unwrap();
+        assert_eq!(plain["text"], "plain");
+        assert_eq!(plain.get("attributes"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn item() -> Item {

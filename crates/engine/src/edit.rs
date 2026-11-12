@@ -256,7 +256,13 @@ fn describe(s: &Source) -> String {
 /// The value asked for, as the field carries it.
 fn input(src: &Source, v: &Value, value: &Json, daily_format: &str) -> Result<Json, String> {
     // A checkbox holds one character as written, and a space is a status.
-    if let (Source::Checkbox(_), Json::String(s)) = (src, value)
+    let checkbox = match src {
+        Source::Checkbox(_) => true,
+        Source::Attribute(name) => name == "checkbox",
+        _ => false,
+    };
+    if let Json::String(s) = value
+        && checkbox
         && s.chars().count() == 1
     {
         return matcher::parse_as_written(v, s, daily_format)
@@ -366,6 +372,18 @@ impl Writer<'_> {
                 None => Err(Refused(format!(
                     "{field} has no value to replace, and its pattern says where a value is \
                      read, not where to add one"
+                ))),
+            },
+            // An attribute's value is where its owner read it: a checkbox's character, a
+            // callout's kind. The engine doesn't know how the file writes one that isn't there.
+            Source::Attribute(name) => match existing {
+                Some(span) if !remove => Ok(Splice {
+                    range: span,
+                    with: self.written(false)?,
+                }),
+                _ => Err(Refused(format!(
+                    "{field} is the attribute {name}, which can be changed where it is                      written but not {} here",
+                    if remove { "taken out" } else { "added" }
                 ))),
             },
             Source::Marker(glyph) => match existing {

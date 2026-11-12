@@ -232,6 +232,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                         block_id: None,
                         rev: line_id(&Json::Object(fields.clone()).to_string()),
                         data: Data::Typed(Box::new(typed)),
+                        attributes: Default::default(),
                     });
                 }
                 Err(e) => out.problems.push(format!("{place}: {e}")),
