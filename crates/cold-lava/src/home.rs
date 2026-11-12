@@ -464,6 +464,60 @@ enum Mode {
     Board,
 }
 
+impl Mode {
+    /// What this mode holds that would be gone if an extension's request took its place: a
+    /// prompt, a dialog waiting for an answer, a typed query. In words for the status line,
+    /// after "not while". Every mode answers and there is no arm for the rest, so a mode can't
+    /// be added without saying. A prompt counts with nothing typed yet, since the next keys
+    /// are meant for it; a picker counts once something is typed. The whiteboard answers for
+    /// itself (`Board::unsaved_work`).
+    fn unsaved(&self) -> Option<&'static str> {
+        match self {
+            Mode::Normal
+            | Mode::Help
+            | Mode::Keys
+            | Mode::Hints(_)
+            | Mode::Peek { .. }
+            | Mode::Tidy(_)
+            | Mode::View { .. }
+            | Mode::Board => None,
+            Mode::Filter => Some("the notes are being filtered"),
+            Mode::NewNote { .. } => Some("a new note's name is being typed"),
+            Mode::AddWorkspace(_) => Some("a workspace's folder is being typed"),
+            Mode::NewFolder(_) => Some("a new folder's name is being typed"),
+            Mode::Rename { moving: false, .. } => Some("a new name is being typed"),
+            Mode::Rename { moving: true, .. } | Mode::MoveMarked(_) => {
+                Some("a folder to move to is being typed")
+            }
+            Mode::Tag { .. } => Some("a tag is being typed"),
+            Mode::ConfirmRename { waiting: None, .. } => Some("a rename waits for your answer"),
+            Mode::ConfirmRename {
+                waiting: Some(_), ..
+            } => Some("a rename waits for its files' owners"),
+            Mode::ConfirmMerge { waiting: None, .. } => Some("a merge waits for your answer"),
+            Mode::ConfirmMerge {
+                waiting: Some(_), ..
+            } => Some("a merge waits for its files' owners"),
+            Mode::ConfirmDelete(_) => Some("a delete waits for your answer"),
+            Mode::ConfirmRestore(_) => Some("an undo waits for your answer"),
+            Mode::Switcher { query, .. } => {
+                (!query.is_empty()).then_some("a note's name is being typed")
+            }
+            Mode::Palette { query, .. } => {
+                (!query.is_empty()).then_some("a command is being typed")
+            }
+            Mode::Search { query, .. } => (!query.is_empty()).then_some("a search is being typed"),
+            Mode::Outline { query, .. } => {
+                (!query.is_empty()).then_some("a heading is being typed")
+            }
+            Mode::Bookmarks { query, .. } => {
+                (!query.is_empty()).then_some("a bookmark is being typed")
+            }
+            Mode::Recipe(view) => view.unsaved(),
+        }
+    }
+}
+
 /// A note, board or folder about to go to the trash, as the user was shown it.
 struct Doomed {
     path: PathBuf,
@@ -1090,13 +1144,14 @@ impl Home {
         }
     }
 
-    /// What the whiteboard in front would lose if something else took its place now (a draft
-    /// in its shape editor, a card being typed). Only the user's own keys leave it then: what
+    /// What would be lost if something else took the place of what is in front: the board's
+    /// answer (a draft in its shape editor, a card being typed), else the mode's (a prompt, a
+    /// dialog, a typed query: `Mode::unsaved`). Only the user's own keys leave it then: what
     /// an extension asks for that would is not done (`held_back`).
     fn unsaved_in_front(&self) -> Option<&'static str> {
         match (&self.mode, &self.board) {
             (Mode::Board, Some(b)) => b.unsaved_work(),
-            _ => None,
+            (mode, _) => mode.unsaved(),
         }
     }
 
@@ -1108,8 +1163,9 @@ impl Home {
         self.refused(notice);
     }
 
-    /// A notice that something was refused to keep the whiteboard in front as it is. The board
-    /// says it, and counts those it hasn't shown yet (`Board::refused`).
+    /// A notice that something was refused to keep what is in front as it is. The whiteboard
+    /// says its own, and counts those it hasn't shown yet (`Board::refused`); over a prompt or
+    /// a dialog it is on the status line.
     fn refused(&mut self, notice: String) {
         if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
             return b.refused(notice);

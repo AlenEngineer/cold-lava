@@ -156,6 +156,19 @@ change commands, keys and file formats; patch versions only fix things.
   (`column can't be read on document (note); only on row (table-row)`, where it said `on note
   (only on table-row)`), and an unknown `on` lists the roles and the older names.
 
+### Fixed
+
+- An extension can no longer close a prompt, a dialog or a typed query (#269). While a new
+  note's or folder's name, a workspace's folder, a new name, a folder to move to, a tag, the
+  notes filter or a recipe's options were being typed, an extension that opened a note,
+  opened or showed a view, or ran a command replaced the prompt and the text was gone. The
+  same closed a rename, merge, delete, undo or recipe waiting for an answer, and a rename
+  that was already waiting for the owners of its files was then never made. Now the request
+  is not done and the status line says why (`open-tasks wanted to open Volcanoes/Krakatoa.md:
+  not while a new note's name is being typed`), as the whiteboard already did for a card
+  being edited. The switcher, the palette, the search, the outline and the bookmarks are
+  kept the same way once something is typed in them. Nothing was lost on disk before either.
+
 ## [0.6.0] - 2026-11-11
 
 One reading of a note, and one door into the engine. Everything that reads a note (the reader,

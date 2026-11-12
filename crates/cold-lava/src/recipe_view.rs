@@ -52,6 +52,20 @@ impl RecipeView {
         }
     }
 
+    /// What the dialog holds that closing it would lose, in words for the status line:
+    /// options being filled, or a plan shown or waiting for owners. The list of recipes holds
+    /// nothing.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        match &self.step {
+            Step::Pick { .. } => None,
+            Step::Options { .. } => Some("a recipe's options are being typed"),
+            Step::Plan { waiting: None, .. } => Some("a recipe waits for your answer"),
+            Step::Plan {
+                waiting: Some(_), ..
+            } => Some("a recipe waits for its files' owners"),
+        }
+    }
+
     /// The options step again, saying why the plan was refused.
     pub fn refused(&mut self, why: String) {
         if let Step::Options { error, .. } = &mut self.step {

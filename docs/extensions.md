@@ -3187,7 +3187,13 @@ design for an extension that needs it, and nothing is built of it.
   as before (`q` in the editor warns once about unsaved changes). `board-keeps-drafts.drive`
   checks the card and the editor with an example patched to open a note unasked,
   `board-keeps-drafts-view.drive` and `board-keeps-drafts-command.drive` a view shown and a
-  command run, and `board-keeps-unsaved.drive` edits a refused save left. What an extension
+  command run, and `board-keeps-unsaved.drive` edits a refused save left. The menu's own
+  prompts and dialogs are kept by the same check (`Mode::unsaved`, #269): a prompt being
+  typed, a dialog waiting for an answer or for owners, and the switcher, the palette, the
+  search, the outline and the bookmarks once something is typed in them. Each mode says
+  what it holds, in a match with no arm for the rest, so a new mode has to answer; the
+  notice is on the status line (`prompt-keeps-typed.drive`,
+  `prompt-keeps-typed-command.drive`, `confirm-keeps-waiting.drive`). What an extension
   asks for inside the board's calls to it about its shapes (`shape/region`, a gesture's steps:
   `ui/notify`, `ui/status`, opening a note) the board keeps (`Board::take_asked`) and the menu
   does after each tick, key and mouse event, as after any call to an extension, within the
