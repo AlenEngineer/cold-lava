@@ -519,6 +519,7 @@ fn lines_given(text: &str) -> Given {
     Given {
         items: text.lines().enumerate().map(piece).collect(),
         links: Vec::new(),
+        between: Vec::new(),
     }
 }
 

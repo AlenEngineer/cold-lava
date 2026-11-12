@@ -2179,7 +2179,7 @@ mod tests {
     #[test]
     fn a_boards_cards_are_pieces_and_its_items_dont_move() {
         use crate::gateway::{Page, Query, Reason, Select};
-        use crate::owner::given::{GivenItem, GivenLink};
+        use crate::owner::given::GivenItem;
         use serde_json::json;
         let dir = std::env::temp_dir().join(format!("cold-lava-cards-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2211,10 +2211,10 @@ mod tests {
 
         // What the owner gave before cards were pieces, read alone.
         let markdown = |i: &&GivenItem| matches!(i, GivenItem::Markdown { .. });
-        let to_file = |l: &&GivenLink| matches!(l, GivenLink::File { .. });
         let before = Given {
             items: file.given.items.iter().filter(markdown).cloned().collect(),
-            links: file.given.links.iter().filter(to_file).cloned().collect(),
+            links: file.given.links.clone(),
+            between: Vec::new(),
         };
         let was = given::read("Board.canvas", &before, settings);
         // The two tasks, and the one paragraph, which a type on every text takes. That type
@@ -2233,8 +2233,11 @@ mod tests {
         for item in &was.items {
             assert_eq!(file.places.get(&item.id), was.places.get(&item.id));
         }
-        let arrows = file.given.links.len() - before.links.len();
-        assert_eq!(arrows, 1, "the arrow to the group is not given");
+        assert_eq!(
+            file.given.between.len(),
+            1,
+            "the arrow to the group is not given"
+        );
 
         // The cards a type asks for are items: the three text cards, each where it sits.
         let cards = |core: &Core| {

@@ -21,6 +21,14 @@ and where it and another document disagree about an idea, it is right. The order
 the first section of roadmap issue #100: the engine-facing work first (one
 path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
 
+**How code is built** is the last section of `docs/foundations.md` ("Tools, called by a
+simple loop, all the way down"): every unit is a caller (it only calls its tools in order) or
+a leaf (it needs nothing but a dependency the project doesn't control); a tool owns its
+state; complexity for speed is a stated decision, written where it is. Write new code that
+way. When you meet a unit that is neither, split it; don't add to it. Much of the existing
+code doesn't meet this yet (`home.rs`, `board.rs`, `owner/given.rs`; #264, #265): don't copy
+their shape, and don't refactor them inside a feature PR.
+
 cold-lava's word for a folder of notes is **workspace**, in the UI, the CLI, the docs and the
 code. "Vault" is only for Obsidian's own concept (an Obsidian vault, Obsidian's vault list,
 `obsidian://open?vault=`).
@@ -186,13 +194,15 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   engine's `.canvas` owner (`owner::BUILT_IN`). It speaks the alphabet: each card is a piece
   at the node's place (`text`; `embed` for a file card or a web page; `opaque` for a type it
   doesn't know), placed by the attributes `x`, `y`, `width`, `height`, and each arrow a link
-  between two pieces (`GivenLink::Between`, `{from, to, label}`), carried and never
+  between two pieces (`given::Between`, `{from, to, label}` in `links` on the wire and
+  `Given::between` in the engine), carried and never
   interpreted. What a board gave before is still given beside them, unchanged: a text
   card's text as a Markdown piece and a file card's link, both at the same place. **A
   board's items, links, ids and revs must not move**: a card's piece is an item only when a
-  type tests for one of its attributes (`matcher/piece.rs`: a piece with no words of its
-  own at the place of a Markdown piece matches only a shape whose `where.attribute` it
-  carries; the owner gives every text card that Markdown piece, empty or not), a group is not given (a `section` piece would be a new heading on every
+  type tests for one of its attributes (`matcher/piece.rs`, the one place for it: a piece
+  with no words matches only a shape whose `where.attribute` it carries, for every owner),
+  the owner asks `given::Places` which cards and arrows the engine takes instead of
+  restating its bounds, a group is not given (a `section` piece would be a new heading on every
   board), and the owner gives no piece the engine would report. A card's Markdown becomes a
   fragment with #244, not before. No extension may claim a built-in owner's kind.
   **One path for owned files** (#183): a file that isn't a note is changed the same way
@@ -479,7 +489,9 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
   everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
-- `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
+- `drive.rs`: `cold-lava drive`, scripted UI runs (its `write` step changes a workspace file
+  with `std::fs` on purpose, as another program would: the one exception `tests/one_door.rs`
+  lists for it): the real binary in a pty, screen read back
   with vt100, cursor-position queries answered, the mouse clicked, dragged and scrolled.
   `graph.drive` and `board.drive` pin the graph and the whiteboard.
 
@@ -511,6 +523,11 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,
   patch = fixes only.
 - Commit messages: a short summary line, then what changed and why.
+- **Two reviews before a merge, by two different agents.** One checks behaviour (CI's
+  binaries against main's, trying to break the claim). The other checks design: the
+  `design-reviewer` agent (`.claude/agents/design-reviewer.md`), which reads the diff against
+  `docs/foundations.md` and runs nothing. Neither is the PR's author. A design finding marked
+  "must fix" blocks the merge as a behaviour finding does.
 
 ## Testing the UI
 

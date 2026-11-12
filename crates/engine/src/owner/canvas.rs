@@ -29,11 +29,9 @@
 
 use crate::alphabet::Role;
 use crate::json_canvas::{self, CNode, Field};
-use crate::owner::given::{
-    Change, Given, GivenItem, GivenLink, MAX_BETWEEN, MAX_PLACE, MAX_TARGET, Piece,
-};
+use crate::owner::given::{Between, Change, Given, GivenItem, GivenLink, Piece, Places};
 use serde_json::{Map, Value as Json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// The kind of file it reads, and its name in messages.
 pub const EXTENSION: &str = "canvas";
@@ -103,71 +101,69 @@ fn attributes(n: &CNode) -> Map<String, Json> {
 
 /// A canvas's items and links: each card a piece, placed; a text card's text a Markdown piece
 /// at the same place; a file card a link to its file; an arrow a link between two pieces.
+///
+/// A canvas is another program's file, so the owner gives only the pieces and arrows the
+/// engine takes, and asks the engine which those are (`given::Places`): a node whose id is
+/// empty, too long, or the place another node already has gets no piece, an arrow past the
+/// bounds or with an end that is no piece (a group, a node that isn't there) is not given,
+/// and both stay in the file. A node's text and file are read as ever.
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
-    let mut given = Given::default();
     let places = places(doc.nodes.iter().map(|n| n.id.as_str()));
-    // The places that hold a piece. A place the engine would refuse (an empty id, one too
-    // long, one another node's place already is) holds none, and the node's text and file are
-    // read as ever.
-    let mut pieces: HashSet<String> = HashSet::new();
-    // The places a text node's own text is at. With ids that repeat, or that look like a
-    // repeated id's place, two nodes can have one place: the text written is what is there.
-    let texts = doc.nodes.iter().zip(&places);
-    let written: HashSet<String> = texts
-        .filter(|(n, _)| n.kind == "text" && n.text.is_some())
-        .map(|(_, place)| place.clone())
-        .collect();
-    for (n, place) in doc.nodes.into_iter().zip(places) {
-        let fits = !place.is_empty() && place.len() <= MAX_PLACE && !pieces.contains(&place);
-        let role = role(&n.kind).filter(|_| fits);
-        let carded = role.is_some();
-        if let Some(role) = role {
-            pieces.insert(place.clone());
-            given.items.push(GivenItem::Piece(Piece {
+    // Each node's card, when it is one.
+    let cards: Vec<Option<Piece>> = (doc.nodes.iter().zip(&places))
+        .map(|(n, place)| {
+            let role = role(&n.kind)?;
+            Some(Piece {
                 place: place.clone(),
                 role,
-                attributes: attributes(&n),
+                attributes: attributes(n),
                 text: Vec::new(),
                 inside: None,
                 cells: Vec::new(),
-            }));
+            })
+        })
+        .collect();
+    // The cards and the arrows the engine takes, asked in the answer's order.
+    let mut taken = Places::default();
+    let mut kept: Vec<bool> = Vec::with_capacity(cards.len());
+    for card in &cards {
+        let fits = card.as_ref().filter(|card| taken.fits(card).is_ok());
+        kept.push(fits.is_some());
+        if let Some(card) = fits {
+            taken.take(card);
         }
+    }
+    // An arrow names two ids, and the first node of an id has the id as its place.
+    let mut between: Vec<Between> = Vec::new();
+    for e in doc.edges {
+        let arrow = Between {
+            from: e.from_node,
+            to: e.to_node,
+            label: e.label.unwrap_or_default(),
+        };
+        if taken.joins(&arrow, between.len()).is_ok() {
+            between.push(arrow);
+        }
+    }
+    let mut given = Given {
+        between,
+        ..Given::default()
+    };
+    let nodes = doc.nodes.into_iter().zip(places);
+    for ((n, place), (card, kept)) in nodes.zip(cards.into_iter().zip(kept)) {
+        given
+            .items
+            .extend(card.filter(|_| kept).map(GivenItem::Piece));
         match (n.kind.as_str(), n.text, n.file) {
             ("text", Some(text), _) => given.items.push(GivenItem::Markdown { place, text }),
-            // A text card with no `text` written is given its Markdown too, empty: every text
-            // card's words are the Markdown piece at its place, which is what tells the engine
-            // that the card's own piece has none to match. Only beside the card's piece, and
-            // never at a place where a node's written text is: nothing that was read before
-            // may find another piece where it stood.
-            ("text", None, _) if carded && !written.contains(&place) => {
-                let text = String::new();
-                given.items.push(GivenItem::Markdown { place, text });
-            }
-            ("file", _, Some(file)) => given.links.push(GivenLink::File {
+            ("file", _, Some(file)) => given.links.push(GivenLink {
                 target: file.clone(),
                 place,
                 text: file,
             }),
             _ => {}
-        }
-    }
-    // An arrow names two ids, and the first node of an id has the id as its place. One with an
-    // end that is no piece (a group, a node that isn't there) stays in the file, not given.
-    // Nor is one past what the engine takes of an answer (a label over 4096 bytes, more
-    // arrows than 65,536): the owner gives nothing the engine would report.
-    let mut arrows = 0;
-    for e in doc.edges {
-        let label = e.label.unwrap_or_default();
-        let fits = label.len() <= MAX_TARGET && arrows < MAX_BETWEEN;
-        if fits && pieces.contains(&e.from_node) && pieces.contains(&e.to_node) {
-            arrows += 1;
-            given.links.push(GivenLink::Between {
-                from: e.from_node,
-                to: e.to_node,
-                label,
-            });
         }
     }
     Ok(given)
@@ -294,10 +290,9 @@ mod tests {
     /// files, which every item, link and id of a board comes from.
     fn as_before(given: &Given) -> (Vec<GivenItem>, Vec<GivenLink>) {
         let markdown = |i: &&GivenItem| matches!(i, GivenItem::Markdown { .. });
-        let file = |l: &&GivenLink| matches!(l, GivenLink::File { .. });
         (
             given.items.iter().filter(markdown).cloned().collect(),
-            given.links.iter().filter(file).cloned().collect(),
+            given.links.clone(),
         )
     }
 
@@ -314,7 +309,7 @@ mod tests {
         );
         assert_eq!(
             links,
-            vec![GivenLink::File {
+            vec![GivenLink {
                 target: "Volcanoes/Lava.md".into(),
                 place: "c".into(),
                 text: "Volcanoes/Lava.md".into()
@@ -377,11 +372,12 @@ mod tests {
         assert_eq!(serde_json::from_str::<Given>(&wire).unwrap(), given);
     }
 
-    /// An empty Markdown piece is given for a text card with no text, and it never stands
-    /// where a node's written text does. Two boards whose ids collide: what a board gave
-    /// before cards were pieces is given as it was, one Markdown piece a place.
+    /// With ids that repeat, or an id that is literally a repeated id's place, a board gives
+    /// the Markdown pieces it gave before cards were pieces: one for each text written, at its
+    /// node's place, and none for a card with no text. Two such boards whose tasks must stay
+    /// editable, and a card with no text on its own.
     #[test]
-    fn an_empty_cards_markdown_never_takes_a_written_texts_place() {
+    fn a_board_gives_the_markdown_it_gave_whatever_its_ids() {
         let markdown = |board: &str| -> Vec<(String, String)> {
             let items = read(board).unwrap().items.into_iter();
             let piece = |i: GivenItem| match i {
@@ -411,9 +407,45 @@ mod tests {
             markdown(second),
             [pair("t", "- [ ] one"), pair("t\u{1f}1", "- [ ] two")]
         );
-        // On its own, a card with no text has its empty Markdown, beside its piece.
+        // A card with no text has a piece and nothing written.
         let alone = r##"{"nodes":[{"id":"n","type":"text"},{"id":"","type":"text"}]}"##;
-        assert_eq!(markdown(alone), [pair("n", "")]);
+        assert!(markdown(alone).is_empty());
+        assert_eq!(read(alone).unwrap().items.len(), 1, "the card at n");
+    }
+
+    /// Every card and arrow the owner gives is one the engine takes: read as the engine reads
+    /// an answer, a board of hostile nodes and arrows has nothing to report.
+    #[test]
+    fn the_engine_reports_nothing_of_what_the_owner_gives() {
+        let long = "i".repeat(crate::owner::given::MAX_PLACE + 1);
+        let label = "L".repeat(crate::owner::given::MAX_LABEL + 1);
+        let board = format!(
+            r##"{{"nodes":[
+                {{"id":"","type":"text","text":"x"}},
+                {{"id":"{long}","type":"file","file":"A.md"}},
+                {{"id":"t","type":"text","text":"one"}},
+                {{"id":"t","type":"text"}},
+                {{"id":"t\u001f1","type":"sparkle"}},
+                {{"id":"g","type":"group"}}
+            ],"edges":[
+                {{"id":"e","fromNode":"t","toNode":"t","label":"{label}"}},
+                {{"id":"e","fromNode":"t","toNode":"g"}},
+                {{"id":"e","fromNode":"","toNode":"t"}},
+                {{"id":"e","fromNode":"t","toNode":"t","label":"kept"}}
+            ]}}"##
+        );
+        let given = read(&board).unwrap();
+        assert_eq!(given.between.len(), 1);
+        let mut taken = Places::default();
+        for item in &given.items {
+            if let GivenItem::Piece(card) = item {
+                assert_eq!(taken.fits(card), Ok(()));
+                taken.take(card);
+            }
+        }
+        for (nth, arrow) in given.between.iter().enumerate() {
+            assert_eq!(taken.joins(arrow, nth), Ok(()));
+        }
     }
 
     /// A canvas is another program's file. Whatever its nodes say, every piece the owner
@@ -421,7 +453,7 @@ mod tests {
     /// and its text is read as ever.
     #[test]
     fn a_node_that_cant_be_a_piece_keeps_its_text() {
-        let long = "i".repeat(MAX_PLACE + 1);
+        let long = "i".repeat(crate::owner::given::MAX_PLACE + 1);
         let board = format!(
             r##"{{"nodes":[
                 {{"id":"","type":"text","text":"- [ ] No id","x":1e300,"y":-1e300}},
@@ -446,8 +478,7 @@ mod tests {
             })
             .collect();
         assert_eq!(places, ["t", "t\u{1f}1", "\u{1b}]0;x\u{7}"]);
-        let between = |l: &&GivenLink| matches!(l, GivenLink::Between { .. });
-        assert_eq!(given.links.iter().filter(between).count(), 1);
+        assert_eq!(given.between.len(), 1);
     }
 
     #[test]
