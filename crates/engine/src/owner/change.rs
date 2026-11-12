@@ -47,7 +47,7 @@ fn what(field: &str, value: &Json) -> String {
 /// The task `item` is and its status symbol as it is now, for a tick: refused when it is no
 /// task, has no status, or recurs. Ticking a recurring task adds its next occurrence, a new
 /// piece, and nothing adds a piece yet.
-fn ticked<'a>(item: &'a Item, s: &Settings) -> Result<(&'a Typed, char), Error> {
+fn ticked(item: &Item) -> Result<(&Typed, char), Error> {
     let typed: &Typed = match &item.data {
         Data::Typed(typed) if item.data.answers_to("task") => typed,
         other => {
@@ -113,7 +113,7 @@ fn next_for_a_piece(symbol: char, s: &Settings) -> Result<char, String> {
 pub fn piece(p: &Piece, item: &Item, op: &Op, s: &Settings) -> Result<Made, Error> {
     match op {
         Op::Toggle => {
-            let (typed, now) = ticked(item, s)?;
+            let (typed, now) = ticked(item)?;
             let next = next_for_a_piece(now, s).map_err(refused)?;
             let next = Json::String(next.to_string());
             let changes = vec![set(p, typed, "status", &next, s)?];
@@ -312,7 +312,7 @@ pub fn typed(place: &str, item: &Item, op: &Op, s: &Settings) -> Result<Made, Er
             Ok(Made { changes, what })
         }
         Op::Toggle => {
-            let (typed, now) = ticked(item, s)?;
+            let (typed, now) = ticked(item)?;
             let next = s.tasks.next_symbol(now);
             let has = |name: &str| typed.fields.get(name).is_some_and(|v| !v.is_null());
             let fields = ["status", "status_type"].into_iter().filter(|f| has(f));
