@@ -542,6 +542,17 @@ impl Core {
             return Err(error(Reason::Changed, message));
         }
         let place = file.places[&edit.id].clone();
+        let is_piece = |g: &given::GivenItem| {
+            let id = |p: &given::Piece| given::piece_id(&file.rel, item.data.kind(), &p.place);
+            matches!(g, given::GivenItem::Piece(p) if p.place == place && id(p) == edit.id)
+        };
+        if file.given.items.iter().any(is_piece) {
+            let message = format!(
+                "{} in {} is a piece {} gave, and a piece can't be changed yet",
+                edit.id, file.rel, file.owner
+            );
+            return Err(error(Reason::Refused, message));
+        }
         let piece = file.given.items.iter().find_map(|g| match g {
             given::GivenItem::Markdown { place: p, text } if *p == place => Some(text),
             _ => None,
@@ -1337,6 +1348,10 @@ fn watch(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWat
 /// The harness for what subscribers hear, and its tests.
 #[cfg(test)]
 pub(crate) mod news;
+
+/// An owner of a made-up format that isn't Markdown, and what the workspace makes of its pieces.
+#[cfg(test)]
+mod pieces;
 
 #[cfg(test)]
 mod tests {

@@ -36,6 +36,9 @@ const READ: &[On] = &[
 
 pub use crate::fields::{Fields, Name, Spans};
 
+mod piece;
+pub use piece::{Asked, Carried};
+
 /// A typed item's kind, the types it answers to, and its fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Typed {
@@ -84,6 +87,9 @@ pub struct Matcher {
     /// Some shape has `where.inside`.
     pub needs_inside: bool,
     daily: daily::Settings,
+    /// How each shape reads a piece an owner gave, made the first time one is matched
+    /// (`piece`): a workspace with no such owner never makes it.
+    pieces: std::sync::OnceLock<piece::Shapes>,
 }
 
 /// An attribute the note's structure gives a piece (docs/extensions.md, "The alphabet, as

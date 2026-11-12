@@ -269,6 +269,75 @@ class Extension:
         return json.loads(body.decode("utf-8")) if body else None
 
 
+# Pieces: what a file holds, said in cold-lava's alphabet instead of as Markdown
+# (docs/extensions.md, "Pieces, as built"). An owner whose format isn't Markdown answers
+# `file/read` with {"items": [piece(...), ...]} and never escapes a character: text is plain.
+# Give pieces only when `initialize` said `alphabet` 2 or more.
+
+
+def piece(place, role, text=None, attributes=None, inside=None, cells=None):
+    """One piece of a file. `place` is your own name for the spot, which cold-lava hands back
+    with a change. `role` is one of document, section, text, item, row, aside, verbatim, embed,
+    opaque. `text` is a string of plain characters or a list of runs (strings, `marked`, `link`,
+    `label`, `field`). `attributes` are what it carries beyond its text, by name: text, a
+    number, True or False ({"task": True, "checkbox": "open", "due": "2026-11-20"}; a checkbox
+    is open, done, in-progress or cancelled). `inside` is the place of the piece it is in,
+    given before it. `cells` are a row's, as (name, text) pairs, instead of `text`."""
+    out = {"place": place, "role": role}
+    if attributes:
+        out["attributes"] = attributes
+    if text:
+        out["text"] = runs(text)
+    if inside is not None:
+        out["in"] = inside
+    if cells:
+        out["cells"] = [{"name": name, "text": runs(text)} for name, text in cells]
+    return out
+
+
+def runs(text):
+    """A piece's text as a list of runs: a string is one plain run."""
+    if not text:
+        return []
+    return [text] if isinstance(text, (str, dict)) else list(text)
+
+
+def marked(text, *marks):
+    """Characters with marks: emphasis, strong, struck, highlighted, code, math."""
+    return {"text": text, "marks": list(marks)}
+
+
+def link(target, text=None):
+    """A link to a file of the workspace, as `[[target]]` would name it, or to an address on
+    the web, showing `text` (else its target)."""
+    return {"link": target, "text": text} if text else {"link": target}
+
+
+def label(name):
+    """A label, which Markdown writes as a tag. The name has no `#`."""
+    return {"label": name}
+
+
+def field(name, value):
+    """A named value written in the text. It is the piece's attribute of that name, and not
+    among its words."""
+    return {"field": name, "value": str(value)}
+
+
+def words(text):
+    """The plain characters of a piece's text, for writing them into your file: a link shows
+    its text or its target, and a label and a field show nothing (write those your own way)."""
+    out = []
+    for run in runs(text):
+        if isinstance(run, str):
+            out.append(run)
+        elif "link" in run:
+            out.append(run.get("text") or run["link"])
+        elif "text" in run:
+            out.append(run["text"])
+    return "".join(out)
+
+
 def _message(method, params=None, request_id=None):
     message = {"jsonrpc": "2.0", "method": method}
     if request_id is not None:

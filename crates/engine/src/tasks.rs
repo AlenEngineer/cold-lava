@@ -110,6 +110,23 @@ impl TasksSettings {
             .unwrap_or(StatusType::NonTask)
     }
 
+    /// The symbol the workspace writes for a status of this type: the plugin's own (` `, `x`,
+    /// `/`, `-`) while the settings still give it that type, else the first that has it. What
+    /// a type reads for the `checkbox` of a piece an owner gave (`owner::given::CHECKBOX`).
+    pub fn symbol_of(&self, status: StatusType) -> char {
+        let own = match status {
+            StatusType::Todo | StatusType::NonTask => ' ',
+            StatusType::Done => 'x',
+            StatusType::InProgress => '/',
+            StatusType::Cancelled => '-',
+        };
+        if self.status_type(own) == status {
+            return own;
+        }
+        let first = self.statuses.iter().find(|(_, t)| **t == status);
+        first.map_or(own, |(symbol, _)| *symbol)
+    }
+
     /// The symbol a toggle sets: the status's next one in the plugin's settings, else done for
     /// an open task and todo for a closed one.
     pub fn next_symbol(&self, symbol: char) -> char {

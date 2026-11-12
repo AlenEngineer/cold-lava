@@ -9,6 +9,20 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- An extension that owns a kind of file can say what the file holds as **pieces**, with no
+  Markdown anywhere (#243, step 3 of the neutral model). A piece in `file/read` is
+  `{place, role, attributes, text, …}`: a role of the alphabet, the attributes it carries
+  (`"task": true`, `"checkbox": "open"`, `"due": "2026-11-20"`), and its text as plain runs
+  that say their own marks, links, labels and fields. cold-lava never reads a piece's text
+  as Markdown, so `#42`, `$5`, `[[x]]` and `**x**` in it are characters: no tag, no math, no
+  link, no mark. Types match a piece as they match a note's block, reading the attributes
+  the owner gave, so the built-in `task` lists an owner's chores in the agenda and the table
+  beside a note's. `in` says what a piece is inside and `cells` are a row's; a position is
+  carried as attributes. The two older answers, a Markdown piece and a typed item, read as
+  before with the ids they had. The alphabet's version, which extensions get in `initialize`,
+  is 2: give pieces only when it is 2 or more. `cold_lava.py` has helpers to build them.
+  A piece can't be edited through cold-lava yet. `docs/extensions.md`, "Pieces, as built".
+
 - A type's `on` takes the roles of the alphabet (#241, step 1 of the neutral model):
   `document`, `section`, `text`, `item`, `row`, `aside` and `verbatim`, and `inline` as
   before. The names it had (`note`, `heading`, `paragraph`, `list-item`, `table-row`, `quote`,

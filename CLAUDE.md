@@ -176,8 +176,8 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   rewrite a reference link in its definition and no byte outside a target) and an item's own
   `links` all take them from it. Don't match links or tags with a pattern of your own. Read
   and change notes through the owner. An extension
-  can own another kind: `owner/given.rs` reads its `file/read` answer (Markdown pieces, typed
-  items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
+  can own another kind: `owner/given.rs` reads its `file/read` answer (pieces, Markdown
+  pieces, typed items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
   `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` holds an edit while
   its owner answers `file/edit` and reads the new text back. `Core::set_owners`, `take_reads`,
   `take_file_edits` and `file_given` run it and never wait; an `items/edit` of an owned file
@@ -196,6 +196,22 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   What stays direct: Markdown (the scan and a note's edits never ask anyone), the scan reading
   canvases into `owned` (it has no core to ask through), and planning a canvas's rename
   (`canvas::relink` plans its own changes, since a card holds a path, not a link).
+  **Pieces** (#243, docs/extensions.md "Pieces, as built"): an extension's owner can say what
+  its file holds in the alphabet's terms, `given::Piece` (`place`, `role`, `attributes`,
+  `text` as `Run`s: plain, marked, link, label, field; `in` for what it is inside, `cells`
+  on a row). **The engine never reads a piece's text as Markdown**: `#42`, `[[x]]` and
+  `- [ ]` in a plain run are characters, and a tag or a link is only what the owner said is
+  one. Types match a piece through `matcher/piece.rs` (`Matcher::piece`), which reuses the
+  matcher's conditions, precedence and value parsing but reads each source as written:
+  `attribute = "due"` is the value the owner gave, never Markdown's reading
+  (`Readings::flat` is for notes only). Its shapes are compiled the first time an owner gives
+  a piece, so a note's path runs none of it: keep `Matcher::block`, `read` and `read_source`
+  free of pieces. `checkbox` on a piece is a word (`given::CHECKBOX`: `open`, `done`,
+  `in-progress`, `cancelled`), read as the workspace's status symbol for it. A piece's item
+  id is `given::piece_id` (file, kind, place, then `piece`), apart from a typed item's and a
+  Markdown piece's: none of the three may take another's id. An answer is untrusted:
+  `Piece::check` and `read_piece` bound depth, runs, attributes and names, and a place is
+  never written into a file. Markdown pieces and typed items read as before.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one walk through its tree (`cst::read`) in the workspace's flavour; `Workspace::items()`
   caches them per note on first use. Ids are stable (block id, heading path, or text hash under
@@ -206,8 +222,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   that use it, and nothing shipped may. Read tasks through items, not by scanning lines.
 - `alphabet.rs`, `types.rs`, `matcher.rs`: the alphabet and the type language.
   `alphabet::Role` is the nine roles a piece of writing can have (`document`, `section`,
-  `text`, `item`, `row`, `aside`, `verbatim`, `embed`, `opaque`) and `alphabet::VERSION` its
-  version, sent in `initialize`; the whole alphabet (text, the five relations, open
+  `text`, `item`, `row`, `aside`, `verbatim`, `embed`, `opaque`), `alphabet::Mark` the six
+  marks a run of text can have, and `alphabet::VERSION` its version (2: owners can give
+  pieces), sent in `initialize`; the whole alphabet (text, the five relations, open
   attributes) and what the engine does with each letter today is docs/extensions.md, "The
   alphabet, as built", whose table of roles a test checks against `Role::ALL`. Only the
   engine adds a letter, with a version bump: a new kind of thing is a type, never a role.
@@ -244,8 +261,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   doesn't). Nothing keeps an
   attribute while a note is read: one is read off the block only when a shape names it.
   Keep it that way: don't store attributes on `items::Item`. Items carry none over the
-  gateway yet: that comes when owners give pieces (#243), with the owner's values, not a
-  type's reading of them. A type on `aside` matches a quote or a callout; a typed aside's
+  gateway yet, an owner's pieces included: what an owner gave stays in `Owned::given`, and
+  a client sees it through a type's fields. When they do go on the wire, it is with the
+  owner's values, not a type's reading of them, and without growing a note's items. A type on `aside` matches a quote or a callout; a typed aside's
   key is set apart (`items::finish`), so it can never take an id from one of its type's
   older items. `types/task.before-242.toml` is the task as it was, kept only for
   `items::tests::the_task_reads_from_attributes_as_it_did_from_characters`, which reads
