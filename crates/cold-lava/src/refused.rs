@@ -4,16 +4,17 @@
 //! no message takes a notice's place: it comes first on the line, and what else is said
 //! follows it. A line too narrow for the notice cuts its end.
 
+use crate::notice::Notice;
 use std::time::{Duration, Instant};
 
 /// How long the notice shows, from when it first could.
 pub const SHOWS: Duration = Duration::from_secs(3);
 
 /// `notice`, standing for `n` refused requests.
-pub fn counted(notice: String, n: usize) -> String {
+pub fn counted(notice: &Notice, n: usize) -> Notice {
     match n {
-        0 | 1 => notice,
-        n => format!("{notice} ({n} requests refused)"),
+        0 | 1 => notice.clone(),
+        n => notice.and(&format!(" ({n} requests refused)")),
     }
 }
 
@@ -24,7 +25,7 @@ pub struct Refused {
 }
 
 struct Last {
-    notice: String,
+    notice: Notice,
     n: usize,
     /// When it first showed: its time runs from then. `None` while it waits to be shown.
     since: Option<Instant>,
@@ -40,7 +41,7 @@ impl Refused {
     /// A request was refused at `now`, for the reason `notice` gives. One that comes while
     /// the last notice still shows, or waits to, takes its place and is counted with it. Only
     /// the last request is named.
-    pub fn add(&mut self, notice: String, now: Instant) {
+    pub fn add(&mut self, notice: Notice, now: Instant) {
         let n = match &self.last {
             Some(last) if last.unread(now) => last.n + 1,
             _ => 1,
@@ -62,18 +63,18 @@ impl Refused {
     }
 
     /// What to say at `now`: the last notice with its count, until `SHOWS` after it began.
-    pub fn shown(&self, now: Instant) -> Option<String> {
+    pub fn shown(&self, now: Instant) -> Option<Notice> {
         let last = self.last.as_ref().filter(|last| last.unread(now))?;
-        Some(counted(last.notice.clone(), last.n))
+        Some(counted(&last.notice, last.n))
     }
 
     /// The line a status line says at `now`: the notice first, then `other`, what else there
     /// is to say, so that nothing pushes the notice off the line.
-    pub fn line(&self, other: Option<&str>, now: Instant) -> Option<String> {
+    pub fn line(&self, other: Option<&Notice>, now: Instant) -> Option<Notice> {
         match (self.shown(now), other) {
-            (Some(refused), Some(other)) => Some(format!("{refused} · {other}")),
+            (Some(refused), Some(other)) => Some(refused.then(" · ", other)),
             (Some(refused), None) => Some(refused),
-            (None, other) => other.map(str::to_string),
+            (None, other) => other.cloned(),
         }
     }
 }
@@ -95,7 +96,10 @@ mod tests {
         refused.add("a wanted to open X: not while typing".into(), start);
         refused.begin(at(start, 10));
         assert_eq!(
-            refused.shown(at(start, 10)).as_deref(),
+            refused
+                .shown(at(start, 10))
+                .map(|said| said.to_string())
+                .as_deref(),
             Some("a wanted to open X: not while typing")
         );
 
@@ -105,7 +109,10 @@ mod tests {
         );
         refused.begin(at(start, 2010));
         assert_eq!(
-            refused.shown(at(start, 5000)).as_deref(),
+            refused
+                .shown(at(start, 5000))
+                .map(|said| said.to_string())
+                .as_deref(),
             Some("b wanted to run y: not while typing (2 requests refused)"),
             "three seconds from when the last one showed, and both are counted"
         );
@@ -116,7 +123,10 @@ mod tests {
             at(start, 6000),
         );
         assert_eq!(
-            refused.shown(at(start, 6001)).as_deref(),
+            refused
+                .shown(at(start, 6001))
+                .map(|said| said.to_string())
+                .as_deref(),
             Some("a wanted to open X: not while typing"),
             "the count starts again once a notice had its time"
         );
@@ -128,7 +138,10 @@ mod tests {
         let mut refused = Refused::default();
         refused.add("first".into(), start);
         assert_eq!(
-            refused.shown(at(start, 60_000)).as_deref(),
+            refused
+                .shown(at(start, 60_000))
+                .map(|said| said.to_string())
+                .as_deref(),
             Some("first"),
             "not shown yet, so not over"
         );
@@ -136,7 +149,10 @@ mod tests {
         refused.begin(at(start, 61_000));
         refused.begin(at(start, 62_000));
         assert_eq!(
-            refused.shown(at(start, 64_000)).as_deref(),
+            refused
+                .shown(at(start, 64_000))
+                .map(|said| said.to_string())
+                .as_deref(),
             Some("second (2 requests refused)")
         );
         assert_eq!(refused.shown(at(start, 64_001)), None);
@@ -147,14 +163,26 @@ mod tests {
         let start = Instant::now();
         let mut refused = Refused::default();
         assert_eq!(refused.line(None, start), None);
-        assert_eq!(refused.line(Some("saved"), start).as_deref(), Some("saved"));
+        assert_eq!(
+            refused
+                .line(Some(&"saved".into()), start)
+                .map(|said| said.to_string())
+                .as_deref(),
+            Some("saved")
+        );
         refused.add("a wanted to open X".into(), start);
         assert_eq!(
-            refused.line(Some("saved"), start).as_deref(),
+            refused
+                .line(Some(&"saved".into()), start)
+                .map(|said| said.to_string())
+                .as_deref(),
             Some("a wanted to open X · saved")
         );
         assert_eq!(
-            refused.line(None, start).as_deref(),
+            refused
+                .line(None, start)
+                .map(|said| said.to_string())
+                .as_deref(),
             Some("a wanted to open X")
         );
     }

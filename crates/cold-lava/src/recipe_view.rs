@@ -4,6 +4,7 @@
 
 use crate::app::{ACCENT, HIT, MUTED, NOTE, TAG};
 use crate::gateway::Ticket;
+use crate::notice::Notice;
 use crate::recipe::{self, Options, Plan, Recipe};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::{Modifier, Style};
@@ -19,7 +20,7 @@ pub enum Step {
         values: Vec<String>,
         at: usize,
         /// Why the last plan was refused.
-        error: Option<String>,
+        error: Option<Notice>,
     },
     Plan {
         plan: Box<Plan>,
@@ -69,7 +70,7 @@ impl RecipeView {
     /// The options step again, saying why the plan was refused.
     pub fn refused(&mut self, why: String) {
         if let Step::Options { error, .. } = &mut self.step {
-            *error = Some(why);
+            *error = Some(why.into());
         }
     }
 

@@ -17,6 +17,7 @@ mod image;
 mod kitty;
 mod list;
 mod looks;
+mod notice;
 mod owned;
 mod previews;
 mod reader;

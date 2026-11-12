@@ -5,6 +5,7 @@ use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
 use crate::commands::{self, BoardAction, HistoryAction, Key, KeyHint, Keymap};
 use crate::history::{Exit, Nav};
 use crate::looks;
+use crate::notice::Notice;
 use crate::term;
 use crate::types::Colour;
 use anyhow::{Context as _, Result};
@@ -201,7 +202,7 @@ pub struct Board {
     redo: Vec<Doc>,
     /// What the second status line says for 3 seconds, and since when it has shown: `None`
     /// while an alert or a mode's hint has the line, under which it waits (`draw_status`).
-    msg: Option<(String, Option<Instant>)>,
+    msg: Option<(Notice, Option<Instant>)>,
     /// The ids another program repeated: the name each later node of one goes by here (its
     /// place, `parse`) to the id it has in the file, which `as_written` gives it back. Never
     /// forgotten while the board is open, so an undo finds its node's id again.
@@ -479,7 +480,7 @@ impl Board {
             }
             self.tick(core, registry);
             self.asked_alone(registry, &mut statuses);
-            let words: Vec<String> = statuses.iter().map(|(_, text)| text.clone()).collect();
+            let words: Vec<Notice> = statuses.iter().map(|(_, text)| text.clone()).collect();
             terminal.draw(|f| self.draw(f, &words))?;
             if event::poll(Duration::from_millis(250))? {
                 match event::read()? {
@@ -498,7 +499,7 @@ impl Board {
     /// behind it: a notification shows, each extension's status words are kept in `statuses`
     /// for the status line, and what only the menu can do (open a note, show a view, run a
     /// command) is refused with a notice.
-    fn asked_alone(&mut self, registry: &Registry, statuses: &mut Vec<(ExtId, String)>) {
+    fn asked_alone(&mut self, registry: &Registry, statuses: &mut Vec<(ExtId, Notice)>) {
         for (ext, effect) in self.take_asked() {
             let wanted = match effect {
                 Effect::Notify { message } => {
@@ -507,7 +508,7 @@ impl Board {
                 }
                 Effect::Status { text } => {
                     statuses.retain(|(e, _)| *e != ext);
-                    statuses.extend(text.map(|text| (ext, text)));
+                    statuses.extend(text.map(|text| (ext, text.into())));
                     continue;
                 }
                 Effect::OpenNote { note, .. } => format!("open {}", note.display()),
@@ -1524,12 +1525,12 @@ impl Board {
 
     // ---------- editing operations ----------
 
-    pub fn flash(&mut self, s: impl Into<String>) {
-        let s = s.into();
+    pub fn flash(&mut self, s: impl Into<Notice>) {
+        let s: Notice = s.into();
         let now = Instant::now();
         // The shape editor in front shows it now, in the board's place, after a notice of
         // refused requests that still shows.
-        let said = self.refusals.line(Some(s.as_str()), now);
+        let said = self.refusals.line(Some(&s), now);
         let shown = self.editor.as_mut().map(|editor| {
             editor.say(said.unwrap_or_else(|| s.clone()));
             now
@@ -1541,7 +1542,7 @@ impl Board {
     /// (`notice`). The user is told of every such request: a notice that comes while the last
     /// one still shows, or waits to, takes its place and says how many there were, and no
     /// other message takes the notice's place (`refused::Refused`, as the menu's).
-    pub fn refused(&mut self, notice: impl Into<String>) {
+    pub fn refused(&mut self, notice: impl Into<Notice>) {
         let now = Instant::now();
         self.refusals.add(notice.into(), now);
         // The shape editor in front shows it now, in the board's place.
@@ -2547,7 +2548,7 @@ impl Board {
 
     // ---------- drawing ----------
 
-    pub fn draw(&mut self, f: &mut Frame, statuses: &[String]) {
+    pub fn draw(&mut self, f: &mut Frame, statuses: &[Notice]) {
         if let Some(editor) = &mut self.editor {
             return editor.draw(f, statuses);
         }
@@ -3019,7 +3020,7 @@ impl Board {
         );
     }
 
-    fn draw_status(&mut self, f: &mut Frame, area: Rect, statuses: &[String]) {
+    fn draw_status(&mut self, f: &mut Frame, area: Rect, statuses: &[Notice]) {
         let mut info = match self.sel.as_ref().and_then(|s| self.node(s)) {
             Some(n) => {
                 let links = self
@@ -3111,7 +3112,7 @@ impl Board {
             }
         }
         // A notice of refused requests comes first, where no message can push it off.
-        let message = self.msg.as_ref().map(|(m, _)| m.as_str());
+        let message = self.msg.as_ref().map(|(m, _)| m);
         let said = self.refusals.line(message, Instant::now());
         let second = match (&self.alert, hint, said) {
             (Some(alert), ..) => {
@@ -3803,7 +3804,7 @@ mod tests {
         b.msg = None;
         b.noticed(&core, &changed);
         b.tick(&mut core, &mut registry);
-        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None);
+        assert_eq!(b.msg.as_ref().map(|(m, _)| m.to_string()).as_deref(), None);
         assert_eq!(std::fs::read(&path).unwrap(), text);
         assert_eq!((b.doc.nodes.len(), b.undo.len()), (3, undo));
         let _ = std::fs::remove_dir_all(dir);
@@ -3886,7 +3887,11 @@ mod tests {
     fn what_an_extension_asks_for_when_asked_about_its_shape_is_kept_for_the_menu() {
         let (dir, mut core, mut registry, chatty, mut b) = chatty_board("board-asked", false);
         b.tick(&mut core, &mut registry);
-        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None, "it bound");
+        assert_eq!(
+            b.msg.as_ref().map(|(m, _)| m.to_string()).as_deref(),
+            None,
+            "it bound"
+        );
         let said = Effect::Notify {
             message: "chatty counted".into(),
         };
@@ -3909,10 +3914,14 @@ mod tests {
             item: None,
         };
         b.gesture("n", click, &mut core, &mut registry);
-        assert_eq!(b.msg.as_ref().map(|(m, _)| m.as_str()), None, "it is asked");
+        assert_eq!(
+            b.msg.as_ref().map(|(m, _)| m.to_string()).as_deref(),
+            None,
+            "it is asked"
+        );
         b.tick(&mut core, &mut registry);
         assert_eq!(
-            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            b.msg.as_ref().map(|(m, _)| m.to_string()).as_deref(),
             Some(
                 "chatty: it answered shape/gesture with steps that can't run: set-field takes \
                  exactly one of value, add and remove"
@@ -3929,9 +3938,12 @@ mod tests {
         let mut statuses = Vec::new();
         b.tick(&mut core, &mut registry);
         b.asked_alone(&registry, &mut statuses);
-        assert_eq!(statuses, [(chatty, "chatty: 1".to_string())]);
+        assert_eq!(statuses, [(chatty, Notice::from("chatty: 1"))]);
         assert_eq!(
-            b.refusals.shown(Instant::now()).as_deref(),
+            b.refusals
+                .shown(Instant::now())
+                .map(|said| said.to_string())
+                .as_deref(),
             Some(
                 "chatty wanted to run search.open: cold-lava board shows the whiteboard only \
                  (2 requests refused)"
@@ -3939,7 +3951,7 @@ mod tests {
             "the note and the command, both refused"
         );
         assert_eq!(
-            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            b.msg.as_ref().map(|(m, _)| m.to_string()).as_deref(),
             Some("chatty counted"),
             "what it said is kept beside the notice, not replaced by it"
         );
@@ -3951,7 +3963,7 @@ mod tests {
         };
         b.asked.push((chatty, words(Some("chatty: 2"))));
         b.asked_alone(&registry, &mut statuses);
-        assert_eq!(statuses, [(chatty, "chatty: 2".to_string())]);
+        assert_eq!(statuses, [(chatty, Notice::from("chatty: 2"))]);
         b.asked.push((chatty, words(None)));
         b.asked_alone(&registry, &mut statuses);
         assert!(statuses.is_empty(), "{statuses:?}");

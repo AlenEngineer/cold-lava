@@ -514,9 +514,16 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   character a cell (a graph node's, an arrow's, a placed shape's region labels) goes
   through `cells::label` before it is measured or fitted: escaped at `Level::Content`,
   tabs as spaces. A shape's own and bound text is not a label and gets the `�`.
-  `Home::flash` and `Board::flash` escape a notice at `Level::Message`. Text drawn through
-  ratatui still holds U+2028 and U+2029, and direction characters where it is a `Line`
+  Text drawn through ratatui still holds U+2028 and U+2029, and direction characters where it is a `Line`
   drawn on its own or a block's title (`cells.rs` pins what ratatui keeps).
+- `notice.rs`: `Notice`, the words of a notice on a status line (what the app did, why it
+  didn't, an extension's `ui/notify` and `ui/status` words). It keeps them as written and
+  its only way out is `Display`, which escapes at `Level::Message`, so the escape happens
+  where the status line is drawn and no store can forget it. `Home::msg`, `Board::msg`,
+  the scene view's and the shape editor's message, the recipe dialog's refusal, the
+  extensions' statuses and `refused::Refused` all hold one; `flash`, `say` and `refused`
+  take `impl Into<Notice>`. Never keep a notice as a `String`. A view's title and rows are
+  content, not notices.
 - `say.rs`: the only module that prints to stdout and stderr. A line is escaped whole as it
   goes out (`cold_lava_views::shown::escape`), a line break in it included, so nothing has
   to be remembered where a line is made. Which entry is called says what the line is:
