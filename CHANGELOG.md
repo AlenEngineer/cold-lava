@@ -49,8 +49,12 @@ change commands, keys and file formats; patch versions only fix things.
   `items`, the agenda, the table, tidy, backlinks and the graph show what they showed. A
   card shows up as an item only where a type of yours tests for one of its attributes, for
   example `on = "text"` with `where.attribute = "x"`. Every other type lists what it
-  listed, also one that reads an inline field or an attribute: a card's words are its
-  Markdown, so its own piece matches only a shape whose `where.attribute` it carries.
+  listed, also one that reads an inline field or an attribute: a card's own piece has no
+  words, and a piece with no words matches only a shape whose `where.attribute` it
+  carries. That holds for every owner: a piece an extension gives with no words (no text,
+  empty runs, only field runs, a row of empty cells) is typed only by `where.attribute`,
+  where before any shape whose conditions it passed took it. An empty `item` is still a
+  `list` and an empty `section` a `heading`.
   Setting a card's attribute through such a type is refused with the reason: the canvas
   owner writes a card's text and file only. A group is not given yet, nor an arrow to one. The alphabet's version is 3:
   give a link between two pieces only when it is 3 or more. `docs/extensions.md`, "The

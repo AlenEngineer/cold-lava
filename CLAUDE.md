@@ -194,13 +194,15 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   engine's `.canvas` owner (`owner::BUILT_IN`). It speaks the alphabet: each card is a piece
   at the node's place (`text`; `embed` for a file card or a web page; `opaque` for a type it
   doesn't know), placed by the attributes `x`, `y`, `width`, `height`, and each arrow a link
-  between two pieces (`GivenLink::Between`, `{from, to, label}`), carried and never
+  between two pieces (`given::Between`, `{from, to, label}` in `links` on the wire and
+  `Given::between` in the engine), carried and never
   interpreted. What a board gave before is still given beside them, unchanged: a text
   card's text as a Markdown piece and a file card's link, both at the same place. **A
   board's items, links, ids and revs must not move**: a card's piece is an item only when a
-  type tests for one of its attributes (`matcher/piece.rs`: a piece with no words of its
-  own at the place of a Markdown piece matches only a shape whose `where.attribute` it
-  carries; the owner gives every text card that Markdown piece, empty or not), a group is not given (a `section` piece would be a new heading on every
+  type tests for one of its attributes (`matcher/piece.rs`, the one place for it: a piece
+  with no words matches only a shape whose `where.attribute` it carries, for every owner),
+  the owner asks `given::Places` which cards and arrows the engine takes instead of
+  restating its bounds, a group is not given (a `section` piece would be a new heading on every
   board), and the owner gives no piece the engine would report. A card's Markdown becomes a
   fragment with #244, not before. No extension may claim a built-in owner's kind.
   **One path for owned files** (#183): a file that isn't a note is changed the same way
@@ -483,7 +485,9 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
   everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
-- `drive.rs`: `cold-lava drive`, scripted UI runs: the real binary in a pty, screen read back
+- `drive.rs`: `cold-lava drive`, scripted UI runs (its `write` step changes a workspace file
+  with `std::fs` on purpose, as another program would: the one exception `tests/one_door.rs`
+  lists for it): the real binary in a pty, screen read back
   with vt100, cursor-position queries answered, the mouse clicked, dragged and scrolled.
   `graph.drive` and `board.drive` pin the graph and the whiteboard.
 

@@ -210,6 +210,7 @@ mod tests {
                 text: text.into(),
             }],
             links: Vec::new(),
+            between: Vec::new(),
         }
     }
 

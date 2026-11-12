@@ -13,7 +13,7 @@
 use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
 use crate::owner::canvas;
-use crate::owner::given::{Change as Ask, Given, GivenItem, GivenLink};
+use crate::owner::given::{Change as Ask, Given, GivenItem};
 use crate::owner::markdown;
 use crate::resolver::{Files, Rewriter, dir_of, join, link_key};
 use anyhow::{Context, Result, bail};
@@ -584,20 +584,16 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
             }
         }
         for l in &f.given.links {
-            // A link between two pieces of the file names no file: nothing in it moves.
-            let GivenLink::File { target, place, .. } = l else {
-                continue;
-            };
-            if let Some(to) = rw.link(target, false, dir_then, dir_now) {
+            if let Some(to) = rw.link(&l.target, false, dir_then, dir_now) {
                 links += 1;
                 changes.push(Change {
                     line: 0,
-                    before: format!("[[{target}]]"),
+                    before: format!("[[{}]]", l.target),
                     after: format!("[[{to}]]"),
                 });
                 asks.push(Ask::Link {
-                    place: place.clone(),
-                    link: target.clone(),
+                    place: l.place.clone(),
+                    link: l.target.clone(),
                     to,
                 });
             }

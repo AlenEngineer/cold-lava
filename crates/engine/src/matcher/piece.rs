@@ -10,13 +10,14 @@
 //! plain characters (`pattern`, `marker`, `flag`, `flags`, `rest`), its labels and links
 //! (`inlines`), its cells (`column`), its file (`note`) or its sections (`section`).
 //!
-//! One kind of piece is matched more narrowly: one with no words of its own that stands at the
-//! place of a Markdown piece of the same answer, as a board's card does (`Asked::
-//! words_elsewhere`). What is written there is the Markdown piece's, and the types already
-//! match it there. So a shape matches such a piece only when its `where.attribute` names an
-//! attribute the piece carries: `where.attribute = "x"` lists a board's cards, and no shape
-//! that reads text, or reads an attribute without testing for it, gains an empty item per
-//! card. Every other piece, with words or without, matches as before.
+//! A piece with no words matches only a shape that tests for an attribute it carries
+//! (`where.attribute`). No words means none after the piece's text and cells are flattened: no
+//! text, runs of nothing or of spaces, field runs (which are values), cells that are all
+//! empty. There is nothing written in such a piece for a shape to be about, so only what it
+//! carries can make it a shape's. A board's card is one, its words being a Markdown piece of
+//! their own: `where.attribute = "x"` lists the cards, and no shape that reads text, or reads
+//! an attribute without testing for it, gains an empty item per card. The rule is here and
+//! nowhere else, and it asks nothing about the other pieces of the answer.
 //!
 //! Nothing here runs for a note: `Matcher::block` and `read_source` are as they were, and the
 //! shapes are compiled for pieces the first time an owner gives one.
@@ -53,9 +54,6 @@ pub struct Asked<'a> {
     /// What it sits inside: roles under their older names, kinds and types.
     pub inside: &'a [String],
     pub carried: &'a [Carried],
-    /// It has no text and no cells, and the answer gives a Markdown piece at its place: its
-    /// words are that piece's. Only a shape with `where.attribute` matches it.
-    pub words_elsewhere: bool,
 }
 
 /// One attribute a piece carries, as text a field's type reads.
@@ -149,15 +147,17 @@ impl Matcher {
             given: Given::default(),
         };
         let carries = |name: &String| asked.carried.iter().any(|c| c.there && c.name == *name);
+        // Nothing written, between its cells' tabs or at all.
+        let wordless = asked.words.trim().is_empty();
         let mut passing: Vec<(usize, usize, &Reads, Option<regex::Captures>)> = Vec::new();
         for &(t, s) in &self.by_on[slot] {
             let shape = &self.types[t].shapes[s];
             let Some(reads) = shapes.get(t).and_then(|ty| ty.get(s)?.as_ref()) else {
                 continue;
             };
-            // Its words are a Markdown piece's: only a test for an attribute, which it must
-            // carry (below), makes it this shape's.
-            if asked.words_elsewhere && shape.w.attribute.is_empty() {
+            // Only a test for an attribute, which it must carry (below), makes a piece with
+            // no words this shape's.
+            if wordless && shape.w.attribute.is_empty() {
                 continue;
             }
             if !note_passes(&shape.w, &note)

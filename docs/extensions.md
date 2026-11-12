@@ -1795,9 +1795,12 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   `links`: the places of two pieces of this answer, and what the link says, which may be
   left out. It is the smallest thing that says a board's arrow or a cross-reference. Both
   ends must be pieces that read; a link with an end no piece is at is reported and left
-  out, like a piece out of bounds, and so is one whose label is over 4096 bytes. A piece
-  may link to itself, and two pieces may have several links. An answer has at most 65,536
-  links between pieces (`given::MAX_BETWEEN`): the rest are left out, and said once. An
+  out, like a piece out of bounds, and so is one whose label is over 4096 bytes
+  (`given::MAX_LABEL`). A piece may link to itself, and two pieces may have several links.
+  An answer has at most 65,536 links between pieces (`given::MAX_BETWEEN`): the rest are
+  left out, and said once. What is taken is decided in one place, `given::Places`, which
+  the engine's own canvas owner asks before it gives a card or an arrow. Inside the engine
+  the two kinds of entry are apart (`Given::links` to files, `Given::between`). An
   entry of `links` is read as the kind its keys show (`from` or `to` and no `target`: between
   pieces), so a mistake in one is named, `missing field `place`` or `unknown field `color``. The engine carries it and reads nothing from it: it is kept with the
   owner's answer (`Owned::given`), and it is no link between files, so `links/query`,
@@ -1825,18 +1828,27 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
 
   So the built-in `task` (`where.attribute = "task"`, `status` from `checkbox`, `due` from
   `due`) matches an owner's piece with no change and no Markdown anywhere.
-- **A piece whose words are a Markdown piece's is matched only by `where.attribute`.** One
-  rule is narrower for one kind of piece, and it is exact: a piece that has no text and no
-  cells of its own (`"text"` and `"cells"` absent or empty lists; a run of an empty string
-  or of a space is text), *and* stands at a place where the same answer gives a Markdown
-  piece. A board's card is that: what is written on it is the Markdown piece. A shape
-  matches such a piece only when it has a `where.attribute`, every name of which the piece
-  carries. A shape with no `where.attribute` never does, whatever its fields read: a type
-  on every `text`, one that reads `{ inline = "when" }` or `{ attribute = "x" }` without
-  testing for it, or one with `match = '^$'` lists what it listed and gains no empty item
-  per card. Every other piece matches as before, with words or without: an empty `item`,
-  `section`, `aside` or `text` an extension gives on its own, and a `row` with `cells: []`,
-  are matched by any shape whose conditions they pass, as they were.
+- **A piece with no words matches only by `where.attribute`.** One rule, in one place
+  (`matcher/piece.rs`), for every owner: a piece with no words matches only a shape that
+  has a `where.attribute`, every name of which the piece carries. There is nothing written
+  in such a piece for any other shape to be about.
+  - *No words* means none once the piece's text and cells are flattened: no `text` and no
+    `cells`, runs of an empty string or of spaces only, cells that are all empty, and field
+    runs, which are values and not words. So `"text": [""]`, `"text": [" "]`,
+    `"text": [{"field": "due", "value": "2026-11-30"}]`, `"cells": []` and a row of empty
+    cells are all pieces with no words. A label or a link is a word.
+  - A shape with no `where.attribute` never matches one, whatever its fields read: a type
+    on every `text`, one that reads `{ inline = "when" }` or `{ attribute = "x" }` without
+    testing for it, one that names a row's columns (`where.header`, `column`), one with
+    `match = '^$'`.
+  - What is lost is exactly that: a typed match on a piece with no words, unless by
+    `where.attribute`. An empty `item` is still a `list` and an empty `section` a
+    `heading`, by the rule under "Items". An empty `text`, `aside` or `row` is no item.
+  - An owner that wants a piece with no words typed gives it an attribute and ships, or
+    asks for, a type that tests for it: `"attributes": {"spacer": true}` and
+    `where.attribute = "spacer"`.
+  - It is what keeps a board's cards out of the types a workspace already has: a card's
+    piece has no words, since what is written on it is a Markdown piece of its own.
 - **Items.** A piece a type matches is an item of that type. Else an `item` is a `list` and
   a `section` a `heading` (its level the attribute `level`, 1 to 6, else its depth in
   sections), as in a note, and any other piece is no item, as a paragraph or a row no type
@@ -2021,7 +2033,7 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
 
   | In the file | Given as | At |
   | --- | --- | --- |
-  | a `text` node | a piece with the role `text`, and its `text` as a Markdown piece `{place, text}`. A node with no `text` gets an empty one beside its card's piece, unless a node's written text already stands at that place (ids that repeat) | the node's place, both |
+  | a `text` node | a piece with the role `text`, and its `text` as a Markdown piece `{place, text}` when the node has one | the node's place, both |
   | a `file` node | a piece with the role `embed`, and a link `{target, place, text}` to its `file` | the node's place, both |
   | a `link` node (a web page) | a piece with the role `embed`, its `url` an attribute | the node's place |
   | a node of any other type but `group` | a piece with the role `opaque` | the node's place |
@@ -2082,13 +2094,16 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   (`where.attribute` naming `x`, `y`, `width`, `height`, `color`, `url` or `subpath`): a
   type on every `text`, or one that reads an inline field or an attribute without testing
   for it, matches the paragraphs on a card as before and never the card, because a card's
-  words are its Markdown piece's ("Pieces, as built"). `core.rs` pins it
+  piece has no words ("Pieces, as built": a piece with no words matches only by
+  `where.attribute`). `core.rs` pins it
   (`a_boards_cards_are_pieces_and_its_items_dont_move`), and `tests/items.rs` on the example
   workspace.
-- **Every piece the owner gives is one the engine takes.** A canvas is another program's
+- **Every piece the owner gives is one the engine takes**, by asking the engine
+  (`given::Places`, the check `given::read` itself uses). A canvas is another program's
   file. A node whose id is empty, longer than 1024 bytes, or the place another node already
-  has (an id that looks like a repeated id's place) gets no piece and no arrow, and its text
-  and file are read as ever. Nothing is reported for it, since nothing that was read before
+  has (an id that looks like a repeated id's place) gets no piece and no arrow, an arrow
+  with a label over 4096 bytes or past the 65,536th is not given, and a node's text and
+  file are read as ever. Nothing is reported for it, since nothing that was read before
   is lost. A coordinate too large for a JSON number, or one that isn't a number, makes the
   file no JSON Canvas at all, as before.
 - **What the scan does for a card.** Before: one parse of the file, and each text card's
