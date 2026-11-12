@@ -1,0 +1,30 @@
+# A view's owner can't close it while a cell is being edited in it (#269). tests/drive.rs
+# installs a csv-table that closes its table whenever the file changes, as the example does
+# when the file is gone. While a year is typed, another program writes the file: the table
+# stays with what was typed, and the status line says what was not done.
+size 140x24
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys /
+type eruptions
+wait-for ▤ Volcanoes/Eruptions.csv
+keys enter j
+wait-for CSV table · ⏎ to open it in csv-table
+keys enter
+wait-for Mount St. Helens  1980
+keys j l e
+wait-for Year: 1883▏
+keys ctrl+u
+type 1884
+wait-for Year: 1884▏
+write Volcanoes/Eruptions.csv Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1883,6,\nTambora,1816,7,\n
+wait-for csv-table wanted to close a view: not while a cell is being edited
+expect Year: 1884▏
+expect Mount St. Helens  1980
+screen
+keys esc
+wait-gone Year: 1884▏
+keys esc
+wait-for cold-lava workspaces
+keys q
+exits 0

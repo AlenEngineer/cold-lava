@@ -1660,6 +1660,8 @@ fn an_extension_cant_close_a_rename_that_waits_for_its_owners() {
     let dir = sandbox("confirm-keeps-waiting");
     let home = dir.join("home");
     // csv-table's own task is the seventeenth, and its arrival mustn't make open-tasks ask.
+    // The owner's six seconds outlast the five a script waits for the watcher to see the
+    // task, so the request always finds the dialog still waiting.
     let push = "    if len(open_ids) == 18:\n        ext.open_note(\"Volcanoes/Krakatoa.md\")\n";
     install_pushy_open_tasks(&dir, &home, push);
     let slow = r#"import json
@@ -1687,6 +1689,57 @@ ext.run()"#;
     let volcanoes = dir.join("example-workspace/Volcanoes");
     assert!(volcanoes.join("Rakata.md").is_file());
     assert!(!volcanoes.join("Krakatoa.md").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_take_a_view_or_tidy_away_from_what_is_typed_or_marked_in_it() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("view-keeps-typed");
+    let home = dir.join("home");
+    let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    \
+                ext.open_note(\"Volcanoes/Vesuvius.md\")\n    \
+                ext.show(\"so there\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "view-keeps-typed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let note = dir.join("example-workspace/Concepts/Volcanic Explosivity Index.md");
+    let text = std::fs::read_to_string(note).unwrap();
+    assert!(text.contains("[[Krakatoa]] 1883, Sunda Strait"), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn a_views_owner_cant_close_it_while_a_cell_is_typed_in_it() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("view-close-keeps-typed");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        let gone = "    if rev is None:\n";
+        assert!(
+            main.contains(gone),
+            "the example's file/changed handler moved"
+        );
+        main.replace(gone, "    if True:\n")
+    });
+    let out = drive_with(
+        "view-close-keeps-typed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
     let _ = std::fs::remove_dir_all(dir);
 }
 
