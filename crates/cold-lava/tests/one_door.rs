@@ -1177,7 +1177,9 @@ fn the_listings_are_these() {
 /// (`Span`, `Line`, `Paragraph`, `set_string`) loses its control characters there. A symbol
 /// set on a cell itself does not, so only `cells.rs` sets one, and it shows the stand-in
 /// for what a terminal would act on. A cell reached another way (`Buffer::content_mut`, a
-/// widget of another crate that sets symbols itself) is not seen.
+/// widget of another crate that sets symbols itself) is not seen, and neither is a cell
+/// put in whole (`buf[(x, y)] = cell`) or a setter named without its call
+/// (`.map(Cell::set_symbol)`).
 #[test]
 fn the_app_sets_a_cells_symbol_only_through_cells() {
     let sets = ["set_char(", "set_symbol("];

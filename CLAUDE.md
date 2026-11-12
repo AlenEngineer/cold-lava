@@ -510,10 +510,12 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   `put_char`). Text drawn through ratatui (`Span`, `Line`, `Paragraph`, `set_string`) loses
   its control characters there, but a symbol set on a cell is written to the terminal as it
   is, so never call `set_char` or `set_symbol` elsewhere (`tests/one_door.rs` lists them).
-  A label drawn a character at a time (graph, arrow, shape) is escaped with
-  `shown::escape` at `Level::Content` before it is laid out; `cells::put` shows `�` for
-  what still gets there. `Home::flash` and `Board::flash` escape a notice at
-  `Level::Message`.
+  `put` shows `�` for what a terminal would act on, a tab included. A label drawn a
+  character a cell (a graph node's, an arrow's, a placed shape's region labels) goes
+  through `cells::label` before it is measured or fitted: escaped at `Level::Content`,
+  tabs as spaces. A shape's own and bound text is not a label and gets the `�`.
+  `Home::flash` and `Board::flash` escape a notice at `Level::Message`. Text drawn through
+  ratatui still holds U+2028 and U+2029 (`cells.rs` pins what ratatui keeps).
 - `say.rs`: the only module that prints to stdout and stderr. A line is escaped whole as it
   goes out (`cold_lava_views::shown::escape`), a line break in it included, so nothing has
   to be remembered where a line is made. Which entry is called says what the line is:

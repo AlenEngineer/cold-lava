@@ -893,10 +893,7 @@ impl SceneView {
             if !(show_all || near || hit(i) || important || Some(i) == sel) {
                 continue;
             }
-            // A node's label is a file's name or an extension's words: escaped before it
-            // is cut and drawn.
-            let label =
-                cold_lava_views::shown::escape(&n.label, cold_lava_views::shown::Level::Content);
+            let label = crate::cells::label(&n.label);
             let mut text: String = label.chars().take(28).collect();
             if label.chars().count() > 28 {
                 text.push('…');

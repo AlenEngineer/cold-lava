@@ -2738,10 +2738,7 @@ impl Board {
             let arrow_from = e.from_end.as_deref() == Some("arrow");
             lines.push((ax, ay, bx, by, color, arrow_to, arrow_from));
             if let Some(l) = e.label.as_ref().filter(|l| !l.is_empty()) {
-                // An arrow's label is the file's: escaped before it is measured and drawn.
-                let label =
-                    cold_lava_views::shown::escape(l, cold_lava_views::shown::Level::Content)
-                        .into_owned();
+                let label = crate::cells::label(l).into_owned();
                 labels.push(((ax + bx) / 2.0, (ay + by) / 2.0, label));
             }
         }

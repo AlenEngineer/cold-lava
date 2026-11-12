@@ -307,6 +307,9 @@ impl Live {
         let fresh = shaped.painted.as_ref().is_some_and(|p| p.key == key);
         if !fresh {
             let mut grid = Grid::new(&local);
+            // The shape's own text and the texts bound into it are painted as they are
+            // written: what a terminal would act on in them is the stand-in of a cell
+            // (`cells::put`), not an escape. Only what the regions show is made a label.
             draw::paint(&mut grid, &placed, &local);
             let contents: Vec<Vec<Entry>> = match &shaped.binding {
                 Ok(b) => b.shown().regions.into_iter().map(|r| r.items).collect(),
@@ -357,12 +360,9 @@ fn paint_members(
             continue;
         }
         let room = Room::inside(&Mask::area(placed, &r.area, view, Res::BRAILLE));
-        // A label is an item's words or an extension's: escaped before it is fitted.
-        let escaped = entries.iter().map(|e| {
-            cold_lava_views::shown::escape(&e.label, cold_lava_views::shown::Level::Content)
-        });
-        let escaped: Vec<_> = escaped.collect();
-        let labels: Vec<&str> = escaped.iter().map(|label| label.as_ref()).collect();
+        // Fitted as shown, not as written (`cells::label`).
+        let shown: Vec<_> = (entries.iter().map(|e| crate::cells::label(&e.label))).collect();
+        let labels: Vec<&str> = shown.iter().map(|label| label.as_ref()).collect();
         let fitted = fit::labels(&room, &labels, Flow::Column, Align::Center);
         fitted.paint(grid, draw::TEXT);
         for (entry, line) in fitted.lines.iter().take(fitted.shown).enumerate() {
