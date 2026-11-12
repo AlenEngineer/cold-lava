@@ -129,6 +129,10 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                                 in_quote: quotes > 0,
                                 table: 0,
                                 cells: Vec::new(),
+                                given: matcher::Given {
+                                    level,
+                                    callout: None,
+                                },
                             });
                         }
                         raws.push(Raw {
@@ -254,6 +258,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                                 in_quote: quotes > 0,
                                 table: 0,
                                 cells: Vec::new(),
+                                given: matcher::Given::default(),
                             });
                         }
                         let raw = &mut raws[at];
@@ -313,6 +318,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                                 in_quote: quotes > 0,
                                 table: 0,
                                 cells: Vec::new(),
+                                given: matcher::Given::default(),
                             });
                         }
                     }
@@ -338,6 +344,7 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                             in_quote: quotes > 0,
                             table: tables.len().saturating_sub(1),
                             cells: std::mem::take(&mut cells),
+                            given: matcher::Given::default(),
                         });
                     }
                     _ => {}

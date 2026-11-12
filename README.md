@@ -663,7 +663,15 @@ fields.vei = { capture = "n", type = "number" }
 heading), `text` (a paragraph), `item` (a list item) or `row` (a table row), or `inline` for a
 pattern anywhere in text. The names `on` had before (`note`, `heading`, `paragraph`,
 `list-item`, `table-row`) still work and mean the same, as in the example above.
-`cold-lava types` prints both (`on note · role document`).
+`cold-lava types` prints both (`on note · role document`). `on = "aside"` (or `quote`) takes
+a quote or a callout: its text is its first words, a callout's title.
+
+A type can also read what a piece carries without saying how Markdown writes it. These are
+**attributes**: a list item's `checkbox` (the character between the brackets), a heading's
+`level`, a callout's kind (`callout`) and whether it folds (`fold`).
+`where.attribute = "checkbox"` takes the pieces that have one, and
+`fields.status = { attribute = "checkbox" }` reads it, beside the sources that read text
+themselves (`checkbox = true`, `marker = "📅"`), which all still work.
 
 Every note and block a type matches is an item of that kind, so `cold-lava items` lists them
 with their fields:

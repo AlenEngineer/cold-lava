@@ -354,6 +354,27 @@ pub struct Where {
     /// older name. A name that is both a type's and a role's is the type.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub inside: Vec<String>,
+    /// The piece carries each of these attributes (docs/extensions.md, "The alphabet, as
+    /// built"): `checkbox` on an item, `level` on a section. One name or a list.
+    #[serde(
+        deserialize_with = "one_or_many",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub attribute: Vec<String>,
+}
+
+/// `"checkbox"` or `["checkbox", "due"]`.
+fn one_or_many<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Written {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Written::deserialize(d)? {
+        Written::One(name) => vec![name],
+        Written::Many(names) => names,
+    })
 }
 
 impl Where {
@@ -373,6 +394,7 @@ impl Where {
                 &self.section,
                 &self.language,
                 &self.inside,
+                &self.attribute,
             ]
             .iter()
             .filter(|l| !l.is_empty())
@@ -556,6 +578,9 @@ pub enum Source {
     /// The character between a task's brackets: `x` in `[x] Pay rent`, kept as written, a
     /// space included.
     Checkbox(Yes),
+    /// An attribute the piece's owner gives it, by name: `checkbox`, `level`, `callout`. The
+    /// type doesn't say how the file writes it; the owner does.
+    Attribute(String),
 }
 
 /// `rest = true`, or `rest = { without = ["#task"] }`: the leftover text, with every
@@ -682,27 +707,30 @@ impl Source {
             Source::Section(_) => "section",
             Source::Rest(_) => "rest",
             Source::Checkbox(_) => "checkbox",
+            Source::Attribute(_) => "attribute",
         }
     }
 
     /// Whether a value set on the field can be put back through this source: only its span
-    /// changes. The others are derived from text the source doesn't own.
+    /// changes. The others are derived from text the source doesn't own, or, for a heading's
+    /// `level` and a callout's `fold`, from the note's structure.
     pub fn writable(&self) -> bool {
-        !matches!(
-            self,
+        match self {
             Source::Inlines(_)
-                | Source::Children(_)
-                | Source::Note(_)
-                | Source::Section(_)
-                | Source::Rest(_)
-        )
+            | Source::Children(_)
+            | Source::Note(_)
+            | Source::Section(_)
+            | Source::Rest(_) => false,
+            Source::Attribute(name) => !matches!(name.as_str(), "level" | "fold"),
+            _ => true,
+        }
     }
 
     /// What it can be read on.
     pub fn on(&self) -> &'static [On] {
         match self {
             Source::Capture(_) | Source::Note(_) => ALL,
-            Source::Pattern(_) => BLOCKS,
+            Source::Pattern(_) | Source::Attribute(_) => BLOCKS,
             Source::Marker(_) | Source::Flag(_) | Source::Flags(_) | Source::Rest(_) => TEXT,
             Source::Inline(_) => &[O::Document, O::Section, O::Text, O::Item, O::Aside],
             Source::Column(_) => &[O::Row],
@@ -1510,9 +1538,19 @@ fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
         (!w.language.is_empty(), "language", on == On::Verbatim),
         (!w.section.is_empty(), "section", on != On::Document),
         (!w.inside.is_empty(), "inside", on != On::Document),
+        (
+            !w.attribute.is_empty(),
+            "attribute",
+            !matches!(on, On::Document | On::Inline),
+        ),
     ] {
         if set && !ok {
             p.push(format!("{at}where.{key} doesn't apply on {}", on.both()));
+        }
+    }
+    for name in &w.attribute {
+        if !is_name(name, false) {
+            p.push(format!("{at}where.attribute: {}", not_an_attribute(name)));
         }
     }
     let groups: Option<Vec<String>> = match &shape.pattern {
@@ -1574,12 +1612,16 @@ fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
                 | Source::Flag(t)
                 | Source::Column(t)
                 | Source::Property(t)
+                | Source::Attribute(t)
                     if t.trim().is_empty() =>
                 {
                     p.push(format!("{at}{} is empty", s.kind()))
                 }
                 Source::Flags(glyphs) if glyphs.is_empty() => {
                     p.push(format!("{at}flags needs at least one glyph"))
+                }
+                Source::Attribute(name) if !is_name(name, false) => {
+                    p.push(format!("{at}{}", not_an_attribute(name)))
                 }
                 Source::Rest(_) => rest += 1,
                 _ => {}
@@ -1595,6 +1637,10 @@ fn check_shape(d: &Definition, shape: &Shape, at: &str, p: &mut Vec<String>) {
     if rest > 1 {
         p.push(format!("{at}more than one field reads the rest"));
     }
+}
+
+fn not_an_attribute(name: &str) -> String {
+    format!("{name:?} is not an attribute's name: a letter, then letters, digits, - or _")
 }
 
 pub(crate) fn is_name(s: &str, dots: bool) -> bool {
@@ -2422,5 +2468,66 @@ mod tests {
             bad.errors[0]
                 .contains("an enum's values are a table, or a setting (${tasks.statuses})")
         );
+    }
+
+    /// A shape can ask that a piece carries an attribute and read one into a field, written as
+    /// one name or a list, and the JSON reads back.
+    #[test]
+    fn a_shape_tests_and_reads_attributes() {
+        let d = definition(
+            r#"
+            fields = { state = "text", depth = "number" }
+            [[from]]
+            on = "item"
+            where.attribute = "checkbox"
+            fields.state = { attribute = "checkbox" }
+            [[from]]
+            on = "section"
+            where.attribute = ["level"]
+            fields.depth = { attribute = "level" }
+            "#,
+        );
+        assert_eq!(check("x", &d), Vec::<String>::new());
+        assert_eq!(d.from[0].conditions.attribute, ["checkbox"]);
+        assert_eq!(d.from[0].conditions.conditions(), 1);
+        assert_eq!(
+            d.from[0].fields["state"].0,
+            [Source::Attribute("checkbox".into())]
+        );
+        assert!(Source::Attribute("checkbox".into()).writable());
+        assert!(!Source::Attribute("level".into()).writable());
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["from"][0]["where"], json!({"attribute": ["checkbox"]}));
+        assert_eq!(
+            json["from"][1]["fields"]["depth"],
+            json!([{"attribute": "level"}])
+        );
+        let back: Definition = serde_json::from_value(json).unwrap();
+        assert_eq!(back, d);
+
+        for (toml, error) in [
+            (
+                "on = \"note\"\nwhere.attribute = \"checkbox\"",
+                "where.attribute doesn't apply on document (note)",
+            ),
+            (
+                "on = \"item\"\nwhere.attribute = \"two words\"",
+                "where.attribute: \"two words\" is not an attribute's name",
+            ),
+            (
+                "on = \"note\"\nfields.s = { attribute = \"checkbox\" }",
+                "attribute can't be read on document (note)",
+            ),
+            (
+                "on = \"item\"\nfields.s = { attribute = \"\" }",
+                "fields.s: attribute is empty",
+            ),
+        ] {
+            let problems = check("x", &definition(toml));
+            assert!(
+                problems.iter().any(|p| p.contains(error)),
+                "{toml}: {problems:?}"
+            );
+        }
     }
 }

@@ -44,6 +44,19 @@ pub fn items(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     items::extract(note, text, s)
 }
 
+/// The `checkbox` attribute of an item whose text (its first line, without its list marker) is
+/// `text`: the character between the brackets, and where the closing bracket is. One character
+/// between brackets, then whitespace or the end of the text, which is what the task type has
+/// always taken for a checkbox. The tree's `TaskMarker` is narrower (a space or a tab after it,
+/// no other whitespace), so the attribute is read off the text until the two are one reading.
+pub(crate) fn checkbox(text: &str) -> Option<(char, usize)> {
+    let symbol = text.strip_prefix('[')?.chars().next()?;
+    let end = 1 + symbol.len_utf8();
+    let after = text[end..].strip_prefix(']')?;
+    (symbol != '\n' && after.chars().next().is_none_or(char::is_whitespace))
+        .then_some((symbol, end))
+}
+
 /// What an edit makes of a note: its new text, which the engine writes.
 pub struct Made {
     pub text: String,

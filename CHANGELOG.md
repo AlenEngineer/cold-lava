@@ -19,8 +19,25 @@ change commands, keys and file formats; patch versions only fix things.
   The alphabet (nine roles, text, five relations, open attributes) is written down in
   `docs/extensions.md`, "The alphabet, as built", with a version that extensions get in
   `initialize` as `alphabet`. No item changes: every id, rev, field and kind is what it was.
+- Attributes, and types that read them (#242, step 2 of the neutral model). A piece carries
+  attributes, a name and a value each, given by the owner of its file. The Markdown owner
+  gives `checkbox` on a list item (the character between the brackets), `level` on a heading,
+  and `callout` and `fold` on a callout (`> [!warning]- Hot` is `warning` and `closed`). A
+  type's shape tests one with `where.attribute = "checkbox"` and reads one with the source
+  `{ attribute = "checkbox" }`, so it says what a piece is and not how Markdown writes it.
+  Every older source (`checkbox = true`, `marker`, `inline`, `pattern`, …) reads as before.
+  `items/edit set-field` writes a field read from `checkbox` or `callout` where it is
+  written; `level` and `fold` are read-only. `cold-lava types` lists the new source and
+  condition like the others. Reading a note costs what it did: an attribute is read only
+  when a type names it. Items over the gateway are unchanged: attributes reach the wire in
+  a later step. The built-in `task` doesn't read attributes yet, and no item changes.
 
 ### Changed
+
+- A type on a quote or a callout (`on = "aside"`, or the older `on = "quote"`) now matches.
+  Before, such a type loaded and matched nothing. Now a quote or a callout it takes is an
+  item of that type: its text is its first words (a callout's title), and its lines are the
+  whole quote. The items the type already had keep their ids.
 
 - A message about a mistake in a type says the role with the older name beside it
   (`column can't be read on document (note); only on row (table-row)`, where it said `on note
