@@ -53,6 +53,9 @@ pub struct TableView {
     sort: Option<(usize, bool)>,
     filter: String,
     input: Input,
+    /// The last key went into the filter of a table that filters as you type: it is still
+    /// being typed, until a key that isn't text (Enter, an arrow, Esc).
+    typed: bool,
     /// After an edit gave the row a new id: select it when it shows up.
     follow: Option<String>,
 }
@@ -68,6 +71,7 @@ impl TableView {
             sort: None,
             filter: String::new(),
             input: Input::None,
+            typed: false,
             follow: None,
         };
         v.reorder(None);
@@ -172,10 +176,13 @@ impl TableView {
     }
 
     /// What is being typed in the table, which taking it from the front would cut short or
-    /// closing it would lose, in words for the status line.
+    /// closing it would lose, in words for the status line: a cell, a filter after `/`, or in
+    /// a table that filters as you type one that the last key added to (as `ListView`'s).
     pub fn unsaved(&self) -> Option<&'static str> {
         match self.input {
-            Input::None => None,
+            Input::None => {
+                (self.typed && !self.filter.is_empty()).then_some("a filter is being typed")
+            }
             Input::Filter => Some("a filter is being typed"),
             Input::Edit { .. } => Some("a cell is being edited"),
         }
@@ -231,9 +238,11 @@ impl TableView {
         if takes(self.table.filter, &k) {
             let keep = self.selected().map(|r| r.id.clone());
             type_into(&mut self.filter, &k);
+            self.typed = true;
             self.reorder(keep.as_deref());
             return Action::Stay;
         }
+        self.typed = false;
         let rows = self.order.len();
         let cols = self.table.columns.len();
         match k.code {
@@ -835,5 +844,22 @@ mod tests {
         assert_eq!(v.unsaved(), Some("a cell is being edited"));
         v.key(key(KeyCode::Esc));
         assert_eq!(v.unsaved(), None);
+    }
+
+    #[test]
+    fn a_table_that_filters_as_you_type_holds_its_filter_while_it_is_typed() {
+        let mut v = TableView::new(Table {
+            filter: Filter::Typing,
+            ..table()
+        });
+        assert_eq!(v.unsaved(), None);
+        v.key(key(KeyCode::Char('f')));
+        assert_eq!(v.unsaved(), Some("a filter is being typed"));
+        v.key(key(KeyCode::Down));
+        assert_eq!(
+            v.unsaved(),
+            None,
+            "chosen from: it stays, and isn't typed any more"
+        );
     }
 }

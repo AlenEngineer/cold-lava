@@ -154,8 +154,10 @@ pub struct Happened {
 pub enum ViewNews {
     #[serde(rename = "view/event")]
     Event(Happened),
-    /// The user closed it (Esc, `q`), or the host did to make room: it is gone, and an update
-    /// to it does nothing.
+    /// The user closed it (Esc, `q`), the host did to make room, or the extension's own
+    /// `view/close` was done after waiting for the user to finish typing in it: it is gone,
+    /// and an update to it does nothing. A view the extension asked to close while the user
+    /// was typing in it sends no more events, and is closed when this names it.
     #[serde(rename = "view/closed")]
     Closed { view: ViewId },
 }

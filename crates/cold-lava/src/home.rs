@@ -892,6 +892,7 @@ impl Home {
             self.check_disk();
             self.board_left()?;
             self.tick_board();
+            self.close_asked();
             self.views.settle();
             self.ask_previews();
             if self.backlinks_target() != self.backs_of {
@@ -1167,9 +1168,9 @@ impl Home {
     }
 
     /// A notice that something was refused to keep what is in front as it is. Every refusal
-    /// comes through here. The whiteboard says its own, and counts those it hasn't shown yet
-    /// (`Board::refused`). Elsewhere the status line shows it beside any other message, which
-    /// doesn't take its place, with how many requests it stands for (`Refused`).
+    /// comes through here. The whiteboard in front says it on its own status line
+    /// (`Board::refused`), the menu on its own; both keep it in a `Refused`, which counts the
+    /// requests and puts the notice first on the line, before any other message.
     fn refused(&mut self, notice: String) {
         if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
             return b.refused(notice);
@@ -1178,14 +1179,33 @@ impl Home {
     }
 
     /// `view/close`: the owner's view is closed, unless something is being typed in it (a
-    /// filter, a cell). Then it stays and the status line says why, as for any other request
-    /// that would take typed work away.
+    /// filter, a cell). Then the status line says so, and the view goes when the typing ends
+    /// (`Views::ask_close`, `close_asked`).
     fn close_view(&mut self, ext: ExtId, view: ViewId) {
-        if let Some(why) = self.views.get(ext, view).and_then(|v| v.unsaved()) {
-            return self.held_back(ext, "close a view", why);
+        match self.views.ask_close(ext, view) {
+            Some(why) => self.held_back(ext, "close a view", why),
+            None => self.forget_closed_views(),
         }
-        self.views.close(ext, view);
-        self.forget_closed_views();
+    }
+
+    /// The views their owners closed while something was typed in them go now that the typing
+    /// ended, or that the user left them (`Views::take_closed`). Their owners hear
+    /// `view/closed`, and the status line says what became of what was typed.
+    fn close_asked(&mut self) {
+        let front = match self.mode {
+            Mode::View { owner, view, .. } => Some((owner, view)),
+            _ => None,
+        };
+        for gone in self.views.take_closed(front) {
+            self.forget_closed_views();
+            let name = self.registry.manifest(gone.owner).name.clone();
+            self.flash(match gone.unsent {
+                true => format!("not saved: {name} had closed this view"),
+                false => format!("{name} closed the view you were typing in"),
+            });
+            let closed = ViewNews::Closed { view: gone.id };
+            self.call(gone.owner, |e, host| e.view(closed, host));
+        }
     }
 
     /// Show an extension's new view in place of what showed, which Back returns to.
@@ -7325,15 +7345,12 @@ impl Home {
                 )
             }
         };
-        // A refused request is always shown: another message stands beside it, not over it.
-        let said = match (&self.msg, self.refusals.shown(Instant::now())) {
-            (Some((m, _)), Some(refused)) => Some(format!(" {m} · {refused}")),
-            (Some((m, _)), None) => Some(format!(" {m}")),
-            (None, Some(refused)) => Some(format!(" {refused}")),
-            (None, None) => None,
-        };
-        let second = match said {
-            Some(said) => Line::styled(said, Style::new().fg(HIT)),
+        // A refused request comes first, where no other message can push it off the line.
+        let now = Instant::now();
+        self.refusals.begin(now);
+        let other = self.msg.as_ref().map(|(m, _)| m.as_str());
+        let second = match self.refusals.line(other, now) {
+            Some(said) => Line::styled(format!(" {said}"), Style::new().fg(HIT)),
             None => Line::styled(hints, Style::new().fg(DIM)),
         };
         f.render_widget(Paragraph::new(vec![info, second]), area);

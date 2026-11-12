@@ -191,10 +191,15 @@ change commands, keys and file formats; patch versions only fix things.
   being edited. The switcher, the palette, the search, the outline and the bookmarks are
   kept the same way once something is typed in them, link hints once a label is begun, Tidy
   while something is marked, and an extension's list or table while a filter is typed or a
-  cell is edited in it. Its owner can't close such a view either (`csv-table wanted to close
-  a view: not while a cell is being edited`). The notice stays for three seconds beside any
-  other message instead of being replaced by it, and says how many requests it stands for
-  (`(2 requests refused)`). Nothing was lost on disk before either.
+  cell is edited in it (in a view that filters as you type, until Enter or an arrow). When
+  the owner of such a view closes it (`csv-table wanted to close a view: not while a cell is
+  being edited`), the view says on its last line that its extension closed it and goes when
+  the typing ends; what Enter was pressed on is not sent, and the status line says `not
+  saved: csv-table had closed this view`. A notice of a refused request comes first on the
+  status line, before any other message, on the whiteboard too, where a message could take
+  its place; it names the last request and says how many there were (`(2 requests
+  refused)`), and a line narrower than the notice cuts its end. Nothing was lost on disk
+  before either.
 - A rename, merge or recipe whose dialog is gone when the owners of its files answer now
   says that nothing was changed, where the answer was dropped without a word (#269).
 
