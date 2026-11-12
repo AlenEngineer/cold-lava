@@ -95,6 +95,11 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
                     "node {place} has no fields: a canvas gives no typed items"
                 ));
             }
+            Change::Attribute { place, .. } | Change::Runs { place, .. } => {
+                return Err(format!(
+                    "node {place} is given as Markdown: a canvas gives no pieces"
+                ));
+            }
         }
     }
     Ok(json_canvas::set(text, &new))

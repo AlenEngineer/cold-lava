@@ -21,8 +21,23 @@ change commands, keys and file formats; patch versions only fix things.
   carried as attributes. The two older answers, a Markdown piece and a typed item, read as
   before with the ids they had. The alphabet's version, which extensions get in `initialize`,
   is 2: give pieces only when it is 2 or more. `cold_lava.py` has helpers to build them.
-  A piece can't be edited through cold-lava yet. `docs/extensions.md`, "Pieces, as built".
-
+  `docs/extensions.md`, "Pieces, as built".
+- An owner's pieces are edited in the model's terms (#243). Ticking a task an owner gave as
+  a piece sends the owner `checkbox = done` at its place, never a line of Markdown; setting
+  its due date sends the attribute `due`; rewording it sends its new text as runs, with the
+  labels and links that are still among the words kept. `file/edit` has two new changes for
+  this, `{place, attribute, value}` and `{place, text}` with a list of runs (`cell` for a
+  row's cell), and renaming a note repoints the links a piece says (`{place, link, to}`).
+  The agenda, the table and `items/edit` work on these items as on any other. Before
+  anything is written the owner reads its new text back, and now every piece must say what
+  was asked and stand where it stood, so an owner that quietly changes another piece,
+  changes the other of two identical chores (where it keeps their places) or moves one
+  is refused. New words are
+  refused when some of the piece's words don't show in the field being set (a type's
+  `marker`, `pattern` or `without` took them out), since they would be dropped unseen. With custom Tasks statuses a tick goes on
+  to the next status that is another of the four words. Ticking a recurring task in a piece
+  is refused for now, and a tick adds no done date there.
+  `docs/extensions.md`, "Changes in the model's terms, as built".
 - A type's `on` takes the roles of the alphabet (#241, step 1 of the neutral model):
   `document`, `section`, `text`, `item`, `row`, `aside` and `verbatim`, and `inline` as
   before. The names it had (`note`, `heading`, `paragraph`, `list-item`, `table-row`, `quote`,
@@ -66,6 +81,10 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- A task an extension's owner gave as a typed item (`{place, type, fields}`) can be ticked
+  (#243): `items/edit toggle` sets its `status` to the next status symbol. It was refused
+  before. A field value of exactly one character is now read as written there, so a
+  `status` of one space is an open task; before it was read as no status.
 - A type on a quote or a callout (`on = "aside"`, or the older `on = "quote"`) now matches.
   Before, such a type loaded and matched nothing. Now a quote or a callout it takes is an
   item of that type: its text is its first words (a callout's title), and its lines are the

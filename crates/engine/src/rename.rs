@@ -545,8 +545,33 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
         let (dir_then, dir_now) = (dir_of(&rw.before.rels[i]), dir_of(&rw.after.rels[i]));
         let (mut asks, mut changes, mut links) = (Vec::new(), Vec::new(), 0);
         for item in &f.given.items {
-            let GivenItem::Markdown { place, text } = item else {
-                continue;
+            let (place, text) = match item {
+                GivenItem::Markdown { place, text } => (place, text),
+                GivenItem::Typed { .. } => continue,
+                // A piece says its links itself: each one that moves is repointed, and no
+                // text is read for it.
+                GivenItem::Piece(p) => {
+                    let mut targets = p.link_targets();
+                    targets.sort_unstable();
+                    targets.dedup();
+                    for target in targets {
+                        let Some(to) = rw.link(target, false, dir_then, dir_now) else {
+                            continue;
+                        };
+                        links += p.link_targets().iter().filter(|t| **t == target).count();
+                        changes.push(Change {
+                            line: 0,
+                            before: format!("[[{target}]]"),
+                            after: format!("[[{to}]]"),
+                        });
+                        asks.push(Ask::Link {
+                            place: p.place.clone(),
+                            link: target.to_string(),
+                            to,
+                        });
+                    }
+                    continue;
+                }
             };
             let (text, lines, n) = rw.note_text(text, dir_then, dir_now);
             if n > 0 {

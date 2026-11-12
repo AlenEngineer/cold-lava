@@ -928,7 +928,10 @@ over **pieces** instead: what each thing is (an item, a row, a section), what it
 (`"task": true`, `"checkbox": "open"`, `"due": "2026-11-20"`) and its text as plain
 characters, with the links and labels said as such. A chore in a file of your own format is
 then a `task` like any other, and `#42`, `$5` or `[[x]]` in its words stay those characters:
-no tag, no math, no link. `docs/extensions.md`, "Pieces, as built", has the shape.
+no tag, no math, no link. Edits go back the same way: ticking that chore in the agenda asks
+its owner for `checkbox = done`, a new due date for `due = 2026-11-21`, new words for the
+text as plain runs, and the owner writes each the way its format does. `docs/extensions.md`,
+"Pieces, as built" and "Changes in the model's terms, as built", have the shapes.
 
 An owner can also ship types in its manifest (`[[types]]`). csv-table has `csv-table.row` for
 the rows none of your types matches: `Volcanoes/Observatories.csv` is a table of those in `i`,

@@ -6,8 +6,7 @@ use crate::act::{Answered, Ask, ShapeAnswer};
 use crate::bookmarks::Bookmarks;
 use crate::files;
 use crate::gateway::{
-    self, Answer, Edit, Edited, Found, News, Op, Query, Reason, Select, SubId, Subscriptions,
-    Ticket,
+    self, Answer, Edit, Edited, Found, News, Query, Reason, Select, SubId, Subscriptions, Ticket,
 };
 use crate::index::Index;
 use crate::items::Item;
@@ -542,21 +541,23 @@ impl Core {
             return Err(error(Reason::Changed, message));
         }
         let place = file.places[&edit.id].clone();
-        let is_piece = |g: &given::GivenItem| {
-            let id = |p: &given::Piece| given::piece_id(&file.rel, item.data.kind(), &p.place);
-            matches!(g, given::GivenItem::Piece(p) if p.place == place && id(p) == edit.id)
-        };
-        if file.given.items.iter().any(is_piece) {
-            let message = format!(
-                "{} in {} is a piece {} gave, and a piece can't be changed yet",
-                edit.id, file.rel, file.owner
-            );
-            return Err(error(Reason::Refused, message));
-        }
+        // How the owner gave the item: as a piece, as a typed item, or in a Markdown piece.
         let piece = file.given.items.iter().find_map(|g| match g {
+            given::GivenItem::Piece(p) if p.place == place => Some(p),
+            _ => None,
+        });
+        let piece =
+            piece.filter(|p| given::piece_id(&file.rel, item.data.kind(), &p.place) == edit.id);
+        let is_typed = |g: &given::GivenItem| {
+            matches!(g, given::GivenItem::Typed { place: p, kind, .. }
+                if *p == place && given::typed_id(&file.rel, kind, p) == edit.id)
+        };
+        let typed = file.given.items.iter().any(is_typed);
+        let markdown = file.given.items.iter().find_map(|g| match g {
             given::GivenItem::Markdown { place: p, text } if *p == place => Some(text),
             _ => None,
         });
+        let markdown = markdown.filter(|_| piece.is_none() && !typed);
         let unchanged = || {
             Answer::Now(Box::new(Edited {
                 item: item.clone(),
@@ -565,8 +566,12 @@ impl Core {
                 warning: None,
             }))
         };
-        let (change, what, warning, after) = match (piece, &edit.op) {
-            (Some(text), _) => {
+        let (changes, what, warning, after) = match (piece, markdown) {
+            (Some(p), _) => {
+                let made = crate::owner::change::piece(p, item, &edit.op, settings)?;
+                (made.changes, made.what, None, None)
+            }
+            (None, Some(text)) => {
                 let key = format!("{}\0{place}", file.rel);
                 let workspace = &self.index.workspace;
                 let style = crate::style::Lazy::new(|| workspace.style());
@@ -577,37 +582,14 @@ impl Core {
                 }
                 let text = made.text;
                 let change = Change::Text { place, text };
-                (change, made.what, made.warning, Some(made.after))
+                (vec![change], made.what, made.warning, Some(made.after))
             }
-            (None, Op::SetField { field, value }) => {
-                let removed =
-                    value.is_null() || value.as_str().is_some_and(|v| v.trim().is_empty());
-                let what = match removed {
-                    true => format!("removed {field}"),
-                    false => format!("set {field}"),
-                };
-                let (field, value) = (field.clone(), value.clone());
-                (
-                    Change::Field {
-                        place,
-                        field,
-                        value,
-                    },
-                    what,
-                    None,
-                    None,
-                )
-            }
-            (None, Op::Toggle) => {
-                let message = format!(
-                    "{} in {} is a typed item {} gave, not a task written as Markdown: set its \
-                     status with set-field",
-                    edit.id, file.rel, file.owner
-                );
-                return Err(error(Reason::Refused, message));
+            (None, None) => {
+                let made = crate::owner::change::typed(&place, item, &edit.op, settings)?;
+                (made.changes, made.what, None, None)
             }
         };
-        let expect = given::apply(&file.given, std::slice::from_ref(&change));
+        let expect = given::apply(&file.given, &changes);
         let read = given::read(&file.rel, &expect, settings);
         if !read.problems.is_empty() {
             return Err(error(Reason::Refused, read.problems.join("; ")));
@@ -659,7 +641,7 @@ impl Core {
             goal,
             stage: Stage::Editing,
         };
-        self.ask_edit(rel, vec![change], pending);
+        self.ask_edit(rel, changes, pending);
         Ok(Answer::Later(ticket))
     }
 
@@ -1356,6 +1338,7 @@ mod pieces;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::Op;
 
     /// The events seen until `want` holds for them. A `Rescanned` also satisfies it: the
     /// watcher may report the folders a test just made (macOS does, late), and the rescan that

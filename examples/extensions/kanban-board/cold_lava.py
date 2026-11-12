@@ -338,6 +338,28 @@ def words(text):
     return "".join(out)
 
 
+def change_kind(change):
+    """What one of `file/edit`'s `changes` asks of your file, at `change["place"]`:
+
+    "attribute": set the piece's attribute `change["attribute"]` to `change["value"]` (None
+        takes it off). Ticking a task is the attribute `checkbox` set to `done`.
+    "runs": the piece's text is now `change["text"]`, a list of runs (`words` gives the plain
+        characters); with `change["cell"]`, that cell of a row.
+    "link": the link `change["link"]` you gave there now leads to `change["to"]`.
+    "field": a typed item's field `change["field"]` is now `change["value"]`.
+    "text": a Markdown piece's text is now the string `change["text"]`.
+
+    Answer `file/edit` with {"text": your file's new text}. Raise an error for a change your
+    format can't hold: cold-lava then writes nothing and says why."""
+    if "attribute" in change:
+        return "attribute"
+    if "field" in change:
+        return "field"
+    if "link" in change:
+        return "link"
+    return "runs" if isinstance(change.get("text"), list) else "text"
+
+
 def _message(method, params=None, request_id=None):
     message = {"jsonrpc": "2.0", "method": method}
     if request_id is not None:

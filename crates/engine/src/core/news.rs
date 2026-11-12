@@ -34,7 +34,7 @@
 //!   one owner's refusal, or a file changed meanwhile, writes nothing anywhere.
 
 use super::*;
-use crate::gateway::{Filter, Page};
+use crate::gateway::{Filter, Op, Page};
 use crate::owner::given::GivenItem;
 use crate::{recipe, rename};
 

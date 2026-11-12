@@ -286,3 +286,149 @@ fn a_cli_recipe_refuses_a_file_changed_while_it_waited_for_an_owner() {
     );
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
+
+/// A copy of the example workspace with `Home.chores` in it, and a home with the owner of
+/// `tests/chores-owner` installed beside the examples' helper.
+fn chores_sandbox(name: &str, chores: &str) -> (PathBuf, PathBuf) {
+    let dir =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("owned-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = dir.join("example-workspace");
+    copy_dir(&manifest.join("../../example-workspace"), &workspace);
+    std::fs::write(workspace.join("Home.chores"), chores).unwrap();
+    std::fs::write(workspace.join("Scratch.md"), "A note to rename.\n").unwrap();
+    let home = dir.join("home");
+    let installed = home.join(".config/cold-lava/extensions/chores");
+    copy_dir(&manifest.join("tests/chores-owner"), &installed);
+    let helper = manifest.join("../../examples/extensions/open-tasks/cold_lava.py");
+    std::fs::copy(helper, installed.join("cold_lava.py")).unwrap();
+    (workspace, home)
+}
+
+/// Step 3 of the neutral model through the real transport: an owner in its own process, for
+/// a made-up format that isn't Markdown, gives its chores as pieces. They are tasks, and they
+/// are ticked, re-dated and reworded with `item set`, which the owner hears as changes in the
+/// model's terms and writes its own way. No other byte of its file moves.
+#[test]
+fn a_made_up_formats_tasks_are_read_and_edited_through_their_owners_process() {
+    use serde_json::{Value, json};
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the test extension needs it");
+        return;
+    }
+    const CHORES: &str = "; The house\n\
+        plumber | todo  | 2026-11-20 | Call the plumber @home about >Krakatoa\n\
+        rent    | done  |            | Pay #42 for $5 to [[x]] and **x**\n";
+    let (workspace, home) = chores_sandbox("chores", CHORES);
+    let ws = workspace.to_str().unwrap();
+    let file = workspace.join("Home.chores");
+    let chores = || std::fs::read_to_string(&file).unwrap();
+    let run = |args: &[&str]| -> String {
+        let out = cold_lava(&home, args);
+        let (stdout, stderr) = text(&out);
+        assert!(out.status.success(), "{args:?}\n{stdout}{stderr}");
+        stdout
+    };
+
+    // The command line reads an owned file from what its owner gave before, and a rename is
+    // what starts an owner to read. This one also repoints the link the chore says.
+    run(&["rename", ws, "Krakatoa", "Krakatau"]);
+    let now = CHORES.replace(">Krakatoa", ">Krakatau");
+    assert_eq!(chores(), now, "the link the piece said, repointed");
+
+    let listed = run(&["items", ws, "task", "--json"]);
+    let tasks: Vec<Value> = (listed.lines())
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|item| item["note"] == "Home.chores")
+        .collect();
+    let [plumber, rent] = &tasks[..] else {
+        panic!("{listed}");
+    };
+    assert_eq!(plumber["text"], "Call the plumber #home about Krakatau");
+    assert_eq!(
+        (&plumber["status"], &plumber["status_type"], &plumber["due"]),
+        (&json!(" "), &json!("todo"), &json!("2026-11-20"))
+    );
+    assert_eq!(
+        (&plumber["tags"], &plumber["links"]),
+        (&json!(["home"]), &json!(["Krakatau"]))
+    );
+    assert_eq!(rent["text"], "Pay #42 for $5 to [[x]] and **x**");
+    assert_eq!(
+        (&rent["status_type"], &rent["tags"], &rent["links"]),
+        (&json!("done"), &json!([]), &json!([])),
+        "`#42` and `[[x]]` in plain text are characters"
+    );
+    let id = plumber["id"].as_str().unwrap();
+
+    let set = |field: &str, value: &str| -> Value {
+        let file = file.to_str().unwrap();
+        let out = run(&["item", "set", file, id, field, value, "--json"]);
+        serde_json::from_str(&out).unwrap()
+    };
+    // After an edit the command line has what the owner read before it: renaming a note has
+    // the owner read the file as it is now.
+    let read_again = |from: &str, to: &str| drop(run(&["rename", ws, from, to]));
+
+    let ticked = set("status", "x");
+    assert_eq!(
+        (&ticked["applied"], &ticked["item"]["status_type"]),
+        (&json!(true), &json!("done"))
+    );
+    assert_eq!(ticked["item"]["id"], id, "a piece keeps its id");
+    let now = now.replace("| todo  |", "| done  |");
+    assert_eq!(chores(), now, "ticked: one word");
+
+    read_again("Scratch", "Scratch 2");
+    let dated = set("due", "2026-11-21");
+    assert_eq!(dated["item"]["due"], "2026-11-21");
+    let now = now.replace("2026-11-20", "2026-11-21");
+    assert_eq!(chores(), now, "re-dated");
+
+    read_again("Scratch 2", "Scratch 3");
+    let file_arg = file.to_str().unwrap();
+    // Words the format can't hold: it ends a link at a space, so a comma after one would
+    // read back as part of the link's target. The read-back catches it, and nothing is written.
+    let comma = "Call the electrician #home about Krakatau, not [[x]]";
+    let refused = cold_lava(&home, &["item", "set", file_arg, id, "text", comma]);
+    let (_, why) = text(&refused);
+    assert!(!refused.status.success(), "{why}");
+    assert!(why.contains("doesn't read back as asked"), "{why}");
+    assert!(why.contains("nothing was written"), "{why}");
+    assert_eq!(chores(), now, "as it was");
+
+    let reworded = set(
+        "text",
+        "Call the electrician #home about Krakatau and not [[x]]",
+    );
+    assert_eq!(
+        (&reworded["item"]["tags"], &reworded["item"]["links"]),
+        (&json!(["home"]), &json!(["Krakatau"])),
+        "the label and the link still among the words stay, and a typed `[[x]]` is characters"
+    );
+    let now = now.replace(
+        "Call the plumber @home about >Krakatau",
+        "Call the electrician @home about >Krakatau and not [[x]]",
+    );
+    assert_eq!(chores(), now, "reworded, in the format's own marks");
+
+    read_again("Scratch 3", "Scratch 4");
+    let undated = run(&["item", "set", file_arg, id, "due", "--remove", "--json"]);
+    let undated: Value = serde_json::from_str(&undated).unwrap();
+    assert_eq!(undated["item"]["due"], Value::Null);
+    let now = now.replace("| 2026-11-21 |", "|  |");
+    assert_eq!(
+        chores(),
+        now,
+        "the date taken off; the remark and the other chore untouched"
+    );
+
+    let log = home.join(".cache/cold-lava/extensions/chores.log");
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "",
+        "nothing on stderr"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}

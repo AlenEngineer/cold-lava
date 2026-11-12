@@ -212,6 +212,26 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   Markdown piece's: none of the three may take another's id. An answer is untrusted:
   `Piece::check` and `read_piece` bound depth, runs, attributes and names, and a place is
   never written into a file. Markdown pieces and typed items read as before.
+  **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
+  model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
+  (`{place, attribute, value}`; a tick is `checkbox = done`, one change, no done date) or
+  `Change::Runs` (`{place, text}` as runs, `cell` for a row's cell), written where the type
+  reads the field. Rewording goes through `given::reword`, which keeps the links, labels and
+  marked runs whose words are still there. A rename repoints a piece's links with
+  `Change::Link`. Never make a Markdown line for a piece, and never read one back: the
+  Markdown owner's `edit` is for Markdown pieces only. The read-back compares pieces too
+  (`given::same`, `piece_key`), in the order given: what each says (role, attributes, text,
+  cells) and where it stands (its position, and the position of the piece it is `in`), not
+  its place; then every place both answers have must hold the piece expected there. Order
+  and the place check are what catch a change made to an identical twin: don't sort them.
+  New words (a piece's, a cell's) are refused unless every word they replace shows in the
+  field being set: `change.rs` compares the field with the piece's full plain words, so
+  whatever took a word out (a `marker`, a `without`, a source added later) is covered.
+  Don't turn that back into a list of source kinds. A piece's tick follows the workspace's
+  next statuses to the first that is another of the four words (`change::next_for_a_piece`)
+  and never answers "unchanged". A `link` field on a piece is the owner's value as written. A typed item
+  an owner gave is ticked as `Change::Field` on `status`. The protocol has no change that
+  adds, moves or removes a piece yet, and `items/edit` takes no runs.
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one walk through its tree (`cst::read`) in the workspace's flavour; `Workspace::items()`
   caches them per note on first use. Ids are stable (block id, heading path, or text hash under
