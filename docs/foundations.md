@@ -171,6 +171,31 @@ The page is still a plain file.
 The engine-facing work comes first and the experience last. Each layer is finished, and has
 one way of doing each thing, before the next is built on it.
 
+## How the code is built
+
+### Tools, called by a simple loop, all the way down
+
+A good architecture is a set of tools and a loop that uses them. The loop only initialises
+its tools and calls them, so it is short and can be read from top to bottom.
+
+The rule is recursive. Every unit of code is one of two things:
+
+- **A caller.** It does its work by calling its tools in order. It holds no logic of its own
+  beyond deciding what to call next.
+- **A leaf.** It needs nothing, or only a dependency the project doesn't control (the
+  standard library, an external crate, the operating system).
+
+A tool owns its state. A caller can ask it to do something; it cannot reach inside. Two tools
+that need the same thing are each handed it by their caller, and neither goes through the
+other.
+
+Complexity is allowed where speed needs it, as a decision. Where code is tangled on purpose,
+it says so and says why, at the place where it is tangled. Complexity nobody decided on is a
+defect, however well it works.
+
+When a unit is neither a caller nor a leaf, the fix is to split it until each part is one or
+the other. Adding to it is never the fix.
+
 ## Open questions
 
 - **Proof.** An idea on this page counts as proven once someone has lived in it.
