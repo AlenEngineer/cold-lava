@@ -23,7 +23,48 @@
 
 use std::path::Path;
 
-/// Every `.rs` file under `dir` by its path there, as `code` keeps it, sorted.
+/// What follows `mod ` on a line that declares a module, whatever its visibility
+/// (`mod x`, `pub mod x`, `pub(crate) mod x`).
+fn declares_mod(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    let rest = match line.strip_prefix("pub") {
+        None => line,
+        Some(after) => {
+            let after = match after.strip_prefix('(') {
+                Some(inside) => inside.split_once(')')?.1,
+                None => after,
+            };
+            after.strip_prefix(' ')?
+        }
+    };
+    rest.strip_prefix("mod ")
+}
+
+/// The modules that are tests whole, each as the path of its file without `.rs`: every
+/// `#[cfg(test)]` on a `mod name;`, whose file is beside the one that declares it or in the
+/// folder of its name.
+fn test_modules(files: &[(String, String)]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, text) in files {
+        let (dir, name) = file.rsplit_once('/').unwrap_or(("", file.as_str()));
+        let base = match ["lib.rs", "main.rs", "mod.rs"].contains(&name) {
+            true => dir,
+            false => file.trim_end_matches(".rs"),
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        for pair in lines.windows(2) {
+            let declared = declares_mod(pair[1]).and_then(|rest| rest.strip_suffix(';'));
+            if let (true, Some(module)) = (pair[0].trim() == "#[cfg(test)]", declared) {
+                let path = format!("{base}/{module}");
+                found.push(path.trim_start_matches('/').to_string());
+            }
+        }
+    }
+    found
+}
+
+/// Every `.rs` file under `dir` by its path there, as `code` keeps it, sorted. A file that
+/// is a test module whole (`test_modules`) is left out, with what is under it.
 fn files_under(dir: &Path) -> Vec<(String, String)> {
     fn walk(dir: &Path, src: &Path, out: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -33,12 +74,22 @@ fn files_under(dir: &Path) -> Vec<(String, String)> {
             } else if path.extension().is_some_and(|x| x == "rs") {
                 let rel = path.strip_prefix(src).unwrap().to_string_lossy();
                 let text = std::fs::read_to_string(&path).unwrap();
-                out.push((rel.replace('\\', "/"), code(&text)));
+                out.push((rel.replace('\\', "/"), text));
             }
         }
     }
     let mut out = Vec::new();
     walk(dir, dir, &mut out);
+    let tests = test_modules(&out);
+    let is_test = |file: &str| {
+        let within = |test: &String| file.strip_prefix(test.as_str());
+        let mut rests = tests.iter().filter_map(within);
+        rests.any(|rest| rest == ".rs" || rest.starts_with('/'))
+    };
+    out.retain(|(file, _)| !is_test(file.as_str()));
+    for (_, text) in &mut out {
+        *text = code(text);
+    }
     out.sort();
     out
 }
@@ -48,21 +99,27 @@ fn sources() -> Vec<(String, String)> {
     files_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
 }
 
-/// The extension host's source files, each named from here (`../host/src/lib.rs`).
-fn host_sources() -> Vec<(String, String)> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../host/src");
-    let from_here = |(file, code): (String, String)| (format!("../host/src/{file}"), code);
+/// The source files of the crate `name` beside this one, each named from here
+/// (`../host/src/lib.rs`).
+fn crate_sources(name: &str) -> Vec<(String, String)> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../{name}/src"));
+    let from_here = |(file, code): (String, String)| (format!("../{name}/src/{file}"), code);
     files_under(&src).into_iter().map(from_here).collect()
 }
 
-/// A file's text without its unit tests (each `#[cfg(test)]` on a `mod`, to the brace that
-/// closes it) and without comment lines. What follows a test module is kept.
+/// The extension host's source files.
+fn host_sources() -> Vec<(String, String)> {
+    crate_sources("host")
+}
+
+/// A file's text without its unit tests (each `#[cfg(test)]` on a `mod`, whatever its
+/// visibility, to the brace that closes it) and without comment lines. What follows a test module is kept.
 fn code(text: &str) -> String {
     let mut kept = Vec::new();
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
         let next = lines.peek().map(|l| l.trim_start());
-        if line.trim() == "#[cfg(test)]" && next.is_some_and(|l| l.starts_with("mod ")) {
+        if line.trim() == "#[cfg(test)]" && next.is_some_and(|l| declares_mod(l).is_some()) {
             let mut depth = 0;
             for inside in lines.by_ref() {
                 depth += inside.matches('{').count() as i32;
@@ -138,11 +195,15 @@ fn functions_of(code: &str, modules: &[&str]) -> Vec<String> {
     found
 }
 
-/// Each of `needles` as often as `code` has it.
+/// Each of `needles` as often as `code` has it. One that begins with a name is not counted
+/// in the middle of a longer name: `println!(` is not found in `eprintln!(`.
 fn times(code: &str, needles: &[&str]) -> Vec<String> {
+    let in_a_name = |c: char| c.is_alphanumeric() || c == '_';
     let mut found = Vec::new();
     for needle in needles {
-        let times = code.matches(needle).count();
+        let begins_a_name = needle.starts_with(in_a_name);
+        let own = |&(at, _): &(usize, &str)| !(begins_a_name && code[..at].ends_with(in_a_name));
+        let times = code.match_indices(needle).filter(own).count();
         found.extend((0..times).map(|_| String::from(*needle)));
     }
     found
@@ -178,10 +239,13 @@ fn tally(mut found: Vec<String>) -> Vec<String> {
     counted.into_iter().map(line).collect()
 }
 
+/// What to do about a way around the door that is found and not listed.
+const THROUGH_THE_CORE: &str = "send it through the core, or list it with its reason";
+
 /// Fails unless what was `found` is exactly what is `listed`, and says which entries are new
-/// and which are listed but no longer found, with what to do about each. A count that
-/// changed shows as both.
-fn only_listed(what: &str, found: &[String], listed: &[&str]) {
+/// (with `remedy`, what to do about one) and which are listed but no longer found. A count
+/// that changed shows as both.
+fn only_listed(what: &str, remedy: &str, found: &[String], listed: &[&str]) {
     let found: Vec<&str> = found.iter().map(String::as_str).collect();
     let new: Vec<&str> = (found.iter().copied())
         .filter(|entry| !listed.contains(entry))
@@ -191,9 +255,9 @@ fn only_listed(what: &str, found: &[String], listed: &[&str]) {
         .collect();
     assert!(
         new.is_empty() && gone.is_empty(),
-        "{what}\n  found but not listed: {new:?}\n    send it through the core, or list it \
-         with its reason: this list only shrinks, so a count is never just raised\n  listed \
-         but not found: {gone:?}\n    take it off the list, or lower its count"
+        "{what}\n  found but not listed: {new:?}\n    {remedy}: this list only shrinks, so a \
+         count is never just raised\n  listed but not found: {gone:?}\n    take it off the \
+         list, or lower its count"
     );
     assert_eq!(found, listed, "{what}");
 }
@@ -527,6 +591,27 @@ fn the_scan_refuses_an_alias_a_glob_and_an_imported_std_function() {
     assert_eq!(sneaked(fine), Vec::<String>::new());
 }
 
+/// A unit test module is one whatever its visibility, and a module that is tests whole is
+/// known by the `#[cfg(test)]` where it is declared.
+#[test]
+fn the_scan_knows_a_test_module_by_any_visibility_and_in_a_file_of_its_own() {
+    let text = "fn f() {\n    a::one();\n}\n#[cfg(test)]\npub(crate) mod tests {\n    fn t() {\n        \
+                a::two();\n    }\n}\n#[cfg(test)]\npub mod more {\n    fn t() {\n        a::three();\n    }\n}\n";
+    assert_eq!(named_in(&code(text), "a::"), ["one"]);
+    assert_eq!(declares_mod("    pub(in crate::x) mod y {"), Some("y {"));
+    assert_eq!(declares_mod("public_mod x"), None);
+    let file = |path: &str, text: &str| (path.to_string(), text.to_string());
+    let files = [
+        file("lib.rs", "mod a;\n#[cfg(test)]\nmod checks;\n"),
+        file(
+            "core.rs",
+            "#[cfg(test)]\npub(crate) mod news;\n#[cfg(test)]\nmod inline {\n}\n",
+        ),
+        file("owner/mod.rs", "#[cfg(test)]\nmod tests;\n"),
+    ];
+    assert_eq!(test_modules(&files), ["checks", "core/news", "owner/tests"]);
+}
+
 /// Code after a file's unit tests is the app's code too.
 #[test]
 fn the_scan_reads_on_after_a_test_module() {
@@ -562,7 +647,7 @@ fn the_index_is_still_read_outside_the_core_here() {
         "main.rs: .index ×3",
         "owned.rs: .index ×2",
     ];
-    only_listed("reads of the core's index", &found, &left);
+    only_listed("reads of the core's index", THROUGH_THE_CORE, &found, &left);
 }
 
 /// A workspace is opened once, as a `Core`, so every command sees the same files, the owned
@@ -583,6 +668,7 @@ fn a_workspace_is_still_opened_beside_the_core_here() {
     ];
     only_listed(
         "a workspace opened beside the core",
+        THROUGH_THE_CORE,
         &tally(hits(&BESIDE)),
         &left,
     );
@@ -695,7 +781,12 @@ fn items_are_still_edited_around_the_core_here() {
         "main.rs: edit::set_field ×1",
         "main.rs: tasks::toggle_in ×1",
     ];
-    only_listed("item edits around Core::edit_item", &found, &left);
+    only_listed(
+        "item edits around Core::edit_item",
+        THROUGH_THE_CORE,
+        &found,
+        &left,
+    );
 }
 
 /// A link is what the Markdown owner and the resolver say is one, never what a pattern of
@@ -742,7 +833,7 @@ fn links_are_still_read_by_pattern_here() {
         "home.rs: markdown_text ×1",
     ];
     let found = tally(hits(&patterns));
-    only_listed("links read by a pattern", &found, &left);
+    only_listed("links read by a pattern", THROUGH_THE_CORE, &found, &left);
 }
 
 /// The extensions the app builds in, the ones `ext.rs`'s `Registry::load` names.
@@ -842,7 +933,12 @@ fn the_built_in_extensions_use_this_beyond_the_gateway() {
         "graph_ext.rs: crate::groups",
         "graph_ext.rs: crate::scene_view",
     ];
-    only_listed("the built-in extensions beyond the gateway", &found, &left);
+    only_listed(
+        "the built-in extensions beyond the gateway",
+        THROUGH_THE_CORE,
+        &found,
+        &left,
+    );
 }
 
 /// A group inside a `use` group doesn't end it: the names after it are read too. The door's
@@ -922,13 +1018,18 @@ fn a_tally_counts() {
 #[test]
 #[should_panic(expected = "found but not listed: [\"a: x ×2\"]")]
 fn a_new_use_fails_its_list() {
-    only_listed("sample", &["a: x ×2".to_string()], &["a: x ×1"]);
+    only_listed("sample", "remedy", &["a: x ×2".to_string()], &["a: x ×1"]);
 }
 
 #[test]
 #[should_panic(expected = "listed but not found: [\"b: y ×1\"]")]
 fn an_entry_that_is_gone_fails_its_list() {
-    only_listed("sample", &["a: x ×1".to_string()], &["a: x ×1", "b: y ×1"]);
+    only_listed(
+        "sample",
+        "remedy",
+        &["a: x ×1".to_string()],
+        &["a: x ×1", "b: y ×1"],
+    );
 }
 
 /// Every name a list is about is guarded, the newer lists' as the file-changing ones'.
@@ -980,4 +1081,94 @@ fn the_scan_refuses_the_ways_around_the_operations_the_edits_and_the_scan() {
     let no_use = "fn f() {\n    g(a, files as u64);\n    let w = std::fs::write as fn(&str);\n    \
                   let s = \"a, rename as before\";\n}\n";
     assert_eq!(sneaked(no_use), Vec::<String>::new());
+}
+
+/// A name is counted as a name of its own, so the print lists below count what they say.
+#[test]
+fn a_name_is_not_counted_inside_a_longer_one() {
+    let code = "eprintln!(\"a\");\nprintln!(\"b\");\nx.index; say::held();";
+    assert_eq!(times(code, &["println!(", "eprintln!("]).len(), 2);
+    assert_eq!(times(code, &[".index", "held()"]).len(), 2);
+}
+
+/// One door out to the terminal too (#265, track A step A2): text a file or an extension
+/// chose is shown only through `shown::escape`, and on the command line that is `say.rs`,
+/// the one module that prints. Nothing else names a print macro, takes stdout or stderr, or
+/// writes bytes of its own to the terminal, but for the terminal's own protocol, which
+/// carries no outside text today and is counted so that it can't grow unseen:
+///
+/// - `main.rs`: `stdout()` for mouse capture, switched on and off around the terminal app.
+/// - `term.rs`: `stdout()` to leave and enter the alternate screen, and in `write_raw`,
+///   which writes the Kitty graphics the app made.
+/// - `home.rs`: a picture placed or deleted with Kitty graphics (`stdout()`, `write_raw`).
+///
+/// No file of the host, the engine or the views crate prints outside its tests.
+///
+/// It is the same guard on the text as the rest of this file, with the same blind spots. It
+/// doesn't see a print through a macro of another crate, `write!` to a handle taken another
+/// way (`io::stdout` under another name, a `File` on `/dev/tty`), or a child process that
+/// inherits the terminal. A panic's message goes to stderr as the standard library writes
+/// it, and can quote outside text: that is a stated limit, since a hook that escaped it
+/// would change what an ordinary panic prints. What the terminal app draws is not printed:
+/// it goes into ratatui's cells, which this test doesn't read.
+#[test]
+fn the_app_prints_only_through_say() {
+    let prints = [
+        "println!(",
+        "eprintln!(",
+        "print!(",
+        "eprint!(",
+        "dbg!(",
+        "stdout()",
+        "stderr()",
+        "Print(",
+        "SetTitle(",
+        "write_raw(",
+    ];
+    let mut files = sources();
+    for name in ["host", "engine", "views"] {
+        files.extend(crate_sources(name));
+    }
+    let found = tally(per_file(&files, |code| times(code, &prints)));
+    let listed = [
+        "home.rs: stdout() ×1",
+        "home.rs: write_raw( ×2",
+        "main.rs: stdout() ×2",
+        "say.rs: eprintln!( ×1",
+        "say.rs: print!( ×1",
+        "say.rs: println!( ×5",
+        "say.rs: stdout() ×1",
+        "term.rs: stdout() ×3",
+        "term.rs: write_raw( ×1",
+    ];
+    let remedy = "print through `out!`, `told!` or `problem!` (src/say.rs says which), so the \
+                  line is escaped";
+    only_listed(
+        "prints and handles on the terminal",
+        remedy,
+        &found,
+        &listed,
+    );
+}
+
+/// Which lines are listings, the user's own content, where a character that turns the
+/// direction of text stays as written: `items`, `table`, `search`, `tidy`, `agenda`,
+/// `daily --path`, a shape drawn as text and a recipe's diff in `main.rs`, and the screen
+/// `drive` read. Every other line is a message (`told!`, `problem!`), where such a character
+/// is escaped. A listing is chosen by calling one of these, so a new one shows here.
+#[test]
+fn the_listings_are_these() {
+    let listings = ["out!(", "listing(", "listing_block("];
+    let found = tally(hits(&listings));
+    let listed = [
+        "drive.rs: out!( ×3",
+        "main.rs: listing( ×2",
+        "main.rs: listing_block( ×2",
+        "main.rs: out!( ×19",
+        "say.rs: listing( ×4",
+        "say.rs: listing_block( ×1",
+    ];
+    let remedy = "a line is a listing only if it is the user's own content; what a command \
+                  did or why it didn't is a message (`told!`, `problem!`)";
+    only_listed("lines printed as listings", remedy, &found, &listed);
 }

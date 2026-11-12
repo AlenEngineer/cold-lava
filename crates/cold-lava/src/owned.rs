@@ -31,7 +31,7 @@ pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspac
     }
     let mut core = open(root, registry)?;
     for (owner, read) in core.take_reads() {
-        eprintln!(
+        crate::say::problem!(
             "{} is left out: {owner} hasn't read it as it is now (open the workspace in \
              cold-lava, and {owner} reads it)",
             read.path
@@ -176,7 +176,7 @@ impl<'a> Owners<'a> {
     ) {
         for effect in self.registry.call(ext, Some(core), f) {
             if let Effect::Notify { message } = effect {
-                eprintln!("{message}");
+                crate::say::problem!("{message}");
             }
         }
     }
@@ -221,7 +221,7 @@ impl<'a> Owners<'a> {
         let method = ask.method();
         for effect in self.registry.ask_shape(ext, Some(core), ask) {
             if let Effect::Notify { message } = effect {
-                eprintln!("{message}");
+                crate::say::problem!("{message}");
             }
         }
         let mut answer = None;

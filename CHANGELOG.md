@@ -158,6 +158,18 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- The command line no longer prints text from a file or an extension as it is written when
+  that text holds characters a terminal acts on (#265, track A step A2). A task whose text
+  held `ESC ]0;…BEL` retitled the terminal from `cold-lava items`, and an owner's place did
+  the same from an error on stderr. Every line is now escaped as it is printed: a control
+  character (but the tab) and the separators U+2028 and U+2029 show as `\u{1b}`, and a line
+  break inside a value or a message as `\n` or `\r`, so text from outside never begins a
+  line of its own. Listings of your own content (`items`, `agenda`, `table`, `search`,
+  `tidy`, `daily --path`, `shapes --render`, a recipe's diff) keep the characters that turn
+  the direction of text (U+202A to U+202E, U+2066 to U+2069); every other line, all of
+  stderr included, shows those as `\u{202e}` too. Text with none of these characters
+  prints byte for byte as before, and `--json`, files, ids and what extensions are
+  answered hold the text as written.
 - An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
   with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the

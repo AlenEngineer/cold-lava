@@ -21,6 +21,7 @@ mod previews;
 mod reader;
 mod recipe_view;
 mod refused;
+mod say;
 mod scene;
 mod scene_view;
 mod shape_editor;
@@ -41,8 +42,9 @@ use anyhow::Result;
 use owner::markdown::attributes;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
+use say::{out, problem, told};
 use std::collections::HashMap;
-use std::io::{Write, stdout};
+use std::io::stdout;
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "cold-lava — Obsidian's graph view and canvas, in the terminal
@@ -189,13 +191,13 @@ impl Args {
 fn print_style(s: &style::Style) {
     fn line<T>(name: &str, c: &style::Choice<T>, value: &str) {
         let counts: Vec<String> = c.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        println!(
+        told!(
             "{name:<18} {value:<11} {:<30} {}",
             c.from.to_string(),
             counts.join(", ")
         );
     }
-    println!("{} notes", s.notes);
+    told!("{} notes", s.notes);
     line("list marker", &s.list_marker, s.list_marker.value.name());
     line("links", &s.links, s.links.value.name());
     line("link path", &s.link_path, s.link_path.value.name());
@@ -212,13 +214,13 @@ fn print_style(s: &style::Style) {
         true => "(none)".to_string(),
         false => k.value.join(", "),
     };
-    println!("{:<18} {keys}  ({})", "key order", k.from);
+    told!("{:<18} {keys}  ({})", "key order", k.from);
     for (field, d) in &s.dates {
         let counts: Vec<String> = (d.counts.iter())
             .filter(|(_, n)| **n > 0)
             .map(|(f, n)| format!("{f} {n}"))
             .collect();
-        println!(
+        told!(
             "{:<18} {:<11} {:<30} {}",
             format!("date {field}"),
             d.value,
@@ -234,7 +236,14 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("COLD_LAVA_COM
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("cold-lava: {e:#}");
+        // An error of several lines is the app's own (a usage): one message line each.
+        match e.downcast_ref::<say::Lines>().map(say::Lines::lines) {
+            Some([first, rest @ ..]) => {
+                problem!("cold-lava: {first}");
+                rest.iter().for_each(|line| problem!("{line}"));
+            }
+            _ => problem!("cold-lava: {e:#}"),
+        }
         // Exit code 3 means "the task line or item changed": callers can refresh and retry.
         let changed_item = matches!(
             e.downcast_ref::<edit::EditError>(),
@@ -255,14 +264,16 @@ fn run() -> Result<()> {
     }
     let args = Args::parse()?;
     if args.has("help") {
-        println!("{USAGE}\n\nA drive script has one step per line:");
+        say::fixed(USAGE);
+        told!();
+        told!("A drive script has one step per line:");
         for line in drive::SYNTAX.lines() {
-            println!("  {line}");
+            told!("  {line}");
         }
         return Ok(());
     }
     if args.has("version") {
-        println!("cold-lava {VERSION}");
+        told!("cold-lava {VERSION}");
         return Ok(());
     }
     let render = if args.has("braille") {
@@ -322,15 +333,14 @@ fn run() -> Result<()> {
             let warnings = &config::get().warnings;
             if !errors.is_empty() || !warnings.is_empty() {
                 let path = config::path().unwrap_or_default();
-                eprintln!("{}:", path.display());
-                for e in errors.iter().chain(warnings) {
-                    eprintln!("  {}", e.replace('\n', "\n  "));
-                }
+                problem!("{}:", path.display());
+                let lines = errors.iter().flat_map(|e| e.lines());
+                lines.chain(warnings).for_each(|line| problem!("  {line}"));
             }
             if !registry.refused().is_empty() {
-                eprintln!("extensions:");
+                problem!("extensions:");
                 for e in registry.refused() {
-                    eprintln!("  {e}");
+                    problem!("  {e}");
                 }
             }
             if !errors.is_empty() || !registry.refused().is_empty() {
@@ -355,15 +365,15 @@ fn run() -> Result<()> {
             };
             let found = types::for_workspace(&root);
             if json {
-                println!("{}", serde_json::to_string_pretty(&found)?);
+                say::json(&found)?;
             } else {
                 let counts = owned::workspace(&root, &registry).ok();
                 let counts = counts.map(|v| type_counts(&v));
                 print_types(&found, counts.as_ref());
                 if !found.errors.is_empty() {
-                    eprintln!("errors:");
+                    problem!("errors:");
                     for e in &found.errors {
-                        eprintln!("  {e}");
+                        problem!("  {e}");
                     }
                 }
             }
@@ -379,14 +389,14 @@ fn run() -> Result<()> {
             };
             let found = attributes::for_workspace(&root);
             if json {
-                println!("{}", serde_json::to_string_pretty(&found)?);
+                say::json(&found)?;
             } else {
                 print_attributes(&found);
                 for (title, lines) in [("notes:", &found.notes), ("errors:", &found.errors)] {
                     if !lines.is_empty() {
-                        eprintln!("{title}");
+                        problem!("{title}");
                         for line in lines {
-                            eprintln!("  {line}");
+                            problem!("  {line}");
                         }
                     }
                 }
@@ -427,21 +437,20 @@ fn run() -> Result<()> {
                         None => return Ok(()),
                     },
                 };
-                print!(
-                    "{}",
-                    cold_lava_canvas::draw::preview(drawn, cols, rows, aspect, rotation, &contents)
-                );
+                say::listing_block(&cold_lava_canvas::draw::preview(
+                    drawn, cols, rows, aspect, rotation, &contents,
+                ));
                 return Ok(());
             }
             if json {
-                println!("{}", serde_json::to_string_pretty(&found)?);
+                say::json(&found)?;
             } else {
                 print_shapes(&found);
                 for (title, lines) in [("notes:", &found.notes), ("errors:", &found.errors)] {
                     if !lines.is_empty() {
-                        eprintln!("{title}");
+                        problem!("{title}");
                         for line in lines {
-                            eprintln!("  {line}");
+                            problem!("  {line}");
                         }
                     }
                 }
@@ -484,7 +493,7 @@ fn run() -> Result<()> {
             }
             let agenda = tasks::agenda(&owned::workspace(&root, &registry)?, from, to);
             if json {
-                println!("{}", serde_json::to_string_pretty(&agenda)?);
+                say::json(&agenda)?;
             } else {
                 print_agenda(&agenda);
             }
@@ -492,15 +501,11 @@ fn run() -> Result<()> {
         }
         Some("items") => {
             let (Some(root), Some(kind)) = (args.word(1), args.word(2)) else {
-                anyhow::bail!(
-                    "usage: cold-lava items WORKSPACE KIND [--json]\nKIND is one of: {} or a type",
-                    types::BUILT_IN
-                        .iter()
-                        .chain(items::KINDS)
-                        .copied()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+                let kinds = types::BUILT_IN.iter().chain(items::KINDS).copied();
+                let kinds = kinds.collect::<Vec<_>>().join(", ");
+                let usage = "usage: cold-lava items WORKSPACE KIND [--json]".to_string();
+                let lines = [usage, format!("KIND is one of: {kinds} or a type")];
+                return Err(say::Lines::of(lines).into());
             };
             let workspace = owned::workspace(Path::new(root), &registry)?;
             let settings = workspace.item_settings();
@@ -521,15 +526,20 @@ fn run() -> Result<()> {
                     kinds.join(", ")
                 );
             }
-            let mut out = std::io::stdout().lock();
+            let mut out = say::held();
             let notes = (workspace.notes.iter()).map(|n| workspace.items_once(n));
             let owned = (workspace.owned.iter()).map(|f| std::borrow::Cow::Borrowed(&f.items[..]));
             for items in notes.chain(owned) {
                 for item in items.iter().filter(|i| i.data.answers_to(kind)) {
                     let written = if json {
-                        writeln!(out, "{}", serde_json::to_string(item)?)
+                        out.json(item)
                     } else {
-                        writeln!(out, "{}:{}  {}", item.note, item.line, item_line(item))
+                        out.listing(format_args!(
+                            "{}:{}  {}",
+                            item.note,
+                            item.line,
+                            item_line(item)
+                        ))
                     };
                     match written {
                         // The reader stopped early (`| head`): that's not an error.
@@ -567,13 +577,13 @@ fn run() -> Result<()> {
                 };
                 view.sort_by(c, desc);
             }
-            let mut out = std::io::stdout().lock();
+            let mut out = say::held();
             let written = match json {
-                true => writeln!(out, "{}", serde_json::to_string_pretty(&view.sorted())?),
+                true => out.json_pretty(&view.sorted()),
                 false => view
                     .text()
                     .iter()
-                    .try_for_each(|l| writeln!(out, "{}", l.trim_end())),
+                    .try_for_each(|l| out.listing(format_args!("{}", l.trim_end()))),
             };
             match written {
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
@@ -585,7 +595,7 @@ fn run() -> Result<()> {
             let ix = index::Index::build(workspace::scan(&root)?);
             let report = tidy::report(&ix);
             if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                say::json(&report)?;
             } else {
                 print_tidy(&report, args.has("no-backlinks"));
             }
@@ -606,22 +616,19 @@ fn run() -> Result<()> {
             let ix = index::Index::build(workspace::scan(&root)?);
             let hits = search::search(&ix, &query, limit);
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&search::to_json(&ix, &hits))?
-                );
+                say::json(&search::to_json(&ix, &hits))?;
             } else {
                 for h in &hits {
                     let n = &ix.workspace.notes[h.note];
                     for l in &h.lines {
-                        println!("{}.md:{}: {}", n.rel, l.line, l.text.trim());
+                        out!("{}.md:{}: {}", n.rel, l.line, l.text.trim());
                     }
                     if h.lines.is_empty() {
-                        println!("{}.md: (name matches)", n.rel);
+                        out!("{}.md: (name matches)", n.rel);
                     }
                 }
                 if hits.is_empty() {
-                    eprintln!("no matches");
+                    problem!("no matches");
                     std::process::exit(1);
                 }
             }
@@ -630,11 +637,11 @@ fn run() -> Result<()> {
         Some("rename") => {
             let (Some(root), Some(note), Some(new)) = (args.word(1), args.word(2), args.word(3))
             else {
-                anyhow::bail!(
-                    "usage: cold-lava rename WORKSPACE NOTE NEW [--dry-run] [--json]\n\
-                     NOTE is a note's name or path, or a folder; NEW is a new name (same \
-                     folder), a folder ending in / (keeps the name), or a full path"
-                );
+                let usage = "usage: cold-lava rename WORKSPACE NOTE NEW [--dry-run] [--json]\n\
+                             NOTE is a note's name or path, or a folder; NEW is a new name \
+                             (same folder), a folder ending in / (keeps the name), or a full \
+                             path";
+                return Err(say::Lines::of([]).then(usage).into());
             };
             let mut core = owned::open(Path::new(root), &registry)?;
             let mut owners = owned::Owners::new(&mut registry, &core);
@@ -662,23 +669,23 @@ fn run() -> Result<()> {
             }
             if json {
                 let out = serde_json::json!({ "applied": !dry, "plan": plan });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                say::json(&out)?;
             } else {
                 let verb = if dry { "would rename" } else { "renamed" };
                 for m in &plan.moves {
-                    println!("{verb} {} → {}", m.from, m.to);
+                    told!("{verb} {} → {}", m.from, m.to);
                 }
                 for e in &plan.edits {
                     for c in &e.changes {
-                        println!("  {}:{}  {}", e.file, c.line, c.after.trim());
+                        told!("  {}:{}  {}", e.file, c.line, c.after.trim());
                     }
                 }
                 for c in plan.bookmarks.iter().flat_map(|b| &b.changes) {
-                    println!("  bookmark  {} → {}", c.before, c.after);
+                    told!("  bookmark  {} → {}", c.before, c.after);
                 }
-                println!("{} links in {} files", plan.links(), plan.files());
+                told!("{} links in {} files", plan.links(), plan.files());
                 for w in &plan.warnings {
-                    eprintln!("warning: {w}");
+                    problem!("warning: {w}");
                 }
             }
             Ok(())
@@ -688,10 +695,10 @@ fn run() -> Result<()> {
                 return print_recipes(json);
             }
             let (Some(root), Some(id)) = (args.word(1), args.word(2)) else {
-                anyhow::bail!(
-                    "usage: cold-lava recipe WORKSPACE NAME [--OPTION VALUE…] [--dry-run] [--json]\n\
-                     cold-lava recipe --list shows the recipes and their options"
-                );
+                let usage = "usage: cold-lava recipe WORKSPACE NAME [--OPTION VALUE…] [--dry-run] \
+                             [--json]\n\
+                             cold-lava recipe --list shows the recipes and their options";
+                return Err(say::Lines::of([]).then(usage).into());
             };
             let r = recipe::find(id).ok_or_else(|| {
                 anyhow::anyhow!("no recipe called {id}; cold-lava recipe --list shows them")
@@ -717,14 +724,16 @@ fn run() -> Result<()> {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
             let found = workspace::scan(&root)?.style();
             if json {
-                println!("{}", serde_json::to_string_pretty(&found)?);
+                say::json(&found)?;
             } else {
                 print_style(&found);
             }
-            let config = (config::get().errors.iter()).filter(|e| e.starts_with("[style]"));
-            let config: Vec<String> = config.map(|e| format!("config.toml {e}")).collect();
+            let config = (config::get().errors.iter()).filter(|e| e.first().starts_with("[style]"));
+            let config: Vec<String> = config
+                .map(|e| format!("config.toml {}", e.first()))
+                .collect();
             for e in found.errors.iter().chain(&config) {
-                eprintln!("{e}");
+                problem!("{e}");
             }
             if !found.errors.is_empty() || !config.is_empty() {
                 std::process::exit(1);
@@ -736,7 +745,7 @@ fn run() -> Result<()> {
             let date = daily::parse_cli_date(args.word(2).unwrap_or("today"))?;
             let path = daily::ensure(&root, date)?;
             if args.has("path") {
-                println!("{}", path.display());
+                out!("{}", path.display());
                 return Ok(());
             }
             let mut home = home::Home::new(render, Some(root), registry);
@@ -770,30 +779,29 @@ fn run() -> Result<()> {
                 tasks::today(),
             );
             match (result, json) {
-                (Ok(r), true) => println!("{}", serde_json::to_string_pretty(&r)?),
+                (Ok(r), true) => say::json(&r)?,
                 (Ok(r), false) => {
-                    println!("{}:{}  {}", r.path, r.line, r.raw.trim());
+                    told!("{}:{}  {}", r.path, r.line, r.raw.trim());
                     if let Some(n) = &r.next {
-                        println!("next occurrence on line {}: {}", n.line, n.raw.trim());
+                        told!("next occurrence on line {}: {}", n.line, n.raw.trim());
                     }
                     if let Some(w) = &r.warning {
-                        eprintln!("warning: {w}");
+                        problem!("warning: {w}");
                     }
                 }
                 (Err(e), true) => {
                     let changed = e.downcast_ref::<tasks::Changed>().is_some();
-                    println!(
-                        "{}",
-                        serde_json::json!({"error": format!("{e:#}"), "changed": changed})
-                    );
+                    say::json_line(
+                        &serde_json::json!({"error": format!("{e:#}"), "changed": changed}),
+                    )?;
                     if let Some(n) = guessed_note(&root, found) {
-                        eprintln!("{n}");
+                        problem!("{n}");
                     }
                     return Err(e);
                 }
                 (Err(e), false) => {
                     if let Some(n) = guessed_note(&root, found) {
-                        eprintln!("{n}");
+                        problem!("{n}");
                     }
                     return Err(e);
                 }
@@ -855,7 +863,7 @@ fn run() -> Result<()> {
                         "changed": set.changed,
                         "item": set.item,
                     });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
+                    say::json(&out)?;
                 }
                 (Ok(set), false) => {
                     let verb = match (set.changed, dry) {
@@ -864,25 +872,24 @@ fn run() -> Result<()> {
                         (true, false) => "set",
                     };
                     let item = &set.item;
-                    println!("{verb} {}:{}  {}", item.note, item.line, item_line(item));
+                    told!("{verb} {}:{}  {}", item.note, item.line, item_line(item));
                     if item.id != id {
-                        println!("new id {}", item.id);
+                        told!("new id {}", item.id);
                     }
                 }
                 (Err(e), true) => {
                     let changed = matches!(e, edit::EditError::Changed(_));
-                    println!(
-                        "{}",
-                        serde_json::json!({"error": e.to_string(), "changed": changed})
-                    );
+                    say::json_line(
+                        &serde_json::json!({"error": e.to_string(), "changed": changed}),
+                    )?;
                     if let Some(n) = guessed_note(&root, found) {
-                        eprintln!("{n}");
+                        problem!("{n}");
                     }
                     return Err(e.into());
                 }
                 (Err(e), false) => {
                     if let Some(n) = guessed_note(&root, found) {
-                        eprintln!("{n}");
+                        problem!("{n}");
                     }
                     return Err(e.into());
                 }
@@ -892,7 +899,8 @@ fn run() -> Result<()> {
         Some(dir) => {
             let path = PathBuf::from(dir);
             if !path.is_dir() {
-                anyhow::bail!("not a folder or command: {dir}\n\n{USAGE}");
+                let lines = [format!("not a folder or command: {dir}"), String::new()];
+                return Err(say::Lines::of(lines).then(USAGE).into());
             }
             let mut home = home::Home::new(render, Some(path), registry);
             with_terminal(|t| home.run(t))
@@ -938,8 +946,13 @@ fn drive() -> Result<()> {
             ("<stdin>".to_string(), src)
         }
     };
-    let script =
-        drive::parse(&src).map_err(|e| anyhow::anyhow!("{name}:{}: {}", e.line, e.message))?;
+    let script = drive::parse(&src).map_err(|e| {
+        let lines = say::Lines::of([format!("{name}:{}: {}", e.line, e.message)]);
+        match e.then {
+            Some(text) => lines.then(text),
+            None => lines,
+        }
+    })?;
     if !drive::run(&name, &script, &std::env::current_exe()?, &theirs, home)? {
         std::process::exit(1);
     }
@@ -949,13 +962,13 @@ fn drive() -> Result<()> {
 /// `cold-lava recipe --list`: each recipe with its options.
 fn print_recipes(json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(recipe::BUILT_IN)?);
+        say::json(recipe::BUILT_IN)?;
         return Ok(());
     }
     for r in recipe::BUILT_IN {
-        println!("{}  {}", r.id, r.about);
+        told!("{}  {}", r.id, r.about);
         for o in r.options {
-            println!("  --{} VALUE  {}", o.name, o.about);
+            told!("  --{} VALUE  {}", o.name, o.about);
         }
     }
     Ok(())
@@ -982,23 +995,23 @@ fn print_recipe_plan(plan: &recipe::Plan, applied: bool, json: bool) -> Result<(
             "files": files,
             "warnings": plan.warnings,
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        say::json(&out)?;
         return Ok(());
     }
     for e in &plan.edits {
         match &e.owned {
-            Some(o) => println!("--- {} (through {})", e.file, o.owner),
-            None => println!("--- {}", e.file),
+            Some(o) => out!("--- {} (through {})", e.file, o.owner),
+            None => out!("--- {}", e.file),
         }
-        print!("{}", recipe::unified(&recipe::file_diff(e, 1)));
+        say::listing_block(&recipe::unified(&recipe::file_diff(e, 1)));
     }
     for w in &plan.warnings {
-        eprintln!("warning: {w}");
+        problem!("warning: {w}");
     }
     match (plan.edits.is_empty(), applied) {
-        (true, _) => println!("{}: nothing to change", plan.title()),
-        (false, true) => println!("{}: changed {}", plan.title(), plan.what()),
-        (false, false) => println!(
+        (true, _) => told!("{}: nothing to change", plan.title()),
+        (false, true) => told!("{}: changed {}", plan.title(), plan.what()),
+        (false, false) => told!(
             "{}: would change {} (dry run, nothing written)",
             plan.title(),
             plan.what()
@@ -1009,8 +1022,8 @@ fn print_recipe_plan(plan: &recipe::Plan, applied: bool, json: bool) -> Result<(
 
 fn print_tidy(r: &tidy::Report, no_backlinks: bool) {
     let section = |title: &str, n: usize| match n {
-        0 => println!("{title}: none"),
-        n => println!("{title}: {n}"),
+        0 => out!("{title}: none"),
+        n => out!("{title}: {n}"),
     };
     let orphans: Vec<&tidy::Orphan> = (r.orphans.iter())
         .filter(|o| no_backlinks || o.both_ways())
@@ -1025,27 +1038,27 @@ fn print_tidy(r: &tidy::Report, no_backlinks: bool) {
         n => format!("{}  (links to {n})", o.note),
     };
     for o in notes {
-        println!("  {}", line(o));
+        out!("  {}", line(o));
     }
     if !daily.is_empty() {
-        println!("  daily notes:");
+        out!("  daily notes:");
         for o in daily {
-            println!("    {}", line(o));
+            out!("    {}", line(o));
         }
     }
     section("Unused attachments", r.unused_attachments.len());
     for a in &r.unused_attachments {
-        println!("  {a}");
+        out!("  {a}");
     }
     section("Empty folders", r.empty_folders.len());
     for f in &r.empty_folders {
-        println!("  {f}/");
+        out!("  {f}/");
     }
     section("Unresolved links", r.unresolved.len());
     for u in &r.unresolved {
-        println!("  {}", u.target);
+        out!("  {}", u.target);
         for l in &u.from {
-            println!("    {}:{}  {}", l.note, l.line, l.context);
+            out!("    {}:{}  {}", l.note, l.line, l.context);
         }
     }
 }
@@ -1055,12 +1068,12 @@ fn print_keys<A: Copy>(screen: &str, table: &[commands::Entry<A>]) {
     let id_width = table.iter().map(|c| c.id.len()).max().unwrap_or(0);
     let labels: Vec<String> = table.iter().map(|c| keys.label(&c.id)).collect();
     let key_width = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-    println!("{screen}");
+    told!("{screen}");
     for (c, label) in table.iter().zip(&labels) {
         let label = if label.is_empty() { "-" } else { label };
-        println!("  {:id_width$}  {label:key_width$}  {}", c.id, c.title);
+        told!("  {:id_width$}  {label:key_width$}  {}", c.id, c.title);
     }
-    println!();
+    told!();
 }
 
 /// `cold-lava ext list`: every extension, built in or installed, with what it may do; then the
@@ -1080,12 +1093,12 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
             Some(i) => i.launch.dir.display().to_string(),
             None => "built in".to_string(),
         };
-        println!("{}{version}  {from}", m.name);
+        told!("{}{version}  {from}", m.name);
         if !m.description.is_empty() {
-            println!("  {}", m.description);
+            told!("  {}", m.description);
         }
         if let Some(i) = on_disk {
-            println!(
+            told!(
                 "  runs: {} ({})",
                 i.launch.run.join(" "),
                 i.launch.transport
@@ -1100,15 +1113,15 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
             .map(Option::unwrap_or_default)
             .collect();
         match permissions.is_empty() {
-            true => println!("  permissions: none"),
-            false => println!("  permissions: {}", permissions.join(", ")),
+            true => told!("  permissions: none"),
+            false => told!("  permissions: {}", permissions.join(", ")),
         }
         for c in &m.commands {
-            println!("  command: {}  {}", c.id, c.title);
+            told!("  command: {}  {}", c.id, c.title);
         }
         if !m.types.is_empty() {
             let ids: Vec<&str> = m.types.iter().map(|t| t.id.as_str()).collect();
-            println!("  types: {}", ids.join(", "));
+            told!("  types: {}", ids.join(", "));
         }
         for t in &m.file_types {
             let new = t.new.as_ref().map(|n| format!(", new: {n}"));
@@ -1117,7 +1130,7 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
                 Some(o) => format!(" (left out: {} opens them)", registry.manifest(o).name),
                 None => " (left out: cold-lava opens them)".into(),
             };
-            println!(
+            told!(
                 "  opens: .{}  {}{}{left_out}",
                 t.extension,
                 t.title,
@@ -1129,36 +1142,35 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
                 true => "",
                 false => " (left out)",
             };
-            println!(
+            told!(
                 "  shows: notes with {}  {}{left_out}",
                 s.describe(),
                 s.title
             );
         }
         if let Some(log) = on_disk.and_then(|i| i.launch.log.as_ref()) {
-            println!("  log: {}", log.display());
+            told!("  log: {}", log.display());
         }
     }
     if let Some(dir) = ext::installed::user_dir()
         && installed.is_empty()
     {
-        println!("no extensions installed in {}", dir.display());
+        told!("no extensions installed in {}", dir.display());
     }
     if let Some(root) = workspace {
         let (local, _) = ext::installed::load(&root.join(".cold-lava/extensions"));
         for i in local {
-            println!(
-                "{}  {}\n  not loaded: extensions inside a workspace aren't loaded yet; \
-                 copy it to the extensions folder in ~/.config/cold-lava to use it",
-                i.manifest.name,
-                i.launch.dir.display()
+            told!("{}  {}", i.manifest.name, i.launch.dir.display());
+            told!(
+                "  not loaded: extensions inside a workspace aren't loaded yet; copy it to the \
+                 extensions folder in ~/.config/cold-lava to use it"
             );
         }
     }
     if !registry.mistakes().is_empty() {
-        eprintln!("didn't load:");
+        problem!("didn't load:");
         for e in registry.mistakes() {
-            eprintln!("  {e}");
+            problem!("  {e}");
         }
     }
 }
@@ -1233,16 +1245,16 @@ fn bound_shape(
         if !json {
             for step in &ran.steps {
                 match step {
-                    act::Did::Edited { item, later: false } => println!("edited {item}"),
+                    act::Did::Edited { item, later: false } => told!("edited {item}"),
                     act::Did::Edited { item, later: true } => {
-                        println!("asked its file's owner to edit {item}")
+                        told!("asked its file's owner to edit {item}")
                     }
-                    act::Did::Created { path } => println!("created {path}"),
-                    act::Did::Recipe { title } => println!("ran {title}"),
+                    act::Did::Created { path } => told!("created {path}"),
+                    act::Did::Recipe { title } => told!("ran {title}"),
                 }
             }
             if let Some(to) = &ran.rebind {
-                println!("now a {}", to.shape);
+                told!("now a {}", to.shape);
             }
         }
         done = Some(ran);
@@ -1256,7 +1268,7 @@ fn bound_shape(
             match owners.ask_shape(&mut core, found, &name, ask) {
                 Ok(act::Answered::Region { items }) => binding.answered(&region, items),
                 Ok(_) => {}
-                Err(e) => eprintln!("{e}"),
+                Err(e) => problem!("{e}"),
             }
         }
     }
@@ -1266,7 +1278,7 @@ fn bound_shape(
             Some(done) => serde_json::json!({"done": done, "shown": shown}),
             None => serde_json::to_value(&shown)?,
         };
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        say::json(&out)?;
         return Ok(None);
     }
     let aspect = binding.shape().definition.aspect;
@@ -1281,7 +1293,7 @@ fn print_shapes(found: &shapes::Shapes) {
         } else {
             format!("  {}", d.title)
         };
-        println!("{}  {}{title}", s.id, s.origin);
+        told!("{}  {}{title}", s.id, s.origin);
         let mut about = Vec::new();
         if !d.inputs.is_empty() {
             about.push(format!("inputs {}", d.inputs.join(", ")));
@@ -1293,7 +1305,7 @@ fn print_shapes(found: &shapes::Shapes) {
             about.push(format!("aspect {aspect}"));
         }
         if !about.is_empty() {
-            println!("  {}", about.join(" · "));
+            told!("  {}", about.join(" · "));
         }
         let parts: Vec<String> = (d.parts.iter())
             .map(|p| match (p, p.id()) {
@@ -1308,10 +1320,10 @@ fn print_shapes(found: &shapes::Shapes) {
                 (p, None) => p.kind().to_string(),
             })
             .collect();
-        println!("  parts {}", parts.join(", "));
+        told!("  parts {}", parts.join(", "));
         for r in &d.regions {
             let shows = r.shows.as_ref().map(|e| format!(", shows {e}"));
-            println!("  region {}: {}{}", r.id, r.area, shows.unwrap_or_default());
+            told!("  region {}: {}{}", r.id, r.area, shows.unwrap_or_default());
         }
         for b in &d.on {
             let gesture = match (&b.drop, &b.click, &b.key, &b.action) {
@@ -1329,23 +1341,24 @@ fn print_shapes(found: &shapes::Shapes) {
                     shapes::Step::Rebind(r) => format!("rebind to {}", r.shape),
                 }))
                 .collect();
-            println!("  on {gesture}: {}", steps.join(", "));
+            told!("  on {gesture}: {}", steps.join(", "));
         }
-        println!();
+        told!();
     }
     let glyphs: Vec<String> = (found.glyphs.iter())
         .map(|g| format!("{} {}", g.symbol, g.name))
         .collect();
-    println!("glyphs  {}", glyphs.join("  "));
+    told!("glyphs  {}", glyphs.join("  "));
 }
 
 /// `cold-lava types`: each type with where it comes from, then each shape with the fields it
 /// reads, where, and whether a value can be written back there.
 fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usize)>>) {
-    println!("{}  built in, read natively", found.native.join(", "));
+    told!("{}  built in, read natively", found.native.join(", "));
     for t in &found.types {
         let d = &t.definition;
-        println!("\n{}  {}", t.name, t.origin);
+        told!();
+        told!("{}  {}", t.name, t.origin);
         if let Some(counts) = counts {
             let (n, unparsed) = counts.get(&t.name).copied().unwrap_or_default();
             let mut line = format!("  found {n} item{}", if n == 1 { "" } else { "s" });
@@ -1353,7 +1366,7 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
                 let s = if unparsed == 1 { " didn't" } else { "s didn't" };
                 line += &format!(" · {unparsed} value{s} parse");
             }
-            println!("{line}");
+            told!("{line}");
         }
         let mut about = Vec::new();
         if let Some(base) = &d.extends {
@@ -1372,7 +1385,7 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
             about.push(format!("write '{w}'"));
         }
         if !about.is_empty() {
-            println!("  {}", about.join(" · "));
+            told!("  {}", about.join(" · "));
         }
         let name_width = d
             .fields
@@ -1403,7 +1416,7 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
             if d.from.len() > 1 {
                 line = format!("shape {}: {line}", i + 1);
             }
-            println!("  {line}");
+            told!("  {line}");
             let read: Vec<(String, &str)> = d
                 .fields
                 .keys()
@@ -1422,22 +1435,23 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
                 .collect();
             let source_width = read.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
             for ((field, value), (source, rw)) in d.fields.keys().zip(&values).zip(&read) {
-                println!(
+                told!(
                     "    {field:name_width$}  {value:value_width$}  {source:source_width$}  {rw}"
                 );
             }
         }
         if !d.style.is_empty() {
-            println!("  looks");
+            told!("  looks");
             for (field, look) in &d.style {
-                println!("    {field:name_width$}  {}", look_label(look));
+                told!("    {field:name_width$}  {}", look_label(look));
             }
         }
     }
     if !found.notes.is_empty() {
-        println!("\nnotes:");
+        told!();
+        told!("notes:");
         for n in &found.notes {
-            println!("  {n}");
+            told!("  {n}");
         }
     }
 }
@@ -1461,20 +1475,21 @@ fn type_counts(workspace: &workspace::Workspace) -> HashMap<String, (usize, usiz
 /// `cold-lava attributes`: how Markdown writes each attribute a type can read, with where
 /// each reading comes from.
 fn print_attributes(found: &attributes::Readings) {
-    println!("level, callout, fold  read from the note's structure");
+    told!("level, callout, fold  read from the note's structure");
     for r in &found.readings {
         let read: Vec<String> = r.read.iter().map(source_label).collect();
-        println!("\n{}  on {} · {}", r.name, r.on.name(), r.origin);
+        told!();
+        told!("{}  on {} · {}", r.name, r.on.name(), r.origin);
         match read.is_empty() {
-            true => println!("  taken out: on no piece"),
-            false => println!("  {}", read.join(", then ")),
+            true => told!("  taken out: on no piece"),
+            false => told!("  {}", read.join(", then ")),
         }
         if !r.with.is_empty() {
-            println!("  only with {}", r.with);
+            told!("  only with {}", r.with);
         }
         let ticked = attributes::TICKED.contains(&r.name.as_str()) && r.on.name() == "item";
         if ticked && r.origin != types::Origin::BuiltIn {
-            println!("  but {}", attributes::TICKING);
+            told!("  but {}", attributes::TICKING);
         }
     }
 }
@@ -1652,9 +1667,9 @@ fn item_line(item: &items::Item) -> String {
 }
 
 fn print_agenda(a: &tasks::Agenda) {
-    println!("{} · {} to {}", a.workspace, a.from, a.to);
+    out!("{} · {} to {}", a.workspace, a.from, a.to);
     if a.days.is_empty() {
-        println!("nothing dated in this range");
+        out!("nothing dated in this range");
     }
     for (day, info) in &a.days {
         let note = if info.daily_note {
@@ -1662,7 +1677,8 @@ fn print_agenda(a: &tasks::Agenda) {
         } else {
             ""
         };
-        println!("\n{day}{note}");
+        out!();
+        out!("{day}{note}");
         for t in a
             .tasks
             .iter()
@@ -1674,7 +1690,7 @@ fn print_agenda(a: &tasks::Agenda) {
                 "in_progress" => "/",
                 _ => " ",
             };
-            println!("  [{mark}] {}   {}:{}", t.text, t.file, t.line);
+            out!("  [{mark}] {}   {}:{}", t.text, t.file, t.line);
         }
     }
 }

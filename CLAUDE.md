@@ -72,7 +72,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `crates/views`: `cold-lava-views`, the frontend framework. Today it holds the view vocabulary
   as serde data, because the host names it: `list.rs`, `table.rs`, `image.rs`, `scene.rs`
   (`List`, `Table`, `Image`, `Scene` and their events) and `view.rs`, the view gateway's
-  messages (`Content`, `Event`, `ViewNews`, the bounds). No UI dependency either. More pieces
+  messages (`Content`, `Event`, `ViewNews`, the bounds), and `shown.rs`: `escape(text,
+  Level)`, the one function that makes text a file or an extension chose safe to show
+  (control characters but the tab, and U+2028/2029, become `\u{1b}`, `\n`, `\r`; at
+  `Level::Message` the nine characters that turn the direction of text too, at
+  `Level::Content`, the user's own content, they stay). Frontends call it where text
+  leaves for the screen; never escape for showing with anything else. No UI dependency
+  either. More pieces
   move into it from `crates/cold-lava` once a second frontend needs them (`docs/engine.md`,
   "The frontend").
 - `crates/editor`: `cold-lava-editor`, cold-lava's own text editor (the main writing surface to come,
@@ -500,6 +506,17 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
   everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
+- `say.rs`: the only module that prints to stdout and stderr. A line is escaped whole as it
+  goes out (`cold_lava_views::shown::escape`), a line break in it included, so nothing has
+  to be remembered where a line is made. Which entry is called says what the line is:
+  `out!` (and `Out::listing`, `listing_block`) for a listing, a line that is the user's own
+  content; `told!` (stdout) and `problem!` (stderr) for a message, what a command did or
+  why it didn't; `say::fixed` for the app's own `&'static str`; `say::json` for JSON,
+  written as it is. One call is one line: what has several lines by the app's own
+  structure makes one call a line, or is a `say::Lines` error (a usage after what went
+  wrong). Never `println!` or take `stdout()` elsewhere: `tests/one_door.rs` lists every
+  print site (the host's, the engine's and the views crate's too) and every listing, and
+  `tests/outside_text.rs` runs the binary on text with escape sequences planted.
 - `drive.rs`: `cold-lava drive`, scripted UI runs (its `write` step changes a workspace file
   with `std::fs` on purpose, as another program would: the one exception `tests/one_door.rs`
   lists for it): the real binary in a pty, screen read back
