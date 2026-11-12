@@ -222,9 +222,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   Markdown owner's `edit` is for Markdown pieces only. The read-back compares pieces too
   (`given::same`, `piece_key`), in the order given: what each says (role, attributes, text,
   cells) and where it stands (its position, and the position of the piece it is `in`), not
-  its place. Order is what catches a change made to an identical twin: don't sort them.
-  New words are refused when another field of the item is read from the piece's words (a
-  `marker`, a `pattern`): they would drop its value. A piece's tick follows the workspace's
+  its place; then every place both answers have must hold the piece expected there. Order
+  and the place check are what catch a change made to an identical twin: don't sort them.
+  New words (a piece's, a cell's) are refused unless every word they replace shows in the
+  field being set: `change.rs` compares the field with the piece's full plain words, so
+  whatever took a word out (a `marker`, a `without`, a source added later) is covered.
+  Don't turn that back into a list of source kinds. A piece's tick follows the workspace's
   next statuses to the first that is another of the four words (`change::next_for_a_piece`)
   and never answers "unchanged". A `link` field on a piece is the owner's value as written. A typed item
   an owner gave is ticked as `Change::Field` on `status`. The protocol has no change that

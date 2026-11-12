@@ -642,6 +642,16 @@ fn pieces_at<'a>(given: &'a mut Given, place: &'a str) -> impl Iterator<Item = &
     })
 }
 
+/// The words of some runs as a field shows them: plain characters, a label as `#name`, a link
+/// by its words, no field, and one space between words.
+pub fn words(runs: &[Run]) -> String {
+    let mut flat = Flat::default();
+    flat.push(runs);
+    let mut out = String::new();
+    crate::matcher::push_words(&mut out, &flat.words);
+    out
+}
+
 /// A piece's new text when its words become `new`: every link, label and marked run whose
 /// own words are still there, in order, stays what it was, the characters between them are
 /// plain, and its fields stay. A label or a link typed into `new` is characters: only the
@@ -801,15 +811,18 @@ pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
     // attribute, a text or a link moves a piece.
     let (want, got) = (&asked.pieces, &gave.pieces);
-    if want != got {
-        let differs = want.iter().zip(got).position(|(a, b)| a != b);
+    let says = |pieces: &[(String, String)]| -> Vec<String> {
+        pieces.iter().map(|(_, says)| says.clone()).collect()
+    };
+    if says(want) != says(got) {
+        let differs = want.iter().zip(got).position(|(a, b)| a.1 != b.1);
         return Err(match differs {
             Some(i) => format!(
                 "the piece {} of {} is {} where {} was asked",
                 i + 1,
                 got.len(),
-                short(vec![got[i].clone()]),
-                short(vec![want[i].clone()])
+                short(vec![got[i].1.clone()]),
+                short(vec![want[i].1.clone()])
             ),
             None => format!(
                 "the pieces are {} where {} were asked",
@@ -817,6 +830,21 @@ pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
                 want.len()
             ),
         });
+    }
+    // A place that is in both answers holds the piece that was asked for there. Two pieces
+    // that say the same can't be told apart by order alone: this is what catches a change
+    // made to the twin, with the two then named as each other. An owner that renamed the
+    // place leaves nothing to check it against.
+    for (place, asked) in want {
+        let there = got.iter().find(|(p, _)| p == place);
+        if let Some((_, gave)) = there.filter(|(_, gave)| gave != asked) {
+            return Err(format!(
+                "the piece at {} is {} where {} was asked",
+                cut(place, 80),
+                short(vec![gave.clone()]),
+                short(vec![asked.clone()])
+            ));
+        }
     }
     Ok(())
 }
@@ -838,10 +866,10 @@ pub struct Read {
     /// By item id.
     pub places: HashMap<String, String>,
     pub links: Vec<(Ref, String)>,
-    /// Every piece in the order given, whether or not it is an item: what it says
-    /// (`piece_key`) and the position of the piece it is in. The read-back check compares
-    /// them.
-    pub pieces: Vec<String>,
+    /// Every piece in the order given, whether or not it is an item: its place, and what it
+    /// says (`piece_key`) with the position of the piece it is in. The read-back check
+    /// compares them.
+    pub pieces: Vec<(String, String)>,
     /// What didn't read, one line each: a type that isn't loaded, a field it doesn't have.
     pub problems: Vec<String>,
 }
@@ -861,7 +889,8 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                     Some(None) => "in a place no piece is at".to_string(),
                 };
                 position.entry(&p.place).or_insert(out.pieces.len());
-                out.pieces.push(format!("{inside}: {}", piece_key(p)));
+                let says = format!("{inside}: {}", piece_key(p));
+                out.pieces.push((p.place.clone(), says));
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
                     // One short line, whatever the owner sent: a reason may quote a value.
                     out.problems
@@ -1529,6 +1558,13 @@ mod tests {
         assert!(wrong.unwrap_err().starts_with("the piece 2 of 3 "));
         let out = gives(twin("a", "done", sec.clone()), twin("b", "open", top));
         assert!(out.unwrap_err().starts_with("the piece 3 of 3 "));
+        // The twin ticked, and the two named as each other: every piece is where it was
+        // asked, but the place that was asked to be done is open.
+        let named = gives(
+            twin("b", "done", sec.clone()),
+            twin("a", "open", sec.clone()),
+        );
+        assert!(named.unwrap_err().starts_with("the piece at a is "));
     }
 
     /// New words replace a piece's text whole, so they are refused when another field has its
@@ -1548,12 +1584,39 @@ fields.text = { rest = true }
 fields.due = { marker = "📅", type = "date" }
 fields.cost = { pattern = '\$(\d+)', type = "number" }
 fields.ref = { attribute = "ref", type = "link" }
+
+[twosrc]
+fields = { text = "text", due = "date" }
+[[twosrc.from]]
+on = "item"
+where.attribute = "twosrc"
+fields.text = { rest = true }
+fields.due = [{ attribute = "due" }, { marker = "📅" }]
+
+[without]
+on = "item"
+where.attribute = "without"
+fields.text = { rest = { without = ["(urgent)", "!!"] } }
+
+[starred]
+on = "item"
+where.attribute = "starred"
+fields.text = { rest = true }
+fields.star = { flag = "⭐", type = "bool" }
 "#,
         );
         let answer = given(json!({"items": [
             {"place": "c1", "role": "item", "attributes": {"chore": true},
              "text": ["Fix the roof 📅 2026-03-04 for $50 ", {"label": "home"}]},
             {"place": "c2", "role": "item", "attributes": {"chore": true}, "text": ["Third"]},
+            {"place": "two", "role": "item", "text": ["Roof 📅 2026-03-04 job"],
+             "attributes": {"twosrc": true, "due": "2026-01-01"}},
+            {"place": "wo", "role": "item", "attributes": {"without": true},
+             "text": ["(urgent) Fix the sink !!"]},
+            {"place": "s1", "role": "item", "attributes": {"starred": true},
+             "text": ["a ⭐ starred one"]},
+            {"place": "s0", "role": "item", "attributes": {"starred": true},
+             "text": ["no star  here ", {"label": "home"}, {"field": "due", "value": "x"}]},
         ]}));
         let read = read("Home.chores", &answer, &s);
         assert_eq!(read.problems, Vec::<String>::new());
@@ -1577,8 +1640,30 @@ fields.ref = { attribute = "ref", type = "link" }
         assert!(
             refused
                 .message
-                .contains("due, cost of this chore are read from those words"),
+                .contains(r#"new words would drop "📅 2026-03-04 $50""#),
             "{refused}"
+        );
+        // A date a second source read and didn't use, words a `without` took out, and a flag
+        // that is there: none shows in the field, so each would be dropped unseen.
+        assert_eq!(
+            fields(&read.items[2]),
+            json!({"text": "Roof job", "due": "2026-01-01"})
+        );
+        for (n, lost) in [(2, "📅 2026-03-04"), (3, "(urgent) !!"), (4, "⭐")] {
+            let refused = change::piece(piece(n), &read.items[n], &words, &s)
+                .err()
+                .unwrap();
+            assert_eq!(refused.reason, Reason::Refused);
+            let says = format!("new words would drop {lost:?}");
+            assert!(refused.message.contains(&says), "{n}: {refused}");
+        }
+        // Every word shows: a flag that isn't there, a label and a field take nothing out.
+        let made = change::piece(piece(5), &read.items[5], &words, &s)
+            .ok()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&made.changes).unwrap(),
+            json!([{"place": "s0", "text": [{"field": "due", "value": "x"}, "Fix the whole roof"]}])
         );
         let made = change::piece(piece(1), &read.items[1], &words, &s)
             .ok()

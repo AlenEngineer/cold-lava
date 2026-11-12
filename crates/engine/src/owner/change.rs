@@ -14,14 +14,15 @@
 //!
 //! Every other source is derived (a label, a link, the file's name) and is refused.
 //!
-//! New words replace a piece's text whole, so they are refused when another field of the item
-//! has its value from those words (a `marker`, a `pattern`, a `flag`): the edit would drop
-//! that value without saying so.
+//! New words replace a piece's text (or a cell's) whole, so they are refused unless every word
+//! they replace shows in the field being set. Whatever took a word out of the field (another
+//! field's `marker` or `pattern`, whether or not its value was used, a `without`), that word
+//! would be dropped without the person having seen it.
 
 use crate::gateway::{Error, Op, Reason};
 use crate::items::{Data, Item, Settings};
 use crate::matcher::Typed;
-use crate::owner::given::{CHECKBOX, Change, Piece, clears, reword};
+use crate::owner::given::{CHECKBOX, Change, Piece, Run, clears, reword, words};
 use crate::tasks::StatusType;
 use crate::types::{Source, Value};
 use serde_json::Value as Json;
@@ -167,34 +168,35 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
              its links, its file or a pattern over its words), so it can't be set"
         )));
     };
-    // The other fields of the item whose values are read from the piece's words: new words
-    // would take them away.
-    let in_words = |s: &Source| {
-        matches!(
-            s,
-            Source::Pattern(_) | Source::Capture(_) | Source::Marker(_) | Source::Flags(_)
-        )
+    // New words replace the words whole. They are refused unless every word that would be
+    // replaced shows in the field being set: whatever took a word out of it (another field's
+    // source, used or not, a `without`, a match), that word would be dropped unseen.
+    let shown = match typed.fields.get(field) {
+        Some(Json::String(text)) => text.clone(),
+        Some(Json::Null) | None => String::new(),
+        Some(other) => other.to_string(),
     };
-    let from_words: Vec<&str> = (typed.place.sources.iter())
-        .filter(|(name, _)| &**name != field)
-        .filter(|(name, i)| {
-            let source = shape.fields.get(&**name).and_then(|s| s.0.get(*i));
-            let value = typed.fields.get(name);
-            let set = value.is_some_and(|v| !v.is_null() && *v != Json::Bool(false));
-            let flag = matches!(source, Some(Source::Flag(_)));
-            set && (flag || source.is_some_and(in_words))
-        })
-        .map(|(name, _)| &**name)
-        .collect();
-    let keeps_words = |what: &str| match from_words.is_empty() {
-        true => Ok(()),
-        false => Err(refused(format!(
-            "{field} is {what}, and {} of this {kind} {} read from those words: new words \
-             would drop {}. Change the words in the file itself",
-            from_words.join(", "),
-            if from_words.len() == 1 { "is" } else { "are" },
-            if from_words.len() == 1 { "it" } else { "them" },
-        ))),
+    let all_show = |runs: &[Run], what: &str| {
+        let all = words(runs);
+        let mut seen = String::new();
+        crate::matcher::push_words(&mut seen, &shown);
+        if all == seen {
+            return Ok(());
+        }
+        // The words that don't show, in order, for the message.
+        let mut showing = seen.split(' ').peekable();
+        let mut hidden: Vec<&str> = Vec::new();
+        for word in all.split(' ') {
+            match showing.peek() == Some(&word) {
+                true => drop(showing.next()),
+                false => hidden.push(word),
+            }
+        }
+        let hidden: String = hidden.join(" ").chars().take(80).collect();
+        Err(refused(format!(
+            "{field} shows only part of {what}: new words would drop {hidden:?}, which this \
+             {kind} reads as something else or leaves out. Change the words in the file itself"
+        )))
     };
     let place = p.place.clone();
     let format = &s.daily.format;
@@ -241,7 +243,7 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
             "{field} is all of a row's words: set the field of the cell instead"
         ))),
         Source::Rest(_) => {
-            keeps_words("the piece's words")?;
+            all_show(&p.text, "the piece's words")?;
             Ok(Change::Runs {
                 place,
                 cell: None,
@@ -254,7 +256,7 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
                     "{field} is read from the cell {name}, which this row doesn't have"
                 ))
             })?;
-            keeps_words("a cell of the row's words")?;
+            all_show(&cell.text, "the cell's words")?;
             let text = text_of(value);
             let reads = crate::matcher::parse(value_type, &text, format).is_some();
             if !text.is_empty() && !reads {
