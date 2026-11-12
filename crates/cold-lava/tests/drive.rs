@@ -126,6 +126,137 @@ fn deletes_a_note_to_the_system_trash_and_undoes_it() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The slow input a delete has to survive: the note changes between the prompt and the yes.
+#[test]
+fn a_note_rewritten_while_the_delete_prompt_is_open_is_asked_about_again() {
+    let dir = sandbox("delete-changed");
+    let home = dir.join("home");
+    let workspace = dir.join("example-workspace");
+    let out = drive_with(
+        "delete-changed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let lava = std::fs::read_to_string(workspace.join("Concepts/Lava.md")).unwrap();
+    assert_eq!(lava, "Rewritten in Obsidian while the prompt was open.\n");
+    assert!(
+        files_ending(&system_trash(&home), "").is_empty(),
+        "undo took it out of the trash"
+    );
+    assert!(!workspace.join(".trash").exists());
+    assert_eq!(
+        in_real_trash(&dir),
+        Vec::<PathBuf>::new(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Opening another workspace starts a fresh core, and the undo has to outlive it.
+#[test]
+fn an_undo_still_works_after_looking_at_another_workspace() {
+    let dir = sandbox("delete-switch");
+    let home = dir.join("home");
+    let workspace = dir.join("example-workspace");
+    let lava = std::fs::read(workspace.join("Concepts/Lava.md")).unwrap();
+    let other = dir.join("elsewhere");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("Only.md"), "# Only\n").unwrap();
+    let config = home.join(".config/cold-lava");
+    std::fs::create_dir_all(&config).unwrap();
+    let recent = serde_json::json!({"workspaces": [{"path": other, "opened": 1}]});
+    std::fs::write(config.join("workspaces.json"), recent.to_string()).unwrap();
+    let out = drive_with(
+        "delete-undo-after-switch.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let back = std::fs::read(workspace.join("Concepts/Lava.md")).unwrap();
+    assert_eq!(back, lava, "exactly the bytes, where they were");
+    assert!(
+        files_ending(&system_trash(&home), "").is_empty(),
+        "undo took it out of the trash"
+    );
+    assert!(!workspace.join(".trash").exists());
+    assert_eq!(
+        in_real_trash(&dir),
+        Vec::<PathBuf>::new(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The tree lists a note that is a symlink, so the menu has to be able to delete it: the link
+/// goes to the trash, and what it points to, outside the workspace, is never touched.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_note_is_deleted_as_a_link_and_its_target_is_left_alone() {
+    let dir = sandbox("delete-symlink");
+    let home = dir.join("home");
+    let workspace = dir.join("example-workspace");
+    let secret = dir.join("outside/secret.md");
+    std::fs::create_dir_all(dir.join("outside")).unwrap();
+    std::fs::write(&secret, "Kept outside the workspace.\n").unwrap();
+    let link = workspace.join("Inbox/LinkedSecret.md");
+    std::os::unix::fs::symlink(&secret, &link).unwrap();
+    let out = drive_with(
+        "delete-symlink.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        secret,
+        "the link is back"
+    );
+    let kept = std::fs::read_to_string(&secret).unwrap();
+    assert_eq!(kept, "Kept outside the workspace.\n");
+    assert!(
+        files_ending(&system_trash(&home), "").is_empty(),
+        "undo took the link out of the trash"
+    );
+    assert_eq!(
+        in_real_trash(&dir),
+        Vec::<PathBuf>::new(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn a_subscriber_hears_the_menus_delete_and_undo_once_each() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the test extension needs it");
+        return;
+    }
+    let dir = sandbox("delete-news");
+    let home = dir.join("home");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let installed = home.join(".config/cold-lava/extensions/news-count");
+    copy_dir(&manifest.join("tests/news-count"), &installed);
+    let helper = manifest.join("../../examples/extensions/open-tasks/cold_lava.py");
+    std::fs::copy(helper, installed.join("cold_lava.py")).unwrap();
+    let out = drive_with(
+        "delete-news.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let log = home.join(".cache/cold-lava/extensions/news-count.log");
+    let stderr = std::fs::read_to_string(log).unwrap();
+    assert_eq!(stderr, "", "nothing on stderr");
+    assert_eq!(
+        in_real_trash(&dir),
+        Vec::<PathBuf>::new(),
+        "the real trash is untouched"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Links in notes that lead nowhere, as `note name: target` (names survive folder moves).
 fn unresolved(workspace: &Path) -> Vec<String> {
     use cold_lava_engine::{index::Index, resolver::Files, workspace};

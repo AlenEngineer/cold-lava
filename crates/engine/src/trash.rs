@@ -59,9 +59,12 @@ pub fn system_bin() -> Option<Bin> {
     None
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which trash took it. On the wire (`workspace/delete`): `system` or `workspace`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Went {
+    #[serde(rename = "system")]
     System,
+    #[serde(rename = "workspace")]
     WorkspaceTrash,
 }
 
@@ -83,12 +86,18 @@ pub enum Contents {
     File(Vec<u8>),
     /// Everything inside the folder (relative paths, sorted), with each file's size and time.
     Folder(Vec<(PathBuf, u64, Option<SystemTime>)>),
+    /// A symlink, by where it points: the link is what goes, and it is never followed.
+    Link(PathBuf),
 }
 
 impl Contents {
     pub fn read(path: &Path) -> Result<Contents, WriteError> {
         let err = |e: io::Error| WriteError::Io(path.to_path_buf(), e);
-        if !path.is_dir() {
+        let meta = std::fs::symlink_metadata(path).map_err(err)?;
+        if meta.file_type().is_symlink() {
+            return std::fs::read_link(path).map(Contents::Link).map_err(err);
+        }
+        if !meta.is_dir() {
             return std::fs::read(path).map(Contents::File).map_err(err);
         }
         let mut entries = Vec::new();

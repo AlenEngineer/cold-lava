@@ -9,6 +9,19 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- Extensions can delete, restore and make folders (part of #193). `workspace/delete` moves a
+  file or a folder to the trash the workspace uses, never for good, and is refused if it
+  changed since the extension read it; `workspace/restore` puts it back, never over a file
+  that is there now; `workspace/create-folder` makes a folder; `workspace/stat` gives the
+  version of any file or folder, with a folder's contents to show first. Deleting and
+  restoring need the new permission `files.delete` in the extension's manifest, which
+  `files.write` does not include. An extension restores only what it deleted itself. The status line says who deleted what
+  (`trash-can: deleted Inbox/Old.md`). The menu's own `d`, `u` and `N` now go the same way,
+  and behave as before, except that `u` pressed while another workspace is open now says
+  which workspace the delete was in instead of restoring into a workspace you aren't
+  looking at, and that the agenda and other views hear of a delete once instead of reading
+  everything again. The Python helper has `ext.stat`, `ext.delete`, `ext.restore` and
+  `ext.create_folder`.
 - Whiteboards join the workspace (part of #92). A `.canvas` file is read by the engine's own
   canvas owner: a task on a sticky or a text card is a task in the agenda, the type table,
   `cold-lava items` and `items/query`, and its links and tags count; a note card is a link from

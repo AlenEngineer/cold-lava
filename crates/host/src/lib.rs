@@ -30,7 +30,9 @@ pub use cold_lava_views::view;
 
 use cold_lava_engine::act::{self, Answered, Ask};
 use cold_lava_engine::core::{Core, Jump};
-use cold_lava_engine::files::{self, Create, Created, Listed, Text, Written};
+use cold_lava_engine::files::{
+    self, Create, Created, Deleted, Folder, Listed, Restore, Restored, Stat, Text, Written,
+};
 use cold_lava_engine::gateway::{
     self, Answer, Edit, Edited, Found, News, Query, Reason, Select, SubId, Ticket,
 };
@@ -166,9 +168,14 @@ pub enum Permission {
     /// `workspace/read` and `workspace/files` for kinds of file it doesn't own.
     #[serde(rename = "files.read")]
     FilesRead,
-    /// `workspace/write` and `workspace/create` for kinds of file it doesn't own.
+    /// `workspace/write` and `workspace/create` for kinds of file it doesn't own, and
+    /// `workspace/create-folder`.
     #[serde(rename = "files.write")]
     FilesWrite,
+    /// `workspace/delete` and `workspace/restore`, of any file or folder. `files.write` doesn't
+    /// include it, and owning a kind of file doesn't either.
+    #[serde(rename = "files.delete")]
+    FilesDelete,
 }
 
 impl Permission {
@@ -178,6 +185,7 @@ impl Permission {
             Permission::ItemsEdit => "items.edit",
             Permission::FilesRead => "files.read",
             Permission::FilesWrite => "files.write",
+            Permission::FilesDelete => "files.delete",
         }
     }
 }
@@ -189,6 +197,9 @@ pub(crate) fn read_only() -> Vec<Permission> {
 /// The reader, a screen of the menu's built the way an extension will be: it reaches notes as
 /// data only through `Host`, under this name (`Registry::screen`), which edits are attributed to.
 pub const READER: &str = "reader";
+/// The menu itself, when it deletes, restores or makes a folder: it asks the core as this
+/// client, with no permission to check, since it is the user.
+pub const MENU: &str = "menu";
 /// The built-in extensions' names, in the frontends that have them: the agenda, the table,
 /// the graph and Neovim as the editor. An installed extension can't take one
 /// (`installed::load`).
@@ -622,16 +633,22 @@ impl Host<'_> {
         self.core(Permission::FilesWrite)?.run_recipe(id, options)
     }
 
+    /// Nothing, when the caller's manifest asks for `needs`; else the refusal, naming it.
+    fn may(&self, needs: Permission) -> Result<(), gateway::Error> {
+        if self.permissions.contains(&needs) {
+            return Ok(());
+        }
+        let message = format!(
+            "{} may not do this: its manifest's permissions don't include {}",
+            self.name,
+            needs.name()
+        );
+        Err(gateway::Error::new(Reason::Forbidden, message))
+    }
+
     /// The core, when the caller's manifest asks for `needs`.
     fn core(&mut self, needs: Permission) -> Result<&mut Core, gateway::Error> {
-        if !self.permissions.contains(&needs) {
-            let message = format!(
-                "{} may not do this: its manifest's permissions don't include {}",
-                self.name,
-                needs.name()
-            );
-            return Err(gateway::Error::new(Reason::Forbidden, message));
-        }
+        self.may(needs)?;
         (self.core.as_deref_mut())
             .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open"))
     }
@@ -739,6 +756,43 @@ impl Host<'_> {
     pub fn list_files(&mut self, extension: &str) -> Result<Listed, gateway::Error> {
         let kind = extension.trim_start_matches('.').to_ascii_lowercase();
         Ok(self.files_core(Some(kind), false)?.files(extension))
+    }
+
+    /// `workspace/stat`: a read, so the owner of the file's kind or `files.read`. A folder
+    /// answers with what is in it, so it needs `files.read` whatever it is called.
+    pub fn stat_file(&mut self, path: &str) -> Result<Stat, gateway::Error> {
+        let core = self.files_core(files::extension_of(path), false)?;
+        let stat = core.stat_file(path)?;
+        if stat.inside.is_some() {
+            self.may(Permission::FilesRead)?;
+        }
+        Ok(stat)
+    }
+
+    /// `workspace/delete`, to the trash and attributed to the caller: it needs `files.delete`,
+    /// whatever kind of file it is.
+    pub fn delete_file(&mut self, path: &str, expect: &str) -> Result<Deleted, gateway::Error> {
+        let name = self.name;
+        self.core(Permission::FilesDelete)?
+            .delete_file(name, path, expect)
+    }
+
+    /// `workspace/restore`, under `files.delete` too: whoever may delete may put back what it
+    /// deleted. Putting it somewhere else (`to`) makes a file there, so it needs `files.write`
+    /// as well.
+    pub fn restore_file(&mut self, restore: &Restore) -> Result<Restored, gateway::Error> {
+        if restore.to.is_some() {
+            self.may(Permission::FilesWrite)?;
+        }
+        let name = self.name;
+        self.core(Permission::FilesDelete)?
+            .restore_file(name, restore)
+    }
+
+    /// `workspace/create-folder`: a folder has no kind, so it needs `files.write`.
+    pub fn create_folder(&mut self, path: &str) -> Result<Folder, gateway::Error> {
+        let name = self.name;
+        self.core(Permission::FilesWrite)?.create_folder(name, path)
     }
 }
 

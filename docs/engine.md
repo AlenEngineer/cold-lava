@@ -191,7 +191,7 @@ walks `Cargo.lock` to check it). Frontends also render `cold-lava-editor` and
 **The extension host** *(built: `crates/host`, #179)* is what runs extensions and guards the
 workspace gateway, once, for every frontend. An extension asks for notes as data through
 `Host`, which checks its manifest's permissions (`items.read`, `items.edit`, `files.read`,
-`files.write`) and puts its name on every edit. A security check written once can't drift
+`files.write`, `files.delete`) and puts its name on every edit. A security check written once can't drift
 between frontends. What a frontend adds is small: it builds a `Registry` from its built-in
 extensions and the installed ones, tells them the workspace, and once a frame hands them
 what the core has for them and applies the `Effect`s they return, or ignores those it has
@@ -480,7 +480,9 @@ What was decided:
 - **One door** (#179, #180, #193, #194). Every program is a client of one versioned protocol:
   the terminal app, a GUI, `cold-lava lsp`, the command line and extensions. The extension host
   and its permission check are shared by all frontends *(built: `cold-lava-host`, #179)*, settings belong to each open workspace,
-  and what the menu does to files goes through gateway messages.
+  and what the menu does to files goes through gateway messages *(built for delete, restore
+  and new folders, the first group of #193; rename, merge, recipes, undo and bookmarks
+  follow)*.
 - **Built-in surfaces, extension data.** Extensions bring data, file formats, types and simple
   views. The page and the whiteboard are built in ("The frontend", above). The earlier goal
   that the menu and the canvas become extensions is dropped.
