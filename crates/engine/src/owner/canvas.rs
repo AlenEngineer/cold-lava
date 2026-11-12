@@ -29,7 +29,9 @@
 
 use crate::alphabet::Role;
 use crate::json_canvas::{self, CNode, Field};
-use crate::owner::given::{Change, Given, GivenItem, GivenLink, MAX_PLACE, Piece};
+use crate::owner::given::{
+    Change, Given, GivenItem, GivenLink, MAX_BETWEEN, MAX_PLACE, MAX_TARGET, Piece,
+};
 use serde_json::{Map, Value as Json};
 use std::collections::{HashMap, HashSet};
 
@@ -124,7 +126,13 @@ pub fn read(text: &str) -> Result<Given, String> {
             }));
         }
         match (n.kind.as_str(), n.text, n.file) {
-            ("text", Some(text), _) => given.items.push(GivenItem::Markdown { place, text }),
+            // A text card with no `text` written is given its Markdown too, empty: every text
+            // card's words are the Markdown piece at its place, which is what tells the engine
+            // that the card's own piece has none to match.
+            ("text", text, _) => given.items.push(GivenItem::Markdown {
+                place,
+                text: text.unwrap_or_default(),
+            }),
             ("file", _, Some(file)) => given.links.push(GivenLink::File {
                 target: file.clone(),
                 place,
@@ -135,12 +143,18 @@ pub fn read(text: &str) -> Result<Given, String> {
     }
     // An arrow names two ids, and the first node of an id has the id as its place. One with an
     // end that is no piece (a group, a node that isn't there) stays in the file, not given.
+    // Nor is one past what the engine takes of an answer (a label over 4096 bytes, more
+    // arrows than 65,536): the owner gives nothing the engine would report.
+    let mut arrows = 0;
     for e in doc.edges {
-        if pieces.contains(&e.from_node) && pieces.contains(&e.to_node) {
+        let label = e.label.unwrap_or_default();
+        let fits = label.len() <= MAX_TARGET && arrows < MAX_BETWEEN;
+        if fits && pieces.contains(&e.from_node) && pieces.contains(&e.to_node) {
+            arrows += 1;
             given.links.push(GivenLink::Between {
                 from: e.from_node,
                 to: e.to_node,
-                label: e.label.unwrap_or_default(),
+                label,
             });
         }
     }
@@ -177,8 +191,8 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
                 place, attribute, ..
             } => {
                 return Err(format!(
-                    "the canvas owner doesn't write a card's {attribute} (node {place}): move \
-                     or restyle the card on the whiteboard"
+                    "the canvas owner doesn't write a card's {attribute} (node {place}): it \
+                     writes a card's text and its file, and nothing else of a node"
                 ));
             }
             Change::Runs { place, .. } => {

@@ -706,7 +706,12 @@ pub fn run(
             Action::Write { file, text } => {
                 let workspace = args.last().map(Path::new).unwrap_or(Path::new("."));
                 let path = workspace.join(file);
-                std::fs::write(&path, text)
+                // As a program that saves safely does: the whole text into a file beside it,
+                // then that file renamed over it. Written in place the file is empty for a
+                // moment, and whoever watches it may read it so.
+                let beside = path.with_file_name(".cold-lava-drive-write.tmp");
+                std::fs::write(&beside, text)
+                    .and_then(|()| std::fs::rename(&beside, &path))
                     .err()
                     .map(|e| format!("couldn't write {}: {e}", path.display()))
             }
