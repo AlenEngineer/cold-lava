@@ -3930,12 +3930,17 @@ mod tests {
         b.asked_alone(&registry, &mut statuses);
         assert_eq!(statuses, [(chatty, "chatty: 1".to_string())]);
         assert_eq!(
-            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            b.refusals.shown(Instant::now()).as_deref(),
             Some(
                 "chatty wanted to run search.open: cold-lava board shows the whiteboard only \
                  (2 requests refused)"
             ),
             "the note and the command, both refused"
+        );
+        assert_eq!(
+            b.msg.as_ref().map(|(m, _)| m.as_str()),
+            Some("chatty counted"),
+            "what it said is kept beside the notice, not replaced by it"
         );
         assert!(b.left().is_none(), "the board stays");
         assert_eq!(b.doc.nodes.len(), 1);
