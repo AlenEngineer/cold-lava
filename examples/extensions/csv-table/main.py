@@ -18,6 +18,8 @@ other byte of the file. An example cold-lava extension that owns a kind of file
 (docs/extensions-guide.md, "Owning a kind of file", "Giving items and links" and "Writing
 items back")."""
 
+import re
+
 from cold_lava import Extension, Refused, change_kind, link, piece, words
 
 ext = Extension()
@@ -31,12 +33,16 @@ KINDS = {" (link)": "link", " (markdown)": "markdown"}
 # to 4096: a row's place and a column's name are cut to fit, and a longer link is characters.
 LONGEST = 200
 LONGEST_NAME = 60
+LONGEST_LINK = 1000
+# A first cell that reads like a place made with a row's number: `row 3`, `a (row 3)`.
+NUMBERED = re.compile(r"(^row|.* \(row) \d+\)?$", re.DOTALL)
 
 
 def spans(text):
-    """The file's rows, each a list of cells `(start, end, value)`: where the cell is written
-    in `text`, quotes included, and what it says. A blank line is a row with no cells. With
-    them, where each row ends (before its line break), for a cell added to a short row."""
+    """`(rows, ends)`. `rows` is the file's rows, each a list of cells `(start, end, value)`:
+    where the cell is written in `text`, quotes included, and what it says. A blank line is a
+    row with no cells. `ends` is where each row ends in `text`, before its line break: where
+    a cell added to a short row goes."""
     rows, ends = [], []
     i, n = 0, len(text)
     while i < n:
@@ -136,9 +142,11 @@ def shape(rows):
 
 def places(rows):
     """A place for each row under the header. A row whose first cell no other row has is named
-    by it, so its place stays when rows are added above it. Rows that start alike are named
-    by that cell and their own number in the file (`a (row 3)`), and a row with no first cell
-    by its number (`row 3`). A blank line is no row and has no place.
+    by it, so its place stays when rows are added above it. Every other row is named with its
+    own number in the file: rows that start alike (`a (row 3)`), a row with no first cell
+    (`row 3`), and a row whose first cell itself reads like one of those. So a place with a
+    number is its row's alone, a place without one is a first cell no other row has, and no
+    two rows share a place whatever their cells say. A blank line is no row and has no place.
 
     The number is the row's own, not its count among the rows like it, on purpose. Setting
     one row's first cell must never hand another row a place a different row had: cold-lava
@@ -149,25 +157,38 @@ def places(rows):
     alike = {}
     for key in keys:
         alike[key] = alike.get(key, 0) + 1
-    taken = set()
     out = []
     for n, key in enumerate(keys, 1):
         if key is None:
             out.append(None)
-            continue
-        if not key:
-            place = f"row {n}"
-        elif alike[key] > 1:
-            place = f"{key} (row {n})"
+        elif not key:
+            out.append(f"row {n}")
+        elif alike[key] > 1 or NUMBERED.match(key):
+            out.append(f"{key} (row {n})")
         else:
-            place = key
-        # No two rows share a place, whatever their cells say (one that is literally
-        # `a (row 3)`): the later one is marked.
-        while place in taken:
-            place += "'"
-        taken.add(place)
-        out.append(place)
+            out.append(key)
     return out
+
+
+def cell_place(row_place, name):
+    """The place of a Markdown cell: its row's place and its column's name."""
+    return f"{row_place}#{name}"
+
+
+def where(rows):
+    """Where each place the file gives is: a row's place by its row's number, and a Markdown
+    cell's place by its row's number and its column's. The way back from a place cold-lava
+    names to the file is to look it up here, never to take the place apart."""
+    names, kinds = shape(rows)
+    at, cells = {}, {}
+    for n, place in enumerate(places(rows), 1):
+        if place is None:
+            continue
+        at[place] = n
+        for column, (name, kind) in enumerate(zip(names, kinds)):
+            if kind == "markdown":
+                cells.setdefault(cell_place(place, name), (n, column))
+    return at, cells
 
 
 def link_cell(value):
@@ -182,7 +203,7 @@ def link_run(value):
     """A link cell as a link run: to the file it names, showing the words after `|` when it
     has some. `None` for a cell that names no file."""
     target, rest = link_cell(value)
-    if not target.strip() or len(value) > 1000:
+    if not target.strip() or len(value) > LONGEST_LINK:
         return None
     return link(target, rest.partition("|")[2] or None)
 
@@ -204,7 +225,7 @@ def given(text, pieces=True):
             if kind == "markdown":
                 cells.append((name, []))
                 if value.strip():
-                    markdown.append({"place": f"{place}#{name}", "text": value})
+                    markdown.append({"place": cell_place(place, name), "text": value})
             elif kind == "link" and link_run(value):
                 cells.append((name, [link_run(value)]))
             else:
@@ -247,16 +268,15 @@ def cell_text(name, kind, runs, now):
     return words(runs)
 
 
-def cells_changed(rows, names, kinds, at, asked):
+def cells_changed(rows, names, kinds, at, cells_at, asked):
     """The cells one of `file/edit`'s changes sets, as `(row, column, value)`."""
     place, kind = asked["place"], change_kind(asked)
     if kind == "text":
-        # A Markdown cell's new text, at `<row's place>#<column>`.
-        row_place, _, name = place.rpartition("#")
-        markdown = [n for n, k in zip(names, kinds) if k == "markdown"]
-        if row_place not in at or name not in markdown:
+        # A Markdown cell's new text.
+        if place not in cells_at:
             raise ValueError(f"no Markdown cell at {place}")
-        return [(at[row_place], names.index(name), asked["text"])]
+        row, column = cells_at[place]
+        return [(row, column, asked["text"])]
     if place not in at:
         raise ValueError(f"no row at {place}")
     row = at[place]
@@ -289,10 +309,10 @@ def file_edit(params):
     text = params["text"]
     rows = parse(text)
     names, kinds = shape(rows)
-    at = {place: n for n, place in enumerate(places(rows), 1) if place is not None}
+    at, cells_at = where(rows)
     cells = []
     for asked in params["changes"]:
-        cells += cells_changed(rows, names, kinds, at, asked)
+        cells += cells_changed(rows, names, kinds, at, cells_at, asked)
     for row, column, value in cells:
         text = set_cell(text, row, column, value)
     return {"text": text}
@@ -325,9 +345,9 @@ def show(path, place=None):
     `place` names (its own, or one of its cells')."""
     read = ext.read(path)
     rows = parse(read["text"])
-    keys = places(rows)
-    row = place if place in keys else (place or "").rsplit("#", 1)[0]
-    select = str(keys.index(row) + 1) if row and row in keys else None
+    at, cells_at = where(rows)
+    row = at.get(place) or cells_at.get(place, (None, None))[0]
+    select = str(row) if row else None
     table = tables.get(path)
     if table is None:
         view = ext.open_view(content(path, rows), select, file=path)

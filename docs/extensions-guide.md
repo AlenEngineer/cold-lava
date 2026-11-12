@@ -489,8 +489,13 @@ items.append(piece(place, "row", cells=cells))
 - The notes column is the one place the example gives Markdown, because that is what people
   write there. Its task is a `task`, at the place `Krakatoa#Notes`.
 - A row's place is its first cell when no other row starts the same. Rows that start alike
-  are named by that cell and their own number in the file (`a (row 3)`). No two rows share
-  a place, so a row is never left out because of what its cells say.
+  are named by that cell and their own number in the file (`a (row 3)`), and so is a row
+  whose first cell itself reads like such a name. So a place with a number belongs to that
+  row alone, no two rows share a place, and a row is never left out because of what its
+  cells say.
+- A place is looked up, never taken apart. The example keeps one function from a row and a
+  column to a Markdown cell's place, and one table from every place back to its row and
+  column. A column's name may then hold any character.
 - Choosing a place is a trade. cold-lava checks an edit by reading your new text back, and
   a place it knows must then hold the piece it expects. So an edit of one piece must never
   give another piece a place that a different piece had. Numbering alike rows `a`, `a (2)`

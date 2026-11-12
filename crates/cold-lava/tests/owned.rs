@@ -469,22 +469,39 @@ fn a_csv_rows_first_cell_is_set_among_rows_that_start_alike() {
     }
     const CELLT: &str = "\n[types.cellt]\non = \"row\"\nwhere.header = [\"K\", \"V\"]\n\
         fields.k = { column = \"K\" }\nfields.v = { column = \"V\" }\n";
-    for (name, before, v, after) in [
-        ("first", "K,V\na,1\na,2\n", "1", "K,V\nzz,1\na,2\n"),
-        ("last", "K,V\na,1\na,2\n", "2", "K,V\na,1\nzz,2\n"),
+    // The last two have a first cell that is literally the name another row is given.
+    for (name, before, v, to, after) in [
+        ("first", "K,V\na,1\na,2\n", "1", "zz", "K,V\nzz,1\na,2\n"),
+        ("last", "K,V\na,1\na,2\n", "2", "zz", "K,V\na,1\nzz,2\n"),
         (
             "apart",
             "K,V\na,1\nb,2\na,3\n",
             "1",
+            "zz",
             "K,V\nzz,1\nb,2\na,3\n",
         ),
         (
             "middle",
             "K,V\na,1\na,2\na,3\n",
             "2",
+            "zz",
             "K,V\na,1\nzz,2\na,3\n",
         ),
-        ("joins", "K,V\na,1\nzz,2\n", "1", "K,V\nzz,1\nzz,2\n"),
+        ("joins", "K,V\na,1\nzz,2\n", "1", "zz", "K,V\nzz,1\nzz,2\n"),
+        (
+            "literal",
+            "K,V\na (row 3),lit\na,x\na,y\n",
+            "lit",
+            "zz",
+            "K,V\nzz,lit\na,x\na,y\n",
+        ),
+        (
+            "leaves",
+            "K,V\na,x\na,y\na (row 1),lit\n",
+            "x",
+            "solo",
+            "K,V\nsolo,x\na,y\na (row 1),lit\n",
+        ),
     ] {
         let (workspace, home) = sandbox(&format!("cli-alike-{name}"), |main| main);
         let ws = workspace.to_str().unwrap();
@@ -508,7 +525,7 @@ fn a_csv_rows_first_cell_is_set_among_rows_that_start_alike() {
         assert_eq!(rows.len(), before.lines().count() - 1, "{name}: {listed}");
         let row = rows.iter().find(|r| r["v"] == v).expect("the row");
         let id = row["id"].as_str().unwrap();
-        run(&["item", "set", file.to_str().unwrap(), id, "k", "zz"]);
+        run(&["item", "set", file.to_str().unwrap(), id, "k", to]);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), after, "{name}");
         let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
     }
