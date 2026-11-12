@@ -544,22 +544,8 @@ impl Matcher {
         };
         // Byte ranges of the block's text that sources read, for `rest`.
         let mut used: Vec<Range<usize>> = Vec::with_capacity(2 * shape.fields.len());
-        // What an attribute the shape asked for was read from is the attribute's, not words:
-        // a task's global filter.
-        for src in shape.attributes.iter().flatten() {
-            match src {
-                Src::Box(with) => {
-                    if let Some((_, end)) = boxed(b.text, with.as_deref()) {
-                        used.push(0..end + 1);
-                    }
-                    if let Some(with) = with {
-                        let held = b.text.match_indices(with.as_str());
-                        used.extend(held.map(|(i, _)| i..i + with.len()));
-                    }
-                }
-                Src::Attribute(_) => {}
-                src => drop(read_source(src, None, note, b, &self.daily, &mut used)),
-            }
+        if !shape.attributes.is_empty() {
+            self.asked(shape, note, b, &mut used);
         }
         let mut rest_field = None;
         for (f, sources) in &shape.fields {
@@ -640,6 +626,29 @@ impl Matcher {
         typed.spans.shrink_to_fit();
         typed.place.sources.shrink_to_fit();
         (typed, key)
+    }
+
+    /// What an attribute the shape asked for (`where.attribute`) was read from is the
+    /// attribute's, not words: a task's global filter. Kept out of `read`, which every typed
+    /// item goes through: with this loop in its body, a release build read every item slower,
+    /// a shape that asks for nothing included (measured: #249).
+    #[inline(never)]
+    fn asked(&self, shape: &Shape, note: &Note, b: &Block, used: &mut Vec<Range<usize>>) {
+        for src in shape.attributes.iter().flatten() {
+            match src {
+                Src::Box(with) => {
+                    if let Some((_, end)) = boxed(b.text, with.as_deref()) {
+                        used.push(0..end + 1);
+                    }
+                    if let Some(with) = with {
+                        let held = b.text.match_indices(with.as_str());
+                        used.extend(held.map(|(i, _)| i..i + with.len()));
+                    }
+                }
+                Src::Attribute(_) => {}
+                src => drop(read_source(src, None, note, b, &self.daily, used)),
+            }
+        }
     }
 
     fn parses(&self, value: &Value, p: &Piece) -> bool {
