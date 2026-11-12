@@ -1812,7 +1812,8 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   than 4096 runs or 256 attributes, with a name over 256 bytes, with an empty place or one
   over 1024 bytes, with a link whose target is empty or over 4096 bytes, at a place another
   piece has, `in` a place no earlier piece is at, or with cells where it can have none is
-  reported (`Event::OwnerTrouble`, on the status line, the place cut to 80 characters) and
+  reported (`Event::OwnerTrouble`, on the status line; the place is cut to 80 characters and
+  the reason, which may quote a value, to 200) and
   left out, and the rest of the answer is read. A message is at most 64 MB, as before. The
   number of pieces in an answer has no bound of its own.
 - **The older answers are unchanged.** A Markdown piece and a typed item read exactly as

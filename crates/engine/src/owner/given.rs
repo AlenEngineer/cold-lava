@@ -323,9 +323,15 @@ fn carried(p: &Piece, flat: &Flat, tasks: &TasksSettings) -> Result<Vec<Carried>
 
 /// A place for a message: its first characters, since an owner may give one of any length.
 fn short(place: &str) -> String {
-    match place.chars().count() > 80 {
-        true => format!("{}…", place.chars().take(80).collect::<String>()),
-        false => place.to_string(),
+    cut(place, 80)
+}
+
+/// The first `most` characters of what an owner gave, for a message. Every problem with a
+/// piece goes through this, so no value an owner sends is repeated whole.
+fn cut(text: &str, most: usize) -> String {
+    match text.char_indices().nth(most) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
     }
 }
 
@@ -645,7 +651,9 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
         match item {
             GivenItem::Piece(p) => {
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
-                    out.problems.push(format!("{}: {why}", short(&p.place)));
+                    // One short line, whatever the owner sent: a reason may quote a value.
+                    out.problems
+                        .push(format!("{}: {}", short(&p.place), cut(&why, 200)));
                 }
             }
             GivenItem::Markdown { place, text } => {
@@ -1015,6 +1023,8 @@ mod tests {
             task("yes", json!({"task": "yes", "checkbox": "open"})),
             task("no", json!({"task": false, "checkbox": "open"})),
             task("nothing", json!({"task": "", "checkbox": "open"})),
+            task("huge", json!({"task": true, "checkbox": "€".repeat(300_000)})),
+            {"place": "deep", "role": "item", "in": "€".repeat(5000), "text": ["x"]},
         ]}));
         let read = read("Home.chores", &answer, &s);
         let places: Vec<&str> = (read.problems.iter())
@@ -1023,14 +1033,25 @@ mod tests {
         let shown = format!("{}…", "L".repeat(80));
         assert_eq!(
             places,
-            ["", shown.as_str(), "link", "far", "blank", "empty", "run"],
+            [
+                "",
+                shown.as_str(),
+                "link",
+                "far",
+                "blank",
+                "empty",
+                "run",
+                "huge",
+                "deep"
+            ],
             "{:?}",
             read.problems
         );
         assert!(
-            read.problems.iter().all(|p| p.len() < 300),
-            "a problem is one short line"
+            read.problems.iter().all(|p| p.chars().count() < 300),
+            "a problem is one short line, whatever value it quotes"
         );
+        assert!(read.problems[7].ends_with('…'), "{}", read.problems[7]);
         assert!(read.problems[4].contains("one of open, done, in-progress, cancelled"));
         let kinds: Vec<(&str, &str)> = (read.items.iter())
             .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
