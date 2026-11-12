@@ -1543,10 +1543,7 @@ impl Board {
             true => self.refusals + 1,
             false => 1,
         };
-        self.flash(match n {
-            1 => notice,
-            n => format!("{notice} ({n} requests refused)"),
-        });
+        self.flash(crate::refused::counted(notice, n));
         self.refusals = n;
     }
 

@@ -252,6 +252,11 @@ impl TidyView {
         self.marks.len()
     }
 
+    /// The marks, which closing the view would lose, in words for the status line.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        (!self.marks.is_empty()).then_some("something is marked in Tidy")
+    }
+
     /// The view's lines in `height` rows of `width` columns, scrolled to the selection.
     pub fn lines(&self, width: usize, height: usize) -> Vec<Line<'static>> {
         let r = &self.report;
@@ -435,5 +440,16 @@ mod tests {
             Action::Create { target, from } if target == "Lahar" && from == "C.md"
         ));
         assert!(matches!(v.key(key(KeyCode::Char('d'))), Action::Stay));
+    }
+
+    #[test]
+    fn marks_are_held() {
+        let mut v = view();
+        assert_eq!(v.unsaved(), None);
+        v.key(key(KeyCode::Char(' ')));
+        assert_eq!(v.unsaved(), Some("something is marked in Tidy"));
+        v.key(key(KeyCode::Up));
+        v.key(key(KeyCode::Char(' ')));
+        assert_eq!(v.unsaved(), None, "unmarked again");
     }
 }

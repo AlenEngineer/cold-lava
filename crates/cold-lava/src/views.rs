@@ -159,8 +159,9 @@ impl Views {
         file: Option<String>,
     ) -> Option<ViewId> {
         let mine = self.open.iter().filter(|v| v.owner == owner).count();
+        // The oldest that holds nothing being typed: opening a view closes no typed work.
         let closed = (mine >= PER_EXTENSION)
-            .then(|| self.open.iter().position(|v| v.owner == owner))
+            .then(|| (self.open.iter()).position(|v| v.owner == owner && v.unsaved().is_none()))
             .flatten()
             .map(|i| self.open.remove(i).id);
         let mut drawn = Drawn::new(content, self.context());
@@ -289,6 +290,17 @@ impl Open {
         match &self.drawn {
             Drawn::Picture(v) => Some(&v.picture),
             _ => None,
+        }
+    }
+
+    /// What is being typed in the view (a filter, a table's cell), in words for the status
+    /// line. While it is, nothing an extension asks for takes the view from the front or
+    /// closes it.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        match &self.drawn {
+            Drawn::List(v) => v.unsaved(),
+            Drawn::Table(v) => v.unsaved(),
+            Drawn::Picture(_) | Drawn::Scene(_) => None,
         }
     }
 
@@ -549,5 +561,25 @@ mod tests {
         views.retain_owners(|e| e != A);
         assert!(!views.has(A, ViewId(n)));
         assert!(views.has(B, ViewId(100)));
+    }
+
+    #[test]
+    fn a_view_being_typed_in_says_so_and_is_not_the_one_closed_to_make_room() {
+        let mut views = Views::default();
+        for id in 1..=PER_EXTENSION as u32 {
+            views.open(A, ViewId(id), list("tasks", &["a", "b"]), None, None);
+        }
+        let oldest = views.get_mut(A, ViewId(1)).unwrap();
+        assert_eq!(oldest.unsaved(), None);
+        oldest.key(press(KeyCode::Char('/')));
+        assert_eq!(oldest.unsaved(), Some("a filter is being typed"));
+
+        let closed = views.open(A, ViewId(9), list("more", &["a"]), None, None);
+        assert_eq!(
+            closed,
+            Some(ViewId(2)),
+            "the oldest that holds nothing typed"
+        );
+        assert!(views.has(A, ViewId(1)));
     }
 }

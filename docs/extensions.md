@@ -3191,9 +3191,16 @@ design for an extension that needs it, and nothing is built of it.
   prompts and dialogs are kept by the same check (`Mode::unsaved`, #269): a prompt being
   typed, a dialog waiting for an answer or for owners, and the switcher, the palette, the
   search, the outline and the bookmarks once something is typed in them. Each mode says
-  what it holds, in a match with no arm for the rest, so a new mode has to answer; the
-  notice is on the status line (`prompt-keeps-typed.drive`,
-  `prompt-keeps-typed-command.drive`, `confirm-keeps-waiting.drive`). What an extension
+  what it holds, in a match with no arm for the rest, so a new mode has to answer, and a
+  mode that names a tool asks the tool: link hints (a label begun), Tidy (marks), a recipe
+  (options, a plan). The view in front answers for itself like the board (`Open::unsaved`:
+  a filter being typed, a table's cell being edited), and then `view/close` from its owner
+  is refused too, and opening a ninth view closes the oldest that holds nothing typed. The
+  notice is the menu's (`refused.rs`): on the status line for three seconds beside any
+  other message, with how many requests it stands for, in the board's words
+  (`prompt-keeps-typed.drive`, `prompt-keeps-typed-command.drive`,
+  `confirm-keeps-waiting.drive`, `view-keeps-typed.drive`,
+  `view-close-keeps-typed.drive`). What an extension
   asks for inside the board's calls to it about its shapes (`shape/region`, a gesture's steps:
   `ui/notify`, `ui/status`, opening a note) the board keeps (`Board::take_asked`) and the menu
   does after each tick, key and mouse event, as after any call to an extension, within the

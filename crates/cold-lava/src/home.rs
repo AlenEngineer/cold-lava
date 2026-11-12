@@ -26,6 +26,7 @@ use crate::paths::{self, config_dir, home_dir};
 use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
+use crate::refused::Refused;
 use crate::resolver::dir_of;
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
@@ -466,21 +467,19 @@ enum Mode {
 
 impl Mode {
     /// What this mode holds that would be gone if an extension's request took its place: a
-    /// prompt, a dialog waiting for an answer, a typed query. In words for the status line,
-    /// after "not while". Every mode answers and there is no arm for the rest, so a mode can't
-    /// be added without saying. A prompt counts with nothing typed yet, since the next keys
-    /// are meant for it; a picker counts once something is typed. The whiteboard answers for
-    /// itself (`Board::unsaved_work`).
+    /// prompt, a dialog waiting for an answer, a typed query, marks. In words for the status
+    /// line, after "not while". Every mode answers and there is no arm for the rest, so a mode
+    /// can't be added without saying. A prompt counts with nothing typed yet, since the next
+    /// keys are meant for it; a picker counts once something is typed, spaces included. A
+    /// mode that only names a tool asks the tool. The two it can't reach from here, the view
+    /// and the whiteboard in front, `Home::unsaved_in_front` asks before it asks the mode.
     fn unsaved(&self) -> Option<&'static str> {
         match self {
-            Mode::Normal
-            | Mode::Help
-            | Mode::Keys
-            | Mode::Hints(_)
-            | Mode::Peek { .. }
-            | Mode::Tidy(_)
-            | Mode::View { .. }
-            | Mode::Board => None,
+            Mode::Normal | Mode::Help | Mode::Keys | Mode::Peek { .. } => None,
+            // Kept in `Home::views` and `Home::board`: asked there.
+            Mode::View { .. } | Mode::Board => None,
+            Mode::Hints(hints) => hints.unsaved(),
+            Mode::Tidy(view) => view.unsaved(),
             Mode::Filter => Some("the notes are being filtered"),
             Mode::NewNote { .. } => Some("a new note's name is being typed"),
             Mode::AddWorkspace(_) => Some("a workspace's folder is being typed"),
@@ -709,6 +708,8 @@ pub struct Home {
     focus: Focus,
     mode: Mode,
     msg: Option<(String, Instant)>,
+    /// What extensions asked for that was not done, to keep what is in front (`refused`).
+    refusals: Refused,
     areas: [Rect; 4],
     quit: bool,
 }
@@ -790,6 +791,7 @@ impl Home {
             focus: Focus::Workspaces,
             mode: Mode::Normal,
             msg: None,
+            refusals: Refused::default(),
             areas: [Rect::default(); 4],
             quit: false,
         };
@@ -1128,10 +1130,7 @@ impl Home {
             } => {
                 self.views.update(ext, view, content, select);
             }
-            Effect::CloseView { view } => {
-                self.views.close(ext, view);
-                self.forget_closed_views();
-            }
+            Effect::CloseView { view } => self.close_view(ext, view),
             Effect::ShowView { view } => self.show_view(ext, view),
             Effect::OpenNote { note, line, item } => self.open_for(ext, &note, line, item),
             Effect::Previewed { path, rev, content } => {
@@ -1144,13 +1143,17 @@ impl Home {
         }
     }
 
-    /// What would be lost if something else took the place of what is in front: the board's
-    /// answer (a draft in its shape editor, a card being typed), else the mode's (a prompt, a
-    /// dialog, a typed query: `Mode::unsaved`). Only the user's own keys leave it then: what
-    /// an extension asks for that would is not done (`held_back`).
+    /// What would be lost if something else took the place of what is in front. Whatever is
+    /// in front answers for itself: the whiteboard (a draft in its shape editor, a card being
+    /// typed), an extension's view (a filter or a cell being typed), else the mode (a prompt,
+    /// a dialog, a typed query: `Mode::unsaved`). Only the user's own keys leave it then:
+    /// what an extension asks for that would is not done (`held_back`).
     fn unsaved_in_front(&self) -> Option<&'static str> {
         match (&self.mode, &self.board) {
             (Mode::Board, Some(b)) => b.unsaved_work(),
+            (Mode::View { owner, view, .. }, _) => {
+                self.views.get(*owner, *view).and_then(|v| v.unsaved())
+            }
             (mode, _) => mode.unsaved(),
         }
     }
@@ -1163,14 +1166,26 @@ impl Home {
         self.refused(notice);
     }
 
-    /// A notice that something was refused to keep what is in front as it is. The whiteboard
-    /// says its own, and counts those it hasn't shown yet (`Board::refused`); over a prompt or
-    /// a dialog it is on the status line.
+    /// A notice that something was refused to keep what is in front as it is. Every refusal
+    /// comes through here. The whiteboard says its own, and counts those it hasn't shown yet
+    /// (`Board::refused`). Elsewhere the status line shows it beside any other message, which
+    /// doesn't take its place, with how many requests it stands for (`Refused`).
     fn refused(&mut self, notice: String) {
         if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
             return b.refused(notice);
         }
-        self.flash(notice);
+        self.refusals.add(notice, Instant::now());
+    }
+
+    /// `view/close`: the owner's view is closed, unless something is being typed in it (a
+    /// filter, a cell). Then it stays and the status line says why, as for any other request
+    /// that would take typed work away.
+    fn close_view(&mut self, ext: ExtId, view: ViewId) {
+        if let Some(why) = self.views.get(ext, view).and_then(|v| v.unsaved()) {
+            return self.held_back(ext, "close a view", why);
+        }
+        self.views.close(ext, view);
+        self.forget_closed_views();
     }
 
     /// Show an extension's new view in place of what showed, which Back returns to.
@@ -4277,6 +4292,11 @@ impl Home {
                 _ => false,
             };
             if !ours {
+                // Its dialog is gone, so nothing is made of the answer: never without a word.
+                self.flash(
+                    "a rename, merge or recipe was closed before its owners answered; \
+                     nothing was changed",
+                );
                 continue;
             }
             match (std::mem::replace(&mut self.mode, Mode::Normal), answer) {
@@ -4733,12 +4753,23 @@ impl Home {
                 }
             }
             recipe_view::Action::Plan(recipe, options) => {
+                // The dialog is in `mode` again before anything is called, so what an
+                // extension asks for in these calls finds the options there and is refused.
+                self.mode = Mode::Recipe(view);
                 self.save_editor();
                 self.reload_tree();
-                let Some(core) = self.core.as_ref() else {
+                let planned = self
+                    .core
+                    .as_ref()
+                    .map(|core| crate::recipe::plan(&core.index, recipe, options));
+                let Some(planned) = planned else {
+                    self.mode = Mode::Normal;
                     return;
                 };
-                match crate::recipe::plan(&core.index, recipe, options) {
+                let Mode::Recipe(view) = &mut self.mode else {
+                    return;
+                };
+                match planned {
                     Ok(plan) => {
                         view.step = recipe_view::Step::Plan {
                             plan: Box::new(plan),
@@ -4748,7 +4779,6 @@ impl Home {
                     }
                     Err(e) => view.refused(format!("{e:#}")),
                 }
-                self.mode = Mode::Recipe(view);
             }
             recipe_view::Action::Apply => {
                 let recipe_view::Step::Plan { plan, waiting, .. } = &mut view.step else {
@@ -4969,6 +4999,10 @@ impl Home {
     }
 
     fn tidy_key(&mut self, k: KeyEvent) {
+        // The view is out of `mode` while its key is handled, so `Mode::unsaved` can't answer
+        // for its marks then. Nothing an extension asks for lands meanwhile: one in its own
+        // process is heard at the start of a frame, and the built-in ones only update their
+        // views on news. Keeping the view in place is #264 (E4).
         let Mode::Tidy(mut view) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return;
         };
@@ -7291,8 +7325,15 @@ impl Home {
                 )
             }
         };
-        let second = match &self.msg {
-            Some((m, _)) => Line::styled(format!(" {m}"), Style::new().fg(HIT)),
+        // A refused request is always shown: another message stands beside it, not over it.
+        let said = match (&self.msg, self.refusals.shown(Instant::now())) {
+            (Some((m, _)), Some(refused)) => Some(format!(" {m} · {refused}")),
+            (Some((m, _)), None) => Some(format!(" {m}")),
+            (None, Some(refused)) => Some(format!(" {refused}")),
+            (None, None) => None,
+        };
+        let second = match said {
+            Some(said) => Line::styled(said, Style::new().fg(HIT)),
             None => Line::styled(hints, Style::new().fg(DIM)),
         };
         f.render_widget(Paragraph::new(vec![info, second]), area);
@@ -7891,5 +7932,161 @@ mod tests {
         );
         assert_eq!(attachment_label("Mount St. Helens"), None);
         assert_eq!(attachment_label("Lahar"), None);
+    }
+
+    #[test]
+    fn each_mode_says_what_an_extensions_request_would_take_away() {
+        let nothing = [
+            Mode::Normal,
+            Mode::Help,
+            Mode::Keys,
+            Mode::Peek {
+                from: PeekFrom::Link,
+                view: Peek::Missing("Lahar".into()),
+            },
+            // Asked through `Home::unsaved_in_front`, which holds the view and the board.
+            Mode::View {
+                owner: ExtId(0),
+                view: ViewId(1),
+                backlinks: false,
+            },
+            Mode::Board,
+            // Their tools answer, and hold nothing yet.
+            Mode::Hints(Hints::new([HintTarget::Link(0), HintTarget::Link(1)])),
+            Mode::Tidy(Box::new(TidyView::new(crate::tidy::Report::default()))),
+            Mode::Recipe(Box::new(RecipeView::new())),
+        ];
+        for mode in nothing {
+            assert_eq!(mode.unsaved(), None);
+        }
+
+        let rename = |waiting| Mode::ConfirmRename {
+            plan: Box::new(crate::rename::Plan {
+                moves: Vec::new(),
+                moving: Vec::new(),
+                edits: Vec::new(),
+                bookmarks: None,
+                warnings: Vec::new(),
+            }),
+            scroll: 0,
+            marked: false,
+            waiting,
+        };
+        let core =
+            Core::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"))
+                .unwrap();
+        let merge = |waiting| Mode::ConfirmMerge {
+            plan: Box::new(crate::merge::plan(&core.index, 0, 1).unwrap()),
+            scroll: 0,
+            waiting,
+        };
+        let renaming = |moving| Mode::Rename {
+            path: PathBuf::new(),
+            input: String::new(),
+            moving,
+        };
+        // A prompt counts with nothing typed yet, and a dialog as long as it is open.
+        let always = [
+            (Mode::Filter, "the notes are being filtered"),
+            (
+                Mode::NewNote {
+                    name: String::new(),
+                    templates: Vec::new(),
+                    template: None,
+                },
+                "a new note's name is being typed",
+            ),
+            (
+                Mode::AddWorkspace(String::new()),
+                "a workspace's folder is being typed",
+            ),
+            (
+                Mode::NewFolder(String::new()),
+                "a new folder's name is being typed",
+            ),
+            (renaming(false), "a new name is being typed"),
+            (renaming(true), "a folder to move to is being typed"),
+            (
+                Mode::MoveMarked(String::new()),
+                "a folder to move to is being typed",
+            ),
+            (
+                Mode::Tag {
+                    typed: String::new(),
+                    all: Vec::new(),
+                    sel: None,
+                },
+                "a tag is being typed",
+            ),
+            (rename(None), "a rename waits for your answer"),
+            (
+                rename(Some(Ticket(1))),
+                "a rename waits for its files' owners",
+            ),
+            (merge(None), "a merge waits for your answer"),
+            (
+                merge(Some(Ticket(1))),
+                "a merge waits for its files' owners",
+            ),
+            (
+                Mode::ConfirmDelete(Box::new(PendingDelete {
+                    doomed: Vec::new(),
+                    notes: None,
+                    backlinks: Vec::new(),
+                    goes: String::new(),
+                    changed: false,
+                    scroll: 0,
+                    tidy: None,
+                })),
+                "a delete waits for your answer",
+            ),
+            (
+                Mode::ConfirmRestore(Vec::new()),
+                "an undo waits for your answer",
+            ),
+        ];
+        for (mode, why) in always {
+            assert_eq!(mode.unsaved(), Some(why));
+        }
+
+        let pickers: [(fn(String) -> Mode, &str); 5] = [
+            (
+                |query: String| Mode::Switcher {
+                    query,
+                    sel: 0,
+                    merging: None,
+                },
+                "a note's name is being typed",
+            ),
+            (
+                |query: String| Mode::Palette { query, sel: 0 },
+                "a command is being typed",
+            ),
+            (
+                |query: String| Mode::Search { query, sel: 0 },
+                "a search is being typed",
+            ),
+            (
+                |query: String| Mode::Outline { query, sel: 0 },
+                "a heading is being typed",
+            ),
+            (
+                |query: String| Mode::Bookmarks { query, sel: 0 },
+                "a bookmark is being typed",
+            ),
+        ];
+        for (picker, why) in pickers {
+            assert_eq!(picker(String::new()).unsaved(), None, "{why}");
+            assert_eq!(picker("lava".into()).unsaved(), Some(why));
+            // Spaces are typed too: the picker shows them and matches with them.
+            assert_eq!(picker("  ".into()).unsaved(), Some(why));
+        }
+
+        let mut hints = Hints::new([HintTarget::Link(0), HintTarget::Link(1)]);
+        let _ = hints.type_char('a');
+        assert_eq!(
+            Mode::Hints(hints).unsaved(),
+            Some("a link's label is being typed")
+        );
     }
 }

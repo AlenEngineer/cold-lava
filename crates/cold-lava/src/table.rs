@@ -171,6 +171,16 @@ impl TableView {
         self.input != Input::None
     }
 
+    /// What is being typed in the table, which taking it from the front would cut short or
+    /// closing it would lose, in words for the status line.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        match self.input {
+            Input::None => None,
+            Input::Filter => Some("a filter is being typed"),
+            Input::Edit { .. } => Some("a cell is being edited"),
+        }
+    }
+
     pub fn key(&mut self, k: KeyEvent) -> Action {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match &mut self.input {
@@ -810,5 +820,20 @@ mod tests {
         assert_eq!(scroll(&w, 1, 2, 30), 1, "back left to the selected one");
         assert_eq!(fit("Kīlauea", 5, Align::Left), "Kīla…");
         assert_eq!(fit("42", 4, Align::Right), "  42");
+    }
+
+    #[test]
+    fn a_filter_and_a_cell_are_held_while_they_are_typed() {
+        let mut v = TableView::new(table());
+        assert_eq!(v.unsaved(), None);
+        v.key(key(KeyCode::Char('/')));
+        assert_eq!(v.unsaved(), Some("a filter is being typed"));
+        v.key(key(KeyCode::Esc));
+        assert_eq!(v.unsaved(), None);
+        v.key(key(KeyCode::Char('e')));
+        v.key(key(KeyCode::Char('x')));
+        assert_eq!(v.unsaved(), Some("a cell is being edited"));
+        v.key(key(KeyCode::Esc));
+        assert_eq!(v.unsaved(), None);
     }
 }

@@ -200,6 +200,12 @@ impl ListView {
         self.filtering
     }
 
+    /// What is being typed in the list, which taking it from the front would cut short, in
+    /// words for the status line.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        self.filtering.then_some("a filter is being typed")
+    }
+
     pub fn key(&mut self, k: KeyEvent) -> Action {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if self.filtering {
@@ -723,5 +729,16 @@ mod tests {
         let s: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(s.starts_with("  ☐ Look up the 2022 eruption  ⏫ "), "{s}");
         assert!(s.ends_with("  Journal"));
+    }
+
+    #[test]
+    fn a_filter_is_held_while_it_is_typed() {
+        let mut v = ListView::new(list());
+        assert_eq!(v.unsaved(), None);
+        v.key(key(KeyCode::Char('/')));
+        assert_eq!(v.unsaved(), Some("a filter is being typed"));
+        v.key(key(KeyCode::Char('k')));
+        v.key(key(KeyCode::Enter));
+        assert_eq!(v.unsaved(), None, "kept, and no longer typed");
     }
 }
