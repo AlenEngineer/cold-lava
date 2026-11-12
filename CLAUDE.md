@@ -190,7 +190,8 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   interpreted. What a board gave before is still given beside them, unchanged: a text
   card's text as a Markdown piece and a file card's link, both at the same place. **A
   board's items, links, ids and revs must not move**: a card's piece is an item only when a
-  type matches it, a group is not given (a `section` piece would be a new heading on every
+  type asks for one of its attributes (`matcher/piece.rs`: a piece with no words matches
+  only a shape that tests or reads an attribute), a group is not given (a `section` piece would be a new heading on every
   board), and the owner gives no piece the engine would report. A card's Markdown becomes a
   fragment with #244, not before. No extension may claim a built-in owner's kind.
   **One path for owned files** (#183): a file that isn't a note is changed the same way

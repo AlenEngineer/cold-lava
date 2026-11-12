@@ -1822,6 +1822,14 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
 
   So the built-in `task` (`where.attribute = "task"`, `status` from `checkbox`, `due` from
   `due`) matches an owner's piece with no change and no Markdown anywhere.
+- **A piece with no words is read only for its attributes.** A piece may have no text and
+  no cells: a board's card, whose words are the Markdown piece beside it. A shape that
+  neither tests an attribute (`where.attribute`) nor reads one (`attribute`, `checkbox`,
+  `inline`) is about what is written, so such a piece is nothing to it, as a paragraph
+  without words is nothing in a note. A shape that asks for an attribute matches it. So a
+  type on every `text` (`on = "text"`, `fields.words = { rest = true }`) lists paragraphs
+  and never an empty card, and `where.attribute = "x"` lists the cards. A row with cells,
+  empty or not, is not such a piece.
 - **Items.** A piece a type matches is an item of that type. Else an `item` is a `list` and
   a `section` a `heading` (its level the attribute `level`, 1 to 6, else its depth in
   sections), as in a note, and any other piece is no item, as a paragraph or a row no type
@@ -2062,10 +2070,11 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   `opaque`. So `items`, the agenda, the table, tidy and every id of an existing board are
   what they were. A type of your own can now read cards: `on = "text"`,
   `where.attribute = "x"`, `where.file-type = ["canvas"]` and `fields.x = { attribute =
-  "x", type = "number" }` lists every text card with where it sits. One case changes
-  without anyone asking: a type on `text` (or `paragraph`) with no condition and no
-  `required` field, which matched every paragraph on a card, now also matches the card
-  itself, as an item with no words.
+  "x", type = "number" }` lists every text card with where it sits. A type you already
+  have lists what it listed: one on every `text`, with no condition, matches the
+  paragraphs on a card as before and not the card, since a card's piece has no words and
+  such a type asks for no attribute ("Pieces, as built"). `core.rs` pins both
+  (`a_boards_cards_are_pieces_and_its_items_dont_move`).
 - **Every piece the owner gives is one the engine takes.** A canvas is another program's
   file. A node whose id is empty, longer than 1024 bytes, or the place another node already
   has (an id that looks like a repeated id's place) gets no piece and no arrow, and its text

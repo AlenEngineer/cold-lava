@@ -47,9 +47,10 @@ change commands, keys and file formats; patch versions only fix things.
   between its own pieces. Nothing a board gave before moves: what is written on a card is
   still read as Markdown, so its tasks, links and tags have the ids they had, and
   `items`, the agenda, the table, tidy, backlinks and the graph show what they showed. A
-  card shows up as an item only where a type of yours asks for it, for example
-  `on = "text"` with `where.attribute = "x"`; a type on `text` with no condition and no
-  `required` field now also matches each text card, with no words. Setting a card's
+  card shows up as an item only where a type of yours asks for one of its attributes, for
+  example `on = "text"` with `where.attribute = "x"`. A type on every `text` lists what it
+  listed: a piece with no words of its own, as a card is, matches only a shape that tests
+  or reads an attribute. Setting a card's
   attribute through such a type is refused with the reason: a card is moved on the
   whiteboard. A group is not given yet, nor an arrow to one. The alphabet's version is 3:
   give a link between two pieces only when it is 3 or more. `docs/extensions.md`, "The

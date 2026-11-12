@@ -2188,7 +2188,8 @@ mod tests {
             dir.join(".cold-lava/types.toml"),
             "version = 1\n[types.card]\non = \"text\"\nwhere.attribute = [\"x\"]\n\
              where.file-type = [\"canvas\"]\n\
-             fields.x = { attribute = \"x\", type = \"number\" }\n",
+             fields.x = { attribute = \"x\", type = \"number\" }\n\
+             [types.prose]\non = \"text\"\npriority = -1\nfields.words = { rest = true }\n",
         )
         .unwrap();
         std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
@@ -2213,7 +2214,10 @@ mod tests {
             links: file.given.links.iter().filter(to_file).cloned().collect(),
         };
         let was = given::read("Board.canvas", &before, settings);
-        assert_eq!(was.items.len(), 2, "the two tasks");
+        // The two tasks, and the one paragraph, which a type on every text takes: a card has
+        // no words of its own, so that type takes no card, here or below.
+        let kinds: Vec<&str> = was.items.iter().map(|i| i.data.kind()).collect();
+        assert_eq!(kinds, ["prose", "task", "task"]);
         let apart = |items: &[Item]| -> Vec<serde_json::Value> {
             let not_cards = items.iter().filter(|i| i.data.kind() != "card");
             not_cards
