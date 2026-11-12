@@ -1211,4 +1211,63 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&v);
     }
+
+    /// Ticking and recurrence don't follow the Markdown owner's table of readings yet
+    /// (`owner::markdown::attributes`): they write the Tasks plugin's own markers. So with
+    /// `due` read from another marker, the date is read, and the next occurrence keeps it
+    /// where `📅` would have moved a week on. This pins that, for the change that moves the
+    /// writer to turn around.
+    #[test]
+    fn a_recurring_task_with_a_due_marker_of_ones_own_keeps_its_date_for_now() {
+        use crate::owner::markdown::attributes;
+        let table: toml::Table = toml::from_str("[item]\ndue = [{ marker = \"⌚\" }]\n").unwrap();
+        let readings = attributes::load([
+            attributes::Layer::built_in(),
+            attributes::Layer::config(Path::new("config.toml"), table),
+        ]);
+        assert_eq!(readings.errors, Vec::<String>::new());
+        assert!(
+            readings
+                .notes
+                .iter()
+                .any(|n| n.ends_with(attributes::TICKING))
+        );
+        let s = items::Settings::with(
+            Flavour::built_in("obsidian").unwrap(),
+            TasksSettings::from_json(&serde_json::json!({})),
+            daily::Settings::default(),
+            templates::Settings::default(),
+            types::load([Layer::built_in()]),
+            readings,
+        );
+        let line = "- [ ] recurring 🔁 every week ⌚ 2026-11-10";
+        assert_eq!(parse_with(&s, line).unwrap().due, Some(d("2026-11-10")));
+        let style = crate::style::Style::default().into();
+        let text = format!("{line}\n");
+        let ticked =
+            toggle_text("T.md", "T.md", &text, &s, &style, 1, None, d("2026-11-09")).unwrap();
+        assert_eq!(
+            ticked.text,
+            "- [ ] recurring 🔁 every week ⌚ 2026-11-10\n\
+             - [x] recurring 🔁 every week ⌚ 2026-11-10 ✅ 2026-11-09\n",
+            "with 📅 the next one would be due 2026-11-17"
+        );
+        let usual = settings(serde_json::json!({}), "");
+        let moved = toggle_text(
+            "T.md",
+            "T.md",
+            &text.replace('⌚', "📅"),
+            &usual,
+            &style,
+            1,
+            None,
+            d("2026-11-09"),
+        );
+        assert!(
+            moved
+                .unwrap()
+                .text
+                .starts_with("- [ ] recurring 🔁 every week 📅 2026-11-17\n")
+        );
+    }
 }

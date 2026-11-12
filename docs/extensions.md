@@ -502,8 +502,11 @@ priority = [
   its readings `*` stands for the attribute's name. Built in, it is Dataview's field:
   `[rating:: 5]` gives `rating`. It is a row like the others, so `cold-lava attributes`
   lists it and a later file can change it or take it out.
-- **Taking an entry out.** An empty list removes the entry of that name
-  (`"*" = []`, `due = []`). With `"*"` out, an attribute nobody declares is on no piece.
+- **Taking an entry out.** An empty list takes the entry of that name out (`due = []`,
+  `"*" = []`). An attribute taken out is on no piece: `"*"` doesn't stand in for it, so
+  `task = []` means no item is a task, not that `[task:: …]` makes one. Only a name with no
+  entry at all falls to `"*"`, and with `"*"` out, such a name is on no piece either. An
+  empty table (`due = {}`) is a mistake and is reported.
 - **Why it is here and not in the type.** The emoji are the Obsidian Tasks plugin's
   convention, the bracketed fields are Dataview's, and the global filter is a setting of the
   plugin. None of them is what a task is. Kept in the type, every other format's owner would
@@ -535,11 +538,28 @@ priority = [
   it was read from: `set-field` on a task's `due` rewrites the date after `📅`, or inside
   `[due:: …]`, and adds a missing one the way the line and the workspace write theirs
   ("Writing, as built"). A type that names its sources itself is untouched by the table.
-- **Ticking** is still `tasks.toggle`, native code that writes the done and cancelled dates
-  as the Tasks plugin does (`✅`, `❌`, `[completion:: …]`, `[cancelled:: …]`). It is the one
-  place a convention of that plugin is still code. It doesn't read the table yet, so
-  changing the reading of `done` changes what is read and what `set-field` writes, not what
-  a tick adds. Its home is this table: the writer's side of `done` and `cancelled`.
+- **What moved, and what didn't.** Reading a task and `set-field` go through the table.
+  Ticking, recurrence and some display code don't yet, and still hold the Tasks plugin's and
+  Dataview's conventions as code:
+  - `tasks.rs`, `toggle_text`: the done and cancelled dates a tick adds and removes (`✅`,
+    `❌`, `completion`, `cancelled`);
+  - `tasks.rs`, `next_occurrence`: the dates a recurring task moves (`📅`/`due`,
+    `⏳`/`scheduled`, `🛫`/`start`);
+  - `tasks.rs`, `strip_field`, `add_field`, `replace_date`: Dataview's `[field:: …]` and
+    `(field:: …)`;
+  - `tasks.rs`, the task-line pattern a tick splits a line with, and the default status
+    characters; `items.rs`, the order of the statuses;
+  - `style.rs`, `TASK_GLYPHS`, for counting how a workspace writes task fields;
+  - `crates/cold-lava/src/agenda.rs`: the priority glyphs and `🔁` the agenda shows.
+  Their home is this table, as the writer's side of each attribute.
+- **So ticking and recurrence still use the built-in markers.** With `due` read from a
+  marker of one's own (`due = [{ marker = "⌚" }]`), the date is read and `set-field` writes
+  it, but ticking a recurring task copies the date unchanged where `📅` would have moved
+  it on, and a tick adds `✅` whatever `done` says. An entry for `due`, `scheduled`,
+  `start`, `done` or `cancelled` that isn't the built-in one carries that warning, in
+  `cold-lava attributes` beside the entry and among its notes.
+  `tasks::tests::a_recurring_task_with_a_due_marker_of_ones_own_keeps_its_date_for_now`
+  pins it for the change that moves the writer.
 
 ## Types
 

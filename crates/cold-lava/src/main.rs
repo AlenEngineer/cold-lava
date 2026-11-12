@@ -1462,9 +1462,16 @@ fn print_attributes(found: &attributes::Readings) {
     for r in &found.readings {
         let read: Vec<String> = r.read.iter().map(source_label).collect();
         println!("\n{}  on {} · {}", r.name, r.on.name(), r.origin);
-        println!("  {}", read.join(", then "));
+        match read.is_empty() {
+            true => println!("  taken out: on no piece"),
+            false => println!("  {}", read.join(", then ")),
+        }
         if !r.with.is_empty() {
             println!("  only with {}", r.with);
+        }
+        let ticked = attributes::TICKED.contains(&r.name.as_str()) && r.on.name() == "item";
+        if ticked && r.origin != types::Origin::BuiltIn {
+            println!("  but {}", attributes::TICKING);
         }
     }
 }

@@ -40,7 +40,10 @@ change commands, keys and file formats; patch versions only fix things.
   `📅` and `[due:: …]`, the priority glyphs, `🔁`. You can read it with the new
   `cold-lava attributes [WORKSPACE]` (`--json` too) and change it in `[attributes]` in
   config.toml or in `<workspace>/.cold-lava/attributes.toml`, where a later entry replaces an
-  earlier one and an empty list takes one out. An attribute nobody declared is the Dataview
+  earlier one and an empty list takes one out, which leaves that attribute on no piece.
+  Reading and `set-field` follow the table; ticking a task and its recurrence still write
+  the built-in markers, and `cold-lava attributes` says so beside a changed entry for a
+  date. A broken entry is listed by `cold-lava types` too. An attribute nobody declared is the Dataview
   field of its name (`[rating:: 5]`), by the table's `"*"` entry, which can be changed or
   removed like any other. No task changes: every id, rev, field and line is what it was,
   `agenda`, `items` and `table` print the same bytes, and ticking or setting a field writes

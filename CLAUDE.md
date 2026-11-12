@@ -250,7 +250,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   older items. `types/task.before-242.toml` is the task as it was, kept only for
   `items::tests::the_task_reads_from_attributes_as_it_did_from_characters`, which reads
   every note both ways: a change to how a task is read must keep that test passing, or it
-  changes ids. `tasks::toggle` still writes `✅` and `❌` itself and doesn't read the table.
+  changes ids. Reading and `set-field` go through the table; ticking and recurrence
+  (`tasks.rs`: `toggle_text`, `next_occurrence`, `strip_field`, `add_field`, `replace_date`,
+  the task-line pattern, the default statuses), `style::TASK_GLYPHS` and the agenda's
+  glyphs (`crates/cold-lava/src/agenda.rs`) still hold the plugin's markers as code
+  (docs/extensions.md, "Attributes in Markdown, as built", lists them). A changed entry for
+  one of `attributes::TICKED` is warned about. An entry emptied (`due = []`) stays in the
+  table with no readings, so the attribute is on no piece and `"*"` doesn't stand in.
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an

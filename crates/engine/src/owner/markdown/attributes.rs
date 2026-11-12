@@ -31,6 +31,15 @@ pub const BUILT_IN: &str = include_str!("../../../markdown/attributes.toml");
 /// attribute's name: `"*" = { inline = "*" }` reads `rating` from `[rating:: 5]`.
 pub const ANY: &str = "*";
 
+/// The attributes `tasks::toggle` writes or moves itself, with the Tasks plugin's markers in
+/// its own code: a tick's done and cancelled dates, a recurring task's next dates. Reading
+/// and `set-field` follow the table; ticking doesn't yet.
+pub const TICKED: &[&str] = &["due", "scheduled", "start", "done", "cancelled"];
+
+/// What is said of an entry for one of `TICKED` that isn't the built-in one.
+pub const TICKING: &str =
+    "ticking a task and its recurrence still write the built-in markers, whatever this entry says";
+
 /// The attributes the tree gives, which no file can say how to read.
 pub const STRUCTURAL: &[&str] = &["level", "callout", "fold"];
 
@@ -42,7 +51,8 @@ pub struct Reading {
     pub on: On,
     pub name: String,
     pub origin: Origin,
-    /// Tried in order; the first with a value gives it.
+    /// Tried in order; the first with a value gives it. Empty for an entry a later file took
+    /// out (`due = []`): the attribute is then on no piece, and `*` doesn't stand in for it.
     pub read: Vec<Source>,
     /// Text the piece must also hold, after its checkbox, to have the attribute at all; it is
     /// not part of the piece's words. Empty when there is no such text.
@@ -174,7 +184,8 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
                         let old =
                             (found.readings.iter()).position(|r| r.on == on && r.name == name);
                         let old = old.map(|old| found.readings.remove(old));
-                        // No readings takes the entry out.
+                        // No readings takes the entry out: it stays in the table, empty,
+                        // so the attribute is on no piece, whatever `*` says.
                         let does = if read.is_empty() {
                             "removes"
                         } else {
@@ -186,8 +197,9 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
                                 .notes
                                 .push(format!("{at} {name} {does} the one from {from}"));
                         }
-                        if read.is_empty() {
-                            continue;
+                        let changed = layer.origin != Origin::BuiltIn;
+                        if changed && on == On::Item && TICKED.contains(&name.as_str()) {
+                            found.notes.push(format!("{at} {name}: {TICKING}"));
                         }
                         found.readings.push(Reading {
                             on,
@@ -226,6 +238,13 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
         Some(other) => return Err(format!("with = {other}: with is text")),
         None => String::new(),
     };
+    if written.as_table().is_some_and(|t| t.is_empty()) {
+        return Err(
+            "no readings: give it at least one, like { marker = \"📅\" }, or [] to take the \
+             entry out"
+                .into(),
+        );
+    }
     let Sources(read) = written
         .try_into()
         .map_err(|e: toml::de::Error| e.to_string().replace('\n', " ").trim().to_string())?;
@@ -447,8 +466,20 @@ mod tests {
         let without = load([Layer::built_in(), config("[item]\n\"*\" = []\n")]);
         assert_eq!(
             kinds(&without.flat(On::Item, &written[2..3])),
-            ["attribute:rating"],
+            Vec::<String>::new(),
             "with the entry for the rest taken out, an attribute nobody declares reads nothing"
+        );
+        let untasked = load([Layer::built_in(), config("[item]\ntask = []\n")]);
+        let task = [Source::Attribute("task".into())];
+        assert_eq!(
+            kinds(&untasked.flat(On::Item, &task)),
+            Vec::<String>::new(),
+            "an entry taken out is on no piece: `*` doesn't make it a Dataview field"
+        );
+        assert_eq!(
+            kinds(&untasked.flat(On::Item, &written[2..3])),
+            ["inline:rating"],
+            "and a name with no entry at all still falls to `*`"
         );
         assert_eq!(
             without.notes,
@@ -465,7 +496,7 @@ mod tests {
     fn a_later_layer_replaces_a_reading_and_a_broken_one_is_dropped() {
         let mine = config(
             "[item]\ndue = { marker = \"@due\" }\nstars = { pattern = 'r(\\d)' }\n\
-             level = { marker = \"#\" }\nbroken = { rest = true }\n\
+             level = { marker = \"#\" }\nbroken = { rest = true }\nnothing = {}\n\
              filtered = { marker = \"x\", with = \"y\" }\n\
              [note]\ndue = { marker = \"x\" }\n",
         );
@@ -477,18 +508,22 @@ mod tests {
         assert!(a.reading(On::Item, "stars").is_some());
         assert_eq!(
             a.notes,
-            ["config.toml: [item] due replaces the one from built in"]
+            [
+                "config.toml: [item] due replaces the one from built in".to_string(),
+                format!("config.toml: [item] due: {TICKING}"),
+            ]
         );
         let errors = a.errors.join("\n");
         for wanted in [
             "[item] level: level is read from the note's structure",
             "[item] broken: rest is not a reading of a piece's text",
             "[item] filtered: with goes beside checkbox = true",
+            "[item] nothing: no readings: give it at least one",
             "[note] is not a role attributes are read on",
         ] {
             assert!(errors.contains(wanted), "{wanted}\nin\n{errors}");
         }
-        assert_eq!(a.errors.len(), 4, "{errors}");
+        assert_eq!(a.errors.len(), 5, "{errors}");
     }
 
     #[test]
