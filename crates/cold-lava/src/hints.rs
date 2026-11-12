@@ -72,6 +72,12 @@ impl<T: Copy> Hints<T> {
         &self.typed
     }
 
+    /// The start of a label that is typed, which closing the hints would lose, in words for
+    /// the status line.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        (!self.typed.is_empty()).then_some("a link's label is being typed")
+    }
+
     /// The labels that still match what was typed, with their targets.
     pub fn matching(&self) -> impl Iterator<Item = (&str, &T)> {
         self.labelled
@@ -147,5 +153,13 @@ mod tests {
         let mut h = Hints::new(0..10);
         assert!(matches!(h.type_char('a'), Typed::Pending));
         assert!(matches!(h.type_char('x'), Typed::NoMatch));
+    }
+
+    #[test]
+    fn a_label_begun_is_held() {
+        let mut hints = Hints::new(0..11);
+        assert_eq!(hints.unsaved(), None);
+        assert!(matches!(hints.type_char('a'), Typed::Pending));
+        assert_eq!(hints.unsaved(), Some("a link's label is being typed"));
     }
 }

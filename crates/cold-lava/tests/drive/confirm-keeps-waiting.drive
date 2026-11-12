@@ -1,0 +1,31 @@
+# A rename that waits for the owners of the files it relinks is not closed by another
+# extension's request (#269). tests/drive.rs installs a csv-table that takes six seconds to
+# answer file/edit for a rename to Rakata, and the open-tasks example patched to send
+# workspace/open for Krakatoa when another program writes an eighteenth task. The dialog
+# stays, the status line says what was not done, and when the owner answers the rename is
+# made: tests/drive.rs checks the note is Rakata.md.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 17 open tasks
+keys /
+type krakatoa
+wait-for Krakatoa
+keys enter
+wait-for ← Eruptions.csv  Krakatoa 1883 6
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Rakata
+keys enter
+wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Rakata.md
+keys enter
+wait-for waiting for csv-table to update its files · Esc cancel
+write Inbox/Chores.md - [ ] Sweep the ash off the roof\n
+wait-for ☐ 18 open tasks
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while a rename waits for its files' owners
+expect waiting for csv-table to update its files · Esc cancel
+screen
+wait-for 10s renamed to Volcanoes/Rakata.md
+keys q
+exits 0

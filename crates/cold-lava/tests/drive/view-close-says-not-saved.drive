@@ -1,0 +1,29 @@
+# What the owner of a view says when it hears view/closed doesn't take the place of the
+# word that a typed cell was not saved (#269). tests/drive.rs installs a csv-table that
+# closes its table whenever the file changes and says "heard view/closed" when it is told
+# the view is closed. A year is typed when another program writes the file; Enter ends
+# the typing, the view goes, and the status line says the edit was not saved, before what
+# the owner said.
+size 140x24
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys /
+type eruptions
+wait-for ▤ Volcanoes/Eruptions.csv
+keys enter j
+wait-for CSV table · ⏎ to open it in csv-table
+keys enter
+wait-for Mount St. Helens  1980
+keys j l e
+wait-for Year: 1883▏
+keys ctrl+u
+type 1884
+wait-for Year: 1884▏
+write Volcanoes/Eruptions.csv Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1883,6,\nTambora,1816,7,\n
+wait-for its extension closed this view: what you type is not saved
+keys enter
+wait-for heard view/closed
+wait-for not saved: csv-table had closed this view
+screen
+keys q
+exits 0
