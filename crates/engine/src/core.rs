@@ -740,8 +740,8 @@ impl Core {
         };
         let settings = self.index.workspace.item_settings();
         let nothing = Given::default();
-        let asked = given::read(path, p.expect.as_ref().unwrap_or(&nothing), settings);
-        let gave = given::read(path, &given, settings);
+        let asked = given::read_back(path, p.expect.as_ref().unwrap_or(&nothing), settings);
+        let gave = given::read_back(path, &given, settings);
         if let Err(diff) = given::same(&asked, &gave) {
             let message = format!(
                 "{owner}'s new text for {path} doesn't read back as asked ({diff}); nothing was \
@@ -2171,6 +2171,141 @@ mod tests {
                 .replace("[[Magma]]", "[[Melt]]")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A board's cards are pieces, and nothing a board gave before moves: its items, their ids
+    /// and revs, and its links are what its Markdown pieces and file links alone read as. A
+    /// type of the user's reads where a card sits, and the owner refuses to write it.
+    #[test]
+    fn a_boards_cards_are_pieces_and_its_items_dont_move() {
+        use crate::gateway::{Page, Query, Reason, Select};
+        use crate::owner::given::GivenItem;
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("cold-lava-cards-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
+        std::fs::write(
+            dir.join(".cold-lava/types.toml"),
+            "version = 1\n[types.card]\non = \"text\"\nwhere.attribute = [\"x\"]\n\
+             where.file-type = [\"canvas\"]\n\
+             fields.x = { attribute = \"x\", type = \"number\" }\n\
+             [types.prose]\non = \"text\"\npriority = -1\nfields.words = { rest = true }\n\
+             fields.when = { inline = \"when\", type = \"date\" }\n\
+             fields.x = { attribute = \"x\" }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
+        let canvas = "{\"nodes\":[\n\
+            {\"id\":\"a\",\"type\":\"text\",\"text\":\"Trip\\n- [ ] Buy masks #trip, see [[Lava]]\",\"x\":40,\"y\":120,\"width\":250,\"height\":60},\n\
+            {\"id\":\"b\",\"type\":\"file\",\"file\":\"Lava.md\",\"x\":400,\"y\":0,\"width\":400,\"height\":400},\n\
+            {\"id\":\"g\",\"type\":\"group\",\"label\":\"Trip\",\"x\":0,\"y\":0,\"width\":900,\"height\":900},\n\
+            {\"id\":\"a\",\"type\":\"text\",\"text\":\"- [ ] Twin\",\"x\":7,\"y\":0,\"width\":1,\"height\":1},\n\
+            {\"id\":\"n\",\"type\":\"text\",\"x\":9,\"y\":0,\"width\":1,\"height\":1}\n\
+            ],\"edges\":[{\"id\":\"e\",\"fromNode\":\"a\",\"toNode\":\"b\",\"label\":\"needs\"},\
+            {\"id\":\"f\",\"fromNode\":\"a\",\"toNode\":\"g\"}]}\n";
+        std::fs::write(dir.join("Board.canvas"), canvas).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let settings = core.index.workspace.item_settings();
+        let file = &core.index.workspace.owned[0];
+        assert_eq!(file.rel, "Board.canvas");
+
+        // What the owner gave before cards were pieces, read alone.
+        let markdown = |i: &&GivenItem| matches!(i, GivenItem::Markdown { .. });
+        let before = Given {
+            items: file.given.items.iter().filter(markdown).cloned().collect(),
+            links: file.given.links.clone(),
+            between: Vec::new(),
+        };
+        let was = given::read("Board.canvas", &before, settings);
+        // The two tasks, and the one paragraph, which a type on every text takes. That type
+        // reads an inline field and an attribute a card carries, and still takes no card,
+        // here or below, with text or without: a card's words are its Markdown piece's.
+        let kinds: Vec<&str> = was.items.iter().map(|i| i.data.kind()).collect();
+        assert_eq!(kinds, ["prose", "task", "task"]);
+        let apart = |items: &[Item]| -> Vec<serde_json::Value> {
+            let not_cards = items.iter().filter(|i| i.data.kind() != "card");
+            not_cards
+                .map(|i| serde_json::to_value(i).unwrap())
+                .collect()
+        };
+        assert_eq!(apart(&file.items), apart(&was.items), "ids and revs too");
+        assert_eq!(file.links, was.links, "and every link, in its order");
+        for item in &was.items {
+            assert_eq!(file.places.get(&item.id), was.places.get(&item.id));
+        }
+        assert_eq!(
+            file.given.between.len(),
+            1,
+            "the arrow to the group is not given"
+        );
+
+        // The cards a type asks for are items: the three text cards, each where it sits.
+        let cards = |core: &Core| {
+            let select = Select {
+                kind: "card".into(),
+                ..Select::default()
+            };
+            let page = Page::default();
+            core.query_items(&Query { select, page }).unwrap().items
+        };
+        let found = cards(&core);
+        let x = |item: &Item| serde_json::to_value(item).unwrap()["x"].as_f64();
+        assert_eq!(
+            found.iter().map(x).collect::<Vec<_>>(),
+            [Some(40.0), Some(7.0), Some(9.0)]
+        );
+        assert!(
+            found
+                .iter()
+                .all(|c| !was.items.iter().any(|i| i.id == c.id))
+        );
+
+        // Moving a card is the whiteboard's: the owner refuses, and no byte changes.
+        let card = found[0].clone();
+        let (field, value) = ("x".to_string(), json!(50));
+        let moved = Edit {
+            id: card.id.clone(),
+            rev: card.rev.clone(),
+            op: Op::SetField { field, value },
+        };
+        let asked = core.edit_item("table", &moved);
+        assert!(matches!(asked, Ok(Answer::Later(_))), "{:?}", asked.err());
+        let (_, _, answer) = core.take_edited().pop().expect("answered at once");
+        let refused = answer.unwrap_err();
+        assert_eq!(refused.reason, Reason::Refused, "{refused}");
+        assert!(
+            refused.message.contains("doesn't write a card's x"),
+            "{refused}"
+        );
+        assert_eq!(read(&dir.join("Board.canvas")), canvas);
+
+        // A task on the card is still ticked through its Markdown, the card's piece beside it.
+        let task = file_task(&core);
+        let tick = Edit {
+            id: task.id.clone(),
+            rev: task.rev.clone(),
+            op: Op::Toggle,
+        };
+        assert!(matches!(
+            core.edit_item("agenda", &tick),
+            Ok(Answer::Later(_))
+        ));
+        let (_, _, answer) = core.take_edited().pop().expect("answered at once");
+        assert!(answer.unwrap().changed);
+        let now = read(&dir.join("Board.canvas"));
+        assert!(
+            now.contains("- [x] Buy masks #trip, see [[Lava]] ✅ "),
+            "{now}"
+        );
+        assert_eq!(cards(&core).len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first task of the first owned file.
+    fn file_task(core: &Core) -> Item {
+        let items = core.index.workspace.owned[0].items.iter();
+        let mut tasks = items.filter(|i| i.data.kind() == "task");
+        tasks.next().cloned().expect("a task")
     }
 
     fn read(path: &Path) -> String {

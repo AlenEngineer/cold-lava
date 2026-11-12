@@ -26,7 +26,7 @@ wait-for saved Volcanoes/Eruptions.csv
 expect [[Krakatoa]]          1884
 write Volcanoes/Eruptions.csv Volcano,Year,VEI,Notes\n[[Vesuvius]],79,5,\n[[Krakatoa]],1884,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n[[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n[[Tambora]],1816,7,\n
 wait-for Volcanoes/Eruptions.csv changed: showing it as it is now
-expect 5 rows
+wait-for 5 rows
 keys j j j e
 wait-for Year: 1816▏
 keys ctrl+u

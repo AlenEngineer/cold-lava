@@ -434,3 +434,43 @@ fn item_set_finds_a_workspace_marked_by_cold_lava_and_explains_a_guess() {
     assert!(err.contains("no .obsidian or .cold-lava folder"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A board's cards are pieces, and a type a workspace already has lists what it listed. This
+/// one is on every paragraph and reads an inline field, an attribute, and an attribute a card
+/// carries (`x`), without testing for any: it takes the paragraphs written on cards, as before
+/// cards were pieces, and no card. The counts are the example workspace's, from the release
+/// before.
+#[test]
+fn a_type_that_reads_attributes_gains_no_item_per_card() {
+    let workspace = sandbox("no-card-items");
+    let types = workspace.join(".cold-lava/types.toml");
+    let mut text = std::fs::read_to_string(&types).unwrap();
+    text.push_str(
+        "\n[types.meeting]\non = \"paragraph\"\n\
+         fields.when = { inline = \"when\", type = \"date\" }\n\
+         fields.due = { attribute = \"due\", type = \"date\" }\n\
+         fields.x = { attribute = \"x\" }\n\
+         fields.text = { rest = true }\n",
+    );
+    std::fs::write(&types, text).unwrap();
+    let listed = run(
+        &workspace,
+        &["items", workspace.to_str().unwrap(), "meeting", "--json"],
+    );
+    let items: Vec<serde_json::Value> = (listed.lines())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let wordless: Vec<&serde_json::Value> = (items.iter())
+        .filter(|i| i["text"].as_str().is_none_or(str::is_empty))
+        .collect();
+    assert!(wordless.is_empty(), "an item with no words: {wordless:?}");
+    let on_boards = |i: &&serde_json::Value| {
+        let note = i["note"].as_str().unwrap_or_default();
+        note.ends_with(".canvas")
+    };
+    assert_eq!(
+        (items.len(), items.iter().filter(on_boards).count()),
+        (65, 7),
+        "every paragraph, seven of them on cards, and no card"
+    );
+}

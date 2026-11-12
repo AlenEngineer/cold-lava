@@ -38,6 +38,27 @@ change commands, keys and file formats; patch versions only fix things.
   to the next status that is another of the four words. Ticking a recurring task in a piece
   is refused for now, and a tick adds no done date there.
   `docs/extensions.md`, "Changes in the model's terms, as built".
+- A whiteboard's cards and arrows are in the model (#243). The canvas owner gives each card
+  as a piece at its place: a text card a `text`, a file card or a web page an `embed`, a
+  node of a type it doesn't know an `opaque`, each with where it sits (`x`, `y`, `width`,
+  `height`) and its `color`, `url` or `subpath` as attributes. Each arrow is a link between
+  two pieces with its label, a new entry of `file/read`'s `links`: `{from, to, label}`.
+  Both are carried and never interpreted, and an extension's owner can give the same link
+  between its own pieces. Nothing a board gave before moves: what is written on a card is
+  still read as Markdown, so its tasks, links and tags have the ids they had, and
+  `items`, the agenda, the table, tidy, backlinks and the graph show what they showed. A
+  card shows up as an item only where a type of yours tests for one of its attributes, for
+  example `on = "text"` with `where.attribute = "x"`. Every other type lists what it
+  listed, also one that reads an inline field or an attribute: a card's own piece has no
+  words, and a piece with no words matches only a shape whose `where.attribute` it
+  carries. That holds for every owner: a piece an extension gives with no words (no text,
+  empty runs, only field runs, a row of empty cells) is typed only by `where.attribute`,
+  where before any shape whose conditions it passed took it. An empty `item` is still a
+  `list` and an empty `section` a `heading`.
+  Setting a card's attribute through such a type is refused with the reason: the canvas
+  owner writes a card's text and file only. A group is not given yet, nor an arrow to one. The alphabet's version is 3:
+  give a link between two pieces only when it is 3 or more. `docs/extensions.md`, "The
+  canvas owner, as built" and "Pieces, as built".
 - A type's `on` takes the roles of the alphabet (#241, step 1 of the neutral model):
   `document`, `section`, `text`, `item`, `row`, `aside` and `verbatim`, and `inline` as
   before. The names it had (`note`, `heading`, `paragraph`, `list-item`, `table-row`, `quote`,

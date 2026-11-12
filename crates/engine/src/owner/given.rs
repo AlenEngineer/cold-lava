@@ -25,14 +25,80 @@ use serde_json::{Map, Value as Json};
 use std::collections::HashMap;
 use std::ops::Range;
 
-/// The answer to `file/read`: the file's items and links.
+/// The answer to `file/read`: the file's items and links. On the wire `links` is one list
+/// with two kinds of entry. Here the two are apart, so whoever reads the links to files has
+/// no other kind to pass over.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "Wire", into = "Wire")]
 pub struct Given {
-    #[serde(default)]
     pub items: Vec<GivenItem>,
-    #[serde(default)]
+    /// The links to files that are outside the items.
     pub links: Vec<GivenLink>,
+    /// The links between two pieces of the file.
+    pub between: Vec<Between>,
+}
+
+/// `Given` as JSON: `{items, links}`, and no other key.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Wire {
+    #[serde(default)]
+    items: Vec<GivenItem>,
+    #[serde(default)]
+    links: Vec<WireLink>,
+}
+
+/// One entry of `links` on the wire.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WireLink {
+    File(GivenLink),
+    Between(Between),
+}
+
+impl From<Wire> for Given {
+    fn from(wire: Wire) -> Given {
+        let mut given = Given {
+            items: wire.items,
+            ..Given::default()
+        };
+        for link in wire.links {
+            match link {
+                WireLink::File(l) => given.links.push(l),
+                WireLink::Between(l) => given.between.push(l),
+            }
+        }
+        given
+    }
+}
+
+impl From<Given> for Wire {
+    fn from(given: Given) -> Wire {
+        let files = given.links.into_iter().map(WireLink::File);
+        let between = given.between.into_iter().map(WireLink::Between);
+        Wire {
+            items: given.items,
+            links: files.chain(between).collect(),
+        }
+    }
+}
+
+/// Which kind an entry is shows in its keys: one with `from` or `to` and no `target` is
+/// between two pieces. It is then read as that kind, so a mistake is named (`missing field
+/// `place``, `unknown field `color``), not answered with "it matches no kind".
+impl<'de> Deserialize<'de> for WireLink {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let entry = Map::<String, Json>::deserialize(d)?;
+        let has = |key: &str| entry.contains_key(key);
+        let between = !has("target") && (has("from") || has("to"));
+        let entry = Json::Object(entry);
+        let link = match between {
+            true => serde_json::from_value(entry).map(WireLink::Between),
+            false => serde_json::from_value(entry).map(WireLink::File),
+        };
+        link.map_err(D::Error::custom)
+    }
 }
 
 /// One item, at a place in the file the owner keeps stable (a row's key, a card's id).
@@ -63,6 +129,9 @@ pub const MAX_NAME: usize = 256;
 /// The bytes a place may have, and a link's target.
 pub const MAX_PLACE: usize = 1024;
 pub const MAX_TARGET: usize = 4096;
+/// The links between pieces an answer may have, and the bytes one's label may have.
+pub const MAX_BETWEEN: usize = 65_536;
+pub const MAX_LABEL: usize = 4096;
 
 /// One unit of what a file holds, in the alphabet's terms (docs/neutral-model.md): what it is
 /// (`role`), what it carries beyond its text (`attributes`), its text, and where it stands
@@ -184,7 +253,7 @@ impl Piece {
     }
 
     /// Whether it is within the bounds, and says nothing two ways.
-    fn check(&self) -> Result<(), String> {
+    pub fn check(&self) -> Result<(), String> {
         if self.place.is_empty() || self.place.len() > MAX_PLACE {
             return Err(format!(
                 "its place is empty or longer than {MAX_PLACE} bytes"
@@ -355,8 +424,65 @@ pub fn typed_id(file: &str, kind: &str, place: &str) -> String {
 /// The pieces of an answer read so far, for the ones that say they are `in` one of them.
 #[derive(Default)]
 struct Before<'a> {
-    by_place: HashMap<&'a str, usize>,
+    places: Places<'a>,
     seen: Vec<Seen>,
+}
+
+/// The places of an answer's pieces as they are taken, one piece a place, in the order
+/// given. What the engine takes of an answer's pieces and of the links between them is
+/// decided here, for the engine reading an answer (`read`) and for an owner in the engine
+/// building one (`canvas::read`): so an owner that asks first gives nothing that is reported.
+#[derive(Default)]
+pub struct Places<'a> {
+    at: HashMap<&'a str, usize>,
+}
+
+impl<'a> Places<'a> {
+    /// Whether this piece can be taken: it is within the bounds, and no piece taken has its
+    /// place.
+    pub fn fits(&self, p: &Piece) -> Result<(), String> {
+        p.check()?;
+        match self.at.contains_key(p.place.as_str()) {
+            true => Err("another piece is at this place".into()),
+            false => Ok(()),
+        }
+    }
+
+    /// Take the piece: its number among the pieces taken, from 0.
+    pub fn take(&mut self, p: &'a Piece) -> usize {
+        let n = self.at.len();
+        self.at.insert(&p.place, n);
+        n
+    }
+
+    /// The number of the piece taken at `place`.
+    pub fn at(&self, place: &str) -> Option<usize> {
+        self.at.get(place).copied()
+    }
+
+    /// Whether this link, the `nth` between pieces of its answer (from 0), is taken: it is
+    /// within the bounds, and both its ends are pieces taken.
+    pub fn joins(&self, l: &Between, nth: usize) -> Result<(), String> {
+        if nth >= MAX_BETWEEN {
+            return Err(format!(
+                "more than {MAX_BETWEEN} links between pieces: the rest are left out"
+            ));
+        }
+        let (from, to) = (short(&l.from), short(&l.to));
+        if l.label.len() > MAX_LABEL {
+            return Err(format!(
+                "a link from {from} to {to}: its label is longer than {MAX_LABEL} bytes"
+            ));
+        }
+        let mut ends = [&l.from, &l.to].into_iter();
+        match ends.find(|place| self.at(place).is_none()) {
+            Some(missing) => Err(format!(
+                "a link from {from} to {to}: no piece is at {}",
+                short(missing)
+            )),
+            None => Ok(()),
+        }
+    }
 }
 
 struct Seen {
@@ -379,13 +505,10 @@ fn read_piece<'a>(
     before: &mut Before<'a>,
     out: &mut Read,
 ) -> Result<(), String> {
-    p.check()?;
-    if before.by_place.contains_key(p.place.as_str()) {
-        return Err("another piece is at this place".into());
-    }
+    before.places.fits(p)?;
     let parent = match &p.inside {
-        Some(place) => match before.by_place.get(place.as_str()) {
-            Some(i) => Some(*i),
+        Some(place) => match before.places.at(place) {
+            Some(i) => Some(i),
             None => {
                 return Err(format!(
                     "it is in {}, and no piece before it is at that place",
@@ -486,7 +609,7 @@ fn read_piece<'a>(
         };
         out.links.push((r, p.place.clone()));
     }
-    before.by_place.insert(&p.place, before.seen.len());
+    before.places.take(p);
     before.seen.push(Seen {
         role: p.role,
         words,
@@ -507,6 +630,18 @@ pub struct GivenLink {
     /// What it says around the link, for backlinks.
     #[serde(default)]
     pub text: String,
+}
+
+/// A link from one piece of the file to another, by their places, with what the link says: a
+/// board's arrow and its label. Carried and never interpreted. It joins two pieces of one
+/// file, not two files, so it is no backlink and no edge of the graph.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Between {
+    pub from: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 /// One change `file/edit` asks of an owner, at one of the places it gave.
@@ -761,7 +896,10 @@ fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run>
 /// lands on another piece that says the same is caught by where it is. Places may differ,
 /// since an owner's place can be part of what changed (a CSV row's first cell). Else what
 /// differs, for a message.
-pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
+pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
+    let (want_pieces, got_pieces) = (&asked.pieces, &gave.pieces);
+    let (want_between, got_between) = (&asked.between, &gave.between);
+    let (asked, gave) = (&asked.read, &gave.read);
     let items = |r: &Read| -> Vec<String> {
         let mut v: Vec<String> = r.items.iter().map(data_key).collect();
         v.sort();
@@ -808,9 +946,18 @@ pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
             short(missing)
         ));
     }
+    // No change makes, moves or relabels a link between two pieces: they come back as they
+    // were, in order, each between the pieces at the same positions.
+    if want_between != got_between {
+        return Err(format!(
+            "the links between pieces are {} where {} were asked",
+            short(got_between.clone()),
+            short(want_between.clone())
+        ));
+    }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
     // attribute, a text or a link moves a piece.
-    let (want, got) = (&asked.pieces, &gave.pieces);
+    let (want, got) = (want_pieces, got_pieces);
     let says = |pieces: &[(String, String)]| -> Vec<String> {
         pieces.iter().map(|(_, says)| says.clone()).collect()
     };
@@ -866,31 +1013,63 @@ pub struct Read {
     /// By item id.
     pub places: HashMap<String, String>,
     pub links: Vec<(Ref, String)>,
-    /// Every piece in the order given, whether or not it is an item: its place, and what it
-    /// says (`piece_key`) with the position of the piece it is in. The read-back check
-    /// compares them.
-    pub pieces: Vec<(String, String)>,
     /// What didn't read, one line each: a type that isn't loaded, a field it doesn't have.
     pub problems: Vec<String>,
+}
+
+/// An answer read for the read-back check (`same`): its items and links, what each of its
+/// pieces says, and which pieces its links between pieces join. Reading a file for the
+/// workspace (`read`) makes neither of the last two, since only an edit compares them.
+pub struct ReadBack {
+    pub read: Read,
+    /// Every piece in the order given, whether or not it is an item: its place, and what it
+    /// says (`piece_key`) with the position of the piece it is in.
+    pieces: Vec<(String, String)>,
+    /// Every link between two pieces, in the order given: which pieces it joins, by their
+    /// positions among the answer's pieces, and its label.
+    between: Vec<String>,
+}
+
+/// Read an answer to compare it with another: what the owner should give, or what it gave.
+pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
+    // Where each piece stands among the answer's pieces, by its place.
+    let mut position: HashMap<&str, usize> = HashMap::new();
+    let mut pieces: Vec<(String, String)> = Vec::new();
+    for item in &given.items {
+        let GivenItem::Piece(p) = item else {
+            continue;
+        };
+        let inside = match p.inside.as_deref().map(|place| position.get(place)) {
+            None => "in nothing".to_string(),
+            Some(Some(i)) => format!("in piece {}", i + 1),
+            Some(None) => "in a place no piece is at".to_string(),
+        };
+        position.entry(&p.place).or_insert(pieces.len());
+        let says = format!("{inside}: {}", piece_key(p));
+        pieces.push((p.place.clone(), says));
+    }
+    let end = |place: &String| match position.get(place.as_str()) {
+        Some(i) => format!("piece {}", i + 1),
+        None => "no piece".to_string(),
+    };
+    let joins = |l: &Between| {
+        let label = Json::String(l.label.clone());
+        format!("{} to {}: {label}", end(&l.from), end(&l.to))
+    };
+    ReadBack {
+        read: read(file, given, s),
+        pieces,
+        between: given.between.iter().map(joins).collect(),
+    }
 }
 
 /// Read what the owner gave for the file at workspace-relative `file`.
 pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     let mut out = Read::default();
     let mut before = Before::default();
-    // Where each piece stands among the answer's pieces, by its place.
-    let mut position: HashMap<&str, usize> = HashMap::new();
     for item in &given.items {
         match item {
             GivenItem::Piece(p) => {
-                let inside = match p.inside.as_deref().map(|place| position.get(place)) {
-                    None => "in nothing".to_string(),
-                    Some(Some(i)) => format!("in piece {}", i + 1),
-                    Some(None) => "in a place no piece is at".to_string(),
-                };
-                position.entry(&p.place).or_insert(out.pieces.len());
-                let says = format!("{inside}: {}", piece_key(p));
-                out.pieces.push((p.place.clone(), says));
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
                     // One short line, whatever the owner sent: a reason may quote a value.
                     out.problems
@@ -942,6 +1121,16 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
             context: l.text.trim().chars().take(240).collect(),
         });
         out.links.extend(r.map(|r| (r, l.place.clone())));
+    }
+    // A link between pieces the engine doesn't take is reported and left out. Past the count
+    // an answer may have, the rest are, and that is said once.
+    for (nth, l) in given.between.iter().enumerate() {
+        if let Err(why) = before.places.joins(l, nth) {
+            out.problems.push(why);
+            if nth >= MAX_BETWEEN {
+                break;
+            }
+        }
     }
     out
 }
@@ -1392,6 +1581,188 @@ mod tests {
 
     /// The pinned JSON of every change `file/edit` can ask: the three it could before, and
     /// the two in the model's terms. A `text` that is a list is runs; a string is Markdown.
+    /// The pinned JSON of a link between two pieces, beside a link to a file in `links`: the
+    /// two places, and a label when it has one. It is carried and compared, and it is no link
+    /// of the file: no backlink, no item.
+    #[test]
+    fn a_link_between_two_pieces_is_json() {
+        let wire = json!({
+            "items": [
+                {"place": "a", "role": "text", "attributes": {"x": 40, "y": 120}},
+                {"place": "b", "role": "embed"},
+            ],
+            "links": [
+                {"target": "Volcanoes/Lava.md", "place": "b", "text": "Volcanoes/Lava.md"},
+                {"from": "a", "to": "b", "label": "feeds"},
+                {"from": "b", "to": "b"},
+            ],
+        });
+        let answer = given(wire.clone());
+        assert_eq!(serde_json::to_value(&answer).unwrap(), wire);
+        assert_eq!((answer.links.len(), answer.between.len()), (1, 2));
+        let s = settings("");
+        let back = read_back("Board.canvas", &answer, &s);
+        assert!(back.read.problems.is_empty(), "{:?}", back.read.problems);
+        assert!(
+            back.read.items.is_empty(),
+            "a text no type matches is no item"
+        );
+        let targets = back.read.links.iter().map(|(r, _)| r.target.as_str());
+        let targets: Vec<&str> = targets.collect();
+        assert_eq!(targets, ["Volcanoes/Lava"], "only the link to a file");
+        assert_eq!(
+            back.between,
+            ["piece 1 to piece 2: \"feeds\"", "piece 2 to piece 2: \"\""]
+        );
+        for wrong in [
+            json!({"from": "a", "to": "b", "colour": "red"}),
+            json!({"from": "a"}),
+            json!({"from": "a", "to": "b", "place": "a"}),
+        ] {
+            let wire = json!({"links": [wrong]});
+            assert!(serde_json::from_value::<Given>(wire).is_err());
+        }
+
+        // An end no piece is at: reported in one short line and left out, the rest read.
+        let long = "z".repeat(5000);
+        let dangling = given(json!({
+            "items": [{"place": "a", "role": "text"}],
+            "links": [{"from": "a", "to": long}, {"from": "nope", "to": "a"}, {"from": "a", "to": "a"}],
+        }));
+        let read = read("Board.canvas", &dangling, &s);
+        assert_eq!(read.problems.len(), 2, "{:?}", read.problems);
+        assert!(read.problems.iter().all(|p| p.chars().count() < 300));
+        assert!(read.problems[1].ends_with("no piece is at nope"));
+
+        // The read-back: a link relabelled, turned round, dropped or added is not what was
+        // asked, and a rename's change leaves it as it was.
+        let differs = |links: Json| {
+            let mut wire = wire.clone();
+            wire["links"] = links;
+            same(&back, &read_back("Board.canvas", &given(wire), &s)).is_err()
+        };
+        let file =
+            json!({"target": "Volcanoes/Lava.md", "place": "b", "text": "Volcanoes/Lava.md"});
+        let arrow = json!({"from": "a", "to": "b", "label": "feeds"});
+        let own = json!({"from": "b", "to": "b"});
+        assert!(
+            !differs(json!([arrow, file, own])),
+            "among the file's links"
+        );
+        assert!(differs(
+            json!([file, {"from": "a", "to": "b", "label": "starves"}, own])
+        ));
+        assert!(differs(
+            json!([file, {"from": "b", "to": "a", "label": "feeds"}, own])
+        ));
+        assert!(differs(json!([file, arrow])));
+        assert!(differs(json!([file, own, arrow])));
+        let moved = Change::Link {
+            place: "b".into(),
+            link: "Volcanoes/Lava.md".into(),
+            to: "Hot/Lava.md".into(),
+        };
+        let after = apply(&answer, &[moved]);
+        assert_eq!(after.links[0].target, "Hot/Lava.md");
+        assert_eq!(after.between, answer.between);
+    }
+
+    /// A piece with no words matches only a shape that tests for an attribute it carries, by
+    /// `where.attribute`: there is nothing written in it for any other shape to be about. No
+    /// words means none after its text and cells are flattened, so an empty run, a run of
+    /// spaces, a field run (a value, not a word) and a row of empty cells all have none. It
+    /// needs to know nothing of the other pieces: a board's card, whose words are a Markdown
+    /// piece's, and an extension's empty piece are the same to it. An `item` and a `section`
+    /// no type takes are still a `list` and a `heading`.
+    #[test]
+    fn a_piece_with_no_words_matches_only_by_where_attribute() {
+        let s = settings(
+            "[prose]\non = \"text\"\nfields.words = { rest = true }\n\
+             fields.when = { inline = \"when\", type = \"date\" }\n\
+             fields.x = { attribute = \"x\" }\n\
+             [placed]\non = \"text\"\nwhere.attribute = [\"x\"]\n\
+             fields.x = { attribute = \"x\", type = \"number\" }\n\
+             [blank]\non = \"text\"\npriority = 5\nmatch = '^$'\n\
+             fields.words = { rest = true }\n\
+             [record]\non = \"row\"\nfields.a = { column = \"A\" }\n\
+             [entry]\non = \"item\"\nfields.words = { rest = true }\n",
+        );
+        let answer = given(json!({"items": [
+            {"place": "card", "role": "text", "attributes": {"x": 40}},
+            {"place": "card", "text": "Words on the card"},
+            {"place": "bare", "role": "text", "attributes": {"y": 1}},
+            {"place": "empty run", "role": "text", "text": [""]},
+            {"place": "spaces", "role": "text", "text": [" ", "\t"]},
+            {"place": "field", "role": "text", "text": [{"field": "when", "value": "2026-11-30"}]},
+            {"place": "field and x", "role": "text",
+             "text": [{"field": "x", "value": "7"}]},
+            {"place": "words", "role": "text", "attributes": {"x": 40}, "text": ["Its own"]},
+            {"place": "no cells", "role": "row", "cells": []},
+            {"place": "empty cells", "role": "row",
+             "cells": [{"name": "A", "text": []}, {"name": "B", "text": [""]}]},
+            {"place": "cells", "role": "row", "cells": [{"name": "A", "text": ["1"]}]},
+            {"place": "item", "role": "item"},
+            {"place": "title", "role": "section"},
+        ]}));
+        let read = read("Board.canvas", &answer, &s);
+        assert!(read.problems.is_empty(), "{:?}", read.problems);
+        let kinds: Vec<(&str, &str)> = (read.items.iter())
+            .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("card", "placed"),
+                ("card", "prose"),
+                ("field and x", "placed"),
+                ("words", "placed"),
+                ("cells", "record"),
+                ("item", "list"),
+                ("title", "heading"),
+            ]
+        );
+    }
+
+    /// A mistake in a link names what is wrong with it, whichever kind it was meant to be,
+    /// and a link between pieces past the bounds is reported and left out.
+    #[test]
+    fn a_bad_link_is_named_and_a_link_past_the_bounds_left_out() {
+        let why = |link: Json| {
+            let wire = json!({"links": [link]});
+            serde_json::from_value::<Given>(wire)
+                .unwrap_err()
+                .to_string()
+        };
+        for (link, says) in [
+            (json!({"target": "Lava"}), "missing field `place`"),
+            (json!({"to": "a"}), "missing field `from`"),
+            (
+                json!({"from": "a", "to": "a", "color": "red"}),
+                "unknown field `color`",
+            ),
+            (
+                json!({"target": "Lava", "place": "a", "from": "a"}),
+                "unknown field `from`",
+            ),
+            (json!({"from": "a", "to": 5}), "invalid type"),
+        ] {
+            let why = why(link);
+            assert!(why.contains(says), "{why}");
+            assert!(!why.contains("untagged"), "{why}");
+        }
+
+        let s = settings("");
+        let long = "L".repeat(MAX_LABEL + 1);
+        let mut links = vec![json!({"from": "a", "to": "a", "label": long})];
+        links.extend((0..MAX_BETWEEN + 5).map(|_| json!({"from": "a", "to": "a"})));
+        let answer = given(json!({"items": [{"place": "a", "role": "text"}], "links": links}));
+        let read = read("Board.canvas", &answer, &s);
+        assert_eq!(read.problems.len(), 2, "{:?}", read.problems);
+        assert!(read.problems[0].contains("its label is longer than 4096 bytes"));
+        assert!(read.problems[1].contains("more than 65536 links between pieces"));
+        assert!(read.problems.iter().all(|p| p.len() < 300));
+    }
+
     #[test]
     fn a_change_is_json() {
         let wire = json!([
@@ -1464,10 +1835,10 @@ mod tests {
                 {"place": "o", "role": "opaque", "attributes": {"x": 40}},
             ], "links": []})
         );
-        let asked = read("Home.chores", &expect, &s);
+        let asked = read_back("Home.chores", &expect, &s);
         let answer = |t1: Json, t2: Json, o: Json| {
             let gave = given(json!({"items": [t1, t2, o]}));
-            same(&asked, &read("Home.chores", &gave, &s))
+            same(&asked, &read_back("Home.chores", &gave, &s))
         };
         let t1 = json!({"place": "moved", "role": "item",
             "attributes": {"task": true, "checkbox": "done"},
@@ -1509,7 +1880,7 @@ mod tests {
             "{why}"
         );
         let gave = given(json!({"items": [t1, other]}));
-        let why = same(&asked, &read("Home.chores", &gave, &s)).unwrap_err();
+        let why = same(&asked, &read_back("Home.chores", &gave, &s)).unwrap_err();
         assert!(why.starts_with("the pieces are 2 where 3 "), "{why}");
     }
 
@@ -1530,10 +1901,10 @@ mod tests {
             {"place": "a", "attribute": "checkbox", "value": "done"},
         ]))
         .unwrap();
-        let asked = read("Home.chores", &apply(&before, &tick), &s);
+        let asked = read_back("Home.chores", &apply(&before, &tick), &s);
         let gives = |a: Json, b: Json| {
             let gave = given(json!({"items": [section, a, b]}));
-            same(&asked, &read("Home.chores", &gave, &s))
+            same(&asked, &read_back("Home.chores", &gave, &s))
         };
         let (sec, top) = (json!("sec"), Json::Null);
         assert_eq!(

@@ -10,6 +10,15 @@
 //! plain characters (`pattern`, `marker`, `flag`, `flags`, `rest`), its labels and links
 //! (`inlines`), its cells (`column`), its file (`note`) or its sections (`section`).
 //!
+//! A piece with no words matches only a shape that tests for an attribute it carries
+//! (`where.attribute`). No words means none after the piece's text and cells are flattened: no
+//! text, runs of nothing or of spaces, field runs (which are values), cells that are all
+//! empty. There is nothing written in such a piece for a shape to be about, so only what it
+//! carries can make it a shape's. A board's card is one, its words being a Markdown piece of
+//! their own: `where.attribute = "x"` lists the cards, and no shape that reads text, or reads
+//! an attribute without testing for it, gains an empty item per card. The rule is here and
+//! nowhere else, and it asks nothing about the other pieces of the answer.
+//!
 //! Nothing here runs for a note: `Matcher::block` and `read_source` are as they were, and the
 //! shapes are compiled for pieces the first time an owner gives one.
 
@@ -138,12 +147,19 @@ impl Matcher {
             given: Given::default(),
         };
         let carries = |name: &String| asked.carried.iter().any(|c| c.there && c.name == *name);
+        // Nothing written, between its cells' tabs or at all.
+        let wordless = asked.words.trim().is_empty();
         let mut passing: Vec<(usize, usize, &Reads, Option<regex::Captures>)> = Vec::new();
         for &(t, s) in &self.by_on[slot] {
             let shape = &self.types[t].shapes[s];
             let Some(reads) = shapes.get(t).and_then(|ty| ty.get(s)?.as_ref()) else {
                 continue;
             };
+            // Only a test for an attribute, which it must carry (below), makes a piece with
+            // no words this shape's.
+            if wordless && shape.w.attribute.is_empty() {
+                continue;
+            }
             if !note_passes(&shape.w, &note)
                 || !block_passes(&shape.w, &note, &block)
                 || !shape.w.attribute.iter().all(carries)

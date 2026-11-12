@@ -252,18 +252,23 @@ has to know which format a thing was written in. The design, with its reasons, i
 owner or a type, and it says for each letter what the engine does with it today.
 
 Today the alphabet is named and versioned, a type's `on` is written in its roles, and an
-extension's owner can give pieces in it ("Pieces, as built"). The Markdown owner and the
-canvas owner still give items of the native kinds, and the Markdown owner reads its
-attributes off a note's text ("Attributes" below). The column "Today" below is exact about
-each letter.
+extension's owner can give pieces in it ("Pieces, as built"). The canvas owner gives each
+card as a piece, placed, and each arrow as a link between two pieces, while what is written
+on a card is still a Markdown piece ("The canvas owner, as built"). The Markdown owner still
+gives items of the native kinds and reads its attributes off a note's text ("Attributes"
+below). The column "Today" below is exact about each letter.
 
-The alphabet's version is **2** (`alphabet::VERSION`, `crates/engine/src/alphabet.rs`). An
+The alphabet's version is **3** (`alphabet::VERSION`, `crates/engine/src/alphabet.rs`). An
 extension gets it in `initialize` as `alphabet`, beside `apiVersion`. Version 1 named the
 alphabet. Version 2 is the first an owner can speak: `file/read` takes pieces, with their
 text in runs and the relations written as `in` and `cells`. No role, mark or relation was
 added, and an extension written for version 1 works unchanged, since it gives no pieces and
 is sent no change it didn't already know. An owner gives pieces only when `alphabet` is 2 or
-more. A letter (a role, a mark, a relation) is added rarely, by the engine only, and each
+more. Version 3 writes one more of the five relations: a link between two pieces of a file,
+`{from, to, label}` in `links`. No letter is new. The number went up all the same, because a
+host of version 2 refuses a whole answer that holds a key it doesn't know: an owner gives
+such a link only when `alphabet` is 3 or more, and one written for version 2 works
+unchanged. A letter (a role, a mark, a relation) is added rarely, by the engine only, and each
 addition raises the version. No extension, type or setting can add one. Attributes are open,
 so a new attribute changes no version.
 
@@ -279,8 +284,8 @@ nine:
 | `row` | one record, in cells | `table-row` | a table row | a type matches on it; a row no type matches is no item |
 | `aside` | set apart from the flow | `quote` | a quote, a callout | a type matches on it: its text is the rest of its first line (a callout's title, a quote's first words) and its lines are all of it; an aside no type matches is no item; `where.inside` can name it |
 | `verbatim` | text kept exactly | `code` | a code block | a type on it loads and matches nothing |
-| `embed` | something from elsewhere, shown here | none | `![[x]]`, an image | named only: `on = "embed"` is refused, and `![[x]]` is read as a link |
-| `opaque` | kept, not understood | none | an HTML block | named only: `on = "opaque"` is refused, and the block stays in the file unread |
+| `embed` | something from elsewhere, shown here | none | `![[x]]`, an image | no type reads one: `on = "embed"` is refused, and `![[x]]` is read as a link. The canvas owner gives a file card and a web page as one, kept with its answer |
+| `opaque` | kept, not understood | none | an HTML block | no type reads one: `on = "opaque"` is refused, and the block stays in the file unread. The canvas owner gives a node of a type it doesn't know as one |
 
 One example of each, as Markdown writes it, with the attributes its owner gives, or would
 give ("Attributes" below says which are given today):
@@ -326,8 +331,8 @@ whose parent is that piece ("Matching, as built").
 | contains | a piece is inside another | an item's `parent` (the list item it is nested in) and `section` (the sections it is in); `where.inside`, `where.section`. A piece says it as `in` |
 | follows | a piece comes after another | the order of a file's items in `items/query`: a note's by line, an owner's pieces in the order given. No field says it |
 | beside | pieces are cells of one record | a row's cells under their header: `where.header`, the `column` source. A `row` piece says it as `cells` |
-| placed | a piece sits at a position | a canvas node's `x`, `y`, `width` and `height` stay in the `.canvas` file. A piece carries a position as attributes, which nothing reads |
-| links to | a piece points at another | `links/query`, backlinks, a type's `inlines = "links"`. A piece says a link to a file as a run of its text. A link from one piece to another piece has no shape yet |
+| placed | a piece sits at a position | a piece carries a position as attributes. The canvas owner gives every card's `x`, `y`, `width` and `height` so. A type can read one into a field (`attribute = "x"`), and nothing else reads them |
+| links to | a piece points at another | to a file: `links/query`, backlinks, a type's `inlines = "links"`; a piece says one as a run of its text. To another piece of the same file: `{from, to, label}` in `links`, which the canvas owner gives for each arrow. It is kept with the answer and checked in the read-back; no query, backlink or graph shows it |
 
 *Placed* is carried and never interpreted: the engine will hand a position to whoever draws,
 and reads no meaning from it.
@@ -338,8 +343,9 @@ item's checkbox, a heading's level, a callout's kind, a card's position. An attr
 owner gives on a piece is text, a number, `true` or `false`, and the field that reads it
 gives it its type (date, duration, enum, …).
 
-The Markdown owner gives the ones below. The canvas owner's text cards are Markdown pieces,
-so what is written on a card has them too. An extension's owner gives its own on its pieces,
+The Markdown owner gives the ones below. What is written on a canvas's text card is a
+Markdown piece, so it has them too; the card itself carries `x`, `y`, `width`, `height` and
+what else its node says ("The canvas owner, as built"). An extension's owner gives its own on its pieces,
 under any names, and says `checkbox` in words instead of a character ("Pieces, as built").
 
 | Attribute | On | Its value | Written as |
@@ -1533,8 +1539,9 @@ each doesn't invent one:
   is never Markdown ("Pieces, as built"). A Markdown piece `{place, text}`, its `text` a
   string, is read by the Markdown owner in the workspace's flavour, so `task` and the user's
   types match in it as in a note. A typed item `{place, type, fields}` is of a loaded type,
-  each value read as its field's type (`Matcher::given`). A link is `{target, place, text}`;
-  the links in pieces are read with them. Unknown keys are refused, and a type that isn't
+  each value read as its field's type (`Matcher::given`). A link to a file is
+  `{target, place, text}`, and the links in pieces are read with them; a link between two
+  pieces of the file is `{from, to, label}` ("Pieces, as built"). Unknown keys are refused, and a type that isn't
   loaded or a field it doesn't have is reported and that item left out.
 - **Where an owned file lives.** `Workspace::owned`, beside the notes: each file with its owner,
   the `rev` its items and links were read from, its items and its links, and the owner's place
@@ -1721,7 +1728,12 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
             {"field": "scheduled", "value": "2026-11-18"}]},
   {"place": "r1", "role": "row",
    "cells": [{"name": "Volcano", "text": ["Krakatoa"]}, {"name": "VEI", "text": ["6"]}]},
-  {"place": "card", "role": "text", "attributes": {"x": 40, "y": 120}, "text": ["A card"]}
+  {"place": "card", "role": "text", "attributes": {"x": 40, "y": 120}, "text": ["A card"]},
+  {"place": "photo", "role": "embed", "attributes": {"x": 400, "y": 120}}
+],
+ "links": [
+  {"target": "Crater.png", "place": "photo", "text": "Crater.png"},
+  {"from": "card", "to": "photo", "label": "shows"}
 ]}
 ```
 
@@ -1778,7 +1790,23 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   key of its own: a position is attributes (`x`, `y`, `width`, `height`), kept with the
   owner's answer and never interpreted. *Links to* a file is a link run, or an entry of the
   answer's `links` as before; both are backlinks and edges of the graph, at the piece's
-  place.
+  place. *Links to* another piece of the same file is a third kind of entry there, below.
+- **A link between two pieces** is `{"from": "card", "to": "photo", "label": "shows"}` in
+  `links`: the places of two pieces of this answer, and what the link says, which may be
+  left out. It is the smallest thing that says a board's arrow or a cross-reference. Both
+  ends must be pieces that read; a link with an end no piece is at is reported and left
+  out, like a piece out of bounds, and so is one whose label is over 4096 bytes
+  (`given::MAX_LABEL`). A piece may link to itself, and two pieces may have several links.
+  An answer has at most 65,536 links between pieces (`given::MAX_BETWEEN`): the rest are
+  left out, and said once. What is taken is decided in one place, `given::Places`, which
+  the engine's own canvas owner asks before it gives a card or an arrow. Inside the engine
+  the two kinds of entry are apart (`Given::links` to files, `Given::between`). An
+  entry of `links` is read as the kind its keys show (`from` or `to` and no `target`: between
+  pieces), so a mistake in one is named, `missing field `place`` or `unknown field `color``. The engine carries it and reads nothing from it: it is kept with the
+  owner's answer (`Owned::given`), and it is no link between files, so `links/query`,
+  backlinks, the graph, tidy and a type's `inlines = "links"` don't show it, and a rename
+  never changes it. No gateway message returns it yet, as for attributes. An owner gives
+  one only when `alphabet` is 3 or more.
 - **Types match a piece as they match a note's block**: the same shapes, conditions,
   precedence, `required` and value parsing (`matcher/piece.rs`, which reuses the matcher's
   own). What differs is where a source reads:
@@ -1800,6 +1828,27 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
 
   So the built-in `task` (`where.attribute = "task"`, `status` from `checkbox`, `due` from
   `due`) matches an owner's piece with no change and no Markdown anywhere.
+- **A piece with no words matches only by `where.attribute`.** One rule, in one place
+  (`matcher/piece.rs`), for every owner: a piece with no words matches only a shape that
+  has a `where.attribute`, every name of which the piece carries. There is nothing written
+  in such a piece for any other shape to be about.
+  - *No words* means none once the piece's text and cells are flattened: no `text` and no
+    `cells`, runs of an empty string or of spaces only, cells that are all empty, and field
+    runs, which are values and not words. So `"text": [""]`, `"text": [" "]`,
+    `"text": [{"field": "due", "value": "2026-11-30"}]`, `"cells": []` and a row of empty
+    cells are all pieces with no words. A label or a link is a word.
+  - A shape with no `where.attribute` never matches one, whatever its fields read: a type
+    on every `text`, one that reads `{ inline = "when" }` or `{ attribute = "x" }` without
+    testing for it, one that names a row's columns (`where.header`, `column`), one with
+    `match = '^$'`.
+  - What is lost is exactly that: a typed match on a piece with no words, unless by
+    `where.attribute`. An empty `item` is still a `list` and an empty `section` a
+    `heading`, by the rule under "Items". An empty `text`, `aside` or `row` is no item.
+  - An owner that wants a piece with no words typed gives it an attribute and ships, or
+    asks for, a type that tests for it: `"attributes": {"spacer": true}` and
+    `where.attribute = "spacer"`.
+  - It is what keeps a board's cards out of the types a workspace already has: a card's
+    piece has no words, since what is written on it is a Markdown piece of its own.
 - **Items.** A piece a type matches is an item of that type. Else an `item` is a `list` and
   a `section` a `heading` (its level the attribute `level`, 1 to 6, else its depth in
   sections), as in a note, and any other piece is no item, as a paragraph or a row no type
@@ -1821,12 +1870,15 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   number of pieces in an answer has no bound of its own.
 - **The older answers are unchanged.** A Markdown piece and a typed item read exactly as
   they did, with the ids they had. An answer may mix all three.
-- **Left out, on purpose.** A link from one piece to another piece of the same file (a
-  board's arrow) has no shape: its first user is the canvas owner, which doesn't give
-  pieces yet. An inline type (`on = "inline"`) doesn't run over a piece's words. A piece's
+- **Left out, on purpose.** A link between two pieces has no place of its own, no
+  attributes (an arrow's sides, ends and colour stay in the file) and no change that makes,
+  relabels or removes one. A link run can't lead to a piece, only to a file or the web. An
+  inline type (`on = "inline"`) doesn't run over a piece's words. A piece's
   attributes don't reach a client except through a type's fields. A task subtype that
   reads no status gets none on a piece. The csv-table example still gives Markdown, and the
-  guide doesn't cover pieces yet.
+  guide doesn't cover pieces yet. What is written on a canvas's card is still a Markdown
+  piece beside the card's own piece: handing it over as a fragment in Markdown is step 4
+  (#244).
 - **The helper.** `cold_lava.py` has `piece`, `marked`, `link`, `label`, `field` and
   `words` for building pieces and for writing a piece's text back as plain characters.
 
@@ -1906,8 +1958,10 @@ that shape yet.
   would add its next occurrence, a new piece, and nothing adds a piece yet.
 - **The read-back compares pieces, in order and by place.** The engine makes the changes
   on what the owner gave (`given::apply`), asks the owner to read its own new text, and
-  compares, before anything is written (`given::same`). Besides the items and the links,
-  two things are checked about the answer's pieces.
+  compares, before anything is written (`given::same`). The links between pieces must come
+  back as they were: the same ones in the same order, each between the pieces at the same
+  positions with the same label, since no change makes, turns or relabels one. Besides
+  those, the items and the links to files, two things are checked about the answer's pieces.
 
   First, the pieces must be the expected ones, one by one in the order given. For the piece
   at each position that is:
@@ -1974,13 +2028,91 @@ the same terms an extension does (`Given`, `Change`), so the canvas joins the wo
 the owner machinery above: `Workspace::owned`, `items/query` and `items/subscribe`, backlinks,
 `links/query`, tidy, edits with the read-back check, and renames.
 
-- **Reading.** Each `text` node's `text` is a Markdown piece `{place, text}` with the node's id
-  as its place, read by the Markdown owner in the workspace's flavour: a task on a sticky or a
-  text card is a `task`, its `[[links]]` are links, its tags tags. Each `file` node is a link
-  `{target, place, text}` to its `file` (a workspace path) at the node's id, so the note's
-  backlinks list the canvas (`index::From::Owned`) and the graph draws the edge. `link` nodes
-  (web pages) and groups' labels are not workspace links, and neither are edges: an arrow joins
-  two nodes of the drawing. Placed shapes need nothing of their own: a sticky's text input is
+- **Reading.** The owner gives a board in the alphabet's terms, and what a board gave before
+  is all still there, unchanged.
+
+  | In the file | Given as | At |
+  | --- | --- | --- |
+  | a `text` node | a piece with the role `text`, and its `text` as a Markdown piece `{place, text}` when the node has one | the node's place, both |
+  | a `file` node | a piece with the role `embed`, and a link `{target, place, text}` to its `file` | the node's place, both |
+  | a `link` node (a web page) | a piece with the role `embed`, its `url` an attribute | the node's place |
+  | a node of any other type but `group` | a piece with the role `opaque` | the node's place |
+  | a `group` | nothing | |
+  | an edge | a link between two pieces `{from, to, label}` | the places of its `fromNode` and `toNode` |
+
+  ```json
+  {"items": [
+    {"place": "a", "role": "text",
+     "attributes": {"x": 40, "y": -120.5, "width": 250, "height": 60, "color": "4"}},
+    {"place": "a", "text": "- [ ] Buy masks"},
+    {"place": "b", "role": "embed",
+     "attributes": {"x": 400, "y": 0, "width": 400, "height": 400, "subpath": "#Flows"}}
+  ],
+   "links": [
+    {"target": "Volcanoes/Lava.md", "place": "b", "text": "Volcanoes/Lava.md"},
+    {"from": "a", "to": "b", "label": "needs"}
+  ]}
+  ```
+
+  `canvas.rs` pins that JSON (`a_board_is_given_in_the_alphabet`).
+- **A card is placed.** Its piece carries `x`, `y`, `width` and `height` as numbers, as the
+  file writes them (0 where the file leaves one out, which is where the whiteboard draws
+  it), then `color`, a web page's `url` and a file card's `subpath` when the node has one.
+  They are attributes: carried, and never interpreted. Every other field of a node (a placed
+  shape's `cold-lava`, what another program added) stays in the file and is given by
+  nobody. A card's piece has no text of its own.
+- **What is written on a card is Markdown**, because that is what JSON Canvas stores there.
+  So it stays a Markdown piece at the card's place, read by the Markdown owner in the
+  workspace's flavour exactly as before: a task on a sticky or a text card is a `task`, its
+  `[[links]]` are links, its tags tags, with the ids, the revs and the order they had. The
+  card's piece and the card's Markdown share one place and never one id: a piece's item id
+  ends in the word `piece` (`given::piece_id`), and an edit finds which of the two an item
+  is by its id. Handing the text over as a fragment in a named format, so that Markdown is
+  one format among others there, is step 4 of the neutral model (#244) and not built.
+- **A file card's link** is the entry of `links` it always was, at the card's place, and not
+  a link run of the embed: so a note's backlinks list the canvas (`index::From::Owned`) in
+  the order they did, the graph draws the edge, and a path of any length, or none, is read
+  as before.
+- **An arrow** is a link between the pieces at its two ends, with its `label`. An edge names
+  ids, and the first node of an id has the id as its place, so with two cards of one id the
+  arrow is the first card's, as on the whiteboard. An arrow with an end that is no piece (a
+  group, a node that isn't in the file) is not given. Its sides, its ends and its colour
+  stay in the file. The engine carries the link and shows it nowhere: `links/query`,
+  backlinks, the graph and tidy are about files, and an arrow joins two cards of one
+  drawing.
+- **A group is not given yet.** The alphabet has a letter for it, a `section`, and a
+  `section` piece no type matches is a `heading` item, as in a note. Giving groups would
+  put a new heading into `items/query` for every board that has one, so it waits for that
+  decision, and an arrow to or from a group waits with it.
+- **Does a card show up as an item?** Only where a type asks for it. A piece is an item when
+  a type matches it, and no built-in type matches a `text` with no words, an `embed` or an
+  `opaque`. So `items`, the agenda, the table, tidy and every id of an existing board are
+  what they were. A type of your own can now read cards: `on = "text"`,
+  `where.attribute = "x"`, `where.file-type = ["canvas"]` and `fields.x = { attribute =
+  "x", type = "number" }` lists every text card with where it sits. A type you already
+  have lists what it listed, unless it tests for an attribute a card carries
+  (`where.attribute` naming `x`, `y`, `width`, `height`, `color`, `url` or `subpath`): a
+  type on every `text`, or one that reads an inline field or an attribute without testing
+  for it, matches the paragraphs on a card as before and never the card, because a card's
+  piece has no words ("Pieces, as built": a piece with no words matches only by
+  `where.attribute`). `core.rs` pins it
+  (`a_boards_cards_are_pieces_and_its_items_dont_move`), and `tests/items.rs` on the example
+  workspace.
+- **Every piece the owner gives is one the engine takes**, by asking the engine
+  (`given::Places`, the check `given::read` itself uses). A canvas is another program's
+  file. A node whose id is empty, longer than 1024 bytes, or the place another node already
+  has (an id that looks like a repeated id's place) gets no piece and no arrow, an arrow
+  with a label over 4096 bytes or past the 65,536th is not given, and a node's text and
+  file are read as ever. Nothing is reported for it, since nothing that was read before
+  is lost. A coordinate too large for a JSON number, or one that isn't a number, makes the
+  file no JSON Canvas at all, as before.
+- **What the scan does for a card.** Before: one parse of the file, and each text card's
+  text read as Markdown. Now also, for each node, a piece with four or five attributes is
+  built and checked against the bounds, and a type on `text` is tried against a text card
+  when the workspace has one. No second parse of the file, and nothing of Markdown runs for
+  it. What each piece says for the read-back check is made only when an edit compares two
+  answers (`given::read_back`), not when a file is read.
+  Placed shapes need nothing of their own: a sticky's text input is
   its node's `text`, a card's note its node's `file` (docs/shapes.md, "Drawings join the
   workspace, as built").
 - **One reader of JSON Canvas.** `crates/engine/src/json_canvas.rs` is the format, moved out of
@@ -2019,7 +2151,11 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   `write::replace` writes it over the text the edit began from. `items/edit` is answered
   `Later`, with the answer already in `take_edited`, so the agenda and the table need nothing
   of their own. A canvas changed since it was read is refused as `changed`, as for any owned
-  file. A typed field is refused: a canvas gives none.
+  file. A typed field is refused: a canvas gives none. A card's attribute is refused too,
+  with the reason (`the canvas owner doesn't write a card's x`): where a card sits and its
+  colour are changed on the whiteboard, and the owner writes a node's `text` and `file`
+  only. So `set-field` on a field a type of yours reads from a card's `x` says why not and
+  writes nothing.
 - **Renames, merges and recipes.** The plan lists a canvas with the notes
   (`▤ Volcano Venn.canvas  2 links`) as an owned file (`FileEdit::owned`, owner `canvas`): each
   file node's `file` becomes the moved file's new workspace path, and each text node's text goes
