@@ -482,10 +482,17 @@ items.append(piece(place, "row", cells=cells))
 - A type whose row shape names the columns (`where.header = ["Volcano", "VEI"]`, `column =
   "VEI"`) matches the row, as it matches a table in a note.
 - `Krakatoa` in the link column is a link: it is in Krakatoa's backlinks, and a rename
-  follows it. `[[Krakatoa]]` typed into a plain column is twelve characters.
+  follows it. `[[Krakatoa]]` typed into a plain column is twelve characters. A link cell
+  may go on after the name, `Krakatoa#Eruptions` or `Krakatoa|the big one`: the link run
+  is to `Krakatoa`, with the words after `|` as its text, and a rename rewrites the name
+  and keeps the rest of the cell.
 - The notes column is the one place the example gives Markdown, because that is what people
   write there. Its task is a `task`, at the place `Krakatoa#Notes`.
-- A row's place is its first cell, numbered when another row starts the same.
+- A row's place is its first cell, numbered when another row starts the same, and never
+  one another row already has: a row is never left out because of what its cells say.
+- It asks what it may give. `ext.alphabet` is the alphabet's version from `initialize`, and
+  the example gives rows as pieces only when it is 2 or more (`given(text, pieces=ext.alphabet
+  >= 2)`). To an older cold-lava it gives the Markdown cells alone.
 
 ## Shipping a type
 

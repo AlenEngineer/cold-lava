@@ -111,7 +111,10 @@ change commands, keys and file formats; patch versions only fix things.
     table. A task in a notes column keeps its id when its row's first cell is unchanged;
   - a `[[link]]`, a `#tag` or a task written in a cell is no longer one. To keep the links
     of a column, name it `Name (link)` and write the bare names (`Krakatoa`, not
-    `[[Krakatoa]]`). To keep Markdown in a column, name it `Name (markdown)`: before, a cell
+    `[[Krakatoa]]`). A heading or the words to show may follow the name, as they did inside
+    the brackets (`Krakatoa#Eruptions`, `Krakatoa|the big one`): the link is to the file,
+    and a rename keeps what follows. One cell is one link: a cell with two links, or a link
+    among other words, has to become a `(markdown)` column to stay links. To keep Markdown in a column, name it `Name (markdown)`: before, a cell
     was Markdown only when it started with `- `;
   - a type's `where.header` and `column` read the column's name without `(link)` or
     `(markdown)`, and `inlines = "tags"` finds nothing in a row;
@@ -119,7 +122,15 @@ change commands, keys and file formats; patch versions only fix things.
     `items/edit` takes words): set it in the CSV's own table;
   - `csv-table.row` has no `tags`, and its `name` can't be set from the type's table: it
     is read by a pattern over the row's words, and a piece's words are not a pattern's to
-    rewrite.
+    rewrite. `cold-lava types` still prints that field as `writable`, which is what it is
+    in a note;
+  - a blank line of the file is no row any more. Before, it was an item with every cell
+    empty;
+  - a row whose first cell is empty has a place of its own (`row 3`, by its number), so its
+    other cells can be set. Before, an edit of such a row's cells was refused. A row is still
+    not allowed to lose its first cell through an edit;
+  - on a cold-lava that takes no pieces (an alphabet below 2), it gives only the Markdown
+    cells.
 
   The example workspace's two CSV files are written the new way.
   `docs/extensions-guide.md` now says when an owner gives a piece, a Markdown piece or a

@@ -7,7 +7,8 @@ column's cells are beyond that, the header says:
     Volcano (link),Year,VEI,Notes (markdown)
     Krakatoa,1883,6,- [ ] Read the report on [[Krakatoa]]
 
-- `(link)`: each cell is the name of a file of the workspace, and a link to it;
+- `(link)`: each cell is the name of a file of the workspace, and a link to it. A heading
+  or the words to show may follow the name, as in `Krakatoa#Eruptions` or `Krakatoa|the big one`;
 - `(markdown)`: each cell is Markdown of its own, handed over as a Markdown piece, so a task
   in it is a task. That is the one place this file speaks Markdown: because the cell does.
 
@@ -137,22 +138,46 @@ def places(rows):
     """A place for each row under the header that stays when rows are added above it: its first
     cell, numbered when another row has the same, or its number when it has none. A blank
     line is no row and has no place."""
-    seen = {}
+    taken = set()
     out = []
     for n, row in enumerate(rows[1:], 1):
         if not row:
             out.append(None)
             continue
         key = row[0][:LONGEST] or f"row {n}"
-        seen[key] = seen.get(key, 0) + 1
-        out.append(key if seen[key] == 1 else f"{key} ({seen[key]})")
+        # No two rows share a place, whatever their cells say: a row whose first cell is
+        # literally `a (2)` takes that place, and the second `a` gets the next number free.
+        place, number = key, 1
+        while place in taken:
+            number += 1
+            place = f"{key} ({number})"
+        taken.add(place)
+        out.append(place)
     return out
 
 
-def given(text):
+def link_cell(value):
+    """A link cell's two parts: the file it names, and what follows the name, a heading
+    (`Krakatoa#Eruptions`) or the words to show (`Krakatoa|the 1883 one`). The link is to
+    the file; a rename changes the name and keeps what follows."""
+    cut = min([i for i in (value.find("#"), value.find("|")) if i >= 0] or [len(value)])
+    return value[:cut], value[cut:]
+
+
+def link_run(value):
+    """A link cell as a link run: to the file it names, showing the words after `|` when it
+    has some. `None` for a cell that names no file."""
+    target, rest = link_cell(value)
+    if not target.strip() or len(value) > 1000:
+        return None
+    return link(target, rest.partition("|")[2] or None)
+
+
+def given(text, pieces=True):
     """What a file holds, for `file/read`: each row a `row` piece with its cells by column, a
     plain cell as characters and a link cell as a link. A Markdown cell is empty in the row
-    and is a Markdown piece of its own, at `<row's place>#<column>`."""
+    and is a Markdown piece of its own, at `<row's place>#<column>`. A cold-lava that takes
+    no pieces yet (`pieces` false) is given the Markdown cells alone."""
     rows = parse(text)
     names, kinds = shape(rows)
     items = []
@@ -166,32 +191,38 @@ def given(text):
                 cells.append((name, []))
                 if value.strip():
                     markdown.append({"place": f"{place}#{name}", "text": value})
-            elif kind == "link" and value.strip() and len(value) <= 1000:
-                cells.append((name, [link(value)]))
+            elif kind == "link" and link_run(value):
+                cells.append((name, [link_run(value)]))
             else:
                 cells.append((name, [value] if value else []))
-        items.append(piece(place, "row", cells=cells))
+        if pieces:
+            items.append(piece(place, "row", cells=cells))
         items.extend(markdown)
     return {"items": items}
 
 
 @ext.on("file/read")
 def file_read(params):
-    return given(params["text"])
+    # Pieces are for a cold-lava whose alphabet is 2 or more: `initialize` says which it is.
+    return given(params["text"], pieces=ext.alphabet >= 2)
 
 
-def cell_text(name, kind, runs):
-    """What a cell says once its text is `runs`, as cold-lava asked. A plain cell holds
-    characters and a link cell one link, so runs that say more than the column can hold are
-    refused: cold-lava then writes nothing and shows why."""
+def cell_text(name, kind, runs, now):
+    """What a cell that says `now` says once its text is `runs`, as cold-lava asked. A plain
+    cell holds characters and a link cell one link, so runs that say more than the column can
+    hold are refused: cold-lava then writes nothing and shows why."""
     runs = [run for run in runs if run != ""]
     if kind == "markdown":
         raise ValueError(f"{name} holds Markdown: change what is written in it as its own item")
     if kind == "link":
         if not runs:
             return ""
+        # The link it has, or a link to another file with nothing after its name. Words are
+        # not a link, and cold-lava can't yet be given one from a field's new value.
+        if runs == [link_run(now)]:
+            return now
         one = runs[0] if len(runs) == 1 and isinstance(runs[0], dict) else {}
-        if "link" not in one or one.get("text") or one.get("marks"):
+        if set(one) != {"link"} or link_run(one["link"]) != one:
             raise ValueError(
                 f"{name} is a column of links, and each cell is the name of a file: "
                 "set it in the CSV table, or rename the file it names"
@@ -215,19 +246,24 @@ def cells_changed(rows, names, kinds, at, asked):
     if place not in at:
         raise ValueError(f"no row at {place}")
     row = at[place]
+    cells = rows[row] + [""] * (len(names) - len(rows[row]))
     if kind == "runs" and asked.get("cell") in names:
         column = names.index(asked["cell"])
-        value = cell_text(names[column], kinds[column], asked["text"])
+        value = cell_text(names[column], kinds[column], asked["text"], cells[column])
         if column == 0 and not value:
             raise ValueError("a row needs its first cell: it names the row")
         return [(row, column, value)]
     if kind == "link":
         # The file a link cell names was renamed: every such cell of the row follows.
-        cells = rows[row] + [""] * (len(names) - len(rows[row]))
-        named = [c for c, k in enumerate(kinds) if k == "link" and cells[c] == asked["link"]]
+        named = [
+            (c, link_cell(cells[c])[1])
+            for c, k in enumerate(kinds)
+            if k == "link" and link_cell(cells[c])[0] == asked["link"]
+        ]
         if not named:
             raise ValueError(f"the row {place} has no link to {asked['link']}")
-        return [(row, column, asked["to"]) for column in named]
+        # The file's new name, and what followed the old one (a heading, the words to show).
+        return [(row, column, asked["to"] + rest) for column, rest in named]
     raise ValueError(f"a CSV row can't hold that change ({kind})")
 
 

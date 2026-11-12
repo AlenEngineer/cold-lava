@@ -401,6 +401,62 @@ fn a_csv_cell_is_plain_characters_and_an_edit_changes_only_its_bytes() {
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
+/// No row of a CSV goes missing: rows that start alike are numbered, and a row whose first
+/// cell is literally another's number (`a (2)`) keeps a place of its own. A link cell may say
+/// a heading or the words to show after the file's name: it is a link to the file, and a
+/// rename changes the name and keeps what follows.
+#[test]
+fn every_csv_row_has_a_place_and_a_link_cell_keeps_what_follows_the_name() {
+    use serde_json::{Value, json};
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    const ROWS: &str = "K,Where (link)\n\
+        a (2),Krakatoa#Eruptions\n\
+        a,Krakatoa|Big K\n\
+        a,\n";
+    const SEEN: &str = "\n[types.seen]\non = \"row\"\nwhere.header = [\"K\", \"Where\"]\n\
+        fields.k = { column = \"K\" }\n\
+        fields.links = { inlines = \"links\", type = \"link\" }\n";
+    let (workspace, home) = sandbox("cli-rows", |main| main);
+    let ws = workspace.to_str().unwrap();
+    let file = workspace.join("Rows.csv");
+    std::fs::write(&file, ROWS).unwrap();
+    let types = workspace.join(".cold-lava/types.toml");
+    let before = std::fs::read_to_string(&types).unwrap();
+    std::fs::write(&types, before + SEEN).unwrap();
+    let run = |args: &[&str]| -> String {
+        let out = cold_lava(&home, args);
+        let (stdout, stderr) = text(&out);
+        assert!(out.status.success(), "{args:?}\n{stdout}{stderr}");
+        stdout
+    };
+
+    run(&["rename", ws, "Krakatoa", "Krakatau"]);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        ROWS.replace("Krakatoa", "Krakatau"),
+        "both links follow, and the heading and the words stay"
+    );
+    let listed = run(&["items", ws, "seen", "--json"]);
+    let rows: Vec<Value> = (listed.lines())
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|item| item["note"] == "Rows.csv")
+        .collect();
+    let said: Vec<(&Value, &Value)> = rows.iter().map(|r| (&r["k"], &r["links"])).collect();
+    assert_eq!(
+        said,
+        [
+            (&json!("a (2)"), &json!(["Krakatau"])),
+            (&json!("a"), &json!(["Krakatau"])),
+            (&json!("a"), &json!([])),
+        ],
+        "three rows, none dropped"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
 /// A copy of the example workspace with `Home.chores` in it, and a home with the owner of
 /// `tests/chores-owner` installed beside the examples' helper.
 fn chores_sandbox(name: &str, chores: &str) -> (PathBuf, PathBuf) {

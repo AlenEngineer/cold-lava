@@ -27,6 +27,9 @@ class Refused(Exception):
 class Extension:
     def __init__(self):
         self.workspace = None
+        # The version of the alphabet cold-lava speaks, from `initialize`: pieces need 2, a
+        # link between two pieces 3. An older cold-lava says none, which is 1.
+        self.alphabet = 1
         self._handlers = {}
         self._commands = {}
         self._next_id = 0
@@ -227,6 +230,7 @@ class Extension:
                 sys.exit(0)
             if method == "initialize":
                 self.workspace = params.get("workspace")
+                self.alphabet = params.get("alphabet") or 1
             if method == "command/run":
                 handler = self._commands.get(params.get("id"))
                 if handler is None:
@@ -272,7 +276,7 @@ class Extension:
 # Pieces: what a file holds, said in cold-lava's alphabet instead of as Markdown
 # (docs/extensions.md, "Pieces, as built"). An owner whose format isn't Markdown answers
 # `file/read` with {"items": [piece(...), ...]} and never escapes a character: text is plain.
-# Give pieces only when `initialize` said `alphabet` 2 or more.
+# Give pieces only when `initialize` said `alphabet` 2 or more: `ext.alphabet` has it.
 
 
 def piece(place, role, text=None, attributes=None, inside=None, cells=None):

@@ -1593,8 +1593,10 @@ each doesn't invent one:
 - **The example** `examples/extensions/csv-table` answers `file/read` with each row as a
   `row` piece (place: its first cell) whose cells are plain characters, by column name. The
   header says what else a column holds: `Name (link)` makes each cell a link run to the file
-  it names, and `Name (markdown)` makes each cell a Markdown piece of its own (place:
-  `row#column`) and empty in the row. `Volcanoes/Eruptions.csv` (`Volcano (link), Year, VEI,
+  it names (what follows the name, `#heading` or `|words`, stays in the cell, the words as
+  the run's text), and `Name (markdown)` makes each cell a Markdown piece of its own (place:
+  `row#column`) and empty in the row. No two rows share a place, a blank line is no row,
+  and it gives pieces only when `initialize` said `alphabet` 2 or more. `Volcanoes/Eruptions.csv` (`Volcano (link), Year, VEI,
   Notes (markdown)`, with a task in its notes) is then `eruption` rows, matched by a second
   row shape of that type in the example workspace's `types.toml`, two backlinks on Krakatoa
   (the row's link and the one in the task) and a task in the agenda. `csv-items.drive` checks it through the menu, and
