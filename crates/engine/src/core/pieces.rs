@@ -117,7 +117,7 @@ fn a_made_up_formats_tasks_join_the_workspace_as_pieces() {
     );
     let of = |name: &str| -> Vec<Json> { all.iter().map(|t| field(t, name)).collect() };
     assert_eq!(of("kind"), [json!("task"), json!("task"), json!("task")]);
-    assert_eq!(of("note"), [json!("Home.chores"); 3]);
+    assert_eq!(of("note"), vec![json!("Home.chores"); 3]);
     assert_eq!(of("status"), [json!(" "), json!("x"), json!("/")]);
     assert_eq!(
         of("status_type"),

@@ -171,11 +171,13 @@ impl Piece {
 
     /// The target of each link in its text, as the owner wrote it.
     pub fn link_targets(&self) -> Vec<&str> {
-        let link = |r: &Run| match r {
-            Run::Link(l) => Some(l.link.as_str()),
-            _ => None,
-        };
-        self.runs().filter_map(link).collect()
+        let mut targets = Vec::new();
+        for run in self.runs() {
+            if let Run::Link(l) = run {
+                targets.push(l.link.as_str());
+            }
+        }
+        targets
     }
 
     /// Whether it is within the bounds, and says nothing two ways.
