@@ -9,7 +9,7 @@ use std::process::{Command, Output, Stdio};
 
 /// A card's task with an escape sequence that would retitle the terminal, and a character
 /// that turns the text after it right to left.
-const CARD: &str = r#"{"nodes":[{"id":"n1","type":"text","x":0,"y":0,"width":300,"height":100,"text":"- [ ] card \u001b]0;PWNED-card\u0007 task ‮gnp.exe"}],"edges":[]}"#;
+const CARD: &str = r#"{"nodes":[{"id":"n1","type":"text","x":0,"y":0,"width":300,"height":100,"text":"- [ ] card \u001b]0;PWNED-card\u0007 task \u202egnp.exe"}],"edges":[]}"#;
 
 /// A note with the same in a task, a heading and beside a link that leads nowhere, and the
 /// other characters that are never shown as written: DEL, one of C1, a line separator (which
