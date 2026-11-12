@@ -86,9 +86,7 @@ fn named_in(code: &str, module: &str) -> Vec<String> {
     let mut found = Vec::new();
     for (at, _) in code.match_indices(module) {
         let rest = &code[at + module.len()..];
-        let grouped = rest.strip_prefix('{').and_then(group);
-        let names = grouped.unwrap_or_else(|| vec![rest]);
-        for name in names {
+        for name in entries(rest) {
             let word = |c: &char| c.is_alphanumeric() || *c == '_';
             let name: String = name.trim_start().chars().take_while(word).collect();
             let is_function = name.chars().next().is_some_and(char::is_lowercase);
@@ -122,6 +120,12 @@ fn group(inside: &str) -> Option<Vec<&str>> {
         }
     }
     None
+}
+
+/// What follows a path's `::`: a group's entries, or the one name there.
+fn entries(rest: &str) -> Vec<&str> {
+    let grouped = rest.strip_prefix('{').and_then(group);
+    grouped.unwrap_or_else(|| vec![rest])
 }
 
 /// `module::name` for each function of `modules` that `code` names.
@@ -326,103 +330,118 @@ fn the_scan_sees_an_import_and_a_bare_call() {
 /// A workspace read without the core: scanned, or an index built, by the app itself.
 const BESIDE: [&str; 2] = ["workspace::scan(", "Index::build("];
 
-/// The engine's modules that edit an item or a tag, each with the names the app may take
-/// from it that edit nothing (readers, and the modules inside it). Anything else named from
-/// one of them counts as an edit: a function a module gains is listed until it is named
-/// here.
-const ITEM_EDITS: [(&str, &[&str]); 5] = [
-    ("edit::", &[]),
-    (
-        "tasks::",
-        &[
-            "agenda",
-            "first_of_month",
-            "last_of_month",
-            "locate",
-            "today",
-        ],
-    ),
-    ("frontmatter::", &["is_tag"]),
-    ("owner::", &["built_in", "canvas", "markdown"]),
-    ("owner::markdown::", &["attributes"]),
+/// The engine's modules that edit an item or a tag. The list counts every function the app
+/// reaches under one of them, at any depth, except the named `READERS`: a module inside one
+/// is never an entry and never an exemption, and a type or a constant counts for nothing.
+const ITEM_EDITS: [&str; 4] = ["edit", "tasks", "frontmatter", "owner"];
+
+/// The functions under `ITEM_EDITS` that make no file's new text and write nothing, each
+/// read in the engine's source. A function those modules gain is listed until it is named
+/// here: `tasks`' are dates, the agenda and `FILE:LINE` taken apart; `is_tag` tests a name;
+/// `built_in` names a kind's owner; `places` names a canvas's nodes; the `attributes` two
+/// keep the configured readings in memory and load a workspace's.
+const READERS: [&str; 10] = [
+    "tasks::agenda",
+    "tasks::first_of_month",
+    "tasks::last_of_month",
+    "tasks::locate",
+    "tasks::today",
+    "frontmatter::is_tag",
+    "owner::built_in",
+    "owner::canvas::places",
+    "owner::markdown::attributes::for_workspace",
+    "owner::markdown::attributes::set_configured",
 ];
 
-/// The engine's modules the lists are about, each once: the ones of `WRITES`, the gateway's
-/// files, and the ones `OPERATIONS`, `BESIDE` and `ITEM_EDITS` name. A list's module is
-/// guarded against a way around because the list names it, not because it is written here.
+/// The names the lists are about, each once: the modules of `WRITES`, the gateway's files,
+/// the modules (and `Index`) that `OPERATIONS` and `BESIDE` call into, and `ITEM_EDITS`. A
+/// list's module is guarded against a way around because the list names it, not because it
+/// is written here.
 fn guarded() -> Vec<&'static str> {
     let writes = WRITES.into_iter().chain([GATEWAY_FILES]);
     let calls = OPERATIONS.into_iter().chain(BESIDE);
     let calls = calls.filter_map(|call| call.split_once("::"));
     let calls = calls.map(|(module, _)| module);
-    let edits = ITEM_EDITS.into_iter().map(|(module, _)| module);
-    let mut modules: Vec<&str> = Vec::new();
-    for module in writes.chain(calls).chain(edits) {
-        let module = module.trim_end_matches("::");
-        if module.starts_with(char::is_lowercase) && !modules.contains(&module) {
-            modules.push(module);
+    let mut names: Vec<&str> = Vec::new();
+    for name in writes.chain(calls).chain(ITEM_EDITS) {
+        let name = name.trim_end_matches("::");
+        if !names.contains(&name) {
+            names.push(name);
         }
     }
-    modules
+    names
 }
 
-/// `module as`, when `code` gives the module another name: after a path, in a group, or on a
-/// line of its own in one.
-fn renamed(code: &str, module: &str) -> Option<String> {
-    let alias = format!("{module} as ");
-    let is_one = |at: usize| {
-        let before = &code[..at];
-        let line = before.rsplit('\n').next().unwrap_or_default();
-        let after_path = before.ends_with("::") || before.ends_with('{');
-        after_path || before.ends_with(", ") || line.trim().is_empty()
-    };
-    let found = code.match_indices(&alias).any(|(at, _)| is_one(at));
-    found.then(|| format!("{module} as"))
+/// One entry of a `use`, spelled out into `paths`: `a::{b, c::{self as d}}` after `x::` is
+/// `x::a::b` and `x::a::c::self as d`.
+fn spell_out(before: &str, tree: &str, paths: &mut Vec<String>) {
+    let tree = tree.trim();
+    match tree.split_once('{') {
+        Some((path, inside)) => {
+            let before = format!("{before}{}", path.trim());
+            for entry in group(inside).unwrap_or_default() {
+                spell_out(&before, entry, paths);
+            }
+        }
+        None if tree.is_empty() => {}
+        None => paths.push(format!("{before}{tree}")),
+    }
 }
 
-/// `module::*`, when `code` imports the module whole.
-fn globbed(code: &str, module: &str) -> Option<String> {
-    let glob = format!("{module}::*");
-    code.contains(&glob).then_some(glob)
-}
-
-/// Whether an entry of a `use` group renames the module (`self as m`) or a function of it
-/// (`delete as d`). A type under another name (`Entry as Bookmark`) is not a call.
-fn renames(entry: &str) -> bool {
-    let word = |c: &char| c.is_alphanumeric() || *c == '_';
-    entry.match_indices(" as ").any(|(at, _)| {
-        let backwards = entry[..at].chars().rev().take_while(word);
-        backwards.last().is_some_and(char::is_lowercase)
-    })
-}
-
-/// `module::{… as …}`, when a `use` group of the module renames it or one of its functions.
-fn renamed_inside(code: &str, module: &str) -> Option<String> {
-    let open = format!("{module}::{{");
-    let found = code.match_indices(&open).any(|(at, _)| {
-        let entries = group(&code[at + open.len()..]).unwrap_or_default();
-        entries.into_iter().any(renames)
-    });
-    found.then(|| format!("{module}::{{… as …}}"))
-}
-
-/// The functions of `module` that a `use` in `code` brings in.
-fn imported(code: &str, module: &str) -> Vec<String> {
-    let mut found = Vec::new();
+/// Every path a `use` in `code` brings in, its groups spelled out. Only a `use` is read: a
+/// cast (`files as u64`), a string or a comment that says `rename as` is not one.
+fn uses(code: &str) -> Vec<String> {
+    let mut paths = Vec::new();
     for statement in code.split(';') {
         let is_use = |l: &&str| {
             let l = l.trim_start();
             l.starts_with("use ") || l.starts_with("pub use ") || l.starts_with("pub(crate) use ")
         };
         let lines: Vec<&str> = statement.lines().skip_while(|l| !is_use(l)).collect();
-        found.extend(named_in(&lines.join("\n"), module));
+        let item = lines.join(" ");
+        if let Some((_, tree)) = item.split_once("use ") {
+            spell_out("", tree, &mut paths);
+        }
     }
-    found
+    paths
 }
 
-/// `use std::fs::name` for each `std::fs` function that changes files and is brought in with
-/// `use`, after which its bare name is the call.
-fn imported_std(code: &str) -> Vec<String> {
+/// The names of a spelled-out path, and whether the last is given another name (`as`).
+fn segments(path: &str) -> (Vec<&str>, bool) {
+    let (path, alias) = match path.split_once(" as ") {
+        Some((path, _)) => (path, true),
+        None => (path, false),
+    };
+    (path.split("::").map(str::trim).collect(), alias)
+}
+
+/// `module as`, when the path gives a guarded name another name, and `module::{… as …}`,
+/// when it renames something under one: the module as `self`, a module inside it or a
+/// function, at any depth, reported under the outermost guarded name. A type under another
+/// name (`Entry as Bookmark`) is not a call.
+fn renamed(path: &str) -> Option<String> {
+    let (names, alias) = segments(path);
+    let guarded = guarded();
+    let module = names.iter().find(|name| guarded.contains(*name))?;
+    let last = names.last()?;
+    match (alias, last == module, last.starts_with(char::is_lowercase)) {
+        (true, true, _) => Some(format!("{module} as")),
+        (true, false, true) => Some(format!("{module}::{{… as …}}")),
+        _ => None,
+    }
+}
+
+/// `module::*`, when the path imports everything of a guarded module or of a module in it.
+fn globbed(path: &str) -> Option<String> {
+    let (names, _) = segments(path);
+    let guarded = guarded();
+    let module = names.iter().find(|name| guarded.contains(*name))?;
+    names.ends_with(&["*"]).then(|| format!("{module}::*"))
+}
+
+/// `use std::fs::name`, when the path brings in a `std::fs` function that changes files,
+/// after which its bare name is the call.
+fn imported_std(path: &str) -> Option<String> {
     let changes = [
         "write",
         "rename",
@@ -434,38 +453,37 @@ fn imported_std(code: &str) -> Vec<String> {
         "copy",
         "hard_link",
     ];
-    let names = imported(code, "fs::").into_iter();
-    let names = names.filter(|name| changes.contains(&name.as_str()));
-    names.map(|name| format!("use std::fs::{name}")).collect()
+    let (names, _) = segments(path);
+    let [.., module, name] = names.as_slice() else {
+        return None;
+    };
+    let is_one = *module == "fs" && changes.contains(name);
+    is_one.then(|| format!("use std::fs::{name}"))
 }
 
-/// `use module::name` for each call of `OPERATIONS` and `BESIDE` brought in with `use`, after
+/// `use module::name`, when the path brings in a call of `OPERATIONS` or `BESIDE`, after
 /// which its bare name is the call and the lists' `module::name(` doesn't find it.
-fn imported_calls(code: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    for call in OPERATIONS.into_iter().chain(BESIDE) {
-        let path = call.trim_end_matches('(').split_once("::");
-        let (module, name) = path.unwrap_or_default();
-        let names = imported(code, &format!("{module}::"));
-        if names.iter().any(|n| n == name) {
-            found.push(format!("use {module}::{name}"));
-        }
-    }
-    found
+fn imported_call(path: &str) -> Option<String> {
+    let (names, _) = segments(path);
+    let [.., module, name] = names.as_slice() else {
+        return None;
+    };
+    let call = format!("{module}::{name}(");
+    let listed = OPERATIONS.into_iter().chain(BESIDE).any(|c| c == call);
+    listed.then(|| format!("use {module}::{name}"))
 }
 
-/// The ways around the lists that the scan refuses outright: a guarded module under another
-/// name, imported whole, or renamed in its own `use` group, and a `std::fs` function that
-/// changes files or a listed call brought in with `use`.
+/// The ways around the lists that the scan refuses outright, read from the `use`s alone: a
+/// guarded name under another name or imported whole, and a `std::fs` function that changes
+/// files or a listed call brought in by name.
 fn sneaked(code: &str) -> Vec<String> {
     let mut found = Vec::new();
-    for module in guarded() {
-        found.extend(renamed(code, module));
-        found.extend(globbed(code, module));
-        found.extend(renamed_inside(code, module));
+    for path in uses(code) {
+        found.extend(renamed(&path));
+        found.extend(globbed(&path));
+        found.extend(imported_std(&path));
+        found.extend(imported_call(&path));
     }
-    found.extend(imported_std(code));
-    found.extend(imported_calls(code));
     found
 }
 
@@ -570,13 +588,89 @@ fn a_workspace_is_still_opened_beside_the_core_here() {
     );
 }
 
-/// What `code` names of the modules of `ITEM_EDITS` apart from what edits nothing.
+/// Whether the engine has a module `name` inside `module` (`owner`, `owner::markdown`): a
+/// file or a folder of that name in its source.
+fn is_module(module: &str, name: &str) -> bool {
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/src");
+    let inside = engine.join(module.replace("::", "/"));
+    inside.join(format!("{name}.rs")).is_file() || inside.join(name).is_dir()
+}
+
+/// What follows each `name::` in `code` where that is a path of its own: not the end of a
+/// longer name (`json_canvas::`), and, for a module read by its `bare` name, not a step of a
+/// longer path (`owner::canvas::`), which is read from its start.
+fn paths_from<'a>(code: &'a str, name: &str, bare: bool) -> Vec<&'a str> {
+    let text = format!("{name}::");
+    let joins = |c: char| c.is_alphanumeric() || c == '_' || (bare && c == ':');
+    let own = |at: &usize| !code[..*at].chars().next_back().is_some_and(joins);
+    let at = code.match_indices(&text).map(|(at, _)| at).filter(own);
+    at.map(|at| &code[at + text.len()..]).collect()
+}
+
+/// One entry under the engine's `module`: a function goes into `found` by its path; a
+/// module inside is gone into; one brought in by its bare name (`use owner::canvas`,
+/// `canvas::{self}`) goes into `imported`, to be read by that name. A type is nothing.
+fn reach(entry: &str, module: &str, found: &mut Vec<String>, imported: &mut Vec<(String, String)>) {
+    let entry = entry.trim_start();
+    let word = |c: &char| c.is_alphanumeric() || *c == '_';
+    let name: String = entry.chars().take_while(word).collect();
+    let path = format!("{module}::{name}");
+    let bare = match (name.as_str(), module.rsplit_once("::")) {
+        ("self", Some((_, last))) => Some((last.to_string(), module.to_string())),
+        ("self", None) => None,
+        _ if !name.starts_with(char::is_lowercase) => None,
+        _ if !is_module(module, &name) => {
+            found.push(path);
+            None
+        }
+        _ => match entry[name.len()..].strip_prefix("::") {
+            Some(rest) => {
+                for inside in entries(rest) {
+                    reach(inside, &path, found, imported);
+                }
+                None
+            }
+            None => Some((name.clone(), path)),
+        },
+    };
+    if let Some(bare) = bare
+        && !imported.contains(&bare)
+    {
+        imported.push(bare);
+    }
+}
+
+/// Every function `code` reaches under the engine's `module`, at any depth, by its path
+/// from the module (`owner::canvas::edit`), as often as it is named, sorted: by a path from
+/// the module, in a `use`, or through a module inside it that a `use` brought in. A function
+/// of a type (`Layer::config`) is the type's, and not seen.
+fn reached(code: &str, module: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut imported = Vec::new();
+    for rest in paths_from(code, module, false) {
+        for entry in entries(rest) {
+            reach(entry, module, &mut found, &mut imported);
+        }
+    }
+    let mut next = 0;
+    while let Some((name, path)) = imported.get(next).cloned() {
+        next += 1;
+        for rest in paths_from(code, &name, true) {
+            for entry in entries(rest) {
+                reach(entry, &path, &mut found, &mut imported);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The functions `code` reaches under the modules of `ITEM_EDITS`, apart from `READERS`.
 fn item_edits(code: &str) -> Vec<String> {
     let mut found = Vec::new();
-    for (module, apart) in ITEM_EDITS {
-        let names = named_in(code, module).into_iter();
-        let names = names.filter(|name| !apart.contains(&name.as_str()));
-        found.extend(names.map(|name| format!("{module}{name}")));
+    for module in ITEM_EDITS {
+        let functions = reached(code, module).into_iter();
+        found.extend(functions.filter(|function| !READERS.contains(&function.as_str())));
     }
     found
 }
@@ -590,8 +684,9 @@ fn item_edits(code: &str) -> Vec<String> {
 /// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it with
 ///   `write::replace` itself.
 ///
-/// The owners' `edit` functions (`owner::edit`, `owner::markdown::edit`) would be listed;
-/// the app names neither.
+/// An owner's functions that make a file's new text (`owner::edit`, `owner::markdown::edit`,
+/// `owner::canvas::edit` and `relink`, `owner::change`'s) would be listed; the app names
+/// none.
 #[test]
 fn items_are_still_edited_around_the_core_here() {
     let found = tally(per_file(&sources(), item_edits));
@@ -657,8 +752,8 @@ const BUILT_IN: [&str; 4] = ["agenda.rs", "ext/nvim.rs", "graph_ext.rs", "type_t
 /// cold_lava_host::*`) and `gateway` the messages; `items`, `types` and `links` are the
 /// engine's types the gateway's answers hold (`Item`, a type's `Definition`, `LinkGraph`);
 /// `list` and `table` are where the terminal names the views' data, re-exported from
-/// `cold_lava_views`. It allows by module: `list.rs` and `table.rs` also hold how the
-/// terminal draws them, which a built-in could name without this seeing it.
+/// `cold_lava_views`. Apart from `ext`, the door is their data, not their functions: a
+/// function of one of them (`items::extract`, a second reading of a note) is beyond it.
 const DOOR: [&str; 7] = ["ext", "gateway", "items", "links", "list", "table", "types"];
 
 /// One file's code, by its path under `src/`.
@@ -667,32 +762,42 @@ fn file<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
     &found.unwrap_or_else(|| panic!("no {path} under src/")).1
 }
 
-/// What the code of the file at `path` uses beyond the door, each once: every module it
-/// names that isn't one of `DOOR`, from the app (`crate::…`; `super::…` too in a file at the
-/// top of `src/`, where it is the same) or from the engine by its crate's name, a glob of
-/// either, another crate of the project, a terminal crate. `cold_lava_views` and
-/// `cold_lava_host` are the door under their own names. In a file inside a module
-/// (`ext/nvim.rs`) `super::` is that module, here `ext`, and isn't read.
+/// What the code of the file at `path` uses beyond the door, each once:
+///
+/// - every module it names that isn't one of `DOOR`, from the crate's root (`crate::…`, or
+///   as many `super::` as lead there from the file: one in `agenda.rs`, two in
+///   `ext/nvim.rs`, where one alone is `ext`) or from the engine by its crate's name, and a
+///   glob of any of them;
+/// - every function it reaches under a module of `DOOR` other than `ext`, as `reached`
+///   finds it: a lowercase name that follows the module's path. A type's own (`Look::default`,
+///   a variant) follows a capital, and is the data;
+/// - the crate's root or the engine under another name, another crate of the project, a
+///   terminal crate.
+///
+/// `cold_lava_views` and `cold_lava_host` are the door under their own names.
 fn beyond_the_gateway(path: &str, code: &str) -> Vec<String> {
-    let mut roots = vec!["crate::", "cold_lava_engine::"];
-    if !path.contains('/') {
-        roots.push("super::");
-    }
+    let up = "super::".repeat(path.matches('/').count() + 1);
     let mut found = Vec::new();
-    for root in roots {
+    for root in ["crate::", "cold_lava_engine::", up.as_str()] {
         let modules = named_in(code, root).into_iter();
         let modules = modules.filter(|module| !DOOR.contains(&module.as_str()));
         found.extend(modules.map(|module| format!("{root}{module}")));
-        found.extend(globbed(code, root.trim_end_matches("::")));
+        let glob = format!("{root}*");
+        found.extend(code.contains(&glob).then_some(glob));
+    }
+    for data in DOOR.into_iter().filter(|module| *module != "ext") {
+        found.extend(reached(code, data));
     }
     let others = [
+        "crate as ",
+        "cold_lava_engine as ",
         "cold_lava_editor",
         "cold_lava_canvas",
         "ratatui",
         "crossterm",
     ];
     let others = others.into_iter().filter(|other| code.contains(other));
-    found.extend(others.map(String::from));
+    found.extend(others.map(|other| other.trim_end().to_string()));
     found.sort();
     found.dedup();
     found
@@ -741,7 +846,8 @@ fn the_built_in_extensions_use_this_beyond_the_gateway() {
 }
 
 /// A group inside a `use` group doesn't end it: the names after it are read too. The door's
-/// own modules are not beyond it, under the app's name or their crate's.
+/// own modules are not beyond it, under the app's name or their crate's, but a function of
+/// one is, and so is the crate's root reached by `super::` or under another name.
 #[test]
 fn the_scan_reads_a_nested_group_to_its_end() {
     let nested = "use crate::{agenda, ext::{self, Host}, items::Item, looks};\n";
@@ -762,24 +868,53 @@ fn the_scan_reads_a_nested_group_to_its_end() {
     assert_eq!(beyond_the_gateway("agenda.rs", around), beyond);
     let inside = ["cold_lava_engine::write", "crate::*", "ratatui"];
     assert_eq!(beyond_the_gateway("ext/nvim.rs", around), inside);
+    let data = "use crate::items::{self, Item};\nuse super::super::tasks;\n\
+                use cold_lava_engine as e;\nfn f() {\n    items::extract(n, t, s);\n    \
+                types::Look::default();\n    let k = types::Colour::Red;\n}\n";
+    let beyond = [
+        "cold_lava_engine as",
+        "items::extract",
+        "super::super::tasks",
+    ];
+    assert_eq!(beyond_the_gateway("ext/nvim.rs", data), beyond);
     let open = "use crate::trash::{delete, restore";
     assert_eq!(named_in(open, "trash::"), Vec::<String>::new());
 }
 
-/// An item edit is seen imported or by its path, in an owner or the frontmatter too; a
-/// reader is not one; and a tally sorts and says how often.
+/// An item edit is a function reached under one of the modules, at any depth: by its path,
+/// in a `use`, or through a module inside that a `use` brought in. A module inside is no
+/// entry and excuses nothing, a type counts for nothing, a reader is not an edit, and a
+/// longer name that ends like a module (`json_canvas`) is not that module.
 #[test]
-fn the_scan_sees_an_item_edit_and_counts() {
-    let sample = "use crate::tasks::{toggle, today};\nfn f() {\n    edit::plan(a);\n    \
-                  tasks::agenda(w);\n    toggle(p);\n    owner::markdown::edit(x);\n    \
-                  owner::built_in(r);\n    frontmatter::edit_tag(t);\n}\n";
+fn the_scan_sees_an_item_edit_at_any_depth() {
+    let sample = "use crate::tasks::{toggle, today};\n\
+                  use cold_lava_engine::owner::given::Piece;\n\
+                  use crate::owner::{self, canvas, change::{self, Change}};\n\
+                  fn f() {\n    edit::plan(a);\n    tasks::agenda(w);\n    toggle(p);\n    \
+                  owner::markdown::edit(x);\n    owner::built_in(r);\n    \
+                  owner::canvas::edit(t, c);\n    canvas::relink(t);\n    canvas::places(i);\n    \
+                  change::piece(p);\n    frontmatter::edit_tag(t);\n    json_canvas::parse(t);\n}\n";
     let edits = [
         "edit::plan",
         "tasks::toggle",
         "frontmatter::edit_tag",
+        "owner::canvas::edit",
+        "owner::canvas::relink",
+        "owner::change::piece",
         "owner::markdown::edit",
     ];
     assert_eq!(item_edits(sample), edits);
+    let types = "use cold_lava_engine::owner::given::{self, Piece, Run};\n\
+                 use crate::owner::markdown::attributes;\nfn f(p: given::Piece) {\n    \
+                 attributes::Layer::config(a, b);\n    attributes::for_workspace(r);\n}\n";
+    assert_eq!(item_edits(types), Vec::<String>::new());
+    let read = ["owner::markdown::attributes::for_workspace"];
+    assert_eq!(reached(types, "owner"), read);
+}
+
+/// A tally sorts and says how often.
+#[test]
+fn a_tally_counts() {
     let twice = ["b: y", "a: x", "a: x"].map(String::from).to_vec();
     assert_eq!(tally(twice), ["a: x ×2", "b: y ×1"]);
 }
@@ -796,10 +931,10 @@ fn an_entry_that_is_gone_fails_its_list() {
     only_listed("sample", &["a: x ×1".to_string()], &["a: x ×1", "b: y ×1"]);
 }
 
-/// Every module a list is about is guarded, the newer lists' as the file-changing ones'.
+/// Every name a list is about is guarded, the newer lists' as the file-changing ones'.
 #[test]
 fn every_lists_module_is_guarded() {
-    let modules = [
+    let names = [
         "trash",
         "write",
         "files",
@@ -809,17 +944,18 @@ fn every_lists_module_is_guarded() {
         "bookmarks",
         "daily",
         "workspace",
+        "Index",
         "edit",
         "tasks",
         "frontmatter",
         "owner",
-        "owner::markdown",
     ];
-    assert_eq!(guarded(), modules);
+    assert_eq!(guarded(), names);
 }
 
 /// The ways around the lists of #270 and around the operations are refused as the
-/// file-changing modules' are, and a type under another name is not one.
+/// file-changing modules' are. A type under another name is not one, unless a list is about
+/// the type, and neither is anything outside a `use`.
 #[test]
 fn the_scan_refuses_the_ways_around_the_operations_the_edits_and_the_scan() {
     let alias = "use crate::rename as r;\nfn f() {\n    r::apply(p);\n}\n";
@@ -832,11 +968,16 @@ fn the_scan_refuses_the_ways_around_the_operations_the_edits_and_the_scan() {
     assert_eq!(sneaked(edit), ["edit::{… as …}"]);
     let deep = "use crate::{owner::{self, markdown::{self as md}}, workspace::{Note, scan}};\n";
     assert_eq!(sneaked(deep), ["owner::{… as …}", "use workspace::scan"]);
-    let path = "use crate::owner::markdown::{self as md};\n";
-    assert_eq!(sneaked(path), ["owner::markdown::{… as …}"]);
+    let inside = "use crate::owner::canvas as c;\nuse crate::owner::canvas::*;\n";
+    assert_eq!(sneaked(inside), ["owner::{… as …}", "owner::*"]);
+    let index = "use crate::index::Index as I;\nfn f() {\n    I::build(w);\n}\n";
+    assert_eq!(sneaked(index), ["Index as"]);
     let bare = "use crate::merge::{self, undo};\nfn f() {\n    undo(m);\n}\n";
     assert_eq!(sneaked(bare), ["use merge::undo"]);
     let fine = "use crate::bookmarks::{self, Entry as Bookmark, Target};\n\
                 use crate::merge::{self, Merged};\nuse crate::{rename, tasks, workspace};\n";
     assert_eq!(sneaked(fine), Vec::<String>::new());
+    let no_use = "fn f() {\n    g(a, files as u64);\n    let w = std::fs::write as fn(&str);\n    \
+                  let s = \"a, rename as before\";\n}\n";
+    assert_eq!(sneaked(no_use), Vec::<String>::new());
 }
