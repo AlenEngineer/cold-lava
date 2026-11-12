@@ -384,10 +384,17 @@ mod tests {
                 panic!("{text:?} parses");
             };
             let problem = unparsed(&e, text);
-            // A CR that no LF follows is the line's own: only a CR LF loses its CR.
-            let as_written = e.to_string().replace("\r\n", "\n");
+            // Only the CR of a CR LF line end goes: one that no LF follows in the file is
+            // the line's own and is shown.
+            let as_written = e.to_string();
             let as_written = as_written.strip_suffix('\n').unwrap_or(&as_written);
+            let as_written = match text.contains("\r\n") {
+                true => as_written.replace("[\r\n", "[\n"),
+                false => as_written.to_string(),
+            };
             assert_eq!(problem.lines().join("\n"), as_written, "{text:?}");
+            let ends_in_cr = problem.lines()[2].ends_with('\r');
+            assert_eq!(ends_in_cr, text.ends_with('\r'), "{text:?}");
             let (message, place) = problem.lines().split_last().expect("lines");
             assert_eq!(message, e.message(), "{text:?}");
             assert_eq!(
