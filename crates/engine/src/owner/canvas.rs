@@ -71,14 +71,6 @@ fn role(kind: &str) -> Option<Role> {
     }
 }
 
-/// A coordinate as an attribute: a whole number as the file writes one.
-fn number(v: f64) -> Option<Json> {
-    match v.fract() == 0.0 && v.abs() < 9e15 {
-        true => Some(Json::from(v as i64)),
-        false => serde_json::Number::from_f64(v).map(Json::Number),
-    }
-}
-
 /// What a card carries beyond its contents, as the file says it. *Placed*: `x`, `y`, `width`
 /// and `height`, 0 where the file leaves one out, which is where the whiteboard draws it.
 /// Then its `color`, a web page's `url` and a file card's `subpath`, when it has one. Every
@@ -92,7 +84,8 @@ fn attributes(n: &CNode) -> Map<String, Json> {
         ("height", n.height),
     ];
     for (name, v) in sizes {
-        out.extend(number(v).map(|v| (name.to_string(), v)));
+        // A whole number as the file writes one, not `40.0`.
+        out.insert(name.to_string(), crate::matcher::number(v));
     }
     let subpath = n.extra.get("subpath").and_then(Json::as_str);
     let texts = [

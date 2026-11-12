@@ -2074,9 +2074,10 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   file no JSON Canvas at all, as before.
 - **What the scan does for a card.** Before: one parse of the file, and each text card's
   text read as Markdown. Now also, for each node, a piece with four or five attributes is
-  built, checked against the bounds and written as one short JSON string for the read-back
-  check, and a type on `text` is tried against a text card when the workspace has one. No
-  second parse of the file, and nothing of Markdown runs for it.
+  built and checked against the bounds, and a type on `text` is tried against a text card
+  when the workspace has one. No second parse of the file, and nothing of Markdown runs for
+  it. What each piece says for the read-back check is made only when an edit compares two
+  answers (`given::read_back`), not when a file is read.
   Placed shapes need nothing of their own: a sticky's text input is
   its node's `text`, a card's note its node's `file` (docs/shapes.md, "Drawings join the
   workspace, as built").

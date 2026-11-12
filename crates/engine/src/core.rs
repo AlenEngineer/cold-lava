@@ -740,8 +740,8 @@ impl Core {
         };
         let settings = self.index.workspace.item_settings();
         let nothing = Given::default();
-        let asked = given::read(path, p.expect.as_ref().unwrap_or(&nothing), settings);
-        let gave = given::read(path, &given, settings);
+        let asked = given::read_back(path, p.expect.as_ref().unwrap_or(&nothing), settings);
+        let gave = given::read_back(path, &given, settings);
         if let Err(diff) = given::same(&asked, &gave) {
             let message = format!(
                 "{owner}'s new text for {path} doesn't read back as asked ({diff}); nothing was \

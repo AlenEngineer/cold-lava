@@ -788,7 +788,9 @@ fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run>
 /// lands on another piece that says the same is caught by where it is. Places may differ,
 /// since an owner's place can be part of what changed (a CSV row's first cell). Else what
 /// differs, for a message.
-pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
+pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
+    let (want_pieces, got_pieces) = (&asked.pieces, &gave.pieces);
+    let (asked, gave) = (&asked.read, &gave.read);
     let items = |r: &Read| -> Vec<String> {
         let mut v: Vec<String> = r.items.iter().map(data_key).collect();
         v.sort();
@@ -846,7 +848,7 @@ pub fn same(asked: &Read, gave: &Read) -> Result<(), String> {
     }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
     // attribute, a text or a link moves a piece.
-    let (want, got) = (&asked.pieces, &gave.pieces);
+    let (want, got) = (want_pieces, got_pieces);
     let says = |pieces: &[(String, String)]| -> Vec<String> {
         pieces.iter().map(|(_, says)| says.clone()).collect()
     };
@@ -902,15 +904,42 @@ pub struct Read {
     /// By item id.
     pub places: HashMap<String, String>,
     pub links: Vec<(Ref, String)>,
-    /// Every piece in the order given, whether or not it is an item: its place, and what it
-    /// says (`piece_key`) with the position of the piece it is in. The read-back check
-    /// compares them.
-    pub pieces: Vec<(String, String)>,
     /// Every link between two pieces, in the order given: which pieces it joins, by their
     /// positions among the answer's pieces, and its label. The read-back check compares them.
     pub between: Vec<String>,
     /// What didn't read, one line each: a type that isn't loaded, a field it doesn't have.
     pub problems: Vec<String>,
+}
+
+/// An answer read for the read-back check (`same`): its items and links, and what each of its
+/// pieces says. Reading a file for the workspace (`read`) makes none of the second, since only
+/// an edit compares pieces.
+pub struct ReadBack {
+    pub read: Read,
+    /// Every piece in the order given, whether or not it is an item: its place, and what it
+    /// says (`piece_key`) with the position of the piece it is in.
+    pieces: Vec<(String, String)>,
+}
+
+/// Read an answer to compare it with another: what the owner should give, or what it gave.
+pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
+    let mut position: HashMap<&str, usize> = HashMap::new();
+    let mut pieces: Vec<(String, String)> = Vec::new();
+    for item in &given.items {
+        let GivenItem::Piece(p) = item else {
+            continue;
+        };
+        let inside = match p.inside.as_deref().map(|place| position.get(place)) {
+            None => "in nothing".to_string(),
+            Some(Some(i)) => format!("in piece {}", i + 1),
+            Some(None) => "in a place no piece is at".to_string(),
+        };
+        position.entry(&p.place).or_insert(pieces.len());
+        let says = format!("{inside}: {}", piece_key(p));
+        pieces.push((p.place.clone(), says));
+    }
+    let read = read(file, given, s);
+    ReadBack { read, pieces }
 }
 
 /// Read what the owner gave for the file at workspace-relative `file`.
@@ -919,17 +948,12 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     let mut before = Before::default();
     // Where each piece stands among the answer's pieces, by its place.
     let mut position: HashMap<&str, usize> = HashMap::new();
+    let mut pieces = 0;
     for item in &given.items {
         match item {
             GivenItem::Piece(p) => {
-                let inside = match p.inside.as_deref().map(|place| position.get(place)) {
-                    None => "in nothing".to_string(),
-                    Some(Some(i)) => format!("in piece {}", i + 1),
-                    Some(None) => "in a place no piece is at".to_string(),
-                };
-                position.entry(&p.place).or_insert(out.pieces.len());
-                let says = format!("{inside}: {}", piece_key(p));
-                out.pieces.push((p.place.clone(), says));
+                position.entry(&p.place).or_insert(pieces);
+                pieces += 1;
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
                     // One short line, whatever the owner sent: a reason may quote a value.
                     out.problems
@@ -1512,11 +1536,11 @@ mod tests {
 
         // The read-back: a link relabelled, turned round, dropped or added is not what was
         // asked, and a rename's change leaves it as it was.
-        let asked = super::read("Board.canvas", &answer, &s);
+        let asked = read_back("Board.canvas", &answer, &s);
         let differs = |links: Json| {
             let mut wire = wire.clone();
             wire["links"] = links;
-            same(&asked, &super::read("Board.canvas", &given(wire), &s)).is_err()
+            same(&asked, &read_back("Board.canvas", &given(wire), &s)).is_err()
         };
         let file =
             json!({"target": "Volcanoes/Lava.md", "place": "b", "text": "Volcanoes/Lava.md"});
@@ -1616,10 +1640,10 @@ mod tests {
                 {"place": "o", "role": "opaque", "attributes": {"x": 40}},
             ], "links": []})
         );
-        let asked = read("Home.chores", &expect, &s);
+        let asked = read_back("Home.chores", &expect, &s);
         let answer = |t1: Json, t2: Json, o: Json| {
             let gave = given(json!({"items": [t1, t2, o]}));
-            same(&asked, &read("Home.chores", &gave, &s))
+            same(&asked, &read_back("Home.chores", &gave, &s))
         };
         let t1 = json!({"place": "moved", "role": "item",
             "attributes": {"task": true, "checkbox": "done"},
@@ -1661,7 +1685,7 @@ mod tests {
             "{why}"
         );
         let gave = given(json!({"items": [t1, other]}));
-        let why = same(&asked, &read("Home.chores", &gave, &s)).unwrap_err();
+        let why = same(&asked, &read_back("Home.chores", &gave, &s)).unwrap_err();
         assert!(why.starts_with("the pieces are 2 where 3 "), "{why}");
     }
 
@@ -1682,10 +1706,10 @@ mod tests {
             {"place": "a", "attribute": "checkbox", "value": "done"},
         ]))
         .unwrap();
-        let asked = read("Home.chores", &apply(&before, &tick), &s);
+        let asked = read_back("Home.chores", &apply(&before, &tick), &s);
         let gives = |a: Json, b: Json| {
             let gave = given(json!({"items": [section, a, b]}));
-            same(&asked, &read("Home.chores", &gave, &s))
+            same(&asked, &read_back("Home.chores", &gave, &s))
         };
         let (sec, top) = (json!("sec"), Json::Null);
         assert_eq!(
