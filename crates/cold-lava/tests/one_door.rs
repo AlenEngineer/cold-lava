@@ -1190,6 +1190,6 @@ fn the_app_sets_a_cells_symbol_only_through_cells() {
         "symbols set on a cell",
         remedy,
         &found,
-        &["cells.rs: set_symbol( ×2"],
+        &["cells.rs: set_char( ×1", "cells.rs: set_symbol( ×3"],
     );
 }

@@ -15,26 +15,40 @@
 //! turns the direction of text is dropped by `set_string` and a `Paragraph`, and kept by a
 //! `Line` drawn on its own and by a block's title. The tests below pin all of it.
 
-use cold_lava_views::shown::{Level, escape};
+use cold_lava_views::shown::{Level, escape, escaped};
 use ratatui::buffer::Cell;
 use std::borrow::Cow;
 
 /// What a cell shows for a symbol that is never shown as written.
 pub const STAND_IN: &str = "\u{fffd}";
 
-/// Set the cell's symbol: `symbol` as it is, or the stand-in when it holds what a terminal
-/// would act on. A tab is one of those here, though a printed line keeps it: in a cell it
+/// Whether a cell can't hold `c`: what a listing never shows as written (`shown::escaped`,
+/// the one definition of it), and a tab, which a printed line keeps but which in a cell
 /// would move the cursor to a tab stop and draw the rest of the row off its cells.
+///
+/// Every cell the app draws itself passes here, each frame: the whiteboard's shapes, a
+/// pane's whole screen. So it asks the question of a character and nothing more. Going
+/// through `escape` for each cell (a text made, searched and thrown away) cost 5 to 9% of
+/// the process's time in a graph, a whiteboard and a pane.
+fn refused(c: char) -> bool {
+    c == '\t' || escaped(c, Level::Content)
+}
+
+/// Set the cell's symbol: `symbol` as it is, or the stand-in when it holds what a cell
+/// can't (`refused`).
 pub fn put<'a>(cell: &'a mut Cell, symbol: &str) -> &'a mut Cell {
-    match escape(symbol, Level::Content) {
-        Cow::Borrowed(symbol) if !symbol.contains('\t') => cell.set_symbol(symbol),
-        _ => cell.set_symbol(STAND_IN),
+    match symbol.chars().any(refused) {
+        true => cell.set_symbol(STAND_IN),
+        false => cell.set_symbol(symbol),
     }
 }
 
 /// Set the cell's symbol to one character, as `put` does.
 pub fn put_char(cell: &mut Cell, ch: char) -> &mut Cell {
-    put(cell, ch.encode_utf8(&mut [0; 4]))
+    match refused(ch) {
+        true => cell.set_symbol(STAND_IN),
+        false => cell.set_char(ch),
+    }
 }
 
 /// A label for drawing a character a cell: a node's in the graph, an arrow's, what a region

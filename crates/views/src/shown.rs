@@ -24,10 +24,11 @@ pub enum Level {
     Message,
 }
 
-/// Whether `c` is never shown as written at `level`: a control character (C0 but the tab,
+/// Whether `c` is never shown as written at `level` (`escape` asks this of each character,
+/// and so does whoever shows one character at a time, a cell of a screen): a control character (C0 but the tab,
 /// DEL, C1), a separator that ends a line (U+2028, U+2029), and in a message the characters
 /// that embed, override or isolate a direction (U+202A to U+202E, U+2066 to U+2069).
-fn escaped(c: char, level: Level) -> bool {
+pub fn escaped(c: char, level: Level) -> bool {
     let acts = (c.is_control() && c != '\t') || matches!(c, '\u{2028}' | '\u{2029}');
     let turns = matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
     acts || (turns && level == Level::Message)
