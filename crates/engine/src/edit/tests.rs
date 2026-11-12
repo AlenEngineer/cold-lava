@@ -741,14 +741,34 @@ fn an_attribute_is_changed_where_its_owner_read_it() {
         after(&s, text, 4, "note-box", "callout", json!("tip")),
         text.replace("NOTE", "tip")
     );
-    let gone = refusal(&s, text, 2, "box", "state", Json::Null);
-    assert!(
-        matches!(&gone, Refused(m) if m.contains("attribute checkbox") && m.contains("taken out")),
-        "{gone:?}"
+    assert_eq!(
+        after(&s, text, 4, "note-box", "callout", json!("WARNING")),
+        text.replace("NOTE", "warning"),
+        "a kind in any case, written in lower case"
     );
-    let deeper = refusal(&s, text, 1, "chapter", "depth", json!(3));
-    assert!(
-        matches!(&deeper, Refused(m) if m.contains("attribute level") && m.contains("added")),
-        "{deeper:?}"
+    assert_eq!(
+        refusal(&s, text, 2, "box", "state", Json::Null),
+        Refused(
+            "state is the attribute checkbox, which set-field can change but not take out: \
+             edit the note instead"
+                .into()
+        )
+    );
+    assert_eq!(
+        refusal(&s, text, 1, "chapter", "depth", json!(3)),
+        Refused(
+            "depth is read from the attribute level, part of the note's structure, which \
+             can't be written"
+                .into()
+        )
+    );
+    let plain = "> just a quote\n";
+    assert_eq!(
+        refusal(&s, plain, 1, "note-box", "callout", json!("tip")),
+        Refused(
+            "callout is the attribute callout, which isn't written here, and set-field can't \
+             add one: edit the note instead"
+                .into()
+        )
     );
 }

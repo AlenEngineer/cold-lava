@@ -27,17 +27,17 @@ change commands, keys and file formats; patch versions only fix things.
   `{ attribute = "checkbox" }`, so it says what a piece is and not how Markdown writes it.
   Every older source (`checkbox = true`, `marker`, `inline`, `pattern`, …) reads as before.
   `items/edit set-field` writes a field read from `checkbox` or `callout` where it is
-  written. `cold-lava types` lists the new source and condition like the others. Over the
-  gateway an item carries the attributes its type read under `attributes`, left out when it
-  read none. Reading a note costs what it did: an attribute is read only when a type names
-  it. The built-in `task` doesn't read attributes yet, and no item changes.
-- A type on `aside` (`quote`) now matches: a quote or a callout is a typed item when a type
-  takes it. Its text is the rest of its first line (a callout's title), and its lines are
-  the whole quote. Such a type loaded before and matched nothing.
+  written; `level` and `fold` are read-only. `cold-lava types` lists the new source and
+  condition like the others. Reading a note costs what it did: an attribute is read only
+  when a type names it. Items over the gateway are unchanged: attributes reach the wire in
+  a later step. The built-in `task` doesn't read attributes yet, and no item changes.
 
 ### Changed
 
-- No type may name a field `attributes`: every item can carry that key over the gateway.
+- A type on a quote or a callout (`on = "aside"`, or the older `on = "quote"`) now matches.
+  Before, such a type loaded and matched nothing. Now a quote or a callout it takes is an
+  item of that type: its text is its first words (a callout's title), and its lines are the
+  whole quote. The items the type already had keep their ids.
 
 - A message about a mistake in a type says the role with the older name beside it
   (`column can't be read on document (note); only on row (table-row)`, where it said `on note

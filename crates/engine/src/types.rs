@@ -39,17 +39,7 @@ pub const BUILT_IN: &[&str] = &["task"];
 
 /// Every item has these, so no type can name a field after them.
 pub const RESERVED_FIELDS: &[&str] = &[
-    "id",
-    "note",
-    "line",
-    "end_line",
-    "section",
-    "parent",
-    "block_id",
-    "rev",
-    "kind",
-    "is",
-    "attributes",
+    "id", "note", "line", "end_line", "section", "parent", "block_id", "rev", "kind", "is",
 ];
 
 /// `${…}` settings a definition can follow, read from the workspace's own settings.
@@ -722,16 +712,18 @@ impl Source {
     }
 
     /// Whether a value set on the field can be put back through this source: only its span
-    /// changes. The others are derived from text the source doesn't own.
+    /// changes. The others are derived from text the source doesn't own, or, for a heading's
+    /// `level` and a callout's `fold`, from the note's structure.
     pub fn writable(&self) -> bool {
-        !matches!(
-            self,
+        match self {
             Source::Inlines(_)
-                | Source::Children(_)
-                | Source::Note(_)
-                | Source::Section(_)
-                | Source::Rest(_)
-        )
+            | Source::Children(_)
+            | Source::Note(_)
+            | Source::Section(_)
+            | Source::Rest(_) => false,
+            Source::Attribute(name) => !matches!(name.as_str(), "level" | "fold"),
+            _ => true,
+        }
     }
 
     /// What it can be read on.
@@ -2503,6 +2495,7 @@ mod tests {
             [Source::Attribute("checkbox".into())]
         );
         assert!(Source::Attribute("checkbox".into()).writable());
+        assert!(!Source::Attribute("level".into()).writable());
         let json = serde_json::to_value(&d).unwrap();
         assert_eq!(json["from"][0]["where"], json!({"attribute": ["checkbox"]}));
         assert_eq!(

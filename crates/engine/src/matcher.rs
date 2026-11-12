@@ -2369,27 +2369,59 @@ fields.words = { rest = true }
         assert_eq!(kinds("commonmark"), ["chapter", "list"]);
     }
 
-    /// No type that reads an attribute, no attribute read: the built-in types alone find the
-    /// same items whether or not the walk could give a piece's attributes.
+    /// A type with a shape on a quote beside another shape matched nothing in quotes before
+    /// asides were read. Now that it does, the items it already had keep their ids: a typed
+    /// aside's key is set apart, so it takes no place among the type's items with the same
+    /// words. The second paragraph's id is the one it had before asides matched.
     #[test]
-    fn an_attribute_nobody_names_is_on_no_item() {
-        let s = settings_with(vec![Layer::built_in()]);
-        let all = extract("Note.md", PIECES, &s);
-        assert!(all.iter().all(|i| i.attributes.is_empty()));
-        assert!(
-            all.iter()
-                .all(|i| !serde_json::to_string(i).unwrap().contains("attributes"))
+    fn a_typed_aside_moves_no_id_that_was_there_before() {
+        let s = settings(
+            "[said]\nfields = { words = \"text\" }\n\
+             [[said.from]]\non = \"paragraph\"\nmatch = '^foo'\nfields.words = { rest = true }\n\
+             [[said.from]]\non = \"quote\"\nmatch = '^foo'\nfields.words = { rest = true }\n",
         );
-        let typed = settings(ATTRIBUTES);
-        let done = extract("Note.md", PIECES, &typed)
-            .into_iter()
-            .find(|i| i.line == 3)
-            .unwrap();
-        let Data::Typed(t) = &done.data else { panic!() };
+        let all = extract("R.md", "foo one\n\n> foo one\n\nfoo one\n", &s);
+        let said: Vec<(usize, &str)> = (all.iter())
+            .filter(|i| i.data.kind() == "said")
+            .map(|i| (i.line, i.id.as_str()))
+            .collect();
+        let lines: Vec<usize> = said.iter().map(|s| s.0).collect();
         assert_eq!(
-            serde_json::to_value(typed.attributes_of(t)).unwrap(),
-            json!({"checkbox": "x"}),
-            "what the gateway adds to the item"
+            lines,
+            [1, 3, 5],
+            "two paragraphs and the quote between them"
+        );
+        assert_eq!(said[2].1, "e68456f9ae56127e", "the paragraph on line 5");
+        let without = settings(
+            "[said]\nfields = { words = \"text\" }\n\
+             [[said.from]]\non = \"paragraph\"\nmatch = '^foo'\nfields.words = { rest = true }\n",
+        );
+        let before = extract("R.md", "foo one\n\n> foo one\n\nfoo one\n", &without);
+        let before: Vec<&str> = (before.iter())
+            .filter(|i| i.data.kind() == "said")
+            .map(|i| i.id.as_str())
+            .collect();
+        assert_eq!(
+            before,
+            [said[0].1, said[2].1],
+            "the ids the paragraphs have with no shape on a quote"
+        );
+        assert!(!before.contains(&said[1].1), "the aside's id is its own");
+    }
+
+    /// An aside's text is the first words in it: a quote inside it adds no marker to them.
+    #[test]
+    fn an_aside_s_text_starts_at_its_first_words() {
+        let s = settings("[said]\non = \"aside\"\nfields.words = { rest = true }\n");
+        let all = extract("Note.md", "> > deep foo\n> shallow\n", &s);
+        let words: Vec<Json> = (all.iter())
+            .filter(|i| i.data.kind() == "said")
+            .map(fields)
+            .collect();
+        assert_eq!(
+            words,
+            [json!({"words": "deep foo"}), json!({"words": "deep foo"})],
+            "the outer quote and the one inside it"
         );
     }
 }
