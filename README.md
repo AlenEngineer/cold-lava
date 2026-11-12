@@ -914,9 +914,12 @@ cold-lava's. A kind of file nobody owns behaves as before. A note that embeds a 
 rows, drawn as soon as csv-table answers and asked again when the file changes.
 
 An owner also tells cold-lava what its files say, so they join the workspace: csv-table hands
-over each row as a table row and a cell like `- [ ] Read the report 📅 2026-11-20` as Markdown.
+over each row as a row of plain cells, so `#42`, `$5` or `[[x]]` in a cell is those characters
+and nothing else. The header says what more a column holds: `Volcano (link)` makes each cell
+a link to the file it names, and `Notes (markdown)` makes each cell Markdown of its own, where
+`- [ ] Read the report 📅 2026-11-20` is a task.
 `Volcanoes/Eruptions.csv`'s rows are then `eruption`s in the table (`i`), its task is in the
-agenda, its `[[Krakatoa]]` shows in Krakatoa's backlinks (Enter opens the CSV at that row) and
+agenda, its Krakatoa row shows in Krakatoa's backlinks (Enter opens the CSV at that row) and
 in the graph, and a link to the CSV leads somewhere. The CSV's own backlinks show under its
 table, as a note's show under the reader: `Tab` moves into them, `Enter` opens the note (or the
 other CSV) at the link, `b` hides them. What an owner said is kept by file version under
@@ -935,7 +938,9 @@ text as plain runs, and the owner writes each the way its format does. `docs/ext
 
 An owner can also ship types in its manifest (`[[types]]`). csv-table has `csv-table.row` for
 the rows none of your types matches: `Volcanoes/Observatories.csv` is a table of those in `i`,
-beside `eruption`, which still takes `Eruptions.csv`'s rows by their columns.
+beside `eruption`, which still takes `Eruptions.csv`'s rows by their columns. Its `name` shows
+a row's first cell and can't be set there: set a cell in the CSV's own table, or through a
+type of yours that reads the column by name.
 
 An extension can also show some notes its own way while they stay Markdown. `kanban-board`, the
 third example, shows Obsidian Kanban boards, notes with `kanban-plugin` in their frontmatter:
@@ -953,7 +958,8 @@ board, reads the note in the reader.
 
 Those items are edited the way a note's are, through their owner: `x` in the agenda ticks the
 CSV's task, `e` in the table sets a row's VEI, and renaming Krakatoa rewrites the CSV's links
-(the rename's preview lists the CSV with the rest). cold-lava makes the change, asks csv-table
+(the rename's preview lists the CSV with the rest). csv-table writes the one cell that was
+asked and leaves every other byte of the file. cold-lava makes the change, asks csv-table
 for the file's new text, has it read that text back, and writes it only when it says what was
 asked and the file hasn't changed meanwhile. An owner that refuses, writes something else or
 doesn't answer in 10 s leaves the file as it was, and the status line says why. A rename asks

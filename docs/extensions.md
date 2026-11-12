@@ -1590,12 +1590,14 @@ each doesn't invent one:
   error, an answer that doesn't parse, no answer in 10 s or an owner that stopped is
   `Event::OwnerTrouble` on the status line, and the file keeps what it had. Nothing waits for an
   owner: the scan and the menu go on.
-- **The example** `examples/extensions/csv-table` answers `file/read` with each row as a one-row
-  Markdown table under the file's header (place: its first cell), and a cell that starts with
-  `- ` as Markdown of its own (place: `row#column`). `Volcanoes/Eruptions.csv` (`Volcano, Year,
-  VEI, Notes`, with `[[links]]` and a task) is then `eruption` rows, matched by a second
-  table-row shape of that type in the example workspace's `types.toml`, five backlinks on
-  Krakatoa and a task in the agenda. `csv-items.drive` checks it through the menu, and
+- **The example** `examples/extensions/csv-table` answers `file/read` with each row as a
+  `row` piece (place: its first cell) whose cells are plain characters, by column name. The
+  header says what else a column holds: `Name (link)` makes each cell a link run to the file
+  it names, and `Name (markdown)` makes each cell a Markdown piece of its own (place:
+  `row#column`) and empty in the row. `Volcanoes/Eruptions.csv` (`Volcano (link), Year, VEI,
+  Notes (markdown)`, with a task in its notes) is then `eruption` rows, matched by a second
+  row shape of that type in the example workspace's `types.toml`, two backlinks on Krakatoa
+  (the row's link and the one in the task) and a task in the agenda. `csv-items.drive` checks it through the menu, and
   `crates/host/src/process.rs` through the real transport.
 - **Edits through the owner** (`owner/edits.rs`, `Core::edit_item`, `file_edited`).
   `items/edit` on an item of an owned file makes the change to what the owner gave: on a
@@ -1660,9 +1662,11 @@ each doesn't invent one:
   piece's new text), the merge dialog waits for the owners after Enter, and `merge::apply`
   writes the target, the notes and the owned files only once every owner has answered. Undo
   puts every written file back, owned ones included, if it is still what the merge wrote.
-- **The example** puts each piece back where it came from: a row's one-row table into the row's
-  cells (keeping its Markdown cells, which the row showed empty), a Markdown cell into its cell,
-  and refuses a row without its first cell, which names it. `csv-edit.drive` ticks the CSV's
+- **The example** writes each change into the cell it names and leaves every other byte of
+  the file: a cell's new runs as characters, a renamed link's new target into the link cells
+  that held the old one, a Markdown cell's new text into that cell. It refuses a row without
+  its first cell, which names it, words in a link column, and anything a CSV row can't hold
+  (an attribute). `csv-edit.drive` ticks the CSV's
   task in the agenda, sets a row's VEI in the table and renames Krakatoa, and `tests/drive.rs`
   reads the CSV after; `csv-edit-refused.drive` runs a copy that refuses every edit and doesn't
   answer one, and the CSV is unchanged. `csv-rename-refused.drive` runs a copy that refuses one
@@ -1699,15 +1703,16 @@ each doesn't invent one:
   meant for an owner's files says so with `where.file-type` (the file's extension), so it never
   matches a table in a note; inside a piece, the note a shape reads (`note = "path"`, `folder`,
   `where.folder`) is the owned file.
-- **The example's type.** csv-table ships `csv-table.row`, a table-row shape with
+- **The example's type.** csv-table ships `csv-table.row`, a row shape with
   `where.file-type = ["csv"]` and `priority = -1`, for the rows no type of the user's matches:
-  its `name` is the row's first cell (a `pattern`, so it is written back like any field),
-  `links` and `tags` the row's. The workspace's `eruption` keeps matching `Eruptions.csv`'s rows
+  its `name` is the row's first cell (a `pattern` over the row's words, up to the first tab,
+  so it shows and can't be set: a piece's field read by a pattern is derived) and `links` the
+  row's link cells. The workspace's `eruption` keeps matching `Eruptions.csv`'s rows
   by their columns (it has the default priority, 0), and `Volcanoes/Observatories.csv`
   (`Observatory, Volcano, Founded`) is three `csv-table.row`s. `csv-types.drive` checks it
   through the menu: the type picker lists it, its table shows those rows, and a name edited
-  there is saved in the CSV through csv-table; `tests/owned.rs` checks `cold-lava types` and
-  `cold-lava items` from the cache.
+  there is refused with the reason and the CSV left as it was; `tests/owned.rs` checks
+  `cold-lava types` and `cold-lava items` from the cache.
 
 ### Pieces, as built
 
@@ -1848,12 +1853,16 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   relabels or removes one. A link run can't lead to a piece, only to a file or the web. An
   inline type (`on = "inline"`) doesn't run over a piece's words. A piece's
   attributes don't reach a client except through a type's fields. A task subtype that
-  reads no status gets none on a piece. The csv-table example still gives Markdown, and the
-  guide doesn't cover pieces yet. What is written on a canvas's card is still a Markdown
+  reads no status gets none on a piece. What is written on a canvas's card is still a Markdown
   piece beside the card's own piece: handing it over as a fragment in Markdown is step 4
   (#244).
 - **The helper.** `cold_lava.py` has `piece`, `marked`, `link`, `label`, `field` and
   `words` for building pieces and for writing a piece's text back as plain characters.
+- **Two owners to read.** The chores owner (`crates/cold-lava/tests/chores-owner/main.py`)
+  gives a format of its own as `item` pieces, and csv-table (`examples/extensions/csv-table`)
+  gives a table as `row` pieces with cells, a link column as link runs and a notes column as
+  Markdown pieces. `docs/extensions-guide.md` walks through both, and says when to give a
+  piece, a Markdown piece or a typed item.
 
 ### Changes in the model's terms, as built
 

@@ -97,6 +97,33 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- The csv-table example gives its rows as pieces, and a cell is plain characters (#243). A
+  row is a `row` with its cells by column, so `#42`, `$5`, `[[x]]`, `**x**` and `- [ ] y` in
+  a cell make no tag, no math, no link, no bold and no task. What else a column holds, its
+  header says: `Volcano (link)` makes each cell a link to the file it names (in backlinks
+  and the graph, followed by a rename), and `Notes (markdown)` makes each cell Markdown of
+  its own, where a task is a task. An edit reaches it in the model's terms and it writes
+  the one cell that was asked: no other byte of the file changes, where before every edit
+  wrote the whole file out again in its own quoting and line endings. If you already use
+  the example, with version 0.2.0:
+  - every row gets a new id, since a row is now a piece and no longer a line of a Markdown
+    table. A task in a notes column keeps its id when its row's first cell is unchanged;
+  - a `[[link]]`, a `#tag` or a task written in a cell is no longer one. To keep the links
+    of a column, name it `Name (link)` and write the bare names (`Krakatoa`, not
+    `[[Krakatoa]]`). To keep Markdown in a column, name it `Name (markdown)`: before, a cell
+    was Markdown only when it started with `- `;
+  - a type's `where.header` and `column` read the column's name without `(link)` or
+    `(markdown)`, and `inlines = "tags"` finds nothing in a row;
+  - a link column's cell can't be reworded from a type's table (it is a link, and
+    `items/edit` takes words): set it in the CSV's own table;
+  - `csv-table.row` has no `tags`, and its `name` can't be set from the type's table: it
+    is read by a pattern over the row's words, and a piece's words are not a pattern's to
+    rewrite.
+
+  The example workspace's two CSV files are written the new way.
+  `docs/extensions-guide.md` now says when an owner gives a piece, a Markdown piece or a
+  typed item, and which changes it must answer, with csv-table and a made-up format's owner
+  as the worked examples.
 - A task an extension's owner gave as a typed item (`{place, type, fields}`) can be ticked
   (#243): `items/edit toggle` sets its `status` to the next status symbol. It was refused
   before. A field value of exactly one character is now read as written there, so a

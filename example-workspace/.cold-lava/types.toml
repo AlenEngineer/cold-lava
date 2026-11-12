@@ -25,7 +25,8 @@ key = ["vei"]
 fields = { vei = { column = "VEI" }, example = { column = "Example" }, volcanoes = { inlines = "links" } }
 
 # A row of a table of eruptions by volcano, like Volcanoes/Eruptions.csv: the csv-table extension
-# hands each of its rows over as a table row, so this matches them as it would in a note.
+# hands each of its rows over as a row with its cells by column, so this matches them as it
+# would in a note. The links are the cells of its `Volcano (link)` column.
 [[types.eruption.from]]
 on = "table-row"
 where.header = ["Volcano", "VEI"]

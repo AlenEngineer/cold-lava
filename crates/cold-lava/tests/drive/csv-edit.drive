@@ -1,6 +1,6 @@
 # Edits and renames reach a file another owner reads through its owner (docs/extensions.md,
-# "Owners and types, as built"). csv-table, installed in the empty home by tests/drive.rs, puts
-# each piece back in its cells; tests/drive.rs then reads Volcanoes/Eruptions.csv.
+# "Owners and types, as built"). csv-table, installed in the empty home by tests/drive.rs, writes
+# each change into the cell it names; tests/drive.rs then reads Volcanoes/Eruptions.csv.
 size 140x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
@@ -10,7 +10,7 @@ type krakatoa
 wait-for Krakatoa
 keys enter
 # csv-table has read the CSV once Krakatoa's backlinks list it.
-wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+wait-for ← Eruptions.csv  Krakatoa 1883 6
 # The agenda ticks the CSV's task as it ticks a note's.
 keys left A
 wait-for Read the Royal Society report on Krakatoa
@@ -49,11 +49,11 @@ type Krakatau
 keys enter
 wait-for Volcanoes/Krakatoa.md  →  Volcanoes/Krakatau.md
 expect ▤ Volcanoes/Eruptions.csv  2 links
-expect | [[Krakatau]] | 1883 | 7 |  |
+expect - [x] Read the Royal Society report on [[Krakatau]]
 screen
 keys enter
 wait-for renamed to Volcanoes/Krakatau.md · 7 links updated in 6 files
-wait-for 12s ← Eruptions.csv  | Krakatau | 1883 | 7 |
+wait-for 12s ← Eruptions.csv  Krakatau 1883 7
 expect ← Eruptions.csv  ☑ Read the Royal Society report on Krakatau
 screen
 keys q

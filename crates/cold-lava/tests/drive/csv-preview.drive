@@ -12,12 +12,12 @@ type log
 wait-for Log
 keys enter
 wait-for Inbox/Log  reading
-wait-for │ [[Krakatoa]]          1883    6
+wait-for │ Krakatoa          1883    6
 expect ⧉ Eruptions.csv
-expect │ Volcano               Year    VEI    ›
+expect │ Volcano (link)    Year    VEI    ›
 expect And a picture: 🖼 kilauea-lava-lake.jpg
-write Volcanoes/Eruptions.csv Volcano,Year,VEI,Notes\n[[Krakatoa]],1883,6,\n[[Tambora]],1815,7,\n
-wait-for │ [[Tambora]]   1815    7
+write Volcanoes/Eruptions.csv Volcano (link),Year,VEI,Notes (markdown)\nKrakatoa,1883,6,\nTambora,1815,7,\n
+wait-for │ Tambora           1815    7
 expect-not Vesuvius
 screen
 keys esc

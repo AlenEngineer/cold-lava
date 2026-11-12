@@ -11,11 +11,11 @@ wait-for ▤ Volcanoes/Eruptions.csv
 keys enter j
 wait-for CSV table · ⏎ to open it in csv-table
 keys enter
-wait-for [[Mount St. Helens]]  1980
+wait-for Mount St. Helens  1980
 wait-for Backlinks 1 · b hide
 expect ← Start Here
 # Another program writes a CSV that links to it: csv-table reads it, and its row is a backlink.
-write Volcanoes/Visits.csv Date,Notes\n2026-03-14,Compared the VEIs in [[Eruptions.csv]]\n
+write Volcanoes/Visits.csv Date,Notes (markdown)\n2026-03-14,Compared the VEIs in [[Eruptions.csv]]\n
 wait-for Backlinks 2 · b hide
 expect ← Visits.csv
 screen
@@ -27,7 +27,7 @@ wait-for a table in a CSV file
 expect Backlinks
 # Back returns to the table, with its backlinks.
 keys ctrl+o
-wait-for [[Mount St. Helens]]  1980
+wait-for Mount St. Helens  1980
 expect ← Visits.csv
 # Enter on a row of another CSV opens that file in its owner, at the row.
 keys tab j enter
@@ -36,7 +36,7 @@ expect Compared the VEIs
 expect Backlinks none
 # b hides the pane under the table, and shows it again.
 keys ctrl+o
-wait-for [[Mount St. Helens]]  1980
+wait-for Mount St. Helens  1980
 keys b
 wait-gone Backlinks 2
 keys b

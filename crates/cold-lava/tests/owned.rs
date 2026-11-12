@@ -99,9 +99,9 @@ fn the_cli_reads_owned_files_from_the_cache_and_renames_through_their_owner() {
     assert!(out.contains("Volcanoes/Eruptions.csv"), "{out}");
     assert_eq!(
         std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv")).unwrap(),
-        "Volcano,Year,VEI,Notes\n[[Vesuvius]],79,5,\n\
-         [[Krakatau]],1883,6,- [ ] Read the Royal Society report on [[Krakatau]] 📅 2026-11-20\n\
-         [[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n",
+        "Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\n\
+         Krakatau,1883,6,- [ ] Read the Royal Society report on [[Krakatau]] 📅 2026-11-20\n\
+         Mount St. Helens,1980,5,\nEyjafjallajökull,2010,4,\n",
         "csv-table relinked the CSV"
     );
 
@@ -139,7 +139,7 @@ fn the_cli_reads_owned_files_from_the_cache_and_renames_through_their_owner() {
     );
     let (out, _) = text(&cold_lava(&home, &["items", ws, "csv-table.row"]));
     assert!(
-        out.contains("Volcanoes/Observatories.csv:3  csv-table.row  name Vesuvius Observatory"),
+        out.contains("Volcanoes/Observatories.csv:1  csv-table.row  name Vesuvius Observatory"),
         "{out}"
     );
     assert!(!out.contains("Eruptions.csv"), "{out}");
@@ -283,6 +283,120 @@ fn a_cli_recipe_refuses_a_file_changed_while_it_waited_for_an_owner() {
     assert!(
         others(files_under(&workspace)) == others(before),
         "every other file is as it was"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
+/// The csv-table example gives a row as a piece and a cell as plain characters, from its own
+/// process. What looks like Markdown in a cell is nothing: no tag, no link, no math, no task.
+/// A `(link)` column's cells are links a rename follows, a `(markdown)` column's cells are
+/// Markdown, and an edit of a cell changes that cell's bytes and no others: the quotes, the
+/// CRLF line ends and the blank line stay.
+#[test]
+fn a_csv_cell_is_plain_characters_and_an_edit_changes_only_its_bytes() {
+    use serde_json::{Value, json};
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    const SHEET: &str = "Name,Cost,Ref,Todo,Seen (link),Notes (markdown)\r\n\
+        one,#42,[[x]],- [ ] y,Krakatoa,\"- [ ] A real task, quoted\"\r\n\
+        \r\n\
+        \"two, too\",$5 and $$6$$,**x** `c` ==h==,[due:: 2026-11-20] #volcano,,\r\n";
+    const PRICED: &str = "\n[types.priced]\non = \"row\"\nwhere.header = [\"Name\", \"Cost\"]\n\
+        fields.name = { column = \"Name\" }\nfields.cost = { column = \"Cost\" }\n\
+        fields.reference = { column = \"Ref\" }\nfields.todo = { column = \"Todo\" }\n\
+        fields.tags = { inlines = \"tags\", type = \"tag\" }\n\
+        fields.links = { inlines = \"links\", type = \"link\" }\n";
+    let (workspace, home) = sandbox("cli-cells", |main| main);
+    let ws = workspace.to_str().unwrap();
+    let file = workspace.join("Sheet.csv");
+    std::fs::write(&file, SHEET).unwrap();
+    let types = workspace.join(".cold-lava/types.toml");
+    let before = std::fs::read_to_string(&types).unwrap();
+    std::fs::write(&types, before + PRICED).unwrap();
+    let sheet = || std::fs::read_to_string(&file).unwrap();
+    let run = |args: &[&str]| -> String {
+        let out = cold_lava(&home, args);
+        let (stdout, stderr) = text(&out);
+        assert!(out.status.success(), "{args:?}\n{stdout}{stderr}");
+        stdout
+    };
+
+    // A rename starts the owner to read its files, and repoints the link cell: one cell.
+    run(&["rename", ws, "Krakatoa", "Krakatau"]);
+    let renamed = SHEET.replace(",Krakatoa,", ",Krakatau,");
+    assert_eq!(sheet(), renamed, "the link cell follows, byte for byte");
+
+    let in_sheet = |kind: &str| -> Vec<Value> {
+        let listed = run(&["items", ws, kind, "--json"]);
+        let items = listed.lines().map(|l| serde_json::from_str(l).unwrap());
+        let here = |item: &Value| item["note"] == "Sheet.csv";
+        items.filter(here).collect()
+    };
+    let rows = in_sheet("priced");
+    let [one, two] = &rows[..] else {
+        panic!("{rows:?}");
+    };
+    let says = |row: &Value, field: &str| row[field].clone();
+    assert_eq!(
+        [says(one, "cost"), says(one, "reference"), says(one, "todo")],
+        [json!("#42"), json!("[[x]]"), json!("- [ ] y")]
+    );
+    assert_eq!(
+        (says(one, "tags"), says(one, "links")),
+        (json!([]), json!(["Krakatau"])),
+        "only the link column's cell is a link"
+    );
+    assert_eq!(
+        [
+            says(two, "name"),
+            says(two, "cost"),
+            says(two, "reference"),
+            says(two, "todo")
+        ],
+        [
+            json!("two, too"),
+            json!("$5 and $$6$$"),
+            json!("**x** `c` ==h=="),
+            json!("[due:: 2026-11-20] #volcano")
+        ]
+    );
+    assert_eq!(
+        (says(two, "tags"), says(two, "links")),
+        (json!([]), json!([]))
+    );
+    let tasks = in_sheet("task");
+    let words: Vec<&Value> = tasks.iter().map(|t| &t["text"]).collect();
+    assert_eq!(
+        words,
+        [&json!("A real task, quoted")],
+        "the Markdown column's task, and not `- [ ] y`"
+    );
+    assert!(in_sheet("list").is_empty() && in_sheet("block").is_empty());
+
+    // Refused by the owner: a row is named by its first cell. Nothing is written.
+    let id = |row: &Value| row["id"].as_str().unwrap().to_string();
+    let path = file.to_str().unwrap();
+    let nameless = cold_lava(&home, &["item", "set", path, id(one).as_str(), "name", ""]);
+    let (out, err) = text(&nameless);
+    assert!(!nameless.status.success(), "{out}");
+    assert!(err.contains("a row needs its first cell"), "{err}");
+    assert_eq!(sheet(), renamed);
+
+    // One cell set: its bytes change, and the characters set are characters.
+    run(&[
+        "item",
+        "set",
+        path,
+        id(two).as_str(),
+        "cost",
+        "#43, \"[[z]]\"",
+    ]);
+    assert_eq!(
+        sheet(),
+        renamed.replace("$5 and $$6$$", "\"#43, \"\"[[z]]\"\"\""),
+        "quoted as CSV needs, and no other byte moved"
     );
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }

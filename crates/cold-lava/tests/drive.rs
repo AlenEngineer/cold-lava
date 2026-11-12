@@ -1742,9 +1742,9 @@ fn the_python_example_extension_opens_edits_and_makes_csv_files() {
     let eruptions = std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv"));
     assert_eq!(
         eruptions.unwrap(),
-        "Volcano,Year,VEI,Notes\n[[Vesuvius]],79,5,\n\
-         [[Krakatoa]],1884,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
-         [[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n[[Tambora]],1815,7,\n",
+        "Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\n\
+         Krakatoa,1884,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
+         Mount St. Helens,1980,5,\nEyjafjallajökull,2010,4,\nTambora,1815,7,\n",
         "both edits saved, on top of the change made outside"
     );
     let made = std::fs::read_to_string(workspace.join("Untitled.csv"));
@@ -1942,10 +1942,10 @@ fn csv_tables_type_ships_with_it_for_rows_no_other_type_matches() {
     let csv = dir.join("example-workspace/Volcanoes/Observatories.csv");
     assert_eq!(
         std::fs::read_to_string(csv).unwrap(),
-        "Observatory,Volcano,Founded\nOsservatorio Vesuviano,[[Vesuvius]],1841\n\
-         Hawaiian Volcano Observatory,[[Kīlauea]],1912\n\
-         Cascades Volcano Observatory,[[Mount St. Helens]],1980\n",
-        "the row's name set through csv-table"
+        "Observatory,Volcano (link),Founded\nVesuvius Observatory,Vesuvius,1841\n\
+         Hawaiian Volcano Observatory,Kīlauea,1912\n\
+         Cascades Volcano Observatory,Mount St. Helens,1980\n",
+        "a name read by a pattern over a piece's words is refused, and nothing is written"
     );
     let log = home.join(".cache/cold-lava/extensions/csv-table.log");
     assert_eq!(
@@ -1990,9 +1990,9 @@ fn items_and_links_in_a_csv_file_are_edited_through_csv_table() {
     let workspace = dir.join("example-workspace");
     assert_eq!(
         std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv")).unwrap(),
-        "Volcano,Year,VEI,Notes\n[[Vesuvius]],79,5,\n\
-         [[Krakatau]],1883,7,- [x] Read the Royal Society report on [[Krakatau]] 📅 2026-11-20 \
-         ✅ 2026-11-07\n[[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n",
+        "Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\n\
+         Krakatau,1883,7,- [x] Read the Royal Society report on [[Krakatau]] 📅 2026-11-20 \
+         ✅ 2026-11-07\nMount St. Helens,1980,5,\nEyjafjallajökull,2010,4,\n",
         "ticked in the agenda, set in the table, relinked by the rename"
     );
     assert!(workspace.join("Volcanoes/Krakatau.md").is_file());
@@ -2018,7 +2018,7 @@ fn an_owner_that_refuses_or_doesnt_answer_an_edit_leaves_its_file_alone() {
 
 @ext.on("file/edit")
 def stubborn(params):
-    if any("| 9 |" in c.get("text", "") for c in params["changes"]):
+    if any(c.get("text") == ["9"] for c in params["changes"]):
         time.sleep(30)
     raise ValueError("this copy is read-only")
 
@@ -2065,16 +2065,16 @@ fn a_merge_relinks_a_csv_file_through_csv_table() {
     let workspace = dir.join("example-workspace");
     assert_eq!(
         std::fs::read_to_string(workspace.join("Volcanoes/Eruptions.csv")).unwrap(),
-        "Volcano,Year,VEI,Notes\n[[Mauna Loa]],79,5,\n\
-         [[Krakatoa]],1883,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
-         [[Mount St. Helens]],1980,5,\n[[Eyjafjallajökull]],2010,4,\n",
+        "Volcano (link),Year,VEI,Notes (markdown)\nMauna Loa,79,5,\n\
+         Krakatoa,1883,6,- [ ] Read the Royal Society report on [[Krakatoa]] 📅 2026-11-20\n\
+         Mount St. Helens,1980,5,\nEyjafjallajökull,2010,4,\n",
         "Vesuvius's row leads to Mauna Loa"
     );
     let observatories = std::fs::read_to_string(workspace.join("Volcanoes/Observatories.csv"));
     assert!(
         observatories
             .unwrap()
-            .contains("Vesuvius Observatory,[[Mauna Loa]],1841\n"),
+            .contains("Vesuvius Observatory,Mauna Loa,1841\n"),
         "and so does the other CSV's"
     );
     assert!(!workspace.join("Volcanoes/Vesuvius.md").exists());

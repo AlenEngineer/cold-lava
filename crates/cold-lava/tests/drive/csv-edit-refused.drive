@@ -9,7 +9,7 @@ keys /
 type krakatoa
 wait-for Krakatoa
 keys enter
-wait-for ← Eruptions.csv  | Krakatoa | 1883 | 6 |
+wait-for ← Eruptions.csv  Krakatoa 1883 6
 keys left A
 wait-for Read the Royal Society report on Krakatoa
 keys G k x
