@@ -1602,6 +1602,221 @@ fn an_extension_cant_take_the_whiteboard_away_from_edits_a_refused_save_left() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_close_a_prompt_a_dialog_or_a_typed_query() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("prompt-keeps-typed");
+    let home = dir.join("home");
+    let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "prompt-keeps-typed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let concepts = dir.join("example-workspace/Concepts");
+    assert!(concepts.join("Whole thought.md").is_file());
+    assert!(!concepts.join("Half a thought.md").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_run_a_command_over_a_prompt_being_typed() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("prompt-keeps-typed-command");
+    let home = dir.join("home");
+    let push = "    ext.notify(\"command/run\", \
+                {\"id\": \"search.open\", \"args\": {\"query\": \"ash\"}})\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "prompt-keeps-typed-command.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    assert!(
+        dir.join("example-workspace/Concepts/Half a thought.md")
+            .is_file()
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_close_a_rename_that_waits_for_its_owners() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("confirm-keeps-waiting");
+    let home = dir.join("home");
+    // csv-table's own task is the seventeenth, and its arrival mustn't make open-tasks ask.
+    // The owner's six seconds outlast the five a script waits for the watcher to see the
+    // task, so the request always finds the dialog still waiting.
+    let push = "    if len(open_ids) == 18:\n        ext.open_note(\"Volcanoes/Krakatoa.md\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let slow = r#"import json
+import time
+
+
+@ext.on("file/edit")
+def slow(params):
+    if "Rakata" in json.dumps(params["changes"]):
+        time.sleep(6)
+    return file_edit(params)
+
+
+ext.run()"#;
+    install_csv_table(&home, |main| {
+        assert!(main.contains("def file_edit(params)"));
+        main.replace("ext.run()", slow)
+    });
+    let out = drive_with(
+        "confirm-keeps-waiting.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let volcanoes = dir.join("example-workspace/Volcanoes");
+    assert!(volcanoes.join("Rakata.md").is_file());
+    assert!(!volcanoes.join("Krakatoa.md").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_take_a_view_or_tidy_away_from_what_is_typed_or_marked_in_it() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("view-keeps-typed");
+    let home = dir.join("home");
+    let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    \
+                ext.open_note(\"Volcanoes/Vesuvius.md\")\n    \
+                ext.show(\"so there\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "view-keeps-typed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let note = dir.join("example-workspace/Concepts/Volcanic Explosivity Index.md");
+    let text = std::fs::read_to_string(note).unwrap();
+    assert!(text.contains("[[Krakatoa]] 1883, Sunda Strait"), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn a_views_owner_cant_close_it_while_a_cell_is_typed_in_it() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("view-close-keeps-typed");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        let gone = "    if rev is None:\n";
+        assert!(
+            main.contains(gone),
+            "the example's file/changed handler moved"
+        );
+        main.replace(gone, "    if True:\n")
+    });
+    let out = drive_with(
+        "view-close-keeps-typed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("example-workspace/Volcanoes/Eruptions.csv")).unwrap(),
+        "Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1883,6,\n",
+        "as the other program wrote it: neither year typed was saved"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn what_a_views_owner_says_on_view_closed_doesnt_hide_that_a_cell_was_not_saved() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("view-close-says-not-saved");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        let gone = "    if rev is None:\n";
+        let closed = "def view_closed(params):\n";
+        assert!(
+            main.contains(gone) && main.contains(closed),
+            "the example's file/changed or view/closed handler moved"
+        );
+        let speaks = format!("{closed}    ext.show(\"heard view/closed\")\n");
+        main.replace(gone, "    if True:\n")
+            .replace(closed, &speaks)
+    });
+    let out = drive_with(
+        "view-close-says-not-saved.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn a_refusals_notice_comes_first_on_a_narrow_status_line() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    for script in ["refusal-first-80.drive", "refusal-first-60.drive"] {
+        let dir = sandbox(script);
+        let home = dir.join("home");
+        let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    \
+                    ext.show(\"a long message from the same extension, which would fill \
+                    the whole status line and more if it came first\")\n";
+        install_pushy_open_tasks(&dir, &home, push);
+        let out = drive_with(script, &dir, &["--home".as_ref(), home.as_os_str()]);
+        assert_passed(&out);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn a_message_doesnt_take_the_place_of_a_refusals_notice_on_the_whiteboard() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("board-keeps-notice");
+    let home = dir.join("home");
+    let push = "    ext.open_note(\"Volcanoes/Krakatoa.md\")\n    ext.show(\"so there\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "board-keeps-notice.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Two cards of one id, as another program may write them, with a task on the second.
 const TWINS: &str = "{\"nodes\":[\
     {\"id\":\"s\",\"type\":\"text\",\"text\":\"First card\",\"x\":0,\"y\":0,\"width\":260,\"height\":80},\

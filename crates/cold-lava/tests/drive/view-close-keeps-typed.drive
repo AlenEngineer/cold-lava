@@ -1,0 +1,47 @@
+# A view's owner that closes it while a cell is typed in it doesn't take the typing away, and
+# doesn't leave a view that only looks alive (#269). tests/drive.rs installs a csv-table that
+# closes its table whenever the file changes, as the example does when the file is gone.
+# While a year is typed, another program writes the file: the table stays, the status line
+# and the table's own last line say its extension closed it, and it goes when the typing
+# ends. With Enter the status line says the edit was not saved, and tests/drive.rs checks the
+# file is as the other program wrote it. With Esc it says who closed the view.
+size 140x24
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys /
+type eruptions
+wait-for ▤ Volcanoes/Eruptions.csv
+keys enter j
+wait-for CSV table · ⏎ to open it in csv-table
+keys enter
+wait-for Mount St. Helens  1980
+keys j l e
+wait-for Year: 1883▏
+keys ctrl+u
+type 1884
+wait-for Year: 1884▏
+write Volcanoes/Eruptions.csv Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1883,6,\nTambora,1816,7,\n
+wait-for csv-table wanted to close a view: not while a cell is being edited
+wait-for its extension closed this view: what you type is not saved
+expect Year: 1884▏
+screen
+keys enter
+wait-for not saved: csv-table had closed this view
+wait-for CSV table · ⏎ to open it in csv-table
+screen
+keys enter
+wait-for Tambora           1816
+keys j l e
+wait-for Year: 1883▏
+keys ctrl+u
+type 1885
+wait-for Year: 1885▏
+write Volcanoes/Eruptions.csv Volcano (link),Year,VEI,Notes (markdown)\nVesuvius,79,5,\nKrakatoa,1883,6,\n
+wait-for its extension closed this view: what you type is not saved
+wait-for csv-table wanted to close a view: not while a cell is being edited
+expect Year: 1885▏
+keys esc
+wait-for csv-table closed the view you were typing in
+wait-for CSV table · ⏎ to open it in csv-table
+keys q
+exits 0

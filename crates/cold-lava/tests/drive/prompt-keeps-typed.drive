@@ -1,0 +1,62 @@
+# An extension's request never closes a prompt, a dialog or a typed query (#269; foundations,
+# "Unsaved work is never taken away"). tests/drive.rs installs the open-tasks example patched
+# to send workspace/open for Krakatoa whenever the tasks change, before it shows its count.
+# Each task another program writes makes it ask: a new note's name being typed, a new name, a
+# rename's plan and a command typed in the palette each stay, with the reason on the status
+# line, and the user's own Enter still does what it did. The palette with nothing typed holds
+# no work, so the note is opened then.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys n
+wait-for new note · Tab template · ⏎ create · Esc cancel
+type Half a thought
+wait-for name: Half a thought▏
+write Inbox/Chores.md - [ ] One\n
+wait-for ☐ 17 open tasks
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while a new note's name is being typed
+expect name: Half a thought▏
+screen
+keys enter
+wait-for Concepts/Half a thought  reading
+keys R
+wait-for rename · ⏎ preview · Esc cancel
+keys ctrl+u
+type Whole thought
+wait-for new name: Whole thought▏
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n
+wait-for ☐ 18 open tasks
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while a new name is being typed
+expect new name: Whole thought▏
+keys enter
+wait-for Concepts/Half a thought.md  →  Concepts/Whole thought.md
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n- [ ] Three\n
+wait-for ☐ 19 open tasks
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while a rename waits for your answer
+expect Concepts/Half a thought.md  →  Concepts/Whole thought.md
+screen
+keys enter
+wait-for renamed to Concepts/Whole thought.md
+keys :
+wait-for ↑↓ choose · ⏎ run · Esc close
+type rescan the
+wait-for rescan the▏
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n- [ ] Three\n- [ ] Four\n
+wait-for ☐ 20 open tasks
+wait-for open-tasks wanted to open Volcanoes/Krakatoa.md: not while a command is being typed
+expect rescan the▏
+keys esc
+wait-gone rescan the▏
+wait-gone open-tasks wanted to open
+keys :
+wait-for ↑↓ choose · ⏎ run · Esc close
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n- [ ] Three\n- [ ] Four\n- [ ] Five\n
+wait-for ☐ 21 open tasks
+wait-for Volcanoes/Krakatoa  reading
+expect-not open-tasks wanted to open
+screen
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

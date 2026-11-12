@@ -2,7 +2,12 @@
 //! Each is drawn by the list, table, picture or scene view and keeps its selection, folds, sort
 //! and filter (a scene its layout and camera) while it is out of sight, so Back returns to it
 //! as it was. Updates wait for the frame and only the last one is drawn; an extension has at
-//! most `PER_EXTENSION` views open.
+//! most `PER_EXTENSION` views open, unless something is being typed in every one of them.
+//!
+//! A view says what is being typed in it (`Open::unsaved`). While something is, nothing an
+//! extension asks for takes it from the front, and its owner's close waits: the view knows
+//! it is closing, tells its owner nothing more, and is gone when the typing ends
+//! (`Views::ask_close`, `take_closed`).
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +52,18 @@ pub struct Open {
     drawn: Drawn,
     /// The last update since the frame was drawn, and the row it selects.
     pending: Option<(Content, Option<String>)>,
+    /// Its owner closed it while something was typed in it: it goes when the typing ends.
+    closing: bool,
+    /// While closing, Enter was pressed on what was typed. Its owner never heard of it.
+    unsent: bool,
+}
+
+/// A view its owner closed while something was typed in it, gone now that nothing is.
+pub struct Gone {
+    pub owner: ExtId,
+    pub id: ViewId,
+    /// Enter was pressed on what was typed, which went nowhere.
+    pub unsent: bool,
 }
 
 enum Drawn {
@@ -159,8 +176,10 @@ impl Views {
         file: Option<String>,
     ) -> Option<ViewId> {
         let mine = self.open.iter().filter(|v| v.owner == owner).count();
+        // The oldest that holds nothing being typed: opening a view closes no typed work.
+        // When every one of the owner's views does, none is closed and it has one more.
         let closed = (mine >= PER_EXTENSION)
-            .then(|| self.open.iter().position(|v| v.owner == owner))
+            .then(|| (self.open.iter()).position(|v| v.owner == owner && v.unsaved().is_none()))
             .flatten()
             .map(|i| self.open.remove(i).id);
         let mut drawn = Drawn::new(content, self.context());
@@ -171,6 +190,8 @@ impl Views {
             file,
             drawn,
             pending: None,
+            closing: false,
+            unsent: false,
         });
         closed
     }
@@ -196,6 +217,36 @@ impl Views {
         let before = self.open.len();
         self.open.retain(|v| (v.owner, v.id) != (owner, id));
         self.open.len() != before
+    }
+
+    /// The owner asks to close its view `id` (`view/close`). It is closed, unless something
+    /// is being typed in it: then it stays, closing, until the typing ends (`take_closed`),
+    /// and this says what is typed.
+    pub fn ask_close(&mut self, owner: ExtId, id: ViewId) -> Option<&'static str> {
+        let typed = self.get(owner, id).and_then(|v| v.unsaved());
+        match (typed, self.get_mut(owner, id)) {
+            (Some(_), Some(v)) => v.closing = true,
+            _ => {
+                self.close(owner, id);
+            }
+        }
+        typed
+    }
+
+    /// The views their owners closed while something was typed in them, where the typing
+    /// ended or which aren't `front`, the view in front, any more: they are gone now.
+    pub fn take_closed(&mut self, front: Option<(ExtId, ViewId)>) -> Vec<Gone> {
+        let done =
+            |v: &Open| v.closing && (v.unsaved().is_none() || front != Some((v.owner, v.id)));
+        let gone = (self.open.iter().filter(|v| done(v)))
+            .map(|v| Gone {
+                owner: v.owner,
+                id: v.id,
+                unsent: v.unsent,
+            })
+            .collect();
+        self.open.retain(|v| !done(v));
+        gone
     }
 
     /// Every view of extensions that `keep` doesn't keep is gone (it stopped).
@@ -292,6 +343,17 @@ impl Open {
         }
     }
 
+    /// What is being typed in the view (a filter, a table's cell), in words for the status
+    /// line. While it is, nothing an extension asks for takes the view from the front or
+    /// closes it.
+    pub fn unsaved(&self) -> Option<&'static str> {
+        match &self.drawn {
+            Drawn::List(v) => v.unsaved(),
+            Drawn::Table(v) => v.unsaved(),
+            Drawn::Picture(_) | Drawn::Scene(_) => None,
+        }
+    }
+
     /// Whether the view takes `k` as text: a filter or a cell being typed, or a character in
     /// a view that filters as you type.
     pub fn takes(&self, k: &KeyEvent) -> bool {
@@ -302,7 +364,19 @@ impl Open {
         }
     }
 
+    /// What the menu should do after `k`. A view its owner closed tells its owner nothing
+    /// more: what Enter would have sent is kept back, and remembered as unsent.
     pub fn key(&mut self, k: KeyEvent) -> Action {
+        match (self.closing, self.pressed(k)) {
+            (true, Action::Send(_)) => {
+                self.unsent = true;
+                Action::Stay
+            }
+            (_, action) => action,
+        }
+    }
+
+    fn pressed(&mut self, k: KeyEvent) -> Action {
         match &mut self.drawn {
             Drawn::List(v) => match v.key(k) {
                 list::Action::Stay => Action::Stay,
@@ -345,6 +419,10 @@ impl Open {
 
     /// The keys, for the bottom of its frame.
     pub fn hint(&self) -> String {
+        if self.closing {
+            return " its extension closed this view: what you type is not saved · ⏎ or Esc "
+                .into();
+        }
         match &self.drawn {
             Drawn::List(v) if v.filters() == Filter::Typing => {
                 " ↑↓ move · ←→ fold · type to filter · ⏎ open · Esc close ".into()
@@ -549,5 +627,61 @@ mod tests {
         views.retain_owners(|e| e != A);
         assert!(!views.has(A, ViewId(n)));
         assert!(views.has(B, ViewId(100)));
+    }
+
+    #[test]
+    fn a_view_being_typed_in_says_so_and_is_not_the_one_closed_to_make_room() {
+        let mut views = Views::default();
+        for id in 1..=PER_EXTENSION as u32 {
+            views.open(A, ViewId(id), list("tasks", &["a", "b"]), None, None);
+        }
+        let oldest = views.get_mut(A, ViewId(1)).unwrap();
+        assert_eq!(oldest.unsaved(), None);
+        oldest.key(press(KeyCode::Char('/')));
+        assert_eq!(oldest.unsaved(), Some("a filter is being typed"));
+
+        let closed = views.open(A, ViewId(9), list("more", &["a"]), None, None);
+        assert_eq!(
+            closed,
+            Some(ViewId(2)),
+            "the oldest that holds nothing typed"
+        );
+        assert!(views.has(A, ViewId(1)));
+    }
+
+    #[test]
+    fn a_view_its_owner_closes_while_it_is_typed_in_goes_when_the_typing_ends() {
+        let mut views = Views::default();
+        for id in 1..=3 {
+            views.open(A, ViewId(id), list("tasks", &["a", "b"]), None, None);
+        }
+        assert_eq!(views.ask_close(A, ViewId(3)), None);
+        assert!(
+            !views.has(A, ViewId(3)),
+            "nothing typed in it: closed at once"
+        );
+
+        for id in 1..=2 {
+            let open = views.get_mut(A, ViewId(id)).unwrap();
+            open.key(press(KeyCode::Char('/')));
+            open.key(press(KeyCode::Char('a')));
+            assert_eq!(
+                views.ask_close(A, ViewId(id)),
+                Some("a filter is being typed")
+            );
+        }
+        let front = Some((A, ViewId(1)));
+        let gone = views.take_closed(front);
+        assert_eq!(gone.len(), 1, "the one the user left");
+        assert_eq!((gone[0].owner, gone[0].id), (A, ViewId(2)));
+        assert!(views.has(A, ViewId(1)), "typed in, and in front: it stays");
+        assert!(views.get(A, ViewId(1)).unwrap().hint().contains("closed"));
+
+        let open = views.get_mut(A, ViewId(1)).unwrap();
+        assert_eq!(open.key(press(KeyCode::Enter)), Action::Stay);
+        let gone = views.take_closed(front);
+        assert_eq!(gone.len(), 1, "the typing ended");
+        assert!(!gone[0].unsent);
+        assert!(!views.has(A, ViewId(1)));
     }
 }
