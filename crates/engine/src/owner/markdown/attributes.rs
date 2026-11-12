@@ -500,4 +500,40 @@ mod tests {
         });
         assert_eq!(a.readings[1].with, "#task");
     }
+
+    /// A broken entry in the workspace's own file is one line among the types' mistakes, the
+    /// entry is dropped, and the rest load: the built-in reading of that attribute stays.
+    #[test]
+    fn a_broken_entry_is_told_with_the_types_mistakes() {
+        let dir = std::env::temp_dir().join(format!(
+            "cold-lava-attributes-broken-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
+        std::fs::write(
+            dir.join(WORKSPACE_FILE),
+            "version = 1\n[item]\ndue = { rest = true }\nstars = { marker = \"★\" }\n",
+        )
+        .unwrap();
+        let found = types::for_workspace(&dir);
+        assert_eq!(found.errors.len(), 1, "{:?}", found.errors);
+        assert!(
+            found.errors[0].ends_with(
+                "attributes.toml: [item] due: rest is not a reading of a piece's text (marker, \
+                 inline, flag, flags, pattern, checkbox)"
+            ),
+            "{:?}",
+            found.errors
+        );
+        assert!(found.types.iter().any(|t| t.name == "task"));
+        let readings = for_workspace(&dir);
+        assert_eq!(
+            readings.reading(On::Item, "due").unwrap().origin,
+            Origin::BuiltIn,
+            "the reading it would have replaced stays"
+        );
+        assert!(readings.reading(On::Item, "stars").is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

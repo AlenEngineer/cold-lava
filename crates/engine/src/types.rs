@@ -1185,11 +1185,16 @@ pub fn set_configured(layers: Vec<Layer>) {
 /// workspace's own file.
 pub fn for_workspace(root: &Path) -> Types {
     let configured = CONFIGURED.get().cloned().unwrap_or_default();
-    load(
+    let mut found = load(
         std::iter::once(Layer::built_in())
             .chain(configured)
             .chain(Layer::workspace(root)),
-    )
+    );
+    // A broken reading of an attribute is told where a broken type is: the types read through
+    // those readings, and whoever lists the types' mistakes lists these.
+    let readings = crate::owner::markdown::attributes::for_workspace(root);
+    found.errors.extend(readings.errors);
+    found
 }
 
 /// Loads layers in order: built in, extensions, config.toml, the workspace. A later definition of a

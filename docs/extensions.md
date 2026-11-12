@@ -519,6 +519,8 @@ priority = [
   manifest can't carry readings yet.
 - **`cold-lava attributes [WORKSPACE]`** lists every reading with where it comes from, and
   its mistakes; `--json` prints the same as data. It exits 1 when a reading was dropped.
+  A dropped reading is also one line among the types' mistakes (`types::for_workspace`), so
+  `cold-lava types` lists it and exits 1, as for a broken type.
   `cold-lava types` goes on listing a type as it is written, so the task's `due` shows as
   `attribute due`.
 - **What can't be given readings.** `level`, `callout` and `fold` are read from the note's
