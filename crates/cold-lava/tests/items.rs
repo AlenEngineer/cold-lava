@@ -30,10 +30,12 @@ fn sandbox(name: &str) -> PathBuf {
     workspace.canonicalize().unwrap()
 }
 
-/// cold-lava without your own config.toml, so only the workspace's types apply.
+/// cold-lava without your own config.toml, so only the workspace's types apply, on a pinned
+/// today (`COLD_LAVA_TODAY`), so what it writes or files by today's date is the same any day.
 fn cold_lava(workspace: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_cold-lava"));
-    c.env("XDG_CONFIG_HOME", workspace.parent().unwrap());
+    c.env("XDG_CONFIG_HOME", workspace.parent().unwrap())
+        .env("COLD_LAVA_TODAY", "2026-11-07");
     c
 }
 
