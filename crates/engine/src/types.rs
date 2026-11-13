@@ -1111,7 +1111,7 @@ impl Layer {
             definitions: Vec::new(),
         };
         let mut file: toml::Table =
-            match text.and_then(|t| toml::from_str(&t).map_err(|e| Problem::toml(&e).one_line())) {
+            match text.and_then(|t| toml::from_str(&t).map_err(|e| Problem::toml(&e).folded())) {
                 Ok(f) => f,
                 Err(e) => return file_error(format!("can't read it: {e}")),
             };
@@ -1156,7 +1156,7 @@ impl Layer {
 
 /// One definition as written, or why it doesn't read, on one line.
 fn parse(value: toml::Value) -> Result<Definition, String> {
-    (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e).one_line())
+    (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e).folded())
 }
 
 /// Every loaded type, and what was wrong with the rest.

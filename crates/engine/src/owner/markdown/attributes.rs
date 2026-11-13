@@ -101,7 +101,7 @@ impl Layer {
     fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
         let roles = text.and_then(|t| {
             let mut file: toml::Table = toml::from_str(&t)
-                .map_err(|e| format!("can't read it: {}", Problem::toml(&e).one_line()))?;
+                .map_err(|e| format!("can't read it: {}", Problem::toml(&e).folded()))?;
             match file.remove("version") {
                 Some(toml::Value::Integer(VERSION)) => Ok(file),
                 Some(v) => Err(format!(
@@ -247,7 +247,7 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
     }
     let Sources(read) = written
         .try_into()
-        .map_err(|e: toml::de::Error| Problem::toml(&e).one_line())?;
+        .map_err(|e: toml::de::Error| Problem::toml(&e).folded())?;
     for s in &read {
         let text = matches!(
             s,

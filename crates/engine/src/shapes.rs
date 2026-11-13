@@ -589,13 +589,14 @@ impl Layer {
     fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
         let place = origin.place();
         let mut layer = Layer::empty(origin);
-        let mut file: toml::Table = match text.and_then(|t| toml::from_str(&t).map_err(one_line)) {
-            Ok(f) => f,
-            Err(e) => {
-                layer.errors.push(format!("{place}: can't read it: {e}"));
-                return layer;
-            }
-        };
+        let mut file: toml::Table =
+            match text.and_then(|t| toml::from_str(&t).map_err(|e| Problem::toml(&e).folded())) {
+                Ok(f) => f,
+                Err(e) => {
+                    layer.errors.push(format!("{place}: can't read it: {e}"));
+                    return layer;
+                }
+            };
         match file.remove("version") {
             Some(toml::Value::Integer(VERSION)) => {}
             Some(v) => {
@@ -678,12 +679,8 @@ impl Layer {
     }
 }
 
-fn one_line(e: toml::de::Error) -> String {
-    Problem::toml(&e).one_line()
-}
-
 fn parse(value: toml::Value) -> Result<Definition, String> {
-    value.try_into::<Definition>().map_err(one_line)
+    (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e).folded())
 }
 
 static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
@@ -718,6 +715,12 @@ pub fn with_draft(root: &Path, id: &str, d: &Definition) -> Shapes {
             .chain(Layer::workspace(root))
             .chain(std::iter::once(draft)),
     )
+}
+
+/// A problem with the shape `id` from `place`: said there, and about the shape, so the shape
+/// editor finds its draft's. Every problem with one shape is made here.
+fn shape_problem(place: &str, id: &str, why: Problem) -> Problem {
+    why.at(format!("{place}: shape {id}")).about(id)
 }
 
 /// Loads layers in order. A later definition of an id or a glyph replaces an earlier one, and
@@ -778,10 +781,9 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
                     }
                     kept.insert(id, (layer.origin.clone(), d));
                 }
-                _ => errors.extend((problems.into_iter()).map(|p| {
-                    let at = format!("{place}: shape {id}");
-                    Problem::line(p).at(at).about(&id)
-                })),
+                _ => errors.extend(
+                    (problems.into_iter()).map(|p| shape_problem(&place, &id, Problem::line(p))),
+                ),
             }
         }
     }
@@ -796,16 +798,15 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         for id in kept.keys() {
             build(id, &kept, &symbols, &mut built, &mut Vec::new());
         }
-        let mut failed: Vec<(String, String)> = Vec::new();
+        let mut failed: Vec<(String, Problem)> = Vec::new();
         for (id, (_, d)) in &kept {
             let problem = match &built[id] {
-                Err(e) => Some(e.clone()),
+                Err(e) => Some(Problem::line(e.clone())),
                 Ok(_) => (d.on.iter())
                     .flat_map(|b| {
                         steps::unknown_rebinds(&b.written(), &|to: &str| kept.contains_key(to))
                     })
-                    .next()
-                    .map(|p| p.to_string()),
+                    .next(),
             };
             failed.extend(problem.map(|p| (id.clone(), p)));
         }
@@ -814,8 +815,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         }
         for (id, problem) in failed {
             if let Some((origin, _)) = kept.shift_remove(&id) {
-                let at = format!("{}: shape {id}", origin.place());
-                errors.push(Problem::line(problem).at(at).about(&id));
+                errors.push(shape_problem(&origin.place(), &id, problem));
             }
         }
     };
@@ -1169,7 +1169,7 @@ fn check(id: &str, d: &Definition) -> Vec<String> {
             ));
         }
         let wrong = steps::edits(&b.written());
-        p.extend(wrong.into_iter().map(|e| format!("{at}: {e}")));
+        p.extend(wrong.into_iter().map(|e| format!("{at}: {}", e.one_line())));
     }
     p
 }
@@ -1297,7 +1297,7 @@ mod tests {
 
     /// Each error as it is said.
     fn said(s: &Shapes) -> Vec<String> {
-        s.errors.iter().map(Problem::to_string).collect()
+        s.errors.iter().map(Problem::one_line).collect()
     }
 
     fn ids(s: &Shapes) -> Vec<&str> {

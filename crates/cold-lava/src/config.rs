@@ -39,12 +39,11 @@ fn problems(lines: Vec<String>) -> impl Iterator<Item = Problem> {
     lines.into_iter().map(Problem::from)
 }
 
-/// `lines` as one problem, the first of them after `label`.
-fn labelled(label: &str, mut lines: Vec<String>) -> Problem {
-    if let Some(first) = lines.first_mut() {
-        *first = format!("{label} {first}");
-    }
-    Problem::of(lines)
+/// A problem in `[section]` of the file: said under `[section]`, and about it, so that a
+/// command can pick a section's problems out (`cold-lava style` takes `[style]`'s). Every
+/// problem with a section is made here.
+fn in_section(section: &str, why: impl Into<Problem>) -> Problem {
+    why.into().under(format!("[{section}]")).about(section)
 }
 
 /// The file as written. Other top-level sections are ignored, for later use.
@@ -143,23 +142,18 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
             id = new.to_string();
         }
         if !ids.contains(id.as_str()) {
-            config
-                .errors
-                .push(format!("[keys] {id:?} is not a command").into());
+            (config.errors).push(in_section("keys", format!("{id:?} is not a command")));
             continue;
         }
         match parse_keys(&value) {
-            Ok(keys) if keys.is_empty() && id == "pane.leave" => config.errors.push(
-                format!(
-                    "[keys] {id:?} = [] would leave no way out of a pane; it keeps its default \
-                     keys"
-                )
-                .into(),
-            ),
+            Ok(keys) if keys.is_empty() && id == "pane.leave" => config.errors.push(in_section(
+                "keys",
+                format!("{id:?} = [] would leave no way out of a pane; it keeps its default keys"),
+            )),
             Ok(keys) => {
                 config.keys.insert(id, keys);
             }
-            Err(e) => config.errors.push(format!("[keys] {id:?}: {e}").into()),
+            Err(e) => (config.errors).push(in_section("keys", format!("{id:?}: {e}"))),
         }
     }
     config.flavour = markdown(file.markdown, &mut config.errors);
@@ -169,7 +163,7 @@ pub fn parse(text: &str, menu: &[Entry<MenuCommand>]) -> Config {
     config.glyphs = file.glyphs;
     match crate::style::Overrides::from_table(file.style) {
         Ok(o) => config.style = o,
-        Err(e) => (config.errors).push(Problem::line(format!("[style] {e}")).about(STYLE)),
+        Err(e) => config.errors.push(in_section(STYLE, e)),
     }
     config
         .errors
@@ -205,14 +199,17 @@ fn markdown(mut section: toml::Table, errors: &mut Vec<Problem>) -> Option<Flavo
                     Ok(f) => {
                         custom.insert(name, f);
                     }
-                    Err(lines) => {
-                        errors.push(labelled(&format!("[markdown.flavours.{name}]"), lines));
+                    Err(problem) => {
+                        errors.push(in_section(&format!("markdown.flavours.{name}"), problem));
                         broken.insert(name);
                     }
                 }
             }
         }
-        Some(v) => errors.push(format!("[markdown] flavours: expected a table, got {v}").into()),
+        Some(v) => errors.push(in_section(
+            "markdown",
+            format!("flavours: expected a table, got {v}"),
+        )),
     }
     let chosen = match section.remove("flavour") {
         None => None,
@@ -221,41 +218,44 @@ fn markdown(mut section: toml::Table, errors: &mut Vec<Problem>) -> Option<Flavo
             if found.is_none() && !broken.contains(&name) {
                 let built_in: Vec<&str> = BUILT_IN.iter().map(|f| f.0).collect();
                 let built_in = built_in.join(", ");
-                errors.push(
+                errors.push(in_section(
+                    "markdown",
                     format!(
-                        "[markdown] flavour {name:?} is not built in ({built_in}) or defined \
-                         under [markdown.flavours]"
-                    )
-                    .into(),
-                );
+                        "flavour {name:?} is not built in ({built_in}) or defined under \
+                         [markdown.flavours]"
+                    ),
+                ));
             }
             found
         }
         Some(v) => {
-            errors.push(format!("[markdown] flavour: expected a name, got {v}").into());
+            errors.push(in_section(
+                "markdown",
+                format!("flavour: expected a name, got {v}"),
+            ));
             None
         }
     };
     for key in section.keys() {
-        errors.push(format!("[markdown] {key:?} is not a setting").into());
+        errors.push(in_section("markdown", format!("{key:?} is not a setting")));
     }
     chosen
 }
 
-/// The flavour `[markdown.flavours.NAME]` defines, or why it defines none, as the lines of
-/// a problem.
-fn custom_flavour(name: &str, value: toml::Value) -> Result<Flavour, Vec<String>> {
+/// The flavour `[markdown.flavours.NAME]` defines, or why it defines none.
+fn custom_flavour(name: &str, value: toml::Value) -> Result<Flavour, Problem> {
     if Flavour::built_in(name).is_some() {
-        return Err(vec![format!(
+        return Err(Problem::line(format!(
             "{name:?} is a built-in flavour; give yours another name"
-        )]);
+        )));
     }
-    let custom: Custom = (value.try_into()).map_err(|e| Problem::toml(&e).lines().to_vec())?;
-    let mut flavour = Flavour::built_in(&custom.base)
-        .ok_or_else(|| vec![format!("base {:?} is not a built-in flavour", custom.base)])?;
+    let custom: Custom = (value.try_into()).map_err(|e| Problem::toml(&e))?;
+    let mut flavour = Flavour::built_in(&custom.base).ok_or_else(|| {
+        Problem::line(format!("base {:?} is not a built-in flavour", custom.base))
+    })?;
     flavour.name = name.to_string();
     let syntax = |s: &String| {
-        let not_one = || vec![format!("{s:?} is not a syntax ({})", Syntax::names())];
+        let not_one = || Problem::line(format!("{s:?} is not a syntax ({})", Syntax::names()));
         Syntax::from_name(s).ok_or_else(not_one)
     };
     for s in &custom.add {
@@ -358,13 +358,10 @@ mod tests {
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[0], e.message());
         assert_eq!(lines[1], "in `a\nFAKE`");
-        let problem = labelled("[markdown.flavours.x]", lines);
-        assert_eq!(problem.lines().len(), 2);
-        assert!(
-            problem
-                .first()
-                .starts_with("[markdown.flavours.x] invalid type: ")
-        );
+        let problem = in_section("markdown.flavours.x", Problem::toml(&e));
+        assert_eq!(problem.lines(), lines);
+        assert!(problem.said()[0].starts_with("[markdown.flavours.x] invalid type: "));
+        assert!(problem.is_about("markdown.flavours.x"));
     }
 
     fn menu(text: &str) -> (Keymap<MenuCommand>, Vec<Problem>) {

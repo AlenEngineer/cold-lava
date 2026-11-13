@@ -376,16 +376,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
-- `problem.rs`: `Problem`, why something was refused, failed or was left out, as the
-  lines it is said on: a line break between two is where its maker put one (a TOML
-  error's lines come from the parser's parts, `Problem::toml`; a usage from the app's own
-  `&'static str`), never found by splitting a string. `at` is where it is, said before
-  its first line; `about` is what it is about (a shape's id, a section of config.toml),
-  for whoever picks problems out of a list, and is never said or sent: pick a problem out
-  by it, never by its words. `joined` is the one way several go on one line (`"; "`),
-  `one_line` how types, shapes and attributes fold a TOML error (what their `--json`
-  holds). It holds words as written and knows no terminal: `say` and `Notice` show them.
-  `tests/one_door.rs` lists what still joins, folds or picks out problems by hand.
+- `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
+  split only where the app's own text or the TOML parser's layout breaks it. Pick a
+  problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it
+  on one line. Words as written, no terminal: `say` and `Notice` show them.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
 what it needs (`markdown::set_configured` for the chosen flavour).

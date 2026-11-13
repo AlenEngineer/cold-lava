@@ -4,53 +4,72 @@
 //! line is text, which a frontend shows as text (`say` on the command line, `Notice` in the
 //! terminal app). The engine keeps the words as they were written and knows no terminal.
 //!
-//! The ways problems are put together are here, once: several joined on one line
-//! (`joined`), a TOML error's lines read from the parser's parts (`Problem::toml`), and a
-//! problem picked out of a list by what it is about, never by its words (`about`).
-//! `tests/one_door.rs` in the app lists what still does one of these by hand.
+//! The ways problems are put together are here, once: on one line where a context holds one
+//! (`one_line`, `joined`, and what `--json` and the gateway carry), a TOML error's lines
+//! read from the parser's parts (`Problem::toml`), and a problem picked out of a list by
+//! what it is about, never by its words (`about`). `tests/one_door.rs` in the app lists what
+//! still does one of these by hand.
 
 use std::fmt;
 
 use serde::{Serialize, Serializer};
 
-/// Why something was refused, failed or was left out.
+/// Why something was refused, failed or was left out. It has a line at least: every way to
+/// make one gives it one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Problem {
-    /// Where it is (a file, and what in it), said before its first line with `": "`.
-    at: Option<String>,
-    /// Its words, a line each, as they were made.
+    /// What is said before its first line, its separator included: where it is (`at`), or
+    /// the section it is under (`under`).
+    before: Option<String>,
+    /// Its words, a line each, as they were made. Never empty.
     lines: Vec<String>,
     /// What it is about (a shape's id, a section of config.toml), for whoever picks problems
     /// out of a list. It is never said: the words already say it as they were written. It is
-    /// set where something picks problems out by it.
+    /// a string while two vocabularies use it, shapes and config.toml's sections; a third
+    /// makes it an enum.
     about: Option<String>,
 }
 
 impl Problem {
     /// A problem of one line.
     pub fn line(words: impl Into<String>) -> Problem {
-        Problem::of([words.into()])
+        Problem::of(words.into(), [])
     }
 
-    /// A problem of these lines, each made where the problem is.
-    pub fn of(lines: impl IntoIterator<Item = String>) -> Problem {
+    /// A problem of these lines, each made where the problem is: `first`, then `rest`.
+    pub fn of(first: String, rest: impl IntoIterator<Item = String>) -> Problem {
         Problem {
-            at: None,
-            lines: lines.into_iter().collect(),
+            before: None,
+            lines: std::iter::once(first).chain(rest).collect(),
             about: None,
         }
     }
 
-    /// And after its lines each line of `text`, the app's own (a usage), whose line breaks
-    /// are known when the app is built.
+    /// A problem that is the app's own text (a usage), whose line breaks are known when the
+    /// app is built: a line for each.
+    pub fn usage(text: &'static str) -> Problem {
+        let mut lines = text.split('\n').map(String::from);
+        let first = lines.next().unwrap_or_default();
+        Problem::of(first, lines)
+    }
+
+    /// And after its lines each line of `text`, the app's own (a usage).
     pub fn then(mut self, text: &'static str) -> Problem {
         self.lines.extend(text.split('\n').map(String::from));
         self
     }
 
-    /// Said at `place`, before its first line.
-    pub fn at(mut self, place: impl Into<String>) -> Problem {
-        self.at = Some(place.into());
+    /// Said at `place`, before its first line with `": "`.
+    pub fn at(mut self, place: impl fmt::Display) -> Problem {
+        self.before = Some(format!("{place}: "));
+        self
+    }
+
+    /// Said under `label` (a section of a file, like `[style]`), before its first line with a
+    /// space. Only config.toml says its sections this way; whether they take `": "` like
+    /// every other place is for #265's step A3b to decide, as it changes the words.
+    pub fn under(mut self, label: impl fmt::Display) -> Problem {
+        self.before = Some(format!("{label} "));
         self
     }
 
@@ -65,47 +84,46 @@ impl Problem {
         self.about.as_deref() == Some(what)
     }
 
-    /// Its own lines, in order, without where it is.
+    /// Its own lines, in order, without what is said before them.
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
 
-    /// Its own first line, without where it is.
+    /// Its own first line, without what is said before it.
     pub fn first(&self) -> &str {
-        self.lines.first().map_or("", String::as_str)
+        &self.lines[0]
     }
 
-    /// The lines a person reads: where it is before the first, then the rest.
+    /// The lines a person reads: what is said before the first, then the rest.
     pub fn said(&self) -> Vec<String> {
         let mut said = self.lines.clone();
-        if let Some(at) = &self.at {
-            match said.is_empty() {
-                true => said.push(at.clone()),
-                false => said[0] = format!("{at}: {}", said[0]),
-            }
+        if let Some(before) = &self.before {
+            said[0] = format!("{before}{}", said[0]);
         }
         said
     }
 
-    /// Its words on one line: its lines joined by a space, a line break inside a line a space
-    /// too, without spaces at either end. How types, shapes and attributes say a TOML error,
-    /// and what their `--json` holds.
-    ///
-    /// For a TOML error this is the parser's text with each line break a space, as those
-    /// three made it before (`e.to_string().replace('\n', " ").trim()`): `toml` cuts the
-    /// text only at a line break (its lines joined by line breaks are the text), or keeps it
-    /// whole as one line.
+    /// The lines a person reads on one line, a space between two: what a context that holds
+    /// one line says (a list `joined`, `--json`, a message on the gateway). A line keeps its
+    /// own characters, a line break inside it included.
     pub fn one_line(&self) -> String {
-        let said: Vec<String> = (self.said().iter())
-            .map(|line| line.replace('\n', " "))
-            .collect();
-        said.join(" ").trim().to_string()
+        self.said().join(" ")
     }
 
-    /// A TOML error as the lines the parser shows it on (toml 1.2.0), taken from its parts
-    /// and never from the line breaks in its message, which what it quotes from the file
-    /// can hold. Its message is one line. The parser writes where the error is in one of two
-    /// ways:
+    /// Its words on one line with every line break a space, and no space at either end: how
+    /// types, shapes and attributes say a TOML error (`Problem::toml`), and what their
+    /// `--json` holds. For a TOML error this is the parser's text with each line break a
+    /// space, as those three made it before (`e.to_string().replace('\n', " ").trim()`):
+    /// `toml` cuts the text only at a line break (its lines joined by line breaks are the
+    /// text), or keeps it whole as one line.
+    pub fn folded(&self) -> String {
+        self.one_line().replace('\n', " ").trim().to_string()
+    }
+
+    /// A TOML error as the lines the parser shows it on (toml 1.2.0), taken from its parts:
+    /// its text is cut only where the parser's layout breaks it, never where what it quotes
+    /// from the file does. Its message is one line. The parser writes where the error is in
+    /// one of two ways:
     ///
     /// - for a text it read (the error has a span), before the message: a header, the line
     ///   of the file and a caret under it, each a line of its own (a line of the file holds
@@ -119,23 +137,26 @@ impl Problem {
     pub fn toml(e: &toml::de::Error) -> Problem {
         let (whole, message) = (e.to_string(), e.message().trim_end());
         let whole = whole.trim_end();
-        let before = || -> Option<Vec<String>> {
+        let before = || -> Option<Problem> {
             let place = whole.strip_suffix(message)?;
             if !place.is_empty() && !place.ends_with('\n') {
                 return None;
             }
-            let place = place.split_terminator('\n').map(String::from);
-            Some(place.chain([message.to_string()]).collect())
+            let mut lines = place.split_terminator('\n').map(String::from);
+            Some(match lines.next() {
+                Some(header) => Problem::of(header, lines.chain([message.to_string()])),
+                None => Problem::line(message),
+            })
         };
-        let after = || -> Option<Vec<String>> {
+        let after = || -> Option<Problem> {
             let keys = whole.strip_prefix(message)?.strip_prefix('\n')?;
-            Some(vec![message.to_string(), keys.to_string()])
+            Some(Problem::of(message.to_string(), [keys.to_string()]))
         };
-        let lines = match e.span() {
+        let problem = match e.span() {
             Some(_) => before().or_else(after),
             None => after(),
         };
-        Problem::of(lines.unwrap_or_else(|| vec![whole.to_string()]))
+        problem.unwrap_or_else(|| Problem::line(whole))
     }
 
     /// Why `text` doesn't parse, as the parser shows it (`toml`). The line of the file it
@@ -158,9 +179,34 @@ impl Problem {
     }
 }
 
+/// What goes on one line where several are `joined`: a `Problem` as `one_line` says it, or
+/// the words of one not yet a `Problem` (an owner's left-out pieces, the cards a merge left
+/// out, the notes a tag edit left alone), which stay as they are.
+pub trait OnOneLine {
+    fn on_one_line(&self) -> String;
+}
+
+impl OnOneLine for Problem {
+    fn on_one_line(&self) -> String {
+        self.one_line()
+    }
+}
+
+impl OnOneLine for String {
+    fn on_one_line(&self) -> String {
+        self.clone()
+    }
+}
+
+impl OnOneLine for &str {
+    fn on_one_line(&self) -> String {
+        self.to_string()
+    }
+}
+
 /// Several problems on one line, in order.
-pub fn joined<T: fmt::Display>(problems: &[T]) -> String {
-    let words: Vec<String> = problems.iter().map(T::to_string).collect();
+pub fn joined<T: OnOneLine>(problems: &[T]) -> String {
+    let words: Vec<String> = problems.iter().map(T::on_one_line).collect();
     words.join("; ")
 }
 
@@ -179,10 +225,10 @@ impl fmt::Display for Problem {
 
 impl std::error::Error for Problem {}
 
-/// As it is said (`Display`), one string. What it is about is not said.
+/// On one line (`one_line`), one string. What it is about is not said.
 impl Serialize for Problem {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(&self.one_line())
     }
 }
 
@@ -192,7 +238,7 @@ mod tests {
     use serde::Deserialize;
     use std::collections::BTreeMap;
 
-    /// How types, shapes and attributes folded a TOML error before `one_line`.
+    /// How types, shapes and attributes folded a TOML error before `folded`.
     fn folded(e: &toml::de::Error) -> String {
         e.to_string().replace('\n', " ").trim().to_string()
     }
@@ -252,7 +298,7 @@ mod tests {
     fn a_toml_error_on_one_line_is_the_parsers_text_folded() {
         for e in errors() {
             let problem = Problem::toml(&e);
-            assert_eq!(problem.one_line(), folded(&e), "{e}");
+            assert_eq!(problem.folded(), folded(&e), "{e}");
             let whole = e.to_string();
             let whole = whole.trim_end();
             match problem.lines() {
@@ -305,25 +351,47 @@ mod tests {
         );
         assert_eq!(p.first(), "it nests shape b, which didn't load");
         assert!(p.is_about("a") && !p.is_about("b"));
-        assert_eq!(
-            serde_json::to_string(&p).unwrap(),
-            "\"/w/shapes.toml: shape a: it nests shape b, which didn't load\"",
-            "what it is about is not said"
-        );
 
-        let usage = Problem::of(["no such thing: a\nb".to_string()]).then("usage: x\n  y");
+        let section = Problem::line("tasks: invalid type").under("[style]");
+        assert_eq!(section.said(), ["[style] tasks: invalid type"]);
+        assert_eq!(section.first(), "tasks: invalid type");
+
+        let usage = Problem::of("no such thing: a\nb".to_string(), []).then("usage: x\n  y");
         assert_eq!(usage.lines(), ["no such thing: a\nb", "usage: x", "  y"]);
         assert_eq!(usage.to_string(), "no such thing: a\nb\nusage: x\n  y");
-        assert_eq!(Problem::of([]).then("usage: x").said(), ["usage: x"]);
+        assert_eq!(Problem::usage("usage: x\n  y").said(), ["usage: x", "  y"]);
+    }
+
+    /// `--json` and a message on the gateway hold one line. A problem of one line is that
+    /// line exactly, a line break inside it included (a shape's id that holds one is written
+    /// as main wrote it), and one of several lines puts a space between them.
+    #[test]
+    fn where_one_line_is_held_a_problem_is_said_on_one() {
+        let id = Problem::line("its rebind names shape a\nb, which isn't loaded")
+            .at("extension x: shape a\nb")
+            .about("a\nb");
+        let said = "extension x: shape a\nb: its rebind names shape a\nb, which isn't loaded";
+        assert_eq!(id.one_line(), said);
+        assert_eq!(
+            serde_json::to_string(&id).unwrap(),
+            serde_json::to_string(said).unwrap(),
+            "as it is said, and not what it is about"
+        );
+        let several = Problem::of("one".to_string(), ["  two".to_string()]).at("p");
+        assert_eq!(several.to_string(), "p: one\n  two");
+        assert_eq!(several.one_line(), "p: one   two");
+        assert_eq!(serde_json::to_string(&several).unwrap(), "\"p: one   two\"");
+        assert_eq!(joined(&[several, id]), format!("p: one   two; {said}"));
     }
 
     #[test]
     fn problems_are_joined_in_order() {
-        assert_eq!(joined(&["a", "b c", "d"]), "a; b c; d");
+        assert_eq!(joined(&["a", "b c\nd", " e "]), "a; b c\nd;  e ");
         assert_eq!(joined::<Problem>(&[]), "");
         assert_eq!(
             joined(&[Problem::line("one"), Problem::line("two").at("x")]),
             "one; x: two"
         );
+        assert_eq!(joined(&["kept".to_string()]), "kept");
     }
 }
