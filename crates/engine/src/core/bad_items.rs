@@ -124,8 +124,9 @@ fn bads() -> Vec<Bad> {
             list: "links",
             entry: json!({"from": "chore", "to": "nowhere"}),
             altered: json!({"from": "chore", "to": "nowhere", "label": "needs"}),
-            fixed: json!({"from": "chore", "to": "md"}),
-            other: json!({"from": "row", "to": "nowhere"}),
+            fixed: json!({"from": "chore", "to": "row"}),
+            // A link to a Markdown piece, which is no piece: bad, and its ends unnamed.
+            other: json!({"from": "chore", "to": "md"}),
             says: "a link from chore to nowhere: no piece is at nowhere".into(),
         },
         Bad {

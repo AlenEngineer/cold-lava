@@ -1423,7 +1423,8 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
     });
     let betweens = (given.between.iter().enumerate()).filter_map(|(n, l)| {
         let words = left(Subject::Between(n))?;
-        Some((format!("between {}: {}", n + 1, joins(l)), words))
+        let holds = key(serde_json::to_string(l));
+        Some((format!("between {}: {holds}", n + 1), words))
     });
     let left_out = (records.chain(items).chain(links).chain(betweens)).collect();
     read.problems = crate::problem::capped(read.problems);
