@@ -17,6 +17,7 @@ use crate::bind::{Binding, Entry, OWNER, Source};
 use crate::core::Core;
 use crate::files::{Create, Created, NewFile};
 use crate::gateway::{Answer, Edit, Error, Op, Reason};
+use crate::problem;
 use crate::recipe;
 use crate::shapes::{Behaviour, EditStep, Shapes, Step, Steps, Way, fill};
 use crate::shows::{Member, text_of};
@@ -202,7 +203,7 @@ impl Binding {
         // The loader checked them already. `run` takes only `Steps`, so that no path can hand
         // it steps nobody checked, and an entry's are made here by the same rules.
         let steps = Steps::checked(b.written(), shapes).map_err(|problems| {
-            let message = format!("{}: {}", self.shape().id, problems.join("; "));
+            let message = format!("{}: {}", self.shape().id, problem::joined(&problems));
             Error::new(Reason::Refused, message)
         })?;
         self.run(gw, gesture, &steps).map(Acted::Ran)
@@ -521,7 +522,7 @@ impl Reply {
                 .map_err(|problems| {
                     format!(
                         "it answered shape/gesture with steps that can't run: {}",
-                        problems.join("; ")
+                        problem::joined(&problems)
                     )
                 }),
             (Ask::Region { .. }, _) => Err("it answered shape/region with steps".into()),

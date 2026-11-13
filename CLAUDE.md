@@ -376,6 +376,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
+  split only where the app's own text or the TOML parser's layout breaks it. Pick a
+  problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it
+  on one line. Words as written, no terminal: `say` and `Notice` show them.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
 what it needs (`markdown::set_configured` for the chosen flavour).
@@ -533,8 +537,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   content; `told!` (stdout) and `problem!` (stderr) for a message, what a command did or
   why it didn't; `say::fixed` for the app's own `&'static str`; `say::json` for JSON,
   written as it is. One call is one line: what has several lines by the app's own
-  structure makes one call a line, or is a `say::Lines` error (a usage after what went
-  wrong). Never `println!` or take `stdout()` elsewhere: `tests/one_door.rs` lists every
+  structure makes one call a line, or is a `Problem` error (the engine's `problem.rs`; a
+  usage after what went wrong), which `main` prints a line each. Never `println!` or take `stdout()` elsewhere: `tests/one_door.rs` lists every
   print site (the host's, the engine's and the views crate's too) and every listing, and
   `tests/outside_text.rs` runs the binary on text with escape sequences planted.
 - `drive.rs`: `cold-lava drive`, scripted UI runs (its `write` step changes a workspace file

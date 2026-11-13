@@ -18,11 +18,12 @@
 //! One call is one line. A line break inside the text of a listing line or a message is
 //! escaped like any other character a terminal acts on, so text from outside can't begin a
 //! line of its own. What has several lines by the app's own structure says so: one call a
-//! line, a `Lines` for an error, or `listing_block` for a text whose lines are a listing.
+//! line, a `Problem` (the engine's `problem.rs`) for an error, which `main` prints a line
+//! each, or `listing_block` for a text whose lines are a listing.
 
 use cold_lava_views::shown::{Level, escape};
 use serde::Serialize;
-use std::fmt::{self, Arguments};
+use std::fmt::Arguments;
 use std::io::{self, StdoutLock, Write};
 
 /// `text` with each of its lines escaped as content. The line ends stay as they are, a CR
@@ -119,38 +120,6 @@ impl Out {
     }
 }
 
-/// An error whose message has several lines by the app's own structure: what went wrong,
-/// then the usage or the list it points to. Each line is one message line when it is
-/// printed, so a line break inside one of them is escaped and the breaks between them are
-/// the app's.
-#[derive(Debug)]
-pub struct Lines(Vec<String>);
-
-impl Lines {
-    /// These lines, each made where the error is.
-    pub fn of(lines: impl IntoIterator<Item = String>) -> Lines {
-        Lines(lines.into_iter().collect())
-    }
-
-    /// And after them each line of `text`, the app's own.
-    pub fn then(mut self, text: &'static str) -> Lines {
-        self.0.extend(text.split('\n').map(String::from));
-        self
-    }
-
-    pub fn lines(&self) -> &[String] {
-        &self.0
-    }
-}
-
-impl fmt::Display for Lines {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0.join("\n"))
-    }
-}
-
-impl std::error::Error for Lines {}
-
 /// One line of a listing on stdout, written as `println!` is.
 macro_rules! out {
     () => { $crate::say::listing(format_args!("")) };
@@ -198,12 +167,5 @@ mod tests {
             message(format_args!("  {}", "plain\twords")),
             "  plain\twords"
         );
-    }
-
-    #[test]
-    fn an_error_of_several_lines_keeps_them_apart() {
-        let e = Lines::of(["no such thing: a\nb".to_string()]).then("usage: x\n  y");
-        assert_eq!(e.lines(), ["no such thing: a\nb", "usage: x", "  y"]);
-        assert_eq!(e.to_string(), "no such thing: a\nb\nusage: x\n  y");
     }
 }

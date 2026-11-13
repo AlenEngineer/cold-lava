@@ -1048,7 +1048,7 @@ impl Board {
                     .collect();
                 let (definition, left_out) = crate::shape_editor::merged(&members);
                 if !left_out.is_empty() {
-                    self.flash(format!("left out: {}", left_out.join("; ")));
+                    self.flash(format!("left out: {}", crate::problem::joined(&left_out)));
                 }
                 let id = (1..)
                     .map(|n| format!("drawing{n}"))

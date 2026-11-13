@@ -14,6 +14,7 @@ use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
 use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Relink, Stage};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
+use crate::problem;
 use crate::trash::{Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned};
 use anyhow::Result;
@@ -403,7 +404,7 @@ impl Core {
             let read = given::read(rel, &given, self.index.workspace.item_settings());
             let problems = self.index.workspace.owned[i].take(rev, given, read);
             if !problems.is_empty() {
-                events.push(trouble(problems.join("; ")));
+                events.push(trouble(problem::joined(&problems)));
             }
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
@@ -592,7 +593,7 @@ impl Core {
         let expect = given::apply(&file.given, &changes);
         let read = given::read(&file.rel, &expect, settings);
         if !read.problems.is_empty() {
-            return Err(error(Reason::Refused, read.problems.join("; ")));
+            return Err(error(Reason::Refused, problem::joined(&read.problems)));
         }
         let at = |id: Option<&str>, line: usize| {
             let found = (read.items.iter()).find(|it| match id {

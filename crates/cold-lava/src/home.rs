@@ -4260,7 +4260,10 @@ impl Home {
             msg.push_str(&format!(" · {} skipped (not notes)", skipped.len()));
         }
         if !refused.is_empty() {
-            msg.push_str(&format!(" · left alone: {}", refused.join("; ")));
+            msg.push_str(&format!(
+                " · left alone: {}",
+                crate::problem::joined(&refused)
+            ));
         }
         self.flash(msg);
     }

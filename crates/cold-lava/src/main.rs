@@ -36,8 +36,8 @@ mod whichkey;
 
 use cold_lava_engine::{
     act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
-    json_canvas, links, markdown, merge, owner, paths, recipe, rename, resolver, search, shapes,
-    style, tasks, templates, tidy, trash, types, workspace, write,
+    json_canvas, links, markdown, merge, owner, paths, problem, recipe, rename, resolver, search,
+    shapes, style, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -239,12 +239,15 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("COLD_LAVA_COM
 fn main() {
     if let Err(e) = run() {
         // An error of several lines is the app's own (a usage): one message line each.
-        match e.downcast_ref::<say::Lines>().map(say::Lines::lines) {
-            Some([first, rest @ ..]) => {
-                problem!("cold-lava: {first}");
-                rest.iter().for_each(|line| problem!("{line}"));
+        match e
+            .downcast_ref::<problem::Problem>()
+            .map(problem::Problem::said)
+        {
+            Some(said) => {
+                problem!("cold-lava: {}", said[0]);
+                said[1..].iter().for_each(|line| problem!("{line}"));
             }
-            _ => problem!("cold-lava: {e:#}"),
+            None => problem!("cold-lava: {e:#}"),
         }
         // Exit code 3 means "the task line or item changed": callers can refresh and retry.
         let changed_item = matches!(
@@ -336,8 +339,10 @@ fn run() -> Result<()> {
             if !errors.is_empty() || !warnings.is_empty() {
                 let path = config::path().unwrap_or_default();
                 problem!("{}:", path.display());
-                let lines = errors.iter().flat_map(|e| e.lines());
-                lines.chain(warnings).for_each(|line| problem!("  {line}"));
+                let lines = errors.iter().flat_map(problem::Problem::said);
+                lines
+                    .chain(warnings.iter().cloned())
+                    .for_each(|line| problem!("  {line}"));
             }
             if !registry.refused().is_empty() {
                 problem!("extensions:");
@@ -448,12 +453,14 @@ fn run() -> Result<()> {
                 say::json(&found)?;
             } else {
                 print_shapes(&found);
-                for (title, lines) in [("notes:", &found.notes), ("errors:", &found.errors)] {
-                    if !lines.is_empty() {
-                        problem!("{title}");
-                        for line in lines {
-                            problem!("  {line}");
-                        }
+                if !found.notes.is_empty() {
+                    problem!("notes:");
+                    found.notes.iter().for_each(|line| problem!("  {line}"));
+                }
+                if !found.errors.is_empty() {
+                    problem!("errors:");
+                    for line in found.errors.iter().flat_map(problem::Problem::said) {
+                        problem!("  {line}");
                     }
                 }
             }
@@ -506,8 +513,8 @@ fn run() -> Result<()> {
                 let kinds = types::BUILT_IN.iter().chain(items::KINDS).copied();
                 let kinds = kinds.collect::<Vec<_>>().join(", ");
                 let usage = "usage: cold-lava items WORKSPACE KIND [--json]".to_string();
-                let lines = [usage, format!("KIND is one of: {kinds} or a type")];
-                return Err(say::Lines::of(lines).into());
+                let kinds = format!("KIND is one of: {kinds} or a type");
+                return Err(problem::Problem::of(usage, [kinds]).into());
             };
             let workspace = owned::workspace(Path::new(root), &registry)?;
             let settings = workspace.item_settings();
@@ -643,7 +650,7 @@ fn run() -> Result<()> {
                              NOTE is a note's name or path, or a folder; NEW is a new name \
                              (same folder), a folder ending in / (keeps the name), or a full \
                              path";
-                return Err(say::Lines::of([]).then(usage).into());
+                return Err(problem::Problem::usage(usage).into());
             };
             let mut core = owned::open(Path::new(root), &registry)?;
             let mut owners = owned::Owners::new(&mut registry, &core);
@@ -700,7 +707,7 @@ fn run() -> Result<()> {
                 let usage = "usage: cold-lava recipe WORKSPACE NAME [--OPTION VALUE…] [--dry-run] \
                              [--json]\n\
                              cold-lava recipe --list shows the recipes and their options";
-                return Err(say::Lines::of([]).then(usage).into());
+                return Err(problem::Problem::usage(usage).into());
             };
             let r = recipe::find(id).ok_or_else(|| {
                 anyhow::anyhow!("no recipe called {id}; cold-lava recipe --list shows them")
@@ -730,9 +737,9 @@ fn run() -> Result<()> {
             } else {
                 print_style(&found);
             }
-            let config = (config::get().errors.iter()).filter(|e| e.first().starts_with("[style]"));
+            let config = (config::get().errors.iter()).filter(|e| e.is_about(config::STYLE));
             let config: Vec<String> = config
-                .map(|e| format!("config.toml {}", e.first()))
+                .map(|e| format!("config.toml {}", e.one_line()))
                 .collect();
             for e in found.errors.iter().chain(&config) {
                 problem!("{e}");
@@ -901,8 +908,10 @@ fn run() -> Result<()> {
         Some(dir) => {
             let path = PathBuf::from(dir);
             if !path.is_dir() {
-                let lines = [format!("not a folder or command: {dir}"), String::new()];
-                return Err(say::Lines::of(lines).then(USAGE).into());
+                let what = format!("not a folder or command: {dir}");
+                return Err(problem::Problem::of(what, [String::new()])
+                    .then(USAGE)
+                    .into());
             }
             let mut home = home::Home::new(render, Some(path), registry);
             with_terminal(|t| home.run(t))
@@ -949,7 +958,7 @@ fn drive() -> Result<()> {
         }
     };
     let script = drive::parse(&src).map_err(|e| {
-        let lines = say::Lines::of([format!("{name}:{}: {}", e.line, e.message)]);
+        let lines = problem::Problem::line(format!("{name}:{}: {}", e.line, e.message));
         match e.then {
             Some(text) => lines.then(text),
             None => lines,

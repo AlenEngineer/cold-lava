@@ -158,6 +158,11 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- The shape editor no longer takes another definition's error for the draft's when that
+  error's words, or the workspace's path, happen to hold `shape ID: ` (#265, track A step
+  A3). A glyph named `shape x` that doesn't load no longer stops a draft called `x` from
+  being saved or drawn, and the draft's own errors no longer show with part of the path
+  before them.
 - The command line no longer prints text from a file or an extension as it is written when
   that text holds characters a terminal acts on (#265, track A step A2). A task whose text
   held `ESC ]0;…BEL` retitled the terminal from `cold-lava items`, and an owner's place did

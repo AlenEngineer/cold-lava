@@ -22,6 +22,7 @@ pub mod matcher;
 pub mod merge;
 pub mod owner;
 pub mod paths;
+pub mod problem;
 pub mod recipe;
 pub mod rename;
 pub mod resolver;
