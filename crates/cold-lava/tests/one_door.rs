@@ -1501,16 +1501,11 @@ const LEAVES: [&str; 19] = [
     "f64",
 ];
 
-<<<<<<< HEAD
 /// The module of the bounded types, and the types in it that hold a value within a bound
 /// another type names: those are bounds, and are not followed. The bounds themselves are
 /// unit types, followed like any other.
 const BOUNDED: &str = "../engine/src/bounded.rs";
 const WRAPPERS: [&str; 4] = ["Text", "List", "Fields", "Pairs"];
-=======
-/// The module of the bounded types: what is in it is a bound, and is not followed.
-const BOUNDED: &str = "../engine/src/bounded.rs";
->>>>>>> origin/main
 
 /// The types read from an answer, from `roots` (`file: Type`) through every type a field of
 /// one names and every type one is read through (`#[serde(from = "…")]`), each as
@@ -1568,12 +1563,8 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
     while let Some((file, i)) = queue.pop() {
         let d = &all.iter().find(|(f, _, _)| *f == file).unwrap().2[i];
         let entry = format!("{}: {}", short(&file), d.name);
-<<<<<<< HEAD
         let wrapper = file == BOUNDED && WRAPPERS.contains(&d.name.as_str());
         if wrapper || reached.contains(&entry) {
-=======
-        if file == BOUNDED || reached.contains(&entry) {
->>>>>>> origin/main
             continue;
         }
         reached.push(entry);
@@ -1613,7 +1604,6 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
     (reached, wrong)
 }
 
-<<<<<<< HEAD
 /// The engine's modules of answers: every type read with serde in them (`Deserialize`) is
 /// an answer's, or one of these, which another program never sends.
 const ANSWER_FILES: [&str; 4] = [
@@ -1658,12 +1648,6 @@ fn read_with_serde(files: &[(String, String)]) -> Vec<String> {
 /// `file/edit` (`NewText`), and an extension's `shape/region` and `shape/gesture` (`Reply`).
 /// This follows every type such an answer is read into, from those three and from every type
 /// serde reads in the modules of answers (`ANSWER_FILES`, but `NOT_ANSWERS`), and fails on a
-=======
-/// What another program answers is held in types whose every field names its bound
-/// (`crates/engine/src/bounded.rs`, #265's step A4): an owner's `file/read` (`Given`) and
-/// `file/edit` (`NewText`), and an extension's `shape/region` and `shape/gesture` (`Reply`).
-/// This follows every type such an answer is read into, from those three, and fails on a
->>>>>>> origin/main
 /// field that holds a `String`, a `Vec`, a map or a JSON value of its own. The list of types
 /// says what is followed: a new one fails until it is listed, and so does one that is gone.
 ///
@@ -1677,7 +1661,6 @@ fn read_with_serde(files: &[(String, String)]) -> Vec<String> {
 #[test]
 fn every_field_of_an_answer_names_its_bound() {
     let files = crate_sources("engine");
-<<<<<<< HEAD
     let serde_reads = read_with_serde(&files);
     let not_answers: Vec<String> = (serde_reads.iter())
         .filter(|t| NOT_ANSWERS.contains(&t.as_str()))
@@ -1691,22 +1674,16 @@ fn every_field_of_an_answer_names_its_bound() {
         &NOT_ANSWERS,
     );
     let mut roots = vec![
-=======
-    let roots = [
->>>>>>> origin/main
         "owner/given.rs: Given",
         "owner/edits.rs: NewText",
         "act.rs: Reply",
     ];
-<<<<<<< HEAD
     roots.extend(
         serde_reads
             .iter()
             .map(String::as_str)
             .filter(|t| !NOT_ANSWERS.contains(t)),
     );
-=======
->>>>>>> origin/main
     let (reached, wrong) = answer_types(&files, &roots);
     assert!(
         wrong.is_empty(),
@@ -1716,7 +1693,6 @@ fn every_field_of_an_answer_names_its_bound() {
          follows, or a leaf"
     );
     let listed = [
-<<<<<<< HEAD
         "act.rs: GestureWire",
         "act.rs: RegionEntry",
         "act.rs: RegionWire",
@@ -1738,12 +1714,6 @@ fn every_field_of_an_answer_names_its_bound() {
         "owner/answer.rs: LeftOut",
         "owner/answer.rs: MarkdownWire",
         "owner/answer.rs: TypedWire",
-=======
-        "act.rs: RegionEntry",
-        "act.rs: Reply",
-        "alphabet.rs: Mark",
-        "alphabet.rs: Role",
->>>>>>> origin/main
         "owner/edits.rs: NewText",
         "owner/given.rs: Between",
         "owner/given.rs: Cell",
@@ -1816,11 +1786,8 @@ fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
     assert_eq!(
         reached,
         [
-<<<<<<< HEAD
             "bounded.rs: Message",
             "bounded.rs: Place",
-=======
->>>>>>> origin/main
             "other.rs: Far",
             "root.rs: Inner",
             "root.rs: Root",
