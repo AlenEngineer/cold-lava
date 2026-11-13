@@ -704,7 +704,17 @@ mod tests {
         let asked = relink(board, lava_to_hot, |_| None).unwrap().unwrap();
         let relinked = edit(board, &asked.changes).unwrap();
         let expected = crate::owner::given::apply(asked.given.as_ref().unwrap(), &asked.changes);
-        assert_eq!(read(&relinked).unwrap().links, expected.links);
+        // The read-back compares where links lead (`given::same`), not the words around them.
+        let leads = |links: &[GivenLink]| -> Vec<(String, String)> {
+            let each = links
+                .iter()
+                .map(|l| (l.place.to_string(), l.target.to_string()));
+            each.collect()
+        };
+        assert_eq!(
+            leads(&read(&relinked).unwrap().links),
+            leads(&expected.links)
+        );
     }
 
     /// Two changes to one node's field are refused, never written one over the other.
