@@ -3,8 +3,10 @@
 # Volcanoes/Eruptions.csv: each row as a row piece with its cells, so the workspace's eruption
 # type matches it, its `Volcano (link)` cells are links, and its `Notes (markdown)` cell is
 # Markdown of its own, so its task is a task.
+# COLD_LAVA_TODAY pins today, so the agenda shows the task's day beside it whatever the date.
 size 140x30
 env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
 wait-for example-workspace
 keys /
 type krakatoa
