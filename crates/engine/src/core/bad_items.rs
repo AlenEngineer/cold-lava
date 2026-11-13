@@ -611,14 +611,14 @@ fn a_tick_on_a_board_with_cards_left_out_writes_only_its_own_card() {
         let listed: Vec<Item> = core.index.workspace.owned[0].items.clone();
         let tasks: Vec<&Item> = listed.iter().filter(|i| i.data.kind() == "task").collect();
         assert!(
-            tasks.iter().any(|t| words(*t) == "n9"),
+            tasks.iter().any(|t| words(t) == "n9"),
             "board {a}/{b}: the good card is listed"
         );
         for task in tasks {
             let said = words(task);
             let file = &core.index.workspace.owned[0];
             let task = (file.items.iter())
-                .find(|i| words(*i) == said)
+                .find(|i| words(i) == said)
                 .unwrap()
                 .clone();
             let before = board_now();
