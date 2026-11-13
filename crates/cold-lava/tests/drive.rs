@@ -37,6 +37,11 @@ fn system_trash(home: &Path) -> PathBuf {
     }
 }
 
+/// The day every script runs on (`COLD_LAVA_TODAY`), so the example workspace's dated tasks
+/// fall in the same agenda groups and count as overdue or not whatever the real date. A
+/// script's own `env COLD_LAVA_TODAY=` header wins over it.
+const TODAY: &str = "2026-11-07";
+
 fn drive(script: &str, dir: &Path) -> Output {
     drive_with(script, dir, &[])
 }
@@ -46,6 +51,7 @@ fn drive_with(script: &str, dir: &Path, options: &[&std::ffi::OsStr]) -> Output 
         .join("tests/drive")
         .join(script);
     Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .env("COLD_LAVA_TODAY", TODAY)
         .arg("drive")
         .args(options)
         .arg(&script)
@@ -62,6 +68,7 @@ fn drive_board(script: &str, dir: &Path) -> Output {
         .join("tests/drive")
         .join(script);
     Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .env("COLD_LAVA_TODAY", TODAY)
         .arg("drive")
         .arg(&script)
         .args(["--", "board"])

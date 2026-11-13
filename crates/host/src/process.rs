@@ -1065,9 +1065,15 @@ mod tests {
         found
     }
 
+    /// The day the example extensions take for today (`COLD_LAVA_TODAY`, which they read as
+    /// the binary does), so the example workspace's dated tasks are overdue or not whatever the
+    /// real date.
+    const TODAY: &str = "2026-11-07";
+
     /// An example extension (`examples/extensions/<example>`), loaded from a copy beside a copy
-    /// of the example workspace with an overdue task in Inbox/Seismograph.md: its registry, the
-    /// core, the workspace and the folder that holds both. Its log is `<example>.log` there.
+    /// of the example workspace with an overdue task in Inbox/Seismograph.md, and started
+    /// through `env` with `COLD_LAVA_TODAY` set to `TODAY`: its registry, the core, the
+    /// workspace and the folder that holds both. Its log is `<example>.log` there.
     fn python_example(example: &str, name: &str) -> (Registry, Core, PathBuf, PathBuf) {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dir = std::env::temp_dir().join(format!("cold-lava-{name}-{}", std::process::id()));
@@ -1082,6 +1088,8 @@ mod tests {
         assert_eq!(mistakes, Vec::<String>::new());
         let mut installed = found.into_iter().next().unwrap();
         installed.launch.log = Some(dir.join(format!("{example}.log")));
+        let pinned = vec!["env".to_string(), format!("COLD_LAVA_TODAY={TODAY}")];
+        installed.launch.run = [pinned, installed.launch.run].concat();
         let r = Registry::new(vec![Box::new(Process::new(installed).unwrap())]);
         let core = Core::open(&root).unwrap();
         (r, core, root, dir)
@@ -1298,8 +1306,7 @@ mod tests {
             notes(std::slice::from_ref(e)) == [moved]
         });
         let text = std::fs::read_to_string(root.join("Inbox/Seismograph.md")).unwrap();
-        let today = crate::tasks::today().format("%Y-%m-%d");
-        assert_eq!(text, format!("- [ ] Check the seismograph 📅 {today}\n"));
+        assert_eq!(text, format!("- [ ] Check the seismograph 📅 {TODAY}\n"));
 
         tick_first(&mut core, tasks(&["todo", "in_progress"]));
         let fewer = format!("☐ {} open tasks", n - 1);
