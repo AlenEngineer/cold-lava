@@ -39,15 +39,54 @@ struct Cache {
     dirty: bool,
 }
 
+/// What an owner gave for one version of a file. The items it left out live in one place,
+/// `given.left_out`, and the cache file holds them beside the answer (`Stored`): what is
+/// saved is what is read back, through any number of loads and saves.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(from = "Stored", into = "Stored")]
 struct Answer {
     rev: String,
     given: Given,
-    /// The items the answer gave that didn't read (`Given::left_out`), which its JSON as an
-    /// owner gives it has no room for. A cache written before they were kept has none here,
-    /// and its answer is read again as it loads, so what didn't read then is found again.
+    /// Whether the answer read back from the cache as it was saved. One whose items no longer
+    /// all read (a bound applies now that didn't when it was saved, or it was saved before
+    /// left-out items were kept) is dropped as it loads, and its owner asked again: the
+    /// positions of what was left out then and what is left out now can't be put in one
+    /// order without the owner's answer.
+    read_as_saved: bool,
+}
+
+/// An answer as the cache file holds it: the answer as its owner gives it, and the items it
+/// left out (`Given::left_out`), which that JSON has no room for.
+#[derive(Serialize, Deserialize)]
+struct Stored {
+    rev: String,
+    given: Given,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    left_out: Vec<(usize, crate::bounded::LeftOut)>,
+    left_out: Vec<(usize, crate::owner::answer::LeftOut)>,
+}
+
+impl From<Stored> for Answer {
+    fn from(stored: Stored) -> Answer {
+        let mut given = stored.given;
+        let read_as_saved = given.left_out.is_empty();
+        given.left_out = stored.left_out;
+        Answer {
+            rev: stored.rev,
+            given,
+            read_as_saved,
+        }
+    }
+}
+
+impl From<Answer> for Stored {
+    fn from(answer: Answer) -> Stored {
+        let left_out = answer.given.left_out.clone();
+        Stored {
+            rev: answer.rev,
+            given: answer.given,
+            left_out,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -74,7 +113,7 @@ impl Owners {
             let cache = (path.as_deref())
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .and_then(|t| serde_json::from_str::<Cache>(&t).ok())
-                .map(Cache::with_left_out)
+                .map(Cache::read_as_saved)
                 .filter(|c| c.owner == k.owner && c.version == k.version)
                 .unwrap_or_else(|| Cache {
                     owner: k.owner.clone(),
@@ -154,7 +193,7 @@ impl Owners {
         let answer = Answer {
             rev: rev.to_string(),
             given: given.clone(),
-            left_out: given.left_out.clone(),
+            read_as_saved: true,
         };
         cache.files.insert(path.to_string(), answer);
         cache.dirty = true;
@@ -183,12 +222,11 @@ impl Owners {
 }
 
 impl Cache {
-    /// Each answer with the items it left out back in it.
-    fn with_left_out(mut self) -> Cache {
-        for answer in self.files.values_mut() {
-            let kept = std::mem::take(&mut answer.left_out);
-            answer.given.left_out.extend(kept);
-        }
+    /// It without the answers that didn't read back as they were saved (`Answer`).
+    fn read_as_saved(mut self) -> Cache {
+        let before = self.files.len();
+        self.files.retain(|_, answer| answer.read_as_saved);
+        self.dirty = self.files.len() != before;
         self
     }
 }

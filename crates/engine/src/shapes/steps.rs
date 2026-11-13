@@ -21,12 +21,17 @@ impl Steps {
         edits(steps)
     }
 
-    /// `steps` among the loaded `shapes`, or what they get wrong, one problem each.
+    /// A problem for each rebind of `steps` to a shape that isn't among the loaded `shapes`.
+    pub fn unknown(steps: &[Step], shapes: &Shapes) -> Vec<Problem> {
+        unknown_rebinds(steps, &|id: &str| shapes.get(id).is_some())
+    }
+
+    /// `steps` among the loaded `shapes`, or what they get wrong, one problem each: what
+    /// they get wrong on their own (`alone`, the rules an answer's steps meet as it arrives),
+    /// then their rebinds to shapes that aren't loaded.
     pub fn checked(steps: Vec<Step>, shapes: &Shapes) -> Result<Steps, Vec<Problem>> {
-        let mut problems = edits(&steps);
-        problems.extend(unknown_rebinds(&steps, &|id: &str| {
-            shapes.get(id).is_some()
-        }));
+        let mut problems = Self::alone(&steps);
+        problems.extend(Self::unknown(&steps, shapes));
         match problems.is_empty() {
             true => Ok(Steps(steps)),
             false => Err(problems),

@@ -244,9 +244,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   id is `given::piece_id` (file, kind, place, then `piece`), apart from a typed item's and a
   Markdown piece's: none of the three may take another's id. An answer is untrusted:
   every field of its types names its bound (`bounded.rs`), which applies as the answer is
-  read in the host; an item is read on its own by its keys (`given::Kept`), so one that
-  doesn't read is left out alone with the reader's words (`Given::left_out`, kept in the
-  cache and compared by the read-back); `Piece::check` and `read_piece` apply what compares
+  read in the host; an item is read on its own by its keys (`owner/answer.rs`: `Kept`,
+  `GivenItem::read`, a run's reader), so one that doesn't read is left out alone with the
+  reader's words (`Given::left_out`, its one home in memory, which the cache saves and reads
+  back beside the answer, and the read-back compares); `Piece::check` and `read_piece` apply what compares
   a piece with the rest of its answer (depth, places, `in`), and a place is never written
   into a file.
   Markdown pieces and typed items read as before.
@@ -391,8 +392,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `ON_ARRIVAL` false for the two the answer's reader applies), and nothing is checked when
   a value is built; a reader applies a bound to a value it didn't read by asking the field
   (`fits`, `most`, `past`), as `Piece::check` does. They serialize as what they hold, so
-  revs don't move. `said` is the one place serde's words are judged safe to show (the
-  host's `unread` asks it); `capped` keeps the first 100 problems. A field of an answer's
+  revs don't move. A leaf: the reader's words are `owner/answer.rs` (`said`, the one place
+  serde's words are judged safe to show, cut to 200 characters, which the host's `unread`
+  asks; `LeftOut`), `serde_words.rs` (the leaf rule for serde's forms) and `problem.rs`
+  (`capped`, the first 100 problems; `cut`). A field of an answer's
   type that holds a bare collection or JSON value, a slice, or a type the scan can't follow
   fails `tests/one_door.rs`, which follows every type an answer is read into; a new field
   names its bound.

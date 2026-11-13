@@ -1501,8 +1501,11 @@ const LEAVES: [&str; 19] = [
     "f64",
 ];
 
-/// The module of the bounded types: what is in it is a bound, and is not followed.
+/// The module of the bounded types, and the types in it that hold a value within a bound
+/// another type names: those are bounds, and are not followed. The bounds themselves are
+/// unit types, followed like any other.
 const BOUNDED: &str = "../engine/src/bounded.rs";
+const WRAPPERS: [&str; 4] = ["Text", "List", "Fields", "Pairs"];
 
 /// The types read from an answer, from `roots` (`file: Type`) through every type a field of
 /// one names and every type one is read through (`#[serde(from = "…")]`), each as
@@ -1560,7 +1563,8 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
     while let Some((file, i)) = queue.pop() {
         let d = &all.iter().find(|(f, _, _)| *f == file).unwrap().2[i];
         let entry = format!("{}: {}", short(&file), d.name);
-        if file == BOUNDED || reached.contains(&entry) {
+        let wrapper = file == BOUNDED && WRAPPERS.contains(&d.name.as_str());
+        if wrapper || reached.contains(&entry) {
             continue;
         }
         reached.push(entry);
@@ -1602,7 +1606,12 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
 
 /// The engine's modules of answers: every type read with serde in them (`Deserialize`) is
 /// an answer's, or one of these, which another program never sends.
-const ANSWER_FILES: [&str; 3] = ["act.rs", "owner/edits.rs", "owner/given.rs"];
+const ANSWER_FILES: [&str; 4] = [
+    "act.rs",
+    "owner/answer.rs",
+    "owner/edits.rs",
+    "owner/given.rs",
+];
 const NOT_ANSWERS: [&str; 7] = [
     // What is asked of an extension, and what the frontend and the engine make.
     "act.rs: Ask",
@@ -1690,6 +1699,21 @@ fn every_field_of_an_answer_names_its_bound() {
         "act.rs: Reply",
         "alphabet.rs: Mark",
         "alphabet.rs: Role",
+        "bounded.rs: AttributeName",
+        "bounded.rs: Attributes",
+        "bounded.rs: Betweens",
+        "bounded.rs: CellName",
+        "bounded.rs: FieldName",
+        "bounded.rs: LabelName",
+        "bounded.rs: LinkLabel",
+        "bounded.rs: Message",
+        "bounded.rs: Owed",
+        "bounded.rs: Place",
+        "bounded.rs: Target",
+        "owner/answer.rs: Kept",
+        "owner/answer.rs: LeftOut",
+        "owner/answer.rs: MarkdownWire",
+        "owner/answer.rs: TypedWire",
         "owner/edits.rs: NewText",
         "owner/given.rs: Between",
         "owner/given.rs: Cell",
@@ -1697,14 +1721,11 @@ fn every_field_of_an_answer_names_its_bound() {
         "owner/given.rs: Given",
         "owner/given.rs: GivenItem",
         "owner/given.rs: GivenLink",
-        "owner/given.rs: Kept",
         "owner/given.rs: Label",
         "owner/given.rs: LinkRun",
-        "owner/given.rs: MarkdownWire",
         "owner/given.rs: Marked",
         "owner/given.rs: Piece",
         "owner/given.rs: Run",
-        "owner/given.rs: TypedWire",
         "owner/given.rs: Wire",
         "owner/given.rs: WireLink",
         "shapes.rs: CreateStep",
@@ -1765,6 +1786,8 @@ fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
     assert_eq!(
         reached,
         [
+            "bounded.rs: Message",
+            "bounded.rs: Place",
             "other.rs: Far",
             "root.rs: Inner",
             "root.rs: Root",

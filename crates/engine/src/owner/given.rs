@@ -14,14 +14,15 @@
 
 use crate::alphabet::{Mark, Role};
 use crate::bounded::{
-    AttributeName, Attributes, Betweens, CellName, FieldName, Fields, LabelName, LeftOut, Limit,
-    LinkLabel, List, Message, Owed, Place, Target, Text, cut,
+    AttributeName, Attributes, Betweens, CellName, FieldName, Fields, LabelName, Limit, LinkLabel,
+    List, Message, Owed, Place, Target, Text,
 };
 use crate::gateway;
 use crate::items::{Data, Item, Settings};
 use crate::matcher::{Asked, Carried};
+use crate::owner::answer::{Kept, LeftOut};
 use crate::owner::markdown;
-use crate::problem::Problem;
+use crate::problem::{Problem, cut};
 use crate::tasks::{FNV_START, StatusType, TasksSettings, fnv_from, line_id};
 use crate::types::On;
 use crate::workspace::{Ref, clean_target};
@@ -117,29 +118,6 @@ impl Serialize for Links<'_> {
     }
 }
 
-/// One entry of an answer's `items` as it is read: the item, or why it is left out. Only a
-/// JSON value that doesn't parse refuses the answer.
-enum Kept {
-    Item(GivenItem),
-    Left(LeftOut),
-}
-
-impl<'de> Deserialize<'de> for Kept {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let value = Json::deserialize(d)?;
-        let place = value.get("place").and_then(Json::as_str).map(short);
-        let key = line_id(&value.to_string());
-        Ok(match GivenItem::read(value) {
-            Ok(item) => Kept::Item(item),
-            Err(why) => {
-                let place = place.unwrap_or_else(|| "an item with no place".to_string());
-                let said = format!("{place}: {}", cut(&why, 200));
-                Kept::Left(LeftOut { place, key, said })
-            }
-        })
-    }
-}
-
 /// Which kind an entry is shows in its keys: one with `from` or `to` and no `target` is
 /// between two pieces. It is then read as that kind, so a mistake is named (`missing field
 /// `place``, `unknown field `color``), not answered with "it matches no kind".
@@ -159,7 +137,7 @@ impl<'de> Deserialize<'de> for WireLink {
 }
 
 /// One item, at a place in the file the owner keeps stable (a row's key, a card's id). It is
-/// read by its keys (`GivenItem::read`), so what is wrong with it is named.
+/// read by its keys (`owner::answer`), so what is wrong with it is named.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum GivenItem {
@@ -178,76 +156,6 @@ pub enum GivenItem {
     },
     /// A piece in the alphabet's terms: never Markdown.
     Piece(Piece),
-}
-
-/// A Markdown piece as the wire has it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MarkdownWire {
-    place: Text<Owed>,
-    text: Text<Message>,
-}
-
-/// A typed item as the wire has it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TypedWire {
-    place: Text<Owed>,
-    #[serde(rename = "type")]
-    kind: Text<Owed>,
-    #[serde(default)]
-    fields: Fields<Owed, Owed, Owed>,
-}
-
-impl GivenItem {
-    /// One item of an answer, of the kind its keys say: a `role` makes it a piece, a `type`
-    /// a typed item, anything else a Markdown piece. A piece within its bounds says nothing
-    /// two ways (`Piece::check`). Else what is wrong with it, in the reader's words, or
-    /// serde's where those say only what the answer wrote (`bounded::said`).
-    fn read(value: Json) -> Result<GivenItem, String> {
-        let (role, typed) = match &value {
-            Json::Object(entry) => (entry.get("role").cloned(), entry.contains_key("type")),
-            _ => return Err("an item is a map: a piece, a typed item or a Markdown piece".into()),
-        };
-        if let Some(Json::String(name)) = &role
-            && Role::from_name(name).is_none()
-        {
-            let roles: Vec<&str> = Role::ALL.iter().map(|r| r.name()).collect();
-            return Err(format!(
-                "its role {:?} is not a role: one of {}",
-                short(name),
-                roles.join(", ")
-            ));
-        }
-        let (kind, item) = match (role.is_some(), typed) {
-            (true, _) => (
-                "a piece",
-                serde_json::from_value::<Piece>(value).map(GivenItem::Piece),
-            ),
-            (false, true) => (
-                "a typed item",
-                serde_json::from_value::<TypedWire>(value).map(|t| GivenItem::Typed {
-                    place: t.place,
-                    kind: t.kind,
-                    fields: t.fields,
-                }),
-            ),
-            (false, false) => (
-                "a Markdown piece",
-                serde_json::from_value::<MarkdownWire>(value).map(|m| GivenItem::Markdown {
-                    place: m.place,
-                    text: m.text,
-                }),
-            ),
-        };
-        let item = item.map_err(|e| {
-            crate::bounded::said(&e).unwrap_or_else(|| format!("it doesn't read as {kind}"))
-        })?;
-        if let GivenItem::Piece(p) = &item {
-            p.check()?;
-        }
-        Ok(item)
-    }
 }
 
 /// How deep pieces may nest (`in`). An owner's answer is another program's: a piece past a
@@ -302,33 +210,6 @@ pub enum Run {
     Link(LinkRun),
     Label(Label),
     Field(FieldRun),
-}
-
-/// A run is read by its keys: a string is plain; a map with `link` a link, with `label` a
-/// label, with `field` a field, and with `text` alone marked characters. So a mistake in one
-/// is named (`unknown field `colour``) and not answered with "it matches no kind".
-impl<'de> Deserialize<'de> for Run {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-        let run = Json::deserialize(d)?;
-        let key = |k: &str| run.get(k).is_some();
-        let kind = match &run {
-            Json::String(_) => "plain",
-            Json::Object(_) if key("link") => "link",
-            Json::Object(_) if key("label") => "label",
-            Json::Object(_) if key("field") => "field",
-            Json::Object(_) if key("text") => "marked",
-            _ => return Err(D::Error::custom(crate::bounded::A_RUN)),
-        };
-        let read = match kind {
-            "plain" => serde_json::from_value(run).map(Run::Plain),
-            "link" => serde_json::from_value(run).map(Run::Link),
-            "label" => serde_json::from_value(run).map(Run::Label),
-            "field" => serde_json::from_value(run).map(Run::Field),
-            _ => serde_json::from_value(run).map(Run::Marked),
-        };
-        read.map_err(D::Error::custom)
-    }
 }
 
 /// `{"text": "hot", "marks": ["strong"]}`: characters with marks.
@@ -1173,8 +1054,8 @@ pub struct Read {
     pub places: HashMap<String, String>,
     pub links: Vec<(Ref, String)>,
     /// What didn't read, in the order of the answer: an item left out as it was read, a type
-    /// that isn't loaded, a field it doesn't have. At most `bounded::PROBLEMS`, then how many
-    /// more (`bounded::capped`).
+    /// that isn't loaded, a field it doesn't have. At most `problem::PROBLEMS`, then how many
+    /// more (`problem::capped`).
     pub problems: Vec<Problem>,
 }
 
@@ -1308,7 +1189,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
             }
         }
     }
-    out.problems = crate::bounded::capped(out.problems);
+    out.problems = crate::problem::capped(out.problems);
     out
 }
 

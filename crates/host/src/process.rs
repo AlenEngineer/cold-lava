@@ -496,13 +496,13 @@ impl Extension for Process {
 }
 
 /// Why an extension's answer to `method` doesn't read, in plain words: what the bounded
-/// reader says (`cold_lava_engine::bounded::said`: its own words, or serde's where those
+/// reader says (`cold_lava_engine::owner::answer::said`: its own words, or serde's where those
 /// say only what the answer wrote), and "doesn't read as one" for anything else. An owner's
 /// item that doesn't read is left out alone with its words as the answer is read
 /// (`owner::given`), so what reaches here is an answer that isn't the shape its method
 /// answers with (`{items, links}`, `{text}`, a view, `{items}` or `{do}`), or a link of one.
 fn unread(method: &str, e: &serde_json::Error) -> String {
-    match cold_lava_engine::bounded::said(e) {
+    match cold_lava_engine::owner::answer::said(e) {
         Some(said) => format!("its answer to {method} doesn't read: {said}"),
         None => format!("its answer to {method} doesn't read as one"),
     }

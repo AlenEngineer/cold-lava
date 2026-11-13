@@ -30,13 +30,11 @@
 //! answer say so (`ON_ARRIVAL`). So nothing past a bound that applies reaches the core, its
 //! cache or the read-back.
 //!
-//! Here too are the reader's words: what serde says that may be shown (`said`), the
-//! problems an answer may have reported (`capped`), a value cut for a message (`cut`), and
-//! what is kept of an item that was left out (`LeftOut`).
-//!
-//! A leaf: it needs serde, serde_json, indexmap and the engine's `Problem`. The types are
-//! transparent on the wire, so what they serialize is what a `String`, a `Vec` or a map
-//! serialized: an item's `rev` hashes that JSON, and it doesn't move.
+//! A leaf: it needs serde, serde_json and indexmap. The types are transparent on the wire,
+//! so what they serialize is what a `String`, a `Vec` or a map serialized: an item's `rev`
+//! hashes that JSON, and it doesn't move. The reader's words (which of serde's may be shown,
+//! the cap on problems, what is kept of an item left out) are the reader's
+//! (`owner::answer`).
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -46,8 +44,6 @@ use std::ops::{Deref, DerefMut};
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value as Json};
-
-use crate::problem::Problem;
 
 /// A bound: the least and the most a field may hold, in bytes for a text and in entries for
 /// a list or a map. (`bind::Bound` is a placed shape's bound input, another thing.)
@@ -234,8 +230,7 @@ fn within<B: Limit, E: serde::de::Error>(n: usize) -> Result<(), E> {
     }
 }
 
-/// What each bound says of a value past it, so the reader knows its own words in serde's
-/// errors (`said`). Every bound is here: a test counts them.
+/// What each bound says of a value past it. Every bound is here: a test counts them.
 const PAST: [fn() -> String; 11] = [
     Message::past,
     Owed::past,
@@ -250,181 +245,10 @@ const PAST: [fn() -> String; 11] = [
     Betweens::past,
 ];
 
-/// What a run of a piece's text is, said when one is neither.
-pub const A_RUN: &str = "a run is text, or a map with a link, a label, a field or a text";
-
-/// What an answer to a shape is, said when one is neither.
-pub const A_REPLY: &str =
-    "an answer to shape/region has items, and an answer to shape/gesture has do";
-
-/// The reader's own words that reach it through serde: each says nothing an answer wrote.
-const OWN: [&str; 2] = [A_RUN, A_REPLY];
-
-/// The problems an answer may have reported: the first 100, then how many more.
-pub const PROBLEMS: usize = 100;
-
-/// `problems` with only the first `PROBLEMS` kept, and a last one that says how many more
-/// there were.
-pub fn capped(mut problems: Vec<Problem>) -> Vec<Problem> {
-    if problems.len() > PROBLEMS {
-        let more = problems.len() - PROBLEMS;
-        problems.truncate(PROBLEMS);
-        problems.push(Problem::line(format!("and {more} more")));
-    }
-    problems
-}
-
-/// The first `most` characters of what another program sent, for a message, with `…` where
-/// it is cut: every value an answer gave that a message quotes is cut so.
-pub fn cut(text: &str, most: usize) -> String {
-    match text.char_indices().nth(most) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_string(),
-    }
-}
-
-/// An item of an answer that didn't read, as it is kept: where it was (its place, cut), a
-/// hash of what it said, to tell whether an owner gave it again unchanged, and what was
-/// said of it. Nothing of it is the answer's but the place, cut.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct LeftOut {
-    pub place: String,
-    pub key: String,
-    pub said: String,
-}
-
-impl LeftOut {
-    /// What is wrong with it, as reported.
-    pub fn problem(&self) -> Problem {
-        Problem::line(self.said.clone())
-    }
-}
-
-/// Why something another program sent doesn't read, in words that say nothing but what it
-/// wrote and what was expected: the reader's own (a bound's, `PAST`, or `OWN`), and serde's
-/// where it is one of the forms that carry only what the answer wrote and a kind of value
-/// (`says_only_the_answer`). `None` for anything else: a message of serde's names one of
-/// cold-lava's Rust types in more ways than anyone can list (`untagged enum NAME`,
-/// `expected struct NAME`, …), so the forms kept are the listed ones and a form nobody has
-/// seen yet says nothing. serde_json writes where it was in a text (` at line N column M`),
-/// which a value never has; it is left out when it is there.
-pub fn said(e: &serde_json::Error) -> Option<String> {
-    let whole = e.to_string();
-    let at = format!(" at line {} column {}", e.line(), e.column());
-    let message = match e.line() {
-        0 => whole.as_str(),
-        _ => whole.strip_suffix(&at).unwrap_or(&whole),
-    };
-    let ours = OWN.contains(&message) || PAST.iter().any(|past| past() == message);
-    (ours || says_only_the_answer(message)).then(|| message.to_string())
-}
-
-/// Whether serde's `message` is one of the forms that carry only what the answer wrote (a
-/// field's or a variant's name, a value) and what a value should have been. The shapes are
-/// serde 1.0.229's own (`serde_core::de::Error`'s defaults and `OneOf`):
-///
-/// - `missing field `NAME``, `duplicate field `NAME``;
-/// - `unknown field `NAME`, expected LIST`, `unknown field `NAME`, there are no fields`, and
-///   the same for `unknown variant` (`there are no variants`), where LIST is serde's list of
-///   the names the answer may use: `` `a` ``, `` `a` or `b` `` or `` one of `a`, `b`, `c` ``
-///   (every enum read from an answer renames its variants for the wire, and the list is of
-///   those names);
-/// - `invalid type: …, expected KIND`, `invalid value: …, expected KIND`,
-///   `invalid length N, expected KIND`, where KIND, what serde writes after the last
-///   `, expected ` (after the answer's own value, which may hold those words), is a kind of
-///   value (`is_a_kind`).
-///
-/// serde writes NAME, the answer's own, between backticks without escaping it, so NAME is
-/// what stands between the first backtick and the next, and the form is kept only when what
-/// follows it is exactly serde's own continuation: a name that holds a backtick ends early,
-/// and the rest of it is not serde's.
-fn says_only_the_answer(message: &str) -> bool {
-    for form in ["missing field `", "duplicate field `"] {
-        if let Some(rest) = message.strip_prefix(form) {
-            return rest
-                .split_once('`')
-                .is_some_and(|(_, after)| after.is_empty());
-        }
-    }
-    for (form, none) in [
-        ("unknown field `", ", there are no fields"),
-        ("unknown variant `", ", there are no variants"),
-    ] {
-        if let Some(rest) = message.strip_prefix(form) {
-            let Some((_, after)) = rest.split_once('`') else {
-                return false;
-            };
-            return after == none
-                || after
-                    .strip_prefix(", expected ")
-                    .is_some_and(is_serdes_list);
-        }
-    }
-    let valued = ["invalid type: ", "invalid value: ", "invalid length "];
-    if !valued.iter().any(|form| message.starts_with(form)) {
-        return false;
-    }
-    message
-        .rsplit_once(", expected ")
-        .is_some_and(|(_, kind)| is_a_kind(kind))
-}
-
-/// Whether `list` is serde's list of names (`OneOf`): `` `a` ``, `` `a` or `b` ``, or
-/// `` one of `a`, `b`, `c` ``, each name between backticks and holding none.
-fn is_serdes_list(list: &str) -> bool {
-    let one = |name: &str| {
-        let inner = name.strip_prefix('`').and_then(|n| n.strip_suffix('`'));
-        inner.is_some_and(|n| !n.is_empty() && !n.contains('`'))
-    };
-    match list.strip_prefix("one of ") {
-        Some(names) => names.split(", ").count() > 2 && names.split(", ").all(one),
-        None => match list.split_once(" or ") {
-            Some((a, b)) => one(a) && one(b),
-            None => one(list),
-        },
-    }
-}
-
-/// Whether serde's `expected` part is a kind of value, not a Rust item: made only of the words
-/// serde and serde_json write for kinds of value in what an answer is read into (serde's
-/// `de::impls` and `Unexpected`, serde_json's value deserializer: `a string`, `a map`, `a
-/// sequence`, `an array of length 2`, `string or map`, `map with a single key`, `option`,
-/// `unit`), and a number's type (`u8`, `f64`). A word it doesn't know, a struct, an enum or a
-/// variant reads "as one"; so does serde's jargon (`variant identifier`), which names nothing
-/// but helps no one.
-fn is_a_kind(kind: &str) -> bool {
-    const NUMBERS: [&str; 14] = [
-        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
-        "f32", "f64",
-    ];
-    const WORDS: [&str; 24] = [
-        "a",
-        "an",
-        "or",
-        "of",
-        "with",
-        "string",
-        "map",
-        "sequence",
-        "array",
-        "boolean",
-        "character",
-        "byte",
-        "borrowed",
-        "empty",
-        "single",
-        "key",
-        "unit",
-        "option",
-        "integer",
-        "number",
-        "null",
-        "length",
-        "elements",
-        "element",
-    ];
-    let word = |w: &str| WORDS.contains(&w) || w.chars().all(|c| c.is_ascii_digit());
-    NUMBERS.contains(&kind) || (!kind.is_empty() && kind.split(' ').all(word))
+/// Whether `message` is what a bound says of a value past it (`Limit::past`): words of the
+/// engine's own, which hold nothing an answer wrote.
+pub fn is_past(message: &str) -> bool {
+    PAST.iter().any(|past| past() == message)
 }
 
 /// A text whose bound, in bytes, is `B`. It doesn't hold the bound: `fits` applies it.
@@ -940,20 +764,21 @@ mod tests {
     }
 
     /// A value past its bound is refused as it is read, in the bound's own words, which
-    /// `said` knows; a bound the answer's reader applies is not.
+    /// `is_past` knows; a bound the answer's reader applies is not.
     #[test]
     fn a_value_past_its_bound_is_refused_as_it_is_read() {
         let refused = |value: Json| -> Option<String> {
             let e = serde_json::from_value::<Text<Place>>(value).err()?;
-            said(&e)
+            Some(e.to_string())
         };
         assert_eq!(refused(json!("p")), None);
         let past = Some("its place is empty or longer than 1024 bytes".to_string());
         assert_eq!(refused(json!("")), past);
         assert_eq!(refused(json!("p".repeat(1025))), past);
+        assert!(is_past(past.as_deref().unwrap()));
         let many = serde_json::from_value::<List<u8, Attributes>>(json!(vec![0; 257]));
         assert_eq!(
-            said(&many.unwrap_err()).unwrap(),
+            many.unwrap_err().to_string(),
             "it has more than 256 attributes"
         );
         let mut names = Map::new();
@@ -961,49 +786,20 @@ mod tests {
         let names = Json::Object(names);
         let fields = serde_json::from_value::<Fields<Attributes, AttributeName, Message>>(names);
         assert_eq!(
-            said(&fields.unwrap_err()).unwrap(),
+            fields.unwrap_err().to_string(),
             "an attribute's name is empty or longer than 256 bytes"
         );
         let long = json!("l".repeat(4097));
         assert!(serde_json::from_value::<Text<LinkLabel>>(long).is_ok());
+        assert!(!is_past("its place is empty"));
     }
 
-    /// Every bound says what it says of a value past it, so the reader knows its words.
+    /// Every bound says what it says of a value past it, so `is_past` knows its words.
     #[test]
     fn every_bound_is_in_the_table_of_what_bounds_say() {
         let source = include_str!("bounded.rs");
         // Spelled in two parts, so this line is not one of them.
         let bounds = source.matches(&["impl", " Limit for "].concat()).count();
         assert_eq!(bounds, PAST.len());
-    }
-
-    /// Only the reader's own words and serde's forms that say what the answer wrote are
-    /// shown: a message that names a Rust type is not.
-    #[test]
-    fn what_serde_says_is_shown_only_when_it_says_what_the_answer_wrote() {
-        use serde::de::Error as _;
-        let custom = |m: &str| said(&serde_json::Error::custom(m));
-        assert_eq!(custom(A_RUN).as_deref(), Some(A_RUN));
-        assert_eq!(custom(A_REPLY).as_deref(), Some(A_REPLY));
-        assert_eq!(
-            custom("data did not match any variant of untagged enum Run"),
-            None
-        );
-        let unknown = serde_json::Error::unknown_field("colour", &["place", "text"]);
-        assert_eq!(
-            said(&unknown).as_deref(),
-            Some("unknown field `colour`, expected `place` or `text`")
-        );
-    }
-
-    /// The first 100 problems are kept, then how many more there were.
-    #[test]
-    fn problems_are_capped_at_a_hundred() {
-        let some = |n: usize| (0..n).map(|i| Problem::line(format!("p{i}"))).collect();
-        assert_eq!(capped(some(100)).len(), 100);
-        let many = capped(some(50_000));
-        assert_eq!(many.len(), 101);
-        assert_eq!(many[99].one_line(), "p99");
-        assert_eq!(many[100].one_line(), "and 49900 more");
     }
 }

@@ -110,19 +110,30 @@ change commands, keys and file formats; patch versions only fix things.
   (`p3: unknown field `colour`, expected one of `place`, `role`, …`, `p4: its role "slide" is
   not a role: one of document, section, …`). An answer that isn't `{items, links}`, or a link
   that doesn't read, is still refused whole, and an edit in a file with an item left out is
-  still refused, naming it.
+  still refused, naming it. A file whose answer was refused whole now takes part in renames:
+  if its owner keeps the bad item, the file is rewritten with its links repointed and the bad
+  item as it was; if its owner drops or changes it (reordering its keys counts), the whole
+  rename is refused, where the rename used to go ahead and leave that file alone.
 - A piece with an attribute's name over 256 bytes is reported as "an attribute's name is
   empty or longer than 256 bytes" (it said "a attribute's").
 - At most 100 problems with an owner's answer are reported, then how many more (`and 49900
   more`); 50,000 bad items made one message of about 4 MB. The same holds for the steps of an
   extension's answer to `shape/gesture`.
-- An extension's answer to `shape/region` or `shape/gesture` is read by its keys and checked
-  as it arrives, so the core keeps no answer it would refuse. One that is neither now says so
-  ("an answer to shape/region has items, and an answer to shape/gesture has do") instead of
-  "doesn't read as one", and a mistake in one names its field.
-- Every bound on an answer applies as it is read, in the host, before it is cached or
-  compared: the owners' cache no longer keeps an item that is out of bounds. A cache written
-  before this is read again as it loads, with the same items and problems.
+- An extension's answer to `shape/region` or `shape/gesture` is checked as it arrives, so the
+  core keeps no answer in the wrong form, or with steps that break a rule on their own (with
+  only their rebinds kept, so the refusal still names a rebind to a shape that isn't loaded).
+  An answer is read as before: `items` that read make it a region's answer, else `do` that
+  reads a gesture's. One that doesn't read now says what was wrong where it said "doesn't
+  read as one": "an answer to shape/region has items, and an answer to shape/gesture has do"
+  when neither form reads, and serde's words otherwise ("invalid type: null, expected a
+  map", "unknown variant `explode`, expected one of `edit`, `create`, `rebind`", "missing
+  field `label`"), cut to 200 characters and never naming a Rust type.
+- Every bound of a field applies as an answer is read, in the host before the core sees it
+  and in the engine as the owners' cache is read; the label of a link between pieces and the
+  number of such links apply as the answer is read into items. The owners' cache keeps what
+  an answer left out beside it, through any number of loads and saves, and no longer keeps
+  an item that is out of bounds. An answer in a cache written before this whose items no
+  longer all read is dropped as it loads, and its owner is asked again.
 
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and

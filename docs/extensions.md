@@ -1892,12 +1892,17 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   (`its place is empty or longer than 1024 bytes`), and the rest is read. A key the item's
   kind doesn't have, a value of the wrong kind or a role that isn't one leaves it out the
   same way, with what was wrong (serde's words where they say only what the answer wrote,
-  `bounded::said`). What compares a piece with the rest of the answer (a place another
+  `owner::answer::said`). What compares a piece with the rest of the answer (a place another
   piece has, `in`, depth, the links between pieces) applies as the answer is read into
-  items. At most 100 problems are reported, then how many more (`bounded::capped`). An
-  item left out is kept beside the answer (its place, a hash of what it said, and why), in
-  the owners' cache too, and the read-back compares it: an owner that changes or drops one
-  during an edit is refused.
+  items. At most 100 problems are reported, then how many more (`problem::capped`). An
+  item left out is kept beside the answer (its place, a hash of the JSON it was sent as, and
+  why), in the owners' cache too, through any number of loads and saves, and the read-back
+  compares it: an owner that changes or drops one during an edit or a rename, reordering its
+  keys included, is refused. An item with both `role` and `type` is read as a piece and left
+  out for its `type`; one whose place isn't text is "an item with no place". A piece or a
+  run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
+  answer whose items no longer all read (a bound applies now that didn't when it was saved)
+  is dropped as it loads, and its owner asked again.
   Every field of the types an answer is read into names its bound
   (`crates/engine/src/bounded.rs`, one type a bound): `place: Text<Place>` says its bound is
   the 1 to 1024 bytes above, a field that where it comes from bounds says so,

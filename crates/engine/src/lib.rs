@@ -28,6 +28,7 @@ pub mod recipe;
 pub mod rename;
 pub mod resolver;
 pub mod search;
+pub mod serde_words;
 pub mod shapes;
 pub mod shows;
 pub mod style;
