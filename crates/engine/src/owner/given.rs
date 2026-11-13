@@ -14,13 +14,14 @@
 
 use crate::alphabet::{Mark, Role};
 use crate::bounded::{
-    AttributeName, Attributes, Betweens, Bound, CellName, FieldName, Fields, LabelName, LinkLabel,
-    List, Message, Place, Runs, Target, Text,
+    AttributeName, Attributes, Betweens, Bound, CellName, FieldName, Fields, LabelName, LeftOut,
+    LinkLabel, List, Message, Place, Runs, Target, Text, cut,
 };
 use crate::gateway;
 use crate::items::{Data, Item, Settings};
 use crate::matcher::{Asked, Carried};
 use crate::owner::markdown;
+use crate::problem::Problem;
 use crate::tasks::{FNV_START, StatusType, TasksSettings, fnv_from, line_id};
 use crate::types::On;
 use crate::workspace::{Ref, clean_target};
@@ -32,29 +33,36 @@ use std::ops::Range;
 /// The answer to `file/read`: the file's items and links. On the wire `links` is one list
 /// with two kinds of entry. Here the two are apart, so whoever reads the links to files has
 /// no other kind to pass over.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(from = "Wire", into = "Wire")]
+///
+/// An item that doesn't read is left out alone, as the answer is read (`Kept`): what was
+/// wrong with it is kept, and reported where it stood (`read`); the rest is read. An answer
+/// that isn't `{items, links}`, or a link that doesn't read, is refused whole.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(from = "Wire")]
 pub struct Given {
     pub items: List<GivenItem, Message>,
     /// The links to files that are outside the items.
     pub links: List<GivenLink, Message>,
     /// The links between two pieces of the file.
     pub between: List<Between, Betweens>,
+    /// The items of the answer that didn't read, each after the number of items read before
+    /// it. Never an item and never written as one: reported (`read`) and compared
+    /// (`read_back`), so an owner that changes or drops one during an edit is caught.
+    #[serde(skip)]
+    pub left_out: Vec<(usize, LeftOut)>,
 }
 
 /// `Given` as JSON: `{items, links}`, and no other key.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wire {
     #[serde(default)]
-    items: List<GivenItem, Message>,
+    items: List<Kept, Message>,
     #[serde(default)]
     links: List<WireLink, Message>,
 }
 
 /// One entry of `links` on the wire.
-#[derive(Serialize)]
-#[serde(untagged)]
 enum WireLink {
     File(GivenLink),
     Between(Between),
@@ -62,10 +70,13 @@ enum WireLink {
 
 impl From<Wire> for Given {
     fn from(wire: Wire) -> Given {
-        let mut given = Given {
-            items: wire.items,
-            ..Given::default()
-        };
+        let mut given = Given::default();
+        for kept in wire.items {
+            match kept {
+                Kept::Item(item) => given.items.push(item),
+                Kept::Left(left) => given.left_out.push((given.items.len(), left)),
+            }
+        }
         for link in wire.links {
             match link {
                 WireLink::File(l) => given.links.push(l),
@@ -76,14 +87,56 @@ impl From<Wire> for Given {
     }
 }
 
-impl From<Given> for Wire {
-    fn from(given: Given) -> Wire {
-        let files = given.links.into_iter().map(WireLink::File);
-        let between = given.between.into_iter().map(WireLink::Between);
-        Wire {
-            items: given.items,
-            links: files.chain(between).collect(),
+/// As JSON: `{items, links}`, the links to files and then the links between pieces in one
+/// list, as an owner gives them. What was left out is not written: it is no item.
+impl Serialize for Given {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("Given", 2)?;
+        out.serialize_field("items", &self.items)?;
+        out.serialize_field("links", &Links(self))?;
+        out.end()
+    }
+}
+
+/// A `Given`'s two kinds of link in one list, as the wire has them.
+struct Links<'a>(&'a Given);
+
+impl Serialize for Links<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let given = self.0;
+        let mut out = serializer.serialize_seq(Some(given.links.len() + given.between.len()))?;
+        for l in given.links.iter() {
+            out.serialize_element(l)?;
         }
+        for l in given.between.iter() {
+            out.serialize_element(l)?;
+        }
+        out.end()
+    }
+}
+
+/// One entry of an answer's `items` as it is read: the item, or why it is left out. Only a
+/// JSON value that doesn't parse refuses the answer.
+enum Kept {
+    Item(GivenItem),
+    Left(LeftOut),
+}
+
+impl<'de> Deserialize<'de> for Kept {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = Json::deserialize(d)?;
+        let place = value.get("place").and_then(Json::as_str).map(short);
+        let key = line_id(&value.to_string());
+        Ok(match GivenItem::read(value) {
+            Ok(item) => Kept::Item(item),
+            Err(why) => {
+                let place = place.unwrap_or_else(|| "an item with no place".to_string());
+                let said = format!("{place}: {}", cut(&why, 200));
+                Kept::Left(LeftOut { place, key, said })
+            }
+        })
     }
 }
 
@@ -105,9 +158,10 @@ impl<'de> Deserialize<'de> for WireLink {
     }
 }
 
-/// One item, at a place in the file the owner keeps stable (a row's key, a card's id).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
+/// One item, at a place in the file the owner keeps stable (a row's key, a card's id). It is
+/// read by its keys (`GivenItem::read`), so what is wrong with it is named.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum GivenItem {
     /// Markdown text, read as a note is: a task in it is a `task`.
     Markdown {
@@ -124,6 +178,76 @@ pub enum GivenItem {
     },
     /// A piece in the alphabet's terms: never Markdown.
     Piece(Piece),
+}
+
+/// A Markdown piece as the wire has it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarkdownWire {
+    place: Text<Message>,
+    text: Text<Message>,
+}
+
+/// A typed item as the wire has it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypedWire {
+    place: Text<Message>,
+    #[serde(rename = "type")]
+    kind: Text<Message>,
+    #[serde(default)]
+    fields: Fields<Message, Message, Message>,
+}
+
+impl GivenItem {
+    /// One item of an answer, of the kind its keys say: a `role` makes it a piece, a `type`
+    /// a typed item, anything else a Markdown piece. A piece within its bounds says nothing
+    /// two ways (`Piece::check`). Else what is wrong with it, in the reader's words, or
+    /// serde's where those say only what the answer wrote (`bounded::said`).
+    fn read(value: Json) -> Result<GivenItem, String> {
+        let (role, typed) = match &value {
+            Json::Object(entry) => (entry.get("role").cloned(), entry.contains_key("type")),
+            _ => return Err("an item is a map: a piece, a typed item or a Markdown piece".into()),
+        };
+        if let Some(Json::String(name)) = &role
+            && Role::from_name(name).is_none()
+        {
+            let roles: Vec<&str> = Role::ALL.iter().map(|r| r.name()).collect();
+            return Err(format!(
+                "its role {:?} is not a role: one of {}",
+                short(name),
+                roles.join(", ")
+            ));
+        }
+        let (kind, item) = match (role.is_some(), typed) {
+            (true, _) => (
+                "a piece",
+                serde_json::from_value::<Piece>(value).map(GivenItem::Piece),
+            ),
+            (false, true) => (
+                "a typed item",
+                serde_json::from_value::<TypedWire>(value).map(|t| GivenItem::Typed {
+                    place: t.place,
+                    kind: t.kind,
+                    fields: t.fields,
+                }),
+            ),
+            (false, false) => (
+                "a Markdown piece",
+                serde_json::from_value::<MarkdownWire>(value).map(|m| GivenItem::Markdown {
+                    place: m.place,
+                    text: m.text,
+                }),
+            ),
+        };
+        let item = item.map_err(|e| {
+            crate::bounded::said(&e).unwrap_or_else(|| format!("it doesn't read as {kind}"))
+        })?;
+        if let GivenItem::Piece(p) = &item {
+            p.check()?;
+        }
+        Ok(item)
+    }
 }
 
 /// How deep pieces may nest (`in`). An owner's answer is another program's: a piece past a
@@ -167,7 +291,7 @@ pub struct Cell {
 
 /// One run of a piece's text. A string is plain characters, whatever they are: `#42`, `$5`,
 /// `[[x]]` and `**x**` are those characters and nothing else.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Run {
     Plain(Text<Message>),
@@ -175,6 +299,33 @@ pub enum Run {
     Link(LinkRun),
     Label(Label),
     Field(FieldRun),
+}
+
+/// A run is read by its keys: a string is plain; a map with `link` a link, with `label` a
+/// label, with `field` a field, and with `text` alone marked characters. So a mistake in one
+/// is named (`unknown field `colour``) and not answered with "it matches no kind".
+impl<'de> Deserialize<'de> for Run {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let run = Json::deserialize(d)?;
+        let key = |k: &str| run.get(k).is_some();
+        let kind = match &run {
+            Json::String(_) => "plain",
+            Json::Object(_) if key("link") => "link",
+            Json::Object(_) if key("label") => "label",
+            Json::Object(_) if key("field") => "field",
+            Json::Object(_) if key("text") => "marked",
+            _ => return Err(D::Error::custom(crate::bounded::A_RUN)),
+        };
+        let read = match kind {
+            "plain" => serde_json::from_value(run).map(Run::Plain),
+            "link" => serde_json::from_value(run).map(Run::Link),
+            "label" => serde_json::from_value(run).map(Run::Label),
+            "field" => serde_json::from_value(run).map(Run::Field),
+            _ => serde_json::from_value(run).map(Run::Marked),
+        };
+        read.map_err(D::Error::custom)
+    }
 }
 
 /// `{"text": "hot", "marks": ["strong"]}`: characters with marks.
@@ -255,44 +406,55 @@ impl Piece {
     /// Whether it is within the bounds, and says nothing two ways.
     pub fn check(&self) -> Result<(), String> {
         if !self.place.fits() {
-            return Err(format!(
-                "its place is empty or longer than {} bytes",
-                Place::MOST
-            ));
+            return Err(Place::past());
         }
-        let long = |r: &Run| matches!(r, Run::Link(l) if !l.link.fits());
-        if self.runs().any(long) {
-            return Err(format!(
-                "a link's target is empty or longer than {} bytes",
-                Target::MOST
-            ));
+        if self
+            .runs()
+            .any(|r| matches!(r, Run::Link(l) if !l.link.fits()))
+        {
+            return Err(Target::past());
         }
         if self.runs().count() > Runs::MOST {
-            return Err(format!("its text has more than {} runs", Runs::MOST));
+            return Err(Runs::past());
         }
         if self.attributes.len() > Attributes::MOST {
-            return Err(format!("it has more than {} attributes", Attributes::MOST));
+            return Err(Attributes::past());
         }
         if !self.cells.is_empty() && (self.role != Role::Row || !self.text.is_empty()) {
             return Err("only a row has cells, and a row's text is its cells'".into());
         }
-        // Each name with whether it fits its bound and what that bound is.
-        let cells =
-            (self.cells.iter()).map(|c| ("cell", c.name.as_str(), c.name.fits(), CellName::MOST));
+        // Each name, whether it is within its bound, and what is said when it isn't.
+        type Past = fn() -> String;
+        let cells = (self.cells.iter()).map(|c| {
+            (
+                "cell",
+                c.name.as_str(),
+                c.name.fits(),
+                CellName::past as Past,
+            )
+        });
         let attributes = self.attributes.keys().map(|k| {
             let fits = crate::bounded::fits::<AttributeName>(k.len());
-            ("attribute", k.as_str(), fits, AttributeName::MOST)
+            ("attribute", k.as_str(), fits, AttributeName::past as Past)
         });
         let runs = self.runs().filter_map(|r| match r {
-            Run::Label(l) => Some(("label", l.label.as_str(), l.label.fits(), LabelName::MOST)),
-            Run::Field(f) => Some(("field", f.field.as_str(), f.field.fits(), FieldName::MOST)),
+            Run::Label(l) => Some((
+                "label",
+                l.label.as_str(),
+                l.label.fits(),
+                LabelName::past as Past,
+            )),
+            Run::Field(f) => Some((
+                "field",
+                f.field.as_str(),
+                f.field.fits(),
+                FieldName::past as Past,
+            )),
             _ => None,
         });
-        for (what, name, fits, most) in cells.chain(attributes).chain(runs) {
+        for (what, name, fits, past) in cells.chain(attributes).chain(runs) {
             if !fits {
-                return Err(format!(
-                    "a {what}'s name is empty or longer than {most} bytes"
-                ));
+                return Err(past());
             }
             if what == "label" && (name.starts_with('#') || name.contains(char::is_whitespace)) {
                 return Err(format!(
@@ -401,15 +563,6 @@ fn short(place: &str) -> String {
     cut(place, 80)
 }
 
-/// The first `most` characters of what an owner gave, for a message. Every problem with a
-/// piece goes through this, so no value an owner sends is repeated whole.
-fn cut(text: &str, most: usize) -> String {
-    match text.char_indices().nth(most) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_string(),
-    }
-}
-
 /// The id of the item a piece is: its file, its kind and the owner's place for it, set apart
 /// from a typed item's id at the same place, so neither can take the other's.
 pub fn piece_id(file: &str, kind: &str, place: &str) -> String {
@@ -470,17 +623,11 @@ impl<'a> Places<'a> {
     /// within the bounds, and both its ends are pieces taken.
     pub fn joins(&self, l: &Between, nth: usize) -> Result<(), String> {
         if nth >= Betweens::MOST {
-            return Err(format!(
-                "more than {} links between pieces: the rest are left out",
-                Betweens::MOST
-            ));
+            return Err(Betweens::past());
         }
         let (from, to) = (short(&l.from), short(&l.to));
         if !l.label.fits() {
-            return Err(format!(
-                "a link from {from} to {to}: its label is longer than {} bytes",
-                LinkLabel::MOST
-            ));
+            return Err(format!("a link from {from} to {to}: {}", LinkLabel::past()));
         }
         let mut ends = [&l.from, &l.to].into_iter();
         match ends.find(|place| self.at(place).is_none()) {
@@ -908,6 +1055,7 @@ fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run>
 pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
     let (want_pieces, got_pieces) = (&asked.pieces, &gave.pieces);
     let (want_between, got_between) = (&asked.between, &gave.between);
+    let (want_left, got_left) = (&asked.left_out, &gave.left_out);
     let (asked, gave) = (&asked.read, &gave.read);
     let items = |r: &Read| -> Vec<String> {
         let mut v: Vec<String> = r.items.iter().map(data_key).collect();
@@ -962,6 +1110,15 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             "the links between pieces are {} where {} were asked",
             short(got_between.clone()),
             short(want_between.clone())
+        ));
+    }
+    // An item left out is no item, and no change is for one: it comes back as it was, where
+    // it was, or the owner changed or dropped what the engine couldn't read.
+    if want_left != got_left {
+        return Err(format!(
+            "the items left out are {} where {} were asked",
+            short(got_left.clone()),
+            short(want_left.clone())
         ));
     }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
@@ -1022,8 +1179,10 @@ pub struct Read {
     /// By item id.
     pub places: HashMap<String, String>,
     pub links: Vec<(Ref, String)>,
-    /// What didn't read, one line each: a type that isn't loaded, a field it doesn't have.
-    pub problems: Vec<String>,
+    /// What didn't read, in the order of the answer: an item left out as it was read, a type
+    /// that isn't loaded, a field it doesn't have. At most `bounded::PROBLEMS`, then how many
+    /// more (`bounded::capped`).
+    pub problems: Vec<Problem>,
 }
 
 /// An answer read for the read-back check (`same`): its items and links, what each of its
@@ -1037,6 +1196,9 @@ pub struct ReadBack {
     /// Every link between two pieces, in the order given: which pieces it joins, by their
     /// positions among the answer's pieces, and its label.
     between: Vec<String>,
+    /// Every item left out as the answer was read, in order: where it stood among the items
+    /// read, and what it said (`LeftOut::key`).
+    left_out: Vec<String>,
 }
 
 /// Read an answer to compare it with another: what the owner should give, or what it gave.
@@ -1069,10 +1231,12 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
             end(l.to.as_str())
         )
     };
+    let left = |(at, l): &(usize, LeftOut)| format!("after item {at}: {}", l.key);
     ReadBack {
         read: read(file, given, s),
         pieces,
         between: given.between.iter().map(joins).collect(),
+        left_out: given.left_out.iter().map(left).collect(),
     }
 }
 
@@ -1080,13 +1244,18 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
 pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     let mut out = Read::default();
     let mut before = Before::default();
-    for item in &given.items {
+    // What was left out as the answer was read is said where it stood.
+    let mut left_out = given.left_out.iter().peekable();
+    for (i, item) in given.items.iter().enumerate() {
+        while let Some((_, l)) = left_out.next_if(|(at, _)| *at <= i) {
+            out.problems.push(l.problem());
+        }
         match item {
             GivenItem::Piece(p) => {
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
                     // One short line, whatever the owner sent: a reason may quote a value.
-                    out.problems
-                        .push(format!("{}: {}", short(&p.place), cut(&why, 200)));
+                    let said = format!("{}: {}", short(&p.place), cut(&why, 200));
+                    out.problems.push(Problem::line(said));
                 }
             }
             GivenItem::Markdown { place, text } => {
@@ -1122,10 +1291,11 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                         data: Data::Typed(Box::new(typed)),
                     });
                 }
-                Err(e) => out.problems.push(format!("{place}: {e}")),
+                Err(e) => out.problems.push(Problem::line(format!("{place}: {e}"))),
             },
         }
     }
+    out.problems.extend(left_out.map(|(_, l)| l.problem()));
     for l in &given.links {
         let target = crate::workspace::clean_target(&l.target);
         let r = target.map(|target| Ref {
@@ -1139,12 +1309,13 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     // an answer may have, the rest are, and that is said once.
     for (nth, l) in given.between.iter().enumerate() {
         if let Err(why) = before.places.joins(l, nth) {
-            out.problems.push(why);
+            out.problems.push(Problem::line(why));
             if nth >= Betweens::MOST {
                 break;
             }
         }
     }
+    out.problems = crate::bounded::capped(out.problems);
     out
 }
 
@@ -1165,8 +1336,18 @@ mod tests {
         let given: Given = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&given).unwrap(), wire);
         assert!(matches!(&given.items[1], GivenItem::Typed { kind, .. } if kind == "eruption"));
-        let wrong = json!({"items": [{"place": "1", "text": "x", "colour": "red"}]});
-        assert!(serde_json::from_value::<Given>(wrong).is_err());
+        // An item that doesn't read is left out alone, with what was wrong; an answer that
+        // isn't `{items, links}` is refused whole.
+        let first = wire["items"][0].clone();
+        let wrong = json!({"items": [{"place": "1", "text": "x", "colour": "red"}, first]});
+        let wrong: Given = serde_json::from_value(wrong).unwrap();
+        assert_eq!(wrong.items.len(), 1);
+        let (at, left) = &wrong.left_out[0];
+        assert_eq!(
+            (*at, left.said.as_str()),
+            (0, "1: unknown field `colour`, expected `place` or `text`")
+        );
+        assert!(serde_json::from_value::<Given>(json!({"items": [], "colour": "red"})).is_err());
     }
 
     /// The workspace's settings with the built-in types and config.toml's `[types]` as `toml`.
@@ -1188,6 +1369,11 @@ mod tests {
 
     fn given(wire: Json) -> Given {
         serde_json::from_value(wire).unwrap()
+    }
+
+    /// What didn't read, each on its one line.
+    fn said(read: &Read) -> Vec<String> {
+        read.problems.iter().map(Problem::one_line).collect()
     }
 
     fn fields(item: &Item) -> Json {
@@ -1256,17 +1442,42 @@ mod tests {
         assert!(matches!(&older.items[0], GivenItem::Markdown { .. }));
         assert!(matches!(&older.items[1], GivenItem::Typed { .. }));
 
-        // The alphabet is closed, and a piece says nothing the engine doesn't know.
-        for wrong in [
-            json!({"place": "1", "role": "slide"}),
-            json!({"place": "1", "role": "item", "colour": "red"}),
-            json!({"place": "1", "role": "item", "text": "a string is Markdown's"}),
-            json!({"place": "1", "role": "item", "text": [{"text": "x", "marks": ["underline"]}]}),
-            json!({"place": "1", "role": "item", "text": [{"label": "x", "colour": "red"}]}),
-            json!({"place": "1", "role": "row", "cells": [{"text": ["no name"]}]}),
+        // The alphabet is closed, and a piece says nothing the engine doesn't know: one that
+        // does is left out alone, and what was wrong with it is said.
+        for (wrong, says) in [
+            (
+                json!({"place": "1", "role": "slide"}),
+                "its role \"slide\" is not a role: one of document, section",
+            ),
+            (
+                json!({"place": "1", "role": "item", "colour": "red"}),
+                "unknown field `colour`, expected one of `place`, `role`",
+            ),
+            (
+                json!({"place": "1", "role": "item", "text": "a string is Markdown's"}),
+                "expected a sequence",
+            ),
+            (
+                json!({"place": "1", "role": "item", "text": [{"text": "x", "marks": ["underline"]}]}),
+                "unknown variant `underline`",
+            ),
+            (
+                json!({"place": "1", "role": "item", "text": [{"label": "x", "colour": "red"}]}),
+                "unknown field `colour`, expected `label`",
+            ),
+            (
+                json!({"place": "1", "role": "row", "cells": [{"text": ["no name"]}]}),
+                "missing field `name`",
+            ),
         ] {
-            let answer = json!({"items": [wrong.clone()]});
-            assert!(serde_json::from_value::<Given>(answer).is_err(), "{wrong}");
+            let answer = given(json!({"items": [wrong.clone()]}));
+            let left = answer.left_out.iter().map(|(_, l)| l.said.as_str());
+            let left: Vec<&str> = left.collect();
+            assert!(answer.items.is_empty(), "{wrong}");
+            assert!(
+                left.len() == 1 && left[0].starts_with("1: ") && left[0].contains(says),
+                "{wrong}: {left:?}"
+            );
         }
     }
 
@@ -1308,7 +1519,7 @@ mod tests {
             {"place": "o", "role": "opaque"},
         ]}));
         let read = read("Home.chores", &answer, &s);
-        assert_eq!(read.problems, Vec::<String>::new());
+        assert_eq!(said(&read), Vec::<String>::new());
         let kinds: Vec<&str> = read.items.iter().map(|i| i.data.kind()).collect();
         assert_eq!(kinds, ["heading", "task", "task", "list", "list"]);
 
@@ -1384,7 +1595,7 @@ mod tests {
             {"place": "3", "role": "row", "cells": [{"name": "VEI", "text": ["6"]}]},
         ]}));
         let read = read("B.csv", &answer, &s);
-        assert_eq!(read.problems, Vec::<String>::new());
+        assert_eq!(said(&read), Vec::<String>::new());
         let ids: Vec<(&str, &str)> = (read.items.iter())
             .map(|i| (i.data.kind(), i.id.as_str()))
             .collect();
@@ -1427,7 +1638,7 @@ mod tests {
             {"place": "r2", "role": "row", "cells": [{"name": "Volcano", "text": ["No VEI column"]}]},
         ]}));
         let read = read("Eruptions.sheet", &answer, &s);
-        assert_eq!(read.problems, Vec::<String>::new());
+        assert_eq!(said(&read), Vec::<String>::new());
         assert_eq!(
             read.items.len(),
             1,
@@ -1467,7 +1678,8 @@ mod tests {
             {"place": "deep", "role": "item", "in": "€".repeat(5000), "text": ["x"]},
         ]}));
         let read = read("Home.chores", &answer, &s);
-        let places: Vec<&str> = (read.problems.iter())
+        let problems = said(&read);
+        let places: Vec<&str> = (problems.iter())
             .map(|p| p.split(':').next().unwrap())
             .collect();
         let shown = format!("{}…", "L".repeat(80));
@@ -1485,14 +1697,14 @@ mod tests {
                 "deep"
             ],
             "{:?}",
-            read.problems
+            said(&read)
         );
         assert!(
-            read.problems.iter().all(|p| p.chars().count() < 300),
+            said(&read).iter().all(|p| p.chars().count() < 300),
             "a problem is one short line, whatever value it quotes"
         );
-        assert!(read.problems[7].ends_with('…'), "{}", read.problems[7]);
-        assert!(read.problems[4].contains("one of open, done, in-progress, cancelled"));
+        assert!(said(&read)[7].ends_with('…'), "{}", said(&read)[7]);
+        assert!(said(&read)[4].contains("one of open, done, in-progress, cancelled"));
         let kinds: Vec<(&str, &str)> = (read.items.iter())
             .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
             .collect();
@@ -1528,7 +1740,7 @@ mod tests {
              "text": ["three"]},
         ]}));
         let read = read("Home.chores", &answer, &s);
-        assert_eq!(read.problems, Vec::<String>::new());
+        assert_eq!(said(&read), Vec::<String>::new());
         let refs: Vec<Json> = read
             .items
             .iter()
@@ -1570,7 +1782,8 @@ mod tests {
             items.push(json!({"place": place, "role": "item", "in": parent, "text": ["deep"]}));
         }
         let read = read("Home.chores", &given(json!({"items": items})), &s);
-        let places: Vec<&str> = (read.problems.iter())
+        let problems = said(&read);
+        let places: Vec<&str> = (problems.iter())
             .map(|p| p.split(':').next().unwrap())
             .collect();
         let deepest = format!("d{}", MAX_DEPTH + 1);
@@ -1586,10 +1799,10 @@ mod tests {
                 deepest.as_str()
             ],
             "{:?}",
-            read.problems
+            said(&read)
         );
         assert_eq!(read.items.len(), 2 + MAX_DEPTH + 1);
-        assert!(read.problems[3].contains("one of open, done, in-progress, cancelled"));
+        assert!(said(&read)[3].contains("one of open, done, in-progress, cancelled"));
     }
 
     /// The pinned JSON of every change `file/edit` can ask: the three it could before, and
@@ -1615,7 +1828,7 @@ mod tests {
         assert_eq!((answer.links.len(), answer.between.len()), (1, 2));
         let s = settings("");
         let back = read_back("Board.canvas", &answer, &s);
-        assert!(back.read.problems.is_empty(), "{:?}", back.read.problems);
+        assert!(said(&back.read).is_empty(), "{:?}", said(&back.read));
         assert!(
             back.read.items.is_empty(),
             "a text no type matches is no item"
@@ -1643,9 +1856,9 @@ mod tests {
             "links": [{"from": "a", "to": long}, {"from": "nope", "to": "a"}, {"from": "a", "to": "a"}],
         }));
         let read = read("Board.canvas", &dangling, &s);
-        assert_eq!(read.problems.len(), 2, "{:?}", read.problems);
-        assert!(read.problems.iter().all(|p| p.chars().count() < 300));
-        assert!(read.problems[1].ends_with("no piece is at nope"));
+        assert_eq!(said(&read).len(), 2, "{:?}", said(&read));
+        assert!(said(&read).iter().all(|p| p.chars().count() < 300));
+        assert!(said(&read)[1].ends_with("no piece is at nope"));
 
         // The read-back: a link relabelled, turned round, dropped or added is not what was
         // asked, and a rename's change leaves it as it was.
@@ -1718,7 +1931,7 @@ mod tests {
             {"place": "title", "role": "section"},
         ]}));
         let read = read("Board.canvas", &answer, &s);
-        assert!(read.problems.is_empty(), "{:?}", read.problems);
+        assert!(said(&read).is_empty(), "{:?}", said(&read));
         let kinds: Vec<(&str, &str)> = (read.items.iter())
             .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
             .collect();
@@ -1770,10 +1983,10 @@ mod tests {
         links.extend((0..Betweens::MOST + 5).map(|_| json!({"from": "a", "to": "a"})));
         let answer = given(json!({"items": [{"place": "a", "role": "text"}], "links": links}));
         let read = read("Board.canvas", &answer, &s);
-        assert_eq!(read.problems.len(), 2, "{:?}", read.problems);
-        assert!(read.problems[0].contains("its label is longer than 4096 bytes"));
-        assert!(read.problems[1].contains("more than 65536 links between pieces"));
-        assert!(read.problems.iter().all(|p| p.len() < 300));
+        assert_eq!(said(&read).len(), 2, "{:?}", said(&read));
+        assert!(said(&read)[0].contains("its label is longer than 4096 bytes"));
+        assert!(said(&read)[1].contains("more than 65536 links between pieces"));
+        assert!(said(&read).iter().all(|p| p.len() < 300));
     }
 
     #[test]
@@ -2003,7 +2216,7 @@ fields.star = { flag = "⭐", type = "bool" }
              "text": ["no star  here ", {"label": "home"}, {"field": "due", "value": "x"}]},
         ]}));
         let read = read("Home.chores", &answer, &s);
-        assert_eq!(read.problems, Vec::<String>::new());
+        assert_eq!(said(&read), Vec::<String>::new());
         let piece = |n: usize| match &answer.items[n] {
             GivenItem::Piece(p) => p,
             other => panic!("{other:?}"),

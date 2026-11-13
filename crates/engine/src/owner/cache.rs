@@ -43,6 +43,11 @@ struct Cache {
 struct Answer {
     rev: String,
     given: Given,
+    /// The items the answer gave that didn't read (`Given::left_out`), which its JSON as an
+    /// owner gives it has no room for. A cache written before they were kept has none here,
+    /// and its answer is read again as it loads, so what didn't read then is found again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    left_out: Vec<(usize, crate::bounded::LeftOut)>,
 }
 
 #[derive(Default)]
@@ -69,6 +74,7 @@ impl Owners {
             let cache = (path.as_deref())
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .and_then(|t| serde_json::from_str::<Cache>(&t).ok())
+                .map(Cache::with_left_out)
                 .filter(|c| c.owner == k.owner && c.version == k.version)
                 .unwrap_or_else(|| Cache {
                     owner: k.owner.clone(),
@@ -148,6 +154,7 @@ impl Owners {
         let answer = Answer {
             rev: rev.to_string(),
             given: given.clone(),
+            left_out: given.left_out.clone(),
         };
         cache.files.insert(path.to_string(), answer);
         cache.dirty = true;
@@ -172,6 +179,17 @@ impl Owners {
                 let _ = crate::write::write_atomic(path, &json);
             }
         }
+    }
+}
+
+impl Cache {
+    /// Each answer with the items it left out back in it.
+    fn with_left_out(mut self) -> Cache {
+        for answer in self.files.values_mut() {
+            let kept = std::mem::take(&mut answer.left_out);
+            answer.given.left_out.extend(kept);
+        }
+        self
     }
 }
 

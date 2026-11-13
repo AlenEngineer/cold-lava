@@ -15,6 +15,12 @@ use crate::problem::Problem;
 pub struct Steps(Vec<Step>);
 
 impl Steps {
+    /// What `steps` get wrong on their own, which needs no shapes: an answer's steps are
+    /// checked for it as they arrive. Empty when they pass.
+    pub fn alone(steps: &[Step]) -> Vec<Problem> {
+        edits(steps)
+    }
+
     /// `steps` among the loaded `shapes`, or what they get wrong, one problem each.
     pub fn checked(steps: Vec<Step>, shapes: &Shapes) -> Result<Steps, Vec<Problem>> {
         let mut problems = edits(&steps);

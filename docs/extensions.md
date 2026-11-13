@@ -1541,8 +1541,12 @@ each doesn't invent one:
   types match in it as in a note. A typed item `{place, type, fields}` is of a loaded type,
   each value read as its field's type (`Matcher::given`). A link to a file is
   `{target, place, text}`, and the links in pieces are read with them; a link between two
-  pieces of the file is `{from, to, label}` ("Pieces, as built"). Unknown keys are refused, and a type that isn't
-  loaded or a field it doesn't have is reported and that item left out.
+  pieces of the file is `{from, to, label}` ("Pieces, as built"). An item is read on its
+  own, by its keys (a `role` is a piece, a `type` a typed item, anything else a Markdown
+  piece): one with a key it doesn't know, or that doesn't read as its kind, is reported with
+  what was wrong and left out, and so is one of a type that isn't loaded or with a field it
+  doesn't have. A key beside `items` and `links`, or a link that doesn't read, refuses the
+  answer whole.
 - **Where an owned file lives.** `Workspace::owned`, beside the notes: each file with its owner,
   the `rev` its items and links were read from, its items and its links, and the owner's place
   for each (`Owned::places` by item id, `Owned::links`), kept off the items so notes' items
@@ -1749,7 +1753,8 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   row's key, a node's id). The engine hands it back with a change and with `file/open`. It
   is an address in memory and in messages: the engine never writes one into a file. One
   place holds one piece.
-- **`role`** is one of the nine. Any other name is refused, and the whole answer with it.
+- **`role`** is one of the nine. A piece with any other name is reported, with the name and
+  the nine, and left out; the rest of the answer is read.
 - **`text`** is a list of runs, never a string: a string there is the older Markdown piece.
   A run is one of five things.
 
@@ -1882,6 +1887,17 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   `crates/cold-lava/src/say.rs`), so a place that holds an escape sequence or a line break
   prints as `\u{1b}` and `\n`. A message is at most 64 MB, as before. The
   number of pieces in an answer has no bound of its own.
+  A field's bound applies as the answer is read, in the host before the core, its cache or
+  the read-back sees it: the item the field is in is left out, with what the bound says
+  (`its place is empty or longer than 1024 bytes`), and the rest is read. A key the item's
+  kind doesn't have, a value of the wrong kind or a role that isn't one leaves it out the
+  same way, with what was wrong (serde's words where they say only what the answer wrote,
+  `bounded::said`). What compares a piece with the rest of the answer (a place another
+  piece has, `in`, depth, the links between pieces) applies as the answer is read into
+  items. At most 100 problems are reported, then how many more (`bounded::capped`). An
+  item left out is kept beside the answer (its place, a hash of what it said, and why), in
+  the owners' cache too, and the read-back compares it: an owner that changes or drops one
+  during an edit is refused.
   Every field of the types an answer is read into names its bound
   (`crates/engine/src/bounded.rs`, one type a bound): `place: Text<Place>` is the 1 to 1024
   bytes above, and a field that only the message bounds says so, `Text<Message>`.
@@ -2947,8 +2963,12 @@ with two requests (host → extension; `crate::act::Ask` in the engine pins thei
   rules a shape's own `do` passes when it is loaded (`shapes::Steps::checked`: an edit is
   exactly one of `set-field`, `toggle` and a recipe, a `set-field` has exactly one of
   `value`, `add` and `remove`, a `rebind` names a loaded shape, and so on). An answer with a
-  step that breaks one is refused whole, with what is wrong: none of its steps run, so
-  nothing is written before the bad step is found.
+  step that breaks one is refused whole, with what is wrong (the first 100 problems, then
+  how many more): none of its steps run, so nothing is written before the bad step is
+  found. An answer is read by its keys (`items` or `do`), and is checked as it arrives for
+  its form and for what a step gets wrong on its own (`Reply::arrived`), so the core keeps
+  no answer it would refuse; whether a `rebind` names a loaded shape is checked when the
+  frontend takes the answer with its shapes.
 - **Permissions.** The asks carry the inputs' data, so an extension without `items.read` isn't
   asked: the answer is that refusal, at once. Its steps need what they would need from it
   directly: `items.edit` for `edit`, `files.write` for `create` and a recipe.

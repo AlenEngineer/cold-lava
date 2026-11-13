@@ -497,9 +497,9 @@ pub struct ShapeAnswer {
     pub answer: Result<Answered, String>,
 }
 
-/// The extension's answer to an `Ask` as it wrote it. Nothing in it is checked: `read` makes
-/// it an `Answered`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// The extension's answer to an `Ask` as it wrote it, within its bounds. As it arrives, it
+/// is checked for what needs no shapes (`arrived`); `read` makes it an `Answered`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Reply {
     /// To `shape/region`: the members it shows, each an id and a label.
@@ -509,6 +509,38 @@ pub enum Reply {
         #[serde(rename = "do")]
         steps: List<Step, Message>,
     },
+}
+
+/// An answer to `shape/region` as the wire has it.
+#[derive(Deserialize)]
+struct RegionWire {
+    items: List<RegionEntry, Message>,
+}
+
+/// An answer to `shape/gesture` as the wire has it.
+#[derive(Deserialize)]
+struct GestureWire {
+    #[serde(rename = "do")]
+    steps: List<Step, Message>,
+}
+
+/// An answer is read by its keys: with `items` it answers a region, with `do` a gesture. So a
+/// mistake in one is named (`missing field `label``), not answered with "it matches no kind".
+impl<'de> Deserialize<'de> for Reply {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let answer = serde_json::Map::<String, Json>::deserialize(d)?;
+        let (items, steps) = (answer.contains_key("items"), answer.contains_key("do"));
+        let answer = Json::Object(answer);
+        let reply = match (items, steps) {
+            (true, _) => serde_json::from_value::<RegionWire>(answer)
+                .map(|r| Reply::Region { items: r.items }),
+            (false, true) => serde_json::from_value::<GestureWire>(answer)
+                .map(|g| Reply::Gesture { steps: g.steps }),
+            (false, false) => return Err(D::Error::custom(crate::bounded::A_REPLY)),
+        };
+        reply.map_err(D::Error::custom)
+    }
 }
 
 /// One member a region shows, as the extension answers it: what it is (left out for a label
@@ -530,6 +562,22 @@ impl From<RegionEntry> for Entry {
 }
 
 impl Reply {
+    /// It as it arrives for `ask`: in the form the ask has, and its steps only when they pass
+    /// the rules a step meets on its own (`Steps::alone`), which need no shapes. Else why it
+    /// isn't taken. The core keeps nothing else (`Core::shape_answered`).
+    pub fn arrived(self, ask: &Ask) -> Result<Reply, String> {
+        let problems = match (ask, &self) {
+            (Ask::Region { .. }, Reply::Region { .. }) => Vec::new(),
+            (Ask::Gesture { .. }, Reply::Gesture { steps }) => Steps::alone(steps),
+            (Ask::Region { .. }, _) => return Err("it answered shape/region with steps".into()),
+            (Ask::Gesture { .. }, _) => return Err("it answered shape/gesture with items".into()),
+        };
+        match problems.is_empty() {
+            true => Ok(self),
+            false => Err(cant_run(problems)),
+        }
+    }
+
     /// It as the answer to `ask`: only in the form the ask has, and its steps only when they
     /// pass the rules a loaded shape's steps pass, among the loaded `shapes`. Else why it
     /// isn't taken.
@@ -541,17 +589,21 @@ impl Reply {
             (Ask::Gesture { .. }, Reply::Gesture { steps }) => {
                 Steps::checked(steps.into_vec(), shapes)
                     .map(|steps| Answered::Gesture { steps })
-                    .map_err(|problems| {
-                        format!(
-                            "it answered shape/gesture with steps that can't run: {}",
-                            problem::joined(&problems)
-                        )
-                    })
+                    .map_err(cant_run)
             }
             (Ask::Region { .. }, _) => Err("it answered shape/region with steps".into()),
             (Ask::Gesture { .. }, _) => Err("it answered shape/gesture with items".into()),
         }
     }
+}
+
+/// Why an answer's steps don't run: the first `bounded::PROBLEMS` of what is wrong, then how
+/// many more, on one line.
+fn cant_run(problems: Vec<crate::problem::Problem>) -> String {
+    format!(
+        "it answered shape/gesture with steps that can't run: {}",
+        problem::joined(&crate::bounded::capped(problems))
+    )
 }
 
 /// What the extension `by` replied to `ask`, or why it didn't, as the core keeps it until a

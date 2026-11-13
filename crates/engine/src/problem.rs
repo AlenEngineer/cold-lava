@@ -233,10 +233,9 @@ impl OnOneLine for Problem {
     }
 }
 
-/// The words of a problem not yet a `Problem`. What keeps this alive: an owner's left-out
-/// pieces (`given::Read.problems`, `Owned::take`), which #265's step A4 makes problems, and
-/// the cards a merge left out and the notes a tag edit left alone (`shape_editor::merged`,
-/// the menu's `refused`), which are a notice's words (#291). Once they are gone, so is this.
+/// The words of a problem not yet a `Problem`. What keeps this alive: the cards a merge
+/// left out and the notes a tag edit left alone (`shape_editor::merged`, the menu's
+/// `refused`), which are a notice's words (#291). Once they are gone, so is this.
 impl OnOneLine for String {
     fn on_one_line(&self) -> String {
         self.clone()

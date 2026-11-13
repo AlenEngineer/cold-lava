@@ -1509,10 +1509,45 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
     (reached, unbounded)
 }
 
+/// The engine's modules of answers: every type read with serde in them (`Deserialize`) is
+/// an answer's, or one of these, which another program never sends.
+const ANSWER_FILES: [&str; 3] = ["act.rs", "owner/edits.rs", "owner/given.rs"];
+const NOT_ANSWERS: [&str; 7] = [
+    // What is asked of an extension, and what the frontend and the engine make.
+    "act.rs: Ask",
+    "act.rs: Gesture",
+    "act.rs: InputData",
+    "act.rs: MemberData",
+    "act.rs: Rebind",
+    // What is asked of an owner.
+    "owner/edits.rs: FileEdit",
+    "owner/given.rs: Change",
+];
+
+/// Every type of `ANSWER_FILES` that serde reads (it derives `Deserialize`), as `file: Type`.
+fn read_with_serde(files: &[(String, String)]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, code) in files {
+        let Some(short) = file.strip_prefix("../engine/src/") else {
+            continue;
+        };
+        if !ANSWER_FILES.contains(&short) {
+            continue;
+        }
+        let read = defined(code)
+            .into_iter()
+            .filter(|d| d.attributes.contains("Deserialize"));
+        found.extend(read.map(|d| format!("{short}: {}", d.name)));
+    }
+    found.sort();
+    found
+}
+
 /// What another program answers is held in types whose every field names its bound
 /// (`crates/engine/src/bounded.rs`, #265's step A4): an owner's `file/read` (`Given`) and
 /// `file/edit` (`NewText`), and an extension's `shape/region` and `shape/gesture` (`Reply`).
-/// This follows every type such an answer is read into, from those three, and fails on a
+/// This follows every type such an answer is read into, from those three and from every type
+/// serde reads in the modules of answers (`ANSWER_FILES`, but `NOT_ANSWERS`), and fails on a
 /// field that holds a `String`, a `Vec`, a map or a JSON value of its own. The list of types
 /// says what is followed: a new one fails until it is listed, and so does one that is gone.
 ///
@@ -1524,11 +1559,29 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
 #[test]
 fn every_field_of_an_answer_names_its_bound() {
     let files = crate_sources("engine");
-    let roots = [
+    let serde_reads = read_with_serde(&files);
+    let not_answers: Vec<String> = (serde_reads.iter())
+        .filter(|t| NOT_ANSWERS.contains(&t.as_str()))
+        .cloned()
+        .collect();
+    let remedy = "an answer's type is followed: take it off unless no other program sends it";
+    only_listed(
+        "types read with serde that no answer holds",
+        remedy,
+        &not_answers,
+        &NOT_ANSWERS,
+    );
+    let mut roots = vec![
         "owner/given.rs: Given",
         "owner/edits.rs: NewText",
         "act.rs: Reply",
     ];
+    roots.extend(
+        serde_reads
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !NOT_ANSWERS.contains(t)),
+    );
     let (reached, unbounded) = answer_types(&files, &roots);
     assert!(
         unbounded.is_empty(),
@@ -1537,7 +1590,9 @@ fn every_field_of_an_answer_names_its_bound() {
          message bounds it)"
     );
     let listed = [
+        "act.rs: GestureWire",
         "act.rs: RegionEntry",
+        "act.rs: RegionWire",
         "act.rs: Reply",
         "alphabet.rs: Mark",
         "alphabet.rs: Role",
@@ -1548,11 +1603,14 @@ fn every_field_of_an_answer_names_its_bound() {
         "owner/given.rs: Given",
         "owner/given.rs: GivenItem",
         "owner/given.rs: GivenLink",
+        "owner/given.rs: Kept",
         "owner/given.rs: Label",
         "owner/given.rs: LinkRun",
+        "owner/given.rs: MarkdownWire",
         "owner/given.rs: Marked",
         "owner/given.rs: Piece",
         "owner/given.rs: Run",
+        "owner/given.rs: TypedWire",
         "owner/given.rs: Wire",
         "owner/given.rs: WireLink",
         "shapes.rs: CreateStep",

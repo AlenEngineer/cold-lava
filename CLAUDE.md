@@ -243,8 +243,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `in-progress`, `cancelled`), read as the workspace's status symbol for it. A piece's item
   id is `given::piece_id` (file, kind, place, then `piece`), apart from a typed item's and a
   Markdown piece's: none of the three may take another's id. An answer is untrusted:
-  every field of its types names its bound (`bounded.rs`), `Piece::check` and `read_piece`
-  apply depth, runs, attributes and names, and a place is never written into a file.
+  every field of its types names its bound (`bounded.rs`), which applies as the answer is
+  read in the host; an item is read on its own by its keys (`given::Kept`), so one that
+  doesn't read is left out alone with the reader's words (`Given::left_out`, kept in the
+  cache and compared by the read-back); `Piece::check` and `read_piece` apply what compares
+  a piece with the rest of its answer (depth, places, `in`), and a place is never written
+  into a file.
   Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
@@ -381,9 +385,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
   bound, and the table of bounds, one type each (`Place`, `Target`, `Runs`, …; `Message`
   where only the 64 MB message bounds a field). They serialize as what they hold, so revs
-  don't move. A field of an answer's type that holds a bare `String`, `Vec`, map or JSON
-  value fails `tests/one_door.rs`, which follows every type an answer is read into; a new
-  field names its bound, `Message` when it has none of its own yet.
+  don't move, and refuse a value past their bound as it is read, in the bound's words
+  (`Bound::past`; `ON_ARRIVAL` false for the two the answer's reader applies). `said` is
+  the one place serde's words are judged safe to show (the host's `unread` asks it);
+  `capped` keeps the first 100 problems. A field of an answer's type that holds a bare
+  `String`, `Vec`, map or JSON value fails `tests/one_door.rs`, which follows every type an
+  answer is read into; a new field names its bound, `Message` when it has none of its own
+  yet.
 - `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
   split only where the app's own text or the TOML parser's layout breaks it. Pick a
   problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it

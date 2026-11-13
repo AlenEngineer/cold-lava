@@ -93,13 +93,13 @@ impl Owned {
     }
 
     /// Take what its owner gave for version `rev`, and its items and links read from it
-    /// (`given::read`). Returns what didn't read, one line each.
+    /// (`given::read`). Returns what didn't read.
     pub fn take(
         &mut self,
         rev: String,
         given: crate::owner::given::Given,
         read: crate::owner::given::Read,
-    ) -> Vec<String> {
+    ) -> Vec<crate::problem::Problem> {
         self.rev = Some(rev);
         self.items = read.items;
         self.places = read.places;

@@ -102,6 +102,26 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- An owner's item that doesn't read costs only itself (#265, step A4). An item with a key its
+  kind doesn't have, a value of the wrong kind or a role that isn't one of the nine used to
+  refuse the whole `file/read` answer, so the file showed nothing, and the status line said
+  only "its answer to file/read doesn't read as one". Now that item alone is left out and the
+  rest of the file's items show; the status line names its place and what was wrong
+  (`p3: unknown field `colour`, expected one of `place`, `role`, …`, `p4: its role "slide" is
+  not a role: one of document, section, …`). An answer that isn't `{items, links}`, or a link
+  that doesn't read, is still refused whole, and an edit in a file with an item left out is
+  still refused, naming it.
+- At most 100 problems with an owner's answer are reported, then how many more (`and 49900
+  more`); 50,000 bad items made one message of about 4 MB. The same holds for the steps of an
+  extension's answer to `shape/gesture`.
+- An extension's answer to `shape/region` or `shape/gesture` is read by its keys and checked
+  as it arrives, so the core keeps no answer it would refuse. One that is neither now says so
+  ("an answer to shape/region has items, and an answer to shape/gesture has do") instead of
+  "doesn't read as one", and a mistake in one names its field.
+- Every bound on an answer applies as it is read, in the host, before it is cached or
+  compared: the owners' cache no longer keeps an item that is out of bounds. A cache written
+  before this is read again as it loads, with the same items and problems.
+
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and
   `attributes.toml` in `cold-lava types`, `shapes` and `attributes` (`cold-lava types`
