@@ -495,96 +495,168 @@ impl Extension for Process {
     }
 }
 
-/// The words serde's derive writes when a message names one of cold-lava's own Rust types or
-/// variants: the answer's shape is wrong, and the name means nothing to whoever wrote it.
-///
-/// What an answer is read into, and how its enums are represented: `file/read` a `Given`
-/// (structs, and the untagged `GivenItem`, `Run` and `WireLink`); `file/edit` a `NewText`;
-/// `file/preview` a view's `Content` (internally tagged by `kind`, `table::Kind` by `type`,
-/// externally tagged `image::Source`, `list::Check`, `list::Filter`, `scene::Look`); a shape's
-/// answer a `Reply` (untagged), whose steps are the externally tagged `Step`. So serde can
-/// write each of these, and each names a Rust item:
-///
-/// - `data did not match any variant of untagged enum NAME`;
-/// - `expected internally tagged enum NAME`, `expected adjacently tagged enum NAME`;
-/// - `expected struct NAME`, and `expected struct variant NAME::VARIANT` (serde_json says
-///   `expected struct variant` with no name for the same wrong shape, which reads the same);
-/// - `expected tuple struct NAME`, `expected unit struct NAME`;
-/// - `expected enum NAME`, and `expected tuple variant NAME::VARIANT`.
-///
-/// `unknown variant`, `unknown field` and `missing field` name what the answer is written in
-/// (every enum here renames its variants for the wire), and `invalid type` names a value's
-/// kind (`a string`, `u8`, `unit variant`), so those keep serde's detail.
-const NAMES_A_TYPE: [&str; 8] = [
-    "untagged enum ",
-    "tagged enum ",
-    "expected struct ",
-    "struct variant ",
-    "expected tuple struct ",
-    "expected unit struct ",
-    "expected enum ",
-    "tuple variant ",
-];
-
-/// Why an extension's answer to `method` doesn't read, in plain words: with serde's detail
-/// where it says what in the answer is wrong (a missing field, a value of the wrong type),
-/// and "as one" where serde's words would name a Rust type instead. serde's error says which
-/// only in its words, so they are matched here, once, against `NAMES_A_TYPE`.
+/// Why an extension's answer to `method` doesn't read, in plain words: serde's message where it
+/// is one of the forms that say only what the answer wrote and a kind of value
+/// (`says_only_the_answer`), and "doesn't read as one" for anything else. A message names one
+/// of cold-lava's own Rust types or variants in more ways than anyone can list (`untagged enum
+/// NAME`, `expected struct NAME`, `no variant of enum NAME found in flattened data`, …), so the
+/// forms kept are the listed ones and a form nobody has seen yet reads "as one". serde_json
+/// writes where it was in a text (` at line N column M`), which an answer read as a value
+/// never has; it is left out when it is there.
 fn unread(method: &str, e: &serde_json::Error) -> String {
-    let detail = e.to_string();
-    match NAMES_A_TYPE.iter().any(|named| detail.contains(named)) {
-        true => format!("its answer to {method} doesn't read as one"),
-        false => format!("its answer to {method} doesn't read: {detail}"),
+    let whole = e.to_string();
+    let at = format!(" at line {} column {}", e.line(), e.column());
+    let message = match e.line() {
+        0 => whole.as_str(),
+        _ => whole.strip_suffix(&at).unwrap_or(&whole),
+    };
+    match says_only_the_answer(message) {
+        true => format!("its answer to {method} doesn't read: {message}"),
+        false => format!("its answer to {method} doesn't read as one"),
     }
+}
+
+/// Whether serde's `message` is one of the forms that carry only what the answer wrote (a
+/// field's or a variant's name, a value) and what a value should have been, which every
+/// type an answer is read into writes in the answer's own names:
+///
+/// - `missing field `NAME``, `duplicate field `NAME``;
+/// - `unknown field `NAME`, …` and `unknown variant `NAME`, …`, whose rest lists the names
+///   the answer may use (every enum read from an answer renames its variants for the wire,
+///   and serde's list is of those names);
+/// - `invalid type: …, expected KIND`, `invalid value: …, expected KIND`,
+///   `invalid length N, expected KIND`, where KIND, what serde writes after the last
+///   `, expected ` (after the answer's own value, which may hold those words), is a kind of
+///   value: `a string`, `an integer`, `u8`. A struct, an enum or a variant there is a Rust
+///   item, and so is anything else.
+fn says_only_the_answer(message: &str) -> bool {
+    let named = ["missing field `", "duplicate field `"];
+    if named.iter().any(|form| message.starts_with(form)) {
+        return message.ends_with('`');
+    }
+    let listed = ["unknown field `", "unknown variant `"];
+    if listed.iter().any(|form| message.starts_with(form)) {
+        return true;
+    }
+    let valued = ["invalid type: ", "invalid value: ", "invalid length "];
+    if !valued.iter().any(|form| message.starts_with(form)) {
+        return false;
+    }
+    message
+        .rsplit_once(", expected ")
+        .is_some_and(|(_, kind)| is_a_kind(kind))
+}
+
+/// Whether serde's `expected` part is a kind of value, not a Rust item: an English kind
+/// (`a string`, `a map`, `an array of length 2`) or a number's type (`u8`, `f64`).
+fn is_a_kind(kind: &str) -> bool {
+    let numbers = [
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+        "f32", "f64",
+    ];
+    let english = kind.starts_with("a ") || kind.starts_with("an ");
+    let items = ["struct", "enum", "variant", "::"];
+    (english || numbers.contains(&kind)) && !items.iter().any(|item| kind.contains(item))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// An answer that doesn't read says so in plain words: serde's detail when it says what
-    /// is wrong in the answer, never the name of a Rust type.
+    /// An answer that doesn't read says so in plain words: serde's detail when it is one of
+    /// the forms that say only what the answer wrote, and "as one" for every other form, the
+    /// ones that name a Rust type and the ones nobody has seen yet.
     #[test]
     fn an_answer_that_doesnt_read_says_so_without_a_rust_types_name() {
-        let reply = serde_json::from_value::<crate::act::Reply>(json!({"nothing": 1})).unwrap_err();
-        assert_eq!(
-            unread("shape/gesture", &reply),
-            "its answer to shape/gesture doesn't read as one"
-        );
-        let text = serde_json::from_value::<NewText>(json!(3)).unwrap_err();
-        assert_eq!(
-            unread("file/edit", &text),
-            "its answer to file/edit doesn't read as one"
-        );
+        use serde::de::{Error as _, Unexpected};
+        let says = |e: &serde_json::Error| unread("file/read", e);
+        let as_one = "its answer to file/read doesn't read as one";
+        let kept = |message: &str| format!("its answer to file/read doesn't read: {message}");
+
         let missing = serde_json::from_value::<NewText>(json!({})).unwrap_err();
-        assert_eq!(
-            unread("file/edit", &missing),
-            "its answer to file/edit doesn't read: missing field `text`"
+        assert_eq!(says(&missing), kept("missing field `text`"));
+        let twice = serde_json::Error::duplicate_field("text");
+        assert_eq!(says(&twice), kept("duplicate field `text`"));
+        let field = serde_json::from_value::<NewText>(json!({"text": "a", "x": 1})).unwrap_err();
+        assert_eq!(says(&field), kept("unknown field `x`, expected `text`"));
+        let image = serde_json::from_value::<cold_lava_views::image::Source>(json!({"bmp": "x"}));
+        let image = image.unwrap_err();
+        assert!(
+            says(&image).starts_with(&kept("unknown variant `bmp`, expected ")),
+            "{image}"
         );
+        assert!(says(&image).contains("`path`") && says(&image).contains("`png`"));
+        let wrong = serde_json::from_value::<NewText>(json!({"text": 3})).unwrap_err();
+        assert_eq!(
+            says(&wrong),
+            kept("invalid type: integer `3`, expected a string")
+        );
+        let length = serde_json::Error::invalid_length(1, &"an array of length 2");
+        assert_eq!(
+            says(&length),
+            kept("invalid length 1, expected an array of length 2")
+        );
+        let value = serde_json::Error::invalid_value(Unexpected::Signed(-1), &"u8");
+        assert_eq!(
+            says(&value),
+            kept("invalid value: integer `-1`, expected u8")
+        );
+        let at = serde_json::from_str::<NewText>("{\"text\": 3}").unwrap_err();
+        assert!(
+            at.line() == 1 && at.to_string().contains(" at line 1 column "),
+            "{at}"
+        );
+        assert_eq!(
+            says(&at),
+            kept("invalid type: integer `3`, expected a string")
+        );
+
         #[derive(Debug, serde::Deserialize)]
         #[allow(dead_code)]
         enum Variant {
             Pair(u8, u8),
             Named { x: u8 },
         }
-        // The first names the variant (`tuple variant Variant::Pair with 2 elements`); the
-        // second is serde_json's own `expected struct variant`, which names none but still
-        // means the answer's shape is wrong.
-        for (wrong, said) in [
-            (json!({"Pair": [1]}), "tuple variant Variant::Pair"),
-            (json!({"Named": [1, 2]}), "expected struct variant"),
+        let mut named: Vec<serde_json::Error> = vec![
+            serde_json::from_value::<crate::act::Reply>(json!({"nothing": 1})).unwrap_err(),
+            serde_json::from_value::<NewText>(json!(3)).unwrap_err(),
+            serde_json::from_value::<Variant>(json!({"Pair": [1]})).unwrap_err(),
+            serde_json::from_value::<Variant>(json!({"Named": [1, 2]})).unwrap_err(),
+            serde_json::from_value::<Content>(json!({"kind": "image", "title": "x"})).unwrap_err(),
+            serde_json::from_value::<Content>(json!({"kind": "image", "title": "x", "gif": "a"}))
+                .unwrap_err(),
+        ];
+        for phrase in [
+            "data did not match any variant of untagged enum Reply",
+            "invalid type: map, expected internally tagged enum Content",
+            "invalid type: map, expected adjacently tagged enum Ask",
+            "invalid type: map, expected struct NewText",
+            "invalid type: map, expected struct variant Variant::Named",
+            "invalid type: map, expected tuple struct Id",
+            "invalid type: map, expected unit struct Unit",
+            "invalid type: map, expected enum Source",
+            "invalid length 1, expected tuple variant Variant::Pair with 2 elements",
+            "no variant of enum Source found in flattened data",
+            "invalid type: map, expected a Source::Path",
+            "something serde has never written",
+            "is not a role: one of document, section",
         ] {
-            let e = serde_json::from_value::<Variant>(wrong).unwrap_err();
-            assert!(e.to_string().contains(said), "{e}");
-            assert_eq!(
-                unread("file/read", &e),
-                "its answer to file/read doesn't read as one"
-            );
+            named.push(serde_json::Error::custom(phrase));
         }
-        let wrong = serde_json::from_value::<NewText>(json!({"text": 3})).unwrap_err();
+        // What the answer itself wrote can't make a Rust name pass: serde's own expected part
+        // comes last, after the answer's value.
+        named.push(serde_json::Error::invalid_type(
+            Unexpected::Str("x\", expected a string"),
+            &"struct Secret",
+        ));
+        for e in &named {
+            assert_eq!(says(e), as_one, "{e}");
+        }
+        // And words of its own that look like a Rust name are the answer's, kept as written.
+        let own = serde_json::Error::invalid_type(Unexpected::Str("expected struct Foo"), &"u8");
         assert_eq!(
-            unread("file/edit", &wrong),
-            "its answer to file/edit doesn't read: invalid type: integer `3`, expected a string"
+            says(&own),
+            kept("invalid type: string \"expected struct Foo\", expected u8")
         );
     }
     use crate::gateway::{Answer, Edit, Filter, Op, Query, Select};
