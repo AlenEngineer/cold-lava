@@ -1172,3 +1172,52 @@ fn the_listings_are_these() {
                   did or why it didn't is a message (`told!`, `problem!`)";
     only_listed("lines printed as listings", remedy, &found, &listed);
 }
+
+/// A problem (why something was refused, failed or was left out) is put together one way,
+/// wherever it is said. These show where it is still put together by hand, in the app, the
+/// host, the engine and the views crate:
+///
+/// - a list joined into one line with `"; "`;
+/// - a TOML error folded onto one line by turning its line breaks into spaces;
+/// - a TOML error said by its message alone, without where in the file it is;
+/// - a problem picked out of a list by reading its words: the shape editor finding its
+///   draft's in the loader's lines by `shape {id}: `, and `cold-lava style` finding the
+///   `[style]` problems of config.toml by how their first line starts.
+///
+/// The scan knows these by their spelling: one written another way passes it, and a
+/// reviewer still reads a change that says a problem.
+#[test]
+fn problems_are_put_together_by_hand_here() {
+    let ways = [
+        "join(\"; \")",
+        "replace('\\n', \" \")",
+        ".message()",
+        "split_once(&mark)",
+        ".first().starts_with(",
+    ];
+    let mut files = sources();
+    for name in ["host", "engine", "views"] {
+        files.extend(crate_sources(name));
+    }
+    let found = tally(per_file(&files, |code| times(code, &ways)));
+    let listed = [
+        "../engine/src/act.rs: join(\"; \") ×2",
+        "../engine/src/core.rs: join(\"; \") ×2",
+        "../engine/src/owner/markdown/attributes.rs: replace('\\n', \" \") ×2",
+        "../engine/src/shapes.rs: replace('\\n', \" \") ×1",
+        "../engine/src/shapes/file.rs: .message() ×2",
+        "../engine/src/style.rs: .message() ×2",
+        "../engine/src/types.rs: replace('\\n', \" \") ×2",
+        "../host/src/installed.rs: .message() ×2",
+        "board.rs: join(\"; \") ×1",
+        "config.rs: .message() ×1",
+        "home.rs: join(\"; \") ×1",
+        "main.rs: .first().starts_with( ×1",
+        "main.rs: join(\"; \") ×1",
+        "shape_editor.rs: .message() ×1",
+        "shape_editor.rs: split_once(&mark) ×1",
+    ];
+    let remedy = "make it a `Problem` (crates/engine/src/problem.rs), which joins, folds and \
+                  picks out problems in one place";
+    only_listed("problems put together by hand", remedy, &found, &listed);
+}
