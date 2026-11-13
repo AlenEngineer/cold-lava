@@ -518,7 +518,7 @@ fn an_edit_reads_the_item_that_holds_its_place() {
     use crate::owner::given::Run;
     let mut core = open("holder", &file_with(&[]), None);
     let file = &core.index.workspace.owned[0];
-    let (rev, mut given) = (file.rev.clone().unwrap(), file.given.clone());
+    let mut given = file.given.clone();
     let mut first = given.items[0].clone();
     let GivenItem::Piece(p) = &mut first else {
         panic!("the chore is a piece");
@@ -530,8 +530,8 @@ fn an_edit_reads_the_item_that_holds_its_place() {
     ]
     .into();
     given.items.insert(0, first);
-    core.file_given(OWNER, FILE, &rev, Ok(given));
-    core.poll();
+    // As an answer that never arrived could hold it (one kept by another reader, A4d's cache).
+    core.index.workspace.owned[0].given = given;
     let chore = item(&core, "task", "chore");
     assert_eq!(
         serde_json::to_value(&chore).unwrap()["text"],
