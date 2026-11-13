@@ -685,11 +685,16 @@ fn an_owners_place_is_never_printed_as_written() {
         eprintln!("skipped: python3 isn't on PATH, and the test extension needs it");
         return;
     }
-    // Two chores share a place, so the second is a problem, named by its place.
+    // Two chores share a place, so the second is a problem, named by its place. The owner
+    // writes a change into the last chore at a place, the second, which is left out: the
+    // read-back refuses the tick and names it (#257).
     const CHORES: &str = "\u{1b}]0;PWNED-place\u{7}p | todo | | first words\n\
         \u{1b}]0;PWNED-place\u{7}p | todo | | second words\n\
         ok | todo | | fine\n";
     let (workspace, home) = chores_sandbox("place", CHORES);
+    let owner = home.join(".config/cold-lava/extensions/chores/main.py");
+    let main = std::fs::read_to_string(&owner).unwrap();
+    std::fs::write(&owner, main.replace("i = at[0]", "i = at[-1]")).unwrap();
     let ws = workspace.to_str().unwrap();
     let file = workspace.join("Home.chores");
     // A rename starts the owner, which reads the file.
@@ -697,11 +702,15 @@ fn an_owners_place_is_never_printed_as_written() {
     assert!(renamed.status.success(), "{:?}", text(&renamed));
     let listed = cold_lava(&home, &["items", ws, "task", "--json"]);
     let (listed, _) = text(&listed);
-    let fine = (listed.lines())
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|item| item["note"] == "Home.chores" && item["text"] == "fine")
-        .expect("the third chore");
-    let id = fine["id"].as_str().unwrap();
+    let chore = |words: &str| -> String {
+        let found = (listed.lines())
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|item| item["note"] == "Home.chores" && item["text"] == words);
+        let found = found.unwrap_or_else(|| panic!("no chore {words}: {listed}"));
+        found["id"].as_str().unwrap().to_string()
+    };
+    let first = chore("first words");
+    let id = first.as_str();
     let refused = cold_lava(
         &home,
         &["item", "set", file.to_str().unwrap(), id, "status", "x"],
@@ -709,7 +718,10 @@ fn an_owners_place_is_never_printed_as_written() {
     let (stdout, stderr) = text(&refused);
     assert_eq!(refused.status.code(), Some(1), "{stdout}{stderr}");
     assert_eq!(
-        stderr, "cold-lava: \\u{1b}]0;PWNED-place\\u{7}p: another piece is at this place\n",
+        stderr,
+        "cold-lava: chores's new text for Home.chores doesn't read back as asked \
+         (\\u{1b}]0;PWNED-place\\u{7}p: another piece is at this place was left out, and came \
+         back changed, moved or not at all); nothing was written\n",
         "{stderr:?}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), CHORES, "as it was");
@@ -720,8 +732,18 @@ fn an_owners_place_is_never_printed_as_written() {
     let (stdout, _) = text(&refused);
     assert_eq!(
         stdout,
-        "{\"error\":\"\\u001b]0;PWNED-place\\u0007p: another piece is at this place\",\
-         \"changed\":false}\n"
+        "{\"error\":\"chores's new text for Home.chores doesn't read back as asked \
+         (\\u001b]0;PWNED-place\\u0007p: another piece is at this place was left out, and came \
+         back changed, moved or not at all); nothing was written\",\"changed\":false}\n"
+    );
+    // A chore beside the left-out one is ticked (#257), and every other line keeps its bytes.
+    let ok = chore("fine");
+    let ticked = cold_lava(&home, &["item", "set", file, ok.as_str(), "status", "x"]);
+    assert!(ticked.status.success(), "{:?}", text(&ticked));
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        CHORES.replace("ok | todo |", "ok | done |"),
+        "only the chore asked for"
     );
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
