@@ -358,9 +358,9 @@ impl Editor {
     /// to it again by `settle`.
     fn reload(&mut self) {
         self.loaded = shapes::with_draft(&self.root, &self.id, &self.def);
-        let mark = format!("shape {}: ", self.id);
         self.errors = (self.loaded.errors.iter())
-            .filter_map(|e| e.split_once(&mark).map(|(_, why)| why.to_string()))
+            .filter(|e| e.is_about(&self.id))
+            .map(|e| e.first().to_string())
             .collect();
         if self.errors.is_empty()
             && let Some(l) = self.loaded.get(&self.id)

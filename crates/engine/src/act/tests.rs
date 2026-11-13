@@ -493,7 +493,7 @@ fn extension_regions_and_gestures_are_an_extensions_only() {
     let found = shapes::for_workspace(&dir);
     assert!(found.get("tally").is_none());
     assert!(
-        found.errors.iter().any(|e| e.ends_with(
+        found.errors.iter().any(|e| e.to_string().ends_with(
             "shape tally: extension = true hands a region or a gesture to the extension that ships the shape, and this one comes from none"
         )),
         "{:?}",

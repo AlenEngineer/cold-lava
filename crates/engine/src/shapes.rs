@@ -17,6 +17,7 @@ use cold_lava_canvas as canvas;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::problem::Problem;
 pub use crate::types::Origin;
 use crate::types::is_name;
 
@@ -513,8 +514,9 @@ pub struct Shapes {
     /// In load order; one replaced by a later origin takes the later one's place.
     pub shapes: Vec<Loaded>,
     pub glyphs: Vec<Glyph>,
-    /// One line per mistake: where, which shape, what. The shape is dropped.
-    pub errors: Vec<String>,
+    /// One problem per mistake: where, which shape (what it is about), what. The shape is
+    /// dropped.
+    pub errors: Vec<Problem>,
     /// Things worth knowing that aren't mistakes, such as a shape replacing an earlier one.
     pub notes: Vec<String>,
 }
@@ -676,8 +678,8 @@ impl Layer {
     }
 }
 
-fn one_line(e: impl std::fmt::Display) -> String {
-    e.to_string().replace('\n', " ").trim().to_string()
+fn one_line(e: toml::de::Error) -> String {
+    Problem::toml(&e).one_line()
 }
 
 fn parse(value: toml::Value) -> Result<Definition, String> {
@@ -703,8 +705,7 @@ pub fn for_workspace(root: &Path) -> Shapes {
 }
 
 /// The shapes a workspace draws with, and `d` as the workspace's shape `id`, last: what the shape
-/// editor draws, binds and checks before it saves. Its mistakes are the errors that name
-/// `shape {id}:`.
+/// editor draws, binds and checks before it saves. Its mistakes are the errors about `id`.
 pub fn with_draft(root: &Path, id: &str, d: &Definition) -> Shapes {
     let configured = CONFIGURED.get().cloned().unwrap_or_default();
     let mut draft = Layer::empty(Origin::Workspace {
@@ -728,14 +729,14 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
     let mut kept: IndexMap<String, (Origin, Definition)> = IndexMap::new();
     let mut glyphs: IndexMap<String, Glyph> = IndexMap::new();
     for layer in layers {
-        errors.extend(layer.errors);
+        errors.extend(layer.errors.into_iter().map(Problem::line));
         let place = layer.origin.place();
         for (name, parsed) in layer.glyphs {
             match parsed {
-                Err(e) => errors.push(format!("{place}: [glyphs] {name}: {e}")),
-                Ok(_) if !is_name(&name, false) => errors.push(format!(
+                Err(e) => errors.push(Problem::line(format!("{place}: [glyphs] {name}: {e}"))),
+                Ok(_) if !is_name(&name, false) => errors.push(Problem::line(format!(
                     "{place}: [glyphs] {name:?}: a glyph's name is letters, digits, - and _"
-                )),
+                ))),
                 Ok(symbol) => {
                     if let Some(old) = glyphs.shift_remove(&name) {
                         notes.push(format!(
@@ -777,7 +778,10 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
                     }
                     kept.insert(id, (layer.origin.clone(), d));
                 }
-                _ => errors.extend(problems.iter().map(|p| format!("{place}: shape {id}: {p}"))),
+                _ => errors.extend((problems.into_iter()).map(|p| {
+                    let at = format!("{place}: shape {id}");
+                    Problem::line(p).at(at).about(&id)
+                })),
             }
         }
     }
@@ -800,7 +804,8 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
                     .flat_map(|b| {
                         steps::unknown_rebinds(&b.written(), &|to: &str| kept.contains_key(to))
                     })
-                    .next(),
+                    .next()
+                    .map(|p| p.to_string()),
             };
             failed.extend(problem.map(|p| (id.clone(), p)));
         }
@@ -809,7 +814,8 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
         }
         for (id, problem) in failed {
             if let Some((origin, _)) = kept.shift_remove(&id) {
-                errors.push(format!("{}: shape {id}: {problem}", origin.place()));
+                let at = format!("{}: shape {id}", origin.place());
+                errors.push(Problem::line(problem).at(at).about(&id));
             }
         }
     };
@@ -1286,7 +1292,12 @@ mod tests {
     /// The errors of a workspace file holding `shapes`, after the built-in layer.
     fn errors_of(shapes: &str) -> Vec<String> {
         let text = format!("version = 1\n{shapes}");
-        load([Layer::built_in(), workspace(&text)]).errors
+        said(&load([Layer::built_in(), workspace(&text)]))
+    }
+
+    /// Each error as it is said.
+    fn said(s: &Shapes) -> Vec<String> {
+        s.errors.iter().map(Problem::to_string).collect()
     }
 
     fn ids(s: &Shapes) -> Vec<&str> {
@@ -1296,7 +1307,7 @@ mod tests {
     #[test]
     fn built_ins_load_from_their_own_toml() {
         let s = load([Layer::built_in()]);
-        assert_eq!(s.errors, Vec::<String>::new());
+        assert_eq!(said(&s), Vec::<String>::new());
         assert_eq!(
             ids(&s),
             [
@@ -1332,7 +1343,7 @@ mod tests {
             "version = 1\n[[shapes]]\nid = \"rect\"\ntitle = \"Mine\"\nparts = [{ rect = { from = [0, 0], to = [1, 0.5] } }]",
         );
         let s = load([Layer::built_in(), ext, config, ws]);
-        assert_eq!(s.errors, Vec::<String>::new());
+        assert_eq!(said(&s), Vec::<String>::new());
         let lane = s.get("lanes.lane").unwrap();
         assert_eq!(
             lane.origin,
@@ -1466,7 +1477,8 @@ mod tests {
                 Layer::built_in(),
                 workspace(&format!("version = 1\n{text}")),
             ]);
-            let errors: Vec<&str> = (s.errors.iter())
+            let lines = said(&s);
+            let errors: Vec<&str> = (lines.iter())
                 .map(|e| {
                     e.strip_prefix("/w/.cold-lava/shapes.toml: shape bad: ")
                         .unwrap_or(e)
@@ -1501,7 +1513,7 @@ mod tests {
                  ]\nregions = [{ id = \"inside\", area = \"b\" }]\n",
             ),
         ]);
-        assert_eq!(shapes.errors, Vec::<String>::new());
+        assert_eq!(said(&shapes), Vec::<String>::new());
         let bubble = &shapes.get("bubble").unwrap().shape;
         let p = Point::new;
         assert_eq!(bubble.anchor("b.tip"), Some(p(0.2, 1.0)));
@@ -1558,7 +1570,7 @@ mod tests {
             ],
         )]);
         assert_eq!(
-            s.errors,
+            said(&s),
             [format!(
                 "extension big: shape big.over: part 1: this path is {} points once its curves are flattened (a curve is {steps}), and a path may be at most {PATH_LIMIT}, so a screen of shapes still draws within a frame: simplify it or split it into several paths",
                 PATH_LIMIT + 1
@@ -1596,7 +1608,7 @@ mod tests {
     fn file_and_entry_mistakes() {
         let skipped = load([workspace("[[shapes]]\nid = \"a\"")]);
         assert_eq!(
-            skipped.errors,
+            said(&skipped),
             [
                 "/w/.cold-lava/shapes.toml: no version: start the file with version = 1; the file is skipped"
             ]
@@ -1624,7 +1636,7 @@ mod tests {
                  regions = [{ id = \"inside\", area = \"l.circle\" }]",
             ),
         ]);
-        assert_eq!(s.errors, Vec::<String>::new());
+        assert_eq!(said(&s), Vec::<String>::new());
         let pair = &s.get("pair").unwrap().shape;
         let parts = pair.parts();
         assert_eq!(parts[0].id.as_deref(), Some("l.circle"));
@@ -1661,7 +1673,7 @@ mod tests {
         let start = guide.find("[[shapes]]\nid = \"csv-table.sheet\"").unwrap();
         let toml = &guide[start..start + guide[start..].find("```").unwrap()];
         let s = load([Layer::built_in(), config(toml)]);
-        assert_eq!(s.errors, Vec::<String>::new());
+        assert_eq!(said(&s), Vec::<String>::new());
         assert_eq!(
             s.get("csv-table.sheet").unwrap().shape.regions()[0].id,
             "rows"

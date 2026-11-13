@@ -7,6 +7,7 @@
 //! two at two times. `Steps::checked` asks both at once.
 
 use super::{EditStep, SetField, Shapes, Step};
+use crate::problem::Problem;
 
 /// Steps that passed both rules. Only `checked` makes one, so a step that runs was checked,
 /// whether a definition or an extension wrote it.
@@ -14,8 +15,8 @@ use super::{EditStep, SetField, Shapes, Step};
 pub struct Steps(Vec<Step>);
 
 impl Steps {
-    /// `steps` among the loaded `shapes`, or what they get wrong, one line each.
-    pub fn checked(steps: Vec<Step>, shapes: &Shapes) -> Result<Steps, Vec<String>> {
+    /// `steps` among the loaded `shapes`, or what they get wrong, one problem each.
+    pub fn checked(steps: Vec<Step>, shapes: &Shapes) -> Result<Steps, Vec<Problem>> {
         let mut problems = edits(&steps);
         problems.extend(unknown_rebinds(&steps, &|id: &str| {
             shapes.get(id).is_some()
@@ -35,8 +36,8 @@ impl std::ops::Deref for Steps {
     }
 }
 
-/// What steps get wrong on their own, one line each, in the steps' order.
-pub(super) fn edits(steps: &[Step]) -> Vec<String> {
+/// What steps get wrong on their own, one problem each, in the steps' order.
+pub(super) fn edits(steps: &[Step]) -> Vec<Problem> {
     (steps.iter())
         .flat_map(|step| match step {
             Step::Edit(e) => check_edit(e),
@@ -45,20 +46,21 @@ pub(super) fn edits(steps: &[Step]) -> Vec<String> {
         .collect()
 }
 
-/// A line for each `rebind` to a shape that isn't loaded, as `knows` says, in the steps' order.
-pub(super) fn unknown_rebinds(steps: &[Step], knows: &dyn Fn(&str) -> bool) -> Vec<String> {
+/// A problem for each `rebind` to a shape that isn't loaded, as `knows` says, in the steps'
+/// order.
+pub(super) fn unknown_rebinds(steps: &[Step], knows: &dyn Fn(&str) -> bool) -> Vec<Problem> {
     (steps.iter())
         .filter_map(|step| match step {
-            Step::Rebind(r) if !knows(&r.shape) => Some(format!(
+            Step::Rebind(r) if !knows(&r.shape) => Some(Problem::line(format!(
                 "its rebind names shape {}, which isn't loaded",
                 r.shape
-            )),
+            ))),
             _ => None,
         })
         .collect()
 }
 
-fn check_edit(e: &EditStep) -> Vec<String> {
+fn check_edit(e: &EditStep) -> Vec<Problem> {
     let mut p = Vec::new();
     let kinds = [
         e.set_field.is_some(),
@@ -66,22 +68,24 @@ fn check_edit(e: &EditStep) -> Vec<String> {
         e.recipe.is_some(),
     ];
     if kinds.iter().filter(|k| **k).count() != 1 {
-        p.push("an edit is exactly one of set-field, toggle and recipe".to_string());
+        p.push(Problem::line(
+            "an edit is exactly one of set-field, toggle and recipe",
+        ));
     }
     match (&e.recipe, &e.item) {
-        (None, None) => p.push(
-            "say which item set-field or toggle changes, like item = \"dropped\"".to_string(),
-        ),
-        (Some(_), Some(_)) => {
-            p.push("a recipe changes the whole workspace, so it names no item".to_string())
-        }
+        (None, None) => p.push(Problem::line(
+            "say which item set-field or toggle changes, like item = \"dropped\"",
+        )),
+        (Some(_), Some(_)) => p.push(Problem::line(
+            "a recipe changes the whole workspace, so it names no item",
+        )),
         _ => {}
     }
     if e.recipe.is_none() && !e.options.is_empty() {
-        p.push("options are a recipe's".to_string());
+        p.push(Problem::line("options are a recipe's"));
     }
     if let Some(Err(problem)) = e.set_field.as_ref().map(SetField::way) {
-        p.push(problem.to_string());
+        p.push(Problem::line(problem));
     }
     p
 }
@@ -145,15 +149,17 @@ mod tests {
         assert_eq!(
             Steps::checked(bad, &shapes),
             Err(vec![
-                "set-field takes exactly one of value, add and remove".to_string(),
-                "an edit is exactly one of set-field, toggle and recipe".to_string(),
-                "say which item set-field or toggle changes, like item = \"dropped\"".to_string(),
-                "options are a recipe's".to_string(),
-                "an edit is exactly one of set-field, toggle and recipe".to_string(),
-                "a recipe changes the whole workspace, so it names no item".to_string(),
-                "set-field takes exactly one of value, add and remove".to_string(),
-                "its rebind names shape nope, which isn't loaded".to_string(),
-                "its rebind names shape gone, which isn't loaded".to_string(),
+                Problem::line("set-field takes exactly one of value, add and remove"),
+                Problem::line("an edit is exactly one of set-field, toggle and recipe"),
+                Problem::line(
+                    "say which item set-field or toggle changes, like item = \"dropped\""
+                ),
+                Problem::line("options are a recipe's"),
+                Problem::line("an edit is exactly one of set-field, toggle and recipe"),
+                Problem::line("a recipe changes the whole workspace, so it names no item"),
+                Problem::line("set-field takes exactly one of value, add and remove"),
+                Problem::line("its rebind names shape nope, which isn't loaded"),
+                Problem::line("its rebind names shape gone, which isn't loaded"),
             ])
         );
     }

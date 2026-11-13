@@ -376,6 +376,16 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `problem.rs`: `Problem`, why something was refused, failed or was left out, as the
+  lines it is said on: a line break between two is where its maker put one (a TOML
+  error's lines come from the parser's parts, `Problem::toml`; a usage from the app's own
+  `&'static str`), never found by splitting a string. `at` is where it is, said before
+  its first line; `about` is what it is about (a shape's id, a section of config.toml),
+  for whoever picks problems out of a list, and is never said or sent: pick a problem out
+  by it, never by its words. `joined` is the one way several go on one line (`"; "`),
+  `one_line` how types, shapes and attributes fold a TOML error (what their `--json`
+  holds). It holds words as written and knows no terminal: `say` and `Notice` show them.
+  `tests/one_door.rs` lists what still joins, folds or picks out problems by hand.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
 what it needs (`markdown::set_configured` for the chosen flavour).
@@ -513,8 +523,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   content; `told!` (stdout) and `problem!` (stderr) for a message, what a command did or
   why it didn't; `say::fixed` for the app's own `&'static str`; `say::json` for JSON,
   written as it is. One call is one line: what has several lines by the app's own
-  structure makes one call a line, or is a `say::Lines` error (a usage after what went
-  wrong). Never `println!` or take `stdout()` elsewhere: `tests/one_door.rs` lists every
+  structure makes one call a line, or is a `Problem` error (the engine's `problem.rs`; a
+  usage after what went wrong), which `main` prints a line each. Never `println!` or take `stdout()` elsewhere: `tests/one_door.rs` lists every
   print site (the host's, the engine's and the views crate's too) and every listing, and
   `tests/outside_text.rs` runs the binary on text with escape sequences planted.
 - `drive.rs`: `cold-lava drive`, scripted UI runs (its `write` step changes a workspace file

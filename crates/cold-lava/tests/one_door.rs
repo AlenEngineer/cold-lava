@@ -1174,15 +1174,28 @@ fn the_listings_are_these() {
 }
 
 /// A problem (why something was refused, failed or was left out) is put together one way,
-/// wherever it is said. These show where it is still put together by hand, in the app, the
-/// host, the engine and the views crate:
+/// wherever it is said: as a `Problem` (crates/engine/src/problem.rs), which joins several
+/// on one line, reads a TOML error's lines from the parser's parts, and is picked out of a
+/// list by what it is about, never by its words. These show where it is still put together
+/// by hand, in the app, the host, the engine and the views crate:
 ///
 /// - a list joined into one line with `"; "`;
 /// - a TOML error folded onto one line by turning its line breaks into spaces;
 /// - a TOML error said by its message alone, without where in the file it is;
-/// - a problem picked out of a list by reading its words: the shape editor finding its
-///   draft's in the loader's lines by `shape {id}: `, and `cold-lava style` finding the
-///   `[style]` problems of config.toml by how their first line starts.
+/// - a problem picked out of a list by reading its words (the shape editor once found its
+///   draft's in the loader's lines by `shape {id}: `, and `cold-lava style` the `[style]`
+///   problems of config.toml by how their first line starts).
+///
+/// What is left:
+///
+/// - `problem.rs`, where each is done once.
+/// - `main.rs`: `where_label` joins the conditions of a type's `where` for `cold-lava
+///   types`, which are no problems.
+/// - The TOML errors said by their message alone, without where in the file they are:
+///   `style.toml` and config.toml's `[style]` (`style.rs`), the shape editor's save
+///   (`shapes/file.rs`) and its form (`shape_editor.rs`), and an extension's manifest
+///   (`installed.rs`). Giving them their place changes what they say, which is for #265's
+///   step A3b to decide.
 ///
 /// The scan knows these by their spelling: one written another way passes it, and a
 /// reviewer still reads a change that says a problem.
@@ -1201,21 +1214,14 @@ fn problems_are_put_together_by_hand_here() {
     }
     let found = tally(per_file(&files, |code| times(code, &ways)));
     let listed = [
-        "../engine/src/act.rs: join(\"; \") ×2",
-        "../engine/src/core.rs: join(\"; \") ×2",
-        "../engine/src/owner/markdown/attributes.rs: replace('\\n', \" \") ×2",
-        "../engine/src/shapes.rs: replace('\\n', \" \") ×1",
+        "../engine/src/problem.rs: .message() ×1",
+        "../engine/src/problem.rs: join(\"; \") ×1",
+        "../engine/src/problem.rs: replace('\\n', \" \") ×1",
         "../engine/src/shapes/file.rs: .message() ×2",
         "../engine/src/style.rs: .message() ×2",
-        "../engine/src/types.rs: replace('\\n', \" \") ×2",
         "../host/src/installed.rs: .message() ×2",
-        "board.rs: join(\"; \") ×1",
-        "config.rs: .message() ×1",
-        "home.rs: join(\"; \") ×1",
-        "main.rs: .first().starts_with( ×1",
         "main.rs: join(\"; \") ×1",
         "shape_editor.rs: .message() ×1",
-        "shape_editor.rs: split_once(&mark) ×1",
     ];
     let remedy = "make it a `Problem` (crates/engine/src/problem.rs), which joins, folds and \
                   picks out problems in one place";
