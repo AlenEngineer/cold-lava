@@ -605,6 +605,14 @@ impl<'a> Places<'a> {
     /// Admit the item: it claims its place when it is within its bounds (`GivenItem::check`)
     /// and no item of its form has claimed the place; else why not. The one way every
     /// reader of an answer takes an item's place (`read`, `Given::placed`, `canvas::read`).
+    ///
+    /// The first item of a form *within its bounds* claims a place, so a later one may be
+    /// admitted where an earlier one was left out. For an owner that gives what it holds,
+    /// that is safe: the read-back compares what was left out and what didn't take its place
+    /// by position and hash (`same`), so a change the owner writes into the item that doesn't
+    /// hold the place is refused and nothing is written. An owner that gives only what is
+    /// taken (the canvas) leaves nothing for the read-back to compare, so its place names the
+    /// first node whatever that node holds (`canvas::Named`).
     pub fn admit(&mut self, item: &'a GivenItem) -> Result<(), String> {
         self.fits(item)?;
         *self.claimed.entry(item.place()).or_default() |= form(item);

@@ -66,6 +66,13 @@ pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
 /// field by its place, so this is the node `edit` writes and `relink` changes, and the only
 /// one whose text or file `read` gives, and only when it is within its bounds: a place never
 /// falls through to a later node with the field, which no change could reach.
+///
+/// This differs from the engine's rule for every owner (`given::Places::admit`: the first
+/// item within its bounds claims a place), which is safe there because the read-back compares
+/// what an owner's answer left out by position and hash. This owner gives only what is
+/// taken, so nothing left out would be in its answer to compare: its place names the first
+/// node, whatever it holds. A node "has" a field when the file gives it as a string, `""`
+/// included; one with no `text`, or `"text": null`, doesn't, and names nothing.
 #[derive(Default)]
 struct Named(HashSet<(String, &'static str)>);
 

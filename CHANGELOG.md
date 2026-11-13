@@ -132,7 +132,9 @@ change commands, keys and file formats; patch versions only fix things.
   first node in the file with a text, and the first with a file, at it: only that node's
   text or file is given (when it is within its bounds) and only that node is changed by a
   tick or relinked by a rename; a later node at the place never is, even when the first
-  one's file is past its bound. Renaming a note linked from a canvas with two text or file
+  one's file is past its bound. So a first node whose `text` is a string that holds no task,
+  `""` included, hides a later task card at that place, which was listed before (a node with
+  no `text`, or `"text": null`, names nothing). Renaming a note linked from a canvas with two text or file
   cards at one place used to crash the rename (a panic, nothing written). With such an id,
   one file link fewer is given than before, so a note's backlinks can count one fewer.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
