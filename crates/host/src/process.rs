@@ -1134,7 +1134,7 @@ mod tests {
         let from = repo.join("examples/extensions").join(example);
         copy_dir(&from, &extensions.join(example));
         let (found, mistakes) = crate::installed::load(&extensions);
-        assert_eq!(mistakes, Vec::<String>::new());
+        assert!(mistakes.is_empty(), "{mistakes:?}");
         let mut installed = found.into_iter().next().unwrap();
         installed.launch.log = Some(dir.join(format!("{example}.log")));
         let pinned = vec!["env".to_string(), format!("COLD_LAVA_TODAY={TODAY}")];
