@@ -1582,9 +1582,12 @@ each doesn't invent one:
   `file_given`). When the menu opens a workspace it tells the core each owned kind with its
   owner's name and version. The core lists those files, reads each one's `rev`, and takes what
   the owner gave for that `rev` from `~/.cache/cold-lava/owners/<hash of the workspace's
-  path>-<owner>-<version>.json` (`{owner, version, files: {path: {rev, given}}}`, written after
-  the frame an answer came in); a file it has nothing for is still in the index, with no items,
-  and its owner is asked. The cache keeps the owner's answer, not items, so a change to the
+  path>-<owner>-<version>.cache<FORMAT>.json` (`{format, owner, version, files: {path: {rev,
+  given, left_out}}}`, `left_out` only when the answer left something out; written after the
+  frame an answer came in). A cache of another `FORMAT` is neither read nor rewritten
+  (`owner::cache::FORMAT`), and a cached answer whose items no longer all read is dropped
+  ("Pieces, as built", Bounds). A file it has nothing for is still in the index, with no
+  items, and its owner is asked. The cache keeps the owner's answer, not items, so a change to the
   workspace's types applies at once. The watcher's `FileChanged` for an owned kind reads the
   `rev` again and asks again when it changed; a file removed leaves the index and the cache.
 - **Answers arrive later.** `Process` sends `file/read` as a request and hands the answer to

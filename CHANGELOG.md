@@ -134,7 +134,12 @@ change commands, keys and file formats; patch versions only fix things.
   an answer left out beside it, through any number of loads and saves, and no longer keeps
   an item that is out of bounds. The cache has a format of its own, in its file's name and
   in the file: a cache written before this is not read, so every owner is asked again once
-  after an upgrade (and once after a downgrade, whose binary keeps its own file). A cached
+  after an upgrade (and once after a downgrade, whose binary keeps its own file). Until then
+  an owned file shows nothing, valid ones included: `items`, `agenda` and `table` never ask
+  owners, so on the command line alone every owned file stays "left out" until the menu is
+  opened once, or a `rename`, `recipe` or `item set` runs; and an owner that crashes or is
+  missing keeps all its files hidden for as long as it stays so, where the older binary
+  showed them from its cache. Open the workspace in the menu once after upgrading. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)
   is dropped as it loads and its owner asked again: until the owner answers, that file shows
   nothing, its good items included; with the owner absent or broken, until it is back.

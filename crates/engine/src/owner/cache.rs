@@ -79,11 +79,16 @@ struct Stored {
 
 impl From<Stored> for Answer {
     fn from(stored: Stored) -> Answer {
-        let mut given = stored.given;
+        // Every field named, so one added to `Stored` says here how it is read back.
+        let Stored {
+            rev,
+            mut given,
+            left_out,
+        } = stored;
         let read_as_saved = given.left_out.is_empty();
-        given.left_out = stored.left_out;
+        given.left_out = left_out;
         Answer {
-            rev: stored.rev,
+            rev,
             given,
             read_as_saved,
         }
@@ -395,6 +400,45 @@ mod tests {
             assert_eq!(o.given("csv-table", "A.csv", "r1"), None, "{name}");
             std::fs::remove_file(dir.join(&name)).unwrap();
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a cache of the current `FORMAT` holds, byte for byte, for an answer with a
+    /// piece, a Markdown piece, a link to a file, a link between pieces and an item left out
+    /// (`cache-format-<FORMAT>.json` beside this file). A change to what a cache holds fails
+    /// here until `FORMAT` is raised, which keeps a binary from trusting another's cache.
+    #[test]
+    fn a_cache_of_this_format_holds_exactly_this() {
+        let dir = std::env::temp_dir().join(format!("cl-owner-format-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = Path::new("/some/workspace");
+        let answer: Given = serde_json::from_value(json!({
+            "items": [
+                {"place": "p", "role": "item", "attributes": {"task": true, "checkbox": "open"},
+                 "text": ["a ", {"link": "Krakatoa"}]},
+                {"place": "m", "text": "- [ ] markdown"},
+                {"place": "b", "role": "slide"},
+            ],
+            "links": [
+                {"target": "Krakatoa", "place": "m", "text": "around"},
+                {"from": "p", "to": "p", "label": "self"},
+            ],
+        }))
+        .unwrap();
+        let mut o = Owners::new(root, vec![kind()], Some(&dir));
+        o.answered("csv-table", "A.csv", "r1", Some(&answer));
+        o.save();
+        let saved = std::fs::read_to_string(dir.join(file_name(root, &kind()))).unwrap();
+        let golden = format!(
+            "{}/src/owner/cache-format-{FORMAT}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let golden = std::fs::read_to_string(&golden).unwrap_or_default();
+        assert_eq!(
+            saved,
+            golden.trim_end(),
+            "what a cache holds changed: raise `FORMAT`, then update this (cache-format-N.json)"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
