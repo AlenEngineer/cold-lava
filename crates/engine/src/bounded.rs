@@ -127,6 +127,12 @@ impl<B> Text<B> {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    /// It with `more` after it. The engine's own change: what an answer holds is bounded as
+    /// it is read, and a text the engine makes is checked where an answer's would be.
+    pub fn push_str(&mut self, more: &str) {
+        self.0.push_str(more);
+    }
 }
 
 impl<B: Bound> Text<B> {
@@ -137,16 +143,10 @@ impl<B: Bound> Text<B> {
 }
 
 impl<B> Deref for Text<B> {
-    type Target = String;
+    type Target = str;
 
-    fn deref(&self) -> &String {
+    fn deref(&self) -> &str {
         &self.0
-    }
-}
-
-impl<B> DerefMut for Text<B> {
-    fn deref_mut(&mut self) -> &mut String {
-        &mut self.0
     }
 }
 
@@ -361,7 +361,10 @@ impl<'de, T: Deserialize<'de>, B> Deserialize<'de> for List<T, B> {
 
 /// Named JSON values (a piece's attributes, a typed item's fields), in the order given: at
 /// most `C` of them, each name within `K` and each value within `V`.
-pub struct Fields<C, K, V>(Map<String, Json>, PhantomData<fn() -> (C, K, V)>);
+pub struct Fields<C, K, V>(Map<String, Json>, Bounds<C, K, V>);
+
+/// The bounds of a map: of its count, its names and its values.
+type Bounds<C, K, V> = PhantomData<fn() -> (C, K, V)>;
 
 impl<C, K, V> Fields<C, K, V> {
     pub fn is_empty(&self) -> bool {
@@ -440,7 +443,7 @@ impl<'de, C, K, V> Deserialize<'de> for Fields<C, K, V> {
 
 /// Named texts (a step's options, a rebind's inputs), in the order given: at most `C` of
 /// them, each name within `K` and each text within `V`.
-pub struct Pairs<C, K, V>(IndexMap<String, String>, PhantomData<fn() -> (C, K, V)>);
+pub struct Pairs<C, K, V>(IndexMap<String, String>, Bounds<C, K, V>);
 
 impl<C, K, V> Pairs<C, K, V> {
     pub fn is_empty(&self) -> bool {
