@@ -1213,19 +1213,29 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             let found = left.iter().find(|(a, _)| a == at);
             found.map(|(_, said)| said.clone()).unwrap_or_default()
         };
-        return Err(
-            match (only(&want, &got).first(), only(&got, &want).first()) {
-                (Some(gone), _) => format!(
-                    "{} was left out, and came back changed, moved or not at all",
-                    words(want_left, gone)
-                ),
-                (None, Some(new)) => format!(
-                    "it leaves out {}, which was asked to read",
-                    words(got_left, new)
-                ),
-                (None, None) => "what was left out came back in another order".to_string(),
-            },
+        // Name one that is gone or new, not one that only stands elsewhere since: what it
+        // holds is what follows its position.
+        let holds = |at: &String| at.rsplit(": ").next().unwrap_or_default().to_string();
+        let first = |these: Vec<String>, those: &[String]| {
+            let held: Vec<String> = those.iter().map(holds).collect();
+            let other = these.iter().find(|at| !held.contains(&holds(at))).cloned();
+            other.or_else(|| these.first().cloned())
+        };
+        let (gone, new) = (
+            first(only(&want, &got), &got),
+            first(only(&got, &want), &want),
         );
+        return Err(match (gone.as_ref(), new.as_ref()) {
+            (Some(gone), _) => format!(
+                "{} was left out, and came back changed, moved or not at all",
+                words(want_left, gone)
+            ),
+            (None, Some(new)) => format!(
+                "it leaves out {}, which was asked to read",
+                words(got_left, new)
+            ),
+            (None, None) => "what was left out came back in another order".to_string(),
+        });
     }
     let (want, got) = (items(asked), items(gave));
     if want != got {
@@ -2916,5 +2926,12 @@ fields.star = { flag = "⭐", type = "bool" }
             let why = gives(v, m).unwrap_err();
             assert!(why.contains(says), "{says}: {why}");
         }
+        // Dropped, it is named, not the item left out after it, which only stands elsewhere.
+        let gave = given(json!({"items": [chore("done"), stray("red")]}));
+        let why = same(&asked, &read_back("A.sheet", &gave, &s)).unwrap_err();
+        assert!(
+            why.starts_with("v: no type called volcano was left out"),
+            "{why}"
+        );
     }
 }
