@@ -11,24 +11,23 @@
 //! bound to a value it didn't read by asking the field (`fits`, `most`, `past`), as
 //! `Piece::check` does. A bound is a check on what arrives, never an invariant of the type.
 //! What the engine makes itself (`given::apply` from a change, the canvas owner's answer) is
-//! not checked as it is built. It becomes an owner's answer, and an answer goes through
-//! `given::read` and `Places` before any of it counts as items, so a piece out of bounds is
-//! left out there like an owner's. An item edit is refused when its expected answer doesn't
-//! read (`Core::edit_item`). A relink (a rename, a merge, a recipe) only compares its
-//! expected answer with what the owner gave (`given::same`): a piece its change puts out of
-//! bounds is left out of the owner's answer as it arrives, and is in the expected one's
-//! pieces, so the two differ and the relink is refused; A4b says so in the bound's words.
+//! not checked as it is built. It becomes an owner's answer, and every answer goes through
+//! `given::Places` before any of it counts as items (`given::read`), which asks every bound
+//! of an item again (`GivenItem::check`): so one rule holds for every form and every owner,
+//! the canvas owner's included, which asks `Places` itself and gives nothing it would leave
+//! out. An item edit is refused when its expected answer doesn't read (`Core::edit_item`),
+//! and a relink (a rename, a merge, a recipe) when its change would leave out what the owner
+//! gave (`Core::relink`), in the bound's words, before the owner is asked.
 //!
 //! The bounds are the table below, one type each, so a number is written once and every
-//! field that has it names it. Three kinds: a bound that applies today (`Place`, `Target`,
-//! the names, `Attributes`, and with the answer `LinkLabel` and `Betweens`); `Message`,
-//! where what bounds a field is where it came from, by decision; and `Owed`, a bound the
-//! owner decided on 2026-11-13 that is not applied yet. The fields that name `Owed` are
-//! what is left to do (#265, A4b), and that is done when none does. Every bound is checked
-//! as a value is read from an answer (`Deserialize`, in the bound's words, `Limit::past`),
-//! which leaves out the item it is in; the two an answer's reader applies with the whole
-//! answer say so (`ON_ARRIVAL`). So nothing past a bound that applies reaches the core, its
-//! cache or the read-back.
+//! field that has it names it. Two kinds: a bound of its own, decided by the owner
+//! (2026-11-13), and `Message`, where what bounds a field is where it came from, by decision.
+//! No other bound has `Message`'s number (a test says so), so a bound decided and not applied
+//! can't hide behind it. Every bound is checked as a value is read from an answer
+//! (`Deserialize`, in the bound's words, `Limit::past`), which leaves out the item it is in;
+//! the ones an answer's reader applies with the whole answer say so (`ON_ARRIVAL`,
+//! `WithAnswer`), since what they leave out is a link and not an item. A total across fields
+//! (a piece's text, its runs, its depth) is a relation, checked with the piece.
 //!
 //! A leaf: it needs serde, serde_json and indexmap. The types are transparent on the wire,
 //! so what they serialize is what a `String`, a `Vec` or a map serialized: an item's `rev`
@@ -63,11 +62,11 @@ pub trait Limit {
 /// types are filled are bounded by what they come from: the canvas owner's answer by the
 /// canvas file it reads, the owners' cache by the answers the engine kept in it, a shape's
 /// steps written in TOML by that file. The fields that name it: an answer's items and links
-/// (the owner decided they are bounded only by the message), a Markdown piece's text, a
-/// file's new text (`NewText`), what a region shows (an id and a label), a run's marks, a
-/// piece's runs (their number is bounded with the piece, `given::MAX_RUNS`), and what names
-/// a place (`in`, the ends of a link between pieces), which must name a piece taken before
-/// it.
+/// (the owner decided they are bounded only by the message), a Markdown piece's text (whether
+/// a piece's 1 MiB applies to it is the owner's open choice), a file's new text (`NewText`), what a region shows (an id and a label), a run's marks, a
+/// piece's runs (their number is bounded with the piece, `given::MAX_RUNS`), what names a
+/// place (`in`, the ends of a link between pieces), which must name a piece taken before it,
+/// and the number of a step's options and a rebind's inputs.
 pub struct Message;
 impl Limit for Message {
     const MOST: usize = 64 << 20;
@@ -80,29 +79,9 @@ impl Limit for Message {
     }
 }
 
-/// A bound the owner decided on 2026-11-13 and that is not applied yet: until #265's A4b
-/// applies it, only `Message` bounds the field. The fields that name it are A4b's work
-/// list: a place in every form (1 to 1024 bytes, unique), a piece's text (1 MiB in total), a
-/// string attribute (1 MiB), a link's words (4096 bytes), a row's cells (4096), a region's
-/// answer (50,000 items), a gesture's answer (64 steps, names up to 256 bytes and values up to
-/// 64 KiB). Also, from the proposal the owner accepted ("generous, as proposed"), numbers
-/// the owner confirms before A4b merges: a file link's target (1 to 4096 bytes, as a link
-/// run's) and the words around it (4096 bytes), a typed item's type and field names (256
-/// bytes), its fields (256), and their values (a scalar, or a list of up to 4096).
-///
-/// A4b applies each where every answer passes, `given::read` and `Places`, not only as an
-/// answer arrives: the canvas owner's answer and what `given::apply` makes never arrive, and
-/// the rule is one for every form, the built-in canvas owner's included.
-pub struct Owed;
-impl Limit for Owed {
-    const MOST: usize = Message::MOST;
-
-    fn past() -> String {
-        Message::past()
-    }
-}
-
-/// A piece's place: 1 to 1024 bytes (`Piece::check`; the piece is left out).
+/// The place of an item in every form (a piece, a Markdown piece, a typed item) and of a link
+/// to a file: 1 to 1024 bytes (`GivenItem::check`; the item is left out). That one item of a
+/// form stands at a place is a relation of the answer's items, `given::Places`.
 pub struct Place;
 impl Limit for Place {
     const LEAST: usize = 1;
@@ -113,7 +92,8 @@ impl Limit for Place {
     }
 }
 
-/// A link run's target: 1 to 4096 bytes (`Piece::check`; the piece is left out).
+/// A link's target, a link run's and a link to a file's: 1 to 4096 bytes (`Piece::check`;
+/// the piece is left out; `Places::link`).
 pub struct Target;
 impl Limit for Target {
     const LEAST: usize = 1;
@@ -166,7 +146,8 @@ impl Limit for LabelName {
     }
 }
 
-/// A field run's name: 1 to 256 bytes (`Piece::check`; the piece is left out).
+/// A field's name, a field run's and a typed item's: 1 to 256 bytes (`GivenItem::check`; the
+/// item is left out).
 pub struct FieldName;
 impl Limit for FieldName {
     const LEAST: usize = 1;
@@ -217,6 +198,147 @@ impl Limit for Betweens {
     }
 }
 
+/// A piece's text: at most 1 MiB, a run's on its own (the piece is left out) and all its runs
+/// together, its cells' included (`Piece::check`): a plain or marked run's characters, a
+/// link's words and a field's value.
+pub struct PieceText;
+impl Limit for PieceText {
+    const MOST: usize = 1 << 20;
+
+    fn past() -> String {
+        format!("its text is longer than {} MiB", Self::MOST >> 20)
+    }
+}
+
+/// A value that is text: a piece's attribute, a field run's value, a typed item's field or
+/// one of a list it holds. At most 1 MiB (`GivenItem::check`; the item is left out).
+pub struct ValueText;
+impl Limit for ValueText {
+    const MOST: usize = 1 << 20;
+
+    fn past() -> String {
+        format!("a value is longer than {} MiB", Self::MOST >> 20)
+    }
+}
+
+/// A link's words: a link run's, and what a link to a file says around it. At most 4096
+/// bytes (`Piece::check`; `Places::link`).
+pub struct LinkText;
+impl Limit for LinkText {
+    const MOST: usize = 4096;
+
+    fn past() -> String {
+        format!("a link's text is longer than {} bytes", Self::MOST)
+    }
+}
+
+/// A row's cells: at most 4096 (`Piece::check`; the piece is left out).
+pub struct Cells;
+impl Limit for Cells {
+    const MOST: usize = 4096;
+
+    fn past() -> String {
+        format!("it has more than {} cells", Self::MOST)
+    }
+}
+
+/// A typed item's type: 1 to 256 bytes (`GivenItem::check`; the item is left out).
+pub struct TypeName;
+impl Limit for TypeName {
+    const LEAST: usize = 1;
+    const MOST: usize = 256;
+
+    fn past() -> String {
+        format!("its type is empty or longer than {} bytes", Self::MOST)
+    }
+}
+
+/// A typed item's fields: at most 256 (`GivenItem::check`; the item is left out).
+pub struct TypedFields;
+impl Limit for TypedFields {
+    const MOST: usize = 256;
+
+    fn past() -> String {
+        format!("it has more than {} fields", Self::MOST)
+    }
+}
+
+/// A list a typed item's field holds: at most 4096 values, each text, a number, `true`,
+/// `false` or `null` (`GivenItem::check`; the item is left out).
+pub struct ValueList;
+impl Limit for ValueList {
+    const MOST: usize = 4096;
+
+    fn past() -> String {
+        format!("a field's list has more than {} values", Self::MOST)
+    }
+}
+
+/// What a region shows, in an answer to `shape/region`: at most 50,000 items (the answer is
+/// refused).
+pub struct RegionItems;
+impl Limit for RegionItems {
+    const MOST: usize = 50_000;
+
+    fn past() -> String {
+        format!("it shows more than {} items", Self::MOST)
+    }
+}
+
+/// The steps of an answer to `shape/gesture`: at most 64 (the answer is refused).
+pub struct GestureSteps;
+impl Limit for GestureSteps {
+    const MOST: usize = 64;
+
+    fn past() -> String {
+        format!("it has more than {} steps", Self::MOST)
+    }
+}
+
+/// A name in a step (an input, a recipe, a field, a shape, an option's or an input's name):
+/// at most 256 bytes. A shape's steps written in TOML are read into the same types.
+pub struct StepName;
+impl Limit for StepName {
+    const MOST: usize = 256;
+
+    fn past() -> String {
+        format!("a name in a step is longer than {} bytes", Self::MOST)
+    }
+}
+
+/// A value in a step (a field's value, a new note's text and name, an option's or an input's
+/// value): at most 64 KiB.
+pub struct StepValue;
+impl Limit for StepValue {
+    const MOST: usize = 64 << 10;
+
+    fn past() -> String {
+        format!("a value in a step is longer than {} KiB", Self::MOST >> 10)
+    }
+}
+
+/// `B`, applied as the answer is read into items rather than as it arrives
+/// (`Limit::ON_ARRIVAL`): a link to a file's bounds (`given::Places::link`). An item past a
+/// bound is left out alone as it arrives, but a link that doesn't read as it arrives
+/// refuses the whole answer, so a link past one is left out alone where the answer is read.
+///
+/// Why two ways to say "applied with the answer": `LinkLabel` and `Betweens` are bounds of
+/// their own, with their own words, that no field applies on arrival, so their `ON_ARRIVAL`
+/// says it. A link to a file's place, target and words are bounds other fields apply on
+/// arrival (`Place`, `Target`, `LinkText`): `WithAnswer` names the same number and words
+/// once, instead of a second type with a copy of them. The fields that name it are listed by
+/// `tests/one_door.rs`, so a new one is a reviewed decision.
+pub struct WithAnswer<B>(PhantomData<fn() -> B>);
+impl<B: Limit> Limit for WithAnswer<B> {
+    const LEAST: usize = B::LEAST;
+    const MOST: usize = B::MOST;
+    const ON_ARRIVAL: bool = false;
+
+    fn past() -> String {
+        B::past()
+    }
+}
+
 /// Whether `n` is within `B`.
 pub fn fits<B: Limit>(n: usize) -> bool {
     (B::LEAST..=B::MOST).contains(&n)
@@ -230,25 +352,36 @@ fn within<B: Limit, E: serde::de::Error>(n: usize) -> Result<(), E> {
     }
 }
 
-/// What each bound says of a value past it. Every bound is here: a test counts them.
-const PAST: [fn() -> String; 11] = [
-    Message::past,
-    Owed::past,
-    Place::past,
-    Target::past,
-    CellName::past,
-    AttributeName::past,
-    LabelName::past,
-    FieldName::past,
-    Attributes::past,
-    LinkLabel::past,
-    Betweens::past,
+/// Each bound's most and what it says of a value past it. Every bound is here: a test counts
+/// them, and another checks that no bound but `Message` has `Message`'s number.
+const PAST: [(usize, fn() -> String); 21] = [
+    (Message::MOST, Message::past),
+    (Place::MOST, Place::past),
+    (Target::MOST, Target::past),
+    (CellName::MOST, CellName::past),
+    (AttributeName::MOST, AttributeName::past),
+    (LabelName::MOST, LabelName::past),
+    (FieldName::MOST, FieldName::past),
+    (Attributes::MOST, Attributes::past),
+    (LinkLabel::MOST, LinkLabel::past),
+    (Betweens::MOST, Betweens::past),
+    (PieceText::MOST, PieceText::past),
+    (ValueText::MOST, ValueText::past),
+    (LinkText::MOST, LinkText::past),
+    (Cells::MOST, Cells::past),
+    (TypeName::MOST, TypeName::past),
+    (TypedFields::MOST, TypedFields::past),
+    (ValueList::MOST, ValueList::past),
+    (RegionItems::MOST, RegionItems::past),
+    (GestureSteps::MOST, GestureSteps::past),
+    (StepName::MOST, StepName::past),
+    (StepValue::MOST, StepValue::past),
 ];
 
 /// Whether `message` is what a bound says of a value past it (`Limit::past`): words of the
 /// engine's own, which hold nothing an answer wrote.
 pub fn is_past(message: &str) -> bool {
-    PAST.iter().any(|past| past() == message)
+    PAST.iter().any(|(_, past)| past() == message)
 }
 
 /// A text whose bound, in bytes, is `B`. It doesn't hold the bound: `fits` applies it.
@@ -411,6 +544,11 @@ impl<T, B: Limit> List<T, B> {
     pub fn most(&self) -> usize {
         B::MOST
     }
+
+    /// What its bound says of a list past it.
+    pub fn past(&self) -> String {
+        B::past()
+    }
 }
 
 impl<T, B> Deref for List<T, B> {
@@ -557,6 +695,19 @@ impl<C: Limit, K: Limit, V: Limit> Fields<C, K, V> {
     /// What `K` says of a name past it.
     pub fn name_past(&self) -> String {
         K::past()
+    }
+
+    /// Whether `value` is within `V`: text by its bytes; any other value is.
+    pub fn value_fits(&self, value: &Json) -> bool {
+        match value {
+            Json::String(text) => fits::<V>(text.len()),
+            _ => true,
+        }
+    }
+
+    /// What `V` says of a value past it.
+    pub fn value_past(&self) -> String {
+        V::past()
     }
 }
 
@@ -790,7 +941,10 @@ mod tests {
             "an attribute's name is empty or longer than 256 bytes"
         );
         let long = json!("l".repeat(4097));
-        assert!(serde_json::from_value::<Text<LinkLabel>>(long).is_ok());
+        assert!(serde_json::from_value::<Text<LinkLabel>>(long.clone()).is_ok());
+        let later = serde_json::from_value::<Text<WithAnswer<Target>>>(long).unwrap();
+        assert!(!later.fits());
+        assert_eq!(later.past(), Target::past());
         assert!(!is_past("its place is empty"));
     }
 
@@ -801,5 +955,13 @@ mod tests {
         // Spelled in two parts, so this line is not one of them.
         let bounds = source.matches(&["impl", " Limit for "].concat()).count();
         assert_eq!(bounds, PAST.len());
+    }
+
+    /// A bound is `Message` or one of its own: a bound that borrows `Message`'s number is
+    /// a bound decided and not applied, which A4b (#265) ended.
+    #[test]
+    fn no_bound_but_message_has_its_number() {
+        let message = PAST.iter().filter(|(most, _)| *most == Message::MOST);
+        assert_eq!(message.count(), 1);
     }
 }

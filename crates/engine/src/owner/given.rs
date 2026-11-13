@@ -14,8 +14,9 @@
 
 use crate::alphabet::{Mark, Role};
 use crate::bounded::{
-    AttributeName, Attributes, Betweens, CellName, FieldName, Fields, LabelName, Limit, LinkLabel,
-    List, Message, Owed, Place, Target, Text,
+    AttributeName, Attributes, Betweens, CellName, Cells, FieldName, Fields, LabelName, Limit,
+    LinkLabel, LinkText, List, Message, PieceText, Place, Target, Text, TypeName, TypedFields,
+    ValueList, ValueText, WithAnswer,
 };
 use crate::gateway;
 use crate::items::{Data, Item, Settings};
@@ -153,19 +154,86 @@ impl<'de> Deserialize<'de> for WireLink {
 pub enum GivenItem {
     /// Markdown text, read as a note is: a task in it is a `task`.
     Markdown {
-        place: Text<Owed>,
+        place: Text<Place>,
         text: Text<Message>,
     },
     /// An item of a loaded type, its fields by name.
     Typed {
-        place: Text<Owed>,
+        place: Text<Place>,
         #[serde(rename = "type")]
-        kind: Text<Owed>,
+        kind: Text<TypeName>,
         #[serde(default)]
-        fields: Fields<Owed, Owed, Owed>,
+        fields: Fields<TypedFields, FieldName, ValueText>,
     },
     /// A piece in the alphabet's terms: never Markdown.
     Piece(Piece),
+}
+
+impl GivenItem {
+    /// The owner's place for it.
+    pub fn place(&self) -> &str {
+        match self {
+            GivenItem::Markdown { place, .. } | GivenItem::Typed { place, .. } => place.as_str(),
+            GivenItem::Piece(p) => p.place.as_str(),
+        }
+    }
+
+    /// Whether it is within its bounds, each asked of its field (`bounded::Limit::past`), in
+    /// every form. Asked as an item arrives (`GivenItem::read`) and again wherever an answer
+    /// is read into items (`Places::fits`), so what the engine makes itself and never
+    /// arrives (the canvas owner's answer, `apply`) is held to the same bounds.
+    pub fn check(&self) -> Result<(), String> {
+        if !fits_place(self.place()) {
+            return Err(Place::past());
+        }
+        match self {
+            GivenItem::Markdown { .. } => Ok(()),
+            GivenItem::Typed { kind, fields, .. } => check_typed(kind, fields),
+            GivenItem::Piece(p) => p.check(),
+        }
+    }
+}
+
+/// Whether `place` is within `bounded::Place`.
+fn fits_place(place: &str) -> bool {
+    crate::bounded::fits::<Place>(place.len())
+}
+
+/// A typed item's type and fields within their bounds: each field's value text, a number,
+/// `true`, `false`, `null`, or a list of up to `ValueList` of those, its text within `ValueText`.
+fn check_typed(
+    kind: &Text<TypeName>,
+    fields: &Fields<TypedFields, FieldName, ValueText>,
+) -> Result<(), String> {
+    if !kind.fits() {
+        return Err(kind.past());
+    }
+    if fields.len() > fields.most() {
+        return Err(fields.past());
+    }
+    for (name, value) in fields {
+        if !fields.name_fits(name).0 {
+            return Err(fields.name_past());
+        }
+        let values = match value {
+            Json::Array(list) if list.len() > ValueList::MOST => return Err(ValueList::past()),
+            Json::Array(list) => list.as_slice(),
+            one => std::slice::from_ref(one),
+        };
+        for v in values {
+            if matches!(v, Json::Array(_) | Json::Object(_)) {
+                return Err(
+                    "a field holds a table or a list of lists: a field's value is \
+                            text, a number, true, false, or a list of those"
+                        .into(),
+                );
+            }
+            if !fields.value_fits(v) {
+                return Err(fields.value_past());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How deep pieces may nest (`in`). An owner's answer is another program's: a piece past a
@@ -189,7 +257,7 @@ pub struct Piece {
     pub role: Role,
     /// Text, a number, `true` or `false` by name; `null` is the same as leaving the name out.
     #[serde(default, skip_serializing_if = "Fields::is_empty")]
-    pub attributes: Fields<Attributes, AttributeName, Owed>,
+    pub attributes: Fields<Attributes, AttributeName, ValueText>,
     #[serde(default, skip_serializing_if = "List::is_empty")]
     pub text: List<Run, Message>,
     /// *Contains*: the place of the piece it is inside, which comes before it in the answer.
@@ -198,7 +266,7 @@ pub struct Piece {
     pub inside: Option<Text<Message>>,
     /// *Beside*: a row's cells, in order. A row has cells and no text of its own.
     #[serde(default, skip_serializing_if = "List::is_empty")]
-    pub cells: List<Cell, Owed>,
+    pub cells: List<Cell, Cells>,
 }
 
 /// One cell of a row: the name of its column, and what it says.
@@ -215,7 +283,7 @@ pub struct Cell {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Run {
-    Plain(Text<Owed>),
+    Plain(Text<PieceText>),
     Marked(Marked),
     Link(LinkRun),
     Label(Label),
@@ -226,7 +294,7 @@ pub enum Run {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Marked {
-    pub text: Text<Owed>,
+    pub text: Text<PieceText>,
     #[serde(default, skip_serializing_if = "List::is_empty")]
     pub marks: List<Mark, Message>,
 }
@@ -239,7 +307,7 @@ pub struct Marked {
 pub struct LinkRun {
     pub link: Text<Target>,
     #[serde(default, skip_serializing_if = "Text::is_empty")]
-    pub text: Text<Owed>,
+    pub text: Text<LinkText>,
     #[serde(default, skip_serializing_if = "List::is_empty")]
     pub marks: List<Mark, Message>,
 }
@@ -257,7 +325,7 @@ pub struct Label {
 #[serde(deny_unknown_fields)]
 pub struct FieldRun {
     pub field: Text<FieldName>,
-    pub value: Text<Owed>,
+    pub value: Text<ValueText>,
 }
 
 /// What a `checkbox` attribute says, in the model's words, and the Tasks plugin's status type
@@ -298,9 +366,44 @@ impl Piece {
     }
 
     /// Whether it is within the bounds, and says nothing two ways. Each bound is asked of
-    /// its field, in its own words (`bounded::Limit::past`); the number of runs is a
-    /// relation of the fields, checked here.
+    /// its field, in its own words (`bounded::Limit::past`); the number of runs and the
+    /// length of its text in all are relations of the fields, checked here.
     pub fn check(&self) -> Result<(), String> {
+        self.check_older_bounds()?;
+        if !self.cells.fits() {
+            return Err(self.cells.past());
+        }
+        if self
+            .attributes
+            .values()
+            .any(|v| !self.attributes.value_fits(v))
+        {
+            return Err(self.attributes.value_past());
+        }
+        // Each run's text within its field's bound, then all of them within the piece's.
+        let mut total = 0;
+        for run in self.runs() {
+            total += match run {
+                Run::Plain(t) | Run::Marked(Marked { text: t, .. }) => t.fits().then_some(t.len()),
+                Run::Link(l) => l.text.fits().then_some(l.text.len()),
+                Run::Field(f) => f.value.fits().then_some(f.value.len()),
+                Run::Label(_) => Some(0),
+            }
+            .ok_or_else(|| match run {
+                Run::Link(l) => l.text.past(),
+                Run::Field(f) => f.value.past(),
+                _ => PieceText::past(),
+            })?;
+        }
+        match total > PieceText::MOST {
+            true => Err(PieceText::past()),
+            false => Ok(()),
+        }
+    }
+
+    /// The bounds it had before A4b (#265), asked in the order they were, so a piece that
+    /// breaks one of them is told what it was told.
+    fn check_older_bounds(&self) -> Result<(), String> {
         if !self.place.fits() {
             return Err(self.place.past());
         }
@@ -467,27 +570,89 @@ struct Before<'a> {
     seen: Vec<Seen>,
 }
 
-/// The places of an answer's pieces as they are taken, one piece a place, in the order
-/// given. What the engine takes of an answer's pieces and of the links between them is
-/// decided here, for the engine reading an answer (`read`) and for an owner in the engine
-/// building one (`canvas::read`): so an owner that asks first gives nothing that is reported.
+/// The places of an answer's items as they are claimed, in the order given, and the pieces
+/// taken among them. What the engine takes of an answer, its items in every form, its links
+/// to files and the links between its pieces, is decided here, for the engine reading an
+/// answer (`read`), for whatever changes an owned file (`Given::placed`, `apply`) and for an
+/// owner in the engine building one (`canvas::read`): so an owner that asks first gives
+/// nothing that is reported.
+///
+/// **A place names one item of each form**: the first item of its form there that is within
+/// its bounds claims it, and a later one of that form is left out, whatever becomes of the
+/// first (a piece `in` no piece is left out after it claimed its place). A piece, a Markdown
+/// piece and a typed item may share a place, as they always could: a board's text card is a
+/// piece and a Markdown piece at the node's id, and an owner may give a row as a typed item
+/// and as a piece. Their ids are apart (`piece_id`, `typed_id`), and each change says which
+/// form it is for (`Change`), so no change to one reaches another. Two of one form at a place
+/// had one id between them and took each other's changes.
 #[derive(Default)]
 pub struct Places<'a> {
+    /// The forms that have claimed each place (`form`).
+    claimed: HashMap<&'a str, u8>,
     at: HashMap<&'a str, usize>,
 }
 
+/// An item's form, as a bit of `Places::claimed`.
+fn form(item: &GivenItem) -> u8 {
+    match item {
+        GivenItem::Piece(_) => 1,
+        GivenItem::Markdown { .. } => 2,
+        GivenItem::Typed { .. } => 4,
+    }
+}
+
 impl<'a> Places<'a> {
-    /// Whether this piece can be taken: it is within the bounds, and no piece taken has its
-    /// place.
-    pub fn fits(&self, p: &Piece) -> Result<(), String> {
-        p.check()?;
-        match self.at.contains_key(p.place.as_str()) {
-            true => Err("another piece is at this place".into()),
+    /// Admit the item: it claims its place when it is within its bounds (`GivenItem::check`)
+    /// and no item of its form has claimed the place; else why not. The one way every
+    /// reader of an answer takes an item's place (`read`, `Given::placed`, `canvas::read`).
+    ///
+    /// The first item of a form *within its bounds* claims a place, so a later one may be
+    /// admitted where an earlier one was left out. For an owner that gives what it holds,
+    /// that is safe: the read-back compares what was left out and what didn't take its place
+    /// by position and hash (`same`), so a change the owner writes into the item that doesn't
+    /// hold the place is refused and nothing is written. An owner that gives only what is
+    /// taken (the canvas) leaves nothing for the read-back to compare, so its place names the
+    /// first node whatever that node holds (`canvas::Named`).
+    pub fn admit(&mut self, item: &'a GivenItem) -> Result<(), String> {
+        self.fits(item)?;
+        *self.claimed.entry(item.place()).or_default() |= form(item);
+        Ok(())
+    }
+
+    fn fits(&self, item: &GivenItem) -> Result<(), String> {
+        item.check()?;
+        let claimed = self.claimed.get(item.place()).copied().unwrap_or_default();
+        match claimed & form(item) != 0 {
             false => Ok(()),
+            true => Err(match item {
+                GivenItem::Piece(_) => "another piece is at this place",
+                GivenItem::Markdown { .. } => "another Markdown piece is at this place",
+                GivenItem::Typed { .. } => "another typed item is at this place",
+            }
+            .into()),
         }
     }
 
-    /// Take the piece: its number among the pieces taken, from 0.
+    /// Whether this link to a file is taken: its place, its target and its words are within
+    /// their bounds. The engine has no place rule for links: a Markdown piece's links all
+    /// have its place. An owner that writes a link by its place gives one link a place, as
+    /// the canvas owner does (`canvas::Named`), or a change at the place can't tell them apart.
+    pub fn link(&self, l: &GivenLink) -> Result<(), String> {
+        let past = if !l.place.fits() {
+            l.place.past()
+        } else if !l.target.fits() {
+            l.target.past()
+        } else if !l.text.fits() {
+            l.text.past()
+        } else {
+            return Ok(());
+        };
+        Err(format!("a link to a file: {past}"))
+    }
+
+    /// Take the piece, once admitted: its number among the pieces taken, from 0. A piece
+    /// is taken after its relations are read (`read_piece`), so its number is its place
+    /// among the pieces that read, which `in` and the links between pieces name.
     pub fn take(&mut self, p: &'a Piece) -> usize {
         let n = self.at.len();
         self.at.insert(p.place.as_str(), n);
@@ -540,7 +705,6 @@ fn read_piece<'a>(
     before: &mut Before<'a>,
     out: &mut Read,
 ) -> Result<(), String> {
-    before.places.fits(p)?;
     let parent = match &p.inside {
         Some(place) => match before.places.at(place) {
             Some(i) => Some(i),
@@ -660,11 +824,11 @@ fn read_piece<'a>(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GivenLink {
-    pub target: Text<Owed>,
-    pub place: Text<Owed>,
+    pub target: Text<WithAnswer<Target>>,
+    pub place: Text<WithAnswer<Place>>,
     /// What it says around the link, for backlinks.
     #[serde(default)]
-    pub text: Text<Owed>,
+    pub text: Text<WithAnswer<LinkText>>,
 }
 
 /// A link from one piece of the file to another, by their places, with what the link says: a
@@ -724,13 +888,15 @@ pub fn clears(value: &Json) -> bool {
     value.is_null() || value.as_str().is_some_and(blank)
 }
 
-/// What the owner should give for the file once `changes` are made to what it gave.
+/// What the owner should give for the file once `changes` are made to what it gave. A
+/// change at a place is for the item of its form that holds the place (`Given::placed`).
 pub fn apply(given: &Given, changes: &[Change]) -> Given {
+    let placed = given.placed_mask();
     let mut out = given.clone();
     for c in changes {
         match c {
             Change::Text { place, text } => {
-                for item in &mut out.items {
+                for item in held(&mut out, &placed) {
                     if let GivenItem::Markdown { place: p, text: t } = item
                         && p == place
                     {
@@ -743,7 +909,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                 field,
                 value,
             } => {
-                for item in &mut out.items {
+                for item in held(&mut out, &placed) {
                     if let GivenItem::Typed {
                         place: p, fields, ..
                     } = item
@@ -762,7 +928,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                         l.target = to.clone().into();
                     }
                 }
-                for p in pieces_at(&mut out, place) {
+                for p in pieces_at(&mut out, &placed, place) {
                     let cells = p.cells.iter_mut().flat_map(|c| c.text.iter_mut());
                     for run in p.text.iter_mut().chain(cells) {
                         if let Run::Link(l) = run
@@ -778,7 +944,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                 attribute,
                 value,
             } => {
-                for p in pieces_at(&mut out, place) {
+                for p in pieces_at(&mut out, &placed, place) {
                     // Wherever the owner wrote it, it now says this once.
                     let named = |r: &Run| matches!(r, Run::Field(f) if f.field == *attribute);
                     p.text.retain(|r| !named(r));
@@ -789,7 +955,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                 }
             }
             Change::Runs { place, cell, text } => {
-                for p in pieces_at(&mut out, place) {
+                for p in pieces_at(&mut out, &placed, place) {
                     match cell {
                         None => p.text = text.clone().into(),
                         Some(name) => {
@@ -805,12 +971,79 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
     out
 }
 
-/// The pieces an owner gave at `place`.
-fn pieces_at<'a>(given: &'a mut Given, place: &'a str) -> impl Iterator<Item = &'a mut Piece> {
-    given.items.iter_mut().filter_map(move |item| match item {
+/// Whether `changes` may be made to what the owner gave for `file`: refused when they would
+/// leave out something the answer as given doesn't (`left_out_by`), in its words. The one
+/// rule for a change to an owned file: a relink asks it (`Core::relink`), and an item edit
+/// keeps a stricter one until #257 (A4c), refusing on anything its expected answer leaves
+/// out (`Core::edit_item`).
+pub fn check_change(
+    file: &str,
+    given: &Given,
+    changes: &[Change],
+    s: &Settings,
+) -> Result<(), String> {
+    let lost = left_out_by(file, given, changes, s);
+    match lost.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "{file}: the change would leave out {}",
+            crate::problem::joined(&lost)
+        )),
+    }
+}
+
+/// What `changes` would leave out of what the owner gave for `file`: each problem of reading
+/// the changed answer about an item, a link or a link between pieces that reading it as given
+/// leaves in. Told apart by which one it is (its position, `Problem::about`), never by the
+/// words, which cut a place to 80 characters: a change keeps every position, since none adds,
+/// moves or removes anything.
+pub fn left_out_by(file: &str, given: &Given, changes: &[Change], s: &Settings) -> Vec<Problem> {
+    let before = read_all(file, given, s).problems;
+    let after = read_all(file, &apply(given, changes), s).problems;
+    let was = |p: &Problem| (p.subject()).is_some_and(|a| before.iter().any(|b| b.is_about(a)));
+    let new: Vec<Problem> = after.into_iter().filter(|p| !was(p)).collect();
+    crate::problem::capped(new)
+}
+
+/// The items of `given` that hold their places, by `placed` (`Given::placed_mask`).
+fn held<'a>(given: &'a mut Given, placed: &'a [bool]) -> impl Iterator<Item = &'a mut GivenItem> {
+    (given.items.iter_mut().zip(placed)).filter_map(|(item, held)| held.then_some(item))
+}
+
+/// The piece that holds `place`.
+fn pieces_at<'a>(
+    given: &'a mut Given,
+    placed: &'a [bool],
+    place: &'a str,
+) -> impl Iterator<Item = &'a mut Piece> {
+    held(given, placed).filter_map(move |item| match item {
         GivenItem::Piece(p) if p.place == place => Some(p),
         _ => None,
     })
+}
+
+impl Given {
+    /// Its items that hold their places, in order (`Places`): each within its bounds and the
+    /// first of its form at its place. What a change to the file is for and what a rename,
+    /// a recipe or tidy reads; `read` leaves out more (a piece `in` no piece, a type that
+    /// isn't loaded), and what it reads is among these.
+    pub fn placed(&self) -> impl Iterator<Item = &GivenItem> {
+        (self.items.iter().zip(self.placed_mask())).filter_map(|(item, held)| held.then_some(item))
+    }
+
+    /// Its links to files within their bounds (`Places::link`).
+    pub fn placed_links(&self) -> impl Iterator<Item = &GivenLink> {
+        let places = Places::default();
+        self.links.iter().filter(move |l| places.link(l).is_ok())
+    }
+
+    /// Whether each of its items holds its place.
+    fn placed_mask(&self) -> Vec<bool> {
+        let mut places = Places::default();
+        (self.items.iter())
+            .map(|item| places.admit(item).is_ok())
+            .collect()
+    }
 }
 
 /// The words of some runs as a field shows them: plain characters, a label as `#name`, a link
@@ -936,6 +1169,7 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
     let (want_pieces, got_pieces) = (&asked.pieces, &gave.pieces);
     let (want_between, got_between) = (&asked.between, &gave.between);
     let (want_left, got_left) = (&asked.left_out, &gave.left_out);
+    let (want_unplaced, got_unplaced) = (&asked.unplaced, &gave.unplaced);
     let (asked, gave) = (&asked.read, &gave.read);
     let items = |r: &Read| -> Vec<String> {
         let mut v: Vec<String> = r.items.iter().map(data_key).collect();
@@ -1003,6 +1237,19 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             "the items left out are {} where {} were asked",
             said(got_left),
             said(want_left)
+        ));
+    }
+    // Nor is one for an item that doesn't hold its place, or for a link past its bounds:
+    // they come back as they were, or the owner changed what no change was for.
+    if want_unplaced != got_unplaced {
+        let said = |left: &Vec<String>| match left.is_empty() {
+            true => "none".to_string(),
+            false => short(left.clone()),
+        };
+        return Err(format!(
+            "the items and links that don't take their places are {} where {} were asked",
+            said(got_unplaced),
+            said(want_unplaced)
         ));
     }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
@@ -1083,6 +1330,9 @@ pub struct ReadBack {
     /// Every item left out as the answer was read, in order: where it stood among the items
     /// read, and what it said (`LeftOut::key`).
     left_out: Vec<String>,
+    /// Every item that doesn't hold its place (`Given::placed`) and every link to a file past
+    /// its bounds, in order: where it is, and a hash of what it says.
+    unplaced: Vec<String>,
 }
 
 /// Read an answer to compare it with another: what the owner should give, or what it gave.
@@ -1116,30 +1366,55 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
         )
     };
     let left = |(at, l): &(usize, LeftOut)| format!("after item {at}: {}", l.key);
+    let key = |json: serde_json::Result<String>| line_id(&json.unwrap_or_default());
+    let items = (given.items.iter().zip(given.placed_mask()).enumerate())
+        .filter(|(_, (_, held))| !held)
+        .map(|(i, (item, _))| format!("item {}: {}", i + 1, key(serde_json::to_string(item))));
+    let places = Places::default();
+    let links = (given.links.iter().enumerate())
+        .filter(|(_, l)| places.link(l).is_err())
+        .map(|(i, l)| format!("link {}: {}", i + 1, key(serde_json::to_string(l))));
     ReadBack {
         read: read(file, given, s),
         pieces,
         between: given.between.iter().map(joins).collect(),
         left_out: given.left_out.iter().map(left).collect(),
+        unplaced: items.chain(links).collect(),
     }
 }
 
 /// Read what the owner gave for the file at workspace-relative `file`.
 pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
+    let mut out = read_all(file, given, s);
+    out.problems = crate::problem::capped(out.problems);
+    out
+}
+
+/// `read`, with every problem, each about the item (`item N`), the link (`link N`), the link
+/// between pieces (`between N`) or the record of an item left out (`left out N`) it is for.
+fn read_all(file: &str, given: &Given, s: &Settings) -> Read {
     let mut out = Read::default();
     let mut before = Before::default();
     // What was left out as the answer was read is said where it stood.
-    let mut left_out = given.left_out.iter().peekable();
+    let mut left_out = given.left_out.iter().enumerate().peekable();
+    let left = |(k, (_, l)): (usize, &(usize, LeftOut))| l.problem().about(format!("left out {k}"));
     for (i, item) in given.items.iter().enumerate() {
-        while let Some((_, l)) = left_out.next_if(|(at, _)| *at <= i) {
-            out.problems.push(l.problem());
+        while let Some(l) = left_out.next_if(|(_, (at, _))| *at <= i) {
+            out.problems.push(left(l));
+        }
+        // One short line, whatever the owner sent: a reason may quote a value.
+        let said = |why: String| {
+            let words = format!("{}: {}", short(item.place()), cut(&why, 200));
+            Problem::line(words).about(format!("item {i}"))
+        };
+        if let Err(why) = before.places.admit(item) {
+            out.problems.push(said(why));
+            continue;
         }
         match item {
             GivenItem::Piece(p) => {
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
-                    // One short line, whatever the owner sent: a reason may quote a value.
-                    let said = format!("{}: {}", short(&p.place), cut(&why, 200));
-                    out.problems.push(Problem::line(said));
+                    out.problems.push(said(why));
                 }
             }
             GivenItem::Markdown { place, text } => {
@@ -1175,12 +1450,18 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                         data: Data::Typed(Box::new(typed)),
                     });
                 }
-                Err(e) => out.problems.push(Problem::line(format!("{place}: {e}"))),
+                Err(e) => out.problems.push(said(e)),
             },
         }
     }
-    out.problems.extend(left_out.map(|(_, l)| l.problem()));
-    for l in &given.links {
+    out.problems.extend(left_out.map(left));
+    for (i, l) in given.links.iter().enumerate() {
+        if let Err(why) = before.places.link(l) {
+            let said = format!("{}: {}", short(&l.place), cut(&why, 200));
+            out.problems
+                .push(Problem::line(said).about(format!("link {i}")));
+            continue;
+        }
         let target = crate::workspace::clean_target(&l.target);
         let r = target.map(|target| Ref {
             target,
@@ -1193,13 +1474,13 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     // an answer may have, the rest are, and that is said once.
     for (nth, l) in given.between.iter().enumerate() {
         if let Err(why) = before.places.joins(l, nth) {
-            out.problems.push(Problem::line(why));
+            out.problems
+                .push(Problem::line(why).about(format!("between {nth}")));
             if nth >= Betweens::MOST {
                 break;
             }
         }
     }
-    out.problems = crate::problem::capped(out.problems);
     out
 }
 
@@ -2215,5 +2496,304 @@ fields.star = { flag = "⭐", type = "bool" }
             "`#homework` is not the label `home`, and a typed link is characters"
         );
         assert_eq!(runs(""), json!([{"field": "due", "value": "2026-11-20"}]));
+    }
+
+    /// One rule for a place (the owner's decision of 2026-11-13): the first item of each form
+    /// at a place holds it, and a second of that form is left out with a problem, so a change
+    /// at the place reaches one item. Before, two Markdown pieces at one place were both
+    /// listed, and ticking the first gave the second the first's text.
+    #[test]
+    fn a_second_item_of_a_form_at_a_taken_place_is_left_out() {
+        let s = settings("");
+        let answer = given(json!({"items": [
+            {"place": "p", "text": "- [ ] first"},
+            {"place": "p", "text": "- [ ] second"},
+            {"place": "p", "role": "item", "text": ["a piece beside them"]},
+            {"place": "t", "type": "task", "fields": {"text": "typed"}},
+            {"place": "t", "type": "task", "fields": {"text": "typed again"}},
+        ]}));
+        let read = read("Home.chores", &answer, &s);
+        assert_eq!(
+            said(&read),
+            [
+                "p: another Markdown piece is at this place",
+                "t: another typed item is at this place"
+            ]
+        );
+        let kinds: Vec<(&str, &str)> = (read.items.iter())
+            .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
+            .collect();
+        assert_eq!(kinds, [("p", "task"), ("p", "list"), ("t", "task")]);
+        assert_eq!(fields(&read.items[0])["text"], "first");
+        assert_eq!(fields(&read.items[2])["text"], "typed");
+
+        let tick = Change::Text {
+            place: "p".into(),
+            text: "- [x] first".into(),
+        };
+        let typed = Change::Field {
+            place: "t".into(),
+            field: "text".into(),
+            value: json!("changed"),
+        };
+        let after = apply(&answer, &[tick, typed]);
+        let texts: Vec<String> = (after.items.iter())
+            .filter_map(|i| match i {
+                GivenItem::Markdown { text, .. } => Some(text.to_string()),
+                GivenItem::Typed { fields, .. } => Some(fields["text"].to_string()),
+                GivenItem::Piece(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "- [x] first",
+                "- [ ] second",
+                "\"changed\"",
+                "\"typed again\""
+            ],
+            "a change at a place reaches the item that holds it, and no other"
+        );
+    }
+
+    /// The limits the owner decided on 2026-11-13, each just within its bound and just past
+    /// it: the item past it is left out as it arrives, in the bound's words, and the one
+    /// within is kept.
+    #[test]
+    fn an_item_past_a_decided_limit_is_left_out_and_one_within_kept() {
+        let mib = 1 << 20;
+        let run = |place: &str, text: Json| json!({"place": place, "role": "item", "text": text});
+        let attribute = |place: &str, value: Json| json!({"place": place, "role": "item", "attributes": {"note": value}, "text": ["x"]});
+        let row = |place: &str, n: usize| {
+            let cells: Vec<Json> = (0..n).map(|i| json!({"name": format!("c{i}")})).collect();
+            json!({"place": place, "role": "row", "cells": cells})
+        };
+        let typed = |place: &str, kind: &str, fields: Json| json!({"place": place, "type": kind, "fields": fields});
+        let named = |n: usize, name_len: usize| -> Json {
+            let names = (0..n).map(|i| (format!("{i:0>width$}", width = name_len), json!(1)));
+            Json::Object(names.collect())
+        };
+        let half = mib / 2;
+        let cases = [
+            (
+                run("run", json!(["x".repeat(mib)])),
+                run("run+", json!(["x".repeat(mib + 1)])),
+                "its text is longer than 1 MiB",
+            ),
+            (
+                run("all", json!(["x".repeat(half), {"text": "y".repeat(half)}])),
+                run(
+                    "all+",
+                    json!(["x".repeat(half), {"text": "y".repeat(half + 1)}]),
+                ),
+                "its text is longer than 1 MiB",
+            ),
+            (
+                run("link", json!([{"link": "Lava", "text": "w".repeat(4096)}])),
+                run("link+", json!([{"link": "Lava", "text": "w".repeat(4097)}])),
+                "a link's text is longer than 4096 bytes",
+            ),
+            (
+                run("field", json!([{"field": "f", "value": "v".repeat(mib)}])),
+                run(
+                    "field+",
+                    json!([{"field": "f", "value": "v".repeat(mib + 1)}]),
+                ),
+                "a value is longer than 1 MiB",
+            ),
+            (
+                attribute("attribute", json!("a".repeat(mib))),
+                attribute("attribute+", json!("a".repeat(mib + 1))),
+                "a value is longer than 1 MiB",
+            ),
+            (
+                row("cells", 4096),
+                row("cells+", 4097),
+                "it has more than 4096 cells",
+            ),
+            (
+                json!({"place": "m".repeat(1024), "text": "- [ ] at the bound"}),
+                json!({"place": "m".repeat(1025), "text": "- [ ] past it"}),
+                "its place is empty or longer than 1024 bytes",
+            ),
+            (
+                typed("type", &"k".repeat(256), json!({})),
+                typed("type+", &"k".repeat(257), json!({})),
+                "its type is empty or longer than 256 bytes",
+            ),
+            (
+                typed("fields", "k", named(256, 3)),
+                typed("fields+", "k", named(257, 3)),
+                "it has more than 256 fields",
+            ),
+            (
+                typed("name", "k", named(1, 256)),
+                typed("name+", "k", named(1, 257)),
+                "a field's name is empty or longer than 256 bytes",
+            ),
+            (
+                typed("list", "k", json!({"f": vec![1; 4096]})),
+                typed("list+", "k", json!({"f": vec![1; 4097]})),
+                "a field's list has more than 4096 values",
+            ),
+            (
+                typed("value", "k", json!({"f": ["v".repeat(mib)]})),
+                typed("value+", "k", json!({"f": ["v".repeat(mib + 1)]})),
+                "a value is longer than 1 MiB",
+            ),
+            (
+                typed("scalar", "k", json!({"f": [1, "two", true, null]})),
+                typed("scalar+", "k", json!({"f": {"a": 1}})),
+                "a field holds a table or a list of lists",
+            ),
+        ];
+        for (within, past, says) in cases {
+            let answer = given(json!({"items": [within, past]}));
+            let left: Vec<&str> = (answer.left_out.iter())
+                .map(|(_, l)| l.said.as_str())
+                .collect();
+            assert_eq!(answer.items.len(), 1, "{says}: {left:?}");
+            assert!(
+                left.len() == 1 && left[0].contains(says),
+                "{says}: {left:?}"
+            );
+        }
+    }
+
+    /// What never arrives (the canvas owner's answer, what `apply` makes) is held to the same
+    /// rule where it is read into items: a Markdown piece at an empty place, a run past the
+    /// limit and a link to a file past its bounds are each left out with a problem.
+    #[test]
+    fn an_answer_that_never_arrived_is_held_to_the_same_bounds() {
+        let s = settings("");
+        let made = Given {
+            items: vec![
+                GivenItem::Markdown {
+                    place: "".into(),
+                    text: "- [ ] no place".into(),
+                },
+                GivenItem::Markdown {
+                    place: "ok".into(),
+                    text: "- [ ] kept".into(),
+                },
+            ]
+            .into(),
+            ..Given::default()
+        };
+        let read = read("Board.canvas", &made, &s);
+        assert_eq!(
+            said(&read),
+            [": its place is empty or longer than 1024 bytes"]
+        );
+        assert_eq!(read.items.len(), 1);
+
+        let answer = given(json!({
+            "items": [{"place": "r", "role": "item", "text": ["short"]}],
+            "links": [{"target": "Lava", "place": "f"}],
+        }));
+        let long = Change::Runs {
+            place: "r".into(),
+            cell: None,
+            text: vec![Run::Plain("x".repeat((1 << 20) + 1).into())],
+        };
+        let far = Change::Link {
+            place: "f".into(),
+            link: "Lava".into(),
+            to: "L".repeat(Target::MOST + 1),
+        };
+        let read = super::read("A.sheet", &apply(&answer, &[long, far]), &s);
+        assert_eq!(
+            said(&read),
+            [
+                "r: its text is longer than 1 MiB",
+                "f: a link to a file: a link's target is empty or longer than 4096 bytes"
+            ]
+        );
+        assert!(read.items.is_empty() && read.links.is_empty());
+    }
+
+    /// A relink that would put what the owner gave past a bound is named before anything is
+    /// asked (`left_out_by`, which `Core::relink` refuses on): comparing the owner's new
+    /// answer with the expected one can't see what both leave out.
+    #[test]
+    fn a_change_that_puts_a_link_past_its_bound_is_named() {
+        let s = settings("");
+        let answer = given(json!({
+            "items": [{"place": "r", "role": "item", "text": [{"link": "Lava"}]}],
+            "links": [{"target": "Lava", "place": "f"}],
+        }));
+        let far = "L".repeat(Target::MOST + 1);
+        let moved = |place: &str| Change::Link {
+            place: place.into(),
+            link: "Lava".into(),
+            to: far.clone(),
+        };
+        let lost = left_out_by("A.sheet", &answer, &[moved("r"), moved("f")], &s);
+        let lost: Vec<String> = lost.iter().map(Problem::one_line).collect();
+        assert_eq!(
+            lost,
+            [
+                "r: a link's target is empty or longer than 4096 bytes",
+                "f: a link to a file: a link's target is empty or longer than 4096 bytes"
+            ]
+        );
+        let near = Change::Link {
+            place: "r".into(),
+            link: "Lava".into(),
+            to: "L".repeat(Target::MOST),
+        };
+        assert!(left_out_by("A.sheet", &answer, &[near], &s).is_empty());
+    }
+
+    /// What a change leaves out is told apart by which item it is, never by its words: two
+    /// pieces whose places share their first 80 characters say the same words when each has
+    /// a checkbox that isn't one of the four words, and a change that brings the first back
+    /// and gives the second a wrong checkbox leaves out something new. (A change reaches only
+    /// an item that holds its place, so it is an attribute's value, read after the place is
+    /// claimed, that a change can put right or wrong.)
+    #[test]
+    fn a_change_that_leaves_out_another_item_with_the_same_words_is_named() {
+        let s = settings("");
+        let (a, b) = (
+            format!("{}a", "P".repeat(80)),
+            format!("{}b", "P".repeat(80)),
+        );
+        let task = |place: &str, checkbox: &str| {
+            json!({"place": place, "role": "item", "text": ["x"],
+                   "attributes": {"task": true, "checkbox": checkbox}})
+        };
+        let given = given(json!({"items": [task(&a, "nope"), task(&b, "open")]}));
+        let before = read("A.sheet", &given, &s);
+        assert_eq!(said(&before).len(), 1, "{:?}", said(&before));
+        let checkbox = |place: &str, word: &str| Change::Attribute {
+            place: place.into(),
+            attribute: "checkbox".into(),
+            value: json!(word),
+        };
+        let swap = [checkbox(&a, "open"), checkbox(&b, "nope")];
+        let after = read("A.sheet", &apply(&given, &swap), &s);
+        assert_eq!(
+            said(&after),
+            said(&before),
+            "the same words, of another item"
+        );
+        let lost = left_out_by("A.sheet", &given, &swap, &s);
+        assert_eq!(lost.len(), 1, "{:?}", lost);
+        assert!(check_change("A.sheet", &given, &swap, &s).is_err());
+    }
+
+    /// A Markdown piece's text is bounded as it was, by the message: whether the 1 MiB of a
+    /// piece's text applies to it is the owner's open choice (#265, A4b's "For the owner").
+    #[test]
+    fn a_markdown_piece_over_a_mib_is_read_as_before() {
+        let s = settings("");
+        let mib = 1 << 20;
+        let answer = given(json!({"items": [
+            {"place": "at", "text": format!("- [ ] {}", "x".repeat(mib - 6))},
+            {"place": "past", "text": format!("- [ ] {}", "x".repeat(mib - 5))},
+        ]}));
+        assert!(answer.left_out.is_empty());
+        let read = read("A.sheet", &answer, &s);
+        assert_eq!((read.items.len(), said(&read).len()), (2, 0));
     }
 }

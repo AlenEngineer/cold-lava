@@ -31,7 +31,7 @@ use crate::alphabet::Role;
 use crate::json_canvas::{self, CNode, Field};
 use crate::owner::given::{Between, Change, Given, GivenItem, GivenLink, Piece, Places};
 use serde_json::{Map, Value as Json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The kind of file it reads, and its name in messages.
 pub const EXTENSION: &str = "canvas";
@@ -59,6 +59,29 @@ pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
             place(id, *nth - 1)
         })
         .collect()
+}
+
+/// Which node a place names, for each of its fields (`text`, `file`): the first node in the
+/// file with that field at that place, whatever the field holds. A change names a node's
+/// field by its place, so this is the node `edit` writes and `relink` changes, and the only
+/// one whose text or file `read` gives, and only when it is within its bounds: a place never
+/// falls through to a later node with the field, which no change could reach.
+///
+/// This differs from the engine's rule for every owner (`given::Places::admit`: the first
+/// item within its bounds claims a place), which is safe there because the read-back compares
+/// what an owner's answer left out by position and hash. This owner gives only what is
+/// taken, so nothing left out would be in its answer to compare: its place names the first
+/// node, whatever it holds. A node "has" a field when the file gives it as a string, `""`
+/// included; one with no `text`, or `"text": null`, doesn't, and names nothing.
+#[derive(Default)]
+struct Named(HashSet<(String, &'static str)>);
+
+impl Named {
+    /// Whether the node at `place` is the one its `field` names: asked in the file's order,
+    /// true for the first node asked with that place and field.
+    fn first(&mut self, place: &str, field: &'static str) -> bool {
+        self.0.insert((place.to_string(), field))
+    }
 }
 
 /// What a node is, in the alphabet. `None` for a group, which is not given.
@@ -102,38 +125,67 @@ fn attributes(n: &CNode) -> Map<String, Json> {
 /// A canvas's items and links: each card a piece, placed; a text card's text a Markdown piece
 /// at the same place; a file card a link to its file; an arrow a link between two pieces.
 ///
-/// A canvas is another program's file, so the owner gives only the pieces and arrows the
-/// engine takes, and asks the engine which those are (`given::Places`): a node whose id is
-/// empty, too long, or the place another node already has gets no piece, an arrow past the
-/// bounds or with an end that is no piece (a group, a node that isn't there) is not given,
-/// and both stay in the file. A node's text and file are read as ever.
+/// A canvas is another program's file, so the owner gives only what the engine takes, and
+/// asks the engine which that is (`given::Places`), the one rule for every owner: a node
+/// whose id is empty or too long gets no piece, no Markdown piece and no link; a node whose
+/// place another node already has gets no piece there; a text or a file is given only for
+/// the node its place names (`Named`), and only within its bounds; a link whose file is
+/// empty or too long is not given; an arrow past the bounds or with an end that is no piece
+/// (a group, a node that isn't there) is not given. All of it stays in the file.
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
     let places = places(doc.nodes.iter().map(|n| n.id.as_str()));
-    // Each node's card, when it is one.
-    let cards: Vec<Option<Piece>> = (doc.nodes.iter().zip(&places))
-        .map(|(n, place)| {
-            let role = role(&n.kind)?;
-            Some(Piece {
+    // Each node's card, the Markdown written on it and its link to a file, when it has them.
+    let mut nodes: Vec<Node> = Vec::with_capacity(doc.nodes.len());
+    let mut named = Named::default();
+    for (n, place) in doc.nodes.into_iter().zip(&places) {
+        let text_named = n.text.is_some() && named.first(place, "text");
+        let file_named = n.file.is_some() && named.first(place, "file");
+        let card = role(&n.kind).map(|role| {
+            GivenItem::Piece(Piece {
                 place: place.as_str().into(),
                 role,
-                attributes: attributes(n).into(),
+                attributes: attributes(&n).into(),
                 text: Default::default(),
                 inside: None,
                 cells: Default::default(),
             })
-        })
-        .collect();
-    // The cards and the arrows the engine takes, asked in the answer's order.
+        });
+        let markdown = match (n.kind.as_str(), n.text) {
+            ("text", Some(text)) if text_named => Some(GivenItem::Markdown {
+                place: place.as_str().into(),
+                text: text.into(),
+            }),
+            _ => None,
+        };
+        let link = match (n.kind.as_str(), n.file) {
+            ("file", Some(file)) if file_named => Some(GivenLink {
+                target: file.as_str().into(),
+                place: place.as_str().into(),
+                text: file.into(),
+            }),
+            _ => None,
+        };
+        nodes.push(Node {
+            items: [card, markdown],
+            link,
+        });
+    }
+    // What the engine takes, asked in the answer's order.
     let mut taken = Places::default();
-    let mut kept: Vec<bool> = Vec::with_capacity(cards.len());
-    for card in &cards {
-        let fits = card.as_ref().filter(|card| taken.fits(card).is_ok());
-        kept.push(fits.is_some());
-        if let Some(card) = fits {
-            taken.take(card);
+    let mut kept: Vec<[bool; 3]> = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        let mut keep = [false; 3];
+        for (k, item) in node.items.iter().enumerate() {
+            let Some(item) = item.as_ref() else { continue };
+            keep[k] = taken.admit(item).is_ok();
+            if let (true, GivenItem::Piece(card)) = (keep[k], item) {
+                taken.take(card);
+            }
         }
+        keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
+        kept.push(keep);
     }
     // An arrow names two ids, and the first node of an id has the id as its place.
     let mut between: Vec<Between> = Vec::new();
@@ -151,34 +203,34 @@ pub fn read(text: &str) -> Result<Given, String> {
         between: between.into(),
         ..Given::default()
     };
-    let nodes = doc.nodes.into_iter().zip(places);
-    for ((n, place), (card, kept)) in nodes.zip(cards.into_iter().zip(kept)) {
-        given
-            .items
-            .extend(card.filter(|_| kept).map(GivenItem::Piece));
-        match (n.kind.as_str(), n.text, n.file) {
-            ("text", Some(text), _) => given.items.push(GivenItem::Markdown {
-                place: place.into(),
-                text: text.into(),
-            }),
-            ("file", _, Some(file)) => given.links.push(GivenLink {
-                target: file.as_str().into(),
-                place: place.into(),
-                text: file.into(),
-            }),
-            _ => {}
-        }
+    for (node, [card, markdown, link]) in nodes.into_iter().zip(kept) {
+        let [card_item, markdown_item] = node.items;
+        given.items.extend(card_item.filter(|_| card));
+        given.items.extend(markdown_item.filter(|_| markdown));
+        given.links.extend(node.link.filter(|_| link));
     }
     Ok(given)
 }
 
+/// What one node gives, before the engine is asked which of it it takes: its card and the
+/// Markdown written on it, and its link to a file.
+struct Node {
+    items: [Option<GivenItem>; 2],
+    link: Option<GivenLink>,
+}
+
 /// The canvas's new text with `changes` made: a Markdown piece's new text is its node's `text`,
-/// a link's new target its node's `file`. A typed item's field is refused, since a canvas gives
+/// a link's new target its node's `file`, each the node the change's place names for that field
+/// (`Named`). Two changes to one field are refused. A typed item's field is refused, since a canvas gives
 /// none, and so are a card's attribute and runs: the owner writes a card's text and file only.
 pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
     let fields = json_canvas::fields(text).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
+    let mut named = Named::default();
+    let fields: Vec<&Field> = (fields.iter())
+        .filter(|f| named.first(&self::place(&f.node, f.nth), f.name))
+        .collect();
     let find = |place: &str, name: &str| {
-        (fields.iter())
+        (fields.iter().copied())
             .find(|f| f.name == name && self::place(&f.node, f.nth) == place)
             .ok_or_else(|| format!("it has no node {place} with a {name}"))
     };
@@ -213,6 +265,13 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
             }
         }
     }
+    // Two changes to one field would be written one over the other.
+    for (i, (f, _)) in new.iter().enumerate() {
+        if new[..i].iter().any(|(g, _)| g.span == f.span) {
+            let place = self::place(&f.node, f.nth);
+            return Err(format!("two changes ask for node {place}'s {}", f.name));
+        }
+    }
     Ok(json_canvas::set(text, &new))
 }
 
@@ -237,9 +296,12 @@ pub struct Relink {
 /// The changes that rewrite a canvas's links to moved files: every node's `file` becomes what
 /// `file` says (a workspace path: a card holds a path, not a link written in a style), every
 /// node's `text` what `piece` makes of it (the Markdown owner's relink, which keeps each link's
-/// style), with how many links `piece` changed. Every node, whatever its type and whether or not
-/// `read` gives anything for it. `None` when nothing changes; an error when the file isn't JSON
-/// with nodes that have ids, so nothing in it can be found.
+/// style), with how many links `piece` changed. Every node its place names for that field
+/// (`Named`), whatever its type and whether or not `read` gives anything for it; a later node
+/// with the field at the place is left as it is, since a change at the place would be written
+/// into the node the place names. `None` when nothing
+/// changes; an error when the file isn't JSON with nodes that have ids, so nothing in it can
+/// be found.
 pub fn relink(
     text: &str,
     file: impl Fn(&str) -> Option<String>,
@@ -252,7 +314,11 @@ pub fn relink(
         shown: Vec::new(),
         links: 0,
     };
+    let mut named = Named::default();
     for f in &fields {
+        if !named.first(&place(&f.node, f.nth), f.name) {
+            continue;
+        }
         let to = match f.name {
             "file" => file(&f.value).map(|to| (to, 1)),
             _ => piece(&f.value),
@@ -418,8 +484,8 @@ mod tests {
         assert_eq!(read(alone).unwrap().items.len(), 1, "the card at n");
     }
 
-    /// Every card and arrow the owner gives is one the engine takes: read as the engine reads
-    /// an answer, a board of hostile nodes and arrows has nothing to report.
+    /// Every card, text, link and arrow the owner gives is one the engine takes: read as the
+    /// engine reads an answer, a board of hostile nodes and arrows has nothing to report.
     #[test]
     fn the_engine_reports_nothing_of_what_the_owner_gives() {
         let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
@@ -443,19 +509,24 @@ mod tests {
         assert_eq!(given.between.len(), 1);
         let mut taken = Places::default();
         for item in &given.items {
+            assert_eq!(taken.admit(item), Ok(()));
             if let GivenItem::Piece(card) = item {
-                assert_eq!(taken.fits(card), Ok(()));
                 taken.take(card);
             }
+        }
+        for link in &given.links {
+            assert_eq!(taken.link(link), Ok(()));
         }
         for (nth, arrow) in given.between.iter().enumerate() {
             assert_eq!(taken.joins(arrow, nth), Ok(()));
         }
     }
 
-    /// A canvas is another program's file. Whatever its nodes say, every piece the owner
-    /// gives is one the engine takes: a node whose id can't be a piece's place has no piece,
-    /// and its text is read as ever.
+    /// A canvas is another program's file. Whatever its nodes say, everything the owner
+    /// gives is what the engine takes (the owner's decision of 2026-11-13, one rule for a
+    /// place in every form): a node whose id can't be a place gives no piece, no text and no
+    /// link, a second node at a place gives no second piece or text there, and a file card
+    /// whose file is empty gives no link.
     #[test]
     fn a_node_that_cant_be_a_piece_keeps_its_text() {
         let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
@@ -475,7 +546,21 @@ mod tests {
         );
         let given = read(&board).unwrap();
         let (items, links) = as_before(&given);
-        assert_eq!((items.len(), links.len()), (5, 1), "every text and file");
+        assert_eq!(
+            items,
+            [
+                GivenItem::Markdown {
+                    place: "t".into(),
+                    text: "one".into()
+                },
+                GivenItem::Markdown {
+                    place: "t\u{1f}1".into(),
+                    text: "two".into()
+                },
+            ],
+            "the text of the nodes that hold their places"
+        );
+        assert!(links.is_empty(), "a file card with no file gives no link");
         let places: Vec<&str> = (given.items.iter())
             .filter_map(|i| match i {
                 GivenItem::Piece(p) => Some(p.place.as_str()),
@@ -614,5 +699,105 @@ mod tests {
             .replace("Volcanoes/Lava.md", "Hot/Lava.md")
             .replace("[[Lava]]", "[[Magma]]");
         assert_eq!(edit(&untyped, &asked.changes).unwrap(), want);
+    }
+
+    /// Two nodes at one place (a repeated id, then a node whose id is literally its place): a
+    /// change names a node by its place and `edit` writes the first node there, so a rename
+    /// changes the first one's links and leaves the second as it is, rather than writing the
+    /// second's relinked text over the first's.
+    #[test]
+    fn a_rename_never_writes_one_nodes_text_over_another_at_its_place() {
+        let board = r##"{"nodes":[
+            {"id":"t","type":"text","text":"one"},
+            {"id":"t","type":"text","text":"two [[Lava]]"},
+            {"id":"t\u001f1","type":"text","text":"three [[Lava]]"}
+        ]}"##;
+        let asked = relink(board, |_| None, lava_to_magma).unwrap().unwrap();
+        let relinked = edit(board, &asked.changes).unwrap();
+        assert_eq!(relinked, board.replace("two [[Lava]]", "two [[Magma]]"));
+    }
+
+    /// Two file cards at one place (a repeated id, then a node whose id is literally the
+    /// repeat's place): the owner gives the first's link there, a rename repoints that one,
+    /// and what the canvas reads after is what the engine expected.
+    #[test]
+    fn a_rename_of_two_file_cards_at_one_place_reads_back_as_expected() {
+        let board = r##"{"nodes":[
+            {"id":"b","type":"file","file":"Volcanoes/Lava.md"},
+            {"id":"b","type":"file","file":"Volcanoes/Lava.md"},
+            {"id":"b\u001f1","type":"file","file":"Volcanoes/Lava.md"}
+        ]}"##;
+        let asked = relink(board, lava_to_hot, |_| None).unwrap().unwrap();
+        let relinked = edit(board, &asked.changes).unwrap();
+        let expected = crate::owner::given::apply(asked.given.as_ref().unwrap(), &asked.changes);
+        // The read-back compares where links lead (`given::same`), not the words around them.
+        let leads = |links: &[GivenLink]| -> Vec<(String, String)> {
+            let each = links
+                .iter()
+                .map(|l| (l.place.to_string(), l.target.to_string()));
+            each.collect()
+        };
+        assert_eq!(
+            leads(&read(&relinked).unwrap().links),
+            leads(&expected.links)
+        );
+    }
+
+    /// A place names the first node in the file with a text, and the first with a file, at
+    /// it, whatever that node holds: a later node at the place is never given instead, so
+    /// what is listed is what `edit` and `relink` change. The first node's text past every
+    /// bound can't be reached from a file (a Markdown piece is bounded by the message), so a
+    /// file card past its target's bound stands for it; a large text holds the place too.
+    #[test]
+    fn a_place_names_its_first_node_and_never_a_later_one() {
+        let long = "L".repeat(4099);
+        let f2 = r##"{"nodes":[
+            {"id":"x","type":"text","text":"- [ ] other"},
+            {"id":"x","type":"file","file":"LONG"},
+            {"id":"x\u001f1","type":"file","file":"Concepts/Lava.md"}
+        ]}"##
+            .replace("LONG", &long);
+        assert!(read(&f2).unwrap().links.is_empty(), "no later card's link");
+        let moved = |f: &str| (f == "Concepts/Lava.md").then(|| "Concepts/Magma.md".to_string());
+        assert!(relink(&f2, moved, |_| None).unwrap().is_none());
+        let addressed = Change::Link {
+            place: "x\u{1f}1".into(),
+            link: "Concepts/Lava.md".into(),
+            to: "Concepts/Magma.md".into(),
+        };
+        assert!(
+            edit(&f2, &[addressed]).is_err(),
+            "the place names the long card"
+        );
+
+        let big = format!("- [ ] big {}", "b".repeat(1 << 20));
+        let a1 = format!(
+            r##"{{"nodes":[
+            {{"id":"x","type":"text","text":"- [ ] other"}},
+            {{"id":"x","type":"text","text":"{big}"}},
+            {{"id":"x\u001f1","type":"text","text":"- [ ] small"}}
+        ]}}"##
+        );
+        let texts: Vec<String> = (read(&a1).unwrap().items.into_iter())
+            .filter_map(|i| match i {
+                GivenItem::Markdown { text, .. } => Some(text.chars().take(9).collect()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            ["- [ ] oth", "- [ ] big"],
+            "the small card is not given"
+        );
+    }
+
+    /// Two changes to one node's field are refused, never written one over the other.
+    #[test]
+    fn two_changes_to_one_field_are_refused() {
+        let text = |t: &str| Change::Text {
+            place: "s".into(),
+            text: t.into(),
+        };
+        assert!(edit(CANVAS, &[text("one"), text("two")]).is_err());
     }
 }

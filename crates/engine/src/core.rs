@@ -823,7 +823,9 @@ impl Core {
     /// the call (the engine's own do) and `edits` have their new texts. Else the answer comes
     /// from `take_relinked` under the ticket: every owned file's edit with its new text, or the
     /// first owner's refusal, after which nothing else is kept. Refused at once when one of them
-    /// changed since it was planned, has an edit waiting, or an owner in the engine refuses.
+    /// changed since it was planned, has an edit waiting, its change would leave out something
+    /// its owner gave (`given::check_change`: a link target past its bound), or an owner in the
+    /// engine refuses.
     pub fn relink(
         &mut self,
         edits: &mut [crate::rename::FileEdit],
@@ -843,6 +845,10 @@ impl Core {
             }
             if std::fs::read_to_string(&e.path).ok().as_ref() != Some(&e.old_text) {
                 return Err(format!("{} changed since it was planned", e.file));
+            }
+            let settings = self.index.workspace.item_settings();
+            if let Some(g) = &o.given {
+                given::check_change(&e.file, g, &o.changes, settings)?;
             }
         }
         let ticket = self.edits.ticket();
