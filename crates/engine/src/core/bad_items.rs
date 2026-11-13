@@ -537,14 +537,20 @@ fn an_edit_reads_the_item_that_holds_its_place() {
         serde_json::to_value(&chore).unwrap()["text"],
         "Water plants"
     );
-    let reword = set(&chore, "text", json!("Water the ferns"));
+    let given = &core.index.workspace.owned[0].given;
+    assert_eq!(
+        given.items.len(),
+        5,
+        "the piece past its bounds is in the answer"
+    );
+    let reword = set(&chore, "text", json!("Water the #ferns"));
     let Ok(Answer::Later(_)) = core.edit_item("agenda", &reword) else {
         panic!("asked of the owner");
     };
     let (_, ask) = core.take_file_edits().pop().unwrap();
     assert_eq!(
         serde_json::to_value(&ask.changes).unwrap(),
-        json!([{"place": "chore", "text": ["Water the ferns"]}]),
+        json!([{"place": "chore", "text": ["Water the #ferns"]}]),
         "made from the holder's runs"
     );
     let _ = std::fs::remove_dir_all(core.root());
