@@ -1280,8 +1280,13 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
     // A place that is in both answers holds the piece that was asked for there. Two pieces
     // that say the same can't be told apart by order alone: this is what catches a change
     // made to the twin, with the two then named as each other. An owner that renamed the
-    // place leaves nothing to check it against.
-    for (place, asked) in want {
+    // place leaves nothing to check it against. A place names its first piece (`Places`): a
+    // second piece there is left out, and was compared above, where it stands.
+    let mut named = std::collections::HashSet::new();
+    for (place, asked) in want
+        .iter()
+        .filter(|(place, _)| named.insert(place.as_str()))
+    {
         let there = got.iter().find(|(p, _)| p == place);
         if let Some((_, gave)) = there.filter(|(_, gave)| gave != asked) {
             return Err(format!(
@@ -2844,6 +2849,35 @@ fields.star = { flag = "⭐", type = "bool" }
         assert!(answer.left_out.is_empty());
         let read = read("A.sheet", &answer, &s);
         assert_eq!((read.items.len(), said(&read).len()), (2, 0));
+    }
+
+    /// A place names its first piece: an edit beside a second piece at a taken place reads
+    /// back as asked, where the place check took the second for the first and refused it.
+    #[test]
+    fn the_place_check_reads_the_first_piece_at_a_place() {
+        let s = settings("");
+        let chore = |place: &str, words: &str, checkbox: &str| {
+            json!({"place": place, "role": "item", "text": [words],
+                   "attributes": {"task": true, "checkbox": checkbox}})
+        };
+        let before = given(json!({"items": [
+            chore("p", "first", "open"), chore("p", "second", "open"), chore("ok", "fine", "open"),
+        ]}));
+        let tick = [Change::Attribute {
+            place: "ok".into(),
+            attribute: "checkbox".into(),
+            value: json!("done"),
+        }];
+        let asked = read_back("A.sheet", &apply(&before, &tick), &s);
+        let gave = given(json!({"items": [
+            chore("p", "first", "open"), chore("p", "second", "open"), chore("ok", "fine", "done"),
+        ]}));
+        assert_eq!(same(&asked, &read_back("A.sheet", &gave, &s)), Ok(()));
+        let swapped = given(json!({"items": [
+            chore("p", "second", "open"), chore("p", "first", "open"), chore("ok", "fine", "done"),
+        ]}));
+        let why = same(&asked, &read_back("A.sheet", &swapped, &s)).unwrap_err();
+        assert!(why.contains("p: another piece is at this place"), "{why}");
     }
 
     /// The read-back compares every item the engine leaves out, by where it stands and what
