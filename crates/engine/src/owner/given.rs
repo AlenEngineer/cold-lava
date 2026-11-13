@@ -1104,10 +1104,14 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
     // An item left out is no item, and no change is for one: it comes back as it was, where
     // it was, or the owner changed or dropped what the engine couldn't read.
     if want_left != got_left {
+        let said = |left: &Vec<String>| match left.is_empty() {
+            true => "none".to_string(),
+            false => short(left.clone()),
+        };
         return Err(format!(
             "the items left out are {} where {} were asked",
-            short(got_left.clone()),
-            short(want_left.clone())
+            said(got_left),
+            said(want_left)
         ));
     }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
