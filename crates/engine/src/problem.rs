@@ -401,7 +401,10 @@ mod tests {
             let problem = Problem::toml_file(&e, text);
             assert_eq!(problem.one_line(), folded(&e), "{text:?}");
             assert_eq!(problem.headline(), e.message(), "{text:?}");
-            assert!(!problem.said().join("\n").contains("\r\n"), "{text:?}");
+            if text.contains("\r\n") {
+                let ends = |line: &String| line.ends_with('\r');
+                assert!(!problem.lines().iter().any(ends), "{text:?}");
+            }
         }
     }
 
