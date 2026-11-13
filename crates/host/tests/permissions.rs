@@ -5,7 +5,6 @@
 use cold_lava_engine::core::{Core, Event};
 use cold_lava_engine::files::Restore;
 use cold_lava_engine::gateway::{self, Reason};
-use cold_lava_engine::tasks;
 use cold_lava_engine::trash::Bin;
 use cold_lava_host::process::Process;
 use cold_lava_host::{
@@ -17,6 +16,9 @@ use std::time::{Duration, Instant};
 
 const LATE: &str = "- [ ] Check the seismograph 📅 2000-01-01\n";
 const NOTE: &str = "Inbox/Seismograph.md";
+/// The day the extension takes for today (`COLD_LAVA_TODAY`), so the example workspace's dated
+/// tasks are overdue or not whatever the real date.
+const TODAY: &str = "2026-11-07";
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -58,7 +60,7 @@ fn workspace(name: &str) -> (PathBuf, PathBuf) {
 }
 
 /// The `open-tasks` example in a process of its own, installed in `dir` with `permissions` in
-/// place of its manifest's.
+/// place of its manifest's, started through `env` with `COLD_LAVA_TODAY` set to `TODAY`.
 fn open_tasks(dir: &Path, permissions: &str) -> Registry {
     let folder = dir.join("extensions/open-tasks");
     copy_dir(&repo().join("examples/extensions/open-tasks"), &folder);
@@ -72,6 +74,8 @@ fn open_tasks(dir: &Path, permissions: &str) -> Registry {
     assert_eq!(mistakes, Vec::<String>::new());
     let mut installed = found.into_iter().next().unwrap();
     installed.launch.log = Some(dir.join("open-tasks.log"));
+    let pinned = vec!["env".to_string(), format!("COLD_LAVA_TODAY={TODAY}")];
+    installed.launch.run = [pinned, installed.launch.run].concat();
     Registry::new(vec![Box::new(Process::new(installed).unwrap())])
 }
 
@@ -175,10 +179,9 @@ fn the_open_tasks_example_edits_an_item_with_items_edit_and_the_edit_names_it() 
     }
     let did = reschedule("may-edit", "[\"items.read\", \"items.edit\"]");
     assert_eq!(did.said, "moved 1 overdue task to today");
-    let today = tasks::today().format("%Y-%m-%d");
     assert_eq!(
         did.note,
-        format!("- [ ] Check the seismograph 📅 {today}\n")
+        format!("- [ ] Check the seismograph 📅 {TODAY}\n")
     );
     assert_eq!(did.edited_by, ["open-tasks"]);
 }
