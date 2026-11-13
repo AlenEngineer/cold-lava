@@ -1665,24 +1665,24 @@ fn behaviour(v: &[String]) -> Result<shapes::Behaviour, String> {
         _ => "clicked".into(),
     };
     let edit = |set: Option<shapes::SetField>, toggle| shapes::EditStep {
-        item: Some(item.clone()),
+        item: Some(item.as_str().into()),
         set_field: set,
         toggle,
         recipe: None,
-        options: IndexMap::new(),
+        options: Default::default(),
     };
     let set = |value, add, remove| {
         if field.is_empty() {
             return Err("name the field set-field changes".to_string());
         }
         Ok(Some(shapes::SetField {
-            field: field.clone(),
+            field: field.as_str().into(),
             value,
             add,
             remove,
         }))
     };
-    let some = || Some(value.clone());
+    let some = || Some(value.as_str().into());
     match step.as_str() {
         "toggle" => b.edit = Some(edit(None, Some(true))),
         "set-field value" => b.edit = Some(edit(set(some(), None, None)?, None)),
@@ -1690,7 +1690,7 @@ fn behaviour(v: &[String]) -> Result<shapes::Behaviour, String> {
         "set-field remove" => b.edit = Some(edit(set(None, None, some())?, None)),
         "create a note" => {
             b.steps = vec![shapes::Step::Create(shapes::CreateStep {
-                text: value.clone(),
+                text: value.as_str().into(),
                 name: None,
             })]
         }
@@ -1699,7 +1699,7 @@ fn behaviour(v: &[String]) -> Result<shapes::Behaviour, String> {
                 .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
                 .collect();
             b.steps = vec![shapes::Step::Rebind(shapes::RebindStep {
-                shape: field.clone(),
+                shape: field.as_str().into(),
                 inputs,
             })]
         }

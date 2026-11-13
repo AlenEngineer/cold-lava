@@ -243,8 +243,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `in-progress`, `cancelled`), read as the workspace's status symbol for it. A piece's item
   id is `given::piece_id` (file, kind, place, then `piece`), apart from a typed item's and a
   Markdown piece's: none of the three may take another's id. An answer is untrusted:
-  `Piece::check` and `read_piece` bound depth, runs, attributes and names, and a place is
-  never written into a file. Markdown pieces and typed items read as before.
+  every field of its types names its bound (`bounded.rs`), `Piece::check` and `read_piece`
+  apply depth, runs, attributes and names, and a place is never written into a file.
+  Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
   (`{place, attribute, value}`; a tick is `checkbox = done`, one change, no done date) or
@@ -376,6 +377,17 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
+  `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
+  bound, and the table of bounds, one type each (the trait `Limit`; `Place`, `Target`, the
+  names, …; `Message` where what a field comes from bounds it, 64 MiB for a message;
+  `Owed` for a bound the owner decided and #265's A4b applies, so the fields naming it are
+  A4b's list). The type names the bound and doesn't hold it: nothing is checked when a
+  value is built or read, and a reader applies a bound by asking the field (`fits`,
+  `most`), as `Piece::check` does. They serialize as what they hold, so revs don't move.
+  A field of an answer's type that holds a bare collection or JSON value, a slice, or a
+  type the scan can't follow fails `tests/one_door.rs`, which follows every type an answer
+  is read into; a new field names its bound.
 - `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
   split only where the app's own text or the TOML parser's layout breaks it. Pick a
   problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it

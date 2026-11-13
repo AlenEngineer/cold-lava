@@ -198,7 +198,7 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
              {kind} reads as something else or leaves out. Change the words in the file itself"
         )))
     };
-    let place = p.place.clone();
+    let place = p.place.to_string();
     let format = &s.daily.format;
     let text_of = |value: &Json| match value {
         Json::Null => String::new(),
@@ -243,7 +243,7 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
             "{field} is all of a row's words: set the field of the cell instead"
         ))),
         Source::Rest(_) => {
-            all_show(&p.text, "the piece's words")?;
+            all_show(&p.text[..], "the piece's words")?;
             Ok(Change::Runs {
                 place,
                 cell: None,
@@ -256,7 +256,7 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
                     "{field} is read from the cell {name}, which this row doesn't have"
                 ))
             })?;
-            all_show(&cell.text, "the cell's words")?;
+            all_show(&cell.text[..], "the cell's words")?;
             let text = text_of(value);
             let reads = crate::matcher::parse(value_type, &text, format).is_some();
             if !text.is_empty() && !reads {

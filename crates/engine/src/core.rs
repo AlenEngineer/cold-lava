@@ -2212,7 +2212,7 @@ mod tests {
         let before = Given {
             items: file.given.items.iter().filter(markdown).cloned().collect(),
             links: file.given.links.clone(),
-            between: Vec::new(),
+            between: Default::default(),
         };
         let was = given::read("Board.canvas", &before, settings);
         // The two tasks, and the one paragraph, which a type on every text takes. That type

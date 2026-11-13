@@ -17,6 +17,7 @@ use cold_lava_canvas as canvas;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::bounded::{Message, Owed, Pairs, Text};
 use crate::problem::Problem;
 pub use crate::types::Origin;
 use crate::types::is_name;
@@ -440,46 +441,46 @@ pub struct EditStep {
     /// The item `set-field` and `toggle` change: `dropped`, `clicked`, or an input with one
     /// member. A recipe changes the whole workspace and names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub item: Option<String>,
+    pub item: Option<Text<Owed>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_field: Option<SetField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggle: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipe: Option<String>,
+    pub recipe: Option<Text<Owed>>,
     /// A recipe's options, by name; placeholders are filled.
-    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-    pub options: IndexMap<String, String>,
+    #[serde(default, skip_serializing_if = "Pairs::is_empty")]
+    pub options: Pairs<Message, Owed, Owed>,
 }
 
 /// `set-field`: exactly one of `value`, `add` and `remove`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetField {
-    pub field: String,
+    pub field: Text<Owed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<Text<Owed>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub add: Option<String>,
+    pub add: Option<Text<Owed>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remove: Option<String>,
+    pub remove: Option<Text<Owed>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateStep {
-    pub text: String,
+    pub text: Text<Owed>,
     /// The new note's name; by default its text's first line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name: Option<Text<Owed>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RebindStep {
-    pub shape: String,
-    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-    pub inputs: IndexMap<String, String>,
+    pub shape: Text<Owed>,
+    #[serde(default, skip_serializing_if = "Pairs::is_empty")]
+    pub inputs: Pairs<Message, Owed, Owed>,
 }
 
 /// A loaded shape: its definition as written and the canvas shape built from it.

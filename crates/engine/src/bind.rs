@@ -364,11 +364,11 @@ pub struct RegionShown {
     pub items: Vec<Entry>,
 }
 
-/// One member as a region shows it: what it is, and its label.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One member as a region shows it: what it is, and its label. An extension's answer is
+/// read as `act::RegionEntry`, never as this.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Entry {
-    /// A member's id; an extension may leave it out for a label of its own.
-    #[serde(default)]
+    /// A member's id; empty for a label of its own.
     pub id: String,
     pub label: String,
 }

@@ -208,9 +208,9 @@ mod tests {
             items: vec![GivenItem::Markdown {
                 place: "1".into(),
                 text: text.into(),
-            }],
-            links: Vec::new(),
-            between: Vec::new(),
+            }]
+            .into(),
+            ..Given::default()
         }
     }
 

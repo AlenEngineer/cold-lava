@@ -8,6 +8,7 @@
 //! steps. A rename, merge or recipe asks every owned file's owner this way before anything is
 //! written, and keeps each new text that read back until all are in (`Relink`).
 
+use crate::bounded::{Message, Text};
 use crate::gateway::{Edited, Error, Ticket};
 use crate::items::Item;
 use crate::owner::cache::FileRead;
@@ -29,7 +30,8 @@ pub struct FileEdit {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewText {
-    pub text: String,
+    /// The file's whole text, which the owner made.
+    pub text: Text<Message>,
 }
 
 /// An edit of one owned file, from asking its owner to writing what it answered.

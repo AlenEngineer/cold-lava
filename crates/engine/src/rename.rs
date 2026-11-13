@@ -565,7 +565,7 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
                             after: format!("[[{to}]]"),
                         });
                         asks.push(Ask::Link {
-                            place: p.place.clone(),
+                            place: p.place.to_string(),
                             link: target.to_string(),
                             to,
                         });
@@ -578,7 +578,7 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
                 links += n;
                 changes.extend(lines.into_iter().map(|c| Change { line: 0, ..c }));
                 asks.push(Ask::Text {
-                    place: place.clone(),
+                    place: place.to_string(),
                     text,
                 });
             }
@@ -592,8 +592,8 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
                     after: format!("[[{to}]]"),
                 });
                 asks.push(Ask::Link {
-                    place: l.place.clone(),
-                    link: l.target.clone(),
+                    place: l.place.to_string(),
+                    link: l.target.to_string(),
                     to,
                 });
             }
