@@ -1577,6 +1577,25 @@ mod tests {
 
     /// An id is the file, the kind and the owner's place, as before, and a piece's is set apart
     /// from the older answers' at the same place. Pinned: an id must not move.
+    /// serde reads a struct from a list as well as from a map, and a piece or a run written
+    /// as a list read so before items were read one at a time: they read the same now.
+    #[test]
+    fn a_piece_or_a_run_written_as_a_list_reads_as_it_did() {
+        let s = settings("");
+        let answer = given(json!({"items": [
+            ["p", "item", {"task": true, "checkbox": "open"}, ["piece as a list"]],
+            {"place": "r", "role": "item", "attributes": {"task": true, "checkbox": "open"},
+             "text": ["x ", ["marked as a list"], ["marked", ["strong"]]]},
+        ]}));
+        assert!(answer.left_out.is_empty(), "{:?}", answer.left_out);
+        let read = read("Home.chores", &answer, &s);
+        assert_eq!(read.items.len(), 2, "{:?}", said(&read));
+        let GivenItem::Piece(r) = &answer.items[1] else {
+            panic!("{:?}", answer.items[1]);
+        };
+        assert!(matches!(&r.text[2], Run::Marked(m) if m.marks == [Mark::Strong]));
+    }
+
     #[test]
     fn ids_are_pinned_for_every_way_to_give_an_item() {
         let s = settings(

@@ -212,6 +212,7 @@ fn file_name(root: &Path, k: &Kind) -> String {
 mod tests {
     use super::*;
     use crate::owner::given::GivenItem;
+    use serde_json::json;
 
     fn kind() -> Kind {
         Kind {
@@ -279,6 +280,35 @@ mod tests {
             None,
             "another workspace"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What an owner gave that didn't read is kept with its answer through any number of
+    /// loads and saves: saving the cache again (another file of the same owner changed)
+    /// must not drop it, or the file's bad item stops being reported and an edit that
+    /// drops it would be written.
+    #[test]
+    fn what_was_left_out_survives_every_load_and_save() {
+        let dir = std::env::temp_dir().join(format!("cl-owner-left-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = Path::new("/some/workspace");
+        let bad: Given = serde_json::from_value(json!({"items": [
+            {"place": "1", "text": "- [ ] one"},
+            {"place": "2", "role": "slide"},
+        ]}))
+        .unwrap();
+        assert_eq!(bad.left_out.len(), 1);
+        let mut o = Owners::new(root, vec![kind()], Some(&dir));
+        o.answered("csv-table", "A.csv", "r1", Some(&bad));
+        o.save();
+        for round in 0..3 {
+            let mut again = Owners::new(root, vec![kind()], Some(&dir));
+            let kept = again.given("csv-table", "A.csv", "r1").cloned();
+            assert_eq!(kept.as_ref(), Some(&bad), "load {round}");
+            let other = format!("B{round}.csv");
+            again.answered("csv-table", &other, "r1", Some(&given("- [ ] two")));
+            again.save();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
