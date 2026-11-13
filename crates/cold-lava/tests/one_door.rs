@@ -1293,7 +1293,7 @@ fn unattributed(mut part: &str) -> (&str, bool) {
         let Some(attribute) = inside(rest) else {
             break;
         };
-        let words = attribute.replace(|c: char| matches!(c, '(' | ')' | ',' | '='), " ");
+        let words = attribute.replace(['(', ')', ',', '='], " ");
         skipped |= words
             .split(' ')
             .any(|w| w == "skip" || w == "skip_deserializing");
@@ -1358,9 +1358,7 @@ fn defined(code: &str) -> Vec<Defined> {
             .join(" ");
         let after: String = lines[i..].join("\n");
         let after = &after[after.find(&name).unwrap_or(0) + name.len()..];
-        let open = after
-            .find(|c: char| matches!(c, '{' | '(' | ';'))
-            .unwrap_or(after.len());
+        let open = after.find(['{', '(', ';']).unwrap_or(after.len());
         let body = &after[open..];
         let mut fields = Vec::new();
         match (kind, body.chars().next()) {
@@ -1377,9 +1375,7 @@ fn defined(code: &str) -> Vec<Defined> {
             ("enum", Some('{')) => {
                 for variant in parts(inside(body).unwrap_or("")) {
                     let (variant, _) = unattributed(variant);
-                    let at = variant
-                        .find(|c: char| matches!(c, '{' | '('))
-                        .unwrap_or(variant.len());
+                    let at = variant.find(['{', '(']).unwrap_or(variant.len());
                     let (vname, vbody) = (variant[..at].trim(), &variant[at..]);
                     let found = match vbody.chars().next() {
                         Some('{') => field_types(inside(vbody).unwrap_or("")),
@@ -1467,7 +1463,7 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
                 return Some(found);
             }
         }
-        let mut anywhere = (all.iter()).filter_map(|(f, _, _)| at(*f));
+        let mut anywhere = (all.iter()).filter_map(|(f, _, _)| at(f));
         let found = anywhere.next();
         assert!(
             anywhere.next().is_none(),
