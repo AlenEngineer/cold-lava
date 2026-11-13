@@ -14,7 +14,7 @@ const CORPUS: &str = include_str!("tasks/corpus.md");
 
 fn settings(tasks: Value) -> Settings {
     let types = types::load([types::Layer::built_in()]);
-    assert_eq!(types.errors, Vec::<String>::new());
+    assert!(types.errors.is_empty(), "{:?}", types.errors);
     Settings::new(
         Flavour::built_in("obsidian").unwrap(),
         TasksSettings::from_json(&tasks),
