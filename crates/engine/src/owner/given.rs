@@ -13,6 +13,10 @@
 //! in every process and after a restart.
 
 use crate::alphabet::{Mark, Role};
+use crate::bounded::{
+    AttributeName, Attributes, Betweens, Bound, CellName, FieldName, Fields, LabelName, LinkLabel,
+    List, Message, Place, Runs, Target, Text,
+};
 use crate::gateway;
 use crate::items::{Data, Item, Settings};
 use crate::matcher::{Asked, Carried};
@@ -31,11 +35,11 @@ use std::ops::Range;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "Wire", into = "Wire")]
 pub struct Given {
-    pub items: Vec<GivenItem>,
+    pub items: List<GivenItem, Message>,
     /// The links to files that are outside the items.
-    pub links: Vec<GivenLink>,
+    pub links: List<GivenLink, Message>,
     /// The links between two pieces of the file.
-    pub between: Vec<Between>,
+    pub between: List<Between, Betweens>,
 }
 
 /// `Given` as JSON: `{items, links}`, and no other key.
@@ -43,9 +47,9 @@ pub struct Given {
 #[serde(deny_unknown_fields)]
 struct Wire {
     #[serde(default)]
-    items: Vec<GivenItem>,
+    items: List<GivenItem, Message>,
     #[serde(default)]
-    links: Vec<WireLink>,
+    links: List<WireLink, Message>,
 }
 
 /// One entry of `links` on the wire.
@@ -106,32 +110,27 @@ impl<'de> Deserialize<'de> for WireLink {
 #[serde(untagged, deny_unknown_fields)]
 pub enum GivenItem {
     /// Markdown text, read as a note is: a task in it is a `task`.
-    Markdown { place: String, text: String },
+    Markdown {
+        place: Text<Message>,
+        text: Text<Message>,
+    },
     /// An item of a loaded type, its fields by name.
     Typed {
-        place: String,
+        place: Text<Message>,
         #[serde(rename = "type")]
-        kind: String,
+        kind: Text<Message>,
         #[serde(default)]
-        fields: Map<String, Json>,
+        fields: Fields<Message, Message, Message>,
     },
     /// A piece in the alphabet's terms: never Markdown.
     Piece(Piece),
 }
 
-/// How deep pieces may nest (`in`), and how much one may hold. An owner's answer is another
-/// program's: a piece past a bound is reported and left out.
+/// How deep pieces may nest (`in`). An owner's answer is another program's: a piece past a
+/// bound is reported and left out. Depth is a relation between pieces, so it is checked with
+/// the answer (`read_piece`); what one field may hold is the field's own type's
+/// (`crate::bounded`).
 pub const MAX_DEPTH: usize = 64;
-pub const MAX_RUNS: usize = 4096;
-pub const MAX_ATTRIBUTES: usize = 256;
-/// The bytes a name may have: an attribute's, a text field's, a label's, a cell's.
-pub const MAX_NAME: usize = 256;
-/// The bytes a place may have, and a link's target.
-pub const MAX_PLACE: usize = 1024;
-pub const MAX_TARGET: usize = 4096;
-/// The links between pieces an answer may have, and the bytes one's label may have.
-pub const MAX_BETWEEN: usize = 65_536;
-pub const MAX_LABEL: usize = 4096;
 
 /// One unit of what a file holds, in the alphabet's terms (docs/neutral-model.md): what it is
 /// (`role`), what it carries beyond its text (`attributes`), its text, and where it stands
@@ -141,28 +140,29 @@ pub const MAX_LABEL: usize = 4096;
 pub struct Piece {
     /// The owner's own name for this spot in the file. The engine hands it back with a change
     /// and never writes it anywhere.
-    pub place: String,
+    pub place: Text<Place>,
     pub role: Role,
     /// Text, a number, `true` or `false` by name; `null` is the same as leaving the name out.
-    #[serde(default, skip_serializing_if = "Map::is_empty")]
-    pub attributes: Map<String, Json>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub text: Vec<Run>,
+    #[serde(default, skip_serializing_if = "Fields::is_empty")]
+    pub attributes: Fields<Attributes, AttributeName, Message>,
+    #[serde(default, skip_serializing_if = "List::is_empty")]
+    pub text: List<Run, Runs>,
     /// *Contains*: the place of the piece it is inside, which comes before it in the answer.
+    /// It names a piece taken before it, which bounds it (`read_piece`).
     #[serde(default, rename = "in", skip_serializing_if = "Option::is_none")]
-    pub inside: Option<String>,
+    pub inside: Option<Text<Message>>,
     /// *Beside*: a row's cells, in order. A row has cells and no text of its own.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cells: Vec<Cell>,
+    #[serde(default, skip_serializing_if = "List::is_empty")]
+    pub cells: List<Cell, Message>,
 }
 
 /// One cell of a row: the name of its column, and what it says.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cell {
-    pub name: String,
+    pub name: Text<CellName>,
     #[serde(default)]
-    pub text: Vec<Run>,
+    pub text: List<Run, Runs>,
 }
 
 /// One run of a piece's text. A string is plain characters, whatever they are: `#42`, `$5`,
@@ -170,7 +170,7 @@ pub struct Cell {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Run {
-    Plain(String),
+    Plain(Text<Message>),
     Marked(Marked),
     Link(LinkRun),
     Label(Label),
@@ -181,9 +181,9 @@ pub enum Run {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Marked {
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub marks: Vec<Mark>,
+    pub text: Text<Message>,
+    #[serde(default, skip_serializing_if = "List::is_empty")]
+    pub marks: List<Mark, Message>,
 }
 
 /// `{"link": "Krakatoa", "text": "the 1883 one"}`: a link, its target as `[[target]]` would
@@ -192,18 +192,18 @@ pub struct Marked {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkRun {
-    pub link: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub marks: Vec<Mark>,
+    pub link: Text<Target>,
+    #[serde(default, skip_serializing_if = "Text::is_empty")]
+    pub text: Text<Message>,
+    #[serde(default, skip_serializing_if = "List::is_empty")]
+    pub marks: List<Mark, Message>,
 }
 
 /// `{"label": "volcano"}`: a label, which Markdown writes as a tag. Its name has no `#`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Label {
-    pub label: String,
+    pub label: Text<LabelName>,
 }
 
 /// `{"field": "rating", "value": "5"}`: a named value written in the text. It is the piece's
@@ -211,8 +211,8 @@ pub struct Label {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldRun {
-    pub field: String,
-    pub value: String,
+    pub field: Text<FieldName>,
+    pub value: Text<Message>,
 }
 
 /// What a `checkbox` attribute says, in the model's words, and the Tasks plugin's status type
@@ -254,38 +254,44 @@ impl Piece {
 
     /// Whether it is within the bounds, and says nothing two ways.
     pub fn check(&self) -> Result<(), String> {
-        if self.place.is_empty() || self.place.len() > MAX_PLACE {
+        if !self.place.fits() {
             return Err(format!(
-                "its place is empty or longer than {MAX_PLACE} bytes"
+                "its place is empty or longer than {} bytes",
+                Place::MOST
             ));
         }
-        let long =
-            |r: &Run| matches!(r, Run::Link(l) if l.link.is_empty() || l.link.len() > MAX_TARGET);
+        let long = |r: &Run| matches!(r, Run::Link(l) if !l.link.fits());
         if self.runs().any(long) {
             return Err(format!(
-                "a link's target is empty or longer than {MAX_TARGET} bytes"
+                "a link's target is empty or longer than {} bytes",
+                Target::MOST
             ));
         }
-        if self.runs().count() > MAX_RUNS {
-            return Err(format!("its text has more than {MAX_RUNS} runs"));
+        if self.runs().count() > Runs::MOST {
+            return Err(format!("its text has more than {} runs", Runs::MOST));
         }
-        if self.attributes.len() > MAX_ATTRIBUTES {
-            return Err(format!("it has more than {MAX_ATTRIBUTES} attributes"));
+        if self.attributes.len() > Attributes::MOST {
+            return Err(format!("it has more than {} attributes", Attributes::MOST));
         }
         if !self.cells.is_empty() && (self.role != Role::Row || !self.text.is_empty()) {
             return Err("only a row has cells, and a row's text is its cells'".into());
         }
-        let cells = self.cells.iter().map(|c| ("cell", c.name.as_str()));
-        let attributes = self.attributes.keys().map(|k| ("attribute", k.as_str()));
+        // Each name with whether it fits its bound and what that bound is.
+        let cells =
+            (self.cells.iter()).map(|c| ("cell", c.name.as_str(), c.name.fits(), CellName::MOST));
+        let attributes = self.attributes.keys().map(|k| {
+            let fits = crate::bounded::fits::<AttributeName>(k.len());
+            ("attribute", k.as_str(), fits, AttributeName::MOST)
+        });
         let runs = self.runs().filter_map(|r| match r {
-            Run::Label(l) => Some(("label", l.label.as_str())),
-            Run::Field(f) => Some(("field", f.field.as_str())),
+            Run::Label(l) => Some(("label", l.label.as_str(), l.label.fits(), LabelName::MOST)),
+            Run::Field(f) => Some(("field", f.field.as_str(), f.field.fits(), FieldName::MOST)),
             _ => None,
         });
-        for (what, name) in cells.chain(attributes).chain(runs) {
-            if name.is_empty() || name.len() > MAX_NAME {
+        for (what, name, fits, most) in cells.chain(attributes).chain(runs) {
+            if !fits {
                 return Err(format!(
-                    "a {what}'s name is empty or longer than {MAX_NAME} bytes"
+                    "a {what}'s name is empty or longer than {most} bytes"
                 ));
             }
             if what == "label" && (name.starts_with('#') || name.contains(char::is_whitespace)) {
@@ -321,7 +327,7 @@ impl Flat {
             }
             let start = flat.words.len();
             flat.push(&cell.text);
-            flat.header.push(cell.name.clone());
+            flat.header.push(cell.name.to_string());
             flat.cells.push(start..flat.words.len());
         }
         flat
@@ -335,8 +341,8 @@ impl Flat {
                 Run::Link(l) => {
                     let at = self.words.len();
                     self.words.push_str(match l.text.is_empty() {
-                        true => &l.link,
-                        false => &l.text,
+                        true => l.link.as_str(),
+                        false => l.text.as_str(),
                     });
                     self.links
                         .extend(clean_target(&l.link).map(|target| (at, target)));
@@ -347,7 +353,7 @@ impl Flat {
                     self.words.push_str(&l.label);
                     self.labels.push(at..self.words.len());
                 }
-                Run::Field(f) => self.fields.push((f.field.clone(), f.value.clone())),
+                Run::Field(f) => self.fields.push((f.field.to_string(), f.value.to_string())),
             }
         }
     }
@@ -357,7 +363,7 @@ impl Flat {
 /// then the fields written in its text under names `attributes` doesn't have.
 fn carried(p: &Piece, flat: &Flat, tasks: &TasksSettings) -> Result<Vec<Carried>, String> {
     let mut out: Vec<Carried> = Vec::new();
-    for (name, value) in &p.attributes {
+    for (name, value) in p.attributes.iter() {
         let (value, there) = match value {
             Json::Null => continue,
             Json::Bool(b) => (b.to_string(), *b),
@@ -451,7 +457,7 @@ impl<'a> Places<'a> {
     /// Take the piece: its number among the pieces taken, from 0.
     pub fn take(&mut self, p: &'a Piece) -> usize {
         let n = self.at.len();
-        self.at.insert(&p.place, n);
+        self.at.insert(p.place.as_str(), n);
         n
     }
 
@@ -463,15 +469,17 @@ impl<'a> Places<'a> {
     /// Whether this link, the `nth` between pieces of its answer (from 0), is taken: it is
     /// within the bounds, and both its ends are pieces taken.
     pub fn joins(&self, l: &Between, nth: usize) -> Result<(), String> {
-        if nth >= MAX_BETWEEN {
+        if nth >= Betweens::MOST {
             return Err(format!(
-                "more than {MAX_BETWEEN} links between pieces: the rest are left out"
+                "more than {} links between pieces: the rest are left out",
+                Betweens::MOST
             ));
         }
         let (from, to) = (short(&l.from), short(&l.to));
-        if l.label.len() > MAX_LABEL {
+        if !l.label.fits() {
             return Err(format!(
-                "a link from {from} to {to}: its label is longer than {MAX_LABEL} bytes"
+                "a link from {from} to {to}: its label is longer than {} bytes",
+                LinkLabel::MOST
             ));
         }
         let mut ends = [&l.from, &l.to].into_iter();
@@ -587,7 +595,7 @@ fn read_piece<'a>(
         if let Data::Typed(t) = &data {
             names.extend(t.is.iter().cloned());
         }
-        out.places.insert(id.clone(), p.place.clone());
+        out.places.insert(id.clone(), p.place.to_string());
         out.items.push(Item {
             id: id.clone(),
             note: file.to_string(),
@@ -607,7 +615,7 @@ fn read_piece<'a>(
             line: 1,
             context: words.chars().take(240).collect(),
         };
-        out.links.push((r, p.place.clone()));
+        out.links.push((r, p.place.to_string()));
     }
     before.places.take(p);
     before.seen.push(Seen {
@@ -625,11 +633,11 @@ fn read_piece<'a>(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GivenLink {
-    pub target: String,
-    pub place: String,
+    pub target: Text<Message>,
+    pub place: Text<Message>,
     /// What it says around the link, for backlinks.
     #[serde(default)]
-    pub text: String,
+    pub text: Text<Message>,
 }
 
 /// A link from one piece of the file to another, by their places, with what the link says: a
@@ -638,10 +646,11 @@ pub struct GivenLink {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Between {
-    pub from: String,
-    pub to: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub label: String,
+    /// The places of its two ends, which name pieces taken before (`Places::joins`).
+    pub from: Text<Message>,
+    pub to: Text<Message>,
+    #[serde(default, skip_serializing_if = "Text::is_empty")]
+    pub label: Text<LinkLabel>,
 }
 
 /// One change `file/edit` asks of an owner, at one of the places it gave.
@@ -698,7 +707,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                     if let GivenItem::Markdown { place: p, text: t } = item
                         && p == place
                     {
-                        *t = text.clone();
+                        *t = text.clone().into();
                     }
                 }
             }
@@ -723,7 +732,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
             Change::Link { place, link, to } => {
                 for l in &mut out.links {
                     if l.place == *place && l.target == *link {
-                        l.target = to.clone();
+                        l.target = to.clone().into();
                     }
                 }
                 for p in pieces_at(&mut out, place) {
@@ -732,7 +741,7 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
                         if let Run::Link(l) = run
                             && l.link == *link
                         {
-                            l.link = to.clone();
+                            l.link = to.clone().into();
                         }
                     }
                 }
@@ -755,10 +764,10 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
             Change::Runs { place, cell, text } => {
                 for p in pieces_at(&mut out, place) {
                     match cell {
-                        None => p.text = text.clone(),
+                        None => p.text = text.clone().into(),
                         Some(name) => {
                             for c in p.cells.iter_mut().filter(|c| c.name == *name) {
-                                c.text = text.clone();
+                                c.text = text.clone().into();
                             }
                         }
                     }
@@ -801,9 +810,9 @@ pub fn reword(old: &[Run], new: &str) -> Vec<Run> {
                 out.push(run.clone());
                 continue;
             }
-            Run::Marked(m) => m.text.clone(),
-            Run::Link(l) if l.text.is_empty() => l.link.clone(),
-            Run::Link(l) => l.text.clone(),
+            Run::Marked(m) => m.text.to_string(),
+            Run::Link(l) if l.text.is_empty() => l.link.to_string(),
+            Run::Link(l) => l.text.to_string(),
             Run::Label(l) => format!("#{}", l.label),
         };
         // A label ends where its name does: `#home` is not the start of `#homework`.
@@ -816,14 +825,14 @@ pub fn reword(old: &[Run], new: &str) -> Vec<Run> {
             .find(|i| whole(i + shown.len()));
         if let Some(i) = found.filter(|_| !shown.is_empty()) {
             if i > at {
-                out.push(Run::Plain(new[at..i].to_string()));
+                out.push(Run::Plain(new[at..i].into()));
             }
             out.push(run.clone());
             at = i + shown.len();
         }
     }
     if at < new.len() {
-        out.push(Run::Plain(new[at..].to_string()));
+        out.push(Run::Plain(new[at..].into()));
     }
     out
 }
@@ -1039,22 +1048,26 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
         let GivenItem::Piece(p) = item else {
             continue;
         };
-        let inside = match p.inside.as_deref().map(|place| position.get(place)) {
+        let inside = match p.inside.as_ref().map(|place| position.get(place.as_str())) {
             None => "in nothing".to_string(),
             Some(Some(i)) => format!("in piece {}", i + 1),
             Some(None) => "in a place no piece is at".to_string(),
         };
-        position.entry(&p.place).or_insert(pieces.len());
+        position.entry(p.place.as_str()).or_insert(pieces.len());
         let says = format!("{inside}: {}", piece_key(p));
-        pieces.push((p.place.clone(), says));
+        pieces.push((p.place.to_string(), says));
     }
-    let end = |place: &String| match position.get(place.as_str()) {
+    let end = |place: &str| match position.get(place) {
         Some(i) => format!("piece {}", i + 1),
         None => "no piece".to_string(),
     };
     let joins = |l: &Between| {
-        let label = Json::String(l.label.clone());
-        format!("{} to {}: {label}", end(&l.from), end(&l.to))
+        let label = Json::String(l.label.to_string());
+        format!(
+            "{} to {}: {label}",
+            end(l.from.as_str()),
+            end(l.to.as_str())
+        )
     };
     ReadBack {
         read: read(file, given, s),
@@ -1083,11 +1096,11 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                     let line = lines.get(item.line - 1).copied().unwrap_or_default();
                     item = gateway::answer_line(s, line, &item).into_owned();
                     item.note = file.to_string();
-                    out.places.insert(item.id.clone(), place.clone());
+                    out.places.insert(item.id.clone(), place.to_string());
                     out.items.push(item);
                 }
                 let refs = markdown::read(text).refs.into_iter();
-                out.links.extend(refs.map(|r| (r, place.clone())));
+                out.links.extend(refs.map(|r| (r, place.to_string())));
             }
             GivenItem::Typed {
                 place,
@@ -1096,7 +1109,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
             } => match s.matcher.given(kind, fields) {
                 Ok(typed) => {
                     let id = typed_id(file, kind, place);
-                    out.places.insert(id.clone(), place.clone());
+                    out.places.insert(id.clone(), place.to_string());
                     out.items.push(Item {
                         id,
                         note: file.to_string(),
@@ -1105,7 +1118,7 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
                         section: Vec::new(),
                         parent: None,
                         block_id: None,
-                        rev: line_id(&Json::Object(fields.clone()).to_string()),
+                        rev: line_id(&Json::Object((**fields).clone()).to_string()),
                         data: Data::Typed(Box::new(typed)),
                     });
                 }
@@ -1120,14 +1133,14 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
             line: 1,
             context: l.text.trim().chars().take(240).collect(),
         });
-        out.links.extend(r.map(|r| (r, l.place.clone())));
+        out.links.extend(r.map(|r| (r, l.place.to_string())));
     }
     // A link between pieces the engine doesn't take is reported and left out. Past the count
     // an answer may have, the rest are, and that is said once.
     for (nth, l) in given.between.iter().enumerate() {
         if let Err(why) = before.places.joins(l, nth) {
             out.problems.push(why);
-            if nth >= MAX_BETWEEN {
+            if nth >= Betweens::MOST {
                 break;
             }
         }
@@ -1433,12 +1446,12 @@ mod tests {
     fn places_targets_and_a_blank_checkbox_are_checked() {
         let s = settings("");
         let task = |place: &str, attributes: Json| json!({"place": place, "role": "item", "attributes": attributes, "text": [place]});
-        let long = "L".repeat(MAX_PLACE + 1);
-        let far = "t".repeat(MAX_TARGET + 1);
+        let long = "L".repeat(Place::MOST + 1);
+        let far = "t".repeat(Target::MOST + 1);
         let answer = given(json!({"items": [
             task("", json!({})),
             task(&long, json!({})),
-            task(&"p".repeat(MAX_PLACE), json!({})),
+            task(&"p".repeat(Place::MOST), json!({})),
             {"place": "link", "role": "item", "text": [{"link": ""}]},
             {"place": "far", "role": "item", "text": [{"link": far}]},
             task("blank", json!({"task": true, "checkbox": " "})),
@@ -1752,9 +1765,9 @@ mod tests {
         }
 
         let s = settings("");
-        let long = "L".repeat(MAX_LABEL + 1);
+        let long = "L".repeat(LinkLabel::MOST + 1);
         let mut links = vec![json!({"from": "a", "to": "a", "label": long})];
-        links.extend((0..MAX_BETWEEN + 5).map(|_| json!({"from": "a", "to": "a"})));
+        links.extend((0..Betweens::MOST + 5).map(|_| json!({"from": "a", "to": "a"})));
         let answer = given(json!({"items": [{"place": "a", "role": "text"}], "links": links}));
         let read = read("Board.canvas", &answer, &s);
         assert_eq!(read.problems.len(), 2, "{:?}", read.problems);

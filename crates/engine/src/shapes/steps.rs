@@ -51,7 +51,7 @@ pub(super) fn edits(steps: &[Step]) -> Vec<Problem> {
 pub(super) fn unknown_rebinds(steps: &[Step], knows: &dyn Fn(&str) -> bool) -> Vec<Problem> {
     (steps.iter())
         .filter_map(|step| match step {
-            Step::Rebind(r) if !knows(&r.shape) => Some(Problem::line(format!(
+            Step::Rebind(r) if !knows(r.shape.as_str()) => Some(Problem::line(format!(
                 "its rebind names shape {}, which isn't loaded",
                 r.shape
             ))),
@@ -102,9 +102,9 @@ impl SetField {
     /// The one of `value`, `add` and `remove` it has, or that it doesn't have exactly one.
     pub fn way(&self) -> Result<Way<'_>, &'static str> {
         match (&self.value, &self.add, &self.remove) {
-            (Some(v), None, None) => Ok(Way::Value(v)),
-            (None, Some(v), None) => Ok(Way::Add(v)),
-            (None, None, Some(v)) => Ok(Way::Remove(v)),
+            (Some(v), None, None) => Ok(Way::Value(v.as_str())),
+            (None, Some(v), None) => Ok(Way::Add(v.as_str())),
+            (None, None, Some(v)) => Ok(Way::Remove(v.as_str())),
             _ => Err("set-field takes exactly one of value, add and remove"),
         }
     }

@@ -243,8 +243,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `in-progress`, `cancelled`), read as the workspace's status symbol for it. A piece's item
   id is `given::piece_id` (file, kind, place, then `piece`), apart from a typed item's and a
   Markdown piece's: none of the three may take another's id. An answer is untrusted:
-  `Piece::check` and `read_piece` bound depth, runs, attributes and names, and a place is
-  never written into a file. Markdown pieces and typed items read as before.
+  every field of its types names its bound (`bounded.rs`), `Piece::check` and `read_piece`
+  apply depth, runs, attributes and names, and a place is never written into a file.
+  Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
   (`{place, attribute, value}`; a tick is `checkbox = done`, one change, no done date) or
@@ -376,6 +377,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
+  `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
+  bound, and the table of bounds, one type each (`Place`, `Target`, `Runs`, …; `Message`
+  where only the 64 MB message bounds a field). They serialize as what they hold, so revs
+  don't move. A field of an answer's type that holds a bare `String`, `Vec`, map or JSON
+  value fails `tests/one_door.rs`, which follows every type an answer is read into; a new
+  field names its bound, `Message` when it has none of its own yet.
 - `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
   split only where the app's own text or the TOML parser's layout breaks it. Pick a
   problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it

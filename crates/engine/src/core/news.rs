@@ -513,13 +513,12 @@ fn named(options: &[(&str, &str)]) -> recipe::Options {
 
 fn lines_given(text: &str) -> Given {
     let piece = |(i, line): (usize, &str)| GivenItem::Markdown {
-        place: (i + 1).to_string(),
-        text: line.to_string(),
+        place: (i + 1).to_string().into(),
+        text: line.into(),
     };
     Given {
         items: text.lines().enumerate().map(piece).collect(),
-        links: Vec::new(),
-        between: Vec::new(),
+        ..Given::default()
     }
 }
 

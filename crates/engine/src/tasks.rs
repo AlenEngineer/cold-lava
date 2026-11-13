@@ -402,7 +402,9 @@ pub struct Agenda {
 fn owned_line<'a>(f: &'a crate::workspace::Owned, item: &Item) -> &'a str {
     let place = f.places.get(&item.id);
     let piece = f.given.items.iter().find_map(|g| match g {
-        crate::owner::given::GivenItem::Markdown { place: p, text } if Some(p) == place => {
+        crate::owner::given::GivenItem::Markdown { place: p, text }
+            if place.is_some_and(|q| p == q) =>
+        {
             Some(text)
         }
         _ => None,

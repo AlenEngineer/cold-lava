@@ -559,10 +559,11 @@ fn the_messages_on_the_wire() {
     );
     assert_eq!(
         serde_json::to_value(Reply::Region {
-            items: vec![Entry {
+            items: vec![RegionEntry {
                 id: "i1".into(),
                 label: "Krakatoa".into()
             }]
+            .into()
         })
         .unwrap(),
         json!({"items": [{"id": "i1", "label": "Krakatoa"}]})

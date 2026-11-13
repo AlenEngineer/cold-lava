@@ -1804,8 +1804,8 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   left out. It is the smallest thing that says a board's arrow or a cross-reference. Both
   ends must be pieces that read; a link with an end no piece is at is reported and left
   out, like a piece out of bounds, and so is one whose label is over 4096 bytes
-  (`given::MAX_LABEL`). A piece may link to itself, and two pieces may have several links.
-  An answer has at most 65,536 links between pieces (`given::MAX_BETWEEN`): the rest are
+  (`bounded::LinkLabel`). A piece may link to itself, and two pieces may have several links.
+  An answer has at most 65,536 links between pieces (`bounded::Betweens`): the rest are
   left out, and said once. What is taken is decided in one place, `given::Places`, which
   the engine's own canvas owner asks before it gives a card or an arrow. Inside the engine
   the two kinds of entry are apart (`Given::links` to files, `Given::between`). An
@@ -1882,6 +1882,12 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   `crates/cold-lava/src/say.rs`), so a place that holds an escape sequence or a line break
   prints as `\u{1b}` and `\n`. A message is at most 64 MB, as before. The
   number of pieces in an answer has no bound of its own.
+  Every field of the types an answer is read into names its bound
+  (`crates/engine/src/bounded.rs`, one type a bound): `place: Text<Place>` is the 1 to 1024
+  bytes above, and a field that only the message bounds says so, `Text<Message>`.
+  `crates/cold-lava/tests/one_door.rs` follows every type an answer to `file/read`,
+  `file/edit`, `shape/region` or `shape/gesture` is read into and fails on a field that
+  names no bound.
 - **The older answers are unchanged.** A Markdown piece and a typed item read exactly as
   they did, with the ids they had. An answer may mix all three.
 - **Left out, on purpose.** A link between two pieces has no place of its own, no

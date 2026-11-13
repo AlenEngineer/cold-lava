@@ -220,7 +220,7 @@ impl Process {
             (Asked::Edit { path, rev }, outcome) => {
                 let text = outcome.map_err(|e| e.message).and_then(|v| {
                     serde_json::from_value::<NewText>(v)
-                        .map(|t| t.text)
+                        .map(|t| t.text.into_string())
                         .map_err(|e| unread("file/edit", &e))
                 });
                 host.file_edited(&path, &rev, text);

@@ -1242,3 +1242,384 @@ fn the_app_sets_a_cells_symbol_only_through_cells() {
         &["cells.rs: set_char( ×1", "cells.rs: set_symbol( ×5"],
     );
 }
+
+/// The top-level `,`-separated parts of `body`, each trimmed; a comma inside brackets of any
+/// kind belongs to its part.
+fn parts(body: &str) -> Vec<&str> {
+    let (mut out, mut depth, mut from) = (Vec::new(), 0i32, 0);
+    for (at, c) in body.char_indices() {
+        match c {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(body[from..at].trim());
+                from = at + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(body[from..].trim());
+    out.retain(|p| !p.is_empty());
+    out
+}
+
+/// What is between the bracket that opens at the start of `text` and the one that closes it.
+fn inside(text: &str) -> Option<&str> {
+    let (open, close) = match text.chars().next()? {
+        '(' => ('(', ')'),
+        '[' => ('[', ']'),
+        '{' => ('{', '}'),
+        _ => return None,
+    };
+    let mut depth = 0;
+    for (at, c) in text.char_indices() {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&text[1..at]);
+            }
+        }
+    }
+    None
+}
+
+/// A part without the attributes before it (`#[…]`), and whether one of them keeps serde
+/// from reading it (`skip`, `skip_deserializing`).
+fn unattributed(mut part: &str) -> (&str, bool) {
+    let mut skipped = false;
+    while let Some(rest) = part.strip_prefix('#') {
+        let Some(attribute) = inside(rest) else {
+            break;
+        };
+        let words = attribute.replace(|c: char| matches!(c, '(' | ')' | ',' | '='), " ");
+        skipped |= words
+            .split(' ')
+            .any(|w| w == "skip" || w == "skip_deserializing");
+        part = rest[attribute.len() + 2..].trim_start();
+    }
+    (part, skipped)
+}
+
+/// A field or a variant without its visibility (`pub`, `pub(crate)`).
+fn unpublished(part: &str) -> &str {
+    let Some(rest) = part.strip_prefix("pub") else {
+        return part;
+    };
+    match rest
+        .trim_start()
+        .strip_prefix('(')
+        .map(|r| r.split_once(')'))
+    {
+        Some(Some((_, after))) => after.trim_start(),
+        _ => rest.trim_start(),
+    }
+}
+
+/// The types of the fields a struct's or a struct variant's body declares, by field name.
+fn field_types(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in parts(body) {
+        let (part, skipped) = unattributed(part);
+        if let (false, Some((name, ty))) = (skipped, unpublished(part).split_once(':')) {
+            out.push((name.trim().to_string(), ty.trim().to_string()));
+        }
+    }
+    out
+}
+
+/// A struct or an enum of `code`: its name, the attributes before it and every type its
+/// fields and variants hold (`Struct.field`, `Enum::Variant.field`, `Enum::Variant.0`).
+struct Defined {
+    name: String,
+    attributes: String,
+    fields: Vec<(String, String)>,
+}
+
+/// Every struct and enum `code` defines.
+fn defined(code: &str) -> Vec<Defined> {
+    let mut out = Vec::new();
+    let lines: Vec<&str> = code.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let item = unpublished(line.trim_start());
+        let (kind, rest) = match (item.strip_prefix("struct "), item.strip_prefix("enum ")) {
+            (Some(rest), _) => ("struct", rest),
+            (_, Some(rest)) => ("enum", rest),
+            _ => continue,
+        };
+        let name: String = (rest.chars())
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let attributes = (lines[..i].iter().rev())
+            .take_while(|l| l.trim_start().starts_with("#[") || l.trim_start().starts_with(')'))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let after: String = lines[i..].join("\n");
+        let after = &after[after.find(&name).unwrap_or(0) + name.len()..];
+        let open = after
+            .find(|c: char| matches!(c, '{' | '(' | ';'))
+            .unwrap_or(after.len());
+        let body = &after[open..];
+        let mut fields = Vec::new();
+        match (kind, body.chars().next()) {
+            ("struct", Some('{')) => {
+                for (field, ty) in field_types(inside(body).unwrap_or("")) {
+                    fields.push((format!("{name}.{field}"), ty));
+                }
+            }
+            ("struct", Some('(')) => {
+                for (n, ty) in parts(inside(body).unwrap_or("")).iter().enumerate() {
+                    fields.push((format!("{name}.{n}"), unpublished(ty).to_string()));
+                }
+            }
+            ("enum", Some('{')) => {
+                for variant in parts(inside(body).unwrap_or("")) {
+                    let (variant, _) = unattributed(variant);
+                    let at = variant
+                        .find(|c: char| matches!(c, '{' | '('))
+                        .unwrap_or(variant.len());
+                    let (vname, vbody) = (variant[..at].trim(), &variant[at..]);
+                    let found = match vbody.chars().next() {
+                        Some('{') => field_types(inside(vbody).unwrap_or("")),
+                        Some('(') => (parts(inside(vbody).unwrap_or("")).iter().enumerate())
+                            .map(|(n, ty)| (n.to_string(), ty.to_string()))
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    for (field, ty) in found {
+                        fields.push((format!("{name}::{vname}.{field}"), ty));
+                    }
+                }
+            }
+            _ => {}
+        }
+        out.push(Defined {
+            name,
+            attributes,
+            fields,
+        });
+    }
+    out
+}
+
+/// The names in a type, as written: `Option<Text<Place>>` names `Option`, `Text`, `Place`.
+fn names_in(ty: &str) -> Vec<&str> {
+    let word = |c: char| !(c.is_alphanumeric() || c == '_');
+    ty.split(word).filter(|w| !w.is_empty()).collect()
+}
+
+/// The module the file `code` takes `name` from with a `use crate::…` of its own, as a path
+/// under `src/` without `.rs` (`shapes`).
+fn module_of(code: &str, name: &str) -> Option<String> {
+    for (at, _) in code.match_indices("use crate::") {
+        let stmt = &code[at + "use crate::".len()..];
+        let stmt = &stmt[..stmt.find(';')?];
+        if !names_in(stmt).contains(&name) {
+            continue;
+        }
+        let path = match stmt.find("::{") {
+            Some(i) => &stmt[..i],
+            None => stmt.rsplit_once("::")?.0,
+        };
+        return Some(path.replace("::", "/"));
+    }
+    None
+}
+
+/// What an answer's types may hold without a bound of their own: none of these. A field
+/// holds a type of `crate::bounded` instead, which names its bound.
+const UNBOUNDED: [&str; 14] = [
+    "String", "Vec", "Map", "Json", "Value", "HashMap", "BTreeMap", "IndexMap", "IndexSet",
+    "HashSet", "BTreeSet", "VecDeque", "str", "Cow",
+];
+
+/// The module of the bounded types: what is in it is a bound, and is not followed.
+const BOUNDED: &str = "../engine/src/bounded.rs";
+
+/// The types read from an answer, from `roots` (`file: Type`) through every type a field of
+/// one holds and every type one is read through (`#[serde(from = "…")]`), each as
+/// `file: Type`; and each field among them that holds an unbounded type (`UNBOUNDED`), as
+/// `file: Type.field: type`. A name is the type of its own file, else the one the file takes
+/// with a `use crate::`, else the only type of that name in the engine.
+fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec<String>) {
+    let all: Vec<(&str, &str, Vec<Defined>)> = (files.iter())
+        .map(|(file, code)| (file.as_str(), code.as_str(), defined(code)))
+        .collect();
+    let find = |file: &str, name: &str| -> Option<(String, usize)> {
+        let at = |f: &str| {
+            let (_, _, d) = all.iter().find(|(x, _, _)| *x == f)?;
+            d.iter()
+                .position(|d| d.name == name)
+                .map(|i| (f.to_string(), i))
+        };
+        if let Some(own) = at(file) {
+            return Some(own);
+        }
+        let code = all.iter().find(|(x, _, _)| *x == file)?.1;
+        if let Some(module) = module_of(code, name) {
+            let candidates = [
+                format!("../engine/src/{module}.rs"),
+                format!("../engine/src/{module}/mod.rs"),
+            ];
+            if let Some(found) = candidates.iter().find_map(|f| at(f.as_str())) {
+                return Some(found);
+            }
+        }
+        let mut anywhere = (all.iter()).filter_map(|(f, _, _)| at(*f));
+        let found = anywhere.next();
+        assert!(
+            anywhere.next().is_none(),
+            "{file} names {name}, which several modules define: take it with a `use crate::`"
+        );
+        found
+    };
+    let (mut reached, mut unbounded) = (Vec::new(), Vec::new());
+    let mut queue: Vec<(String, String)> = (roots.iter())
+        .map(|r| {
+            let (file, name) = r.split_once(": ").unwrap();
+            (format!("../engine/src/{file}"), name.to_string())
+        })
+        .collect();
+    while let Some((file, name)) = queue.pop() {
+        let Some((file, i)) = find(file.as_str(), name.as_str()) else {
+            continue;
+        };
+        let entry = format!("{}: {name}", file.trim_start_matches("../engine/src/"));
+        if file == BOUNDED || reached.contains(&entry) {
+            continue;
+        }
+        reached.push(entry);
+        let d = &all.iter().find(|(f, _, _)| *f == file).unwrap().2[i];
+        let through = d.attributes.split("from = \"").skip(1);
+        for via in through.filter_map(|rest| rest.split_once('"')) {
+            queue.push((file.clone(), via.0.to_string()));
+        }
+        for (field, ty) in &d.fields {
+            let names = names_in(ty);
+            if names.iter().any(|n| UNBOUNDED.contains(n)) {
+                let short = file.trim_start_matches("../engine/src/");
+                unbounded.push(format!("{short}: {field}: {ty}"));
+            }
+            let types = names
+                .into_iter()
+                .filter(|n| n.starts_with(char::is_uppercase));
+            queue.extend(types.map(|n| (file.clone(), n.to_string())));
+        }
+    }
+    reached.sort();
+    unbounded.sort();
+    (reached, unbounded)
+}
+
+/// What another program answers is held in types whose every field names its bound
+/// (`crates/engine/src/bounded.rs`, #265's step A4): an owner's `file/read` (`Given`) and
+/// `file/edit` (`NewText`), and an extension's `shape/region` and `shape/gesture` (`Reply`).
+/// This follows every type such an answer is read into, from those three, and fails on a
+/// field that holds a `String`, a `Vec`, a map or a JSON value of its own. The list of types
+/// says what is followed: a new one fails until it is listed, and so does one that is gone.
+///
+/// It reads the text, so it can't see an answer read into a type outside these three (the
+/// host's reads are counted below, so a new one fails there), a field whose type comes
+/// through a type alias or a macro, or what a hand-written `Deserialize` reads on its way
+/// (`WireLink` reads a map, then one of two types this follows). A view's content
+/// (`file/preview`) is the views crate's, outside this guard (#296).
+#[test]
+fn every_field_of_an_answer_names_its_bound() {
+    let files = crate_sources("engine");
+    let roots = [
+        "owner/given.rs: Given",
+        "owner/edits.rs: NewText",
+        "act.rs: Reply",
+    ];
+    let (reached, unbounded) = answer_types(&files, &roots);
+    assert!(
+        unbounded.is_empty(),
+        "fields of an answer without a bound of their own: {unbounded:#?}\n    hold it in a \
+         type of crate::bounded, which names its bound (`Text<Message>` when only the \
+         message bounds it)"
+    );
+    let listed = [
+        "act.rs: RegionEntry",
+        "act.rs: Reply",
+        "alphabet.rs: Mark",
+        "alphabet.rs: Role",
+        "owner/edits.rs: NewText",
+        "owner/given.rs: Between",
+        "owner/given.rs: Cell",
+        "owner/given.rs: FieldRun",
+        "owner/given.rs: Given",
+        "owner/given.rs: GivenItem",
+        "owner/given.rs: GivenLink",
+        "owner/given.rs: Label",
+        "owner/given.rs: LinkRun",
+        "owner/given.rs: Marked",
+        "owner/given.rs: Piece",
+        "owner/given.rs: Run",
+        "owner/given.rs: Wire",
+        "owner/given.rs: WireLink",
+        "shapes.rs: CreateStep",
+        "shapes.rs: EditStep",
+        "shapes.rs: RebindStep",
+        "shapes.rs: SetField",
+        "shapes.rs: Step",
+    ];
+    let remedy = "check its fields are bounded, and list it";
+    only_listed(
+        "the types an answer is read into",
+        remedy,
+        &reached,
+        &listed,
+    );
+
+    // Where the host reads what an extension sent into a type: in process.rs its answers
+    // to file/read, file/edit, file/preview (a view, #296) and a shape's ask; in rpc.rs a
+    // JSON-RPC error and its requests (#296).
+    let reads = ["serde_json::from_value"];
+    let found = tally(per_file(&host_sources(), |code| times(code, &reads)));
+    let remedy = "read an answer into one of the types above, or into a new one this follows";
+    only_listed(
+        "where the host reads what an extension sent",
+        remedy,
+        &found,
+        &[
+            "../host/src/process.rs: serde_json::from_value ×4",
+            "../host/src/rpc.rs: serde_json::from_value ×4",
+        ],
+    );
+}
+
+#[test]
+fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
+    let code = "use crate::other::{Far};\n\
+                #[derive(Deserialize)]\n\
+                #[serde(from = \"Wire\")]\n\
+                pub struct Root {\n    pub a: Text<Place>,\n    #[serde(skip)]\n    pub \
+                cache: String,\n    pub(crate) b: List<Inner, Message>,\n}\n\
+                struct Wire {\n    c: Option<Far>,\n}\n\
+                enum Inner {\n    Plain(Text<Message>),\n    #[serde(rename = \"x\")]\n    \
+                Named { d: Vec<u8>, e: bool },\n    Unit,\n}\n";
+    let far = "pub struct Far(pub Map<String, Json>);\n";
+    let files = vec![
+        ("../engine/src/root.rs".to_string(), code.to_string()),
+        ("../engine/src/other.rs".to_string(), far.to_string()),
+    ];
+    let (reached, unbounded) = answer_types(&files, &["root.rs: Root"]);
+    assert_eq!(
+        reached,
+        [
+            "other.rs: Far",
+            "root.rs: Inner",
+            "root.rs: Root",
+            "root.rs: Wire"
+        ]
+    );
+    assert_eq!(
+        unbounded,
+        [
+            "other.rs: Far.0: Map<String, Json>",
+            "root.rs: Inner::Named.d: Vec<u8>",
+        ]
+    );
+}

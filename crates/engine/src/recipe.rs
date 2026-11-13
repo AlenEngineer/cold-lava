@@ -152,8 +152,9 @@ impl<'a> Draft<'a> {
         (self.ix.workspace.owned[f].given.items.iter())
             .filter_map(|item| match item {
                 GivenItem::Markdown { place, text } => {
-                    let now = changed.and_then(|c| c.get(place)).unwrap_or(text);
-                    Some((place.clone(), now.clone()))
+                    let now = changed.and_then(|c| c.get(place.as_str()));
+                    let now = now.map(String::as_str).unwrap_or(text.as_str());
+                    Some((place.to_string(), now.to_string()))
                 }
                 GivenItem::Typed { .. } | GivenItem::Piece(_) => None,
             })
@@ -197,12 +198,12 @@ impl<'a> Draft<'a> {
                 let GivenItem::Markdown { place, text } = item else {
                     continue;
                 };
-                let Some(new) = pieces.get(place).filter(|new| *new != text) else {
+                let Some(new) = pieces.get(place.as_str()).filter(|new| text != *new) else {
                     continue;
                 };
                 changes.extend(changed_lines(text, new));
                 asks.push(Ask::Text {
-                    place: place.clone(),
+                    place: place.to_string(),
                     text: new.clone(),
                 });
             }

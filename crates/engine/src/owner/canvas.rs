@@ -116,12 +116,12 @@ pub fn read(text: &str) -> Result<Given, String> {
         .map(|(n, place)| {
             let role = role(&n.kind)?;
             Some(Piece {
-                place: place.clone(),
+                place: place.as_str().into(),
                 role,
-                attributes: attributes(n),
-                text: Vec::new(),
+                attributes: attributes(n).into(),
+                text: Default::default(),
                 inside: None,
-                cells: Vec::new(),
+                cells: Default::default(),
             })
         })
         .collect();
@@ -139,16 +139,16 @@ pub fn read(text: &str) -> Result<Given, String> {
     let mut between: Vec<Between> = Vec::new();
     for e in doc.edges {
         let arrow = Between {
-            from: e.from_node,
-            to: e.to_node,
-            label: e.label.unwrap_or_default(),
+            from: e.from_node.into(),
+            to: e.to_node.into(),
+            label: e.label.unwrap_or_default().into(),
         };
         if taken.joins(&arrow, between.len()).is_ok() {
             between.push(arrow);
         }
     }
     let mut given = Given {
-        between,
+        between: between.into(),
         ..Given::default()
     };
     let nodes = doc.nodes.into_iter().zip(places);
@@ -157,11 +157,14 @@ pub fn read(text: &str) -> Result<Given, String> {
             .items
             .extend(card.filter(|_| kept).map(GivenItem::Piece));
         match (n.kind.as_str(), n.text, n.file) {
-            ("text", Some(text), _) => given.items.push(GivenItem::Markdown { place, text }),
+            ("text", Some(text), _) => given.items.push(GivenItem::Markdown {
+                place: place.into(),
+                text: text.into(),
+            }),
             ("file", _, Some(file)) => given.links.push(GivenLink {
-                target: file.clone(),
-                place,
-                text: file,
+                target: file.as_str().into(),
+                place: place.into(),
+                text: file.into(),
             }),
             _ => {}
         }
@@ -292,7 +295,7 @@ mod tests {
         let markdown = |i: &&GivenItem| matches!(i, GivenItem::Markdown { .. });
         (
             given.items.iter().filter(markdown).cloned().collect(),
-            given.links.clone(),
+            given.links.to_vec(),
         )
     }
 
@@ -381,7 +384,9 @@ mod tests {
         let markdown = |board: &str| -> Vec<(String, String)> {
             let items = read(board).unwrap().items.into_iter();
             let piece = |i: GivenItem| match i {
-                GivenItem::Markdown { place, text } => Some((place, text)),
+                GivenItem::Markdown { place, text } => {
+                    Some((place.into_string(), text.into_string()))
+                }
                 _ => None,
             };
             items.filter_map(piece).collect()
@@ -417,8 +422,8 @@ mod tests {
     /// an answer, a board of hostile nodes and arrows has nothing to report.
     #[test]
     fn the_engine_reports_nothing_of_what_the_owner_gives() {
-        let long = "i".repeat(crate::owner::given::MAX_PLACE + 1);
-        let label = "L".repeat(crate::owner::given::MAX_LABEL + 1);
+        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Bound>::MOST + 1);
+        let label = "L".repeat(<crate::bounded::LinkLabel as crate::bounded::Bound>::MOST + 1);
         let board = format!(
             r##"{{"nodes":[
                 {{"id":"","type":"text","text":"x"}},
@@ -453,7 +458,7 @@ mod tests {
     /// and its text is read as ever.
     #[test]
     fn a_node_that_cant_be_a_piece_keeps_its_text() {
-        let long = "i".repeat(crate::owner::given::MAX_PLACE + 1);
+        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Bound>::MOST + 1);
         let board = format!(
             r##"{{"nodes":[
                 {{"id":"","type":"text","text":"- [ ] No id","x":1e300,"y":-1e300}},
@@ -566,7 +571,7 @@ mod tests {
         let places = |text: &str| -> Vec<String> {
             let items = read(text).unwrap().items.into_iter();
             let place = |i: GivenItem| match i {
-                GivenItem::Markdown { place, .. } => Some(place),
+                GivenItem::Markdown { place, .. } => Some(place.into_string()),
                 GivenItem::Typed { .. } | GivenItem::Piece(_) => None,
             };
             items.filter_map(place).collect()

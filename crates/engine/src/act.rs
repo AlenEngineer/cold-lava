@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::bind::{Binding, Entry, OWNER, Source};
+use crate::bounded::{List, Message, Text};
 use crate::core::Core;
 use crate::files::{Create, Created, NewFile};
 use crate::gateway::{Answer, Edit, Error, Op, Reason};
@@ -261,7 +262,7 @@ impl Binding {
                         })
                         .collect::<Result<_, _>>()?;
                     done.rebind = Some(Rebind {
-                        shape: r.shape.clone(),
+                        shape: r.shape.to_string(),
                         inputs,
                     });
                 }
@@ -284,7 +285,7 @@ impl Binding {
             let title = gw.run_recipe(id, options)?;
             return Ok(Did::Recipe { title });
         }
-        let named = e.item.as_deref().unwrap_or_default();
+        let named = e.item.as_ref().map(|i| i.as_str()).unwrap_or_default();
         let member = self.item_of(gesture, named).ok_or_else(|| {
             let message = format!("{named} names no item here");
             Error::new(Reason::Refused, message)
@@ -301,7 +302,7 @@ impl Binding {
                     Way::Remove(v) => listed(member, &s.field, &fill(v, value), false)?,
                 };
                 Op::SetField {
-                    field: s.field.clone(),
+                    field: s.field.to_string(),
                     value,
                 }
             }
@@ -502,12 +503,30 @@ pub struct ShapeAnswer {
 #[serde(untagged)]
 pub enum Reply {
     /// To `shape/region`: the members it shows, each an id and a label.
-    Region { items: Vec<Entry> },
+    Region { items: List<RegionEntry, Message> },
     /// To `shape/gesture`: steps, in the language of `on`'s `do`.
     Gesture {
         #[serde(rename = "do")]
-        steps: Vec<Step>,
+        steps: List<Step, Message>,
     },
+}
+
+/// One member a region shows, as the extension answers it: what it is (left out for a label
+/// of its own) and its label.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionEntry {
+    #[serde(default)]
+    pub id: Text<Message>,
+    pub label: Text<Message>,
+}
+
+impl From<RegionEntry> for Entry {
+    fn from(shown: RegionEntry) -> Entry {
+        Entry {
+            id: shown.id.into_string(),
+            label: shown.label.into_string(),
+        }
+    }
 }
 
 impl Reply {
@@ -516,15 +535,19 @@ impl Reply {
     /// isn't taken.
     pub fn read(self, ask: &Ask, shapes: &Shapes) -> Result<Answered, String> {
         match (ask, self) {
-            (Ask::Region { .. }, Reply::Region { items }) => Ok(Answered::Region { items }),
-            (Ask::Gesture { .. }, Reply::Gesture { steps }) => Steps::checked(steps, shapes)
-                .map(|steps| Answered::Gesture { steps })
-                .map_err(|problems| {
-                    format!(
-                        "it answered shape/gesture with steps that can't run: {}",
-                        problem::joined(&problems)
-                    )
-                }),
+            (Ask::Region { .. }, Reply::Region { items }) => Ok(Answered::Region {
+                items: items.into_iter().map(Entry::from).collect(),
+            }),
+            (Ask::Gesture { .. }, Reply::Gesture { steps }) => {
+                Steps::checked(steps.into_vec(), shapes)
+                    .map(|steps| Answered::Gesture { steps })
+                    .map_err(|problems| {
+                        format!(
+                            "it answered shape/gesture with steps that can't run: {}",
+                            problem::joined(&problems)
+                        )
+                    })
+            }
             (Ask::Region { .. }, _) => Err("it answered shape/region with steps".into()),
             (Ask::Gesture { .. }, _) => Err("it answered shape/gesture with items".into()),
         }
