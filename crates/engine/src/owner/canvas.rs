@@ -681,4 +681,30 @@ mod tests {
         let relinked = edit(board, &asked.changes).unwrap();
         assert_eq!(relinked, board.replace("two [[Lava]]", "two [[Magma]]"));
     }
+
+    /// Two file cards at one place (a repeated id, then a node whose id is literally the
+    /// repeat's place): the owner gives the first's link there, a rename repoints that one,
+    /// and what the canvas reads after is what the engine expected.
+    #[test]
+    fn a_rename_of_two_file_cards_at_one_place_reads_back_as_expected() {
+        let board = r##"{"nodes":[
+            {"id":"b","type":"file","file":"Volcanoes/Lava.md"},
+            {"id":"b","type":"file","file":"Volcanoes/Lava.md"},
+            {"id":"b\u001f1","type":"file","file":"Volcanoes/Lava.md"}
+        ]}"##;
+        let asked = relink(board, lava_to_hot, |_| None).unwrap().unwrap();
+        let relinked = edit(board, &asked.changes).unwrap();
+        let expected = crate::owner::given::apply(asked.given.as_ref().unwrap(), &asked.changes);
+        assert_eq!(read(&relinked).unwrap().links, expected.links);
+    }
+
+    /// Two changes to one node's field are refused, never written one over the other.
+    #[test]
+    fn two_changes_to_one_field_are_refused() {
+        let text = |t: &str| Change::Text {
+            place: "s".into(),
+            text: t.into(),
+        };
+        assert!(edit(CANVAS, &[text("one"), text("two")]).is_err());
+    }
 }

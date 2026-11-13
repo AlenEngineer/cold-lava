@@ -2711,4 +2711,66 @@ fields.star = { flag = "⭐", type = "bool" }
         };
         assert!(left_out_by("A.sheet", &answer, &[near], &s).is_empty());
     }
+
+    /// What a change leaves out is told apart by which item it is, never by its words: two
+    /// pieces whose places share their first 80 characters say the same words when each is
+    /// past a bound, and a change that brings the first back and puts the second past one
+    /// leaves out something new.
+    #[test]
+    fn a_change_that_leaves_out_another_item_with_the_same_words_is_named() {
+        let s = settings("");
+        let far = "L".repeat(Target::MOST + 1);
+        let piece = |place: String, target: &str| {
+            GivenItem::Piece(Piece {
+                place: place.into(),
+                role: Role::Item,
+                attributes: Default::default(),
+                text: vec![Run::Link(LinkRun {
+                    link: target.into(),
+                    text: Default::default(),
+                    marks: Default::default(),
+                })]
+                .into(),
+                inside: None,
+                cells: Default::default(),
+            })
+        };
+        let (a, b) = (
+            format!("{}a", "P".repeat(80)),
+            format!("{}b", "P".repeat(80)),
+        );
+        let given = Given {
+            items: vec![piece(a.clone(), &far), piece(b.clone(), "Lava")].into(),
+            ..Given::default()
+        };
+        let swap = [
+            Change::Link {
+                place: a,
+                link: far.clone(),
+                to: "Lava".into(),
+            },
+            Change::Link {
+                place: b,
+                link: "Lava".into(),
+                to: far,
+            },
+        ];
+        let lost = left_out_by("A.sheet", &given, &swap, &s);
+        assert_eq!(lost.len(), 1, "{:?}", lost);
+    }
+
+    /// A Markdown piece is a piece: its text is up to 1 MiB, like any piece's.
+    #[test]
+    fn a_markdown_piece_past_a_mib_is_left_out() {
+        let mib = 1 << 20;
+        let answer = given(json!({"items": [
+            {"place": "at", "text": format!("- [ ] {}", "x".repeat(mib - 6))},
+            {"place": "past", "text": format!("- [ ] {}", "x".repeat(mib - 5))},
+        ]}));
+        let left: Vec<&str> = (answer.left_out.iter())
+            .map(|(_, l)| l.said.as_str())
+            .collect();
+        assert_eq!(answer.items.len(), 1);
+        assert_eq!(left, ["past: its text is longer than 1 MiB"]);
+    }
 }
