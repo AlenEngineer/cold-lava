@@ -2739,50 +2739,40 @@ fields.star = { flag = "⭐", type = "bool" }
     }
 
     /// What a change leaves out is told apart by which item it is, never by its words: two
-    /// pieces whose places share their first 80 characters say the same words when each is
-    /// past a bound, and a change that brings the first back and puts the second past one
-    /// leaves out something new.
+    /// pieces whose places share their first 80 characters say the same words when each has
+    /// a checkbox that isn't one of the four words, and a change that brings the first back
+    /// and gives the second a wrong checkbox leaves out something new. (A change reaches only
+    /// an item that holds its place, so it is an attribute's value, read after the place is
+    /// claimed, that a change can put right or wrong.)
     #[test]
     fn a_change_that_leaves_out_another_item_with_the_same_words_is_named() {
         let s = settings("");
-        let far = "L".repeat(Target::MOST + 1);
-        let piece = |place: String, target: &str| {
-            GivenItem::Piece(Piece {
-                place: place.into(),
-                role: Role::Item,
-                attributes: Default::default(),
-                text: vec![Run::Link(LinkRun {
-                    link: target.into(),
-                    text: Default::default(),
-                    marks: Default::default(),
-                })]
-                .into(),
-                inside: None,
-                cells: Default::default(),
-            })
-        };
         let (a, b) = (
             format!("{}a", "P".repeat(80)),
             format!("{}b", "P".repeat(80)),
         );
-        let given = Given {
-            items: vec![piece(a.clone(), &far), piece(b.clone(), "Lava")].into(),
-            ..Given::default()
+        let task = |place: &str, checkbox: &str| {
+            json!({"place": place, "role": "item", "text": ["x"],
+                   "attributes": {"task": true, "checkbox": checkbox}})
         };
-        let swap = [
-            Change::Link {
-                place: a,
-                link: far.clone(),
-                to: "Lava".into(),
-            },
-            Change::Link {
-                place: b,
-                link: "Lava".into(),
-                to: far,
-            },
-        ];
+        let given = given(json!({"items": [task(&a, "nope"), task(&b, "open")]}));
+        let before = read("A.sheet", &given, &s);
+        assert_eq!(said(&before).len(), 1, "{:?}", said(&before));
+        let checkbox = |place: &str, word: &str| Change::Attribute {
+            place: place.into(),
+            attribute: "checkbox".into(),
+            value: json!(word),
+        };
+        let swap = [checkbox(&a, "open"), checkbox(&b, "nope")];
+        let after = read("A.sheet", &apply(&given, &swap), &s);
+        assert_eq!(
+            said(&after),
+            said(&before),
+            "the same words, of another item"
+        );
         let lost = left_out_by("A.sheet", &given, &swap, &s);
         assert_eq!(lost.len(), 1, "{:?}", lost);
+        assert!(check_change("A.sheet", &given, &swap, &s).is_err());
     }
 
     /// A Markdown piece is a piece: its text is up to 1 MiB, like any piece's.
