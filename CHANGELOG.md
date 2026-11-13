@@ -170,6 +170,19 @@ change commands, keys and file formats; patch versions only fix things.
   stderr included, shows those as `\u{202e}` too. Text with none of these characters
   prints byte for byte as before, and `--json`, files, ids and what extensions are
   answered hold the text as written.
+  In the terminal app, a label drawn a character at a time was written to the terminal as
+  it is: a note whose file name held an escape sequence retitled the terminal from the
+  graph with its labels on, and an arrow's or a placed shape's label on the whiteboard
+  could do the same. Those labels are now escaped like a listing, and every symbol the app
+  sets on a cell itself goes through one function, which shows `�` for a character a
+  terminal would act on and a space for a tab (a tab in a label or in a shape's text used
+  to be written as it is, and moved the rest of the row to a tab stop),
+  and a notice on the status line (the app's own, an extension's notice and its status
+  words) is escaped like a message, where it used to lose its control and direction
+  characters without a trace and keep the separators U+2028 and U+2029. Text the app
+  draws as running text (the tree, the reader, lists, tables, cards) still loses control
+  characters and can still hold the separators U+2028 and U+2029 and, in titles and
+  single lines, direction characters.
 - An extension can no longer take cold-lava down with the steps it answers `shape/gesture`
   with (#268). Those steps skipped the checks a shape's own `do` gets when it is loaded, and
   a `set-field` with none of `value`, `add` and `remove` made the app panic when the

@@ -18,6 +18,7 @@ use crate::bind::{Binding, Source};
 use crate::commands::{self, KeyHint, Keymap, SHAPE_EDITOR, ShapeEditorAction as Action};
 use crate::core::{Core, Event as CoreEvent};
 use crate::gateway::News;
+use crate::notice::Notice;
 use crate::shapes::{self, Definition, PartDef, Pos, Shapes, Xy, file};
 use anyhow::Result;
 use cold_lava_canvas::snap::{self, Guide};
@@ -208,7 +209,7 @@ pub struct Editor {
     /// The draft changed since the preview was bound: it is bound again once the key or the
     /// mouse event that changed it is done.
     unbound: bool,
-    msg: Option<String>,
+    msg: Option<Notice>,
     keys: Keymap<Action>,
     which_key: bool,
     canvas: Rect,
@@ -384,7 +385,7 @@ impl Editor {
             .map(|(i, s)| (i.clone(), s.clone()));
         match Binding::new(core, &self.loaded, &self.id, sources) {
             Ok(b) => self.binding = Some(b),
-            Err(e) => self.msg = Some(format!("preview: {e}")),
+            Err(e) => self.msg = Some(format!("preview: {e}").into()),
         }
     }
 
@@ -439,7 +440,7 @@ impl Editor {
     }
 
     /// Shows `s` in the status line until the next key.
-    pub fn say(&mut self, s: impl Into<String>) {
+    pub fn say(&mut self, s: impl Into<Notice>) {
         self.msg = Some(s.into());
     }
 
@@ -1307,7 +1308,7 @@ impl Editor {
 
     /// Draws it over the whole screen, with the extensions' `ui/status` words (`statuses`) in
     /// its status line.
-    pub fn draw(&mut self, f: &mut Frame, statuses: &[String]) {
+    pub fn draw(&mut self, f: &mut Frame, statuses: &[Notice]) {
         let area = f.area();
         let panel = PANEL.min(area.width / 2);
         self.canvas = Rect::new(
@@ -1431,7 +1432,7 @@ impl Editor {
                 }
                 let b = &mut buf[(c.x + col, c.y + row)];
                 if cell.ch != ' ' || cell.fg != canvas::Style::NONE {
-                    b.set_char(cell.ch);
+                    crate::cells::put_char(b, cell.ch);
                     b.set_fg(match cell.fg {
                         ink::TEXT => NOTE,
                         ink::LABEL => ACCENT_SOFT,
@@ -1613,7 +1614,7 @@ impl Editor {
                     continue;
                 }
                 let b = &mut buf[(area.x + col, area.y + row)];
-                b.set_char(cell.ch);
+                crate::cells::put_char(b, cell.ch);
                 b.set_fg(match cell.fg {
                     ink::LABEL => ACCENT_SOFT,
                     _ => NOTE,
@@ -1721,7 +1722,7 @@ fn describe(b: &shapes::Behaviour) -> String {
 fn put(f: &mut Frame, col: u16, row: u16, s: &str, style: Style) {
     let area = f.area();
     if col < area.x + area.width && row < area.y + area.height {
-        f.buffer_mut()[(col, row)].set_symbol(s).set_style(style);
+        crate::cells::put(&mut f.buffer_mut()[(col, row)], s).set_style(style);
     }
 }
 

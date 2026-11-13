@@ -228,7 +228,7 @@ impl Embedded {
                 style = style.add_modifier(m);
                 let out = &mut buf[(area.x + col, area.y + row)];
                 let text = cell.contents();
-                out.set_symbol(if text.is_empty() { " " } else { text });
+                crate::cells::put(out, if text.is_empty() { " " } else { text });
                 out.set_style(style);
             }
         }

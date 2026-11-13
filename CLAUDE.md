@@ -510,6 +510,26 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
   everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
+- `cells.rs`: the only module that sets a symbol on a screen cell (`cells::put`,
+  `put_char`). Text drawn through ratatui (`Span`, `Line`, `Paragraph`, `set_string`) loses
+  its control characters there, but a symbol set on a cell is written to the terminal as it
+  is, so never call `set_char` or `set_symbol` elsewhere (`tests/one_door.rs` lists them).
+  `put` shows `�` for what a terminal would act on and a space for a tab, whoever wrote
+  it. A label drawn a character a cell (a graph node's, an arrow's, a placed shape's
+  region labels) goes through `cells::label` before it is measured or fitted: escaped at
+  `Level::Content`. A shape's own and bound text is not a label and gets the `�`. A cell
+  is content: direction characters are kept in it, a shape's text and a pane's cells
+  included.
+  Text drawn through ratatui still holds U+2028 and U+2029, and direction characters where it is a `Line`
+  drawn on its own or a block's title (`cells.rs` pins what ratatui keeps).
+- `notice.rs`: `Notice`, the words of a notice on a status line (what the app did, why it
+  didn't, an extension's `ui/notify` and `ui/status` words). It keeps them as written and
+  its only way out is `Display`, which escapes at `Level::Message`, so the escape happens
+  where the status line is drawn and no store can forget it. `Home::msg`, `Board::msg`,
+  the scene view's and the shape editor's message, the recipe dialog's refusal, the
+  extensions' statuses and `refused::Refused` all hold one; `flash`, `say` and `refused`
+  take `impl Into<Notice>`. Never keep a notice as a `String`. A view's title and rows are
+  content, not notices.
 - `say.rs`: the only module that prints to stdout and stderr. A line is escaped whole as it
   goes out (`cold_lava_views::shown::escape`), a line break in it included, so nothing has
   to be remembered where a line is made. Which entry is called says what the line is:

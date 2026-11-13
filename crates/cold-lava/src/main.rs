@@ -1,6 +1,7 @@
 mod agenda;
 mod app;
 mod board;
+mod cells;
 mod commands;
 mod config;
 mod drive;
@@ -16,6 +17,7 @@ mod image;
 mod kitty;
 mod list;
 mod looks;
+mod notice;
 mod owned;
 mod previews;
 mod reader;
