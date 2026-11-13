@@ -153,7 +153,8 @@ pub fn fields(text: &str) -> serde_json::Result<Vec<Field>> {
 }
 
 /// `text` with each field's value replaced by the string given for it, written as JSON in
-/// place: every other byte stays as it was.
+/// place: every other byte stays as it was. Each field is given once: spans must not
+/// overlap, and `canvas::edit`, the caller, refuses two changes to one field.
 pub fn set(text: &str, new: &[(&Field, String)]) -> String {
     let mut new: Vec<&(&Field, String)> = new.iter().collect();
     new.sort_by_key(|(f, _)| f.span.start);

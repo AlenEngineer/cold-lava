@@ -1885,7 +1885,8 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   left out, and the rest of the answer is read. The owner's limits of 2026-11-13 leave out a
   piece the same way: its text over 1 MiB (`bounded::PieceText`, one run's, and all its runs
   and cells' together: plain and marked characters, a link's words, a field's value, so a
-  field run of exactly 1 MiB beside any other text is past it; a Markdown piece's text too),
+  field run of exactly 1 MiB beside any other text is past it; a Markdown piece's text is
+  bounded by the message, as before, until the owner decides),
   a link's words over 4096 bytes (`LinkText`), an attribute's or a field run's text value over
   1 MiB (`ValueText`), more than 4096 cells (`Cells`). A Markdown piece and a typed item have
   the place rule too (1 to 1024 bytes); a typed item's type is 1 to 256 bytes (`TypeName`),
@@ -2182,14 +2183,14 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   longer listed. A node whose place another node already has (an id that looks like a
   repeated id's place) gets no piece and no arrow, no Markdown piece where the other node
   has text, and no link where the other node has a file: a change names a node's text or
-  file by its place, so only the first node with that field at the place can be changed. A
-  file card whose file is empty or longer than 4096 bytes gives no link.
+  file by its place, so a place names the first node in the file with that field
+  (`canvas::Named`), and only that node's is given, when it is within its bounds, and never
+  a later node's instead. A file card whose file is empty or longer than 4096 bytes gives no link.
   An arrow with a label over 4096 bytes or past the 65,536th is not given. Nothing is
   reported for any of it: the owner gives what the engine takes, and the rest stays in the
-  file as it is. A rename changes a node's text or file by its place, so of two nodes with
-  a text, or with a file, at one place only the first is relinked (`canvas::relink`); the
-  second's stays as it is, never written over the first's (`canvas::edit` refuses two changes
-  to one field, which on main crashed the rename). A coordinate too large for a JSON number, or one that
+  file as it is. A rename changes the node its place names (`canvas::relink`); a later node
+  with a text or a file at that place stays as it is, never written over the named node's
+  (`canvas::edit` refuses two changes to one field, which on main crashed the rename). A coordinate too large for a JSON number, or one that
   isn't a number, makes the file no JSON Canvas at all, as before.
 - **What the scan does for a card.** Before: one parse of the file, and each text card's
   text read as Markdown. Now also, for each node, a piece with four or five attributes is

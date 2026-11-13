@@ -62,7 +62,8 @@ pub trait Limit {
 /// types are filled are bounded by what they come from: the canvas owner's answer by the
 /// canvas file it reads, the owners' cache by the answers the engine kept in it, a shape's
 /// steps written in TOML by that file. The fields that name it: an answer's items and links
-/// (the owner decided they are bounded only by the message), a file's new text (`NewText`), what a region shows (an id and a label), a run's marks, a
+/// (the owner decided they are bounded only by the message), a Markdown piece's text (whether
+/// a piece's 1 MiB applies to it is the owner's open choice), a file's new text (`NewText`), what a region shows (an id and a label), a run's marks, a
 /// piece's runs (their number is bounded with the piece, `given::MAX_RUNS`), what names a
 /// place (`in`, the ends of a link between pieces), which must name a piece taken before it,
 /// and the number of a step's options and a rebind's inputs.
@@ -199,8 +200,7 @@ impl Limit for Betweens {
 
 /// A piece's text: at most 1 MiB, a run's on its own (the piece is left out) and all its runs
 /// together, its cells' included (`Piece::check`): a plain or marked run's characters, a
-/// link's words and a field's value. A Markdown piece is a piece: its text has the same bound
-/// (`GivenItem::check`).
+/// link's words and a field's value.
 pub struct PieceText;
 impl Limit for PieceText {
     const MOST: usize = 1 << 20;

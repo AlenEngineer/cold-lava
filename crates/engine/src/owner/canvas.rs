@@ -61,6 +61,22 @@ pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
         .collect()
 }
 
+/// Which node a place names, for each of its fields (`text`, `file`): the first node in the
+/// file with that field at that place, whatever the field holds. A change names a node's
+/// field by its place, so this is the node `edit` writes and `relink` changes, and the only
+/// one whose text or file `read` gives, and only when it is within its bounds: a place never
+/// falls through to a later node with the field, which no change could reach.
+#[derive(Default)]
+struct Named(HashSet<(String, &'static str)>);
+
+impl Named {
+    /// Whether the node at `place` is the one its `field` names: asked in the file's order,
+    /// true for the first node asked with that place and field.
+    fn first(&mut self, place: &str, field: &'static str) -> bool {
+        self.0.insert((place.to_string(), field))
+    }
+}
+
 /// What a node is, in the alphabet. `None` for a group, which is not given.
 fn role(kind: &str) -> Option<Role> {
     match kind {
@@ -105,17 +121,20 @@ fn attributes(n: &CNode) -> Map<String, Json> {
 /// A canvas is another program's file, so the owner gives only what the engine takes, and
 /// asks the engine which that is (`given::Places`), the one rule for every owner: a node
 /// whose id is empty or too long gets no piece, no Markdown piece and no link; a node whose
-/// place another node already has gets no piece, no Markdown piece and no link where the
-/// other has one; a link whose file is empty or too long is not given; an arrow past the bounds or with
-/// an end that is no piece (a group, a node that isn't there) is not given. All of it stays
-/// in the file.
+/// place another node already has gets no piece there; a text or a file is given only for
+/// the node its place names (`Named`), and only within its bounds; a link whose file is
+/// empty or too long is not given; an arrow past the bounds or with an end that is no piece
+/// (a group, a node that isn't there) is not given. All of it stays in the file.
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
     let places = places(doc.nodes.iter().map(|n| n.id.as_str()));
     // Each node's card, the Markdown written on it and its link to a file, when it has them.
     let mut nodes: Vec<Node> = Vec::with_capacity(doc.nodes.len());
+    let mut named = Named::default();
     for (n, place) in doc.nodes.into_iter().zip(&places) {
+        let text_named = n.text.is_some() && named.first(place, "text");
+        let file_named = n.file.is_some() && named.first(place, "file");
         let card = role(&n.kind).map(|role| {
             GivenItem::Piece(Piece {
                 place: place.as_str().into(),
@@ -127,14 +146,14 @@ pub fn read(text: &str) -> Result<Given, String> {
             })
         });
         let markdown = match (n.kind.as_str(), n.text) {
-            ("text", Some(text)) => Some(GivenItem::Markdown {
+            ("text", Some(text)) if text_named => Some(GivenItem::Markdown {
                 place: place.as_str().into(),
                 text: text.into(),
             }),
             _ => None,
         };
         let link = match (n.kind.as_str(), n.file) {
-            ("file", Some(file)) => Some(GivenLink {
+            ("file", Some(file)) if file_named => Some(GivenLink {
                 target: file.as_str().into(),
                 place: place.as_str().into(),
                 text: file.into(),
@@ -146,11 +165,8 @@ pub fn read(text: &str) -> Result<Given, String> {
             link,
         });
     }
-    // What the engine takes, asked in the answer's order. A file card's link is given by
-    // the first node whose file is at its place: a change names a node's file by its place
-    // (`edit`, `relink`), so it reaches that node and no other.
+    // What the engine takes, asked in the answer's order.
     let mut taken = Places::default();
-    let mut files: HashSet<&str> = HashSet::new();
     let mut kept: Vec<[bool; 3]> = Vec::with_capacity(nodes.len());
     for node in &nodes {
         let mut keep = [false; 3];
@@ -161,8 +177,7 @@ pub fn read(text: &str) -> Result<Given, String> {
                 taken.take(card);
             }
         }
-        keep[2] = (node.link.as_ref())
-            .is_some_and(|l| taken.link(l).is_ok() && files.insert(l.place.as_str()));
+        keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
         kept.push(keep);
     }
     // An arrow names two ids, and the first node of an id has the id as its place.
@@ -198,13 +213,17 @@ struct Node {
 }
 
 /// The canvas's new text with `changes` made: a Markdown piece's new text is its node's `text`,
-/// a link's new target its node's `file`, each the first node with that field at the change's
-/// place. Two changes to one field are refused. A typed item's field is refused, since a canvas gives
+/// a link's new target its node's `file`, each the node the change's place names for that field
+/// (`Named`). Two changes to one field are refused. A typed item's field is refused, since a canvas gives
 /// none, and so are a card's attribute and runs: the owner writes a card's text and file only.
 pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
     let fields = json_canvas::fields(text).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
+    let mut named = Named::default();
+    let fields: Vec<&Field> = (fields.iter())
+        .filter(|f| named.first(&self::place(&f.node, f.nth), f.name))
+        .collect();
     let find = |place: &str, name: &str| {
-        (fields.iter())
+        (fields.iter().copied())
             .find(|f| f.name == name && self::place(&f.node, f.nth) == place)
             .ok_or_else(|| format!("it has no node {place} with a {name}"))
     };
@@ -270,10 +289,10 @@ pub struct Relink {
 /// The changes that rewrite a canvas's links to moved files: every node's `file` becomes what
 /// `file` says (a workspace path: a card holds a path, not a link written in a style), every
 /// node's `text` what `piece` makes of it (the Markdown owner's relink, which keeps each link's
-/// style), with how many links `piece` changed. Every node, whatever its type and whether or not
-/// `read` gives anything for it, but a node whose place an earlier node's `text` or `file`
-/// has: a change names a node by its place and `edit` writes the first node there, so the
-/// later one's change would be written over the earlier one's text. `None` when nothing
+/// style), with how many links `piece` changed. Every node its place names for that field
+/// (`Named`), whatever its type and whether or not `read` gives anything for it; a later node
+/// with the field at the place is left as it is, since a change at the place would be written
+/// into the node the place names. `None` when nothing
 /// changes; an error when the file isn't JSON with nodes that have ids, so nothing in it can
 /// be found.
 pub fn relink(
@@ -288,9 +307,9 @@ pub fn relink(
         shown: Vec::new(),
         links: 0,
     };
-    let mut seen: HashSet<(&str, String)> = HashSet::new();
+    let mut named = Named::default();
     for f in &fields {
-        if !seen.insert((f.name, place(&f.node, f.nth))) {
+        if !named.first(&place(&f.node, f.nth), f.name) {
             continue;
         }
         let to = match f.name {

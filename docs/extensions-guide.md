@@ -440,7 +440,6 @@ Then, for all three:
   read, is refused whole. At most 100 problems are said, then how many more.
 - **Limits.** An item past one is left out the same way, with the limit named:
   - every item: a place of 1 to 1024 bytes, and no other item of its kind at that place;
-  - a Markdown piece: its text up to 1 MiB;
   - a piece: its text up to 1 MiB, its runs and its cells' together, and up to 4096 runs; a
     link's target 1 to 4096 bytes and its words up to 4096; up to 256 attributes, each name
     up to 256 bytes and each text value up to 1 MiB; a row up to 4096 cells; a cell's,

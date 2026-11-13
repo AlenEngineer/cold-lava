@@ -155,7 +155,7 @@ pub enum GivenItem {
     /// Markdown text, read as a note is: a task in it is a `task`.
     Markdown {
         place: Text<Place>,
-        text: Text<PieceText>,
+        text: Text<Message>,
     },
     /// An item of a loaded type, its fields by name.
     Typed {
@@ -187,10 +187,7 @@ impl GivenItem {
             return Err(Place::past());
         }
         match self {
-            GivenItem::Markdown { text, .. } => match text.fits() {
-                true => Ok(()),
-                false => Err(text.past()),
-            },
+            GivenItem::Markdown { .. } => Ok(()),
             GivenItem::Typed { kind, fields, .. } => check_typed(kind, fields),
             GivenItem::Piece(p) => p.check(),
         }
@@ -629,7 +626,9 @@ impl<'a> Places<'a> {
     }
 
     /// Whether this link to a file is taken: its place, its target and its words are within
-    /// their bounds. Links may share a place: a Markdown piece's links all have its place.
+    /// their bounds. The engine has no place rule for links: a Markdown piece's links all
+    /// have its place. An owner that writes a link by its place gives one link a place, as
+    /// the canvas owner does (`canvas::Named`), or a change at the place can't tell them apart.
     pub fn link(&self, l: &GivenLink) -> Result<(), String> {
         let past = if !l.place.fits() {
             l.place.past()

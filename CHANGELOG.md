@@ -105,8 +105,7 @@ change commands, keys and file formats; patch versions only fix things.
 - The limits the owner decided apply to what an extension answers (#265, step A4b). An
   item past one is left out alone, with the limit named, and the rest of the file shows: a
   piece's text over 1 MiB (one run's, or all its runs and cells together, a field run's
-  value included, so a field of exactly 1 MiB beside any other text is left out), a
-  Markdown piece's text over 1 MiB, a link's words
+  value included, so a field of exactly 1 MiB beside any other text is left out), a link's words
   in a piece over 4096 bytes, a text attribute or field value over 1 MiB, a row of more than
   4096 cells (a row of 4097 cells with text is told "more than 4096 cells", where it was
   told "more than 4096 runs"), a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
@@ -129,11 +128,13 @@ change commands, keys and file formats; patch versions only fix things.
 - The canvas owner gives only what the engine takes: a card whose id is empty or over 1024
   bytes no longer gives its text's tasks and links or its file link, a node at a place
   another node has (an id that is literally a repeated id's place) gives no text and no
-  file link there, a text card whose text is over 1 MiB gives no tasks, and a file card with
-  an empty file gives no link. Renaming a note linked
-  from a canvas with two text or file cards at one place used to crash the rename (a panic,
-  nothing written); now only the first node at the place is relinked, and the later node's
-  text or file stays as it was.
+  file link there, and a file card with an empty file gives no link. A place names the
+  first node in the file with a text, and the first with a file, at it: only that node's
+  text or file is given (when it is within its bounds) and only that node is changed by a
+  tick or relinked by a rename; a later node at the place never is, even when the first
+  one's file is past its bound. Renaming a note linked from a canvas with two text or file
+  cards at one place used to crash the rename (a panic, nothing written). With such an id,
+  one file link fewer is given than before, so a note's backlinks can count one fewer.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80
