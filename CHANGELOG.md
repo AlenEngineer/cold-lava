@@ -102,6 +102,40 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- The limits the owner decided apply to what an extension answers (#265, step A4b). An
+  item past one is left out alone, with the limit named, and the rest of the file shows: a
+  piece's text over 1 MiB (one run's, or all its runs and cells together), a link's words
+  in a piece over 4096 bytes, a text attribute or field value over 1 MiB, a row of more than
+  4096 cells, a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
+  typed item's type that is empty or over 256 bytes, more than 256 fields, a field name
+  that is empty or over 256 bytes, a field holding a list of more than 4096 values, a table
+  or a list of lists. A link to a file whose place is empty or over 1024 bytes, whose target
+  is empty or over 4096 bytes or whose words are over 4096 bytes is left out alone and
+  named, and the rest of the answer read. An answer to `shape/region` showing more than
+  50,000 items, or to `shape/gesture` with more than 64 steps, a name in a step over 256
+  bytes or a value over 64 KiB, is refused, naming the limit; a shape's own steps in
+  `shapes.toml` are held to the same names and values. Before, only the 64 MB message
+  bounded these.
+- One item of each kind at a place. Two Markdown pieces an owner gave at one place were
+  both listed, and ticking a task in the first gave the second the first's text; two typed
+  items at one place took each other's field changes. Now the first of each kind at a
+  place holds it, and a second of that kind is left out with "another Markdown piece is at
+  this place" (or "another typed item"). A piece and a Markdown piece at one place, as a
+  board's text card gives, both show as before. Renames, recipes and `tidy` read only the
+  items that hold their places.
+- The canvas owner gives only what the engine takes: a card whose id is empty or over 1024
+  bytes no longer gives its text's tasks and links or its file link, a node at a place
+  another node has (an id that is literally a repeated id's place) gives no text there, and
+  a file card with an empty file gives no link. Renaming a note linked from a canvas with
+  two nodes at one place used to write the second node's relinked text over the first's;
+  now only the first is relinked.
+- A rename, merge or recipe whose change would put what an owner gave past a limit (a
+  link's target over 4096 bytes) is refused before the owner is asked, naming it.
+- An owner's typed item of a type that isn't loaded is named by its place cut to 80
+  characters, as every other problem with an answer is.
+- An owner's piece that is `in` no piece, or that an attribute leaves out, still holds its
+  place: a second piece at that place is left out, where it used to be read.
+
 - An owner's item that doesn't read costs only itself (#265, step A4). An item with a key its
   kind doesn't have, a value of the wrong kind or a role that isn't one of the nine used to
   refuse the whole `file/read` answer, so the file showed nothing, and the status line said

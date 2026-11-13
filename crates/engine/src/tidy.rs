@@ -129,18 +129,18 @@ pub fn report(ix: &Index) -> Report {
     // shows, is a link too, though it isn't a note.
     for owned in &ix.workspace.owned {
         let from = files.path(&owned.rel).unwrap_or(usize::MAX);
-        let pieces = owned.given.items.iter().filter_map(|i| match i {
+        let pieces = owned.given.placed().filter_map(|i| match i {
             GivenItem::Markdown { text, .. } => Some(text),
             GivenItem::Typed { .. } | GivenItem::Piece(_) => None,
         });
         // A piece in the alphabet's terms says its links itself: nothing is read for them.
-        let runs = owned.given.items.iter().flat_map(|i| match i {
+        let runs = owned.given.placed().flat_map(|i| match i {
             GivenItem::Piece(p) => p.link_targets(),
             GivenItem::Markdown { .. } | GivenItem::Typed { .. } => Vec::new(),
         });
         let targets = (pieces.flat_map(|t| link_targets(t)))
             .chain(runs)
-            .chain(owned.given.links.iter().map(|l| l.target.as_str()));
+            .chain(owned.given.placed_links().map(|l| l.target.as_str()));
         for raw in targets {
             found(from, dir_of(&owned.rel), raw, &mut used);
         }

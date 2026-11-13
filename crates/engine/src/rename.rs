@@ -544,7 +544,7 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
         };
         let (dir_then, dir_now) = (dir_of(&rw.before.rels[i]), dir_of(&rw.after.rels[i]));
         let (mut asks, mut changes, mut links) = (Vec::new(), Vec::new(), 0);
-        for item in &f.given.items {
+        for item in f.given.placed() {
             let (place, text) = match item {
                 GivenItem::Markdown { place, text } => (place, text),
                 GivenItem::Typed { .. } => continue,
@@ -583,7 +583,7 @@ pub(crate) fn owned_edits(ix: &Index, rw: &Rewriter, warnings: &mut Vec<String>)
                 });
             }
         }
-        for l in &f.given.links {
+        for l in f.given.placed_links() {
             if let Some(to) = rw.link(&l.target, false, dir_then, dir_now) {
                 links += 1;
                 changes.push(Change {

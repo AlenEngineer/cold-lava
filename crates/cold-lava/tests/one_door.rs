@@ -1502,10 +1502,10 @@ const LEAVES: [&str; 19] = [
 ];
 
 /// The module of the bounded types, and the types in it that hold a value within a bound
-/// another type names: those are bounds, and are not followed. The bounds themselves are
-/// unit types, followed like any other.
+/// another type names, or a bound applied later (`WithAnswer`): those are not followed. The
+/// bounds themselves are unit types, followed like any other.
 const BOUNDED: &str = "../engine/src/bounded.rs";
-const WRAPPERS: [&str; 4] = ["Text", "List", "Fields", "Pairs"];
+const WRAPPERS: [&str; 5] = ["Text", "List", "Fields", "Pairs", "WithAnswer"];
 
 /// The types read from an answer, from `roots` (`file: Type`) through every type a field of
 /// one names and every type one is read through (`#[serde(from = "…")]`), each as
@@ -1689,8 +1689,8 @@ fn every_field_of_an_answer_names_its_bound() {
         wrong.is_empty(),
         "fields of an answer that name no bound: {wrong:#?}\n    hold each in a type of \
          crate::bounded, which names its bound (`Text<Message>` when where it comes from \
-         bounds it, `Text<Owed>` for a bound decided and not applied yet), a type the scan \
-         follows, or a leaf"
+         bounds it, else a bound of its own the reader applies), a type the scan follows, or \
+         a leaf"
     );
     let listed = [
         "act.rs: GestureWire",
@@ -1703,13 +1703,22 @@ fn every_field_of_an_answer_names_its_bound() {
         "bounded.rs: Attributes",
         "bounded.rs: Betweens",
         "bounded.rs: CellName",
+        "bounded.rs: Cells",
         "bounded.rs: FieldName",
+        "bounded.rs: GestureSteps",
         "bounded.rs: LabelName",
         "bounded.rs: LinkLabel",
+        "bounded.rs: LinkText",
         "bounded.rs: Message",
-        "bounded.rs: Owed",
+        "bounded.rs: PieceText",
         "bounded.rs: Place",
+        "bounded.rs: RegionItems",
+        "bounded.rs: StepName",
+        "bounded.rs: StepValue",
         "bounded.rs: Target",
+        "bounded.rs: TypeName",
+        "bounded.rs: TypedFields",
+        "bounded.rs: ValueText",
         "owner/answer.rs: Kept",
         "owner/answer.rs: LeftOut",
         "owner/answer.rs: MarkdownWire",

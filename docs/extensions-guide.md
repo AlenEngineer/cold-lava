@@ -384,7 +384,8 @@ piece("Krakatoa", "row", cells=[("Volcano", [link("Krakatoa")]), ("VEI", ["6"])]
 
 - **`place`** is your own name for the spot: a row's key, a chore's name, a card's id. Keep it
   stable when other things in the file change, since an item's id comes from its file, its kind
-  and its place. One place holds one piece.
+  and its place. One place holds one piece, one Markdown piece and one typed item at most: a
+  second of the same kind at a place is left out. A place is 1 to 1024 bytes.
 - **`role`** is what it is, one of nine: `document`, `section`, `text`, `item`, `row`, `aside`,
   `verbatim`, `embed`, `opaque`. A type matches a piece by its role (`on = "item"`), so a chore
   given as an `item` with `task` and `checkbox` is a `task` with no type of yours.
@@ -437,6 +438,19 @@ Then, for all three:
   line names the item's place and what was wrong (`p3: unknown field `colour`, expected one
   of `place`, `role`, …`). An answer that isn't `{items, links}`, or a link that doesn't
   read, is refused whole. At most 100 problems are said, then how many more.
+- **Limits.** An item past one is left out the same way, with the limit named:
+  - every item: a place of 1 to 1024 bytes, and no other item of its kind at that place;
+  - a piece: its text up to 1 MiB, its runs and its cells' together, and up to 4096 runs; a
+    link's target 1 to 4096 bytes and its words up to 4096; up to 256 attributes, each name
+    up to 256 bytes and each text value up to 1 MiB; a row up to 4096 cells; a cell's,
+    label's or field's name up to 256 bytes; pieces nested up to 64 deep;
+  - a typed item: its type 1 to 256 bytes, up to 256 fields, each name 1 to 256 bytes, each
+    value text, a number, `true`, `false`, `null` or a list of up to 4096 of those, text up to
+    1 MiB;
+  - an entry of `links` to a file: its place 1 to 1024 bytes, its target 1 to 4096 and its
+    text up to 4096. A link past one is left out alone and named; the rest is read.
+
+  Nothing else is counted: an answer may have as many items as fit in a message (64 MB).
 
 ### Two worked examples
 
@@ -652,6 +666,11 @@ cold-lava then asks you, with the shape's inputs and their members:
   `files.write` to create a note. They are checked as a shape's own `do` is: if one can't
   run (a `set-field` with no `value`, `add` or `remove`, say), none runs and the user is told
   what is wrong with your answer.
+
+An answer past a limit is refused, with the limit named: a region shows up to 50,000 items,
+and a gesture's answer has up to 64 steps, with names (an input, a field, a recipe, a shape,
+an option's name) up to 256 bytes and values (a field's value, a new note's text and name, an
+option's value) up to 64 KiB.
 
 Being asked needs `items.read`, since the inputs come with the question. Check yours without a
 canvas: `cold-lava shapes WORKSPACE --render csv-table.tally --bind rows='type=eruption'` asks

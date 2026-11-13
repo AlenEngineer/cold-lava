@@ -247,9 +247,19 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   read in the host; an item is read on its own by its keys (`owner/answer.rs`: `Kept`,
   `GivenItem::read`, a run's reader), so one that doesn't read is left out alone with the
   reader's words (`Given::left_out`, its one home in memory, which the cache saves and reads
-  back beside the answer, and the read-back compares); `Piece::check` and `read_piece` apply what compares
-  a piece with the rest of its answer (depth, places, `in`), and a place is never written
-  into a file.
+  back beside the answer, and the read-back compares). Every answer, the canvas owner's
+  and what `given::apply` makes included, goes through `given::Places` as it is read into
+  items, which asks each item's bounds again (`GivenItem::check`) and holds **one rule for
+  a place**: 1 to 1024 bytes, and one item of each form at it (the first within its bounds
+  claims it; a second of that form is left out). A piece, a Markdown piece and a typed item
+  may share a place (a board's text card is both a piece and a Markdown piece), since their
+  ids and changes never cross. A change at a place is for the item that holds it
+  (`apply`), and a rename, a recipe and tidy read only those (`Given::placed`,
+  `placed_links`). A link to a file is checked there too (`Places::link`), alone, since a
+  link that doesn't read as it arrives would refuse the whole answer (`WithAnswer`).
+  `read_piece` applies what compares a piece with the rest of its answer (depth, `in`), and
+  a place is never written into a file. A relink whose change would leave out what the owner
+  gave is refused before the owner is asked (`given::left_out_by`, `Core::relink`).
   Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
@@ -384,12 +394,14 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `paths.rs`: the user's home and config folders.
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
-  bound, and the table of bounds, one type each (the trait `Limit`; `Place`, `Target`, the
-  names, …; `Message` where what a field comes from bounds it, 64 MiB for a message;
-  `Owed` for a bound the owner decided and #265's A4b applies, so the fields naming it are
-  A4b's list). The type names the bound and doesn't hold it: a value read from an answer
+  bound, and the table of bounds, one type each (the trait `Limit`; the owner's limits of
+  2026-11-13: `Place`, `Target`, the names, `PieceText`, `ValueText`, `LinkText`, `Cells`,
+  `RegionItems`, `GestureSteps`, `StepName`, `StepValue`, …; `Message` where what a field
+  comes from bounds it, 64 MiB for a message, and no other bound may have its number, a
+  test says). The type names the bound and doesn't hold it: a value read from an answer
   is refused past its bound as it is read, in the bound's words (`Limit::past`;
-  `ON_ARRIVAL` false for the two the answer's reader applies), and nothing is checked when
+  `ON_ARRIVAL` false for the ones the answer's reader applies, and `WithAnswer<B>` for a
+  link to a file's), and nothing is checked when
   a value is built; a reader applies a bound to a value it didn't read by asking the field
   (`fits`, `most`, `past`), as `Piece::check` does. They serialize as what they hold, so
   revs don't move. A leaf: the reader's words are `owner/answer.rs` (`said`, the one place

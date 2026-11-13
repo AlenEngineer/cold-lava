@@ -31,7 +31,7 @@ use crate::alphabet::Role;
 use crate::json_canvas::{self, CNode, Field};
 use crate::owner::given::{Between, Change, Given, GivenItem, GivenLink, Piece, Places};
 use serde_json::{Map, Value as Json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The kind of file it reads, and its name in messages.
 pub const EXTENSION: &str = "canvas";
@@ -102,38 +102,66 @@ fn attributes(n: &CNode) -> Map<String, Json> {
 /// A canvas's items and links: each card a piece, placed; a text card's text a Markdown piece
 /// at the same place; a file card a link to its file; an arrow a link between two pieces.
 ///
-/// A canvas is another program's file, so the owner gives only the pieces and arrows the
-/// engine takes, and asks the engine which those are (`given::Places`): a node whose id is
-/// empty, too long, or the place another node already has gets no piece, an arrow past the
-/// bounds or with an end that is no piece (a group, a node that isn't there) is not given,
-/// and both stay in the file. A node's text and file are read as ever.
+/// A canvas is another program's file, so the owner gives only what the engine takes, and
+/// asks the engine which that is (`given::Places`), the one rule for every owner: a node
+/// whose id is empty or too long gets no piece, no Markdown piece and no link; a node whose
+/// place another node already has gets no piece and no Markdown piece where the other has
+/// one; a link whose file is empty or too long is not given; an arrow past the bounds or with
+/// an end that is no piece (a group, a node that isn't there) is not given. All of it stays
+/// in the file.
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
     let places = places(doc.nodes.iter().map(|n| n.id.as_str()));
-    // Each node's card, when it is one.
-    let cards: Vec<Option<Piece>> = (doc.nodes.iter().zip(&places))
-        .map(|(n, place)| {
-            let role = role(&n.kind)?;
-            Some(Piece {
+    // Each node's card, the Markdown written on it and its link to a file, when it has them.
+    let mut nodes: Vec<Node> = Vec::with_capacity(doc.nodes.len());
+    for (n, place) in doc.nodes.into_iter().zip(&places) {
+        let card = role(&n.kind).map(|role| {
+            GivenItem::Piece(Piece {
                 place: place.as_str().into(),
                 role,
-                attributes: attributes(n).into(),
+                attributes: attributes(&n).into(),
                 text: Default::default(),
                 inside: None,
                 cells: Default::default(),
             })
-        })
-        .collect();
-    // The cards and the arrows the engine takes, asked in the answer's order.
+        });
+        let markdown = match (n.kind.as_str(), n.text) {
+            ("text", Some(text)) => Some(GivenItem::Markdown {
+                place: place.as_str().into(),
+                text: text.into(),
+            }),
+            _ => None,
+        };
+        let link = match (n.kind.as_str(), n.file) {
+            ("file", Some(file)) => Some(GivenLink {
+                target: file.as_str().into(),
+                place: place.as_str().into(),
+                text: file.into(),
+            }),
+            _ => None,
+        };
+        nodes.push(Node {
+            items: [card, markdown],
+            link,
+        });
+    }
+    // What the engine takes, asked in the answer's order.
     let mut taken = Places::default();
-    let mut kept: Vec<bool> = Vec::with_capacity(cards.len());
-    for card in &cards {
-        let fits = card.as_ref().filter(|card| taken.fits(card).is_ok());
-        kept.push(fits.is_some());
-        if let Some(card) = fits {
-            taken.take(card);
+    let mut kept: Vec<[bool; 3]> = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        let mut keep = [false; 3];
+        for (k, item) in node.items.iter().enumerate() {
+            if let Some(item) = item.as_ref().filter(|item| taken.fits(item).is_ok()) {
+                taken.claim(item);
+                if let GivenItem::Piece(card) = item {
+                    taken.take(card);
+                }
+                keep[k] = true;
+            }
         }
+        keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
+        kept.push(keep);
     }
     // An arrow names two ids, and the first node of an id has the id as its place.
     let mut between: Vec<Between> = Vec::new();
@@ -151,25 +179,20 @@ pub fn read(text: &str) -> Result<Given, String> {
         between: between.into(),
         ..Given::default()
     };
-    let nodes = doc.nodes.into_iter().zip(places);
-    for ((n, place), (card, kept)) in nodes.zip(cards.into_iter().zip(kept)) {
-        given
-            .items
-            .extend(card.filter(|_| kept).map(GivenItem::Piece));
-        match (n.kind.as_str(), n.text, n.file) {
-            ("text", Some(text), _) => given.items.push(GivenItem::Markdown {
-                place: place.into(),
-                text: text.into(),
-            }),
-            ("file", _, Some(file)) => given.links.push(GivenLink {
-                target: file.as_str().into(),
-                place: place.into(),
-                text: file.into(),
-            }),
-            _ => {}
-        }
+    for (node, [card, markdown, link]) in nodes.into_iter().zip(kept) {
+        let [card_item, markdown_item] = node.items;
+        given.items.extend(card_item.filter(|_| card));
+        given.items.extend(markdown_item.filter(|_| markdown));
+        given.links.extend(node.link.filter(|_| link));
     }
     Ok(given)
+}
+
+/// What one node gives, before the engine is asked which of it it takes: its card and the
+/// Markdown written on it, and its link to a file.
+struct Node {
+    items: [Option<GivenItem>; 2],
+    link: Option<GivenLink>,
 }
 
 /// The canvas's new text with `changes` made: a Markdown piece's new text is its node's `text`,
@@ -238,8 +261,11 @@ pub struct Relink {
 /// `file` says (a workspace path: a card holds a path, not a link written in a style), every
 /// node's `text` what `piece` makes of it (the Markdown owner's relink, which keeps each link's
 /// style), with how many links `piece` changed. Every node, whatever its type and whether or not
-/// `read` gives anything for it. `None` when nothing changes; an error when the file isn't JSON
-/// with nodes that have ids, so nothing in it can be found.
+/// `read` gives anything for it, but a node whose place an earlier node's `text` or `file`
+/// has: a change names a node by its place and `edit` writes the first node there, so the
+/// later one's change would be written over the earlier one's text. `None` when nothing
+/// changes; an error when the file isn't JSON with nodes that have ids, so nothing in it can
+/// be found.
 pub fn relink(
     text: &str,
     file: impl Fn(&str) -> Option<String>,
@@ -252,7 +278,11 @@ pub fn relink(
         shown: Vec::new(),
         links: 0,
     };
+    let mut seen: HashSet<(&str, String)> = HashSet::new();
     for f in &fields {
+        if !seen.insert((f.name, place(&f.node, f.nth))) {
+            continue;
+        }
         let to = match f.name {
             "file" => file(&f.value).map(|to| (to, 1)),
             _ => piece(&f.value),
@@ -418,8 +448,8 @@ mod tests {
         assert_eq!(read(alone).unwrap().items.len(), 1, "the card at n");
     }
 
-    /// Every card and arrow the owner gives is one the engine takes: read as the engine reads
-    /// an answer, a board of hostile nodes and arrows has nothing to report.
+    /// Every card, text, link and arrow the owner gives is one the engine takes: read as the
+    /// engine reads an answer, a board of hostile nodes and arrows has nothing to report.
     #[test]
     fn the_engine_reports_nothing_of_what_the_owner_gives() {
         let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
@@ -443,19 +473,25 @@ mod tests {
         assert_eq!(given.between.len(), 1);
         let mut taken = Places::default();
         for item in &given.items {
+            assert_eq!(taken.fits(item), Ok(()));
+            taken.claim(item);
             if let GivenItem::Piece(card) = item {
-                assert_eq!(taken.fits(card), Ok(()));
                 taken.take(card);
             }
+        }
+        for link in &given.links {
+            assert_eq!(taken.link(link), Ok(()));
         }
         for (nth, arrow) in given.between.iter().enumerate() {
             assert_eq!(taken.joins(arrow, nth), Ok(()));
         }
     }
 
-    /// A canvas is another program's file. Whatever its nodes say, every piece the owner
-    /// gives is one the engine takes: a node whose id can't be a piece's place has no piece,
-    /// and its text is read as ever.
+    /// A canvas is another program's file. Whatever its nodes say, everything the owner
+    /// gives is what the engine takes (the owner's decision of 2026-11-13, one rule for a
+    /// place in every form): a node whose id can't be a place gives no piece, no text and no
+    /// link, a second node at a place gives no second piece or text there, and a file card
+    /// whose file is empty gives no link.
     #[test]
     fn a_node_that_cant_be_a_piece_keeps_its_text() {
         let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
@@ -475,7 +511,21 @@ mod tests {
         );
         let given = read(&board).unwrap();
         let (items, links) = as_before(&given);
-        assert_eq!((items.len(), links.len()), (5, 1), "every text and file");
+        assert_eq!(
+            items,
+            [
+                GivenItem::Markdown {
+                    place: "t".into(),
+                    text: "one".into()
+                },
+                GivenItem::Markdown {
+                    place: "t\u{1f}1".into(),
+                    text: "two".into()
+                },
+            ],
+            "the text of the nodes that hold their places"
+        );
+        assert!(links.is_empty(), "a file card with no file gives no link");
         let places: Vec<&str> = (given.items.iter())
             .filter_map(|i| match i {
                 GivenItem::Piece(p) => Some(p.place.as_str()),

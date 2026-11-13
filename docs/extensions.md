@@ -1882,7 +1882,26 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   piece has, `in` a place no earlier piece is at, or with cells where it can have none is
   reported (`Event::OwnerTrouble`, on the status line; the place is cut to 80 characters and
   the reason, which may quote a value, to 200) and
-  left out, and the rest of the answer is read. A message holds what an owner gave as it
+  left out, and the rest of the answer is read. The owner's limits of 2026-11-13 leave out a
+  piece the same way: its text over 1 MiB (`bounded::PieceText`, one run's, and all its runs
+  and cells' together: plain and marked characters, a link's words, a field's value), a
+  link's words over 4096 bytes (`LinkText`), an attribute's or a field run's text value over
+  1 MiB (`ValueText`), more than 4096 cells (`Cells`). A Markdown piece and a typed item have
+  the place rule too (1 to 1024 bytes); a typed item's type is 1 to 256 bytes (`TypeName`),
+  it has at most 256 fields (`TypedFields`), each name 1 to 256 bytes (`FieldName`) and each
+  value text, a number, `true`, `false`, `null` or a list of at most 4096 of those
+  (`ValueList`), text at most 1 MiB. A link to a file (an entry of `links` with a `target`)
+  has a place of 1 to 1024 bytes, a target of 1 to 4096 and words of at most 4096: one past
+  them is reported and left out alone where the answer is read into items (`Places::link`,
+  `bounded::WithAnswer`), since a link that doesn't read as it arrives refuses the whole
+  answer. **One rule for a place** (`given::Places`): the first item of each form at a place
+  that is within its bounds claims it, and a second of that form there is left out ("another
+  Markdown piece is at this place"), whatever becomes of the first. A piece, a Markdown piece
+  and a typed item may share a place: a board's text card is a piece and a Markdown piece at
+  the node's id, ids keep the three apart and each change names its form. A change at a place
+  is for the item that holds it (`given::apply`), and a rename, a recipe and tidy read only
+  those (`Given::placed`). This is asked wherever an answer is read into items, so the canvas
+  owner's answer and an edit's expected answer, which never arrive, are held to it too. A message holds what an owner gave as it
   is written, so the reason an extension gets over the gateway and the `error` of `--json`
   quote the owner's bytes.
   An answer is not trusted to be safe to show: each frontend escapes text where it shows
@@ -1913,7 +1932,8 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   (`crates/engine/src/bounded.rs`, one type a bound): `place: Text<Place>` says its bound is
   the 1 to 1024 bytes above, a field that where it comes from bounds says so,
   `Text<Message>` (64 MiB for an extension's message), and a bound decided on 2026-11-13
-  and not applied yet is `Owed`. The type names the bound and doesn't hold it: a value is
+  and applied where the answer is read into items is `WithAnswer<…>`; no bound but
+  `Message` has `Message`'s number. The type names the bound and doesn't hold it: a value is
   checked as it is read from an answer (above), and what the engine builds itself (an
   edit's expected answer, the canvas owner's) is checked where it is read like an answer.
   `crates/cold-lava/tests/one_door.rs` follows every type an answer to `file/read`,
@@ -2153,14 +2173,20 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   `where.attribute`). `core.rs` pins it
   (`a_boards_cards_are_pieces_and_its_items_dont_move`), and `tests/items.rs` on the example
   workspace.
-- **Every piece the owner gives is one the engine takes**, by asking the engine
-  (`given::Places`, the check `given::read` itself uses). A canvas is another program's
-  file. A node whose id is empty, longer than 1024 bytes, or the place another node already
-  has (an id that looks like a repeated id's place) gets no piece and no arrow, an arrow
-  with a label over 4096 bytes or past the 65,536th is not given, and a node's text and
-  file are read as ever. Nothing is reported for it, since nothing that was read before
-  is lost. A coordinate too large for a JSON number, or one that isn't a number, makes the
-  file no JSON Canvas at all, as before.
+- **Everything the owner gives is what the engine takes**, by asking the engine
+  (`given::Places`, the check `given::read` itself uses), under the one rule for a place
+  every owner has (the owner's decision of 2026-11-13). A canvas is another program's file.
+  A node whose id is empty or longer than 1024 bytes gets no piece, no arrow, and, since
+  A4b (#265), no Markdown piece and no link: the tasks and links on such a card are no
+  longer listed. A node whose place another node already has (an id that looks like a
+  repeated id's place) gets no piece and no arrow, and no Markdown piece where the other
+  node has text. A file card whose file is empty or longer than 4096 bytes gives no link.
+  An arrow with a label over 4096 bytes or past the 65,536th is not given. Nothing is
+  reported for any of it: the owner gives what the engine takes, and the rest stays in the
+  file as it is. A rename changes a node's text or file by its place, so of two nodes at one
+  place only the first is relinked (`canvas::relink`); the second's links stay as they are,
+  never written over the first's text. A coordinate too large for a JSON number, or one that
+  isn't a number, makes the file no JSON Canvas at all, as before.
 - **What the scan does for a card.** Before: one parse of the file, and each text card's
   text read as Markdown. Now also, for each node, a piece with four or five attributes is
   built and checked against the bounds, and a type on `text` is tried against a text card
@@ -2983,7 +3009,14 @@ with two requests (host → extension; `crate::act::Ask` in the engine pins thei
   found. An answer is read by its keys (`items` or `do`), and is checked as it arrives for
   its form and for what a step gets wrong on its own (`Reply::arrived`), so the core keeps
   no answer it would refuse; whether a `rebind` names a loaded shape is checked when the
-  frontend takes the answer with its shapes.
+  frontend takes the answer with its shapes. **Bounds** (the owner's, 2026-11-13): a
+  region's answer has at most 50,000 items (`bounded::RegionItems`), a gesture's at most 64
+  steps (`GestureSteps`), a name in a step (`item`, `recipe`, `field`, `shape`, an option's
+  or an input's name) at most 256 bytes (`StepName`) and a value (`value`, `add`, `remove`,
+  `text`, a new note's `name`, an option's or an input's value) at most 64 KiB
+  (`StepValue`). An answer past one is refused, naming it. A shape's own steps in TOML are
+  read into the same types, so they are held to the same names and values; the number of
+  steps a shape writes has no bound of its own.
 - **Permissions.** The asks carry the inputs' data, so an extension without `items.read` isn't
   asked: the answer is that refusal, at once. Its steps need what they would need from it
   directly: `items.edit` for `edit`, `files.write` for `create` and a recipe.

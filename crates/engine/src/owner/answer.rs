@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as Json;
 
 use crate::alphabet::Role;
-use crate::bounded::{Fields, Message, Owed, Text};
+use crate::bounded::{FieldName, Fields, Message, Place, Text, TypeName, TypedFields, ValueText};
 use crate::owner::given::{FieldRun, GivenItem, Label, LinkRun, Marked, Piece, Run};
 use crate::problem::{Problem, cut};
 use crate::serde_words;
@@ -100,7 +100,7 @@ impl<'de> Deserialize<'de> for Kept {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MarkdownWire {
-    place: Text<Owed>,
+    place: Text<Place>,
     text: Text<Message>,
 }
 
@@ -108,20 +108,20 @@ struct MarkdownWire {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TypedWire {
-    place: Text<Owed>,
+    place: Text<Place>,
     #[serde(rename = "type")]
-    kind: Text<Owed>,
+    kind: Text<TypeName>,
     #[serde(default)]
-    fields: Fields<Owed, Owed, Owed>,
+    fields: Fields<TypedFields, FieldName, ValueText>,
 }
 
 impl GivenItem {
     /// One item of an answer, of the kind its keys say: a `role` makes it a piece (and one
     /// with a `type` too is read as a piece, which has no `type`), a `type` a typed item,
     /// anything else a Markdown piece. A list is a piece written as a list, which serde reads
-    /// as it reads a map and an untagged reading took. A piece within its bounds says nothing
-    /// two ways (`Piece::check`). Else what is wrong with it, in the reader's words, or
-    /// serde's where those say only what the answer wrote (`said`).
+    /// as it reads a map and an untagged reading took. It is within its bounds, each of them,
+    /// and a piece says nothing two ways (`GivenItem::check`). Else what is wrong with it, in
+    /// the reader's words, or serde's where those say only what the answer wrote (`said`).
     pub(crate) fn read(value: Json) -> Result<GivenItem, String> {
         let (role, typed) = match &value {
             Json::Object(entry) => (entry.get("role").cloned(), entry.contains_key("type")),
@@ -161,9 +161,7 @@ impl GivenItem {
         };
         let item =
             item.map_err(|e| said(&e).unwrap_or_else(|| format!("it doesn't read as {kind}")))?;
-        if let GivenItem::Piece(p) = &item {
-            p.check()?;
-        }
+        item.check()?;
         Ok(item)
     }
 }

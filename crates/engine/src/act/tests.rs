@@ -648,3 +648,42 @@ fn a_refused_gesture_answer_names_every_step_that_cant_run() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The limits the owner decided on 2026-11-13 for a shape's answers: a region shows up to
+/// 50,000 items, and a gesture's answer has up to 64 steps, their names up to 256 bytes and
+/// their values up to 64 KiB. Just within each is read; just past it is refused in the
+/// bound's words.
+#[test]
+fn a_shape_answer_past_a_decided_limit_is_refused_in_its_words() {
+    let read = |answer: Json| serde_json::from_value::<Reply>(answer).map_err(|e| e.to_string());
+    let shown = |n: usize| {
+        let items: Vec<Json> = (0..n).map(|_| json!({"label": "x"})).collect();
+        json!({ "items": items })
+    };
+    let create = |text: String| json!({"create": {"text": text}});
+    let steps = |n: usize| json!({ "do": vec![create("x".into()); n] });
+    let shape = |name: String| json!({"do": [{"rebind": {"shape": name}}]});
+    let cases = [
+        (
+            shown(50_000),
+            shown(50_001),
+            "it shows more than 50000 items",
+        ),
+        (steps(64), steps(65), "it has more than 64 steps"),
+        (
+            shape("s".repeat(256)),
+            shape("s".repeat(257)),
+            "a name in a step is longer than 256 bytes",
+        ),
+        (
+            json!({"do": [create("v".repeat(64 << 10))]}),
+            json!({"do": [create("v".repeat((64 << 10) + 1))]}),
+            "a value in a step is longer than 64 KiB",
+        ),
+    ];
+    for (within, past, says) in cases {
+        assert!(read(within).is_ok(), "{says}");
+        let why = read(past).unwrap_err();
+        assert!(why.contains(says), "{says}: {why}");
+    }
+}

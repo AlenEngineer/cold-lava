@@ -149,7 +149,7 @@ impl<'a> Draft<'a> {
     /// The Markdown pieces of owned file `f`, each with its place and its text as the draft has it.
     pub fn pieces(&self, f: usize) -> Vec<(String, String)> {
         let changed = self.owned.get(&f).map(|(p, _)| p);
-        (self.ix.workspace.owned[f].given.items.iter())
+        (self.ix.workspace.owned[f].given.placed())
             .filter_map(|item| match item {
                 GivenItem::Markdown { place, text } => {
                     let now = changed.and_then(|c| c.get(place.as_str()));
@@ -194,7 +194,7 @@ impl<'a> Draft<'a> {
         for (f, (pieces, n)) in owned {
             let file = &self.ix.workspace.owned[f];
             let (mut asks, mut changes) = (Vec::new(), Vec::new());
-            for item in &file.given.items {
+            for item in file.given.placed() {
                 let GivenItem::Markdown { place, text } = item else {
                     continue;
                 };
