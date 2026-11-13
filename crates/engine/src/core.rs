@@ -522,8 +522,11 @@ impl Core {
     /// `items/edit` on the item `edit.id` of the owned file `owned[i]`: the change is made to
     /// what its owner gave (a Markdown piece's text through the Markdown owner, a typed item's
     /// field as asked), and the owner is asked for the file's new text (`file/edit`). Refused at
-    /// once when the item isn't the version `rev`, the file changed since its owner read it, or
-    /// another edit of it is waiting for its owner.
+    /// once when the item isn't the version `rev`, the file changed since its owner read it,
+    /// another edit of it is waiting for its owner, or the change would leave out something
+    /// the file as given doesn't (`given::check_change`, the rule a relink asks too). An item
+    /// the engine already leaves out doesn't stop it: the read-back holds the owner to giving
+    /// that back as it was (`given::same`).
     fn edit_owned(&mut self, by: &str, i: usize, edit: &Edit) -> Result<Answer, gateway::Error> {
         let settings = self.index.workspace.item_settings();
         let file = &self.index.workspace.owned[i];
@@ -590,11 +593,10 @@ impl Core {
                 (made.changes, made.what, None, None)
             }
         };
+        given::check_change(&file.rel, &file.given, &changes, settings)
+            .map_err(|why| error(Reason::Refused, why))?;
         let expect = given::apply(&file.given, &changes);
         let read = given::read(&file.rel, &expect, settings);
-        if !read.problems.is_empty() {
-            return Err(error(Reason::Refused, problem::joined(&read.problems)));
-        }
         let at = |id: Option<&str>, line: usize| {
             let found = (read.items.iter()).find(|it| match id {
                 Some(id) => it.id == id,

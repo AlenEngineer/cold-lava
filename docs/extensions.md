@@ -1615,8 +1615,10 @@ each doesn't invent one:
   `toggle` and `set-field` behave exactly as in a note); on a typed item, `{field, value}`
   (`toggle` sets a task's `status` to the next status symbol); on a piece, a change in the
   model's terms ("Changes in the model's terms, as built"). It is refused at once when
-  the item isn't the version `rev`, the file on disk isn't the version the owner read, or
-  another edit of the file is waiting for its owner. Then the owner is asked:
+  the item isn't the version `rev`, the file on disk isn't the version the owner read,
+  another edit of the file is waiting for its owner, or the change would leave out
+  something the file as given doesn't (`given::check_change`, the rule a rename asks too).
+  An item the engine already leaves out doesn't stop it (#257). Then the owner is asked:
 
   | Request (host → owner) | Answer |
   | --- | --- |
@@ -1922,7 +1924,20 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   item left out is kept beside the answer (its place, a hash of the JSON it was sent as, and
   why), in the owners' cache too, through any number of loads and saves, and the read-back
   compares it: an owner that changes or drops one during an edit or a rename, reordering its
-  keys included, is refused. An item with both `role` and `type` is read as a piece and left
+  keys included, is refused. **An edit beside a bad item** (#257): an edit to a good item,
+  like a rename, goes ahead when what is left out is the same before and after the change
+  (`given::check_change`, the one rule for both, asked before the owner is: a change that
+  would leave out something new is refused there, naming it, as `{file}: the change would
+  leave out {place}: {why}`). The read-back then compares everything the engine leaves out
+  of the owner's new answer with what it left out of the expected one: an item left out as
+  it arrived by its position and the hash of the JSON it was sent as; an item, a link to a
+  file or a link between pieces left out as it is read by its position and the hash of what
+  it reads as (so reordering a piece's keys, which reads the same, is no change). An owner
+  that drops, changes, fixes, moves, duplicates or swaps one, or writes the change into it
+  (the first of two items at a place), is refused as `read-back`, naming it in the words it
+  is reported in: `{owner}'s new text for {file} doesn't read back as asked (bad: unknown
+  field `colour`, … was left out, and came back changed, moved or not at all); nothing was
+  written`. An item with both `role` and `type` is read as a piece and left
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)
@@ -2037,8 +2052,10 @@ that shape yet.
   on what the owner gave (`given::apply`), asks the owner to read its own new text, and
   compares, before anything is written (`given::same`). The links between pieces must come
   back as they were: the same ones in the same order, each between the pieces at the same
-  positions with the same label, since no change makes, turns or relabels one. Besides
-  those, the items and the links to files, two things are checked about the answer's pieces.
+  positions with the same label, since no change makes, turns or relabels one. What the
+  engine leaves out must come back where it was and holding what it held, and is compared
+  first, so a refusal names it ("Pieces, as built", above). Besides those, the items and the links
+  to files, two things are checked about the answer's pieces.
 
   First, the pieces must be the expected ones, one by one in the order given. For the piece
   at each position that is:

@@ -34,6 +34,13 @@ pub struct FileRead {
 /// another format neither reads nor rewrites this one's cache, and in the file, where it must
 /// match, so a cache of another format is not read and its owners are asked again. A change
 /// to what a cache holds raises it: an upgrade or a downgrade then asks every owner once.
+///
+/// An edit beside an item left out (#257) changed nothing a cache holds, so it is still 2. The
+/// answer kept after such an edit is the one the owner gave for the file's new text, read
+/// as any answer is (left-out records included), and it was compared with the expected one
+/// before anything was written: a binary of the same format that refuses those edits reads
+/// the same answer it would have been given, and this binary trusts nothing from that binary
+/// that it wouldn't have kept itself.
 const FORMAT: u32 = 2;
 
 /// What one owner gave, by file, as kept on disk.

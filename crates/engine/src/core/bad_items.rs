@@ -519,7 +519,9 @@ fn an_edit_that_would_leave_out_its_item_is_refused_in_the_rules_words() {
     assert_eq!(error.reason, Reason::Refused, "{error}");
     assert_eq!(
         error.message,
-        "A.probe: the change would leave out chore: its text is longer than 1 MiB"
+        "A.probe: the change would leave out chore: its text is longer than 1 MiB; \
+         a link from chore to row: no piece is at chore",
+        "what the change leaves out, and nothing that was left out before"
     );
     assert!(core.take_file_edits().is_empty(), "the probe isn't asked");
     assert_eq!(now(&core), original);

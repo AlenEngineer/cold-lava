@@ -729,6 +729,12 @@ it is:
   reaches the file. cold-lava writes the text itself, refused if the file changed since `rev`,
   so don't write the file yourself; `file/changed` then comes with the new `rev`, like after
   your own saves.
+- **Leave what was left out alone.** If your answer had an item cold-lava left out (a key it
+  doesn't know, a place another item has, a type that isn't loaded), the user can still edit
+  the file's other items: you are asked as usual, and that item must come back exactly as it
+  was, where it was. Fixing it, dropping it, moving it, or writing the change into it (the
+  first of two items at one place) is refused, naming the item, and nothing is written. Fix
+  a bad item when you read the file, not while you make someone's edit.
 - **Places can change.** A rename can change a row's key, and so its place; cold-lava compares
   what you give, not what you call it.
 - **Not asked yet.** No change adds, moves or removes a piece, so ticking a recurring task in a

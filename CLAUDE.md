@@ -258,8 +258,15 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `placed_links`). A link to a file is checked there too (`Places::link`), alone, since a
   link that doesn't read as it arrives would refuse the whole answer (`WithAnswer`).
   `read_piece` applies what compares a piece with the rest of its answer (depth, `in`), and
-  a place is never written into a file. A relink whose change would leave out what the owner
-  gave is refused before the owner is asked (`given::left_out_by`, `Core::relink`).
+  a place is never written into a file. **One rule for a change to an owned file**
+  (`given::check_change`): an item edit and a relink alike are refused before the owner is
+  asked when the change would leave out something the file as given doesn't
+  (`left_out_by`, told apart by `Subject`, never by words), and go ahead beside what is
+  already left out (#257). The read-back is its other half: everything the engine leaves out
+  (left out as it arrived, kept as sent; an item, a link to a file or a link between pieces
+  left out as it is read, kept as it reads) must come back where it was, holding what it
+  held, or the edit is refused naming it and nothing is written. Don't add a second rule
+  for edits, and don't compare what is left out by its words.
   Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`

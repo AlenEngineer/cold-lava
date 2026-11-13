@@ -102,6 +102,24 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- One bad item in an owner's answer no longer makes its file read-only (#257, step A4c).
+  An edit to a good item (a tick, a date, new words, a row's cell, a typed item's field, a
+  Markdown piece) goes ahead beside an item cold-lava leaves out, as a rename already did,
+  when the owner gives every left-out item back as it was, where it was. If the owner
+  drops, changes, fixes, moves, duplicates or swaps one, or writes the change into it (the
+  first of two items at one place), the edit is refused as `read-back`, naming the item in
+  the words it is reported in, and nothing is written: `probe's new text for A.probe
+  doesn't read back as asked (bad: unknown field `colour`, … was left out, and came back
+  changed, moved or not at all); nothing was written`. Before, every edit in such a file
+  was refused, its message listing every problem of the file. An edit that would itself
+  leave out something is refused as before, before the owner is asked, now in the words a
+  rename uses and naming only what the change would leave out: `A.probe: the change would
+  leave out chore: its text is longer than 1 MiB; a link from chore to row: no piece is at
+  chore` (it listed every problem of the file, those already there included). An item left
+  out as it is read (a place another item has, a type that isn't loaded, a piece in no
+  piece, a link past its bounds) is now held to the read-back by what it reads as, so an
+  owner that changes a typed item of a type that isn't loaded during a rename is refused,
+  where it was written.
 - The limits the owner decided apply to what an extension answers (#265, step A4b). An
   item past one is left out alone, with the limit named, and the rest of the file shows: a
   piece's text over 1 MiB (one run's, or all its runs and cells together, a field run's
@@ -153,8 +171,8 @@ change commands, keys and file formats; patch versions only fix things.
   rest of the file's items show; the status line names its place and what was wrong
   (`p3: unknown field `colour`, expected one of `place`, `role`, …`, `p4: its role "slide" is
   not a role: one of document, section, …`). An answer that isn't `{items, links}`, or a link
-  that doesn't read, is still refused whole, and an edit in a file with an item left out is
-  still refused, naming it. A file whose answer was refused whole now takes part in renames:
+  that doesn't read, is still refused whole (an edit in a file with an item left out: see
+  #257 above). A file whose answer was refused whole now takes part in renames:
   if its owner keeps the bad item, the file is rewritten with its links repointed and the bad
   item as it was; if its owner drops or changes it (reordering its keys counts), the whole
   rename is refused, where the rename used to go ahead and leave that file alone.
