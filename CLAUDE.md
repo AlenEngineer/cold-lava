@@ -263,10 +263,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   asked when the change would leave out something the file as given doesn't
   (`left_out_by`, told apart by `Subject`, never by words), and go ahead beside what is
   already left out (#257). The read-back is its other half: everything the engine leaves out
-  (left out as it arrived, kept as sent; an item, a link to a file or a link between pieces
-  left out as it is read, kept as it reads) must come back where it was, holding what it
-  held, or the edit is refused naming it and nothing is written. Don't add a second rule
-  for edits, and don't compare what is left out by its words.
+  (left out as it arrived, by the JSON value it was sent as, once parsed; an item, a link
+  to a file or a link between pieces left out as it is read, by what it reads as) must
+  come back where it was, holding what it held, or the edit is refused naming it and
+  nothing is written. A place names the item that holds it (`Places`, `Given::placed`):
+  find an edit's item among those, never by order. Don't add a second rule for edits, and
+  don't compare what is left out by its words.
   Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`

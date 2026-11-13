@@ -733,7 +733,7 @@ it is:
   doesn't know, a place another item has, a type that isn't loaded), the user can still edit
   the file's other items: you are asked as usual, and that item must come back exactly as it
   was, where it was. Fixing it, dropping it, moving it, or writing the change into it (the
-  first of two items at one place) is refused, naming the item, and nothing is written. Fix
+  other of two items at one place) is refused, naming the item, and nothing is written. Fix
   a bad item when you read the file, not while you make someone's edit.
 - **Places can change.** A rename can change a row's key, and so its place; cold-lava compares
   what you give, not what you call it.

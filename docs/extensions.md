@@ -1921,21 +1921,31 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   `owner::answer::said`). What compares a piece with the rest of the answer (a place another
   piece has, `in`, depth, the links between pieces) applies as the answer is read into
   items. At most 100 problems are reported, then how many more (`problem::capped`). An
-  item left out is kept beside the answer (its place, a hash of the JSON it was sent as, and
-  why), in the owners' cache too, through any number of loads and saves, and the read-back
+  item left out is kept beside the answer (its place, a hash of the JSON value it was sent
+  as, and why), in the owners' cache too, through any number of loads and saves, and the read-back
   compares it: an owner that changes or drops one during an edit or a rename, reordering its
   keys included, is refused. **An edit beside a bad item** (#257): an edit to a good item,
   like a rename, goes ahead when what is left out is the same before and after the change
   (`given::check_change`, the one rule for both, asked before the owner is: a change that
   would leave out something new is refused there, naming it, as `{file}: the change would
   leave out {place}: {why}`). The read-back then compares everything the engine leaves out
-  of the owner's new answer with what it left out of the expected one: an item left out as
-  it arrived by its position and the hash of the JSON it was sent as; an item, a link to a
-  file or a link between pieces left out as it is read by its position and the hash of what
-  it reads as (so reordering a piece's keys, which reads the same, is no change). An owner
-  that drops, changes, fixes, moves, duplicates or swaps one, or writes the change into it
-  (the first of two items at a place), is refused as `read-back`, naming it in the words it
-  is reported in: `{owner}'s new text for {file} doesn't read back as asked (bad: unknown
+  of the owner's new answer with what it left out of the expected one, in order: an item
+  left out as it arrived by its position and the hash of the JSON value it was sent as; an
+  item, a link to a file or a link between pieces left out as it is read by its position
+  and the JSON it reads as, whole. A link between pieces is compared too by the places its
+  ends name, so one past the count an answer may have, reported once, is held to it as
+  well. **The JSON value, not the bytes**: the host reads each message into one JSON value
+  before any of it is an answer, so what parsing drops is not compared. For an item left
+  out as it arrived: space between tokens, how a character is escaped (`\u0041` is `A`),
+  a key's earlier values when it is written twice, and a number's digits past what a
+  64-bit integer or float holds (`100000000000000000001` and `100000000000000000002`
+  parse alike, as do `0.1` and `0.10000000000000001`); the order of its keys counts. For
+  one that reads, the same, and the order of its own keys doesn't count either (it reads
+  the same), while the order inside a map it holds (a piece's `attributes`, a typed item's
+  `fields`) does. An owner that drops, changes, fixes, moves, duplicates or swaps one, or
+  writes the change into it (the other of two items at one place), is refused as
+  `read-back`, naming it in the words it is reported in (one that is gone or new before
+  one that only moved): `{owner}'s new text for {file} doesn't read back as asked (bad: unknown
   field `colour`, … was left out, and came back changed, moved or not at all); nothing was
   written`. An item with both `role` and `type` is read as a piece and left
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a

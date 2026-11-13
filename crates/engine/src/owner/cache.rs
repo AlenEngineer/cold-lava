@@ -69,8 +69,8 @@ struct Answer {
     /// and its owner asked again: the positions of what was left out then and what is left
     /// out now can't be put in one order without the owner's answer. So the file shows
     /// nothing, its good items included, until its owner answers; with its owner absent or
-    /// broken, until it is back. The owner has not decided this rule (#298): the other way
-    /// keeps showing the cached good items and reports the bad one.
+    /// broken, until it is back. The owner decided otherwise on 2026-11-13 (the cached good
+    /// items keep showing and the bad one is reported); that changes in A4d, not here.
     read_as_saved: bool,
 }
 
