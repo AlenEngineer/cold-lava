@@ -522,8 +522,11 @@ impl Core {
     /// `items/edit` on the item `edit.id` of the owned file `owned[i]`: the change is made to
     /// what its owner gave (a Markdown piece's text through the Markdown owner, a typed item's
     /// field as asked), and the owner is asked for the file's new text (`file/edit`). Refused at
-    /// once when the item isn't the version `rev`, the file changed since its owner read it, or
-    /// another edit of it is waiting for its owner.
+    /// once when the item isn't the version `rev`, the file changed since its owner read it,
+    /// another edit of it is waiting for its owner, or the change would leave out something
+    /// the file as given doesn't (`given::check_change`, the rule a relink asks too). An item
+    /// the engine already leaves out doesn't stop it: the read-back holds the owner to giving
+    /// that back as it was (`given::same`).
     fn edit_owned(&mut self, by: &str, i: usize, edit: &Edit) -> Result<Answer, gateway::Error> {
         let settings = self.index.workspace.item_settings();
         let file = &self.index.workspace.owned[i];
@@ -542,8 +545,10 @@ impl Core {
             return Err(error(Reason::Changed, message));
         }
         let place = file.places[&edit.id].clone();
-        // How the owner gave the item: as a piece, as a typed item, or in a Markdown piece.
-        let piece = file.given.items.iter().find_map(|g| match g {
+        // How the owner gave the item: as a piece, as a typed item, or in a Markdown piece;
+        // among the items that hold their places (`Places`), so the one the change is for.
+        let placed: Vec<&given::GivenItem> = file.given.placed().collect();
+        let piece = placed.iter().find_map(|g| match g {
             given::GivenItem::Piece(p) if p.place == place => Some(p),
             _ => None,
         });
@@ -553,8 +558,8 @@ impl Core {
             matches!(g, given::GivenItem::Typed { place: p, kind, .. }
                 if *p == place && given::typed_id(&file.rel, kind, p) == edit.id)
         };
-        let typed = file.given.items.iter().any(is_typed);
-        let markdown = file.given.items.iter().find_map(|g| match g {
+        let typed = placed.iter().any(|g| is_typed(g));
+        let markdown = placed.iter().find_map(|g| match g {
             given::GivenItem::Markdown { place: p, text } if *p == place => Some(text),
             _ => None,
         });
@@ -590,11 +595,9 @@ impl Core {
                 (made.changes, made.what, None, None)
             }
         };
-        let expect = given::apply(&file.given, &changes);
+        let expect = given::check_change(&file.rel, &file.given, &changes, settings)
+            .map_err(|why| error(Reason::Refused, why))?;
         let read = given::read(&file.rel, &expect, settings);
-        if !read.problems.is_empty() {
-            return Err(error(Reason::Refused, problem::joined(&read.problems)));
-        }
         let at = |id: Option<&str>, line: usize| {
             let found = (read.items.iter()).find(|it| match id {
                 Some(id) => it.id == id,
@@ -838,6 +841,8 @@ impl Core {
         if owned.is_empty() {
             return Ok(None);
         }
+        // What each owner should give once its file is changed, asked of the one rule.
+        let mut expected: Vec<Option<Given>> = Vec::with_capacity(owned.len());
         for e in &owned {
             let o = e.owned.as_ref().expect("owned");
             if self.edits.pending.contains_key(&e.file) {
@@ -847,19 +852,20 @@ impl Core {
                 return Err(format!("{} changed since it was planned", e.file));
             }
             let settings = self.index.workspace.item_settings();
-            if let Some(g) = &o.given {
-                given::check_change(&e.file, g, &o.changes, settings)?;
-            }
+            expected.push(match &o.given {
+                Some(g) => Some(given::check_change(&e.file, g, &o.changes, settings)?),
+                None => None,
+            });
         }
         let ticket = self.edits.ticket();
-        let asks: Vec<_> = (owned.iter())
-            .map(|e| {
+        let asks: Vec<_> = (owned.iter().zip(expected))
+            .map(|(e, expect)| {
                 let o = e.owned.as_ref().expect("owned");
                 let pending = Pending {
                     owner: o.owner.clone(),
                     rev: files::rev(e.old_text.as_bytes()),
                     text: e.old_text.clone(),
-                    expect: (o.given.as_ref()).map(|g| given::apply(g, &o.changes)),
+                    expect,
                     goal: Goal::Relink(ticket),
                     stage: Stage::Editing,
                 };
@@ -1340,6 +1346,10 @@ pub(crate) mod news;
 /// An owner of a made-up format that isn't Markdown, and what the workspace makes of its pieces.
 #[cfg(test)]
 mod pieces;
+
+/// An edit in a file that holds a bad item, with a probe owner that can tamper with it.
+#[cfg(test)]
+mod bad_items;
 
 #[cfg(test)]
 mod tests {

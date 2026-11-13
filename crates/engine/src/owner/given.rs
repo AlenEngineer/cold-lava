@@ -973,18 +973,21 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
 
 /// Whether `changes` may be made to what the owner gave for `file`: refused when they would
 /// leave out something the answer as given doesn't (`left_out_by`), in its words. The one
-/// rule for a change to an owned file: a relink asks it (`Core::relink`), and an item edit
-/// keeps a stricter one until #257 (A4c), refusing on anything its expected answer leaves
-/// out (`Core::edit_item`).
+/// rule for a change to an owned file, asked before its owner is: an item edit
+/// (`Core::edit_item`) and a relink (`Core::relink`) ask it alike, so a change beside an item
+/// the engine already leaves out goes ahead (#257). Its other half is the read-back
+/// (`same`), which holds the owner to it: what the engine leaves out comes back as it was.
+/// When the change may be made, what the owner should then give (`apply`).
 pub fn check_change(
     file: &str,
     given: &Given,
     changes: &[Change],
     s: &Settings,
-) -> Result<(), String> {
-    let lost = left_out_by(file, given, changes, s);
+) -> Result<Given, String> {
+    let after = apply(given, changes);
+    let lost = left_out(file, given, &after, s);
     match lost.is_empty() {
-        true => Ok(()),
+        true => Ok(after),
         false => Err(format!(
             "{file}: the change would leave out {}",
             crate::problem::joined(&lost)
@@ -998,11 +1001,18 @@ pub fn check_change(
 /// words, which cut a place to 80 characters: a change keeps every position, since none adds,
 /// moves or removes anything.
 pub fn left_out_by(file: &str, given: &Given, changes: &[Change], s: &Settings) -> Vec<Problem> {
+    left_out(file, given, &apply(given, changes), s)
+}
+
+/// `left_out_by`, with the changed answer made.
+fn left_out(file: &str, given: &Given, after: &Given, s: &Settings) -> Vec<Problem> {
     let before = read_all(file, given, s).problems;
-    let after = read_all(file, &apply(given, changes), s).problems;
-    let was = |p: &Problem| (p.subject()).is_some_and(|a| before.iter().any(|b| b.is_about(a)));
-    let new: Vec<Problem> = after.into_iter().filter(|p| !was(p)).collect();
-    crate::problem::capped(new)
+    let was: std::collections::HashSet<&str> = before.iter().filter_map(Problem::subject).collect();
+    let after = read_all(file, after, s).problems;
+    let new = after
+        .into_iter()
+        .filter(|p| !p.subject().is_some_and(|a| was.contains(a)));
+    crate::problem::capped(new.collect())
 }
 
 /// The items of `given` that hold their places, by `placed` (`Given::placed_mask`).
@@ -1158,18 +1168,19 @@ fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run>
     out
 }
 
-/// Whether what an owner gave reads as what was asked of it: the same items (their kinds and
-/// fields, wherever they are and whatever their ids), the same link targets, and the same
-/// pieces in the same order, each saying what was asked and inside the same piece. So a piece
-/// the change wasn't for says what it said and stands where it stood, and a change that
-/// lands on another piece that says the same is caught by where it is. Places may differ,
-/// since an owner's place can be part of what changed (a CSV row's first cell). Else what
-/// differs, for a message.
+/// Whether what an owner gave reads as what was asked of it: the same things left out, each
+/// where it was and holding what it held; the same items (their kinds and fields, wherever
+/// they are and whatever their ids), the same link targets, and the same pieces in the same
+/// order, each saying what was asked and inside the same piece. So a piece the change wasn't
+/// for says what it said and stands where it stood, a change that lands on another piece
+/// that says the same is caught by where it is, and one that lands on an item the engine
+/// leaves out (the other of two items at a place) is caught by what that item holds. Places may
+/// differ, since an owner's place can be part of what changed (a CSV row's first cell). Else
+/// what differs, for a message, which names what was left out by the words it is reported in.
 pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
     let (want_pieces, got_pieces) = (&asked.pieces, &gave.pieces);
     let (want_between, got_between) = (&asked.between, &gave.between);
     let (want_left, got_left) = (&asked.left_out, &gave.left_out);
-    let (want_unplaced, got_unplaced) = (&asked.unplaced, &gave.unplaced);
     let (asked, gave) = (&asked.read, &gave.read);
     let items = |r: &Read| -> Vec<String> {
         let mut v: Vec<String> = r.items.iter().map(data_key).collect();
@@ -1199,6 +1210,50 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             false => s,
         }
     };
+    // What the engine leaves out is no item, and no change is for one: it comes back as it
+    // was, where it was, or the owner changed what the engine couldn't read. Asked first, so
+    // that the refusal names it, in the words it is reported in.
+    let one = |a: &Left, b: &Left| a.at == b.at && a.holds == b.holds;
+    let alike =
+        want_left.len() == got_left.len() && want_left.iter().zip(got_left).all(|(a, b)| one(a, b));
+    if !alike {
+        // Those of `these` that `those` doesn't have, each matched once.
+        let only = |these: &[Left], those: &[Left]| -> Vec<Left> {
+            let mut those: Vec<&Left> = those.iter().collect();
+            let mut out = Vec::new();
+            for l in these {
+                match those.iter().position(|t| one(l, t)) {
+                    Some(i) => {
+                        those.remove(i);
+                    }
+                    None => out.push(l.clone()),
+                }
+            }
+            out
+        };
+        let (gone, new) = (only(want_left, got_left), only(got_left, want_left));
+        // One whose content the other side doesn't hold at all is named first: another may
+        // only stand elsewhere because something before it changed.
+        let absent = |l: &&Left, those: &[Left]| !those.iter().any(|t| t.holds == l.holds);
+        let truly_gone = gone.iter().find(|l| absent(l, got_left));
+        let truly_new = new.iter().find(|l| absent(l, want_left));
+        let came_back = |l: &Left| {
+            format!(
+                "{} was left out, and came back changed, moved or not at all",
+                l.words
+            )
+        };
+        let added = |l: &Left| format!("it leaves out {}, which was asked to read", l.words);
+        return Err(match (truly_gone, truly_new) {
+            (Some(l), _) => came_back(l),
+            (None, Some(l)) => added(l),
+            (None, None) => match (gone.first(), new.first()) {
+                (Some(l), _) => came_back(l),
+                (None, Some(l)) => added(l),
+                (None, None) => "what was left out came back in another order".to_string(),
+            },
+        });
+    }
     let (want, got) = (items(asked), items(gave));
     if want != got {
         let (missing, extra) = (only(&want, &got), only(&got, &want));
@@ -1226,47 +1281,19 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             short(want_between.clone())
         ));
     }
-    // An item left out is no item, and no change is for one: it comes back as it was, where
-    // it was, or the owner changed or dropped what the engine couldn't read.
-    if want_left != got_left {
-        let said = |left: &Vec<String>| match left.is_empty() {
-            true => "none".to_string(),
-            false => short(left.clone()),
-        };
-        return Err(format!(
-            "the items left out are {} where {} were asked",
-            said(got_left),
-            said(want_left)
-        ));
-    }
-    // Nor is one for an item that doesn't hold its place, or for a link past its bounds:
-    // they come back as they were, or the owner changed what no change was for.
-    if want_unplaced != got_unplaced {
-        let said = |left: &Vec<String>| match left.is_empty() {
-            true => "none".to_string(),
-            false => short(left.clone()),
-        };
-        return Err(format!(
-            "the items and links that don't take their places are {} where {} were asked",
-            said(got_unplaced),
-            said(want_unplaced)
-        ));
-    }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
     // attribute, a text or a link moves a piece.
     let (want, got) = (want_pieces, got_pieces);
-    let says = |pieces: &[(String, String)]| -> Vec<String> {
-        pieces.iter().map(|(_, says)| says.clone()).collect()
-    };
+    let says = |pieces: &[Said]| -> Vec<String> { pieces.iter().map(|p| p.says.clone()).collect() };
     if says(want) != says(got) {
-        let differs = want.iter().zip(got).position(|(a, b)| a.1 != b.1);
+        let differs = want.iter().zip(got).position(|(a, b)| a.says != b.says);
         return Err(match differs {
             Some(i) => format!(
                 "the piece {} of {} is {} where {} was asked",
                 i + 1,
                 got.len(),
-                short(vec![got[i].1.clone()]),
-                short(vec![want[i].1.clone()])
+                short(vec![got[i].says.clone()]),
+                short(vec![want[i].says.clone()])
             ),
             None => format!(
                 "the pieces are {} where {} were asked",
@@ -1278,15 +1305,19 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
     // A place that is in both answers holds the piece that was asked for there. Two pieces
     // that say the same can't be told apart by order alone: this is what catches a change
     // made to the twin, with the two then named as each other. An owner that renamed the
-    // place leaves nothing to check it against.
-    for (place, asked) in want {
-        let there = got.iter().find(|(p, _)| p == place);
-        if let Some((_, gave)) = there.filter(|(_, gave)| gave != asked) {
+    // place leaves nothing to check it against. A place names the piece that holds it
+    // (`Places`): another piece there is left out, and was compared above.
+    let holder = |pieces: &[Said], place: &str| -> Option<String> {
+        let found = pieces.iter().find(|p| p.holds_place && p.place == place);
+        found.map(|p| p.says.clone())
+    };
+    for asked in want.iter().filter(|p| p.holds_place) {
+        if let Some(gave) = holder(got, &asked.place).filter(|gave| *gave != asked.says) {
             return Err(format!(
                 "the piece at {} is {} where {} was asked",
-                cut(place, 80),
-                short(vec![gave.clone()]),
-                short(vec![asked.clone()])
+                cut(&asked.place, 80),
+                short(vec![gave]),
+                short(vec![asked.says.clone()])
             ));
         }
     }
@@ -1317,30 +1348,75 @@ pub struct Read {
 }
 
 /// An answer read for the read-back check (`same`): its items and links, what each of its
-/// pieces says, and which pieces its links between pieces join. Reading a file for the
-/// workspace (`read`) makes neither of the last two, since only an edit compares them.
+/// pieces says, which pieces its links between pieces join, and what the engine leaves out
+/// of it. Reading a file for the workspace (`read`) makes none of the last three, since only
+/// an edit compares them.
 pub struct ReadBack {
     pub read: Read,
-    /// Every piece in the order given, whether or not it is an item: its place, and what it
-    /// says (`piece_key`) with the position of the piece it is in.
-    pieces: Vec<(String, String)>,
+    /// Every piece in the order given, whether or not it is an item.
+    pieces: Vec<Said>,
     /// Every link between two pieces, in the order given: which pieces it joins, by their
     /// positions among the answer's pieces, and its label.
     between: Vec<String>,
-    /// Every item left out as the answer was read, in order: where it stood among the items
-    /// read, and what it said (`LeftOut::key`).
-    left_out: Vec<String>,
-    /// Every item that doesn't hold its place (`Given::placed`) and every link to a file past
-    /// its bounds, in order: where it is, and a hash of what it says.
-    unplaced: Vec<String>,
+    /// Everything the engine leaves out of the answer (`Subject`), in order.
+    left_out: Vec<Left>,
+}
+
+/// A piece as the read-back compares it: its place, whether it holds the place (`Places`),
+/// and what it says (`piece_key`) with the position of the piece it is in.
+struct Said {
+    place: String,
+    holds_place: bool,
+    says: String,
+}
+
+/// Something the engine leaves out of an answer, as the read-back compares it.
+#[derive(Clone)]
+struct Left {
+    /// Which it is and where it stands: `item 3`, `link 1`, `between 2`, or for an item left
+    /// out as it arrived `left out 1, after item 2` (after the items read before it).
+    at: String,
+    /// What it holds. For an item, a link or a link between pieces, the JSON it reads as,
+    /// compared whole. For an item left out as it arrived, what is kept of it, here and in
+    /// the owners' cache: the 48-bit hash (`tasks::line_id`) of the JSON value it was sent
+    /// as, once parsed (`LeftOut::key`). Two that differ there and hash alike by chance
+    /// compare the same: a hash is enough against an owner's mistake, not against one that
+    /// crafts a collision, and nothing else of an item that didn't read is kept to compare.
+    holds: String,
+    /// The words it is reported in, for a refusal.
+    words: String,
+}
+
+/// What a problem with an answer is about (`Problem::about`), as `read` says it: the item,
+/// the link to a file, the link between pieces, or the record of an item left out as it
+/// arrived, each by its position in its list, from 0. A change keeps every position, since
+/// none adds, moves or removes anything, so before and after are told apart by these.
+enum Subject {
+    Item(usize),
+    Link(usize),
+    Between(usize),
+    LeftOut(usize),
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Subject::Item(i) => write!(f, "item {i}"),
+            Subject::Link(i) => write!(f, "link {i}"),
+            Subject::Between(n) => write!(f, "between {n}"),
+            Subject::LeftOut(k) => write!(f, "left out {k}"),
+        }
+    }
 }
 
 /// Read an answer to compare it with another: what the owner should give, or what it gave.
 pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
     // Where each piece stands among the answer's pieces, by its place.
     let mut position: HashMap<&str, usize> = HashMap::new();
-    let mut pieces: Vec<(String, String)> = Vec::new();
-    for item in &given.items {
+    let mut pieces: Vec<Said> = Vec::new();
+    // Which items hold their places: only those name a place (`Places`).
+    let mask = given.placed_mask();
+    for (item, &holds_place) in given.items.iter().zip(&mask) {
         let GivenItem::Piece(p) = item else {
             continue;
         };
@@ -1349,13 +1425,22 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
             Some(Some(i)) => format!("in piece {}", i + 1),
             Some(None) => "in a place no piece is at".to_string(),
         };
-        position.entry(p.place.as_str()).or_insert(pieces.len());
+        if holds_place {
+            position.insert(p.place.as_str(), pieces.len());
+        }
         let says = format!("{inside}: {}", piece_key(p));
-        pieces.push((p.place.to_string(), says));
+        let place = p.place.to_string();
+        pieces.push(Said {
+            place,
+            holds_place,
+            says,
+        });
     }
+    // An end that is no piece is told by the place it names: a link past the count an answer
+    // may have is reported once (`read_all`), and compared only here.
     let end = |place: &str| match position.get(place) {
         Some(i) => format!("piece {}", i + 1),
-        None => "no piece".to_string(),
+        None => format!("no piece, at {}", Json::String(place.to_string())),
     };
     let joins = |l: &Between| {
         let label = Json::String(l.label.to_string());
@@ -1365,21 +1450,52 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
             end(l.to.as_str())
         )
     };
-    let left = |(at, l): &(usize, LeftOut)| format!("after item {at}: {}", l.key);
-    let key = |json: serde_json::Result<String>| line_id(&json.unwrap_or_default());
-    let items = (given.items.iter().zip(given.placed_mask()).enumerate())
-        .filter(|(_, (_, held))| !held)
-        .map(|(i, (item, _))| format!("item {}: {}", i + 1, key(serde_json::to_string(item))));
-    let places = Places::default();
-    let links = (given.links.iter().enumerate())
-        .filter(|(_, l)| places.link(l).is_err())
-        .map(|(i, l)| format!("link {}: {}", i + 1, key(serde_json::to_string(l))));
+    // What the engine leaves out is what `read` reports a problem about: an item left out
+    // as it arrived (kept as it was sent), and an item, a link or a link between pieces
+    // left out as it is read (kept as it reads). Each is compared by where it stands and
+    // what it holds, so an owner that changes, moves, drops, adds or fixes one is caught.
+    let mut read = read_all(file, given, s);
+    let said: HashMap<String, String> = (read.problems.iter())
+        .filter_map(|p| Some((p.subject()?.to_string(), p.one_line())))
+        .collect();
+    let json = |value: serde_json::Result<String>| value.unwrap_or_default();
+    // The words it is reported in, when what `about` names is left out.
+    let left = |about: Subject| said.get(&about.to_string()).cloned();
+    let records = (given.left_out.iter().enumerate()).filter_map(|(k, (at, l))| {
+        Some(Left {
+            at: format!("left out {}, after item {at}", k + 1),
+            holds: l.key.to_string(),
+            words: left(Subject::LeftOut(k))?,
+        })
+    });
+    let items = (given.items.iter().enumerate()).filter_map(|(i, item)| {
+        Some(Left {
+            words: left(Subject::Item(i))?,
+            at: format!("item {}", i + 1),
+            holds: json(serde_json::to_string(item)),
+        })
+    });
+    let links = (given.links.iter().enumerate()).filter_map(|(i, l)| {
+        Some(Left {
+            words: left(Subject::Link(i))?,
+            at: format!("link {}", i + 1),
+            holds: json(serde_json::to_string(l)),
+        })
+    });
+    let betweens = (given.between.iter().enumerate()).filter_map(|(n, l)| {
+        Some(Left {
+            words: left(Subject::Between(n))?,
+            at: format!("between {}", n + 1),
+            holds: json(serde_json::to_string(l)),
+        })
+    });
+    let left_out = (records.chain(items).chain(links).chain(betweens)).collect();
+    read.problems = crate::problem::capped(read.problems);
     ReadBack {
-        read: read(file, given, s),
+        read,
         pieces,
         between: given.between.iter().map(joins).collect(),
-        left_out: given.left_out.iter().map(left).collect(),
-        unplaced: items.chain(links).collect(),
+        left_out,
     }
 }
 
@@ -1397,7 +1513,9 @@ fn read_all(file: &str, given: &Given, s: &Settings) -> Read {
     let mut before = Before::default();
     // What was left out as the answer was read is said where it stood.
     let mut left_out = given.left_out.iter().enumerate().peekable();
-    let left = |(k, (_, l)): (usize, &(usize, LeftOut))| l.problem().about(format!("left out {k}"));
+    let left = |(k, (_, l)): (usize, &(usize, LeftOut))| {
+        l.problem().about(Subject::LeftOut(k).to_string())
+    };
     for (i, item) in given.items.iter().enumerate() {
         while let Some(l) = left_out.next_if(|(_, (at, _))| *at <= i) {
             out.problems.push(left(l));
@@ -1405,7 +1523,7 @@ fn read_all(file: &str, given: &Given, s: &Settings) -> Read {
         // One short line, whatever the owner sent: a reason may quote a value.
         let said = |why: String| {
             let words = format!("{}: {}", short(item.place()), cut(&why, 200));
-            Problem::line(words).about(format!("item {i}"))
+            Problem::line(words).about(Subject::Item(i).to_string())
         };
         if let Err(why) = before.places.admit(item) {
             out.problems.push(said(why));
@@ -1459,7 +1577,7 @@ fn read_all(file: &str, given: &Given, s: &Settings) -> Read {
         if let Err(why) = before.places.link(l) {
             let said = format!("{}: {}", short(&l.place), cut(&why, 200));
             out.problems
-                .push(Problem::line(said).about(format!("link {i}")));
+                .push(Problem::line(said).about(Subject::Link(i).to_string()));
             continue;
         }
         let target = crate::workspace::clean_target(&l.target);
@@ -1475,7 +1593,7 @@ fn read_all(file: &str, given: &Given, s: &Settings) -> Read {
     for (nth, l) in given.between.iter().enumerate() {
         if let Err(why) = before.places.joins(l, nth) {
             out.problems
-                .push(Problem::line(why).about(format!("between {nth}")));
+                .push(Problem::line(why).about(Subject::Between(nth).to_string()));
             if nth >= Betweens::MOST {
                 break;
             }
@@ -2795,5 +2913,131 @@ fields.star = { flag = "⭐", type = "bool" }
         assert!(answer.left_out.is_empty());
         let read = read("A.sheet", &answer, &s);
         assert_eq!((read.items.len(), said(&read).len()), (2, 0));
+    }
+
+    /// A link between pieces past the count an answer may have is reported once, so the ones
+    /// after it are compared only by which pieces they join: an end that is no piece names
+    /// its place there, or an owner could repoint it to another missing place unseen (#301's
+    /// review, M2).
+    #[test]
+    fn a_link_past_the_count_is_compared_by_the_places_it_names() {
+        let s = settings("");
+        let piece = |place: &str| {
+            json!({"place": place, "role": "item", "text": ["x"],
+                   "attributes": {"task": true, "checkbox": "open"}})
+        };
+        let with = |to: &str| -> Given {
+            let mut g = given(json!({"items": [piece("chore"), piece("row")]}));
+            let good = Between {
+                from: "chore".into(),
+                to: "row".into(),
+                label: Default::default(),
+            };
+            let mut between = vec![good; Betweens::MOST + 1];
+            between.push(Between {
+                from: "chore".into(),
+                to: to.into(),
+                label: Default::default(),
+            });
+            g.between = between.into();
+            g
+        };
+        let asked = read_back("A.sheet", &with("nowhere"), &s);
+        assert_eq!(
+            same(&asked, &read_back("A.sheet", &with("nowhere"), &s)),
+            Ok(())
+        );
+        for to in ["elsewhere", "row"] {
+            let why = same(&asked, &read_back("A.sheet", &with(to), &s));
+            assert!(why.is_err(), "to {to}: read back as asked");
+        }
+    }
+
+    /// An owner that adds a bad item before one left out as it arrived is named for the one
+    /// it added, not for the one that only stands one record further (#301's review, M4).
+    #[test]
+    fn a_new_bad_item_is_named_and_not_the_one_after_it() {
+        let s = settings("");
+        let chore = json!({"place": "t", "role": "item", "text": ["x"],
+                           "attributes": {"task": true, "checkbox": "open"}});
+        let stray = |place: &str| json!({"place": place, "role": "item", "colour": "red"});
+        let before = given(json!({"items": [chore, stray("lr")]}));
+        let asked = read_back("A.sheet", &before, &s);
+        let gave = given(json!({"items": [chore, stray("new"), stray("lr")]}));
+        let why = same(&asked, &read_back("A.sheet", &gave, &s)).unwrap_err();
+        assert!(why.starts_with("it leaves out new: "), "{why}");
+    }
+
+    /// A place names its first piece: an edit beside a second piece at a taken place reads
+    /// back as asked, where the place check took the second for the first and refused it.
+    #[test]
+    fn the_place_check_reads_the_first_piece_at_a_place() {
+        let s = settings("");
+        let chore = |place: &str, words: &str, checkbox: &str| {
+            json!({"place": place, "role": "item", "text": [words],
+                   "attributes": {"task": true, "checkbox": checkbox}})
+        };
+        let before = given(json!({"items": [
+            chore("p", "first", "open"), chore("p", "second", "open"), chore("ok", "fine", "open"),
+        ]}));
+        let tick = [Change::Attribute {
+            place: "ok".into(),
+            attribute: "checkbox".into(),
+            value: json!("done"),
+        }];
+        let asked = read_back("A.sheet", &apply(&before, &tick), &s);
+        let gave = given(json!({"items": [
+            chore("p", "first", "open"), chore("p", "second", "open"), chore("ok", "fine", "done"),
+        ]}));
+        assert_eq!(same(&asked, &read_back("A.sheet", &gave, &s)), Ok(()));
+        let swapped = given(json!({"items": [
+            chore("p", "second", "open"), chore("p", "first", "open"), chore("ok", "fine", "done"),
+        ]}));
+        let why = same(&asked, &read_back("A.sheet", &swapped, &s)).unwrap_err();
+        assert!(why.contains("p: another piece is at this place"), "{why}");
+    }
+
+    /// The read-back compares every item the engine leaves out, by where it stands and what
+    /// it holds, and names the one an owner changed in the words it is reported in. A typed
+    /// item of a type that isn't loaded holds its place and is no item, so before #257 an
+    /// owner could change it unseen.
+    #[test]
+    fn the_read_back_names_a_bad_item_the_owner_changed() {
+        let s = settings("");
+        let chore = |checkbox: &str| {
+            json!({"place": "t", "role": "item", "text": ["x"],
+                   "attributes": {"task": true, "checkbox": checkbox}})
+        };
+        let volcano = |vei: u8| json!({"place": "v", "type": "volcano", "fields": {"vei": vei}});
+        let stray =
+            |colour: &str| json!({"place": "m", "role": "item", "text": ["x"], "colour": colour});
+        let before = given(json!({"items": [chore("open"), volcano(6), stray("red")]}));
+        let tick = [Change::Attribute {
+            place: "t".into(),
+            attribute: "checkbox".into(),
+            value: json!("done"),
+        }];
+        let asked = read_back("A.sheet", &apply(&before, &tick), &s);
+        let gives = |v: Json, m: Json| {
+            let gave = given(json!({"items": [chore("done"), v, m]}));
+            same(&asked, &read_back("A.sheet", &gave, &s))
+        };
+        assert_eq!(gives(volcano(6), stray("red")), Ok(()));
+        let fixed = json!({"place": "v", "type": "task", "fields": {"text": "y"}});
+        for (v, m, says) in [
+            (volcano(7), stray("red"), "v: no type called volcano"),
+            (fixed, stray("red"), "v: no type called volcano"),
+            (volcano(6), stray("blue"), "m: unknown field `colour`"),
+        ] {
+            let why = gives(v, m).unwrap_err();
+            assert!(why.contains(says), "{says}: {why}");
+        }
+        // Dropped, it is named, not the item left out after it, which only stands elsewhere.
+        let gave = given(json!({"items": [chore("done"), stray("red")]}));
+        let why = same(&asked, &read_back("A.sheet", &gave, &s)).unwrap_err();
+        assert!(
+            why.starts_with("v: no type called volcano was left out"),
+            "{why}"
+        );
     }
 }

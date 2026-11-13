@@ -42,9 +42,14 @@ pub fn said(e: &serde_json::Error) -> Option<String> {
 }
 
 /// An item of an answer that didn't read, as it is kept: its place (cut to 80 characters),
-/// a hash of the JSON it was sent as, which is its identity (its keys' order included, so an
-/// owner that gives it again with its keys reordered has changed it), and what was said of
-/// it. It is kept in the owners' cache, and read back from it, as a part of the answer it
+/// a hash of the JSON value it was sent as, which is its identity, and what was said of it.
+/// The value is hashed once parsed, not as the bytes that were sent: the host reads a whole
+/// message into one JSON value before any of it is an answer, and the bytes are gone. So the
+/// order of its keys counts (an owner that gives it again with its keys reordered has changed
+/// it), and what parsing drops doesn't: space between tokens, how a character is escaped
+/// (`A` is `A`), a key's earlier values when it is written twice, and the digits of a
+/// number past what a 64-bit integer or float holds (`100000000000000000001` and
+/// `100000000000000000002` parse alike, as do `0.1` and `0.10000000000000001`). It is kept in the owners' cache, and read back from it, as a part of the answer it
 /// was left out of (`owner::cache`); the cache is the engine's own file, which bounds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LeftOut {
