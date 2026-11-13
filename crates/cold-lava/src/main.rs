@@ -239,14 +239,8 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("COLD_LAVA_COM
 fn main() {
     if let Err(e) = run() {
         // An error of several lines is the app's own (a usage): one message line each.
-        match e
-            .downcast_ref::<problem::Problem>()
-            .map(problem::Problem::said)
-        {
-            Some(said) => {
-                problem!("cold-lava: {}", said[0]);
-                said[1..].iter().for_each(|line| problem!("{line}"));
-            }
+        match e.downcast_ref::<problem::Problem>() {
+            Some(p) => say::problem_lines(p, "", "cold-lava: "),
             None => problem!("cold-lava: {e:#}"),
         }
         // Exit code 3 means "the task line or item changed": callers can refresh and retry.
@@ -339,13 +333,13 @@ fn run() -> Result<()> {
             if !errors.is_empty() || !warnings.is_empty() {
                 let path = config::path().unwrap_or_default();
                 problem!("{}:", path.display());
-                errors.iter().for_each(|e| say::problem_lines(e, "  "));
+                errors.iter().for_each(|e| say::problem_lines(e, "  ", ""));
                 warnings.iter().for_each(|line| problem!("  {line}"));
             }
             if !registry.refused().is_empty() {
                 problem!("extensions:");
                 for e in registry.refused() {
-                    say::problem_lines(e, "  ");
+                    say::problem_lines(e, "  ", "");
                 }
             }
             if !errors.is_empty() || !registry.refused().is_empty() {
@@ -378,7 +372,7 @@ fn run() -> Result<()> {
                 if !found.errors.is_empty() {
                     problem!("errors:");
                     for e in &found.errors {
-                        say::problem_lines(e, "  ");
+                        say::problem_lines(e, "  ", "");
                     }
                 }
             }
@@ -404,7 +398,7 @@ fn run() -> Result<()> {
                 if !found.errors.is_empty() {
                     problem!("errors:");
                     for e in &found.errors {
-                        say::problem_lines(e, "  ");
+                        say::problem_lines(e, "  ", "");
                     }
                 }
             }
@@ -460,7 +454,7 @@ fn run() -> Result<()> {
                 if !found.errors.is_empty() {
                     problem!("errors:");
                     for e in &found.errors {
-                        say::problem_lines(e, "  ");
+                        say::problem_lines(e, "  ", "");
                     }
                 }
             }
@@ -740,14 +734,12 @@ fn run() -> Result<()> {
             let config: Vec<&problem::Problem> = (config::get().errors.iter())
                 .filter(|e| e.is_about(config::STYLE))
                 .collect();
+            // With no `errors:` header and no indent, unlike the other commands: left on #290.
             for e in &found.errors {
-                say::problem_lines(e, "");
+                say::problem_lines(e, "", "");
             }
             for e in &config {
-                // `[style]`'s problems are said after the file they are in, as they always were.
-                let said = e.said();
-                problem!("config.toml {}", said[0]);
-                said[1..].iter().for_each(|line| problem!("{line}"));
+                say::problem_lines(e, "", "config.toml ");
             }
             if !found.errors.is_empty() || !config.is_empty() {
                 std::process::exit(1);
@@ -1180,7 +1172,7 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
     if !registry.mistakes().is_empty() {
         problem!("didn't load:");
         for e in registry.mistakes() {
-            say::problem_lines(e, "  ");
+            say::problem_lines(e, "  ", "");
         }
     }
 }

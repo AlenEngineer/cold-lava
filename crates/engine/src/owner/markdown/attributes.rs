@@ -212,7 +212,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
                             with,
                         });
                     }
-                    Err(e) => found.errors.push(e.under(format!("{at} {name}:"))),
+                    Err(e) => found.errors.push(e.at(format!("{at} {name}"))),
                 }
             }
         }

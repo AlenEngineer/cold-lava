@@ -99,9 +99,8 @@ impl Problem {
     }
 
     /// Said under `label` (a section of a file, like `[style]`), before its first line with a
-    /// space: config.toml's sections, a type's `[types.NAME]` and an attribute's reading.
-    /// Saying them with `at`'s `": "` changes their words, so it waits for the owner's word
-    /// (asked with #265's step A3b).
+    /// space: config.toml's sections and a type's `[types.NAME]`. Saying them with `at`'s
+    /// `": "` would change their words, which the owner has not decided, so they keep it.
     pub fn under(mut self, label: impl fmt::Display) -> Problem {
         self.before = Some(format!("{label} "));
         self
@@ -116,16 +115,6 @@ impl Problem {
     /// Whether it is about `what`.
     pub fn is_about(&self, what: &str) -> bool {
         self.about.as_deref() == Some(what)
-    }
-
-    /// Its own lines, in order, without what is said before them.
-    pub fn lines(&self) -> &[String] {
-        &self.lines
-    }
-
-    /// Its own first line, without what is said before it.
-    pub fn first(&self) -> &str {
-        &self.lines[0]
     }
 
     /// The lines a person reads: what is said before the first, then the rest.
@@ -365,7 +354,7 @@ mod tests {
             assert_eq!(problem.clone().brief().one_line(), e.message(), "{e}");
             let whole = e.to_string();
             let whole = whole.trim_end();
-            match problem.lines() {
+            match problem.lines.as_slice() {
                 [one] => assert_eq!(one, whole),
                 lines => assert_eq!(lines.join("\n"), whole, "cut only at its line breaks"),
             }
@@ -376,7 +365,7 @@ mod tests {
     fn a_toml_error_keeps_the_parsers_lines_and_its_message_whole() {
         for e in errors() {
             let problem = Problem::toml(&e);
-            let lines = problem.lines();
+            let lines = &problem.lines;
             match e.span() {
                 Some(_) => {
                     assert_eq!(lines.len(), 5, "a header, a gutter, the line, a caret: {e}");
@@ -403,7 +392,7 @@ mod tests {
             assert_eq!(problem.headline(), e.message(), "{text:?}");
             if text.contains("\r\n") {
                 let ends = |line: &String| line.ends_with('\r');
-                assert!(!problem.lines().iter().any(ends), "{text:?}");
+                assert!(!problem.lines.iter().any(ends), "{text:?}");
             }
         }
     }
@@ -416,7 +405,7 @@ mod tests {
             ("a = 1\rb = 2\n", "1 | a = 1\rb = 2"),
         ] {
             let e = toml::from_str::<toml::Table>(text).expect_err(text);
-            assert_eq!(Problem::toml_file(&e, text).lines()[2], line, "{text:?}");
+            assert_eq!(Problem::toml_file(&e, text).lines[2], line, "{text:?}");
         }
     }
 
@@ -429,15 +418,15 @@ mod tests {
             p.to_string(),
             "/w/shapes.toml: shape a: it nests shape b, which didn't load"
         );
-        assert_eq!(p.first(), "it nests shape b, which didn't load");
+        assert_eq!(p.words(), "it nests shape b, which didn't load");
         assert!(p.is_about("a") && !p.is_about("b"));
 
         let section = Problem::line("tasks: invalid type").under("[style]");
         assert_eq!(section.said(), ["[style] tasks: invalid type"]);
-        assert_eq!(section.first(), "tasks: invalid type");
+        assert_eq!(section.words(), "tasks: invalid type");
 
         let usage = Problem::of("no such thing: a\nb".to_string(), []).then("usage: x\n  y");
-        assert_eq!(usage.lines(), ["no such thing: a\nb", "usage: x", "  y"]);
+        assert_eq!(usage.said(), ["no such thing: a\nb", "usage: x", "  y"]);
         assert_eq!(usage.to_string(), "no such thing: a\nb\nusage: x\n  y");
         assert_eq!(Problem::usage("usage: x\n  y").said(), ["usage: x", "  y"]);
     }

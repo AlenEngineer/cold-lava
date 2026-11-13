@@ -495,15 +495,34 @@ impl Extension for Process {
     }
 }
 
-/// The words serde's derive writes when a message names one of cold-lava's own Rust types:
-/// the answer's whole shape is wrong, and the type's name means nothing to whoever wrote it.
-const NAMES_A_TYPE: [&str; 6] = [
+/// The words serde's derive writes when a message names one of cold-lava's own Rust types or
+/// variants: the answer's shape is wrong, and the name means nothing to whoever wrote it.
+///
+/// What an answer is read into, and how its enums are represented: `file/read` a `Given`
+/// (structs, and the untagged `GivenItem`, `Run` and `WireLink`); `file/edit` a `NewText`;
+/// `file/preview` a view's `Content` (internally tagged by `kind`, `table::Kind` by `type`,
+/// externally tagged `image::Source`, `list::Check`, `list::Filter`, `scene::Look`); a shape's
+/// answer a `Reply` (untagged), whose steps are the externally tagged `Step`. So serde can
+/// write each of these, and each names a Rust item:
+///
+/// - `data did not match any variant of untagged enum NAME`;
+/// - `expected internally tagged enum NAME`, `expected adjacently tagged enum NAME`;
+/// - `expected struct NAME`, and `expected struct variant NAME::VARIANT`;
+/// - `expected tuple struct NAME`, `expected unit struct NAME`;
+/// - `expected enum NAME`, and `expected tuple variant NAME::VARIANT`.
+///
+/// `unknown variant`, `unknown field` and `missing field` name what the answer is written in
+/// (every enum here renames its variants for the wire), and `invalid type` names a value's
+/// kind (`a string`, `u8`, `unit variant`), so those keep serde's detail.
+const NAMES_A_TYPE: [&str; 8] = [
     "untagged enum ",
+    "tagged enum ",
     "expected struct ",
+    "struct variant ",
     "expected tuple struct ",
     "expected unit struct ",
     "expected enum ",
-    "tagged enum ",
+    "tuple variant ",
 ];
 
 /// Why an extension's answer to `method` doesn't read, in plain words: with serde's detail
@@ -541,6 +560,20 @@ mod tests {
             unread("file/edit", &missing),
             "its answer to file/edit doesn't read: missing field `text`"
         );
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        enum Variant {
+            Pair(u8, u8),
+            Named { x: u8 },
+        }
+        for wrong in [json!({"Pair": [1]}), json!({"Named": [1, 2]})] {
+            let e = serde_json::from_value::<Variant>(wrong).unwrap_err();
+            assert!(e.to_string().contains("variant Variant::"), "{e}");
+            assert_eq!(
+                unread("file/read", &e),
+                "its answer to file/read doesn't read as one"
+            );
+        }
         let wrong = serde_json::from_value::<NewText>(json!({"text": 3})).unwrap_err();
         assert_eq!(
             unread("file/edit", &wrong),

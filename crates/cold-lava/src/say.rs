@@ -79,11 +79,13 @@ pub fn message_err(words: Arguments<'_>) {
 }
 
 /// A problem on stderr, one message line for each of its lines (`Problem::said`), each after
-/// `indent`: a TOML error's place lines and message, a usage's lines. The breaks between the
-/// lines are the problem's, never found in its words.
-pub fn problem_lines(problem: &Problem, indent: &str) {
-    for line in problem.said() {
-        message_err(format_args!("{indent}{line}"));
+/// `indent`, and the first after `first` too (`cold-lava: `, the file a section is in): a
+/// TOML error's place lines and message, a usage's lines. The breaks between the lines are
+/// the problem's, never found in its words.
+pub fn problem_lines(problem: &Problem, indent: &str, first: &str) {
+    for (i, line) in problem.said().iter().enumerate() {
+        let first = if i == 0 { first } else { "" };
+        message_err(format_args!("{indent}{first}{line}"));
     }
 }
 
