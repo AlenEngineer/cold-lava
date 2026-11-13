@@ -502,7 +502,8 @@ impl Extension for Process {
 /// NAME`, `expected struct NAME`, `no variant of enum NAME found in flattened data`, …), so the
 /// forms kept are the listed ones and a form nobody has seen yet reads "as one". serde_json
 /// writes where it was in a text (` at line N column M`), which an answer read as a value
-/// never has; it is left out when it is there.
+/// never has; it is left out when it is there. #265's step A4 shrinks this: its bounded
+/// reader refuses an owner's answer in cold-lava's own words before serde has to.
 fn unread(method: &str, e: &serde_json::Error) -> String {
     let whole = e.to_string();
     let at = format!(" at line {} column {}", e.line(), e.column());
@@ -517,26 +518,45 @@ fn unread(method: &str, e: &serde_json::Error) -> String {
 }
 
 /// Whether serde's `message` is one of the forms that carry only what the answer wrote (a
-/// field's or a variant's name, a value) and what a value should have been, which every
-/// type an answer is read into writes in the answer's own names:
+/// field's or a variant's name, a value) and what a value should have been. The shapes are
+/// serde 1.0.229's own (`serde_core::de::Error`'s defaults and `OneOf`):
 ///
 /// - `missing field `NAME``, `duplicate field `NAME``;
-/// - `unknown field `NAME`, …` and `unknown variant `NAME`, …`, whose rest lists the names
-///   the answer may use (every enum read from an answer renames its variants for the wire,
-///   and serde's list is of those names);
+/// - `unknown field `NAME`, expected LIST`, `unknown field `NAME`, there are no fields`, and
+///   the same for `unknown variant` (`there are no variants`), where LIST is serde's list of
+///   the names the answer may use: `` `a` ``, `` `a` or `b` `` or `` one of `a`, `b`, `c` ``
+///   (every enum read from an answer renames its variants for the wire, and the list is of
+///   those names);
 /// - `invalid type: …, expected KIND`, `invalid value: …, expected KIND`,
 ///   `invalid length N, expected KIND`, where KIND, what serde writes after the last
 ///   `, expected ` (after the answer's own value, which may hold those words), is a kind of
-///   value: `a string`, `an integer`, `u8`. A struct, an enum or a variant there is a Rust
-///   item, and so is anything else.
+///   value (`is_a_kind`).
+///
+/// serde writes NAME, the answer's own, between backticks without escaping it, so NAME is
+/// what stands between the first backtick and the next, and the form is kept only when what
+/// follows it is exactly serde's own continuation: a name that holds a backtick ends early,
+/// and the rest of it is not serde's.
 fn says_only_the_answer(message: &str) -> bool {
-    let named = ["missing field `", "duplicate field `"];
-    if named.iter().any(|form| message.starts_with(form)) {
-        return message.ends_with('`');
+    for form in ["missing field `", "duplicate field `"] {
+        if let Some(rest) = message.strip_prefix(form) {
+            return rest
+                .split_once('`')
+                .is_some_and(|(_, after)| after.is_empty());
+        }
     }
-    let listed = ["unknown field `", "unknown variant `"];
-    if listed.iter().any(|form| message.starts_with(form)) {
-        return true;
+    for (form, none) in [
+        ("unknown field `", ", there are no fields"),
+        ("unknown variant `", ", there are no variants"),
+    ] {
+        if let Some(rest) = message.strip_prefix(form) {
+            let Some((_, after)) = rest.split_once('`') else {
+                return false;
+            };
+            return after == none
+                || after
+                    .strip_prefix(", expected ")
+                    .is_some_and(is_serdes_list);
+        }
     }
     let valued = ["invalid type: ", "invalid value: ", "invalid length "];
     if !valued.iter().any(|form| message.starts_with(form)) {
@@ -547,16 +567,62 @@ fn says_only_the_answer(message: &str) -> bool {
         .is_some_and(|(_, kind)| is_a_kind(kind))
 }
 
-/// Whether serde's `expected` part is a kind of value, not a Rust item: an English kind
-/// (`a string`, `a map`, `an array of length 2`) or a number's type (`u8`, `f64`).
+/// Whether `list` is serde's list of names (`OneOf`): `` `a` ``, `` `a` or `b` ``, or
+/// `` one of `a`, `b`, `c` ``, each name between backticks and holding none.
+fn is_serdes_list(list: &str) -> bool {
+    let one = |name: &str| {
+        let inner = name.strip_prefix('`').and_then(|n| n.strip_suffix('`'));
+        inner.is_some_and(|n| !n.is_empty() && !n.contains('`'))
+    };
+    match list.strip_prefix("one of ") {
+        Some(names) => names.split(", ").count() > 2 && names.split(", ").all(one),
+        None => match list.split_once(" or ") {
+            Some((a, b)) => one(a) && one(b),
+            None => one(list),
+        },
+    }
+}
+
+/// Whether serde's `expected` part is a kind of value, not a Rust item: made only of the words
+/// serde and serde_json write for kinds of value in what an answer is read into (serde's
+/// `de::impls` and `Unexpected`, serde_json's value deserializer: `a string`, `a map`, `a
+/// sequence`, `an array of length 2`, `string or map`, `map with a single key`, `option`,
+/// `unit`), and a number's type (`u8`, `f64`). A word it doesn't know, a struct, an enum or a
+/// variant reads "as one"; so does serde's jargon (`variant identifier`), which names nothing
+/// but helps no one.
 fn is_a_kind(kind: &str) -> bool {
-    let numbers = [
+    const NUMBERS: [&str; 14] = [
         "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
         "f32", "f64",
     ];
-    let english = kind.starts_with("a ") || kind.starts_with("an ");
-    let items = ["struct", "enum", "variant", "::"];
-    (english || numbers.contains(&kind)) && !items.iter().any(|item| kind.contains(item))
+    const WORDS: [&str; 24] = [
+        "a",
+        "an",
+        "or",
+        "of",
+        "with",
+        "string",
+        "map",
+        "sequence",
+        "array",
+        "boolean",
+        "character",
+        "byte",
+        "borrowed",
+        "empty",
+        "single",
+        "key",
+        "unit",
+        "option",
+        "integer",
+        "number",
+        "null",
+        "length",
+        "elements",
+        "element",
+    ];
+    let word = |w: &str| WORDS.contains(&w) || w.chars().all(|c| c.is_ascii_digit());
+    NUMBERS.contains(&kind) || (!kind.is_empty() && kind.split(' ').all(word))
 }
 
 #[cfg(test)]
@@ -601,6 +667,30 @@ mod tests {
             says(&value),
             kept("invalid value: integer `-1`, expected u8")
         );
+        for (e, message) in [
+            (
+                serde_json::Error::unknown_field("x", &[]),
+                "unknown field `x`, there are no fields",
+            ),
+            (
+                serde_json::Error::unknown_variant("x", &["a", "b", "c"]),
+                "unknown variant `x`, expected one of `a`, `b`, `c`",
+            ),
+            (
+                serde_json::Error::unknown_variant("x", &["a", "b"]),
+                "unknown variant `x`, expected `a` or `b`",
+            ),
+            (
+                serde_json::Error::invalid_type(Unexpected::Signed(3), &"string or map"),
+                "invalid type: integer `3`, expected string or map",
+            ),
+            (
+                serde_json::Error::invalid_value(Unexpected::Map, &"map with a single key"),
+                "invalid value: map, expected map with a single key",
+            ),
+        ] {
+            assert_eq!(says(&e), kept(message));
+        }
         let at = serde_json::from_str::<NewText>("{\"text\": 3}").unwrap_err();
         assert!(
             at.line() == 1 && at.to_string().contains(" at line 1 column "),
@@ -651,6 +741,38 @@ mod tests {
         ));
         for e in &named {
             assert_eq!(says(e), as_one, "{e}");
+        }
+        // serde writes a name between backticks without escaping it: one that holds a
+        // backtick can't make the rest look like serde's own.
+        for attack in [
+            "`, expected struct Foo",
+            "a`, expected `b",
+            "a` or `b",
+            "x`",
+            "`",
+        ] {
+            named.push(serde_json::Error::unknown_field(attack, &["text"]));
+            named.push(serde_json::Error::unknown_variant(
+                attack,
+                &["list", "table"],
+            ));
+            named.push(serde_json::Error::unknown_field(attack, &[]));
+            named.push(serde_json::Error::custom(format!(
+                "missing field `{attack}`"
+            )));
+            named.push(serde_json::Error::custom(format!(
+                "duplicate field `{attack}`"
+            )));
+        }
+        let real = serde_json::from_value::<NewText>(json!({"`, expected struct Foo": 1}));
+        named.push(real.unwrap_err());
+        // A kind serde writes that isn't made only of words for kinds of value.
+        for kind in [
+            "variant identifier",
+            "a typed item's fields",
+            "string or Foo",
+        ] {
+            named.push(serde_json::Error::invalid_type(Unexpected::Map, &kind));
         }
         // And words of its own that look like a Rust name are the answer's, kept as written.
         let own = serde_json::Error::invalid_type(Unexpected::Str("expected struct Foo"), &"u8");
