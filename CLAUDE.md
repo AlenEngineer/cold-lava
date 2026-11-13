@@ -510,10 +510,12 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   `put_char`). Text drawn through ratatui (`Span`, `Line`, `Paragraph`, `set_string`) loses
   its control characters there, but a symbol set on a cell is written to the terminal as it
   is, so never call `set_char` or `set_symbol` elsewhere (`tests/one_door.rs` lists them).
-  `put` shows `�` for what a terminal would act on, a tab included. A label drawn a
-  character a cell (a graph node's, an arrow's, a placed shape's region labels) goes
-  through `cells::label` before it is measured or fitted: escaped at `Level::Content`,
-  tabs as spaces. A shape's own and bound text is not a label and gets the `�`.
+  `put` shows `�` for what a terminal would act on and a space for a tab, whoever wrote
+  it. A label drawn a character a cell (a graph node's, an arrow's, a placed shape's
+  region labels) goes through `cells::label` before it is measured or fitted: escaped at
+  `Level::Content`. A shape's own and bound text is not a label and gets the `�`. A cell
+  is content: direction characters are kept in it, a shape's text and a pane's cells
+  included.
   Text drawn through ratatui still holds U+2028 and U+2029, and direction characters where it is a `Line`
   drawn on its own or a block's title (`cells.rs` pins what ratatui keeps).
 - `notice.rs`: `Notice`, the words of a notice on a status line (what the app did, why it

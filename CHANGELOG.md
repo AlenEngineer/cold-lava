@@ -173,9 +173,10 @@ change commands, keys and file formats; patch versions only fix things.
   In the terminal app, a label drawn a character at a time was written to the terminal as
   it is: a note whose file name held an escape sequence retitled the terminal from the
   graph with its labels on, and an arrow's or a placed shape's label on the whiteboard
-  could do the same. Those labels are now escaped like a listing, with a tab shown as a
-  space (it used to move the rest of the row), every symbol the app sets on a cell itself
-  goes through one function (which shows `�` for a character a terminal would act on),
+  could do the same. Those labels are now escaped like a listing, and every symbol the app
+  sets on a cell itself goes through one function, which shows `�` for a character a
+  terminal would act on and a space for a tab (a tab in a label or in a shape's text used
+  to be written as it is, and moved the rest of the row to a tab stop),
   and a notice on the status line (the app's own, an extension's notice and its status
   words) is escaped like a message, where it used to lose its control and direction
   characters without a trace and keep the separators U+2028 and U+2029. Text the app

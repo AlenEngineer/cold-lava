@@ -8,7 +8,11 @@
 //! A label is made ready before it is laid out (`label`), so what a terminal would act on
 //! shows as `\u{1b}` and takes the room it needs. `put` is what holds when one wasn't: a
 //! cell has room for one symbol, so a character that is never shown as written becomes
-//! `STAND_IN` there.
+//! `STAND_IN` there. A tab is a space in a cell, whoever wrote it: its only effect is to
+//! move the cursor, and a space is the one-cell form of that.
+//!
+//! A cell is content, not a message: a character that turns the direction of text is kept,
+//! in a label, in a shape's own and bound text and in a pane's cells alike.
 //!
 //! What this does not reach: text drawn through ratatui. It loses what `char::is_control`
 //! names, and keeps the separators U+2028 and U+2029 however it is drawn. A character that
@@ -22,48 +26,51 @@ use std::borrow::Cow;
 /// What a cell shows for a symbol that is never shown as written.
 pub const STAND_IN: &str = "\u{fffd}";
 
+/// What a cell shows for a tab: a printed line keeps a tab, but in a cell it would move the
+/// cursor to a tab stop and draw the rest of the row off its cells.
+const TAB: &str = " ";
+
 /// Whether a cell can't hold `c`: what a listing never shows as written (`shown::escaped`,
-/// the one definition of it), and a tab, which a printed line keeps but which in a cell
-/// would move the cursor to a tab stop and draw the rest of the row off its cells.
+/// the one definition of it).
 ///
 /// Every cell the app draws itself passes here, each frame: the whiteboard's shapes, a
 /// pane's whole screen. So it asks the question of a character and nothing more. Going
 /// through `escape` for each cell (a text made, searched and thrown away) cost 5 to 9% of
 /// the process's time in a graph, a whiteboard and a pane.
 fn refused(c: char) -> bool {
-    c == '\t' || escaped(c, Level::Content)
+    escaped(c, Level::Content)
 }
 
-/// Set the cell's symbol: `symbol` as it is, or the stand-in when it holds what a cell
-/// can't (`refused`).
+/// Set the cell's symbol: `symbol` as it is, the stand-in when it holds what a cell can't
+/// (`refused`), a space when it holds a tab.
 pub fn put<'a>(cell: &'a mut Cell, symbol: &str) -> &'a mut Cell {
-    match symbol.chars().any(refused) {
-        true => cell.set_symbol(STAND_IN),
-        false => cell.set_symbol(symbol),
+    match (symbol.chars().any(refused), symbol.contains('\t')) {
+        (true, _) => cell.set_symbol(STAND_IN),
+        (false, true) => cell.set_symbol(TAB),
+        (false, false) => cell.set_symbol(symbol),
     }
 }
 
 /// Set the cell's symbol to one character, as `put` does.
 pub fn put_char(cell: &mut Cell, ch: char) -> &mut Cell {
-    match refused(ch) {
-        true => cell.set_symbol(STAND_IN),
-        false => cell.set_char(ch),
+    match (refused(ch), ch == '\t') {
+        (true, _) => cell.set_symbol(STAND_IN),
+        (false, true) => cell.set_symbol(TAB),
+        (false, false) => cell.set_char(ch),
     }
 }
 
 /// A label for drawing a character a cell: a node's in the graph, an arrow's, what a region
 /// of a placed shape shows. It is someone else's words (a file's name, a card's text, an
-/// extension's), so what a terminal would act on is escaped as in a listing, and a tab is a
-/// space, since a cell holds no tab. Call it before the label is measured, cut or fitted,
+/// extension's), so what a terminal would act on is escaped as in a listing. A tab stays
+/// one: it is one character and one cell to the layout either way, and `put` shows it as a
+/// space, as it does for every cell. Call it before the label is measured, cut or fitted,
 /// so the escape takes the room it needs. The layout then measures the label as shown, not
 /// as written: where room runs out ("+N more") can differ from what another frontend
 /// computes from the label as written. With one renderer for every frontend (#227) this
 /// becomes a step of its input.
 pub fn label(text: &str) -> Cow<'_, str> {
-    match escape(text, Level::Content) {
-        Cow::Borrowed(text) if !text.contains('\t') => Cow::Borrowed(text),
-        shown => Cow::Owned(shown.replace('\t', " ")),
-    }
+    escape(text, Level::Content)
 }
 
 #[cfg(test)]
@@ -89,19 +96,27 @@ mod tests {
     fn a_symbol_a_terminal_would_act_on_is_the_stand_in() {
         let mut cell = Cell::default();
         for acts in [
-            '\u{1b}', '\u{7}', '\0', '\u{1f}', '\u{7f}', '\u{9b}', '\n', '\u{2028}', '\t',
+            '\u{1b}', '\u{7}', '\0', '\u{1f}', '\u{7f}', '\u{9b}', '\n', '\u{2028}',
         ] {
             assert_eq!(put_char(&mut cell, acts).symbol(), STAND_IN, "{acts:?}");
         }
         assert_eq!(put(&mut cell, "e\u{1b}").symbol(), STAND_IN);
-        assert_eq!(put(&mut cell, "a\tb").symbol(), STAND_IN);
+        assert_eq!(put(&mut cell, "\t\u{1b}").symbol(), STAND_IN);
+    }
+
+    /// A tab is ordinary input (a file's name, a shape's own text can hold one), and a cell
+    /// shows it as a space, whoever wrote it.
+    #[test]
+    fn a_tab_is_a_space_in_a_cell() {
+        let mut cell = Cell::default();
+        assert_eq!(put_char(&mut cell, '\t').symbol(), " ");
+        assert_eq!(put(&mut cell, "\t").symbol(), " ");
     }
 
     #[test]
-    fn a_label_is_escaped_as_a_listing_is_and_its_tabs_are_spaces() {
+    fn a_label_is_escaped_as_a_listing_is() {
         assert_eq!(label("Esc\u{1b}]0;t\u{7}Name"), "Esc\\u{1b}]0;t\\u{7}Name");
-        assert_eq!(label("tab\there\u{1b}"), "tab here\\u{1b}");
-        assert_eq!(label("tab\there"), "tab here");
+        assert_eq!(label("tab\there\u{1b}"), "tab\there\\u{1b}");
         assert_eq!(label("a\nb \u{202e}c"), "a\\nb \u{202e}c");
         let plain = "Parícutin 日本語 👍";
         assert!(matches!(label(plain), Cow::Borrowed(same) if same == plain));
