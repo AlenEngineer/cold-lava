@@ -507,7 +507,8 @@ impl Extension for Process {
 ///
 /// - `data did not match any variant of untagged enum NAME`;
 /// - `expected internally tagged enum NAME`, `expected adjacently tagged enum NAME`;
-/// - `expected struct NAME`, and `expected struct variant NAME::VARIANT`;
+/// - `expected struct NAME`, and `expected struct variant NAME::VARIANT` (serde_json says
+///   `expected struct variant` with no name for the same wrong shape, which reads the same);
 /// - `expected tuple struct NAME`, `expected unit struct NAME`;
 /// - `expected enum NAME`, and `expected tuple variant NAME::VARIANT`.
 ///
@@ -566,9 +567,15 @@ mod tests {
             Pair(u8, u8),
             Named { x: u8 },
         }
-        for wrong in [json!({"Pair": [1]}), json!({"Named": [1, 2]})] {
+        // The first names the variant (`tuple variant Variant::Pair with 2 elements`); the
+        // second is serde_json's own `expected struct variant`, which names none but still
+        // means the answer's shape is wrong.
+        for (wrong, said) in [
+            (json!({"Pair": [1]}), "tuple variant Variant::Pair"),
+            (json!({"Named": [1, 2]}), "expected struct variant"),
+        ] {
             let e = serde_json::from_value::<Variant>(wrong).unwrap_err();
-            assert!(e.to_string().contains("variant Variant::"), "{e}");
+            assert!(e.to_string().contains(said), "{e}");
             assert_eq!(
                 unread("file/read", &e),
                 "its answer to file/read doesn't read as one"
