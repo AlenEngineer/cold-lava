@@ -11,7 +11,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as Json;
 
 use crate::alphabet::Role;
-use crate::bounded::{FieldName, Fields, Message, Place, Text, TypeName, TypedFields, ValueText};
+use crate::bounded::{
+    FieldName, Fields, Message, PieceText, Place, Text, TypeName, TypedFields, ValueText,
+};
 use crate::owner::given::{FieldRun, GivenItem, Label, LinkRun, Marked, Piece, Run};
 use crate::problem::{Problem, cut};
 use crate::serde_words;
@@ -101,7 +103,7 @@ impl<'de> Deserialize<'de> for Kept {
 #[serde(deny_unknown_fields)]
 struct MarkdownWire {
     place: Text<Place>,
-    text: Text<Message>,
+    text: Text<PieceText>,
 }
 
 /// A typed item as the wire has it.

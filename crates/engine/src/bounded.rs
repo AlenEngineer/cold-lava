@@ -62,8 +62,7 @@ pub trait Limit {
 /// types are filled are bounded by what they come from: the canvas owner's answer by the
 /// canvas file it reads, the owners' cache by the answers the engine kept in it, a shape's
 /// steps written in TOML by that file. The fields that name it: an answer's items and links
-/// (the owner decided they are bounded only by the message), a Markdown piece's text, a
-/// file's new text (`NewText`), what a region shows (an id and a label), a run's marks, a
+/// (the owner decided they are bounded only by the message), a file's new text (`NewText`), what a region shows (an id and a label), a run's marks, a
 /// piece's runs (their number is bounded with the piece, `given::MAX_RUNS`), what names a
 /// place (`in`, the ends of a link between pieces), which must name a piece taken before it,
 /// and the number of a step's options and a rebind's inputs.
@@ -200,7 +199,8 @@ impl Limit for Betweens {
 
 /// A piece's text: at most 1 MiB, a run's on its own (the piece is left out) and all its runs
 /// together, its cells' included (`Piece::check`): a plain or marked run's characters, a
-/// link's words and a field's value.
+/// link's words and a field's value. A Markdown piece is a piece: its text has the same bound
+/// (`GivenItem::check`).
 pub struct PieceText;
 impl Limit for PieceText {
     const MOST: usize = 1 << 20;
@@ -321,6 +321,13 @@ impl Limit for StepValue {
 /// (`Limit::ON_ARRIVAL`): a link to a file's bounds (`given::Places::link`). An item past a
 /// bound is left out alone as it arrives, but a link that doesn't read as it arrives
 /// refuses the whole answer, so a link past one is left out alone where the answer is read.
+///
+/// Why two ways to say "applied with the answer": `LinkLabel` and `Betweens` are bounds of
+/// their own, with their own words, that no field applies on arrival, so their `ON_ARRIVAL`
+/// says it. A link to a file's place, target and words are bounds other fields apply on
+/// arrival (`Place`, `Target`, `LinkText`): `WithAnswer` names the same number and words
+/// once, instead of a second type with a copy of them. The fields that name it are listed by
+/// `tests/one_door.rs`, so a new one is a reviewed decision.
 pub struct WithAnswer<B>(PhantomData<fn() -> B>);
 impl<B: Limit> Limit for WithAnswer<B> {
     const LEAST: usize = B::LEAST;

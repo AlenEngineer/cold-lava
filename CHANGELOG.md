@@ -104,9 +104,12 @@ change commands, keys and file formats; patch versions only fix things.
 
 - The limits the owner decided apply to what an extension answers (#265, step A4b). An
   item past one is left out alone, with the limit named, and the rest of the file shows: a
-  piece's text over 1 MiB (one run's, or all its runs and cells together), a link's words
+  piece's text over 1 MiB (one run's, or all its runs and cells together, a field run's
+  value included, so a field of exactly 1 MiB beside any other text is left out), a
+  Markdown piece's text over 1 MiB, a link's words
   in a piece over 4096 bytes, a text attribute or field value over 1 MiB, a row of more than
-  4096 cells, a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
+  4096 cells (a row of 4097 cells with text is told "more than 4096 cells", where it was
+  told "more than 4096 runs"), a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
   typed item's type that is empty or over 256 bytes, more than 256 fields, a field name
   that is empty or over 256 bytes, a field holding a list of more than 4096 values, a table
   or a list of lists. A link to a file whose place is empty or over 1024 bytes, whose target
@@ -125,16 +128,20 @@ change commands, keys and file formats; patch versions only fix things.
   items that hold their places.
 - The canvas owner gives only what the engine takes: a card whose id is empty or over 1024
   bytes no longer gives its text's tasks and links or its file link, a node at a place
-  another node has (an id that is literally a repeated id's place) gives no text there, and
-  a file card with an empty file gives no link. Renaming a note linked from a canvas with
-  two nodes at one place used to write the second node's relinked text over the first's;
-  now only the first is relinked.
+  another node has (an id that is literally a repeated id's place) gives no text and no
+  file link there, a text card whose text is over 1 MiB gives no tasks, and a file card with
+  an empty file gives no link. Renaming a note linked
+  from a canvas with two text or file cards at one place used to crash the rename (a panic,
+  nothing written); now only the first node at the place is relinked, and the later node's
+  text or file stays as it was.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80
   characters, as every other problem with an answer is.
 - An owner's piece that is `in` no piece, or that an attribute leaves out, still holds its
   place: a second piece at that place is left out, where it used to be read.
+- An item left out of an owner's answer is not relinked by a rename: its links keep the
+  old name, as nothing reads them.
 
 - An owner's item that doesn't read costs only itself (#265, step A4). An item with a key its
   kind doesn't have, a value of the wrong kind or a role that isn't one of the nine used to

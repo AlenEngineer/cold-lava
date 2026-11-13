@@ -155,7 +155,7 @@ pub enum GivenItem {
     /// Markdown text, read as a note is: a task in it is a `task`.
     Markdown {
         place: Text<Place>,
-        text: Text<Message>,
+        text: Text<PieceText>,
     },
     /// An item of a loaded type, its fields by name.
     Typed {
@@ -187,7 +187,10 @@ impl GivenItem {
             return Err(Place::past());
         }
         match self {
-            GivenItem::Markdown { .. } => Ok(()),
+            GivenItem::Markdown { text, .. } => match text.fits() {
+                true => Ok(()),
+                false => Err(text.past()),
+            },
             GivenItem::Typed { kind, fields, .. } => check_typed(kind, fields),
             GivenItem::Piece(p) => p.check(),
         }
@@ -602,9 +605,16 @@ fn form(item: &GivenItem) -> u8 {
 }
 
 impl<'a> Places<'a> {
-    /// Whether this item can claim its place: it is within its bounds (`GivenItem::check`),
-    /// and no item of its form has claimed the place.
-    pub fn fits(&self, item: &GivenItem) -> Result<(), String> {
+    /// Admit the item: it claims its place when it is within its bounds (`GivenItem::check`)
+    /// and no item of its form has claimed the place; else why not. The one way every
+    /// reader of an answer takes an item's place (`read`, `Given::placed`, `canvas::read`).
+    pub fn admit(&mut self, item: &'a GivenItem) -> Result<(), String> {
+        self.fits(item)?;
+        *self.claimed.entry(item.place()).or_default() |= form(item);
+        Ok(())
+    }
+
+    fn fits(&self, item: &GivenItem) -> Result<(), String> {
         item.check()?;
         let claimed = self.claimed.get(item.place()).copied().unwrap_or_default();
         match claimed & form(item) != 0 {
@@ -616,11 +626,6 @@ impl<'a> Places<'a> {
             }
             .into()),
         }
-    }
-
-    /// Claim the item's place for it, once it fits.
-    pub fn claim(&mut self, item: &'a GivenItem) {
-        *self.claimed.entry(item.place()).or_default() |= form(item);
     }
 
     /// Whether this link to a file is taken: its place, its target and its words are within
@@ -638,7 +643,9 @@ impl<'a> Places<'a> {
         Err(format!("a link to a file: {past}"))
     }
 
-    /// Take the piece, whose place it claimed: its number among the pieces taken, from 0.
+    /// Take the piece, once admitted: its number among the pieces taken, from 0. A piece
+    /// is taken after its relations are read (`read_piece`), so its number is its place
+    /// among the pieces that read, which `in` and the links between pieces name.
     pub fn take(&mut self, p: &'a Piece) -> usize {
         let n = self.at.len();
         self.at.insert(p.place.as_str(), n);
@@ -957,24 +964,38 @@ pub fn apply(given: &Given, changes: &[Change]) -> Given {
     out
 }
 
+/// Whether `changes` may be made to what the owner gave for `file`: refused when they would
+/// leave out something the answer as given doesn't (`left_out_by`), in its words. The one
+/// rule for a change to an owned file: a relink asks it (`Core::relink`), and an item edit
+/// keeps a stricter one until #257 (A4c), refusing on anything its expected answer leaves
+/// out (`Core::edit_item`).
+pub fn check_change(
+    file: &str,
+    given: &Given,
+    changes: &[Change],
+    s: &Settings,
+) -> Result<(), String> {
+    let lost = left_out_by(file, given, changes, s);
+    match lost.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "{file}: the change would leave out {}",
+            crate::problem::joined(&lost)
+        )),
+    }
+}
+
 /// What `changes` would leave out of what the owner gave for `file`: each problem of reading
-/// the changed answer that reading it as given doesn't have. A relink refuses a change that
-/// leaves anything out (`Core::relink`), since comparing the owner's new answer with the
-/// expected one can't see what both leave out.
+/// the changed answer about an item, a link or a link between pieces that reading it as given
+/// leaves in. Told apart by which one it is (its position, `Problem::about`), never by the
+/// words, which cut a place to 80 characters: a change keeps every position, since none adds,
+/// moves or removes anything.
 pub fn left_out_by(file: &str, given: &Given, changes: &[Change], s: &Settings) -> Vec<Problem> {
-    let mut before: Vec<String> = (read(file, given, s).problems.iter())
-        .map(Problem::one_line)
-        .collect();
-    let after = read(file, &apply(given, changes), s).problems;
-    (after.into_iter())
-        .filter(|p| match before.iter().position(|b| *b == p.one_line()) {
-            Some(i) => {
-                before.remove(i);
-                false
-            }
-            None => true,
-        })
-        .collect()
+    let before = read_all(file, given, s).problems;
+    let after = read_all(file, &apply(given, changes), s).problems;
+    let was = |p: &Problem| (p.subject()).is_some_and(|a| before.iter().any(|b| b.is_about(a)));
+    let new: Vec<Problem> = after.into_iter().filter(|p| !was(p)).collect();
+    crate::problem::capped(new)
 }
 
 /// The items of `given` that hold their places, by `placed` (`Given::placed_mask`).
@@ -1013,13 +1034,7 @@ impl Given {
     fn placed_mask(&self) -> Vec<bool> {
         let mut places = Places::default();
         (self.items.iter())
-            .map(|item| {
-                let fits = places.fits(item).is_ok();
-                if fits {
-                    places.claim(item);
-                }
-                fits
-            })
+            .map(|item| places.admit(item).is_ok())
             .collect()
     }
 }
@@ -1363,22 +1378,32 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
 
 /// Read what the owner gave for the file at workspace-relative `file`.
 pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
+    let mut out = read_all(file, given, s);
+    out.problems = crate::problem::capped(out.problems);
+    out
+}
+
+/// `read`, with every problem, each about the item (`item N`), the link (`link N`), the link
+/// between pieces (`between N`) or the record of an item left out (`left out N`) it is for.
+fn read_all(file: &str, given: &Given, s: &Settings) -> Read {
     let mut out = Read::default();
     let mut before = Before::default();
     // What was left out as the answer was read is said where it stood.
-    let mut left_out = given.left_out.iter().peekable();
+    let mut left_out = given.left_out.iter().enumerate().peekable();
+    let left = |(k, (_, l)): (usize, &(usize, LeftOut))| l.problem().about(format!("left out {k}"));
     for (i, item) in given.items.iter().enumerate() {
-        while let Some((_, l)) = left_out.next_if(|(at, _)| *at <= i) {
-            out.problems.push(l.problem());
+        while let Some(l) = left_out.next_if(|(_, (at, _))| *at <= i) {
+            out.problems.push(left(l));
         }
         // One short line, whatever the owner sent: a reason may quote a value.
-        let said =
-            |why: String| Problem::line(format!("{}: {}", short(item.place()), cut(&why, 200)));
-        if let Err(why) = before.places.fits(item) {
+        let said = |why: String| {
+            let words = format!("{}: {}", short(item.place()), cut(&why, 200));
+            Problem::line(words).about(format!("item {i}"))
+        };
+        if let Err(why) = before.places.admit(item) {
             out.problems.push(said(why));
             continue;
         }
-        before.places.claim(item);
         match item {
             GivenItem::Piece(p) => {
                 if let Err(why) = read_piece(file, p, s, &mut before, &mut out) {
@@ -1422,11 +1447,12 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
             },
         }
     }
-    out.problems.extend(left_out.map(|(_, l)| l.problem()));
-    for l in &given.links {
+    out.problems.extend(left_out.map(left));
+    for (i, l) in given.links.iter().enumerate() {
         if let Err(why) = before.places.link(l) {
             let said = format!("{}: {}", short(&l.place), cut(&why, 200));
-            out.problems.push(Problem::line(said));
+            out.problems
+                .push(Problem::line(said).about(format!("link {i}")));
             continue;
         }
         let target = crate::workspace::clean_target(&l.target);
@@ -1441,13 +1467,13 @@ pub fn read(file: &str, given: &Given, s: &Settings) -> Read {
     // an answer may have, the rest are, and that is said once.
     for (nth, l) in given.between.iter().enumerate() {
         if let Err(why) = before.places.joins(l, nth) {
-            out.problems.push(Problem::line(why));
+            out.problems
+                .push(Problem::line(why).about(format!("between {nth}")));
             if nth >= Betweens::MOST {
                 break;
             }
         }
     }
-    out.problems = crate::problem::capped(out.problems);
     out
 }
 

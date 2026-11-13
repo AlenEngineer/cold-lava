@@ -1751,6 +1751,33 @@ fn every_field_of_an_answer_names_its_bound() {
         &listed,
     );
 
+    // A field whose bound is applied where the answer is read into items, not as it arrives
+    // (`bounded::WithAnswer`), is a decision: its reader must check it (`given::Places::link`).
+    let mut later = Vec::new();
+    for (file, code) in &files {
+        let Some(short) = file.strip_prefix("../engine/src/") else {
+            continue;
+        };
+        for d in defined(code) {
+            let named = d
+                .fields
+                .iter()
+                .filter(|(_, ty, _)| names_in(ty).contains(&"WithAnswer"));
+            later.extend(named.map(|(field, _, _)| format!("{short}: {field}")));
+        }
+    }
+    later.sort();
+    only_listed(
+        "the fields whose bound applies where the answer is read into items",
+        "check it where the answer is read into items (`Places::link` does for a link), and list it",
+        &later,
+        &[
+            "owner/given.rs: GivenLink.place",
+            "owner/given.rs: GivenLink.target",
+            "owner/given.rs: GivenLink.text",
+        ],
+    );
+
     // Where the host reads what an extension sent into a type: in process.rs its answers
     // to file/read, file/edit, file/preview (a view, #296) and a shape's ask; in rpc.rs the
     // message itself, a JSON-RPC error and its requests (#296).

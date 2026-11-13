@@ -105,8 +105,8 @@ fn attributes(n: &CNode) -> Map<String, Json> {
 /// A canvas is another program's file, so the owner gives only what the engine takes, and
 /// asks the engine which that is (`given::Places`), the one rule for every owner: a node
 /// whose id is empty or too long gets no piece, no Markdown piece and no link; a node whose
-/// place another node already has gets no piece and no Markdown piece where the other has
-/// one; a link whose file is empty or too long is not given; an arrow past the bounds or with
+/// place another node already has gets no piece, no Markdown piece and no link where the
+/// other has one; a link whose file is empty or too long is not given; an arrow past the bounds or with
 /// an end that is no piece (a group, a node that isn't there) is not given. All of it stays
 /// in the file.
 pub fn read(text: &str) -> Result<Given, String> {
@@ -146,21 +146,23 @@ pub fn read(text: &str) -> Result<Given, String> {
             link,
         });
     }
-    // What the engine takes, asked in the answer's order.
+    // What the engine takes, asked in the answer's order. A file card's link is given by
+    // the first node whose file is at its place: a change names a node's file by its place
+    // (`edit`, `relink`), so it reaches that node and no other.
     let mut taken = Places::default();
+    let mut files: HashSet<&str> = HashSet::new();
     let mut kept: Vec<[bool; 3]> = Vec::with_capacity(nodes.len());
     for node in &nodes {
         let mut keep = [false; 3];
         for (k, item) in node.items.iter().enumerate() {
-            if let Some(item) = item.as_ref().filter(|item| taken.fits(item).is_ok()) {
-                taken.claim(item);
-                if let GivenItem::Piece(card) = item {
-                    taken.take(card);
-                }
-                keep[k] = true;
+            let Some(item) = item.as_ref() else { continue };
+            keep[k] = taken.admit(item).is_ok();
+            if let (true, GivenItem::Piece(card)) = (keep[k], item) {
+                taken.take(card);
             }
         }
-        keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
+        keep[2] = (node.link.as_ref())
+            .is_some_and(|l| taken.link(l).is_ok() && files.insert(l.place.as_str()));
         kept.push(keep);
     }
     // An arrow names two ids, and the first node of an id has the id as its place.
@@ -196,7 +198,8 @@ struct Node {
 }
 
 /// The canvas's new text with `changes` made: a Markdown piece's new text is its node's `text`,
-/// a link's new target its node's `file`. A typed item's field is refused, since a canvas gives
+/// a link's new target its node's `file`, each the first node with that field at the change's
+/// place. Two changes to one field are refused. A typed item's field is refused, since a canvas gives
 /// none, and so are a card's attribute and runs: the owner writes a card's text and file only.
 pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
     let fields = json_canvas::fields(text).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
@@ -234,6 +237,13 @@ pub fn edit(text: &str, changes: &[Change]) -> Result<String, String> {
                     "a card's text is Markdown and takes no runs (node {place})"
                 ));
             }
+        }
+    }
+    // Two changes to one field would be written one over the other.
+    for (i, (f, _)) in new.iter().enumerate() {
+        if new[..i].iter().any(|(g, _)| g.span == f.span) {
+            let place = self::place(&f.node, f.nth);
+            return Err(format!("two changes ask for node {place}'s {}", f.name));
         }
     }
     Ok(json_canvas::set(text, &new))
@@ -473,8 +483,7 @@ mod tests {
         assert_eq!(given.between.len(), 1);
         let mut taken = Places::default();
         for item in &given.items {
-            assert_eq!(taken.fits(item), Ok(()));
-            taken.claim(item);
+            assert_eq!(taken.admit(item), Ok(()));
             if let GivenItem::Piece(card) = item {
                 taken.take(card);
             }

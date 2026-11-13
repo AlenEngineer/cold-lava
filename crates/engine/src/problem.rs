@@ -117,6 +117,11 @@ impl Problem {
         self.about.as_deref() == Some(what)
     }
 
+    /// What it is about, when its maker said.
+    pub fn subject(&self) -> Option<&str> {
+        self.about.as_deref()
+    }
+
     /// The lines a person reads: what is said before the first, then the rest.
     pub fn said(&self) -> Vec<String> {
         let mut said = self.lines.clone();
