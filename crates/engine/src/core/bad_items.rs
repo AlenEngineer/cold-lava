@@ -509,6 +509,47 @@ fn an_edit_lands_only_on_the_item_it_names_where_a_bad_item_shares_its_place() {
     let _ = std::fs::remove_dir_all(core.root());
 }
 
+/// An edit reads the item that holds its place (`Given::placed`), not the first of its form
+/// there: here a piece past its bounds (an attribute's name over 256 bytes) stands before the
+/// chore at its place, with other runs. New words are made from the holder's runs, so its
+/// label stays plain words as the holder has none (#301's review, M1).
+#[test]
+fn an_edit_reads_the_item_that_holds_its_place() {
+    use crate::owner::given::Run;
+    let mut core = open("holder", &file_with(&[]), None);
+    let file = &core.index.workspace.owned[0];
+    let (rev, mut given) = (file.rev.clone().unwrap(), file.given.clone());
+    let mut first = given.items[0].clone();
+    let GivenItem::Piece(p) = &mut first else {
+        panic!("the chore is a piece");
+    };
+    p.attributes.insert("a".repeat(300), json!(1));
+    p.text = vec![
+        Run::Plain("Water the ".into()),
+        serde_json::from_value(json!({"label": "ferns"})).unwrap(),
+    ]
+    .into();
+    given.items.insert(0, first);
+    core.file_given(OWNER, FILE, &rev, Ok(given));
+    core.poll();
+    let chore = item(&core, "task", "chore");
+    assert_eq!(
+        serde_json::to_value(&chore).unwrap()["text"],
+        "Water plants"
+    );
+    let reword = set(&chore, "text", json!("Water the ferns"));
+    let Ok(Answer::Later(_)) = core.edit_item("agenda", &reword) else {
+        panic!("asked of the owner");
+    };
+    let (_, ask) = core.take_file_edits().pop().unwrap();
+    assert_eq!(
+        serde_json::to_value(&ask.changes).unwrap(),
+        json!([{"place": "chore", "text": ["Water the ferns"]}]),
+        "made from the holder's runs"
+    );
+    let _ = std::fs::remove_dir_all(core.root());
+}
+
 /// One rule for a change to an owned file, an item edit's as a relink's: refused before the
 /// owner is asked when it would leave out something new, in the rule's words, which name the
 /// item.

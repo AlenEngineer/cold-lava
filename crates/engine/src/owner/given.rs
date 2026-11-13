@@ -2862,6 +2862,59 @@ fields.star = { flag = "⭐", type = "bool" }
         assert_eq!((read.items.len(), said(&read).len()), (2, 0));
     }
 
+    /// A link between pieces past the count an answer may have is reported once, so the ones
+    /// after it are compared only by which pieces they join: an end that is no piece names
+    /// its place there, or an owner could repoint it to another missing place unseen (#301's
+    /// review, M2).
+    #[test]
+    fn a_link_past_the_count_is_compared_by_the_places_it_names() {
+        let s = settings("");
+        let piece = |place: &str| {
+            json!({"place": place, "role": "item", "text": ["x"],
+                   "attributes": {"task": true, "checkbox": "open"}})
+        };
+        let with = |to: &str| -> Given {
+            let mut g = given(json!({"items": [piece("chore"), piece("row")]}));
+            let good = Between {
+                from: "chore".into(),
+                to: "row".into(),
+                label: Default::default(),
+            };
+            let mut between = vec![good; Betweens::MOST + 1];
+            between.push(Between {
+                from: "chore".into(),
+                to: to.into(),
+                label: Default::default(),
+            });
+            g.between = between.into();
+            g
+        };
+        let asked = read_back("A.sheet", &with("nowhere"), &s);
+        assert_eq!(
+            same(&asked, &read_back("A.sheet", &with("nowhere"), &s)),
+            Ok(())
+        );
+        for to in ["elsewhere", "row"] {
+            let why = same(&asked, &read_back("A.sheet", &with(to), &s));
+            assert!(why.is_err(), "to {to}: read back as asked");
+        }
+    }
+
+    /// An owner that adds a bad item before one left out as it arrived is named for the one
+    /// it added, not for the one that only stands one record further (#301's review, M4).
+    #[test]
+    fn a_new_bad_item_is_named_and_not_the_one_after_it() {
+        let s = settings("");
+        let chore = json!({"place": "t", "role": "item", "text": ["x"],
+                           "attributes": {"task": true, "checkbox": "open"}});
+        let stray = |place: &str| json!({"place": place, "role": "item", "colour": "red"});
+        let before = given(json!({"items": [chore, stray("lr")]}));
+        let asked = read_back("A.sheet", &before, &s);
+        let gave = given(json!({"items": [chore, stray("new"), stray("lr")]}));
+        let why = same(&asked, &read_back("A.sheet", &gave, &s)).unwrap_err();
+        assert!(why.starts_with("it leaves out new: "), "{why}");
+    }
+
     /// A place names its first piece: an edit beside a second piece at a taken place reads
     /// back as asked, where the place check took the second for the first and refused it.
     #[test]
