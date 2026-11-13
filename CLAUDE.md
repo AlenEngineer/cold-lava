@@ -243,8 +243,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `in-progress`, `cancelled`), read as the workspace's status symbol for it. A piece's item
   id is `given::piece_id` (file, kind, place, then `piece`), apart from a typed item's and a
   Markdown piece's: none of the three may take another's id. An answer is untrusted:
-  every field of its types names its bound (`bounded.rs`), `Piece::check` and `read_piece`
-  apply depth, runs, attributes and names, and a place is never written into a file.
+  every field of its types names its bound (`bounded.rs`), which applies as the answer is
+  read in the host; an item is read on its own by its keys (`owner/answer.rs`: `Kept`,
+  `GivenItem::read`, a run's reader), so one that doesn't read is left out alone with the
+  reader's words (`Given::left_out`, its one home in memory, which the cache saves and reads
+  back beside the answer, and the read-back compares); `Piece::check` and `read_piece` apply what compares
+  a piece with the rest of its answer (depth, places, `in`), and a place is never written
+  into a file.
   Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
@@ -382,12 +387,18 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   bound, and the table of bounds, one type each (the trait `Limit`; `Place`, `Target`, the
   names, …; `Message` where what a field comes from bounds it, 64 MiB for a message;
   `Owed` for a bound the owner decided and #265's A4b applies, so the fields naming it are
-  A4b's list). The type names the bound and doesn't hold it: nothing is checked when a
-  value is built or read, and a reader applies a bound by asking the field (`fits`,
-  `most`), as `Piece::check` does. They serialize as what they hold, so revs don't move.
-  A field of an answer's type that holds a bare collection or JSON value, a slice, or a
-  type the scan can't follow fails `tests/one_door.rs`, which follows every type an answer
-  is read into; a new field names its bound.
+  A4b's list). The type names the bound and doesn't hold it: a value read from an answer
+  is refused past its bound as it is read, in the bound's words (`Limit::past`;
+  `ON_ARRIVAL` false for the two the answer's reader applies), and nothing is checked when
+  a value is built; a reader applies a bound to a value it didn't read by asking the field
+  (`fits`, `most`, `past`), as `Piece::check` does. They serialize as what they hold, so
+  revs don't move. A leaf: the reader's words are `owner/answer.rs` (`said`, the one place
+  serde's words are judged safe to show, cut to 200 characters, which the host's `unread`
+  asks; `LeftOut`), `serde_words.rs` (the leaf rule for serde's forms) and `problem.rs`
+  (`capped`, the first 100 problems; `cut`). A field of an answer's
+  type that holds a bare collection or JSON value, a slice, or a type the scan can't follow
+  fails `tests/one_door.rs`, which follows every type an answer is read into; a new field
+  names its bound.
 - `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
   split only where the app's own text or the TOML parser's layout breaks it. Pick a
   problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it

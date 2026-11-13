@@ -5,29 +5,36 @@
 //! bound: `place: Text<Place>` is a place whose bound is 1 to 1024 bytes.
 //! `crates/cold-lava/tests/one_door.rs` fails on a field of those types that names no bound.
 //!
-//! **The type names the bound; it doesn't hold it.** Nothing is checked when one of these
-//! values is built or read: `From`, `Default` and `Deserialize` take any value, and
-//! `DerefMut` hands out what is inside. A reader applies a bound by asking the field
-//! (`fits`, `most`): `Piece::check` and `Places::joins` do, for the bounds that apply today.
-//! A bound is a check on what arrives, never an invariant of the type. What the engine makes
-//! itself (`given::apply` from a change, the canvas owner's answer) is not checked as it is
-//! built. It becomes an owner's answer, and an answer goes through `given::read` and
-//! `Places` before any of it counts as items, so a piece out of bounds is left out there
-//! like an owner's. An item edit is refused when its expected answer doesn't read
-//! (`Core::edit_item`); a relink (a rename, a merge, a recipe) only compares its expected
-//! answer with what the owner gave (`given::same`), so a piece its change puts out of
-//! bounds drops out of both and is not refused (#265, A4b).
+//! **The type names the bound; it doesn't hold it.** A value read from an answer is
+//! checked as it is read (`Deserialize`), but nothing is checked when one is built: `From`
+//! and `Default` take any value, and `DerefMut` hands out what is inside. A reader applies a
+//! bound to a value it didn't read by asking the field (`fits`, `most`, `past`), as
+//! `Piece::check` does. A bound is a check on what arrives, never an invariant of the type.
+//! What the engine makes itself (`given::apply` from a change, the canvas owner's answer) is
+//! not checked as it is built. It becomes an owner's answer, and an answer goes through
+//! `given::read` and `Places` before any of it counts as items, so a piece out of bounds is
+//! left out there like an owner's. An item edit is refused when its expected answer doesn't
+//! read (`Core::edit_item`). A relink (a rename, a merge, a recipe) only compares its
+//! expected answer with what the owner gave (`given::same`): a piece its change puts out of
+//! bounds is left out of the owner's answer as it arrives, and is in the expected one's
+//! pieces, so the two differ and the relink is refused; A4b says so in the bound's words.
 //!
 //! The bounds are the table below, one type each, so a number is written once and every
 //! field that has it names it. Three kinds: a bound that applies today (`Place`, `Target`,
 //! the names, `Attributes`, and with the answer `LinkLabel` and `Betweens`); `Message`,
 //! where what bounds a field is where it came from, by decision; and `Owed`, a bound the
 //! owner decided on 2026-11-13 that is not applied yet. The fields that name `Owed` are
-//! what is left to do (#265, A4b), and that is done when none does.
+//! what is left to do (#265, A4b), and that is done when none does. Every bound is checked
+//! as a value is read from an answer (`Deserialize`, in the bound's words, `Limit::past`),
+//! which leaves out the item it is in; the two an answer's reader applies with the whole
+//! answer say so (`ON_ARRIVAL`). So nothing past a bound that applies reaches the core, its
+//! cache or the read-back.
 //!
-//! A leaf: it needs serde, serde_json and indexmap. The types are transparent on the wire, so
-//! what they serialize is what a `String`, a `Vec` or a map serialized: an item's `rev`
-//! hashes that JSON, and it doesn't move.
+//! A leaf: it needs serde, serde_json and indexmap. The types are transparent on the wire,
+//! so what they serialize is what a `String`, a `Vec` or a map serialized: an item's `rev`
+//! hashes that JSON, and it doesn't move. The reader's words (which of serde's may be shown,
+//! the cap on problems, what is kept of an item left out) are the reader's
+//! (`owner::answer`).
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -43,6 +50,12 @@ use serde_json::{Map, Value as Json};
 pub trait Limit {
     const LEAST: usize = 0;
     const MOST: usize;
+    /// Whether a value past it is refused as it is read, which leaves out the item it is in
+    /// (or, outside an item, refuses the answer). Else the reader of the whole answer applies
+    /// it, since what is left out there is named by what is around it.
+    const ON_ARRIVAL: bool = true;
+    /// What is said of a value past it. It holds no byte of the value.
+    fn past() -> String;
 }
 
 /// What bounds a field is where it came from: 64 MiB. An extension's answer is
@@ -58,6 +71,13 @@ pub trait Limit {
 pub struct Message;
 impl Limit for Message {
     const MOST: usize = 64 << 20;
+
+    fn past() -> String {
+        format!(
+            "it holds more than the {} MiB a message may",
+            Self::MOST >> 20
+        )
+    }
 }
 
 /// A bound the owner decided on 2026-11-13 and that is not applied yet: until #265's A4b
@@ -76,6 +96,10 @@ impl Limit for Message {
 pub struct Owed;
 impl Limit for Owed {
     const MOST: usize = Message::MOST;
+
+    fn past() -> String {
+        Message::past()
+    }
 }
 
 /// A piece's place: 1 to 1024 bytes (`Piece::check`; the piece is left out).
@@ -83,6 +107,10 @@ pub struct Place;
 impl Limit for Place {
     const LEAST: usize = 1;
     const MOST: usize = 1024;
+
+    fn past() -> String {
+        format!("its place is empty or longer than {} bytes", Self::MOST)
+    }
 }
 
 /// A link run's target: 1 to 4096 bytes (`Piece::check`; the piece is left out).
@@ -90,6 +118,13 @@ pub struct Target;
 impl Limit for Target {
     const LEAST: usize = 1;
     const MOST: usize = 4096;
+
+    fn past() -> String {
+        format!(
+            "a link's target is empty or longer than {} bytes",
+            Self::MOST
+        )
+    }
 }
 
 /// A cell's name: 1 to 256 bytes (`Piece::check`; the piece is left out).
@@ -97,6 +132,10 @@ pub struct CellName;
 impl Limit for CellName {
     const LEAST: usize = 1;
     const MOST: usize = 256;
+
+    fn past() -> String {
+        format!("a cell's name is empty or longer than {} bytes", Self::MOST)
+    }
 }
 
 /// An attribute's name: 1 to 256 bytes (`Piece::check`; the piece is left out).
@@ -104,6 +143,13 @@ pub struct AttributeName;
 impl Limit for AttributeName {
     const LEAST: usize = 1;
     const MOST: usize = 256;
+
+    fn past() -> String {
+        format!(
+            "an attribute's name is empty or longer than {} bytes",
+            Self::MOST
+        )
+    }
 }
 
 /// A label's name: 1 to 256 bytes (`Piece::check`; the piece is left out).
@@ -111,6 +157,13 @@ pub struct LabelName;
 impl Limit for LabelName {
     const LEAST: usize = 1;
     const MOST: usize = 256;
+
+    fn past() -> String {
+        format!(
+            "a label's name is empty or longer than {} bytes",
+            Self::MOST
+        )
+    }
 }
 
 /// A field run's name: 1 to 256 bytes (`Piece::check`; the piece is left out).
@@ -118,12 +171,23 @@ pub struct FieldName;
 impl Limit for FieldName {
     const LEAST: usize = 1;
     const MOST: usize = 256;
+
+    fn past() -> String {
+        format!(
+            "a field's name is empty or longer than {} bytes",
+            Self::MOST
+        )
+    }
 }
 
 /// A piece's attributes: at most 256 (`Piece::check`; the piece is left out).
 pub struct Attributes;
 impl Limit for Attributes {
     const MOST: usize = 256;
+
+    fn past() -> String {
+        format!("it has more than {} attributes", Self::MOST)
+    }
 }
 
 /// The label of a link between two pieces: at most 4096 bytes. Applied with the answer
@@ -131,6 +195,11 @@ impl Limit for Attributes {
 pub struct LinkLabel;
 impl Limit for LinkLabel {
     const MOST: usize = 4096;
+    const ON_ARRIVAL: bool = false;
+
+    fn past() -> String {
+        format!("its label is longer than {} bytes", Self::MOST)
+    }
 }
 
 /// The links between pieces of an answer: at most 65,536. Applied with the answer
@@ -138,11 +207,48 @@ impl Limit for LinkLabel {
 pub struct Betweens;
 impl Limit for Betweens {
     const MOST: usize = 65_536;
+    const ON_ARRIVAL: bool = false;
+
+    fn past() -> String {
+        format!(
+            "more than {} links between pieces: the rest are left out",
+            Self::MOST
+        )
+    }
 }
 
 /// Whether `n` is within `B`.
 pub fn fits<B: Limit>(n: usize) -> bool {
     (B::LEAST..=B::MOST).contains(&n)
+}
+
+/// `n` as it is read: an error in `B`'s words when `B` applies on arrival and `n` is past it.
+fn within<B: Limit, E: serde::de::Error>(n: usize) -> Result<(), E> {
+    match B::ON_ARRIVAL && !fits::<B>(n) {
+        true => Err(E::custom(B::past())),
+        false => Ok(()),
+    }
+}
+
+/// What each bound says of a value past it. Every bound is here: a test counts them.
+const PAST: [fn() -> String; 11] = [
+    Message::past,
+    Owed::past,
+    Place::past,
+    Target::past,
+    CellName::past,
+    AttributeName::past,
+    LabelName::past,
+    FieldName::past,
+    Attributes::past,
+    LinkLabel::past,
+    Betweens::past,
+];
+
+/// Whether `message` is what a bound says of a value past it (`Limit::past`): words of the
+/// engine's own, which hold nothing an answer wrote.
+pub fn is_past(message: &str) -> bool {
+    PAST.iter().any(|past| past() == message)
 }
 
 /// A text whose bound, in bytes, is `B`. It doesn't hold the bound: `fits` applies it.
@@ -177,6 +283,11 @@ impl<B: Limit> Text<B> {
     /// The most bytes its bound allows.
     pub fn most(&self) -> usize {
         B::MOST
+    }
+
+    /// What its bound says of a value past it.
+    pub fn past(&self) -> String {
+        B::past()
     }
 }
 
@@ -268,9 +379,12 @@ impl<B> Serialize for Text<B> {
     }
 }
 
-impl<'de, B> Deserialize<'de> for Text<B> {
+/// Refused past its bound (`Limit::ON_ARRIVAL`), in the bound's words.
+impl<'de, B: Limit> Deserialize<'de> for Text<B> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        String::deserialize(d).map(Text::from)
+        let text = String::deserialize(d)?;
+        within::<B, D::Error>(text.len())?;
+        Ok(Text::from(text))
     }
 }
 
@@ -396,15 +510,19 @@ impl<T: Serialize, B> Serialize for List<T, B> {
     }
 }
 
-impl<'de, T: Deserialize<'de>, B> Deserialize<'de> for List<T, B> {
+/// Refused past its bound (`Limit::ON_ARRIVAL`), in the bound's words.
+impl<'de, T: Deserialize<'de>, B: Limit> Deserialize<'de> for List<T, B> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Vec::<T>::deserialize(d).map(List::from)
+        let list = Vec::<T>::deserialize(d)?;
+        within::<B, D::Error>(list.len())?;
+        Ok(List::from(list))
     }
 }
 
 /// Named JSON values (a piece's attributes, a typed item's fields), in the order given: at
-/// most `C` of them, each name within `K` and each value within `V`. A reader asks `most`
-/// and `name_fits`; nothing reads `V` yet.
+/// most `C` of them, each name within `K` and each value that is text within `V`. All three
+/// are checked as an answer is read (`Deserialize`); a reader of a value it didn't read
+/// asks `most` and `name_fits`.
 pub struct Fields<C, K, V>(Map<String, Json>, Bounds<C, K, V>);
 
 /// The bounds of a map: of its count, its names and its values.
@@ -429,6 +547,16 @@ impl<C: Limit, K: Limit, V: Limit> Fields<C, K, V> {
     /// Whether `name` is within `K`, and the most bytes `K` allows.
     pub fn name_fits(&self, name: &str) -> (bool, usize) {
         (fits::<K>(name.len()), K::MOST)
+    }
+
+    /// What `C` says of too many names.
+    pub fn past(&self) -> String {
+        C::past()
+    }
+
+    /// What `K` says of a name past it.
+    pub fn name_past(&self) -> String {
+        K::past()
     }
 }
 
@@ -491,15 +619,25 @@ impl<C, K, V> Serialize for Fields<C, K, V> {
     }
 }
 
-impl<'de, C, K, V> Deserialize<'de> for Fields<C, K, V> {
+/// Refused past one of its bounds (`Limit::ON_ARRIVAL`), in the bound's words: its count,
+/// a name, or a value that is text.
+impl<'de, C: Limit, K: Limit, V: Limit> Deserialize<'de> for Fields<C, K, V> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Map::<String, Json>::deserialize(d).map(Fields::from)
+        let map = Map::<String, Json>::deserialize(d)?;
+        within::<C, D::Error>(map.len())?;
+        for (name, value) in &map {
+            within::<K, D::Error>(name.len())?;
+            if let Json::String(text) = value {
+                within::<V, D::Error>(text.len())?;
+            }
+        }
+        Ok(Fields::from(map))
     }
 }
 
 /// Named texts (a step's options, a rebind's inputs), in the order given: at most `C` of
-/// them, each name within `K` and each text within `V`. Nothing applies them yet: they are
-/// owed (`Owed`).
+/// them, each name within `K` and each text within `V`, checked as an answer is read
+/// (`Deserialize`).
 pub struct Pairs<C, K, V>(IndexMap<String, String>, Bounds<C, K, V>);
 
 impl<C, K, V> Pairs<C, K, V> {
@@ -573,9 +711,17 @@ impl<C, K, V> Serialize for Pairs<C, K, V> {
     }
 }
 
-impl<'de, C, K, V> Deserialize<'de> for Pairs<C, K, V> {
+/// Refused past one of its bounds (`Limit::ON_ARRIVAL`), in the bound's words: its count, a
+/// name or a text.
+impl<'de, C: Limit, K: Limit, V: Limit> Deserialize<'de> for Pairs<C, K, V> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        IndexMap::<String, String>::deserialize(d).map(Pairs::from)
+        let map = IndexMap::<String, String>::deserialize(d)?;
+        within::<C, D::Error>(map.len())?;
+        for (name, text) in &map {
+            within::<K, D::Error>(name.len())?;
+            within::<V, D::Error>(text.len())?;
+        }
+        Ok(Pairs::from(map))
     }
 }
 
@@ -615,5 +761,45 @@ mod tests {
         assert!(Text::<Message>::from("").fits());
         let many: List<u8, Attributes> = vec![0; 257].into();
         assert!(!many.fits());
+    }
+
+    /// A value past its bound is refused as it is read, in the bound's own words, which
+    /// `is_past` knows; a bound the answer's reader applies is not.
+    #[test]
+    fn a_value_past_its_bound_is_refused_as_it_is_read() {
+        let refused = |value: Json| -> Option<String> {
+            let e = serde_json::from_value::<Text<Place>>(value).err()?;
+            Some(e.to_string())
+        };
+        assert_eq!(refused(json!("p")), None);
+        let past = Some("its place is empty or longer than 1024 bytes".to_string());
+        assert_eq!(refused(json!("")), past);
+        assert_eq!(refused(json!("p".repeat(1025))), past);
+        assert!(is_past(past.as_deref().unwrap()));
+        let many = serde_json::from_value::<List<u8, Attributes>>(json!(vec![0; 257]));
+        assert_eq!(
+            many.unwrap_err().to_string(),
+            "it has more than 256 attributes"
+        );
+        let mut names = Map::new();
+        names.insert("x".repeat(257), json!(1));
+        let names = Json::Object(names);
+        let fields = serde_json::from_value::<Fields<Attributes, AttributeName, Message>>(names);
+        assert_eq!(
+            fields.unwrap_err().to_string(),
+            "an attribute's name is empty or longer than 256 bytes"
+        );
+        let long = json!("l".repeat(4097));
+        assert!(serde_json::from_value::<Text<LinkLabel>>(long).is_ok());
+        assert!(!is_past("its place is empty"));
+    }
+
+    /// Every bound says what it says of a value past it, so `is_past` knows its words.
+    #[test]
+    fn every_bound_is_in_the_table_of_what_bounds_say() {
+        let source = include_str!("bounded.rs");
+        // Spelled in two parts, so this line is not one of them.
+        let bounds = source.matches(&["impl", " Limit for "].concat()).count();
+        assert_eq!(bounds, PAST.len());
     }
 }

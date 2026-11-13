@@ -944,7 +944,9 @@ impl Core {
     }
 
     /// The answer of the extension named `by` to `ask` (`shape/region`, `shape/gesture`). Only
-    /// the extension that ships the shape may answer. What it wrote waits unread.
+    /// the extension that ships the shape may answer. It waits for a frontend's shapes
+    /// (`take_shape_answers`) already checked for what needs none (`Reply::arrived`), so no
+    /// answer in the wrong form, or with steps that can't run on their own, is kept.
     pub fn shape_answered(&mut self, by: &str, ask: &Ask, reply: Result<Reply, String>) {
         if !ask.shape().starts_with(&format!("{by}.")) {
             return;
@@ -952,7 +954,7 @@ impl Core {
         self.shape_answers.push(Replied {
             by: by.to_string(),
             ask: ask.clone(),
-            reply,
+            reply: reply.and_then(|reply| reply.arrived(ask)),
         });
     }
 
@@ -2212,7 +2214,7 @@ mod tests {
         let before = Given {
             items: file.given.items.iter().filter(markdown).cloned().collect(),
             links: file.given.links.clone(),
-            between: Default::default(),
+            ..Given::default()
         };
         let was = given::read("Board.canvas", &before, settings);
         // The two tasks, and the one paragraph, which a type on every text takes. That type

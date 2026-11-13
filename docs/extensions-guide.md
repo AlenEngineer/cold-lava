@@ -431,9 +431,12 @@ Then, for all three:
   workspace opens with your files' items before you have started. Change `version` when you
   change what you give. Answer within 10 s; an error, a late answer or an answer that doesn't
   read is said on the status line, and the file keeps what you gave before.
-- **An answer is checked.** A piece with an empty place, a place another piece has or a
-  `checkbox` that isn't one of the four words is reported and left out, and the rest is read.
-  A key or a role cold-lava doesn't know refuses the whole answer.
+- **An answer is checked, one item at a time.** A piece with an empty place, a place another
+  piece has or a `checkbox` that isn't one of the four words is reported and left out, and
+  the rest is read. So is an item with a key or a role cold-lava doesn't know: the status
+  line names the item's place and what was wrong (`p3: unknown field `colour`, expected one
+  of `place`, `role`, …`). An answer that isn't `{items, links}`, or a link that doesn't
+  read, is refused whole. At most 100 problems are said, then how many more.
 
 ### Two worked examples
 

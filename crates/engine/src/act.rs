@@ -497,9 +497,9 @@ pub struct ShapeAnswer {
     pub answer: Result<Answered, String>,
 }
 
-/// The extension's answer to an `Ask` as it wrote it. Nothing in it is checked: `read` makes
-/// it an `Answered`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// The extension's answer to an `Ask` as it wrote it, within its bounds. As it arrives, it
+/// is checked for what needs no shapes (`arrived`); `read` makes it an `Answered`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Reply {
     /// To `shape/region`: the members it shows, each an id and a label.
@@ -509,6 +509,43 @@ pub enum Reply {
         #[serde(rename = "do")]
         steps: List<Step, Owed>,
     },
+}
+
+/// An answer to `shape/region` as the wire has it.
+#[derive(Deserialize)]
+struct RegionWire {
+    items: List<RegionEntry, Owed>,
+}
+
+/// An answer to `shape/gesture` as the wire has it.
+#[derive(Deserialize)]
+struct GestureWire {
+    #[serde(rename = "do")]
+    steps: List<Step, Owed>,
+}
+
+/// An answer is read by what it says, as an untagged reading did: `items` that read make it
+/// a region's answer, else `do` that reads makes it a gesture's, whatever the other key
+/// holds. When only one of the two is there and it doesn't read, what is wrong with it is
+/// named (`missing field `label``); when neither reads, or neither is there, the answer
+/// says what the two forms are (`owner::answer::A_REPLY`).
+impl<'de> Deserialize<'de> for Reply {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let answer = serde_json::Map::<String, Json>::deserialize(d)?;
+        let (items, steps) = (answer.contains_key("items"), answer.contains_key("do"));
+        let answer = Json::Object(answer);
+        let region = match items.then(|| serde_json::from_value::<RegionWire>(answer.clone())) {
+            Some(Ok(r)) => return Ok(Reply::Region { items: r.items }),
+            other => other,
+        };
+        let gesture = steps.then(|| serde_json::from_value::<GestureWire>(answer));
+        match (region, gesture) {
+            (_, Some(Ok(g))) => Ok(Reply::Gesture { steps: g.steps }),
+            (Some(Err(e)), None) | (None, Some(Err(e))) => Err(D::Error::custom(e)),
+            _ => Err(D::Error::custom(crate::owner::answer::A_REPLY)),
+        }
+    }
 }
 
 /// One member a region shows, as the extension answers it: what it is (left out for a label
@@ -530,6 +567,32 @@ impl From<RegionEntry> for Entry {
 }
 
 impl Reply {
+    /// It as it arrives for `ask`: refused when it isn't in the form the ask has, taken when
+    /// its steps pass the rules a step meets on its own (`Steps::alone`), which need no
+    /// shapes, and else refused for what they get wrong with only its rebinds kept, so the
+    /// refusal can also name a shape that isn't loaded, as a loaded shape's steps are
+    /// refused for both (`Replied::read`). The core keeps nothing else
+    /// (`Core::shape_answered`).
+    pub fn arrived(self, ask: &Ask) -> Result<Arrived, String> {
+        let problems = match (ask, &self) {
+            (Ask::Region { .. }, Reply::Region { .. }) => Vec::new(),
+            (Ask::Gesture { .. }, Reply::Gesture { steps }) => Steps::alone(steps),
+            (Ask::Region { .. }, _) => return Err("it answered shape/region with steps".into()),
+            (Ask::Gesture { .. }, _) => return Err("it answered shape/gesture with items".into()),
+        };
+        if problems.is_empty() {
+            return Ok(Arrived::Taken(self));
+        }
+        let Reply::Gesture { steps } = self else {
+            return Err(cant_run(problems));
+        };
+        let rebinds = steps.into_iter().filter(|s| matches!(s, Step::Rebind(_)));
+        Ok(Arrived::Refused {
+            problems,
+            rebinds: rebinds.collect(),
+        })
+    }
+
     /// It as the answer to `ask`: only in the form the ask has, and its steps only when they
     /// pass the rules a loaded shape's steps pass, among the loaded `shapes`. Else why it
     /// isn't taken.
@@ -541,17 +604,32 @@ impl Reply {
             (Ask::Gesture { .. }, Reply::Gesture { steps }) => {
                 Steps::checked(steps.into_vec(), shapes)
                     .map(|steps| Answered::Gesture { steps })
-                    .map_err(|problems| {
-                        format!(
-                            "it answered shape/gesture with steps that can't run: {}",
-                            problem::joined(&problems)
-                        )
-                    })
+                    .map_err(cant_run)
             }
             (Ask::Region { .. }, _) => Err("it answered shape/region with steps".into()),
             (Ask::Gesture { .. }, _) => Err("it answered shape/gesture with items".into()),
         }
     }
+}
+
+/// Why an answer's steps don't run: the first `problem::PROBLEMS` of what is wrong, then how
+/// many more, on one line.
+fn cant_run(problems: Vec<crate::problem::Problem>) -> String {
+    format!(
+        "it answered shape/gesture with steps that can't run: {}",
+        problem::joined(&crate::problem::capped(problems))
+    )
+}
+
+/// A reply as it arrived (`Reply::arrived`): taken, or refused for what its steps get wrong
+/// on their own, with its rebinds kept for the shapes to be asked when it is taken.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Arrived {
+    Taken(Reply),
+    Refused {
+        problems: Vec<crate::problem::Problem>,
+        rebinds: Vec<Step>,
+    },
 }
 
 /// What the extension `by` replied to `ask`, or why it didn't, as the core keeps it until a
@@ -560,13 +638,24 @@ impl Reply {
 pub struct Replied {
     pub by: String,
     pub ask: Ask,
-    pub reply: Result<Reply, String>,
+    pub reply: Result<Arrived, String>,
 }
 
 impl Replied {
-    /// The answer it makes among the loaded `shapes`.
+    /// The answer it makes among the loaded `shapes`. A reply refused as it arrived is
+    /// refused for that and for every rebind to a shape that isn't loaded, in the order a
+    /// loaded shape's steps are (`Steps::checked`).
     pub fn read(self, shapes: &Shapes) -> ShapeAnswer {
-        let answer = (self.reply).and_then(|reply| reply.read(&self.ask, shapes));
+        let answer = (self.reply).and_then(|arrived| match arrived {
+            Arrived::Taken(reply) => reply.read(&self.ask, shapes),
+            Arrived::Refused {
+                mut problems,
+                rebinds,
+            } => {
+                problems.extend(Steps::unknown(&rebinds, shapes));
+                Err(cant_run(problems))
+            }
+        });
         ShapeAnswer {
             by: self.by,
             ask: self.ask,

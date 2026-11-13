@@ -220,6 +220,30 @@ impl Problem {
     }
 }
 
+/// The problems one answer from another program may have reported: the first 100, then how
+/// many more (`capped`).
+pub const PROBLEMS: usize = 100;
+
+/// `problems` with only the first `PROBLEMS` kept, and a last one that says how many more
+/// there were.
+pub fn capped(mut problems: Vec<Problem>) -> Vec<Problem> {
+    if problems.len() > PROBLEMS {
+        let more = problems.len() - PROBLEMS;
+        problems.truncate(PROBLEMS);
+        problems.push(Problem::line(format!("and {more} more")));
+    }
+    problems
+}
+
+/// The first `most` characters of what another program sent, for a message, with `…` where
+/// it is cut: every value an answer gave that a message quotes is cut so.
+pub fn cut(text: &str, most: usize) -> String {
+    match text.char_indices().nth(most) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
+}
+
 /// What goes on one line where several are `joined`: a `Problem` as `one_line` says it, or
 /// the words of one not yet a `Problem` (an owner's left-out pieces, the cards a merge left
 /// out, the notes a tag edit left alone), which stay as they are.
@@ -233,10 +257,9 @@ impl OnOneLine for Problem {
     }
 }
 
-/// The words of a problem not yet a `Problem`. What keeps this alive: an owner's left-out
-/// pieces (`given::Read.problems`, `Owned::take`), which #265's step A4 makes problems, and
-/// the cards a merge left out and the notes a tag edit left alone (`shape_editor::merged`,
-/// the menu's `refused`), which are a notice's words (#291). Once they are gone, so is this.
+/// The words of a problem not yet a `Problem`. What keeps this alive: the cards a merge
+/// left out and the notes a tag edit left alone (`shape_editor::merged`, the menu's
+/// `refused`), which are a notice's words (#291). Once they are gone, so is this.
 impl OnOneLine for String {
     fn on_one_line(&self) -> String {
         self.clone()
@@ -463,5 +486,16 @@ mod tests {
             "one; x: two"
         );
         assert_eq!(joined(&["kept".to_string()]), "kept");
+    }
+
+    /// The first 100 problems are kept, then how many more there were.
+    #[test]
+    fn problems_are_capped_at_a_hundred() {
+        let some = |n: usize| (0..n).map(|i| Problem::line(format!("p{i}"))).collect();
+        assert_eq!(capped(some(100)).len(), 100);
+        let many = capped(some(50_000));
+        assert_eq!(many.len(), 101);
+        assert_eq!(many[99].one_line(), "p99");
+        assert_eq!(many[100].one_line(), "and 49900 more");
     }
 }

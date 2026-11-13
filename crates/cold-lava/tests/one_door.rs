@@ -1501,8 +1501,11 @@ const LEAVES: [&str; 19] = [
     "f64",
 ];
 
-/// The module of the bounded types: what is in it is a bound, and is not followed.
+/// The module of the bounded types, and the types in it that hold a value within a bound
+/// another type names: those are bounds, and are not followed. The bounds themselves are
+/// unit types, followed like any other.
 const BOUNDED: &str = "../engine/src/bounded.rs";
+const WRAPPERS: [&str; 4] = ["Text", "List", "Fields", "Pairs"];
 
 /// The types read from an answer, from `roots` (`file: Type`) through every type a field of
 /// one names and every type one is read through (`#[serde(from = "…")]`), each as
@@ -1560,7 +1563,8 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
     while let Some((file, i)) = queue.pop() {
         let d = &all.iter().find(|(f, _, _)| *f == file).unwrap().2[i];
         let entry = format!("{}: {}", short(&file), d.name);
-        if file == BOUNDED || reached.contains(&entry) {
+        let wrapper = file == BOUNDED && WRAPPERS.contains(&d.name.as_str());
+        if wrapper || reached.contains(&entry) {
             continue;
         }
         reached.push(entry);
@@ -1600,10 +1604,50 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
     (reached, wrong)
 }
 
+/// The engine's modules of answers: every type read with serde in them (`Deserialize`) is
+/// an answer's, or one of these, which another program never sends.
+const ANSWER_FILES: [&str; 4] = [
+    "act.rs",
+    "owner/answer.rs",
+    "owner/edits.rs",
+    "owner/given.rs",
+];
+const NOT_ANSWERS: [&str; 7] = [
+    // What is asked of an extension, and what the frontend and the engine make.
+    "act.rs: Ask",
+    "act.rs: Gesture",
+    "act.rs: InputData",
+    "act.rs: MemberData",
+    "act.rs: Rebind",
+    // What is asked of an owner.
+    "owner/edits.rs: FileEdit",
+    "owner/given.rs: Change",
+];
+
+/// Every type of `ANSWER_FILES` that serde reads (it derives `Deserialize`), as `file: Type`.
+fn read_with_serde(files: &[(String, String)]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, code) in files {
+        let Some(short) = file.strip_prefix("../engine/src/") else {
+            continue;
+        };
+        if !ANSWER_FILES.contains(&short) {
+            continue;
+        }
+        let read = defined(code)
+            .into_iter()
+            .filter(|d| d.attributes.contains("Deserialize"));
+        found.extend(read.map(|d| format!("{short}: {}", d.name)));
+    }
+    found.sort();
+    found
+}
+
 /// What another program answers is held in types whose every field names its bound
 /// (`crates/engine/src/bounded.rs`, #265's step A4): an owner's `file/read` (`Given`) and
 /// `file/edit` (`NewText`), and an extension's `shape/region` and `shape/gesture` (`Reply`).
-/// This follows every type such an answer is read into, from those three, and fails on a
+/// This follows every type such an answer is read into, from those three and from every type
+/// serde reads in the modules of answers (`ANSWER_FILES`, but `NOT_ANSWERS`), and fails on a
 /// field that holds a `String`, a `Vec`, a map or a JSON value of its own. The list of types
 /// says what is followed: a new one fails until it is listed, and so does one that is gone.
 ///
@@ -1617,11 +1661,29 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
 #[test]
 fn every_field_of_an_answer_names_its_bound() {
     let files = crate_sources("engine");
-    let roots = [
+    let serde_reads = read_with_serde(&files);
+    let not_answers: Vec<String> = (serde_reads.iter())
+        .filter(|t| NOT_ANSWERS.contains(&t.as_str()))
+        .cloned()
+        .collect();
+    let remedy = "an answer's type is followed: take it off unless no other program sends it";
+    only_listed(
+        "types read with serde that no answer holds",
+        remedy,
+        &not_answers,
+        &NOT_ANSWERS,
+    );
+    let mut roots = vec![
         "owner/given.rs: Given",
         "owner/edits.rs: NewText",
         "act.rs: Reply",
     ];
+    roots.extend(
+        serde_reads
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !NOT_ANSWERS.contains(t)),
+    );
     let (reached, wrong) = answer_types(&files, &roots);
     assert!(
         wrong.is_empty(),
@@ -1631,10 +1693,27 @@ fn every_field_of_an_answer_names_its_bound() {
          follows, or a leaf"
     );
     let listed = [
+        "act.rs: GestureWire",
         "act.rs: RegionEntry",
+        "act.rs: RegionWire",
         "act.rs: Reply",
         "alphabet.rs: Mark",
         "alphabet.rs: Role",
+        "bounded.rs: AttributeName",
+        "bounded.rs: Attributes",
+        "bounded.rs: Betweens",
+        "bounded.rs: CellName",
+        "bounded.rs: FieldName",
+        "bounded.rs: LabelName",
+        "bounded.rs: LinkLabel",
+        "bounded.rs: Message",
+        "bounded.rs: Owed",
+        "bounded.rs: Place",
+        "bounded.rs: Target",
+        "owner/answer.rs: Kept",
+        "owner/answer.rs: LeftOut",
+        "owner/answer.rs: MarkdownWire",
+        "owner/answer.rs: TypedWire",
         "owner/edits.rs: NewText",
         "owner/given.rs: Between",
         "owner/given.rs: Cell",
@@ -1707,6 +1786,8 @@ fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
     assert_eq!(
         reached,
         [
+            "bounded.rs: Message",
+            "bounded.rs: Place",
             "other.rs: Far",
             "root.rs: Inner",
             "root.rs: Root",

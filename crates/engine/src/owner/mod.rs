@@ -20,6 +20,7 @@
 //! asks through `give` and `edit` below, and an answer from either kind of owner is handled by
 //! the same code from there on.
 
+pub mod answer;
 pub mod cache;
 pub mod canvas;
 pub mod change;

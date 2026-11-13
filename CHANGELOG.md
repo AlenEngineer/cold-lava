@@ -102,6 +102,48 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- An owner's item that doesn't read costs only itself (#265, step A4). An item with a key its
+  kind doesn't have, a value of the wrong kind or a role that isn't one of the nine used to
+  refuse the whole `file/read` answer, so the file showed nothing, and the status line said
+  only "its answer to file/read doesn't read as one". Now that item alone is left out and the
+  rest of the file's items show; the status line names its place and what was wrong
+  (`p3: unknown field `colour`, expected one of `place`, `role`, …`, `p4: its role "slide" is
+  not a role: one of document, section, …`). An answer that isn't `{items, links}`, or a link
+  that doesn't read, is still refused whole, and an edit in a file with an item left out is
+  still refused, naming it. A file whose answer was refused whole now takes part in renames:
+  if its owner keeps the bad item, the file is rewritten with its links repointed and the bad
+  item as it was; if its owner drops or changes it (reordering its keys counts), the whole
+  rename is refused, where the rename used to go ahead and leave that file alone.
+- A piece with an attribute's name over 256 bytes is reported as "an attribute's name is
+  empty or longer than 256 bytes" (it said "a attribute's").
+- At most 100 problems with an owner's answer are reported, then how many more (`and 49900
+  more`); 50,000 bad items made one message of about 4 MB. The same holds for the steps of an
+  extension's answer to `shape/gesture`.
+- An extension's answer to `shape/region` or `shape/gesture` is checked as it arrives, so the
+  core keeps no answer in the wrong form, or with steps that break a rule on their own (with
+  only their rebinds kept, so the refusal still names a rebind to a shape that isn't loaded).
+  An answer is read as before: `items` that read make it a region's answer, else `do` that
+  reads a gesture's. One that doesn't read now says what was wrong where it said "doesn't
+  read as one": "an answer to shape/region has items, and an answer to shape/gesture has do"
+  when neither form reads, and serde's words otherwise ("invalid type: null, expected a
+  map", "unknown variant `explode`, expected one of `edit`, `create`, `rebind`", "missing
+  field `label`"), cut to 200 characters and never naming a Rust type.
+- Every bound of a field applies as an answer is read, in the host before the core sees it
+  and in the engine as the owners' cache is read; the label of a link between pieces and the
+  number of such links apply as the answer is read into items. The owners' cache keeps what
+  an answer left out beside it, through any number of loads and saves, and no longer keeps
+  an item that is out of bounds. The cache has a format of its own, in its file's name and
+  in the file: a cache written before this is not read, so every owner is asked again once
+  after an upgrade (and once after a downgrade, whose binary keeps its own file). Until then
+  an owned file shows nothing, valid ones included: `items`, `agenda` and `table` never ask
+  owners, so on the command line alone every owned file stays "left out" until the menu is
+  opened once, or a `rename`, `recipe` or `item set` runs; and an owner that crashes or is
+  missing keeps all its files hidden for as long as it stays so, where the older binary
+  showed them from its cache. Open the workspace in the menu once after upgrading. A cached
+  answer whose items no longer all read (a bound applies now that didn't when it was saved)
+  is dropped as it loads and its owner asked again: until the owner answers, that file shows
+  nothing, its good items included; with the owner absent or broken, until it is back.
+
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and
   `attributes.toml` in `cold-lava types`, `shapes` and `attributes` (`cold-lava types`

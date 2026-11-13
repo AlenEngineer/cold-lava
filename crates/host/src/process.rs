@@ -495,134 +495,17 @@ impl Extension for Process {
     }
 }
 
-/// Why an extension's answer to `method` doesn't read, in plain words: serde's message where it
-/// is one of the forms that say only what the answer wrote and a kind of value
-/// (`says_only_the_answer`), and "doesn't read as one" for anything else. A message names one
-/// of cold-lava's own Rust types or variants in more ways than anyone can list (`untagged enum
-/// NAME`, `expected struct NAME`, `no variant of enum NAME found in flattened data`, …), so the
-/// forms kept are the listed ones and a form nobody has seen yet reads "as one". serde_json
-/// writes where it was in a text (` at line N column M`), which an answer read as a value
-/// never has; it is left out when it is there. #265's step A4 shrinks this: its bounded
-/// reader refuses an owner's answer in cold-lava's own words before serde has to.
+/// Why an extension's answer to `method` doesn't read, in plain words: what the bounded
+/// reader says (`cold_lava_engine::owner::answer::said`: its own words, or serde's where those
+/// say only what the answer wrote), and "doesn't read as one" for anything else. An owner's
+/// item that doesn't read is left out alone with its words as the answer is read
+/// (`owner::given`), so what reaches here is an answer that isn't the shape its method
+/// answers with (`{items, links}`, `{text}`, a view, `{items}` or `{do}`), or a link of one.
 fn unread(method: &str, e: &serde_json::Error) -> String {
-    let whole = e.to_string();
-    let at = format!(" at line {} column {}", e.line(), e.column());
-    let message = match e.line() {
-        0 => whole.as_str(),
-        _ => whole.strip_suffix(&at).unwrap_or(&whole),
-    };
-    match says_only_the_answer(message) {
-        true => format!("its answer to {method} doesn't read: {message}"),
-        false => format!("its answer to {method} doesn't read as one"),
+    match cold_lava_engine::owner::answer::said(e) {
+        Some(said) => format!("its answer to {method} doesn't read: {said}"),
+        None => format!("its answer to {method} doesn't read as one"),
     }
-}
-
-/// Whether serde's `message` is one of the forms that carry only what the answer wrote (a
-/// field's or a variant's name, a value) and what a value should have been. The shapes are
-/// serde 1.0.229's own (`serde_core::de::Error`'s defaults and `OneOf`):
-///
-/// - `missing field `NAME``, `duplicate field `NAME``;
-/// - `unknown field `NAME`, expected LIST`, `unknown field `NAME`, there are no fields`, and
-///   the same for `unknown variant` (`there are no variants`), where LIST is serde's list of
-///   the names the answer may use: `` `a` ``, `` `a` or `b` `` or `` one of `a`, `b`, `c` ``
-///   (every enum read from an answer renames its variants for the wire, and the list is of
-///   those names);
-/// - `invalid type: …, expected KIND`, `invalid value: …, expected KIND`,
-///   `invalid length N, expected KIND`, where KIND, what serde writes after the last
-///   `, expected ` (after the answer's own value, which may hold those words), is a kind of
-///   value (`is_a_kind`).
-///
-/// serde writes NAME, the answer's own, between backticks without escaping it, so NAME is
-/// what stands between the first backtick and the next, and the form is kept only when what
-/// follows it is exactly serde's own continuation: a name that holds a backtick ends early,
-/// and the rest of it is not serde's.
-fn says_only_the_answer(message: &str) -> bool {
-    for form in ["missing field `", "duplicate field `"] {
-        if let Some(rest) = message.strip_prefix(form) {
-            return rest
-                .split_once('`')
-                .is_some_and(|(_, after)| after.is_empty());
-        }
-    }
-    for (form, none) in [
-        ("unknown field `", ", there are no fields"),
-        ("unknown variant `", ", there are no variants"),
-    ] {
-        if let Some(rest) = message.strip_prefix(form) {
-            let Some((_, after)) = rest.split_once('`') else {
-                return false;
-            };
-            return after == none
-                || after
-                    .strip_prefix(", expected ")
-                    .is_some_and(is_serdes_list);
-        }
-    }
-    let valued = ["invalid type: ", "invalid value: ", "invalid length "];
-    if !valued.iter().any(|form| message.starts_with(form)) {
-        return false;
-    }
-    message
-        .rsplit_once(", expected ")
-        .is_some_and(|(_, kind)| is_a_kind(kind))
-}
-
-/// Whether `list` is serde's list of names (`OneOf`): `` `a` ``, `` `a` or `b` ``, or
-/// `` one of `a`, `b`, `c` ``, each name between backticks and holding none.
-fn is_serdes_list(list: &str) -> bool {
-    let one = |name: &str| {
-        let inner = name.strip_prefix('`').and_then(|n| n.strip_suffix('`'));
-        inner.is_some_and(|n| !n.is_empty() && !n.contains('`'))
-    };
-    match list.strip_prefix("one of ") {
-        Some(names) => names.split(", ").count() > 2 && names.split(", ").all(one),
-        None => match list.split_once(" or ") {
-            Some((a, b)) => one(a) && one(b),
-            None => one(list),
-        },
-    }
-}
-
-/// Whether serde's `expected` part is a kind of value, not a Rust item: made only of the words
-/// serde and serde_json write for kinds of value in what an answer is read into (serde's
-/// `de::impls` and `Unexpected`, serde_json's value deserializer: `a string`, `a map`, `a
-/// sequence`, `an array of length 2`, `string or map`, `map with a single key`, `option`,
-/// `unit`), and a number's type (`u8`, `f64`). A word it doesn't know, a struct, an enum or a
-/// variant reads "as one"; so does serde's jargon (`variant identifier`), which names nothing
-/// but helps no one.
-fn is_a_kind(kind: &str) -> bool {
-    const NUMBERS: [&str; 14] = [
-        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
-        "f32", "f64",
-    ];
-    const WORDS: [&str; 24] = [
-        "a",
-        "an",
-        "or",
-        "of",
-        "with",
-        "string",
-        "map",
-        "sequence",
-        "array",
-        "boolean",
-        "character",
-        "byte",
-        "borrowed",
-        "empty",
-        "single",
-        "key",
-        "unit",
-        "option",
-        "integer",
-        "number",
-        "null",
-        "length",
-        "elements",
-        "element",
-    ];
-    let word = |w: &str| WORDS.contains(&w) || w.chars().all(|c| c.is_ascii_digit());
-    NUMBERS.contains(&kind) || (!kind.is_empty() && kind.split(' ').all(word))
 }
 
 #[cfg(test)]
@@ -691,6 +574,12 @@ mod tests {
         ] {
             assert_eq!(says(&e), kept(message));
         }
+        // An answer to a shape that is neither form says what the two are.
+        let neither = serde_json::from_value::<crate::act::Reply>(json!({"nothing": 1}));
+        assert_eq!(
+            says(&neither.unwrap_err()),
+            kept("an answer to shape/region has items, and an answer to shape/gesture has do")
+        );
         let at = serde_json::from_str::<NewText>("{\"text\": 3}").unwrap_err();
         assert!(
             at.line() == 1 && at.to_string().contains(" at line 1 column "),
@@ -708,7 +597,6 @@ mod tests {
             Named { x: u8 },
         }
         let mut named: Vec<serde_json::Error> = vec![
-            serde_json::from_value::<crate::act::Reply>(json!({"nothing": 1})).unwrap_err(),
             serde_json::from_value::<NewText>(json!(3)).unwrap_err(),
             serde_json::from_value::<Variant>(json!({"Pair": [1]})).unwrap_err(),
             serde_json::from_value::<Variant>(json!({"Named": [1, 2]})).unwrap_err(),

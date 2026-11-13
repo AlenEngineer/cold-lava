@@ -583,3 +583,68 @@ fn the_messages_on_the_wire() {
                "rebind": {"shape": "card", "inputs": {"note": {"note": "Inbox/A.md"}}}})
     );
 }
+
+/// An answer to a shape is read by what it says, as an untagged reading did: `items` that
+/// read make it a region's answer, else `do` that reads makes it a gesture's, whatever the
+/// other key holds; one where neither reads is refused.
+#[test]
+fn a_shape_answer_is_read_by_what_it_says() {
+    let steps = json!([{"create": {"text": "x"}}]);
+    let items = json!([{"label": "a"}]);
+    let read = |answer: Json| serde_json::from_value::<Reply>(answer);
+    for answer in [
+        json!({"items": "x", "do": steps}),
+        json!({"items": null, "do": steps}),
+        json!({"do": steps}),
+    ] {
+        let reply = read(answer.clone()).unwrap_or_else(|e| panic!("{answer}: {e}"));
+        assert!(matches!(reply, Reply::Gesture { .. }), "{answer}");
+    }
+    for answer in [
+        json!({"items": items, "do": steps}),
+        json!({"items": items, "do": "x"}),
+        json!({"items": items}),
+    ] {
+        let reply = read(answer.clone()).unwrap_or_else(|e| panic!("{answer}: {e}"));
+        assert!(matches!(reply, Reply::Region { .. }), "{answer}");
+    }
+    for answer in [json!({"items": "x", "do": "y"}), json!({}), json!(null)] {
+        assert!(read(answer.clone()).is_err(), "{answer}");
+    }
+}
+
+/// An answer whose steps break a rule on their own and name a shape that isn't loaded is
+/// refused with both, as a loaded shape's steps are, though only one can be seen as it
+/// arrives.
+#[test]
+fn a_refused_gesture_answer_names_every_step_that_cant_run() {
+    let dir = workspace("both", "");
+    let mut core = Core::open(&dir).unwrap();
+    let table: toml::Table = toml::from_str(SHIPPED).unwrap();
+    let shapes = load([
+        Layer::built_in(),
+        Layer::extension("tally", [("tally.box".to_string(), table)]),
+    ]);
+    let ask = Ask::Gesture {
+        placed: 1,
+        shape: "tally.box".into(),
+        gesture: Gesture::Key { key: "x".into() },
+        inputs: IndexMap::new(),
+    };
+    let reply: Reply = serde_json::from_value(json!({"do": [
+        {"edit": {"item": "clicked", "set-field": {"field": "x"}}},
+        {"rebind": {"shape": "gone"}},
+    ]}))
+    .unwrap();
+    core.shape_answered("tally", &ask, Ok(reply));
+    let answers = core.take_shape_answers(&shapes);
+    let Err(why) = &answers[0].answer else {
+        panic!("{answers:?}");
+    };
+    assert!(
+        why.contains("set-field takes exactly one of value, add and remove")
+            && why.contains("its rebind names shape gone, which isn't loaded"),
+        "{why}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
