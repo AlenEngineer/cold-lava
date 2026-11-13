@@ -172,9 +172,9 @@ pub enum GivenItem {
     Typed {
         place: Text<Owed>,
         #[serde(rename = "type")]
-        kind: Text<Message>,
+        kind: Text<Owed>,
         #[serde(default)]
-        fields: Fields<Message, Message, Message>,
+        fields: Fields<Owed, Owed, Owed>,
     },
     /// A piece in the alphabet's terms: never Markdown.
     Piece(Piece),
@@ -194,9 +194,9 @@ struct MarkdownWire {
 struct TypedWire {
     place: Text<Owed>,
     #[serde(rename = "type")]
-    kind: Text<Message>,
+    kind: Text<Owed>,
     #[serde(default)]
-    fields: Fields<Message, Message, Message>,
+    fields: Fields<Owed, Owed, Owed>,
 }
 
 impl GivenItem {
@@ -769,11 +769,11 @@ fn read_piece<'a>(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GivenLink {
-    pub target: Text<Message>,
+    pub target: Text<Owed>,
     pub place: Text<Owed>,
     /// What it says around the link, for backlinks.
     #[serde(default)]
-    pub text: Text<Message>,
+    pub text: Text<Owed>,
 }
 
 /// A link from one piece of the file to another, by their places, with what the link says: a

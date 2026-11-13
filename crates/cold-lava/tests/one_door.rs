@@ -1403,7 +1403,7 @@ fn defined(code: &str) -> Vec<Defined> {
             }
             ("enum", Some('{')) => {
                 for variant in parts(inside(body).unwrap_or("")) {
-                    let (variant, _, _) = unattributed(variant);
+                    let (variant, _, variant_with) = unattributed(variant);
                     let at = variant.find(['{', '(']).unwrap_or(variant.len());
                     let (vname, vbody) = (variant[..at].trim(), &variant[at..]);
                     let found = match vbody.chars().next() {
@@ -1412,6 +1412,7 @@ fn defined(code: &str) -> Vec<Defined> {
                         _ => Vec::new(),
                     };
                     for (field, ty, with) in found {
+                        let with = with || variant_with;
                         fields.push((format!("{name}::{vname}.{field}"), ty, with));
                     }
                 }
@@ -1449,6 +1450,24 @@ fn module_of(code: &str, name: &str) -> Option<String> {
         return Some(path.replace("::", "/"));
     }
     None
+}
+
+/// Whether the file `code` takes `name` with a `use` from outside the engine (`std::`,
+/// another crate, `super::`, `self::`): a type the scan can't follow, whatever the engine
+/// names the same way.
+fn imported_from_outside(code: &str, name: &str) -> bool {
+    for (at, _) in code.match_indices("use ") {
+        let line = &code[code[..at].rfind('\n').map_or(0, |n| n + 1)..at];
+        if !(line.trim().is_empty() || line.trim() == "pub") {
+            continue;
+        }
+        let stmt = &code[at + "use ".len()..];
+        let stmt = &stmt[..stmt.find(';').unwrap_or(stmt.len())];
+        if !stmt.starts_with("crate::") && names_in(stmt).contains(&name) {
+            return true;
+        }
+    }
+    false
 }
 
 /// What an answer's types may hold without a bound of their own: none of these. A field
@@ -1517,6 +1536,9 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
             if let Some(found) = candidates.iter().find_map(|f| at(f.as_str())) {
                 return Some(found);
             }
+        }
+        if imported_from_outside(code, name) {
+            return None;
         }
         let mut anywhere = (all.iter()).filter_map(|(f, _, _)| at(f));
         let found = anywhere.next();
@@ -1719,6 +1741,7 @@ fn every_field_of_an_answer_names_its_bound() {
 #[test]
 fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
     let code = "use crate::other::{Far};\n\
+                use std::ops::Range;\n\
                 use crate::bounded::{List, Message, Place, Text};\n\
                 #[derive(Deserialize)]\n\
                 #[serde(\n    from = \"Wire\",\n)]\n\
@@ -1726,10 +1749,11 @@ fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
                 cache: String,\n    pub(crate) b: List<Inner, Message>,\n    \
                 #[serde(deserialize_with = \"x\")]\n    c: Option<u8>,\n}\n\
                 struct Wire {\n    c: Option<Far>,\n    p: PathBuf,\n    s: Box<[u8]>,\n    \
-                m: std::path::Path,\n}\n\
+                m: std::path::Path,\n    r: Range<u8>,\n}\n\
                 enum Inner {\n    Plain(Text<Message>),\n    #[serde(rename = \"x\")]\n    \
-                Named { d: Vec<u8>, e: bool },\n    Unit,\n}\n";
-    let far = "pub struct Far(pub Map<String, Json>);\n";
+                Named { d: Vec<u8>, e: bool },\n    \
+                #[serde(deserialize_with = \"y\")]\n    Read(u8),\n    Unit,\n}\n";
+    let far = "pub struct Far(pub Map<String, Json>);\npub struct Range;\n";
     let bounded = "pub struct Text<B>(String);\npub struct List<T, B>(Vec<T>);\n\
                    pub struct Place;\npub struct Message;\n";
     let files = vec![
@@ -1754,11 +1778,13 @@ fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
             "other.rs: Far.0: Map<String, Json>: Map has no bound",
             "other.rs: Far.0: Map<String, Json>: String has no bound",
             "root.rs: Inner::Named.d: Vec<u8>: Vec has no bound",
+            "root.rs: Inner::Read.0: u8: serde reads it with a function of its own",
             "root.rs: Root.c: Option<u8>: serde reads it with a function of its own",
             "root.rs: Wire.m: std::path::Path: a field type the scan can't follow: Path",
             "root.rs: Wire.m: std::path::Path: a field type the scan can't follow: path",
             "root.rs: Wire.m: std::path::Path: a field type the scan can't follow: std",
             "root.rs: Wire.p: PathBuf: a field type the scan can't follow: PathBuf",
+            "root.rs: Wire.r: Range<u8>: a field type the scan can't follow: Range",
             "root.rs: Wire.s: Box<[u8]>: a slice or an array",
         ]
     );

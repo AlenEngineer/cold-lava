@@ -111,6 +111,8 @@ change commands, keys and file formats; patch versions only fix things.
   not a role: one of document, section, …`). An answer that isn't `{items, links}`, or a link
   that doesn't read, is still refused whole, and an edit in a file with an item left out is
   still refused, naming it.
+- A piece with an attribute's name over 256 bytes is reported as "an attribute's name is
+  empty or longer than 256 bytes" (it said "a attribute's").
 - At most 100 problems with an owner's answer are reported, then how many more (`and 49900
   more`); 50,000 bad items made one message of about 4 MB. The same holds for the steps of an
   extension's answer to `shape/gesture`.

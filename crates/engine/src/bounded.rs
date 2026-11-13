@@ -9,11 +9,15 @@
 //! checked as it is read (`Deserialize`), but nothing is checked when one is built: `From`
 //! and `Default` take any value, and `DerefMut` hands out what is inside. A reader applies a
 //! bound to a value it didn't read by asking the field (`fits`, `most`, `past`), as
-//! `Piece::check` does. A bound is a check on what arrives, never an invariant of the type. What the engine makes
-//! itself (`given::apply` from an edit, the canvas owner's answer, a rename's new target) is
-//! not checked as it is built; it is safe because it is read like an answer before anything
-//! is written: an edit's expected answer goes through `given::read`, and a piece out of
-//! bounds there refuses the edit, and the canvas owner gives only the pieces `Places` takes.
+//! `Piece::check` does. A bound is a check on what arrives, never an invariant of the type.
+//! What the engine makes itself (`given::apply` from a change, the canvas owner's answer) is
+//! not checked as it is built. It becomes an owner's answer, and an answer goes through
+//! `given::read` and `Places` before any of it counts as items, so a piece out of bounds is
+//! left out there like an owner's. An item edit is refused when its expected answer doesn't
+//! read (`Core::edit_item`). A relink (a rename, a merge, a recipe) only compares its
+//! expected answer with what the owner gave (`given::same`): a piece its change puts out of
+//! bounds is left out of the owner's answer as it arrives, and is in the expected one's
+//! pieces, so the two differ and the relink is refused; A4b says so in the bound's words.
 //!
 //! The bounds are the table below, one type each, so a number is written once and every
 //! field that has it names it. Three kinds: a bound that applies today (`Place`, `Target`,
@@ -58,16 +62,16 @@ pub trait Limit {
     fn past() -> String;
 }
 
-/// What bounds a field is where it came from, by decision: 64 MiB. An extension's answer is
+/// What bounds a field is where it came from: 64 MiB. An extension's answer is
 /// one message, so the host's frames bound it (`frame::MAX_MESSAGE`). The other ways these
 /// types are filled are bounded by what they come from: the canvas owner's answer by the
 /// canvas file it reads, the owners' cache by the answers the engine kept in it, a shape's
-/// steps written in TOML by that file. The fields that name it: an answer's items and links,
-/// a Markdown piece's text, a typed item's type and fields, a link's target and the words
-/// around it, a file's new text (`NewText`), what a region shows (an id and a label), a
-/// run's marks, a piece's runs (their number is bounded with the piece, `given::MAX_RUNS`),
-/// and what names a place (`in`, the ends of a link between pieces), which must name a piece
-/// taken before it.
+/// steps written in TOML by that file. The fields that name it: an answer's items and links
+/// (the owner decided they are bounded only by the message), a Markdown piece's text, a
+/// file's new text (`NewText`), what a region shows (an id and a label), a run's marks, a
+/// piece's runs (their number is bounded with the piece, `given::MAX_RUNS`), and what names
+/// a place (`in`, the ends of a link between pieces), which must name a piece taken before
+/// it.
 pub struct Message;
 impl Limit for Message {
     const MOST: usize = 64 << 20;
@@ -85,7 +89,14 @@ impl Limit for Message {
 /// list: a place in every form (1 to 1024 bytes, unique), a piece's text (1 MiB in total), a
 /// string attribute (1 MiB), a link's words (4096 bytes), a row's cells (4096), a region's
 /// answer (50,000 items), a gesture's answer (64 steps, names up to 256 bytes and values up to
-/// 64 KiB).
+/// 64 KiB). Also, from the proposal the owner accepted ("generous, as proposed"), numbers
+/// the owner confirms before A4b merges: a file link's target (1 to 4096 bytes, as a link
+/// run's) and the words around it (4096 bytes), a typed item's type and field names (256
+/// bytes), its fields (256), and their values (a scalar, or a list of up to 4096).
+///
+/// A4b applies each where every answer passes, `given::read` and `Places`, not only as an
+/// answer arrives: the canvas owner's answer and what `given::apply` makes never arrive, and
+/// the rule is one for every form, the built-in canvas owner's included.
 pub struct Owed;
 impl Limit for Owed {
     const MOST: usize = Message::MOST;
@@ -139,7 +150,7 @@ impl Limit for AttributeName {
 
     fn past() -> String {
         format!(
-            "a attribute's name is empty or longer than {} bytes",
+            "an attribute's name is empty or longer than {} bytes",
             Self::MOST
         )
     }
@@ -684,9 +695,10 @@ impl<'de, T: Deserialize<'de>, B: Limit> Deserialize<'de> for List<T, B> {
     }
 }
 
-/// Named JSON values (a piece's attributes, a typed item's fields), in the order given, whose
-/// bounds are named here and applied by `fits` and `name_fits`: at
-/// most `C` of them, each name within `K` and each value within `V`.
+/// Named JSON values (a piece's attributes, a typed item's fields), in the order given: at
+/// most `C` of them, each name within `K` and each value that is text within `V`. All three
+/// are checked as an answer is read (`Deserialize`); a reader of a value it didn't read
+/// asks `most` and `name_fits`.
 pub struct Fields<C, K, V>(Map<String, Json>, Bounds<C, K, V>);
 
 /// The bounds of a map: of its count, its names and its values.
@@ -703,11 +715,6 @@ impl<C, K, V> Fields<C, K, V> {
 }
 
 impl<C: Limit, K: Limit, V: Limit> Fields<C, K, V> {
-    /// Whether it has no more names than `C` allows.
-    pub fn fits(&self) -> bool {
-        fits::<C>(self.0.len()) && self.0.values().all(value_fits::<V>)
-    }
-
     /// The most names `C` allows.
     pub fn most(&self) -> usize {
         C::MOST
@@ -726,15 +733,6 @@ impl<C: Limit, K: Limit, V: Limit> Fields<C, K, V> {
     /// What `K` says of a name past it.
     pub fn name_past(&self) -> String {
         K::past()
-    }
-}
-
-/// Whether a JSON value is within `V`: a text by its bytes; anything else is a number, a
-/// truth or nothing, or a list or table its reader refuses on its own.
-fn value_fits<V: Limit>(value: &Json) -> bool {
-    match value {
-        Json::String(text) => fits::<V>(text.len()),
-        _ => true,
     }
 }
 
@@ -813,23 +811,14 @@ impl<'de, C: Limit, K: Limit, V: Limit> Deserialize<'de> for Fields<C, K, V> {
     }
 }
 
-/// Named texts (a step's options, a rebind's inputs), in the order given, whose bounds are
-/// named here and applied by `fits` and `name_fits`: at most `C` of
-/// them, each name within `K` and each text within `V`.
+/// Named texts (a step's options, a rebind's inputs), in the order given: at most `C` of
+/// them, each name within `K` and each text within `V`, checked as an answer is read
+/// (`Deserialize`).
 pub struct Pairs<C, K, V>(IndexMap<String, String>, Bounds<C, K, V>);
 
 impl<C, K, V> Pairs<C, K, V> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-}
-
-impl<C: Limit, K: Limit, V: Limit> Pairs<C, K, V> {
-    /// Whether it is within its bounds: its count, each name and each text.
-    pub fn fits(&self) -> bool {
-        let each =
-            |(name, text): (&String, &String)| fits::<K>(name.len()) && fits::<V>(text.len());
-        fits::<C>(self.0.len()) && self.0.iter().all(each)
     }
 }
 
@@ -973,7 +962,7 @@ mod tests {
         let fields = serde_json::from_value::<Fields<Attributes, AttributeName, Message>>(names);
         assert_eq!(
             said(&fields.unwrap_err()).unwrap(),
-            "a attribute's name is empty or longer than 256 bytes"
+            "an attribute's name is empty or longer than 256 bytes"
         );
         let long = json!("l".repeat(4097));
         assert!(serde_json::from_value::<Text<LinkLabel>>(long).is_ok());
