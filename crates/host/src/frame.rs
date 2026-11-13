@@ -2,13 +2,13 @@
 //! line, other header lines ignored, an empty line, then N bytes of JSON. Lines end in `\r\n`; a
 //! bare `\n` is read too.
 
-use cold_lava_engine::bounded::{Bound, Message};
+use cold_lava_engine::bounded::{Limit, Message};
 use std::io::{self, BufRead, Write};
 
 /// No message is bigger: a stream that says otherwise is broken, not a message to wait for.
 /// It is the bound of what an answer holds that has no bound of its own
 /// (`cold_lava_engine::bounded::Message`).
-pub const MAX_MESSAGE: usize = <Message as Bound>::MOST;
+pub const MAX_MESSAGE: usize = <Message as Limit>::MOST;
 
 pub fn write(w: &mut impl Write, message: &[u8]) -> io::Result<()> {
     write!(w, "Content-Length: {}\r\n\r\n", message.len())?;

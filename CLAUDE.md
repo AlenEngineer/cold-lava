@@ -383,15 +383,19 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `paths.rs`: the user's home and config folders.
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
-  bound, and the table of bounds, one type each (`Place`, `Target`, `Runs`, …; `Message`
-  where only the 64 MB message bounds a field). They serialize as what they hold, so revs
-  don't move, and refuse a value past their bound as it is read, in the bound's words
-  (`Bound::past`; `ON_ARRIVAL` false for the two the answer's reader applies). `said` is
-  the one place serde's words are judged safe to show (the host's `unread` asks it);
-  `capped` keeps the first 100 problems. A field of an answer's type that holds a bare
-  `String`, `Vec`, map or JSON value fails `tests/one_door.rs`, which follows every type an
-  answer is read into; a new field names its bound, `Message` when it has none of its own
-  yet.
+  bound, and the table of bounds, one type each (the trait `Limit`; `Place`, `Target`, the
+  names, …; `Message` where what a field comes from bounds it, 64 MiB for a message;
+  `Owed` for a bound the owner decided and #265's A4b applies, so the fields naming it are
+  A4b's list). The type names the bound and doesn't hold it: a value read from an answer
+  is refused past its bound as it is read, in the bound's words (`Limit::past`;
+  `ON_ARRIVAL` false for the two the answer's reader applies), and nothing is checked when
+  a value is built; a reader applies a bound to a value it didn't read by asking the field
+  (`fits`, `most`, `past`), as `Piece::check` does. They serialize as what they hold, so
+  revs don't move. `said` is the one place serde's words are judged safe to show (the
+  host's `unread` asks it); `capped` keeps the first 100 problems. A field of an answer's
+  type that holds a bare collection or JSON value, a slice, or a type the scan can't follow
+  fails `tests/one_door.rs`, which follows every type an answer is read into; a new field
+  names its bound.
 - `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
   split only where the app's own text or the TOML parser's layout breaks it. Pick a
   problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it

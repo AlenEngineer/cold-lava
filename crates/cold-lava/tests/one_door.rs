@@ -1285,21 +1285,24 @@ fn inside(text: &str) -> Option<&str> {
     None
 }
 
-/// A part without the attributes before it (`#[…]`), and whether one of them keeps serde
-/// from reading it (`skip`, `skip_deserializing`).
-fn unattributed(mut part: &str) -> (&str, bool) {
-    let mut skipped = false;
+/// A part without the attributes before it (`#[…]`), whether one of them keeps serde from
+/// reading it (`skip`, `skip_deserializing`), and whether one reads it with a function of
+/// its own (`with`, `deserialize_with`), which the scan can't follow.
+fn unattributed(mut part: &str) -> (&str, bool, bool) {
+    let (mut skipped, mut with) = (false, false);
     while let Some(rest) = part.strip_prefix('#') {
         let Some(attribute) = inside(rest) else {
             break;
         };
         let words = attribute.replace(['(', ')', ',', '='], " ");
+        let mut words = words.split(' ');
         skipped |= words
-            .split(' ')
+            .clone()
             .any(|w| w == "skip" || w == "skip_deserializing");
+        with |= words.any(|w| w == "with" || w == "deserialize_with");
         part = rest[attribute.len() + 2..].trim_start();
     }
-    (part, skipped)
+    (part, skipped, with)
 }
 
 /// A field or a variant without its visibility (`pub`, `pub(crate)`).
@@ -1317,75 +1320,99 @@ fn unpublished(part: &str) -> &str {
     }
 }
 
-/// The types of the fields a struct's or a struct variant's body declares, by field name.
-fn field_types(body: &str) -> Vec<(String, String)> {
+/// The fields a struct's or a struct variant's body declares and serde reads: each one's
+/// name, its type, and whether serde reads it with a function of its own (`with`).
+fn field_types(body: &str) -> Vec<(String, String, bool)> {
     let mut out = Vec::new();
     for part in parts(body) {
-        let (part, skipped) = unattributed(part);
+        let (part, skipped, with) = unattributed(part);
         if let (false, Some((name, ty))) = (skipped, unpublished(part).split_once(':')) {
-            out.push((name.trim().to_string(), ty.trim().to_string()));
+            out.push((name.trim().to_string(), ty.trim().to_string(), with));
         }
     }
     out
 }
 
 /// A struct or an enum of `code`: its name, the attributes before it and every type its
-/// fields and variants hold (`Struct.field`, `Enum::Variant.field`, `Enum::Variant.0`).
+/// fields and variants hold (`Struct.field`, `Enum::Variant.field`, `Enum::Variant.0`), each
+/// with whether serde reads it with a function of its own.
 struct Defined {
     name: String,
     attributes: String,
-    fields: Vec<(String, String)>,
+    fields: Vec<(String, String, bool)>,
+}
+
+/// Which lines of `lines` are in an attribute (`#[…]`), one that runs over several lines
+/// included.
+fn in_attributes(lines: &[&str]) -> Vec<bool> {
+    let mut depth = 0i32;
+    let mut out = Vec::new();
+    for line in lines {
+        let starts = depth == 0 && line.trim_start().starts_with("#[");
+        let inside = depth > 0 || starts;
+        if inside {
+            depth += line.matches('[').count() as i32 - line.matches(']').count() as i32;
+        }
+        out.push(inside);
+    }
+    out
 }
 
 /// Every struct and enum `code` defines.
 fn defined(code: &str) -> Vec<Defined> {
     let mut out = Vec::new();
     let lines: Vec<&str> = code.lines().collect();
+    let attribute = in_attributes(&lines);
     for (i, line) in lines.iter().enumerate() {
         let item = unpublished(line.trim_start());
         let (kind, rest) = match (item.strip_prefix("struct "), item.strip_prefix("enum ")) {
-            (Some(rest), _) => ("struct", rest),
-            (_, Some(rest)) => ("enum", rest),
+            (Some(rest), _) if !attribute[i] => ("struct", rest),
+            (_, Some(rest)) if !attribute[i] => ("enum", rest),
             _ => continue,
         };
         let name: String = (rest.chars())
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();
-        let attributes = (lines[..i].iter().rev())
-            .take_while(|l| l.trim_start().starts_with("#[") || l.trim_start().starts_with(')'))
-            .copied()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let first = (0..i)
+            .rev()
+            .take_while(|j| attribute[*j])
+            .last()
+            .unwrap_or(i);
+        let attributes = lines[first..i].join(" ");
         let after: String = lines[i..].join("\n");
         let after = &after[after.find(&name).unwrap_or(0) + name.len()..];
         let open = after.find(['{', '(', ';']).unwrap_or(after.len());
         let body = &after[open..];
+        let tuple = |body: &str| -> Vec<(String, String, bool)> {
+            let types = parts(inside(body).unwrap_or("")).into_iter().enumerate();
+            types
+                .map(|(n, ty)| (n.to_string(), unpublished(ty).to_string(), false))
+                .collect()
+        };
         let mut fields = Vec::new();
         match (kind, body.chars().next()) {
             ("struct", Some('{')) => {
-                for (field, ty) in field_types(inside(body).unwrap_or("")) {
-                    fields.push((format!("{name}.{field}"), ty));
+                for (field, ty, with) in field_types(inside(body).unwrap_or("")) {
+                    fields.push((format!("{name}.{field}"), ty, with));
                 }
             }
             ("struct", Some('(')) => {
-                for (n, ty) in parts(inside(body).unwrap_or("")).iter().enumerate() {
-                    fields.push((format!("{name}.{n}"), unpublished(ty).to_string()));
+                for (n, ty, with) in tuple(body) {
+                    fields.push((format!("{name}.{n}"), ty, with));
                 }
             }
             ("enum", Some('{')) => {
                 for variant in parts(inside(body).unwrap_or("")) {
-                    let (variant, _) = unattributed(variant);
+                    let (variant, _, _) = unattributed(variant);
                     let at = variant.find(['{', '(']).unwrap_or(variant.len());
                     let (vname, vbody) = (variant[..at].trim(), &variant[at..]);
                     let found = match vbody.chars().next() {
                         Some('{') => field_types(inside(vbody).unwrap_or("")),
-                        Some('(') => (parts(inside(vbody).unwrap_or("")).iter().enumerate())
-                            .map(|(n, ty)| (n.to_string(), ty.to_string()))
-                            .collect(),
+                        Some('(') => tuple(vbody),
                         _ => Vec::new(),
                     };
-                    for (field, ty) in found {
-                        fields.push((format!("{name}::{vname}.{field}"), ty));
+                    for (field, ty, with) in found {
+                        fields.push((format!("{name}::{vname}.{field}"), ty, with));
                     }
                 }
             }
@@ -1431,14 +1458,42 @@ const UNBOUNDED: [&str; 14] = [
     "HashSet", "BTreeSet", "VecDeque", "str", "Cow",
 ];
 
+/// What a field may name that the scan doesn't follow: a type that only wraps the one it
+/// holds, and the scalars, whose size is fixed.
+const LEAVES: [&str; 19] = [
+    "Option",
+    "Box",
+    "PhantomData",
+    "bool",
+    "char",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "u128",
+    "usize",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "i128",
+    "isize",
+    "f32",
+    "f64",
+];
+
 /// The module of the bounded types: what is in it is a bound, and is not followed.
 const BOUNDED: &str = "../engine/src/bounded.rs";
 
 /// The types read from an answer, from `roots` (`file: Type`) through every type a field of
-/// one holds and every type one is read through (`#[serde(from = "…")]`), each as
-/// `file: Type`; and each field among them that holds an unbounded type (`UNBOUNDED`), as
-/// `file: Type.field: type`. A name is the type of its own file, else the one the file takes
-/// with a `use crate::`, else the only type of that name in the engine.
+/// one names and every type one is read through (`#[serde(from = "…")]`), each as
+/// `file: Type`; and each field among them that breaks the rule, as `file: Type.field: type:
+/// why`. The rule: every name in a field's type is a bounded type (`BOUNDED`), a type the
+/// scan follows, or a leaf (`LEAVES`); a bare collection (`UNBOUNDED`), a slice, a name the
+/// scan can't find in the engine (another crate's type, a path, one behind a re-export) and
+/// a field serde reads with a function of its own are each named. A name is the type of its
+/// own file, else the one the file takes with a `use crate::`, else the only type of that
+/// name in the engine.
 fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec<String>) {
     let all: Vec<(&str, &str, Vec<Defined>)> = (files.iter())
         .map(|(file, code)| (file.as_str(), code.as_str(), defined(code)))
@@ -1471,42 +1526,56 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
         );
         found
     };
-    let (mut reached, mut unbounded) = (Vec::new(), Vec::new());
-    let mut queue: Vec<(String, String)> = (roots.iter())
+    let short = |file: &str| file.trim_start_matches("../engine/src/").to_string();
+    let (mut reached, mut wrong) = (Vec::new(), Vec::new());
+    let mut queue: Vec<(String, usize)> = (roots.iter())
         .map(|r| {
             let (file, name) = r.split_once(": ").unwrap();
-            (format!("../engine/src/{file}"), name.to_string())
+            let found = find(&format!("../engine/src/{file}"), name);
+            found.unwrap_or_else(|| panic!("the root {r} is no struct or enum"))
         })
         .collect();
-    while let Some((file, name)) = queue.pop() {
-        let Some((file, i)) = find(file.as_str(), name.as_str()) else {
-            continue;
-        };
-        let entry = format!("{}: {name}", file.trim_start_matches("../engine/src/"));
+    while let Some((file, i)) = queue.pop() {
+        let d = &all.iter().find(|(f, _, _)| *f == file).unwrap().2[i];
+        let entry = format!("{}: {}", short(&file), d.name);
         if file == BOUNDED || reached.contains(&entry) {
             continue;
         }
         reached.push(entry);
-        let d = &all.iter().find(|(f, _, _)| *f == file).unwrap().2[i];
         let through = d.attributes.split("from = \"").skip(1);
         for via in through.filter_map(|rest| rest.split_once('"')) {
-            queue.push((file.clone(), via.0.to_string()));
+            let found = find(&file, via.0);
+            let found = found.unwrap_or_else(|| {
+                panic!(
+                    "{} is read through {}, which the scan can't find",
+                    d.name, via.0
+                )
+            });
+            queue.push(found);
         }
-        for (field, ty) in &d.fields {
-            let names = names_in(ty);
-            if names.iter().any(|n| UNBOUNDED.contains(n)) {
-                let short = file.trim_start_matches("../engine/src/");
-                unbounded.push(format!("{short}: {field}: {ty}"));
+        for (field, ty, with) in &d.fields {
+            let mut say = |why: &str| wrong.push(format!("{}: {field}: {ty}: {why}", short(&file)));
+            if *with {
+                say("serde reads it with a function of its own");
             }
-            let types = names
-                .into_iter()
-                .filter(|n| n.starts_with(char::is_uppercase));
-            queue.extend(types.map(|n| (file.clone(), n.to_string())));
+            if ty.contains('[') {
+                say("a slice or an array");
+            }
+            for name in names_in(ty) {
+                if UNBOUNDED.contains(&name) {
+                    say(&format!("{name} has no bound"));
+                } else if LEAVES.contains(&name) {
+                } else if let Some(found) = find(&file, name) {
+                    queue.push(found);
+                } else {
+                    say(&format!("a field type the scan can't follow: {name}"));
+                }
+            }
         }
     }
     reached.sort();
-    unbounded.sort();
-    (reached, unbounded)
+    wrong.sort();
+    (reached, wrong)
 }
 
 /// The engine's modules of answers: every type read with serde in them (`Deserialize`) is
@@ -1552,10 +1621,12 @@ fn read_with_serde(files: &[(String, String)]) -> Vec<String> {
 /// says what is followed: a new one fails until it is listed, and so does one that is gone.
 ///
 /// It reads the text, so it can't see an answer read into a type outside these three (the
-/// host's reads are counted below, so a new one fails there), a field whose type comes
-/// through a type alias or a macro, or what a hand-written `Deserialize` reads on its way
-/// (`WireLink` reads a map, then one of two types this follows). A view's content
-/// (`file/preview`) is the views crate's, outside this guard (#296).
+/// host's reads with `serde_json::from_…` are counted below, so a new one fails there), a
+/// field whose type comes through a type alias or a macro, or what a hand-written
+/// `Deserialize` reads on its way (`WireLink` reads a map, then one of two types this
+/// follows). A view's content (`file/preview`) is the views crate's, outside this guard
+/// (#296), and so is the owners' cache read from disk (`owner/cache.rs`), which holds
+/// `Given`s the engine kept.
 #[test]
 fn every_field_of_an_answer_names_its_bound() {
     let files = crate_sources("engine");
@@ -1582,12 +1653,13 @@ fn every_field_of_an_answer_names_its_bound() {
             .map(String::as_str)
             .filter(|t| !NOT_ANSWERS.contains(t)),
     );
-    let (reached, unbounded) = answer_types(&files, &roots);
+    let (reached, wrong) = answer_types(&files, &roots);
     assert!(
-        unbounded.is_empty(),
-        "fields of an answer without a bound of their own: {unbounded:#?}\n    hold it in a \
-         type of crate::bounded, which names its bound (`Text<Message>` when only the \
-         message bounds it)"
+        wrong.is_empty(),
+        "fields of an answer that name no bound: {wrong:#?}\n    hold each in a type of \
+         crate::bounded, which names its bound (`Text<Message>` when where it comes from \
+         bounds it, `Text<Owed>` for a bound decided and not applied yet), a type the scan \
+         follows, or a leaf"
     );
     let listed = [
         "act.rs: GestureWire",
@@ -1628,9 +1700,9 @@ fn every_field_of_an_answer_names_its_bound() {
     );
 
     // Where the host reads what an extension sent into a type: in process.rs its answers
-    // to file/read, file/edit, file/preview (a view, #296) and a shape's ask; in rpc.rs a
-    // JSON-RPC error and its requests (#296).
-    let reads = ["serde_json::from_value"];
+    // to file/read, file/edit, file/preview (a view, #296) and a shape's ask; in rpc.rs the
+    // message itself, a JSON-RPC error and its requests (#296).
+    let reads = ["serde_json::from_"];
     let found = tally(per_file(&host_sources(), |code| times(code, &reads)));
     let remedy = "read an answer into one of the types above, or into a new one this follows";
     only_listed(
@@ -1638,8 +1710,8 @@ fn every_field_of_an_answer_names_its_bound() {
         remedy,
         &found,
         &[
-            "../host/src/process.rs: serde_json::from_value ×4",
-            "../host/src/rpc.rs: serde_json::from_value ×4",
+            "../host/src/process.rs: serde_json::from_ ×4",
+            "../host/src/rpc.rs: serde_json::from_ ×5",
         ],
     );
 }
@@ -1647,19 +1719,25 @@ fn every_field_of_an_answer_names_its_bound() {
 #[test]
 fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
     let code = "use crate::other::{Far};\n\
+                use crate::bounded::{List, Message, Place, Text};\n\
                 #[derive(Deserialize)]\n\
-                #[serde(from = \"Wire\")]\n\
+                #[serde(\n    from = \"Wire\",\n)]\n\
                 pub struct Root {\n    pub a: Text<Place>,\n    #[serde(skip)]\n    pub \
-                cache: String,\n    pub(crate) b: List<Inner, Message>,\n}\n\
-                struct Wire {\n    c: Option<Far>,\n}\n\
+                cache: String,\n    pub(crate) b: List<Inner, Message>,\n    \
+                #[serde(deserialize_with = \"x\")]\n    c: Option<u8>,\n}\n\
+                struct Wire {\n    c: Option<Far>,\n    p: PathBuf,\n    s: Box<[u8]>,\n    \
+                m: std::path::Path,\n}\n\
                 enum Inner {\n    Plain(Text<Message>),\n    #[serde(rename = \"x\")]\n    \
                 Named { d: Vec<u8>, e: bool },\n    Unit,\n}\n";
     let far = "pub struct Far(pub Map<String, Json>);\n";
+    let bounded = "pub struct Text<B>(String);\npub struct List<T, B>(Vec<T>);\n\
+                   pub struct Place;\npub struct Message;\n";
     let files = vec![
         ("../engine/src/root.rs".to_string(), code.to_string()),
         ("../engine/src/other.rs".to_string(), far.to_string()),
+        ("../engine/src/bounded.rs".to_string(), bounded.to_string()),
     ];
-    let (reached, unbounded) = answer_types(&files, &["root.rs: Root"]);
+    let (reached, wrong) = answer_types(&files, &["root.rs: Root"]);
     assert_eq!(
         reached,
         [
@@ -1670,10 +1748,18 @@ fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
         ]
     );
     assert_eq!(
-        unbounded,
+        wrong,
         [
-            "other.rs: Far.0: Map<String, Json>",
-            "root.rs: Inner::Named.d: Vec<u8>",
+            "other.rs: Far.0: Map<String, Json>: Json has no bound",
+            "other.rs: Far.0: Map<String, Json>: Map has no bound",
+            "other.rs: Far.0: Map<String, Json>: String has no bound",
+            "root.rs: Inner::Named.d: Vec<u8>: Vec has no bound",
+            "root.rs: Root.c: Option<u8>: serde reads it with a function of its own",
+            "root.rs: Wire.m: std::path::Path: a field type the scan can't follow: Path",
+            "root.rs: Wire.m: std::path::Path: a field type the scan can't follow: path",
+            "root.rs: Wire.m: std::path::Path: a field type the scan can't follow: std",
+            "root.rs: Wire.p: PathBuf: a field type the scan can't follow: PathBuf",
+            "root.rs: Wire.s: Box<[u8]>: a slice or an array",
         ]
     );
 }

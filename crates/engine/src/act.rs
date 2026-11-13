@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::bind::{Binding, Entry, OWNER, Source};
-use crate::bounded::{List, Message, Text};
+use crate::bounded::{List, Message, Owed, Text};
 use crate::core::Core;
 use crate::files::{Create, Created, NewFile};
 use crate::gateway::{Answer, Edit, Error, Op, Reason};
@@ -503,25 +503,25 @@ pub struct ShapeAnswer {
 #[serde(untagged)]
 pub enum Reply {
     /// To `shape/region`: the members it shows, each an id and a label.
-    Region { items: List<RegionEntry, Message> },
+    Region { items: List<RegionEntry, Owed> },
     /// To `shape/gesture`: steps, in the language of `on`'s `do`.
     Gesture {
         #[serde(rename = "do")]
-        steps: List<Step, Message>,
+        steps: List<Step, Owed>,
     },
 }
 
 /// An answer to `shape/region` as the wire has it.
 #[derive(Deserialize)]
 struct RegionWire {
-    items: List<RegionEntry, Message>,
+    items: List<RegionEntry, Owed>,
 }
 
 /// An answer to `shape/gesture` as the wire has it.
 #[derive(Deserialize)]
 struct GestureWire {
     #[serde(rename = "do")]
-    steps: List<Step, Message>,
+    steps: List<Step, Owed>,
 }
 
 /// An answer is read by its keys: with `items` it answers a region, with `do` a gesture. So a

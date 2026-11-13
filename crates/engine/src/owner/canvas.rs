@@ -422,8 +422,8 @@ mod tests {
     /// an answer, a board of hostile nodes and arrows has nothing to report.
     #[test]
     fn the_engine_reports_nothing_of_what_the_owner_gives() {
-        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Bound>::MOST + 1);
-        let label = "L".repeat(<crate::bounded::LinkLabel as crate::bounded::Bound>::MOST + 1);
+        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
+        let label = "L".repeat(<crate::bounded::LinkLabel as crate::bounded::Limit>::MOST + 1);
         let board = format!(
             r##"{{"nodes":[
                 {{"id":"","type":"text","text":"x"}},
@@ -458,7 +458,7 @@ mod tests {
     /// and its text is read as ever.
     #[test]
     fn a_node_that_cant_be_a_piece_keeps_its_text() {
-        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Bound>::MOST + 1);
+        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
         let board = format!(
             r##"{{"nodes":[
                 {{"id":"","type":"text","text":"- [ ] No id","x":1e300,"y":-1e300}},
