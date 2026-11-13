@@ -1050,9 +1050,9 @@ pub struct Type {
 #[derive(Clone)]
 pub struct Layer {
     origin: Origin,
-    definitions: Vec<(String, Result<Definition, String>)>,
+    definitions: Vec<(String, Result<Definition, Problem>)>,
     /// Problems with the file as a whole.
-    errors: Vec<String>,
+    errors: Vec<Problem>,
 }
 
 impl Layer {
@@ -1105,39 +1105,42 @@ impl Layer {
     /// A types file: `version = 1`, then `[types.NAME]` tables.
     fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
         let place = origin.place();
-        let file_error = |e: String| Layer {
-            errors: vec![format!("{place}: {e}")],
+        let file_error = |e: Problem| Layer {
+            errors: vec![e],
             origin: origin.clone(),
             definitions: Vec::new(),
         };
-        let mut file: toml::Table =
-            match text.and_then(|t| toml::from_str(&t).map_err(|e| Problem::toml(&e).folded())) {
-                Ok(f) => f,
-                Err(e) => return file_error(format!("can't read it: {e}")),
-            };
+        let read = text
+            .map_err(Problem::line)
+            .and_then(|t| toml::from_str(&t).map_err(|e| Problem::toml_file(&e, &t)));
+        let mut file: toml::Table = match read {
+            Ok(f) => f,
+            Err(e) => return file_error(e.unreadable(&place)),
+        };
+        let skipped = |why: String| file_error(Problem::line(why).at(&place));
         match file.remove("version") {
             Some(toml::Value::Integer(VERSION)) => {}
             Some(v) => {
-                return file_error(format!(
+                return skipped(format!(
                     "version = {v} is not one this cold-lava reads (it reads version = {VERSION}); the file is skipped"
                 ));
             }
             None => {
-                return file_error(format!(
+                return skipped(format!(
                     "no version: start the file with version = {VERSION}; the file is skipped"
                 ));
             }
         }
         let types = match file.remove("types") {
             Some(toml::Value::Table(t)) => t,
-            Some(v) => return file_error(format!("types: expected [types.NAME] tables, got {v}")),
+            Some(v) => return skipped(format!("types: expected [types.NAME] tables, got {v}")),
             None => toml::Table::new(),
         };
         let mut layer = Layer::from_table(origin.clone(), types);
         for key in file.keys() {
-            layer.errors.push(format!(
+            layer.errors.push(Problem::line(format!(
                 "{place}: {key:?} is not a setting (only version and [types.NAME])"
-            ));
+            )));
         }
         layer
     }
@@ -1154,9 +1157,9 @@ impl Layer {
     }
 }
 
-/// One definition as written, or why it doesn't read, on one line.
-fn parse(value: toml::Value) -> Result<Definition, String> {
-    (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e).folded())
+/// One definition as written, or why it doesn't read.
+fn parse(value: toml::Value) -> Result<Definition, Problem> {
+    (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e))
 }
 
 /// Every loaded type, and what was wrong with the rest.
@@ -1166,8 +1169,8 @@ pub struct Types {
     pub native: Vec<String>,
     /// In load order; a type replaced by a later origin takes the later one's place.
     pub types: Vec<Type>,
-    /// One line per mistake: where, which type, what. The type is dropped.
-    pub errors: Vec<String>,
+    /// One problem per mistake: where, which type, what. The type is dropped.
+    pub errors: Vec<Problem>,
     /// Things worth knowing that aren't mistakes, such as a type replacing an earlier one.
     pub notes: Vec<String>,
 }
@@ -1196,6 +1199,12 @@ pub fn for_workspace(root: &Path) -> Types {
     found
 }
 
+/// A problem with the type `name` from `place`: said `{place}: [types.NAME] …`. Every
+/// problem with one type is made here.
+fn type_problem(place: &str, name: &str, why: Problem) -> Problem {
+    why.under(format!("{place}: [types.{name}]"))
+}
+
 /// Loads layers in order: built in, extensions, config.toml, the workspace. A later definition of a
 /// name replaces an earlier one, and says so in a note. Broken definitions are dropped.
 pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
@@ -1213,20 +1222,16 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
                     if (NATIVE.contains(&name.as_str()) || BUILT_IN.contains(&name.as_str()))
                         && layer.origin != Origin::BuiltIn =>
                 {
-                    vec![format!(
+                    vec![Problem::line(format!(
                         "{name} is built in: it can be extended (extends = \"{name}\") but not redefined"
-                    )]
+                    ))]
                 }
-                Ok(d) => check(&name, d),
+                Ok(d) => check(&name, d).into_iter().map(Problem::line).collect(),
             };
             let definition = match parsed {
                 Ok(d) if problems.is_empty() => d,
                 _ => {
-                    errors.extend(
-                        problems
-                            .iter()
-                            .map(|p| format!("{place}: [types.{name}] {p}")),
-                    );
+                    errors.extend((problems.into_iter()).map(|p| type_problem(&place, &name, p)));
                     dropped.insert(name);
                     continue;
                 }
@@ -1264,7 +1269,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Types {
         }
         for (name, e) in broken {
             if let Some(t) = kept.shift_remove(&name) {
-                errors.push(format!("{}: [types.{name}] {e}", t.origin.place()));
+                errors.push(type_problem(&t.origin.place(), &name, Problem::line(e)));
             }
             dropped.insert(name);
         }
@@ -1782,6 +1787,11 @@ fn placeholders(template: &str) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each error as `--json` writes it, on one line.
+    fn said(t: &Types) -> Vec<String> {
+        t.errors.iter().map(Problem::one_line).collect()
+    }
     use serde_json::json;
 
     fn definition(text: &str) -> Definition {
@@ -1914,12 +1924,12 @@ mod tests {
             let t = load([config(&format!("[x]\n{text}"))]);
             assert_eq!(t.errors.len(), 1, "{text}: {:?}", t.errors);
             assert!(
-                t.errors[0].starts_with("config.toml: [types.x] "),
+                said(&t)[0].starts_with("config.toml: [types.x] "),
                 "{:?}",
                 t.errors
             );
-            assert!(!t.errors[0].contains('\n'), "{:?}", t.errors);
-            assert!(t.errors[0].contains(needle), "{text}: {:?}", t.errors);
+            assert!(!said(&t)[0].contains('\n'), "{:?}", t.errors);
+            assert!(said(&t)[0].contains(needle), "{text}: {:?}", t.errors);
             assert!(t.types.is_empty());
         }
     }
@@ -2042,7 +2052,8 @@ mod tests {
         ] {
             let t = load([config(&format!("{good}[bad]\n{bad}\n"))]);
             assert_eq!(t.errors.len(), 1, "{bad}: {:?}", t.errors);
-            let line = &t.errors[0];
+            let lines = said(&t);
+            let line = &lines[0];
             assert!(line.starts_with("config.toml: [types.bad] "), "{line}");
             assert!(line.contains(needle), "{bad}: {line}");
             assert!(!line.contains('\n'), "{line}");
@@ -2057,7 +2068,7 @@ mod tests {
              fields.a = { column = \"A\" }\n",
         )]);
         assert_eq!(
-            t.errors,
+            said(&t),
             [
                 "config.toml: [types.x] shape 2: fields.a: column can't be read on document (note); only on row (table-row)"
             ]
@@ -2076,11 +2087,11 @@ mod tests {
         assert_eq!(names(&t), ["task", "idea"]);
         assert_eq!(t.errors.len(), 2, "{:?}", t.errors);
         assert!(
-            t.errors[0].contains("[types.task] task is built in"),
+            said(&t)[0].contains("[types.task] task is built in"),
             "{:?}",
             t.errors
         );
-        assert!(t.errors[1].contains("[types.list] list is built in"));
+        assert!(said(&t)[1].contains("[types.list] list is built in"));
         assert_eq!(t.native, NATIVE);
     }
 
@@ -2093,21 +2104,21 @@ mod tests {
         )]);
         assert!(t.types.is_empty(), "{:?}", names(&t));
         assert!(
-            t.errors
+            said(&t)
                 .iter()
                 .any(|e| e.contains("[types.a] extends goes round in a circle: a → b → a")),
             "{:?}",
             t.errors
         );
         assert!(
-            t.errors
+            said(&t)
                 .iter()
                 .any(|e| e.contains("[types.c] extends \"d\", which was dropped for its errors")),
             "{:?}",
             t.errors
         );
         assert!(
-            t.errors
+            said(&t)
                 .iter()
                 .any(|e| e.contains("[types.e] extends \"c\", which was dropped")),
             "{:?}",
@@ -2164,7 +2175,7 @@ mod tests {
             .flatten(),
         );
         assert!(
-            matches!(&t.errors[..], [e] if e.starts_with("extension word-count: [types.word-count.broken]")),
+            matches!(&said(&t)[..], [e] if e.starts_with("extension word-count: [types.word-count.broken]")),
             "a broken type is dropped, and the extension's others load: {:?}",
             t.errors
         );
@@ -2204,8 +2215,8 @@ mod tests {
             let t = load(Layer::workspace(&root));
             assert!(t.types.is_empty(), "{name}");
             assert_eq!(t.errors.len(), 1, "{name}: {:?}", t.errors);
-            assert!(t.errors[0].contains(needle), "{name}: {:?}", t.errors);
-            assert!(!t.errors[0].contains('\n'), "{:?}", t.errors);
+            assert!(said(&t)[0].contains(needle), "{name}: {:?}", t.errors);
+            assert!(!said(&t)[0].contains('\n'), "{:?}", t.errors);
             let _ = std::fs::remove_dir_all(root);
         }
         let root = workspace(
@@ -2216,7 +2227,7 @@ mod tests {
         assert_eq!(names(&t), ["a"]);
         assert_eq!(t.errors.len(), 1, "{:?}", t.errors);
         assert!(
-            t.errors[0].contains("\"colour\" is not a setting"),
+            said(&t)[0].contains("\"colour\" is not a setting"),
             "{:?}",
             t.errors
         );
@@ -2360,7 +2371,7 @@ mod tests {
                 .flatten(),
             );
             let _ = std::fs::remove_dir_all(root);
-            assert_eq!(found.errors, Vec::<String>::new());
+            assert!(found.errors.is_empty(), "{:?}", found.errors);
             (found.types.into_iter())
                 .map(|t| (t.name, t.definition))
                 .collect::<Vec<(String, Definition)>>()
@@ -2438,7 +2449,8 @@ mod tests {
             ),
         ] {
             let start = format!("config.toml: [types.{name}] ");
-            let line = (t.errors.iter())
+            let lines = said(&t);
+            let line = (lines.iter())
                 .find(|e| e.starts_with(&start))
                 .unwrap_or_else(|| panic!("{name}: {:?}", t.errors));
             assert!(line.contains(needle), "{line}");
@@ -2460,7 +2472,7 @@ mod tests {
     #[test]
     fn the_built_in_task_loads_and_reads_back_as_json() {
         let t = load([Layer::built_in()]);
-        assert_eq!(t.errors, Vec::<String>::new());
+        assert!(t.errors.is_empty(), "{:?}", t.errors);
         assert_eq!(names(&t), ["task"]);
         assert_eq!(t.native, ["list", "heading", "block"]);
         let task = &t.types[0];
@@ -2472,7 +2484,7 @@ mod tests {
 
         let mine = load([Layer::built_in(), config("[task]\non = \"list-item\"\n")]);
         assert_eq!(
-            mine.errors,
+            said(&mine),
             [
                 "config.toml: [types.task] task is built in: it can be extended (extends = \"task\") but not redefined"
             ]
@@ -2481,7 +2493,7 @@ mod tests {
             "[x]\non = \"list-item\"\nfields.s = { checkbox = true, type = \"enum\", values = \"${daily.format}\" }\n",
         )]);
         assert!(
-            bad.errors[0]
+            said(&bad)[0]
                 .contains("an enum's values are a table, or a setting (${tasks.statuses})")
         );
     }

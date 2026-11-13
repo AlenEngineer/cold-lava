@@ -28,6 +28,24 @@ pub struct Problem {
     /// a string while two vocabularies use it, shapes and config.toml's sections; a third
     /// makes it an enum.
     about: Option<String>,
+    /// Which of its lines says what is wrong: the first, but a TOML error's message, which
+    /// comes after where it is (`headline`).
+    gist: usize,
+    /// How it is said where one line is held (`one_line`).
+    one: OneLine,
+}
+
+/// How a problem is said where one line is held: `--json`, a message on the gateway, a list
+/// `joined`. Its maker chooses; what `--json` has written for a kind of problem stays.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OneLine {
+    /// Its lines, a space between two, each with its own characters.
+    Lines,
+    /// The text given: a TOML error's as the parser wrote it, every line break a space, as
+    /// types, shapes and attributes have always written it (a CR before a line break kept).
+    Text(String),
+    /// Its `headline`: what is wrong, without where in the file it is.
+    Headline,
 }
 
 impl Problem {
@@ -42,6 +60,8 @@ impl Problem {
             before: None,
             lines: std::iter::once(first).chain(rest).collect(),
             about: None,
+            gist: 0,
+            one: OneLine::Lines,
         }
     }
 
@@ -65,9 +85,23 @@ impl Problem {
         self
     }
 
+    /// Why the file at `place` can't be read: said `{place}: can't read it: …`.
+    pub fn unreadable(self, place: impl fmt::Display) -> Problem {
+        self.at(format!("{place}: can't read it"))
+    }
+
+    /// Said on one line (`one_line`) by its `headline` alone: a TOML error that has always
+    /// been said by its message alone where one line is held (`style`'s errors in `--json`
+    /// and on the gateway), while a person reading it on the command line sees where it is.
+    pub fn brief(mut self) -> Problem {
+        self.one = OneLine::Headline;
+        self
+    }
+
     /// Said under `label` (a section of a file, like `[style]`), before its first line with a
-    /// space. Only config.toml says its sections this way; whether they take `": "` like
-    /// every other place is for #265's step A3b to decide, as it changes the words.
+    /// space: config.toml's sections, a type's `[types.NAME]` and an attribute's reading.
+    /// Saying them with `at`'s `": "` changes their words, so it waits for the owner's word
+    /// (asked with #265's step A3b).
     pub fn under(mut self, label: impl fmt::Display) -> Problem {
         self.before = Some(format!("{label} "));
         self
@@ -103,21 +137,33 @@ impl Problem {
         said
     }
 
-    /// The lines a person reads on one line, a space between two: what a context that holds
-    /// one line says (a list `joined`, `--json`, a message on the gateway). A line keeps its
-    /// own characters, a line break inside it included.
-    pub fn one_line(&self) -> String {
-        self.said().join(" ")
+    /// What is wrong and where it is, on one short line: what is said before its first line,
+    /// then the line that says what is wrong (a TOML error's message). What a status line
+    /// shows.
+    pub fn headline(&self) -> String {
+        format!(
+            "{}{}",
+            self.before.as_deref().unwrap_or(""),
+            self.lines[self.gist]
+        )
     }
 
-    /// Its words on one line with every line break a space, and no space at either end: how
-    /// types, shapes and attributes say a TOML error (`Problem::toml`), and what their
-    /// `--json` holds. For a TOML error this is the parser's text with each line break a
-    /// space, as those three made it before (`e.to_string().replace('\n', " ").trim()`):
-    /// `toml` cuts the text only at a line break (its lines joined by line breaks are the
-    /// text), or keeps it whole as one line.
-    pub fn folded(&self) -> String {
-        self.one_line().replace('\n', " ").trim().to_string()
+    /// It on one line, as a context that holds one says it (a list `joined`, `--json`, a
+    /// message on the gateway): its lines with a space between two, each with its own
+    /// characters, a line break inside one included; a TOML error as types, shapes and
+    /// attributes have always written it (`Problem::toml`); or its `headline` (`brief`).
+    pub fn one_line(&self) -> String {
+        format!("{}{}", self.before.as_deref().unwrap_or(""), self.words())
+    }
+
+    /// Its own words on one line (`one_line`), without what is said before them: what a
+    /// list that says where each problem is by itself shows (the shape editor's mistakes).
+    pub fn words(&self) -> String {
+        match &self.one {
+            OneLine::Lines => self.lines.join(" "),
+            OneLine::Text(text) => text.clone(),
+            OneLine::Headline => self.lines[self.gist].clone(),
+        }
     }
 
     /// A TOML error as the lines the parser shows it on (toml 1.2.0), taken from its parts:
@@ -133,9 +179,11 @@ impl Problem {
     ///
     /// So where it is, is what is left of the parser's text without the message, before it
     /// or after it. A text that is neither is one line. The line of the file keeps a CR
-    /// that ends it (`toml_file` takes it off).
+    /// that ends it (`toml_file` takes it off). On one line it is the parser's text with
+    /// every line break a space (`OneLine::Text`).
     pub fn toml(e: &toml::de::Error) -> Problem {
         let (whole, message) = (e.to_string(), e.message().trim_end());
+        let one = OneLine::Text(whole.replace('\n', " ").trim().to_string());
         let whole = whole.trim_end();
         let before = || -> Option<Problem> {
             let place = whole.strip_suffix(message)?;
@@ -143,10 +191,12 @@ impl Problem {
                 return None;
             }
             let mut lines = place.split_terminator('\n').map(String::from);
-            Some(match lines.next() {
+            let mut problem = match lines.next() {
                 Some(header) => Problem::of(header, lines.chain([message.to_string()])),
                 None => Problem::line(message),
-            })
+            };
+            problem.gist = problem.lines.len() - 1;
+            Some(problem)
         };
         let after = || -> Option<Problem> {
             let keys = whole.strip_prefix(message)?.strip_prefix('\n')?;
@@ -156,7 +206,9 @@ impl Problem {
             Some(_) => before().or_else(after),
             None => after(),
         };
-        problem.unwrap_or_else(|| Problem::line(whole))
+        let mut problem = problem.unwrap_or_else(|| Problem::line(whole));
+        problem.one = one;
+        problem
     }
 
     /// Why `text` doesn't parse, as the parser shows it (`toml`). The line of the file it
@@ -192,15 +244,13 @@ impl OnOneLine for Problem {
     }
 }
 
+/// The words of a problem not yet a `Problem`. What keeps this alive: an owner's left-out
+/// pieces (`given::Read.problems`, `Owned::take`), which #265's step A4 makes problems, and
+/// the cards a merge left out and the notes a tag edit left alone (`shape_editor::merged`,
+/// the menu's `refused`), which are a notice's words (#291). Once they are gone, so is this.
 impl OnOneLine for String {
     fn on_one_line(&self) -> String {
         self.clone()
-    }
-}
-
-impl OnOneLine for &str {
-    fn on_one_line(&self) -> String {
-        self.to_string()
     }
 }
 
@@ -212,6 +262,12 @@ pub fn joined<T: OnOneLine>(problems: &[T]) -> String {
 
 impl From<String> for Problem {
     fn from(line: String) -> Problem {
+        Problem::line(line)
+    }
+}
+
+impl From<&str> for Problem {
+    fn from(line: &str) -> Problem {
         Problem::line(line)
     }
 }
@@ -238,7 +294,7 @@ mod tests {
     use serde::Deserialize;
     use std::collections::BTreeMap;
 
-    /// How types, shapes and attributes folded a TOML error before `folded`.
+    /// How types, shapes and attributes have always written a TOML error on one line.
     fn folded(e: &toml::de::Error) -> String {
         e.to_string().replace('\n', " ").trim().to_string()
     }
@@ -253,28 +309,31 @@ mod tests {
         t: BTreeMap<String, u8>,
     }
 
+    /// Texts that don't parse: the first line, the last, a last line with no line end, LF,
+    /// CR LF and a lone CR, tabs and wide characters, a key holding a line break.
+    const TEXTS: [&str; 15] = [
+        "[types.x\n",
+        "a = 1\nb = [\n",
+        "a = 1\nb = = 2",
+        "[types.x]\r\nfoo = [\r\n",
+        "[types.x\r\nfoo = 1\r\n",
+        "a = 1\r\nb = = 2",
+        "a = 1\rb = 2\n",
+        "a = [\r",
+        "\ta = = 1\n",
+        "日本語 = = 1\n",
+        "\"日本語のキー\" = = 1\n",
+        "\"a\\nb\" = 1\n\"a\\nb\" = 2\n",
+        "[a]\n[a]\n",
+        "=",
+        "a = \"\t\" x\n",
+    ];
+
     /// Errors with a span (texts the parser read) and without (values read into a type), on
     /// the first line, the last, a last line with no line end, with LF, CR LF and a lone CR,
     /// tabs and wide characters, and messages that quote a key holding a line break.
     fn errors() -> Vec<toml::de::Error> {
-        let texts = [
-            "[types.x\n",
-            "a = 1\nb = [\n",
-            "a = 1\nb = = 2",
-            "[types.x]\r\nfoo = [\r\n",
-            "[types.x\r\nfoo = 1\r\n",
-            "a = 1\r\nb = = 2",
-            "a = 1\rb = 2\n",
-            "a = [\r",
-            "\ta = = 1\n",
-            "日本語 = = 1\n",
-            "\"日本語のキー\" = = 1\n",
-            "\"a\\nb\" = 1\n\"a\\nb\" = 2\n",
-            "[a]\n[a]\n",
-            "=",
-            "a = \"\t\" x\n",
-        ];
-        let mut errors: Vec<toml::de::Error> = (texts.iter())
+        let mut errors: Vec<toml::de::Error> = (TEXTS.iter())
             .map(|t| toml::from_str::<toml::Table>(t).expect_err(t))
             .collect();
         for text in [
@@ -298,7 +357,12 @@ mod tests {
     fn a_toml_error_on_one_line_is_the_parsers_text_folded() {
         for e in errors() {
             let problem = Problem::toml(&e);
-            assert_eq!(problem.folded(), folded(&e), "{e}");
+            assert_eq!(problem.one_line(), folded(&e), "{e}");
+            let at = problem.clone().unreadable("w/types.toml");
+            let written = format!("w/types.toml: can't read it: {}", folded(&e));
+            assert_eq!(at.one_line(), written, "{e}");
+            assert_eq!(problem.headline(), e.message(), "what is wrong: {e}");
+            assert_eq!(problem.clone().brief().one_line(), e.message(), "{e}");
             let whole = e.to_string();
             let whole = whole.trim_end();
             match problem.lines() {
@@ -325,6 +389,19 @@ mod tests {
                     assert!(keys.iter().all(|k| k.starts_with("in `")), "{e}");
                 }
             }
+        }
+    }
+
+    /// A file's error shows its lines without the CR of a CR LF line end, and is written on
+    /// one line as it always was, that CR kept.
+    #[test]
+    fn a_files_error_on_one_line_keeps_what_its_lines_leave_out() {
+        for text in TEXTS {
+            let e = toml::from_str::<toml::Table>(text).expect_err(text);
+            let problem = Problem::toml_file(&e, text);
+            assert_eq!(problem.one_line(), folded(&e), "{text:?}");
+            assert_eq!(problem.headline(), e.message(), "{text:?}");
+            assert!(!problem.said().join("\n").contains("\r\n"), "{text:?}");
         }
     }
 
@@ -386,7 +463,8 @@ mod tests {
 
     #[test]
     fn problems_are_joined_in_order() {
-        assert_eq!(joined(&["a", "b c\nd", " e "]), "a; b c\nd;  e ");
+        let words = ["a", "b c\nd", " e "].map(String::from);
+        assert_eq!(joined(&words), "a; b c\nd;  e ");
         assert_eq!(joined::<Problem>(&[]), "");
         assert_eq!(
             joined(&[Problem::line("one"), Problem::line("two").at("x")]),

@@ -2,6 +2,7 @@
 //! an `extension.toml` (docs/extensions.md, "Manifest"). Mistakes are collected like
 //! config.toml's: one line each, the broken extension is left out and the rest load.
 
+use cold_lava_engine::problem::Problem;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -72,7 +73,7 @@ pub fn log_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Every extension in `dir`'s folders, by folder name, and what was wrong with the rest.
-pub fn load(dir: &Path) -> (Vec<Installed>, Vec<String>) {
+pub fn load(dir: &Path) -> (Vec<Installed>, Vec<Problem>) {
     let mut folders: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(entries) => (entries.flatten())
             .map(|e| e.path())
@@ -89,57 +90,60 @@ pub fn load(dir: &Path) -> (Vec<Installed>, Vec<String>) {
         }
         match read(&folder, &path) {
             Ok(ext) if found.iter().any(|f| f.manifest.name == ext.manifest.name) => {
-                mistakes.push(format!(
+                mistakes.push(Problem::line(format!(
                     "{}: another extension is called {}",
                     path.display(),
                     ext.manifest.name
-                ))
+                )))
             }
             Ok(ext) => found.push(ext),
-            Err(why) => mistakes.push(format!("{}: {why}", path.display())),
+            Err(why) => mistakes.push(why.at(path.display())),
         }
     }
     (found, mistakes)
 }
 
-fn read(folder: &Path, path: &Path) -> Result<Installed, String> {
+fn read(folder: &Path, path: &Path) -> Result<Installed, Problem> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let table: toml::Table = toml::from_str(&text).map_err(|e| e.message().to_string())?;
+    let table: toml::Table = toml::from_str(&text).map_err(|e| Problem::toml_file(&e, &text))?;
     if let Some(toml::Value::Table(_)) = table.get("types") {
         let name = table.get("name").and_then(|n| n.as_str()).unwrap_or("NAME");
-        return Err(format!(
+        return Err(Problem::line(format!(
             "write each type as a [[types]] table with its id, like id = \"{name}.row\""
-        ));
+        )));
     }
-    let file: File = (toml::Value::Table(table).try_into())
-        .map_err(|e: toml::de::Error| e.message().to_string())?;
+    let file: File = (toml::Value::Table(table).try_into()).map_err(|e| Problem::toml(&e))?;
     let name = file.name;
     let named = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
     if name.is_empty() || !name.chars().all(named) || name.starts_with('-') {
-        return Err(format!(
+        return Err(Problem::line(format!(
             "the name {name:?} must be lowercase letters, digits and dashes"
-        ));
+        )));
     }
     if folder.file_name().and_then(|f| f.to_str()) != Some(name.as_str()) {
-        return Err(format!("its folder must be called {name}, as its name"));
+        return Err(Problem::line(format!(
+            "its folder must be called {name}, as its name"
+        )));
     }
     if RESERVED.contains(&name.as_str()) {
-        return Err(format!("{name} is a name cold-lava keeps for itself"));
+        return Err(Problem::line(format!(
+            "{name} is a name cold-lava keeps for itself"
+        )));
     }
     if file.api != rpc::API_VERSION {
-        return Err(format!(
+        return Err(Problem::line(format!(
             "it needs API {}, and this cold-lava speaks {}",
             file.api,
             rpc::API_VERSION
-        ));
+        )));
     }
     if transport::connector(&file.transport).is_none() {
         let kinds: Vec<_> = transport::CONNECTORS.iter().map(|c| c.kind()).collect();
-        return Err(format!(
+        return Err(Problem::line(format!(
             "transport {:?} isn't one cold-lava has ({})",
             file.transport,
             kinds.join(", ")
-        ));
+        )));
     }
     if file.run.is_empty() {
         return Err("run must name a program".into());
@@ -150,16 +154,16 @@ fn read(folder: &Path, path: &Path) -> Result<Installed, String> {
         let x = &t.extension;
         let fits = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
         if x.is_empty() || !x.chars().all(fits) {
-            return Err(format!(
+            return Err(Problem::line(format!(
                 "file type {x:?} must be an extension of letters, digits, - and _, like \"csv\""
-            ));
+            )));
         }
         if let Some(new) = &t.new
             && !file.commands.iter().any(|c| c.id == *new)
         {
-            return Err(format!(
+            return Err(Problem::line(format!(
                 "file type .{x} makes new files with {new}, which isn't one of its [[commands]]"
-            ));
+            )));
         }
     }
     let manifest = Manifest {
@@ -236,7 +240,7 @@ where.folder = ["Drafts"]
     fn loads_a_manifest() {
         let d = dir("ok", &[("wc", WC)]);
         let (found, mistakes) = load(&d);
-        assert_eq!(mistakes, Vec::<String>::new());
+        assert!(mistakes.is_empty(), "{mistakes:?}");
         let [wc] = &found[..] else {
             panic!("{found:?}")
         };
@@ -316,7 +320,8 @@ where.folder = ["Drafts"]
         let names: Vec<_> = found.iter().map(|f| f.manifest.name.as_str()).collect();
         assert_eq!(names, ["a"]);
         let says = |i: usize, what: &str| {
-            assert!(mistakes[i].contains(what), "{i}: {}", mistakes[i]);
+            let said = mistakes[i].one_line();
+            assert!(said.contains(what), "{i}: {said}");
         };
         assert_eq!(mistakes.len(), 13, "{mistakes:#?}");
         says(0, "lowercase letters");

@@ -805,7 +805,7 @@ impl Home {
         let config = crate::config::get();
         match h.registry.mistakes() {
             [] => {}
-            [why] => h.flash(why.clone()),
+            [why] => h.flash(Notice::from(why)),
             many => h.flash(format!(
                 "{} extensions didn't load: run cold-lava ext list to see why",
                 many.len()
@@ -816,7 +816,7 @@ impl Home {
                 h.flash("config.toml uses an old command name: run cold-lava keys to see it")
             }
             (0, []) => {}
-            (0, [why]) => h.flash(why.clone()),
+            (0, [why]) => h.flash(Notice::from(why)),
             (0, refused) => h.flash(format!(
                 "{} extension commands, keys or file types were left out: run cold-lava keys to see why",
                 refused.len()

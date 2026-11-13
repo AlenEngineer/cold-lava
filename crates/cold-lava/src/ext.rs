@@ -175,9 +175,12 @@ mod tests {
         assert_eq!(ids(&r), ["wc.show"]);
         let refused = r.refused();
         assert_eq!(refused.len(), 5, "{refused:?}");
-        assert!(refused[0].contains("\"graph.open\"") && refused[0].contains("\"wc.\""));
-        assert!(refused[3].contains("taken"), "{refused:?}");
-        assert!(refused[4].contains("note.rename"), "{refused:?}");
+        assert!(
+            refused[0].one_line().contains("\"graph.open\"")
+                && refused[0].one_line().contains("\"wc.\"")
+        );
+        assert!(refused[3].one_line().contains("taken"), "{refused:?}");
+        assert!(refused[4].one_line().contains("note.rename"), "{refused:?}");
         // What a refused command's id was meant to run is still the core's.
         let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
         assert_eq!(keys.label("graph.open"), "g");
@@ -192,9 +195,9 @@ mod tests {
         assert_eq!(ids(&r), ["a.one", "b.two"]);
         let refused = r.refused();
         assert_eq!(refused.len(), 3, "{refused:?}");
-        assert!(refused[0].contains("graph.open"), "{refused:?}");
-        assert!(refused[1].contains("hyper+x"), "{refused:?}");
-        assert!(refused[2].contains("a.one"), "{refused:?}");
+        assert!(refused[0].one_line().contains("graph.open"), "{refused:?}");
+        assert!(refused[1].one_line().contains("hyper+x"), "{refused:?}");
+        assert!(refused[2].one_line().contains("a.one"), "{refused:?}");
         let keys = commands::Keymap::with(r.commands(), &Default::default()).0;
         assert_eq!(keys.label("a.one"), "x");
         assert_eq!(keys.label("b.two"), "y");

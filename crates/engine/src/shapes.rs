@@ -531,10 +531,10 @@ impl Shapes {
 #[derive(Clone, Debug)]
 pub struct Layer {
     origin: Origin,
-    definitions: Vec<(String, Result<Definition, String>)>,
+    definitions: Vec<(String, Result<Definition, Problem>)>,
     glyphs: Vec<(String, Result<char, String>)>,
     /// Problems with the file as a whole, or with an entry that has no id.
-    errors: Vec<String>,
+    errors: Vec<Problem>,
 }
 
 impl Layer {
@@ -589,26 +589,28 @@ impl Layer {
     fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
         let place = origin.place();
         let mut layer = Layer::empty(origin);
-        let mut file: toml::Table =
-            match text.and_then(|t| toml::from_str(&t).map_err(|e| Problem::toml(&e).folded())) {
-                Ok(f) => f,
-                Err(e) => {
-                    layer.errors.push(format!("{place}: can't read it: {e}"));
-                    return layer;
-                }
-            };
+        let read = text
+            .map_err(Problem::line)
+            .and_then(|t| toml::from_str(&t).map_err(|e| Problem::toml_file(&e, &t)));
+        let mut file: toml::Table = match read {
+            Ok(f) => f,
+            Err(e) => {
+                layer.errors.push(e.unreadable(&place));
+                return layer;
+            }
+        };
         match file.remove("version") {
             Some(toml::Value::Integer(VERSION)) => {}
             Some(v) => {
-                layer.errors.push(format!(
+                layer.errors.push(Problem::line(format!(
                     "{place}: version = {v} is not one this cold-lava reads (it reads version = {VERSION}); the file is skipped"
-                ));
+                )));
                 return layer;
             }
             None => {
-                layer.errors.push(format!(
+                layer.errors.push(Problem::line(format!(
                     "{place}: no version: start the file with version = {VERSION}; the file is skipped"
-                ));
+                )));
                 return layer;
             }
         }
@@ -618,17 +620,17 @@ impl Layer {
                 .filter_map(|e| match e {
                     toml::Value::Table(t) => Some(t),
                     _ => {
-                        layer
-                            .errors
-                            .push(format!("{place}: shapes: each entry is a [[shapes]] table"));
+                        layer.errors.push(Problem::line(format!(
+                            "{place}: shapes: each entry is a [[shapes]] table"
+                        )));
                         None
                     }
                 })
                 .collect(),
             Some(_) => {
-                layer.errors.push(format!(
+                layer.errors.push(Problem::line(format!(
                     "{place}: shapes: write each shape as a [[shapes]] table with its id"
-                ));
+                )));
                 Vec::new()
             }
         };
@@ -636,16 +638,16 @@ impl Layer {
             None => toml::Table::new(),
             Some(toml::Value::Table(t)) => t,
             Some(_) => {
-                layer.errors.push(format!(
+                layer.errors.push(Problem::line(format!(
                     "{place}: glyphs: expected a [glyphs] table of name = \"symbol\""
-                ));
+                )));
                 toml::Table::new()
             }
         };
         for key in file.keys() {
-            layer.errors.push(format!(
+            layer.errors.push(Problem::line(format!(
                 "{place}: {key:?} is not a setting (only version, [[shapes]] and [glyphs])"
-            ));
+            )));
         }
         layer.read(shapes, glyphs);
         layer
@@ -659,10 +661,10 @@ impl Layer {
                     self.definitions
                         .push((id, parse(toml::Value::Table(table))));
                 }
-                _ => self.errors.push(format!(
+                _ => self.errors.push(Problem::line(format!(
                     "{place}: shape {} has no id: give it one, like id = \"lane\"",
                     i + 1
-                )),
+                ))),
             }
         }
         for (name, symbol) in glyphs {
@@ -679,8 +681,8 @@ impl Layer {
     }
 }
 
-fn parse(value: toml::Value) -> Result<Definition, String> {
-    (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e).folded())
+fn parse(value: toml::Value) -> Result<Definition, Problem> {
+    (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e))
 }
 
 static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
@@ -732,7 +734,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
     let mut kept: IndexMap<String, (Origin, Definition)> = IndexMap::new();
     let mut glyphs: IndexMap<String, Glyph> = IndexMap::new();
     for layer in layers {
-        errors.extend(layer.errors.into_iter().map(Problem::line));
+        errors.extend(layer.errors);
         let place = layer.origin.place();
         for (name, parsed) in layer.glyphs {
             match parsed {
@@ -771,7 +773,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
                             "extension = true hands a region or a gesture to the extension that ships the shape, and this one comes from none".into(),
                         );
                     }
-                    p
+                    p.into_iter().map(Problem::line).collect()
                 }
             };
             match parsed {
@@ -781,9 +783,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Shapes {
                     }
                     kept.insert(id, (layer.origin.clone(), d));
                 }
-                _ => errors.extend(
-                    (problems.into_iter()).map(|p| shape_problem(&place, &id, Problem::line(p))),
-                ),
+                _ => errors.extend((problems.into_iter()).map(|p| shape_problem(&place, &id, p))),
             }
         }
     }

@@ -1193,13 +1193,6 @@ fn the_listings_are_these() {
 /// - `problem.rs`, where each is done once.
 /// - `main.rs`: `where_label` joins the conditions of a type's `where` for `cold-lava
 ///   types`, which are no problems.
-/// - `attributes.rs`: the readings of an attribute that don't read, whose closure names the
-///   error's type and goes through `Problem::toml`.
-/// - The TOML errors said by their message alone, without where in the file they are:
-///   `style.toml` and config.toml's `[style]` (`style.rs`), the shape editor's save
-///   (`shapes/file.rs`) and its form (`shape_editor.rs`), and an extension's manifest
-///   (`installed.rs`). Giving them their place changes what they say, which is for #265's
-///   step A3b to decide.
 ///
 /// The scan knows these by their spelling: a TOML error handled without naming its type, or
 /// a fold written another way, passes it, and a reviewer still reads a change that says a
@@ -1218,19 +1211,11 @@ fn problems_are_put_together_by_hand_here() {
     }
     let found = tally(per_file(&files, |code| times(code, &ways)));
     let listed = [
-        "../engine/src/owner/markdown/attributes.rs: toml::de::Error ×1",
         "../engine/src/problem.rs: .message() ×1",
         "../engine/src/problem.rs: join(\"; \") ×1",
         "../engine/src/problem.rs: replace('\\n', \" \") ×1",
         "../engine/src/problem.rs: toml::de::Error ×2",
-        "../engine/src/shapes/file.rs: .message() ×2",
-        "../engine/src/style.rs: .message() ×2",
-        "../engine/src/style.rs: toml::de::Error ×1",
-        "../host/src/installed.rs: .message() ×2",
-        "../host/src/installed.rs: toml::de::Error ×1",
         "main.rs: join(\"; \") ×1",
-        "shape_editor.rs: .message() ×1",
-        "shape_editor.rs: toml::de::Error ×1",
     ];
     let remedy = "make it a `Problem` (crates/engine/src/problem.rs), which joins, folds and \
                   picks out problems in one place";

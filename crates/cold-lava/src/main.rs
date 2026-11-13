@@ -339,15 +339,13 @@ fn run() -> Result<()> {
             if !errors.is_empty() || !warnings.is_empty() {
                 let path = config::path().unwrap_or_default();
                 problem!("{}:", path.display());
-                let lines = errors.iter().flat_map(problem::Problem::said);
-                lines
-                    .chain(warnings.iter().cloned())
-                    .for_each(|line| problem!("  {line}"));
+                errors.iter().for_each(|e| say::problem_lines(e, "  "));
+                warnings.iter().for_each(|line| problem!("  {line}"));
             }
             if !registry.refused().is_empty() {
                 problem!("extensions:");
                 for e in registry.refused() {
-                    problem!("  {e}");
+                    say::problem_lines(e, "  ");
                 }
             }
             if !errors.is_empty() || !registry.refused().is_empty() {
@@ -380,7 +378,7 @@ fn run() -> Result<()> {
                 if !found.errors.is_empty() {
                     problem!("errors:");
                     for e in &found.errors {
-                        problem!("  {e}");
+                        say::problem_lines(e, "  ");
                     }
                 }
             }
@@ -399,12 +397,14 @@ fn run() -> Result<()> {
                 say::json(&found)?;
             } else {
                 print_attributes(&found);
-                for (title, lines) in [("notes:", &found.notes), ("errors:", &found.errors)] {
-                    if !lines.is_empty() {
-                        problem!("{title}");
-                        for line in lines {
-                            problem!("  {line}");
-                        }
+                if !found.notes.is_empty() {
+                    problem!("notes:");
+                    found.notes.iter().for_each(|line| problem!("  {line}"));
+                }
+                if !found.errors.is_empty() {
+                    problem!("errors:");
+                    for e in &found.errors {
+                        say::problem_lines(e, "  ");
                     }
                 }
             }
@@ -459,8 +459,8 @@ fn run() -> Result<()> {
                 }
                 if !found.errors.is_empty() {
                     problem!("errors:");
-                    for line in found.errors.iter().flat_map(problem::Problem::said) {
-                        problem!("  {line}");
+                    for e in &found.errors {
+                        say::problem_lines(e, "  ");
                     }
                 }
             }
@@ -737,12 +737,17 @@ fn run() -> Result<()> {
             } else {
                 print_style(&found);
             }
-            let config = (config::get().errors.iter()).filter(|e| e.is_about(config::STYLE));
-            let config: Vec<String> = config
-                .map(|e| format!("config.toml {}", e.one_line()))
+            let config: Vec<&problem::Problem> = (config::get().errors.iter())
+                .filter(|e| e.is_about(config::STYLE))
                 .collect();
-            for e in found.errors.iter().chain(&config) {
-                problem!("{e}");
+            for e in &found.errors {
+                say::problem_lines(e, "");
+            }
+            for e in &config {
+                // `[style]`'s problems are said after the file they are in, as they always were.
+                let said = e.said();
+                problem!("config.toml {}", said[0]);
+                said[1..].iter().for_each(|line| problem!("{line}"));
             }
             if !found.errors.is_empty() || !config.is_empty() {
                 std::process::exit(1);
@@ -957,13 +962,7 @@ fn drive() -> Result<()> {
             ("<stdin>".to_string(), src)
         }
     };
-    let script = drive::parse(&src).map_err(|e| {
-        let lines = problem::Problem::line(format!("{name}:{}: {}", e.line, e.message));
-        match e.then {
-            Some(text) => lines.then(text),
-            None => lines,
-        }
-    })?;
+    let script = drive::parse(&name, &src)?;
     if !drive::run(&name, &script, &std::env::current_exe()?, &theirs, home)? {
         std::process::exit(1);
     }
@@ -1181,7 +1180,7 @@ fn print_extensions(registry: &ext::Registry, workspace: Option<&Path>) {
     if !registry.mistakes().is_empty() {
         problem!("didn't load:");
         for e in registry.mistakes() {
-            problem!("  {e}");
+            say::problem_lines(e, "  ");
         }
     }
 }

@@ -212,29 +212,29 @@ impl Process {
                 host.notify(format!("{}: {}", self.manifest.name, e.message))
             }
             (Asked::Read { path, rev }, outcome) => {
-                let given = outcome.map_err(|e| e.message).and_then(|v| {
-                    serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
-                });
+                let given = outcome
+                    .map_err(|e| e.message)
+                    .and_then(|v| serde_json::from_value(v).map_err(|e| unread("file/read", &e)));
                 host.file_given(&path, &rev, given);
             }
             (Asked::Edit { path, rev }, outcome) => {
                 let text = outcome.map_err(|e| e.message).and_then(|v| {
                     serde_json::from_value::<NewText>(v)
                         .map(|t| t.text)
-                        .map_err(|e| format!("its answer doesn't read: {e}"))
+                        .map_err(|e| unread("file/edit", &e))
                 });
                 host.file_edited(&path, &rev, text);
             }
             (Asked::Preview { path, rev }, outcome) => {
                 let content = outcome.map_err(|e| e.message).and_then(|v| {
-                    serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
+                    serde_json::from_value(v).map_err(|e| unread("file/preview", &e))
                 });
                 host.file_previewed(&path, &rev, content);
             }
             (Asked::Shape(ask), outcome) => {
-                let answer = outcome.map_err(|e| e.message).and_then(|v| {
-                    serde_json::from_value(v).map_err(|e| format!("its answer doesn't read: {e}"))
-                });
+                let answer = outcome
+                    .map_err(|e| e.message)
+                    .and_then(|v| serde_json::from_value(v).map_err(|e| unread(ask.method(), &e)));
                 host.shape_answered(&ask, answer);
             }
             _ => {}
@@ -495,9 +495,58 @@ impl Extension for Process {
     }
 }
 
+/// The words serde's derive writes when a message names one of cold-lava's own Rust types:
+/// the answer's whole shape is wrong, and the type's name means nothing to whoever wrote it.
+const NAMES_A_TYPE: [&str; 6] = [
+    "untagged enum ",
+    "expected struct ",
+    "expected tuple struct ",
+    "expected unit struct ",
+    "expected enum ",
+    "tagged enum ",
+];
+
+/// Why an extension's answer to `method` doesn't read, in plain words: with serde's detail
+/// where it says what in the answer is wrong (a missing field, a value of the wrong type),
+/// and "as one" where serde's words would name a Rust type instead. serde's error says which
+/// only in its words, so they are matched here, once, against `NAMES_A_TYPE`.
+fn unread(method: &str, e: &serde_json::Error) -> String {
+    let detail = e.to_string();
+    match NAMES_A_TYPE.iter().any(|named| detail.contains(named)) {
+        true => format!("its answer to {method} doesn't read as one"),
+        false => format!("its answer to {method} doesn't read: {detail}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An answer that doesn't read says so in plain words: serde's detail when it says what
+    /// is wrong in the answer, never the name of a Rust type.
+    #[test]
+    fn an_answer_that_doesnt_read_says_so_without_a_rust_types_name() {
+        let reply = serde_json::from_value::<crate::act::Reply>(json!({"nothing": 1})).unwrap_err();
+        assert_eq!(
+            unread("shape/gesture", &reply),
+            "its answer to shape/gesture doesn't read as one"
+        );
+        let text = serde_json::from_value::<NewText>(json!(3)).unwrap_err();
+        assert_eq!(
+            unread("file/edit", &text),
+            "its answer to file/edit doesn't read as one"
+        );
+        let missing = serde_json::from_value::<NewText>(json!({})).unwrap_err();
+        assert_eq!(
+            unread("file/edit", &missing),
+            "its answer to file/edit doesn't read: missing field `text`"
+        );
+        let wrong = serde_json::from_value::<NewText>(json!({"text": 3})).unwrap_err();
+        assert_eq!(
+            unread("file/edit", &wrong),
+            "its answer to file/edit doesn't read: invalid type: integer `3`, expected a string"
+        );
+    }
     use crate::gateway::{Answer, Edit, Filter, Op, Query, Select};
     use crate::view::Content;
     use crate::{Effect, ExtId, Permission, Registry};

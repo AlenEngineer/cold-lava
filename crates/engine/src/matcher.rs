@@ -1963,7 +1963,8 @@ Survey the rim ~3h, not `~4h`, not~6h.
         ]);
         assert_eq!(refused.types.len(), 1, "only the task loads");
         assert!(
-            refused.errors[0].contains("where.inside names \"section\", which where.inside can't"),
+            (refused.errors[0].one_line())
+                .contains("where.inside names \"section\", which where.inside can't"),
             "{:?}",
             refused.errors
         );

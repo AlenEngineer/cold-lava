@@ -39,6 +39,7 @@ use cold_lava_engine::gateway::{
 use cold_lava_engine::owner::cache::{FileRead, Kind};
 use cold_lava_engine::owner::edits::FileEdit;
 use cold_lava_engine::owner::given::Given;
+use cold_lava_engine::problem::Problem;
 use cold_lava_engine::types::Type;
 #[cfg(test)]
 use cold_lava_engine::{bind, shapes};
@@ -825,12 +826,12 @@ pub struct Registry {
     next_view: u32,
     /// Why types, shapes, commands, keys, file types or claims the extensions registered were
     /// left out.
-    refused: Vec<String>,
+    refused: Vec<Problem>,
     /// Where in `refused` the frontend's word on commands goes: after the types and shapes,
     /// before the file types and the claims.
     commands_at: usize,
     /// Extensions on disk that didn't load, and why.
-    mistakes: Vec<String>,
+    mistakes: Vec<Problem>,
     /// Whether any extension runs in a process, so the menu polls more often.
     processes: bool,
     /// Who opens each kind of file, by extension: the first to claim it.
@@ -900,7 +901,7 @@ impl Registry {
             .collect();
         let mut refused = Vec::new();
         for (_, m) in &mut loaded {
-            refused.extend(leave_out_definitions(m));
+            refused.extend(leave_out_definitions(m).into_iter().map(Problem::line));
         }
         let commands_at = refused.len();
         let mut owners: Vec<(String, ExtId)> = Vec::new();
@@ -909,11 +910,11 @@ impl Registry {
                 let x = &t.extension;
                 if !claimable(x) {
                     let why = format!("{} can't open .{x} files: cold-lava does", m.name);
-                    refused.push(why);
+                    refused.push(Problem::line(why));
                 } else if let Some((_, first)) = owners.iter().find(|(o, _)| o == x) {
                     let first = &loaded[first.0].1.name;
                     let why = format!("{} and {first} both open .{x} files: {first} does", m.name);
-                    refused.push(why);
+                    refused.push(Problem::line(why));
                 } else {
                     owners.push((x.clone(), ExtId(i)));
                 }
@@ -927,17 +928,17 @@ impl Registry {
                     loaded[e.0].1.shows[k].conditions == claim.conditions
                 };
                 if let Some(problem) = claim.problem() {
-                    refused.push(format!(
+                    refused.push(Problem::line(format!(
                         "{}: shows {what:?} was left out: {problem}",
                         m.name
-                    ));
+                    )));
                 } else if let Some((first, _)) = shows.iter().find(same) {
                     let first = &loaded[first.0].1.name;
                     let why = format!(
                         "{} and {first} both show notes with {what}: {first} does",
                         m.name
                     );
-                    refused.push(why);
+                    refused.push(Problem::line(why));
                 } else {
                     shows.push((ExtId(i), n));
                 }
@@ -1007,7 +1008,7 @@ impl Registry {
         Some((ext, t))
     }
 
-    pub fn refused(&self) -> &[String] {
+    pub fn refused(&self) -> &[Problem] {
         &self.refused
     }
 
@@ -1016,7 +1017,7 @@ impl Registry {
     /// with the rest, where a manifest names its commands.
     pub fn refuse_commands(&mut self, why: Vec<String>) {
         let after = self.refused.split_off(self.commands_at);
-        self.refused.extend(why);
+        self.refused.extend(why.into_iter().map(Problem::line));
         self.commands_at = self.refused.len();
         self.refused.extend(after);
     }
@@ -1025,7 +1026,7 @@ impl Registry {
         self.processes
     }
 
-    pub fn mistakes(&self) -> &[String] {
+    pub fn mistakes(&self) -> &[Problem] {
         &self.mistakes
     }
 
@@ -1122,6 +1123,11 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each problem as it is said on one line.
+    fn said(problems: &[Problem]) -> Vec<String> {
+        problems.iter().map(Problem::one_line).collect()
+    }
     use serde::de::DeserializeOwned;
     use serde_json::json;
     use std::fmt::Debug;
@@ -1797,7 +1803,7 @@ mod tests {
         assert_eq!(ext("csv"), None, "a name without an extension");
         assert_eq!((r.owner("tsv"), r.owner("md")), (Some(ExtId(0)), None));
         assert_eq!(
-            r.refused(),
+            said(r.refused()),
             [
                 "other and sheets both open .csv files: sheets does",
                 "other can't open .md files: cold-lava does",
@@ -1869,7 +1875,7 @@ mod tests {
         );
         assert_eq!(shower("Plan.md", "# Plan\n", &[]), None);
         assert_eq!(
-            r.refused(),
+            said(r.refused()),
             [
                 "boards and kanban both show notes with kanban-plugin: basic: kanban does",
                 "boards: shows \"\" was left out: its where may only name property, tag and folder",

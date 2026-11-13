@@ -874,7 +874,7 @@ mod tests {
             ));
         }
         let types = types::load(layers);
-        assert_eq!(types.errors, Vec::<String>::new());
+        assert!(types.errors.is_empty(), "{:?}", types.errors);
         items::Settings::new(
             Flavour::built_in("obsidian").unwrap(),
             TasksSettings::from_json(&json),
@@ -1216,7 +1216,8 @@ mod tests {
         let f = v.join("Ideas.md");
         std::fs::write(&f, format!("{line}\n- [ ] Pay rent 📅 2026-11-12\n")).unwrap();
         let workspace = crate::workspace::scan(&v).unwrap();
-        assert_eq!(workspace.item_settings().types.errors, Vec::<String>::new());
+        let errors = &workspace.item_settings().types.errors;
+        assert!(errors.is_empty(), "{errors:?}");
         let a = agenda(&workspace, d("2026-11-01"), d("2026-11-30"));
         let texts: Vec<&str> = a.tasks.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(texts.len(), 2, "{texts:?}");
@@ -1242,7 +1243,7 @@ mod tests {
             attributes::Layer::built_in(),
             attributes::Layer::config(Path::new("config.toml"), table),
         ]);
-        assert_eq!(readings.errors, Vec::<String>::new());
+        assert!(readings.errors.is_empty(), "{:?}", readings.errors);
         assert!(
             readings
                 .notes

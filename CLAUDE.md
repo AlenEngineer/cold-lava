@@ -379,7 +379,8 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `problem.rs`: `Problem`, a refusal or failure as the lines it is said on (one at least),
   split only where the app's own text or the TOML parser's layout breaks it. Pick a
   problem out by `about`, never by its words; `joined`, `one_line` (and `--json`) say it
-  on one line. Words as written, no terminal: `say` and `Notice` show them.
+  on one line, `headline` on a status line. Words as written, no terminal: `say`
+  (`say::problem_lines`) and `Notice` show them.
 
 The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
 what it needs (`markdown::set_configured` for the chosen flavour).

@@ -3,6 +3,7 @@
 //! terminal setup, mouse mode and an embedded Neovim's own pty are all part of what's tested.
 
 use crate::commands::Key;
+use crate::problem::Problem;
 use crate::say::{out, told};
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
@@ -91,12 +92,13 @@ pub enum Input {
     Text(String),
 }
 
+/// Why a line of a script isn't a step: which line, what is wrong, and what to say after it.
 #[derive(Debug, PartialEq)]
-pub struct ParseError {
-    pub line: usize,
-    pub message: String,
+struct ParseError {
+    line: usize,
+    message: String,
     /// Lines to say after the message: the steps there are, for a step that isn't one.
-    pub then: Option<&'static str>,
+    then: Option<&'static str>,
 }
 
 pub const SYNTAX: &str = "\
@@ -121,7 +123,18 @@ write FILE TEXT         replace FILE in the workspace (the last argument) with T
 exits [10s] CODE        the program exits with CODE
 # comment             a line starting with # is skipped";
 
-pub fn parse(src: &str) -> Result<Script, ParseError> {
+/// The script `src`, read from `name`, or why it isn't one: said at `{name}:{line}`.
+pub fn parse(name: &str, src: &str) -> Result<Script, Problem> {
+    read(src).map_err(|e| {
+        let problem = Problem::line(e.message).at(format!("{name}:{}", e.line));
+        match e.then {
+            Some(text) => problem.then(text),
+            None => problem,
+        }
+    })
+}
+
+fn read(src: &str) -> Result<Script, ParseError> {
     let mut script = Script {
         cols: 160,
         rows: 44,
@@ -822,7 +835,7 @@ mod tests {
     use super::*;
 
     fn step(src: &str) -> Action {
-        parse(src).unwrap().steps.remove(0).action
+        read(src).unwrap().steps.remove(0).action
     }
 
     #[test]
@@ -834,8 +847,8 @@ mod tests {
                 text: "x,y\n1,2\n".into()
             }
         );
-        assert!(parse("write /etc/a x").is_err());
-        assert!(parse("write a.csv").is_err());
+        assert!(read("write /etc/a x").is_err());
+        assert!(read("write a.csv").is_err());
     }
 
     #[test]
@@ -891,7 +904,7 @@ mod tests {
     #[test]
     fn header_comments_and_line_numbers() {
         let s =
-            parse("# demo\nsize 80x24\nenv A=b=c\n\nexpect hi\n  screen  \nclick 3 7\n").unwrap();
+            read("# demo\nsize 80x24\nenv A=b=c\n\nexpect hi\n  screen  \nclick 3 7\n").unwrap();
         assert_eq!((s.cols, s.rows), (80, 24));
         assert_eq!(s.env, [("A".to_string(), "b=c".to_string())]);
         let lines: Vec<usize> = s.steps.iter().map(|s| s.line).collect();
@@ -946,13 +959,13 @@ mod tests {
             "expect-in 1 2 3 4",
             "expect-in 5 1 2 4 x",
         ] {
-            assert!(parse(bad).is_err(), "{bad}");
+            assert!(read(bad).is_err(), "{bad}");
         }
     }
 
     #[test]
     fn mistakes_name_their_line() {
-        let line = |src: &str| parse(src).unwrap_err().line;
+        let line = |src: &str| read(src).unwrap_err().line;
         assert_eq!(line("expect a\nsize 80x24"), 2);
         assert_eq!(line("\n\nfrobnicate"), 3);
         assert_eq!(line("size big"), 1);
@@ -985,7 +998,7 @@ mod tests {
         let program = "stty raw -echo; dd bs=1 count=1 >/dev/null 2>&1; sleep 0.3; \
             stty min 0 time 0; n=$(dd bs=1 count=1 2>/dev/null | wc -c); \
             if [ $n -eq 0 ]; then echo APART; else echo MERGED; fi; sleep 5";
-        let script = parse("wait 300ms\nkeys esc q\nwait-for APART").unwrap();
+        let script = read("wait 300ms\nkeys esc q\nwait-for APART").unwrap();
         let args = ["-c".to_string(), program.to_string()];
         assert!(
             run(
