@@ -349,4 +349,29 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A cache this binary trusts was written by a binary that keeps left-out records. One
+    /// in the older format (no format of its own, no left-out records), at the name the
+    /// older binary used or at this one's, is not read: its owner is asked again.
+    #[test]
+    fn a_cache_in_an_older_format_is_not_trusted() {
+        let dir = std::env::temp_dir().join(format!("cl-owner-older-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = Path::new("/some/workspace");
+        let older = json!({"owner": "csv-table", "version": "0.1.0", "files": {
+            "A.csv": {"rev": "r1", "given": {"items": [{"place": "1", "text": "- [ ] one"}], "links": []}}
+        }});
+        let older_name = format!(
+            "{:016x}-csv-table-0.1.0.json",
+            fnv(root.to_string_lossy().as_bytes())
+        );
+        for name in [older_name, file_name(root, &kind())] {
+            std::fs::write(dir.join(&name), older.to_string()).unwrap();
+            let mut o = Owners::new(root, vec![kind()], Some(&dir));
+            assert_eq!(o.given("csv-table", "A.csv", "r1"), None, "{name}");
+            std::fs::remove_file(dir.join(&name)).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
