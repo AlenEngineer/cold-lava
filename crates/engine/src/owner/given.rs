@@ -2796,4 +2796,41 @@ fields.star = { flag = "⭐", type = "bool" }
         let read = read("A.sheet", &answer, &s);
         assert_eq!((read.items.len(), said(&read).len()), (2, 0));
     }
+
+    /// The read-back compares every item the engine leaves out, by where it stands and what
+    /// it holds, and names the one an owner changed in the words it is reported in. A typed
+    /// item of a type that isn't loaded holds its place and is no item, so before #257 an
+    /// owner could change it unseen.
+    #[test]
+    fn the_read_back_names_a_bad_item_the_owner_changed() {
+        let s = settings("");
+        let chore = |checkbox: &str| {
+            json!({"place": "t", "role": "item", "text": ["x"],
+                   "attributes": {"task": true, "checkbox": checkbox}})
+        };
+        let volcano = |vei: u8| json!({"place": "v", "type": "volcano", "fields": {"vei": vei}});
+        let stray =
+            |colour: &str| json!({"place": "m", "role": "item", "text": ["x"], "colour": colour});
+        let before = given(json!({"items": [chore("open"), volcano(6), stray("red")]}));
+        let tick = [Change::Attribute {
+            place: "t".into(),
+            attribute: "checkbox".into(),
+            value: json!("done"),
+        }];
+        let asked = read_back("A.sheet", &apply(&before, &tick), &s);
+        let gives = |v: Json, m: Json| {
+            let gave = given(json!({"items": [chore("done"), v, m]}));
+            same(&asked, &read_back("A.sheet", &gave, &s))
+        };
+        assert_eq!(gives(volcano(6), stray("red")), Ok(()));
+        let fixed = json!({"place": "v", "type": "task", "fields": {"text": "y"}});
+        for (v, m, says) in [
+            (volcano(7), stray("red"), "v: no type called volcano"),
+            (fixed, stray("red"), "v: no type called volcano"),
+            (volcano(6), stray("blue"), "m: unknown field `colour`"),
+        ] {
+            let why = gives(v, m).unwrap_err();
+            assert!(why.contains(says), "{says}: {why}");
+        }
+    }
 }

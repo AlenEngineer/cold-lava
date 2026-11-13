@@ -1341,6 +1341,10 @@ pub(crate) mod news;
 #[cfg(test)]
 mod pieces;
 
+/// An edit in a file that holds a bad item, with a probe owner that can tamper with it.
+#[cfg(test)]
+mod bad_items;
+
 #[cfg(test)]
 mod tests {
     use super::*;
