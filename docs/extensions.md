@@ -1883,8 +1883,11 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   prints as `\u{1b}` and `\n`. A message is at most 64 MB, as before. The
   number of pieces in an answer has no bound of its own.
   Every field of the types an answer is read into names its bound
-  (`crates/engine/src/bounded.rs`, one type a bound): `place: Text<Place>` is the 1 to 1024
-  bytes above, and a field that only the message bounds says so, `Text<Message>`.
+  (`crates/engine/src/bounded.rs`, one type a bound): `place: Text<Place>` says its bound is
+  the 1 to 1024 bytes above, a field that where it comes from bounds says so,
+  `Text<Message>` (64 MiB for an extension's message), and a bound decided on 2026-11-13
+  and not applied yet is `Owed`. The type names the bound and doesn't hold it: the checks
+  above apply it as the answer is read into items, and nothing else is checked yet.
   `crates/cold-lava/tests/one_door.rs` follows every type an answer to `file/read`,
   `file/edit`, `shape/region` or `shape/gesture` is read into and fails on a field that
   names no bound.

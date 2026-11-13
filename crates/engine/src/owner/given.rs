@@ -14,8 +14,8 @@
 
 use crate::alphabet::{Mark, Role};
 use crate::bounded::{
-    AttributeName, Attributes, Betweens, Bound, CellName, FieldName, Fields, LabelName, LinkLabel,
-    List, Message, Place, Runs, Target, Text,
+    AttributeName, Attributes, Betweens, CellName, FieldName, Fields, LabelName, Limit, LinkLabel,
+    List, Message, Owed, Place, Target, Text,
 };
 use crate::gateway;
 use crate::items::{Data, Item, Settings};
@@ -111,12 +111,12 @@ impl<'de> Deserialize<'de> for WireLink {
 pub enum GivenItem {
     /// Markdown text, read as a note is: a task in it is a `task`.
     Markdown {
-        place: Text<Message>,
+        place: Text<Owed>,
         text: Text<Message>,
     },
     /// An item of a loaded type, its fields by name.
     Typed {
-        place: Text<Message>,
+        place: Text<Owed>,
         #[serde(rename = "type")]
         kind: Text<Message>,
         #[serde(default)]
@@ -131,6 +131,9 @@ pub enum GivenItem {
 /// the answer (`read_piece`); what one field may hold is the field's own type's
 /// (`crate::bounded`).
 pub const MAX_DEPTH: usize = 64;
+/// The runs of a piece's text and of its cells, together: a relation of the piece's fields,
+/// so it is checked with the piece (`Piece::check`), like the depth.
+pub const MAX_RUNS: usize = 4096;
 
 /// One unit of what a file holds, in the alphabet's terms (docs/neutral-model.md): what it is
 /// (`role`), what it carries beyond its text (`attributes`), its text, and where it stands
@@ -144,16 +147,16 @@ pub struct Piece {
     pub role: Role,
     /// Text, a number, `true` or `false` by name; `null` is the same as leaving the name out.
     #[serde(default, skip_serializing_if = "Fields::is_empty")]
-    pub attributes: Fields<Attributes, AttributeName, Message>,
+    pub attributes: Fields<Attributes, AttributeName, Owed>,
     #[serde(default, skip_serializing_if = "List::is_empty")]
-    pub text: List<Run, Runs>,
+    pub text: List<Run, Message>,
     /// *Contains*: the place of the piece it is inside, which comes before it in the answer.
     /// It names a piece taken before it, which bounds it (`read_piece`).
     #[serde(default, rename = "in", skip_serializing_if = "Option::is_none")]
     pub inside: Option<Text<Message>>,
     /// *Beside*: a row's cells, in order. A row has cells and no text of its own.
     #[serde(default, skip_serializing_if = "List::is_empty")]
-    pub cells: List<Cell, Message>,
+    pub cells: List<Cell, Owed>,
 }
 
 /// One cell of a row: the name of its column, and what it says.
@@ -162,7 +165,7 @@ pub struct Piece {
 pub struct Cell {
     pub name: Text<CellName>,
     #[serde(default)]
-    pub text: List<Run, Runs>,
+    pub text: List<Run, Message>,
 }
 
 /// One run of a piece's text. A string is plain characters, whatever they are: `#42`, `$5`,
@@ -170,7 +173,7 @@ pub struct Cell {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Run {
-    Plain(Text<Message>),
+    Plain(Text<Owed>),
     Marked(Marked),
     Link(LinkRun),
     Label(Label),
@@ -181,7 +184,7 @@ pub enum Run {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Marked {
-    pub text: Text<Message>,
+    pub text: Text<Owed>,
     #[serde(default, skip_serializing_if = "List::is_empty")]
     pub marks: List<Mark, Message>,
 }
@@ -194,7 +197,7 @@ pub struct Marked {
 pub struct LinkRun {
     pub link: Text<Target>,
     #[serde(default, skip_serializing_if = "Text::is_empty")]
-    pub text: Text<Message>,
+    pub text: Text<Owed>,
     #[serde(default, skip_serializing_if = "List::is_empty")]
     pub marks: List<Mark, Message>,
 }
@@ -212,7 +215,7 @@ pub struct Label {
 #[serde(deny_unknown_fields)]
 pub struct FieldRun {
     pub field: Text<FieldName>,
-    pub value: Text<Message>,
+    pub value: Text<Owed>,
 }
 
 /// What a `checkbox` attribute says, in the model's words, and the Tasks plugin's status type
@@ -257,35 +260,41 @@ impl Piece {
         if !self.place.fits() {
             return Err(format!(
                 "its place is empty or longer than {} bytes",
-                Place::MOST
+                self.place.most()
             ));
         }
-        let long = |r: &Run| matches!(r, Run::Link(l) if !l.link.fits());
-        if self.runs().any(long) {
+        let mut targets = self.runs().filter_map(|r| match r {
+            Run::Link(l) => Some(&l.link),
+            _ => None,
+        });
+        if let Some(far) = targets.find(|t| !t.fits()) {
             return Err(format!(
                 "a link's target is empty or longer than {} bytes",
-                Target::MOST
+                far.most()
             ));
         }
-        if self.runs().count() > Runs::MOST {
-            return Err(format!("its text has more than {} runs", Runs::MOST));
+        if self.runs().count() > MAX_RUNS {
+            return Err(format!("its text has more than {MAX_RUNS} runs"));
         }
-        if self.attributes.len() > Attributes::MOST {
-            return Err(format!("it has more than {} attributes", Attributes::MOST));
+        if self.attributes.len() > self.attributes.most() {
+            return Err(format!(
+                "it has more than {} attributes",
+                self.attributes.most()
+            ));
         }
         if !self.cells.is_empty() && (self.role != Role::Row || !self.text.is_empty()) {
             return Err("only a row has cells, and a row's text is its cells'".into());
         }
-        // Each name with whether it fits its bound and what that bound is.
+        // Each name, whether its field's bound takes it, and the most that bound allows.
         let cells =
-            (self.cells.iter()).map(|c| ("cell", c.name.as_str(), c.name.fits(), CellName::MOST));
+            (self.cells.iter()).map(|c| ("cell", c.name.as_str(), c.name.fits(), c.name.most()));
         let attributes = self.attributes.keys().map(|k| {
-            let fits = crate::bounded::fits::<AttributeName>(k.len());
-            ("attribute", k.as_str(), fits, AttributeName::MOST)
+            let (fits, most) = self.attributes.name_fits(k);
+            ("attribute", k.as_str(), fits, most)
         });
         let runs = self.runs().filter_map(|r| match r {
-            Run::Label(l) => Some(("label", l.label.as_str(), l.label.fits(), LabelName::MOST)),
-            Run::Field(f) => Some(("field", f.field.as_str(), f.field.fits(), FieldName::MOST)),
+            Run::Label(l) => Some(("label", l.label.as_str(), l.label.fits(), l.label.most())),
+            Run::Field(f) => Some(("field", f.field.as_str(), f.field.fits(), f.field.most())),
             _ => None,
         });
         for (what, name, fits, most) in cells.chain(attributes).chain(runs) {
@@ -479,7 +488,7 @@ impl<'a> Places<'a> {
         if !l.label.fits() {
             return Err(format!(
                 "a link from {from} to {to}: its label is longer than {} bytes",
-                LinkLabel::MOST
+                l.label.most()
             ));
         }
         let mut ends = [&l.from, &l.to].into_iter();
@@ -634,7 +643,7 @@ fn read_piece<'a>(
 #[serde(deny_unknown_fields)]
 pub struct GivenLink {
     pub target: Text<Message>,
-    pub place: Text<Message>,
+    pub place: Text<Owed>,
     /// What it says around the link, for backlinks.
     #[serde(default)]
     pub text: Text<Message>,
