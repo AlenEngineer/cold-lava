@@ -717,6 +717,54 @@ mod tests {
         );
     }
 
+    /// A place names the first node in the file with a text, and the first with a file, at
+    /// it, whatever that node holds: a later node at the place is never given instead, so
+    /// what is listed is what `edit` and `relink` change. The first node's text past every
+    /// bound can't be reached from a file (a Markdown piece is bounded by the message), so a
+    /// file card past its target's bound stands for it; a large text holds the place too.
+    #[test]
+    fn a_place_names_its_first_node_and_never_a_later_one() {
+        let long = "L".repeat(4099);
+        let f2 = r##"{"nodes":[
+            {"id":"x","type":"text","text":"- [ ] other"},
+            {"id":"x","type":"file","file":"LONG"},
+            {"id":"x\u001f1","type":"file","file":"Concepts/Lava.md"}
+        ]}"##
+            .replace("LONG", &long);
+        assert!(read(&f2).unwrap().links.is_empty(), "no later card's link");
+        let moved = |f: &str| (f == "Concepts/Lava.md").then(|| "Concepts/Magma.md".to_string());
+        assert!(relink(&f2, moved, |_| None).unwrap().is_none());
+        let addressed = Change::Link {
+            place: "x\u{1f}1".into(),
+            link: "Concepts/Lava.md".into(),
+            to: "Concepts/Magma.md".into(),
+        };
+        assert!(
+            edit(&f2, &[addressed]).is_err(),
+            "the place names the long card"
+        );
+
+        let big = format!("- [ ] big {}", "b".repeat(1 << 20));
+        let a1 = format!(
+            r##"{{"nodes":[
+            {{"id":"x","type":"text","text":"- [ ] other"}},
+            {{"id":"x","type":"text","text":"{big}"}},
+            {{"id":"x\u001f1","type":"text","text":"- [ ] small"}}
+        ]}}"##
+        );
+        let texts: Vec<String> = (read(&a1).unwrap().items.into_iter())
+            .filter_map(|i| match i {
+                GivenItem::Markdown { text, .. } => Some(text.chars().take(9).collect()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            ["- [ ] oth", "- [ ] big"],
+            "the small card is not given"
+        );
+    }
+
     /// Two changes to one node's field are refused, never written one over the other.
     #[test]
     fn two_changes_to_one_field_are_refused() {

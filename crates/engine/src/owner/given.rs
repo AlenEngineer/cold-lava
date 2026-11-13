@@ -2775,18 +2775,18 @@ fields.star = { flag = "⭐", type = "bool" }
         assert!(check_change("A.sheet", &given, &swap, &s).is_err());
     }
 
-    /// A Markdown piece is a piece: its text is up to 1 MiB, like any piece's.
+    /// A Markdown piece's text is bounded as it was, by the message: whether the 1 MiB of a
+    /// piece's text applies to it is the owner's open choice (#265, A4b's "For the owner").
     #[test]
-    fn a_markdown_piece_past_a_mib_is_left_out() {
+    fn a_markdown_piece_over_a_mib_is_read_as_before() {
+        let s = settings("");
         let mib = 1 << 20;
         let answer = given(json!({"items": [
             {"place": "at", "text": format!("- [ ] {}", "x".repeat(mib - 6))},
             {"place": "past", "text": format!("- [ ] {}", "x".repeat(mib - 5))},
         ]}));
-        let left: Vec<&str> = (answer.left_out.iter())
-            .map(|(_, l)| l.said.as_str())
-            .collect();
-        assert_eq!(answer.items.len(), 1);
-        assert_eq!(left, ["past: its text is longer than 1 MiB"]);
+        assert!(answer.left_out.is_empty());
+        let read = read("A.sheet", &answer, &s);
+        assert_eq!((read.items.len(), said(&read).len()), (2, 0));
     }
 }
