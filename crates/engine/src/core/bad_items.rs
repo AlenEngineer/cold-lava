@@ -426,11 +426,14 @@ fn an_owner_that_touches_a_bad_item_is_refused_naming_it() {
                 "{}, {how}: {error}",
                 bad.name
             );
-            assert!(
-                error.message.contains(&bad.says),
-                "{}, {how}: names it: {error}",
-                bad.name
-            );
+            // A copy of an item that holds its place no longer holds it, and is named as
+            // the second at that place.
+            let place = bad.says.split(": ").next().unwrap_or_default();
+            let names = match how {
+                "duplicate" => error.message.contains(place),
+                _ => error.message.contains(&bad.says),
+            };
+            assert!(names, "{}, {how}: names it: {error}", bad.name);
             assert!(error.message.contains("nothing was written"), "{error}");
             assert_eq!(now(&core), original, "{}, {how}", bad.name);
         }
