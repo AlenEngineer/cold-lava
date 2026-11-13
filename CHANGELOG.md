@@ -102,6 +102,48 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
+  is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and
+  `attributes.toml` in `cold-lava types`, `shapes` and `attributes` (`cold-lava types`
+  lists attributes.toml's too), as `config.toml` already was in `cold-lava keys`. What was
+  one line with the gutter inline,
+
+  ```
+  errors:
+    ws/.cold-lava/types.toml: can't read it: TOML parse error at line 1, column 9   | 1 | [types.x   |         ^ unclosed table, expected `]`
+  ```
+
+  is now
+
+  ```
+  errors:
+    ws/.cold-lava/types.toml: can't read it: TOML parse error at line 1, column 9
+      |
+    1 | [types.x
+      |         ^
+    unclosed table, expected `]`
+  ```
+
+  A value of the wrong type in a definition (types.toml, shapes.toml, config.toml's
+  `[types]` and `[[shapes]]`) says the keys that lead to it on a line of its own, as a
+  value in config.toml already did: `[types.x] invalid type: integer `3`, expected a map in
+  `fields`` is now `[types.x] invalid type: integer `3`, expected a map`, then
+  `in `fields``.
+
+  The errors that said only the parser's message now say where it is too, on the command
+  line: `.cold-lava/style.toml` and config.toml's `[style]` in `cold-lava style` and
+  `cold-lava keys`, and an extension's `extension.toml` in `cold-lava ext list`. A status
+  line (the menu's, the shape editor's) still says the message alone, and `--json` and
+  what extensions are sent keep the one line they had.
+- An extension's answer that doesn't read is said in plain words: "its answer to
+  shape/gesture doesn't read as one" instead of "its answer doesn't read: data did not
+  match any variant of untagged enum Reply". serde's own words stay only where they say
+  just what the answer wrote and what a value should be (a missing, duplicate or unknown
+  field or variant, a value of the wrong kind): "its answer to file/edit doesn't read:
+  missing field `text`". Anything else, a name of cold-lava's own types among it, is "doesn't
+  read as one". The same for `file/read`, `file/edit`, `file/preview`, `shape/region` and
+  `shape/gesture`, wherever it is said: the status line, an owner's trouble notice, and the
+  refusal `cold-lava item set` prints, `--json`'s `{"error": …}` included.
 - The csv-table example gives its rows as pieces, and a cell is plain characters (#243). A
   row is a `row` with its cells by column, so `#42`, `$5`, `[[x]]`, `**x**` and `- [ ] y` in
   a cell make no tag, no math, no link, no bold and no task. What else a column holds, its

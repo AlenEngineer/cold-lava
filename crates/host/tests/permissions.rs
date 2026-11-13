@@ -71,7 +71,7 @@ fn open_tasks(dir: &Path, permissions: &str) -> Registry {
     let given = shipped.replace(asks, &format!("permissions = {permissions}"));
     std::fs::write(&manifest, given).unwrap();
     let (found, mistakes) = installed::load(&dir.join("extensions"));
-    assert_eq!(mistakes, Vec::<String>::new());
+    assert!(mistakes.is_empty(), "{mistakes:?}");
     let mut installed = found.into_iter().next().unwrap();
     installed.launch.log = Some(dir.join("open-tasks.log"));
     let pinned = vec!["env".to_string(), format!("COLD_LAVA_TODAY={TODAY}")];
@@ -414,7 +414,7 @@ fn trash_can(dir: &Path, permissions: &str) -> Registry {
     let given = shipped.replace(asks, &format!("permissions = {permissions}"));
     std::fs::write(&manifest, given).unwrap();
     let (found, mistakes) = installed::load(&dir.join("extensions"));
-    assert_eq!(mistakes, Vec::<String>::new());
+    assert!(mistakes.is_empty(), "{mistakes:?}");
     let mut installed = found.into_iter().next().unwrap();
     installed.launch.log = Some(dir.join("trash-can.log"));
     Registry::new(vec![Box::new(Process::new(installed).unwrap())])

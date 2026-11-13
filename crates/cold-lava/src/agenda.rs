@@ -672,7 +672,8 @@ mod tests {
                 ("Ideas.md", "- [ ] Glass from sand #idea 📅 2026-11-07\n"),
             ],
         );
-        assert_eq!(v.item_settings().types.errors, Vec::<String>::new());
+        let errors = &v.item_settings().types.errors;
+        assert!(errors.is_empty(), "{errors:?}");
         let a = built(&v, d("2026-11-07"), false);
         assert_eq!(
             shown(&a),

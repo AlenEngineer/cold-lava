@@ -358,7 +358,7 @@ fn definition_of(block: &str) -> Option<Definition> {
 fn draft_errors(errors: &[Problem], id: &str) -> Vec<String> {
     (errors.iter())
         .filter(|e| e.is_about(id))
-        .map(|e| e.first().to_string())
+        .map(Problem::words)
         .collect()
 }
 
@@ -1641,8 +1641,7 @@ fn behaviour(v: &[String]) -> Result<shapes::Behaviour, String> {
     if on.is_empty() {
         return Err("say what it is on: a region, a part, a key or the action's name".into());
     }
-    let mut b: shapes::Behaviour =
-        toml::from_str("").map_err(|e: toml::de::Error| e.message().to_string())?;
+    let mut b: shapes::Behaviour = toml::from_str("").map_err(|e| Problem::toml(&e).headline())?;
     match gesture.as_str() {
         "click" => b.click = Some(on.clone()),
         "drop" => {

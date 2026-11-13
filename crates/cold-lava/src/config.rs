@@ -323,10 +323,11 @@ mod tests {
                 true => as_written.replace("[\r\n", "[\n"),
                 false => as_written.to_string(),
             };
-            assert_eq!(problem.lines().join("\n"), as_written, "{text:?}");
-            let ends_in_cr = problem.lines()[2].ends_with('\r');
+            let said = problem.said();
+            assert_eq!(said.join("\n"), as_written, "{text:?}");
+            let ends_in_cr = said[2].ends_with('\r');
             assert_eq!(ends_in_cr, text.ends_with('\r'), "{text:?}");
-            let (message, place) = problem.lines().split_last().expect("lines");
+            let (message, place) = said.split_last().expect("lines");
             assert_eq!(message, e.message(), "{text:?}");
             assert_eq!(
                 place.len(),
@@ -347,19 +348,20 @@ mod tests {
             panic!("a number is no base");
         };
         assert_eq!(
-            Problem::toml(&e).lines(),
+            Problem::toml(&e).said(),
             ["invalid type: integer `3`, expected a string", "in `base`"]
         );
 
         let table: toml::Table = toml::from_str("\"a\\nFAKE\" = \"x\"\n").unwrap();
         let read = toml::Value::Table(table).try_into::<BTreeMap<String, u8>>();
         let e = read.expect_err("a string is no number");
-        let lines = Problem::toml(&e).lines().to_vec();
+        let lines = Problem::toml(&e).said();
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[0], e.message());
         assert_eq!(lines[1], "in `a\nFAKE`");
         let problem = in_section("markdown.flavours.x", Problem::toml(&e));
-        assert_eq!(problem.lines(), lines);
+        let first = format!("[markdown.flavours.x] {}", lines[0]);
+        assert_eq!(problem.said(), [first, lines[1].clone()]);
         assert!(problem.said()[0].starts_with("[markdown.flavours.x] invalid type: "));
         assert!(problem.is_about("markdown.flavours.x"));
     }
@@ -402,7 +404,7 @@ mod tests {
     fn unknown_command_is_reported_and_the_rest_applies() {
         let (keys, errors) = menu("[keys]\n\"graph.opne\" = \"G\"\n\"workspace.add\" = \"V\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].first().contains("graph.opne"));
+        assert!(errors[0].one_line().contains("graph.opne"));
         assert_eq!(keys.label("graph.open"), "g");
         assert_eq!(keys.label("workspace.add"), "V");
     }
@@ -429,7 +431,7 @@ mod tests {
     fn bad_key_is_reported_and_the_default_kept() {
         let (keys, errors) = menu("[keys]\n\"graph.open\" = [\"G\", \"hyper+g\"]\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].first().contains("hyper+g"));
+        assert!(errors[0].one_line().contains("hyper+g"));
         assert_eq!(keys.label("graph.open"), "g");
         let (_, errors) = menu("[keys]\n\"graph.open\" = 7\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
@@ -440,7 +442,8 @@ mod tests {
         let (keys, errors) = menu("[keys]\n\"graph.open\" = \"x\"\n\"boards.open\" = \"x\"\n");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(
-            errors[0].first().contains("graph.open") && errors[0].first().contains("boards.open")
+            errors[0].one_line().contains("graph.open")
+                && errors[0].one_line().contains("boards.open")
         );
         assert_eq!(keys.label("graph.open"), "g");
         assert_eq!(keys.label("boards.open"), "w");
@@ -483,7 +486,11 @@ mod tests {
 
         let c = parse("[keys]\n\"pane.leave\" = []\n");
         assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
-        assert!(c.errors[0].first().contains("pane.leave"), "{:?}", c.errors);
+        assert!(
+            c.errors[0].one_line().contains("pane.leave"),
+            "{:?}",
+            c.errors
+        );
         let keys = Keymap::with(&commands::entries(PANE), &c.keys).0;
         assert_eq!(keys.get(ctrl('q')), Some(PaneAction::Leave));
     }
@@ -550,7 +557,7 @@ mod tests {
             let c = parse(text);
             assert_eq!(c.errors.len(), 1, "{text}: {:?}", c.errors);
             assert!(
-                c.errors[0].first().contains(needle),
+                c.errors[0].one_line().contains(needle),
                 "{text}: {:?}",
                 c.errors
             );

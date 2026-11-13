@@ -11,6 +11,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use super::{Definition, VERSION, WORKSPACE_FILE};
+use crate::problem::Problem;
 use crate::write::{self, WriteError};
 
 /// `d` as a `[[shapes]]` block with id `id`, ending in a line break.
@@ -291,7 +292,7 @@ pub fn splice(
 /// Whether `after` reads as `before` with only the shape `replacing` changed (or `id` added).
 fn check(before: &str, after: &str, replacing: Option<&str>, id: &str) -> Result<(), String> {
     let refuse = |why: String| Err(format!("not saved: {why}; the file is left as it was"));
-    let read = |t: &str| toml::from_str::<toml::Table>(t).map_err(|e| e.message().to_string());
+    let read = |t: &str| toml::from_str::<toml::Table>(t).map_err(|e| Problem::toml(&e).headline());
     let (old, new) = match (read(before), read(after)) {
         (Ok(o), Ok(n)) => (o, n),
         (_, Err(e)) => return refuse(format!("the new text doesn't read ({e})")),
@@ -331,7 +332,8 @@ fn check(before: &str, after: &str, replacing: Option<&str>, id: &str) -> Result
     };
     entry.remove("id");
     if let Err(e) = toml::Value::Table(entry).try_into::<Definition>() {
-        return refuse(format!("the shape doesn't read back ({})", e.message()));
+        let why = Problem::toml(&e).headline();
+        return refuse(format!("the shape doesn't read back ({why})"));
     }
     Ok(())
 }

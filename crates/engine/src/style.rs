@@ -14,6 +14,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::frontmatter::{self, Value};
+use crate::problem::Problem;
 
 /// The workspace's own overrides, beside its types.
 pub const WORKSPACE_FILE: &str = ".cold-lava/style.toml";
@@ -483,7 +484,7 @@ pub struct Style {
     pub dates: BTreeMap<String, DateChoice>,
     /// Mistakes in the override files, which are skipped.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub errors: Vec<String>,
+    pub errors: Vec<Problem>,
 }
 
 impl Default for Style {
@@ -510,15 +511,16 @@ pub struct Overrides {
 }
 
 impl Overrides {
-    pub fn parse(text: &str) -> Result<Overrides, String> {
-        toml::from_str(text).map_err(|e| e.message().to_string())
+    /// `text` as `.cold-lava/style.toml` has it, or why it doesn't read: where it is in the
+    /// file, and on one line the message alone, as `--json` and the gateway have always said
+    /// it.
+    pub fn parse(text: &str) -> Result<Overrides, Problem> {
+        toml::from_str(text).map_err(|e| Problem::toml_file(&e, text).brief())
     }
 
-    /// `[style]` as config.toml has it.
-    pub fn from_table(table: toml::Table) -> Result<Overrides, String> {
-        table
-            .try_into()
-            .map_err(|e: toml::de::Error| e.message().to_string())
+    /// `[style]` as config.toml has it, or why it doesn't read (as `parse`).
+    pub fn from_table(table: toml::Table) -> Result<Overrides, Problem> {
+        table.try_into().map_err(|e| Problem::toml(&e).brief())
     }
 }
 
@@ -668,10 +670,11 @@ impl Style {
         match std::fs::read_to_string(root.join(WORKSPACE_FILE)) {
             Ok(text) => match Overrides::parse(&text) {
                 Ok(o) => s.apply(&o, Origin::Workspace),
-                Err(e) => s.errors.push(format!("{WORKSPACE_FILE}: {e}")),
+                Err(e) => s.errors.push(e.at(WORKSPACE_FILE)),
             },
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                s.errors.push(format!("{WORKSPACE_FILE}: {e}"));
+                s.errors
+                    .push(Problem::line(e.to_string()).at(WORKSPACE_FILE));
             }
             Err(_) => {}
         }

@@ -8,6 +8,7 @@
 //! The view an extension sends (a title, a row) is not a notice: it is content, drawn
 //! through ratatui's text (`cells.rs` says what that keeps).
 
+use crate::problem::Problem;
 use cold_lava_views::shown::{Level, escape};
 use std::fmt;
 
@@ -36,6 +37,14 @@ impl From<String> for Notice {
 impl From<&str> for Notice {
     fn from(words: &str) -> Notice {
         Notice(words.to_string())
+    }
+}
+
+/// A problem on a status line, which holds one short line: what is wrong and where, without
+/// the lines that show where in a file (`Problem::headline`).
+impl From<&Problem> for Notice {
+    fn from(problem: &Problem) -> Notice {
+        Notice(problem.headline())
     }
 }
 

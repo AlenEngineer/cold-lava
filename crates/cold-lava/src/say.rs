@@ -21,6 +21,7 @@
 //! line, a `Problem` (the engine's `problem.rs`) for an error, which `main` prints a line
 //! each, or `listing_block` for a text whose lines are a listing.
 
+use crate::problem::Problem;
 use cold_lava_views::shown::{Level, escape};
 use serde::Serialize;
 use std::fmt::Arguments;
@@ -75,6 +76,17 @@ pub fn message_out(words: Arguments<'_>) {
 /// One line of a message on stderr.
 pub fn message_err(words: Arguments<'_>) {
     eprintln!("{}", message(words));
+}
+
+/// A problem on stderr, one message line for each of its lines (`Problem::said`), each after
+/// `indent`, and the first after `first` too (`cold-lava: `, the file a section is in): a
+/// TOML error's place lines and message, a usage's lines. The breaks between the lines are
+/// the problem's, never found in its words.
+pub fn problem_lines(problem: &Problem, indent: &str, first: &str) {
+    for (i, line) in problem.said().iter().enumerate() {
+        let first = if i == 0 { first } else { "" };
+        message_err(format_args!("{indent}{first}{line}"));
+    }
 }
 
 /// The app's own text on stdout, as it is: only text known when the app was built.

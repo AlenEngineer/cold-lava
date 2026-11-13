@@ -69,8 +69,8 @@ fn role_name<S: serde::Serializer>(on: &On, s: S) -> Result<S::Ok, S::Error> {
 #[derive(Clone)]
 pub struct Layer {
     origin: Origin,
-    /// Role → attribute → readings, or why the file doesn't read.
-    roles: Result<toml::Table, String>,
+    /// Role → attribute → readings, or why the file doesn't read, said where it is.
+    roles: Result<toml::Table, Problem>,
 }
 
 impl Layer {
@@ -99,18 +99,21 @@ impl Layer {
 
     /// An attributes file: `version = 1`, then a table per role.
     fn from_file(origin: Origin, text: Result<String, String>) -> Layer {
-        let roles = text.and_then(|t| {
-            let mut file: toml::Table = toml::from_str(&t)
-                .map_err(|e| format!("can't read it: {}", Problem::toml(&e).folded()))?;
+        let place = origin.place();
+        let roles = text.map_err(|e| Problem::line(e).at(&place)).and_then(|t| {
+            let mut file: toml::Table =
+                toml::from_str(&t).map_err(|e| Problem::toml_file(&e, &t).unreadable(&place))?;
             match file.remove("version") {
                 Some(toml::Value::Integer(VERSION)) => Ok(file),
-                Some(v) => Err(format!(
+                Some(v) => Err(Problem::line(format!(
                     "version = {v} is not one this cold-lava reads (it reads version = \
                      {VERSION}); the file is skipped"
-                )),
-                None => Err(format!(
+                ))
+                .at(&place)),
+                None => Err(Problem::line(format!(
                     "no version: start the file with version = {VERSION}; the file is skipped"
-                )),
+                ))
+                .at(&place)),
             }
         });
         Layer { origin, roles }
@@ -122,8 +125,8 @@ impl Layer {
 pub struct Readings {
     /// In load order; a reading replaced by a later origin takes the later one's place.
     pub readings: Vec<Reading>,
-    /// One line per mistake: where, which attribute, what. The reading is dropped.
-    pub errors: Vec<String>,
+    /// One problem per mistake: where, which attribute, what. The reading is dropped.
+    pub errors: Vec<Problem>,
     /// Things worth knowing that aren't mistakes, such as a reading replacing an earlier one.
     pub notes: Vec<String>,
 }
@@ -156,7 +159,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
         let roles = match layer.roles {
             Ok(roles) => roles,
             Err(e) => {
-                found.errors.push(format!("{place}: {e}"));
+                found.errors.push(e);
                 continue;
             }
         };
@@ -165,17 +168,17 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
             let on = match On::from_name(&role).filter(|on| on.name() == role) {
                 Some(on) if !matches!(on, On::Document | On::Inline) => on,
                 _ => {
-                    found.errors.push(format!(
+                    found.errors.push(Problem::line(format!(
                         "{at} is not a role attributes are read on (section, text, item, row, \
                          aside, verbatim)"
-                    ));
+                    )));
                     continue;
                 }
             };
             let toml::Value::Table(attributes) = attributes else {
-                found.errors.push(format!(
+                found.errors.push(Problem::line(format!(
                     "{at} is a table of attributes, each with its readings"
-                ));
+                )));
                 continue;
             };
             for (name, written) in attributes {
@@ -209,7 +212,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
                             with,
                         });
                     }
-                    Err(e) => found.errors.push(format!("{at} {name}: {e}")),
+                    Err(e) => found.errors.push(e.at(format!("{at} {name}"))),
                 }
             }
         }
@@ -219,7 +222,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
 
 /// One attribute's readings as written: sources like a type's field has, and `with` beside a
 /// checkbox.
-fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>, String), String> {
+fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>, String), Problem> {
     if name != ANY && !types::is_name(name, false) {
         return Err(
             "not an attribute's name: a letter, then letters, digits, - or _, or \"*\" for \
@@ -228,14 +231,14 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
         );
     }
     if STRUCTURAL.contains(&name) {
-        return Err(format!(
+        return Err(Problem::line(format!(
             "{name} is read from the note's structure and can't be given readings ({})",
             STRUCTURAL.join(", ")
-        ));
+        )));
     }
     let with = match written.as_table_mut().and_then(|t| t.remove("with")) {
         Some(toml::Value::String(with)) => with,
-        Some(other) => return Err(format!("with = {other}: with is text")),
+        Some(other) => return Err(Problem::line(format!("with = {other}: with is text"))),
         None => String::new(),
     };
     if written.as_table().is_some_and(|t| t.is_empty()) {
@@ -245,9 +248,7 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
                 .into(),
         );
     }
-    let Sources(read) = written
-        .try_into()
-        .map_err(|e: toml::de::Error| Problem::toml(&e).folded())?;
+    let Sources(read) = written.try_into().map_err(|e| Problem::toml(&e))?;
     for s in &read {
         let text = matches!(
             s,
@@ -259,26 +260,32 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
                 | Source::Checkbox(_)
         );
         if !text {
-            return Err(format!(
+            return Err(Problem::line(format!(
                 "{} is not a reading of a piece's text (marker, inline, flag, flags, pattern, \
                  checkbox)",
                 s.kind()
-            ));
+            )));
         }
         if !s.on().contains(&on) {
-            return Err(format!("{} can't be read on {}", s.kind(), on.name()));
+            return Err(Problem::line(format!(
+                "{} can't be read on {}",
+                s.kind(),
+                on.name()
+            )));
         }
         match s {
             Source::Marker(t) | Source::Inline(t) | Source::Flag(t) if t.trim().is_empty() => {
-                return Err(format!("{} is empty", s.kind()));
+                return Err(Problem::line(format!("{} is empty", s.kind())));
             }
             Source::Flags(glyphs) if glyphs.is_empty() => {
                 return Err("flags needs at least one glyph".into());
             }
             Source::Pattern(re) => match types::compile(re) {
-                Err(e) => return Err(format!("pattern '{re}': {e}")),
+                Err(e) => return Err(Problem::line(format!("pattern '{re}': {e}"))),
                 Ok(r) if r.captures_len() < 2 => {
-                    return Err(format!("pattern '{re}' needs a group (…) around the value"));
+                    return Err(Problem::line(format!(
+                        "pattern '{re}' needs a group (…) around the value"
+                    )));
                 }
                 Ok(_) => {}
             },
@@ -396,7 +403,7 @@ mod tests {
     #[test]
     fn the_built_in_readings_load() {
         let a = Readings::built_in();
-        assert_eq!(a.errors, Vec::<String>::new());
+        assert!(a.errors.is_empty(), "{:?}", a.errors);
         let names: Vec<&str> = a.readings.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
@@ -513,7 +520,8 @@ mod tests {
                 format!("config.toml: [item] due: {TICKING}"),
             ]
         );
-        let errors = a.errors.join("\n");
+        let errors: Vec<String> = a.errors.iter().map(Problem::one_line).collect();
+        let errors = errors.join("\n");
         for wanted in [
             "[item] level: level is read from the note's structure",
             "[item] broken: rest is not a reading of a piece's text",
@@ -554,7 +562,7 @@ mod tests {
         let found = types::for_workspace(&dir);
         assert_eq!(found.errors.len(), 1, "{:?}", found.errors);
         assert!(
-            found.errors[0].ends_with(
+            found.errors[0].one_line().ends_with(
                 "attributes.toml: [item] due: rest is not a reading of a piece's text (marker, \
                  inline, flag, flags, pattern, checkbox)"
             ),
