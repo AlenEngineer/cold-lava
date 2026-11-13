@@ -1902,7 +1902,10 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)
-  is dropped as it loads, and its owner asked again.
+  is dropped as it loads, and its owner asked again; until it answers, that file shows
+  nothing. The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
+  the file: a cache of another format is neither read nor rewritten, so an upgrade or a
+  downgrade asks each owner again once.
   Every field of the types an answer is read into names its bound
   (`crates/engine/src/bounded.rs`, one type a bound): `place: Text<Place>` says its bound is
   the 1 to 1024 bytes above, a field that where it comes from bounds says so,

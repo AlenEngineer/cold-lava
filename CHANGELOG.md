@@ -132,8 +132,12 @@ change commands, keys and file formats; patch versions only fix things.
   and in the engine as the owners' cache is read; the label of a link between pieces and the
   number of such links apply as the answer is read into items. The owners' cache keeps what
   an answer left out beside it, through any number of loads and saves, and no longer keeps
-  an item that is out of bounds. An answer in a cache written before this whose items no
-  longer all read is dropped as it loads, and its owner is asked again.
+  an item that is out of bounds. The cache has a format of its own, in its file's name and
+  in the file: a cache written before this is not read, so every owner is asked again once
+  after an upgrade (and once after a downgrade, whose binary keeps its own file). A cached
+  answer whose items no longer all read (a bound applies now that didn't when it was saved)
+  is dropped as it loads and its owner asked again: until the owner answers, that file shows
+  nothing, its good items included; with the owner absent or broken, until it is back.
 
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and

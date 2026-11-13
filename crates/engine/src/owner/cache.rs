@@ -29,9 +29,19 @@ pub struct FileRead {
     pub text: String,
 }
 
+/// The format of the owners' cache. A cache this binary trusts was written by a binary
+/// that keeps left-out records (`Answer`). The format is in the file's name, so a binary of
+/// another format neither reads nor rewrites this one's cache, and in the file, where it must
+/// match, so a cache of another format is not read and its owners are asked again. A change
+/// to what a cache holds raises it: an upgrade or a downgrade then asks every owner once.
+const FORMAT: u32 = 2;
+
 /// What one owner gave, by file, as kept on disk.
 #[derive(Default, Serialize, Deserialize)]
 struct Cache {
+    /// `FORMAT`; a cache written before formats were kept has none, and is not read.
+    #[serde(default)]
+    format: u32,
     owner: String,
     version: String,
     files: BTreeMap<String, Answer>,
@@ -48,10 +58,12 @@ struct Answer {
     rev: String,
     given: Given,
     /// Whether the answer read back from the cache as it was saved. One whose items no longer
-    /// all read (a bound applies now that didn't when it was saved, or it was saved before
-    /// left-out items were kept) is dropped as it loads, and its owner asked again: the
-    /// positions of what was left out then and what is left out now can't be put in one
-    /// order without the owner's answer.
+    /// all read (a bound applies now that didn't when it was saved) is dropped as it loads,
+    /// and its owner asked again: the positions of what was left out then and what is left
+    /// out now can't be put in one order without the owner's answer. So the file shows
+    /// nothing, its good items included, until its owner answers; with its owner absent or
+    /// broken, until it is back. The owner has not decided this rule (#298): the other way
+    /// keeps showing the cached good items and reports the bad one.
     read_as_saved: bool,
 }
 
@@ -80,10 +92,16 @@ impl From<Stored> for Answer {
 
 impl From<Answer> for Stored {
     fn from(answer: Answer) -> Stored {
-        let left_out = answer.given.left_out.clone();
+        // Every field named, so one added to `Answer` says here whether it is saved.
+        let Answer {
+            rev,
+            given,
+            read_as_saved: _,
+        } = answer;
+        let left_out = given.left_out.clone();
         Stored {
-            rev: answer.rev,
-            given: answer.given,
+            rev,
+            given,
             left_out,
         }
     }
@@ -114,8 +132,9 @@ impl Owners {
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .and_then(|t| serde_json::from_str::<Cache>(&t).ok())
                 .map(Cache::read_as_saved)
-                .filter(|c| c.owner == k.owner && c.version == k.version)
+                .filter(|c| c.format == FORMAT && c.owner == k.owner && c.version == k.version)
                 .unwrap_or_else(|| Cache {
+                    format: FORMAT,
                     owner: k.owner.clone(),
                     version: k.version.clone(),
                     ..Cache::default()
@@ -232,7 +251,7 @@ impl Cache {
 }
 
 /// The cache file for an owner of a workspace: the workspace by a hash of its path, the owner by
-/// name and version.
+/// name and version, and the cache's `FORMAT`.
 fn file_name(root: &Path, k: &Kind) -> String {
     let safe = |s: &str| -> String {
         (s.chars())
@@ -243,7 +262,11 @@ fn file_name(root: &Path, k: &Kind) -> String {
             .collect()
     };
     let root = fnv(root.to_string_lossy().as_bytes());
-    format!("{root:016x}-{}-{}.json", safe(&k.owner), safe(&k.version))
+    format!(
+        "{root:016x}-{}-{}.cache{FORMAT}.json",
+        safe(&k.owner),
+        safe(&k.version)
+    )
 }
 
 #[cfg(test)]

@@ -90,28 +90,38 @@ impl From<Wire> for Given {
 
 /// As JSON: `{items, links}`, the links to files and then the links between pieces in one
 /// list, as an owner gives them. What was left out is not written: it is no item.
+///
+/// Every field is named here, so a field added to `Given` is a compile error until this says
+/// whether it is written: `left_out` is not (it is no item), and the owners' cache saves it
+/// beside this JSON (`owner::cache::Stored`).
 impl Serialize for Given {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
+        let Given {
+            items,
+            links,
+            between,
+            left_out: _,
+        } = self;
         let mut out = serializer.serialize_struct("Given", 2)?;
-        out.serialize_field("items", &self.items)?;
-        out.serialize_field("links", &Links(self))?;
+        out.serialize_field("items", items)?;
+        out.serialize_field("links", &Links(links, between))?;
         out.end()
     }
 }
 
 /// A `Given`'s two kinds of link in one list, as the wire has them.
-struct Links<'a>(&'a Given);
+struct Links<'a>(&'a List<GivenLink, Message>, &'a List<Between, Betweens>);
 
 impl Serialize for Links<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
-        let given = self.0;
-        let mut out = serializer.serialize_seq(Some(given.links.len() + given.between.len()))?;
-        for l in given.links.iter() {
+        let Links(links, between) = self;
+        let mut out = serializer.serialize_seq(Some(links.len() + between.len()))?;
+        for l in links.iter() {
             out.serialize_element(l)?;
         }
-        for l in given.between.iter() {
+        for l in between.iter() {
             out.serialize_element(l)?;
         }
         out.end()
