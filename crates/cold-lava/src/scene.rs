@@ -129,7 +129,7 @@ impl Frame {
                     continue;
                 }
                 let cell = &mut buf[(area.x + c as u16, y)];
-                cell.set_char(ch);
+                crate::cells::put_char(cell, ch);
                 cell.set_style(l.style);
             }
         }
@@ -172,5 +172,27 @@ mod tests {
             .collect();
         assert!(text.contains("First") && text.contains("Apart"));
         assert!(!text.contains("Clash"));
+    }
+
+    /// A label is a file's name or an extension's words. One that was not escaped before
+    /// it got here still puts nothing a terminal would act on in a cell.
+    #[test]
+    fn a_label_holding_an_escape_sequence_reaches_no_cell_as_written() {
+        let scene = Frame {
+            view: (0.0, 40.0, -10.0, 10.0),
+            zoom: 1.0,
+            layers: vec![],
+            labels: vec![label(20.0, "a\u{1b}]0;t\u{7}b")],
+        };
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        scene.draw_labels(&mut buf, area);
+        let text: String = buf.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(!text.contains(char::is_control), "{text:?}");
+        let stand_in = crate::cells::STAND_IN;
+        assert!(
+            text.contains(&format!("a{stand_in}]0;t{stand_in}b")),
+            "{text:?}"
+        );
     }
 }

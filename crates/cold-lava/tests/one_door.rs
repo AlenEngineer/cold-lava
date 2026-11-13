@@ -1172,3 +1172,24 @@ fn the_listings_are_these() {
                   did or why it didn't is a message (`told!`, `problem!`)";
     only_listed("lines printed as listings", remedy, &found, &listed);
 }
+
+/// What the terminal app draws goes into ratatui's cells, and text drawn through ratatui
+/// (`Span`, `Line`, `Paragraph`, `set_string`) loses its control characters there. A symbol
+/// set on a cell itself does not, so only `cells.rs` sets one, and it shows the stand-in
+/// for what a terminal would act on. A cell reached another way (`Buffer::content_mut`, a
+/// widget of another crate that sets symbols itself) is not seen, and neither is a cell
+/// put in whole (`buf[(x, y)] = cell`) or a setter named without its call
+/// (`.map(Cell::set_symbol)`).
+#[test]
+fn the_app_sets_a_cells_symbol_only_through_cells() {
+    let sets = ["set_char(", "set_symbol("];
+    let found = tally(hits(&sets));
+    let remedy = "set it with `cells::put` or `cells::put_char`, so an escape sequence in a \
+                  label never reaches the terminal";
+    only_listed(
+        "symbols set on a cell",
+        remedy,
+        &found,
+        &["cells.rs: set_char( ×1", "cells.rs: set_symbol( ×5"],
+    );
+}

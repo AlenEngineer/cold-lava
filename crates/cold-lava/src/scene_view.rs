@@ -10,6 +10,7 @@ use crate::commands::{self, GraphAction, HistoryAction, Key, KeyHint, Keymap};
 use crate::graph::{self, Graph, Kind};
 use crate::history::Nav;
 use crate::kitty::{self, Kitty};
+use crate::notice::Notice;
 use crate::scene::{Disc, Edge as Line2, Frame as Drawing, Label, Layer};
 use crate::workspace;
 use ratatui::Frame;
@@ -80,7 +81,7 @@ pub struct SceneView {
     mode: Mode,
     hits: Vec<usize>,
     hit_pos: usize,
-    msg: Option<(String, Instant)>,
+    msg: Option<(Notice, Instant)>,
     area: Rect,
     drag: Option<Drag>,
     keys: Keymap<GraphAction>,
@@ -190,7 +191,7 @@ impl SceneView {
         self.drag.is_some()
     }
 
-    pub fn flash(&mut self, s: impl Into<String>) {
+    pub fn flash(&mut self, s: impl Into<Notice>) {
         self.msg = Some((s.into(), Instant::now()));
     }
 
@@ -893,8 +894,9 @@ impl SceneView {
             if !(show_all || near || hit(i) || important || Some(i) == sel) {
                 continue;
             }
-            let mut text: String = n.label.chars().take(28).collect();
-            if n.label.chars().count() > 28 {
+            let label = crate::cells::label(&n.label);
+            let mut text: String = label.chars().take(28).collect();
+            if label.chars().count() > 28 {
                 text.push('…');
             }
             let style = if Some(i) == sel {
@@ -933,7 +935,7 @@ impl SceneView {
     }
 
     /// Draws the view over `area`; `statuses` are the extensions' words for the status line.
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, statuses: &[String]) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, statuses: &[Notice]) {
         let [main, status] =
             Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(area);
 
@@ -1062,7 +1064,7 @@ impl SceneView {
         f.render_widget(Paragraph::new(rows), r);
     }
 
-    fn draw_status(&mut self, f: &mut Frame, area: Rect, statuses: &[String]) {
+    fn draw_status(&mut self, f: &mut Frame, area: Rect, statuses: &[Notice]) {
         let g = &self.graph;
         let mut info = match self.sel {
             None => Line::from(Span::styled(

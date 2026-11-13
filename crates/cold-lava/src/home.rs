@@ -22,6 +22,7 @@ use crate::history::{Exit, History, Nav, Place};
 use crate::index::Backlink;
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
+use crate::notice::Notice;
 use crate::paths::{self, config_dir, home_dir};
 use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
@@ -662,7 +663,7 @@ pub struct Home {
     /// What extensions may still ask for this frame (see `call`).
     effects_left: usize,
     /// Each extension's own part of the status line (`ui/status`).
-    statuses: Vec<(ExtId, String)>,
+    statuses: Vec<(ExtId, Notice)>,
     /// The views extensions opened and haven't closed, shown or not.
     views: Views,
     /// The scene view in front in the last frame (its pixels go when it stops being there).
@@ -707,7 +708,7 @@ pub struct Home {
     // UI
     focus: Focus,
     mode: Mode,
-    msg: Option<(String, Instant)>,
+    msg: Option<(Notice, Instant)>,
     /// What extensions asked for that was not done, to keep what is in front (`refused`).
     refusals: Refused,
     areas: [Rect; 4],
@@ -1085,8 +1086,8 @@ impl Home {
             Effect::Status { text } => {
                 let at = self.statuses.iter().position(|(e, _)| *e == ext);
                 match (at, text) {
-                    (Some(i), Some(text)) => self.statuses[i].1 = text,
-                    (None, Some(text)) => self.statuses.push((ext, text)),
+                    (Some(i), Some(text)) => self.statuses[i].1 = text.into(),
+                    (None, Some(text)) => self.statuses.push((ext, text.into())),
                     (Some(i), None) => {
                         self.statuses.remove(i);
                     }
@@ -1175,7 +1176,7 @@ impl Home {
         if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
             return b.refused(notice);
         }
-        self.refusals.add(notice, Instant::now());
+        self.refusals.add(notice.into(), Instant::now());
     }
 
     /// `view/close`: the owner's view is closed, unless something is being typed in it (a
@@ -2341,8 +2342,8 @@ impl Home {
         }
     }
 
-    fn flash(&mut self, s: impl Into<String>) {
-        let s = s.into();
+    fn flash(&mut self, s: impl Into<Notice>) {
+        let s: Notice = s.into();
         if let Some(scene) = self.front_scene_mut() {
             scene.flash(s.clone());
         }
@@ -6171,7 +6172,7 @@ impl Home {
     }
 
     fn draw_screen(&mut self, f: &mut Frame) {
-        let statuses: Vec<String> = self.statuses.iter().map(|(_, t)| t.clone()).collect();
+        let statuses: Vec<Notice> = self.statuses.iter().map(|(_, t)| t.clone()).collect();
         // Nothing is drawn under the board picker over a scene (`tick_scene`).
         if self.picking.is_some() && self.front_scene().is_some() {
             return;
@@ -7349,7 +7350,7 @@ impl Home {
         // A refused request comes first, where no other message can push it off the line.
         let now = Instant::now();
         self.refusals.begin(now);
-        let other = self.msg.as_ref().map(|(m, _)| m.as_str());
+        let other = self.msg.as_ref().map(|(m, _)| m);
         let second = match self.refusals.line(other, now) {
             Some(said) => Line::styled(format!(" {said}"), Style::new().fg(HIT)),
             None => Line::styled(hints, Style::new().fg(DIM)),
