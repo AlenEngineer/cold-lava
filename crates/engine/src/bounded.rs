@@ -896,7 +896,8 @@ mod tests {
     #[test]
     fn every_bound_is_in_the_table_of_what_bounds_say() {
         let source = include_str!("bounded.rs");
-        let bounds = source.matches("impl Bound for ").count();
+        // Spelled in two parts, so this line is not one of them.
+        let bounds = source.matches(&["impl", " Bound for "].concat()).count();
         assert_eq!(bounds, PAST.len());
     }
 
