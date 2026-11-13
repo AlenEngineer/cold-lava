@@ -19,6 +19,7 @@ use crate::commands::{self, KeyHint, Keymap, SHAPE_EDITOR, ShapeEditorAction as 
 use crate::core::{Core, Event as CoreEvent};
 use crate::gateway::News;
 use crate::notice::Notice;
+use crate::problem::Problem;
 use crate::shapes::{self, Definition, PartDef, Pos, Shapes, Xy, file};
 use anyhow::Result;
 use cold_lava_canvas::snap::{self, Guide};
@@ -352,6 +353,15 @@ fn definition_of(block: &str) -> Option<Definition> {
     entry.try_into().ok()
 }
 
+/// The draft `id`'s own errors among the loader's, each in its own words: the problems about
+/// it, whatever the words of the others hold.
+fn draft_errors(errors: &[Problem], id: &str) -> Vec<String> {
+    (errors.iter())
+        .filter(|e| e.is_about(id))
+        .map(|e| e.first().to_string())
+        .collect()
+}
+
 impl Editor {
     // ---------- the draft ----------
 
@@ -359,10 +369,7 @@ impl Editor {
     /// to it again by `settle`.
     fn reload(&mut self) {
         self.loaded = shapes::with_draft(&self.root, &self.id, &self.def);
-        self.errors = (self.loaded.errors.iter())
-            .filter(|e| e.is_about(&self.id))
-            .map(|e| e.first().to_string())
-            .collect();
+        self.errors = draft_errors(&self.loaded.errors, &self.id);
         if self.errors.is_empty()
             && let Some(l) = self.loaded.get(&self.id)
         {
@@ -1768,4 +1775,33 @@ fn draw_form(f: &mut Frame, area: Rect, form: &Form) {
             .block(block),
         r,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The draft's errors are the problems about it: not a glyph's whose words hold
+    /// `shape x: `, and with no part of a path that holds it before the draft's own words.
+    #[test]
+    fn the_drafts_errors_are_the_problems_about_it_whatever_the_words_hold() {
+        let place = "w/shape x: /.cold-lava/shapes.toml";
+        let errors = [
+            Problem::line(format!(
+                "{place}: [glyphs] shape x: a glyph is one symbol in quotes, like shape x = \
+                 \"✓\"; got \"ab\""
+            )),
+            Problem::line("it nests shape w, which isn't loaded")
+                .at(format!("{place}: shape x"))
+                .about("x"),
+            Problem::line("it nests shape x, which isn't loaded")
+                .at(format!("{place}: shape y"))
+                .about("y"),
+        ];
+        assert_eq!(
+            draft_errors(&errors, "x"),
+            ["it nests shape w, which isn't loaded"]
+        );
+        assert_eq!(draft_errors(&errors, "z"), Vec::<String>::new());
+    }
 }
