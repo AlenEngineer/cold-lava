@@ -2216,4 +2216,218 @@ fields.star = { flag = "⭐", type = "bool" }
         );
         assert_eq!(runs(""), json!([{"field": "due", "value": "2026-11-20"}]));
     }
+
+    /// One rule for a place (the owner's decision of 2026-11-13): the first item of each form
+    /// at a place holds it, and a second of that form is left out with a problem, so a change
+    /// at the place reaches one item. Before, two Markdown pieces at one place were both
+    /// listed, and ticking the first gave the second the first's text.
+    #[test]
+    fn a_second_item_of_a_form_at_a_taken_place_is_left_out() {
+        let s = settings("");
+        let answer = given(json!({"items": [
+            {"place": "p", "text": "- [ ] first"},
+            {"place": "p", "text": "- [ ] second"},
+            {"place": "p", "role": "item", "text": ["a piece beside them"]},
+            {"place": "t", "type": "task", "fields": {"text": "typed"}},
+            {"place": "t", "type": "task", "fields": {"text": "typed again"}},
+        ]}));
+        let read = read("Home.chores", &answer, &s);
+        assert_eq!(
+            said(&read),
+            [
+                "p: another Markdown piece is at this place",
+                "t: another typed item is at this place"
+            ]
+        );
+        let kinds: Vec<(&str, &str)> = (read.items.iter())
+            .map(|i| (read.places[&i.id].as_str(), i.data.kind()))
+            .collect();
+        assert_eq!(kinds, [("p", "task"), ("p", "list"), ("t", "task")]);
+        assert_eq!(fields(&read.items[0])["text"], "first");
+        assert_eq!(fields(&read.items[2])["text"], "typed");
+
+        let tick = Change::Text {
+            place: "p".into(),
+            text: "- [x] first".into(),
+        };
+        let typed = Change::Field {
+            place: "t".into(),
+            field: "text".into(),
+            value: json!("changed"),
+        };
+        let after = apply(&answer, &[tick, typed]);
+        let texts: Vec<String> = (after.items.iter())
+            .filter_map(|i| match i {
+                GivenItem::Markdown { text, .. } => Some(text.to_string()),
+                GivenItem::Typed { fields, .. } => Some(fields["text"].to_string()),
+                GivenItem::Piece(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "- [x] first",
+                "- [ ] second",
+                "\"changed\"",
+                "\"typed again\""
+            ],
+            "a change at a place reaches the item that holds it, and no other"
+        );
+    }
+
+    /// The limits the owner decided on 2026-11-13, each just within its bound and just past
+    /// it: the item past it is left out as it arrives, in the bound's words, and the one
+    /// within is kept.
+    #[test]
+    fn an_item_past_a_decided_limit_is_left_out_and_one_within_kept() {
+        let mib = 1 << 20;
+        let run = |place: &str, text: Json| json!({"place": place, "role": "item", "text": text});
+        let attribute = |place: &str, value: Json| json!({"place": place, "role": "item", "attributes": {"note": value}, "text": ["x"]});
+        let row = |place: &str, n: usize| {
+            let cells: Vec<Json> = (0..n).map(|i| json!({"name": format!("c{i}")})).collect();
+            json!({"place": place, "role": "row", "cells": cells})
+        };
+        let typed = |place: &str, kind: &str, fields: Json| json!({"place": place, "type": kind, "fields": fields});
+        let named = |n: usize, name_len: usize| -> Json {
+            let names = (0..n).map(|i| (format!("{i:0>width$}", width = name_len), json!(1)));
+            Json::Object(names.collect())
+        };
+        let half = mib / 2;
+        let cases = [
+            (
+                run("run", json!(["x".repeat(mib)])),
+                run("run+", json!(["x".repeat(mib + 1)])),
+                "its text is longer than 1 MiB",
+            ),
+            (
+                run("all", json!(["x".repeat(half), {"text": "y".repeat(half)}])),
+                run(
+                    "all+",
+                    json!(["x".repeat(half), {"text": "y".repeat(half + 1)}]),
+                ),
+                "its text is longer than 1 MiB",
+            ),
+            (
+                run("link", json!([{"link": "Lava", "text": "w".repeat(4096)}])),
+                run("link+", json!([{"link": "Lava", "text": "w".repeat(4097)}])),
+                "a link's text is longer than 4096 bytes",
+            ),
+            (
+                run("field", json!([{"field": "f", "value": "v".repeat(mib)}])),
+                run(
+                    "field+",
+                    json!([{"field": "f", "value": "v".repeat(mib + 1)}]),
+                ),
+                "a value is longer than 1 MiB",
+            ),
+            (
+                attribute("attribute", json!("a".repeat(mib))),
+                attribute("attribute+", json!("a".repeat(mib + 1))),
+                "a value is longer than 1 MiB",
+            ),
+            (
+                row("cells", 4096),
+                row("cells+", 4097),
+                "it has more than 4096 cells",
+            ),
+            (
+                json!({"place": "m".repeat(1024), "text": "- [ ] at the bound"}),
+                json!({"place": "m".repeat(1025), "text": "- [ ] past it"}),
+                "its place is empty or longer than 1024 bytes",
+            ),
+            (
+                typed("type", &"k".repeat(256), json!({})),
+                typed("type+", &"k".repeat(257), json!({})),
+                "its type is empty or longer than 256 bytes",
+            ),
+            (
+                typed("fields", "k", named(256, 3)),
+                typed("fields+", "k", named(257, 3)),
+                "it has more than 256 fields",
+            ),
+            (
+                typed("name", "k", named(1, 256)),
+                typed("name+", "k", named(1, 257)),
+                "a field's name is empty or longer than 256 bytes",
+            ),
+            (
+                typed("list", "k", json!({"f": vec![1; 4096]})),
+                typed("list+", "k", json!({"f": vec![1; 4097]})),
+                "a field's list has more than 4096 values",
+            ),
+            (
+                typed("value", "k", json!({"f": ["v".repeat(mib)]})),
+                typed("value+", "k", json!({"f": ["v".repeat(mib + 1)]})),
+                "a value is longer than 1 MiB",
+            ),
+            (
+                typed("scalar", "k", json!({"f": [1, "two", true, null]})),
+                typed("scalar+", "k", json!({"f": {"a": 1}})),
+                "a field holds a table or a list of lists",
+            ),
+        ];
+        for (within, past, says) in cases {
+            let answer = given(json!({"items": [within, past]}));
+            let left: Vec<&str> = (answer.left_out.iter())
+                .map(|(_, l)| l.said.as_str())
+                .collect();
+            assert_eq!(answer.items.len(), 1, "{says}: {left:?}");
+            assert!(
+                left.len() == 1 && left[0].contains(says),
+                "{says}: {left:?}"
+            );
+        }
+    }
+
+    /// What never arrives (the canvas owner's answer, what `apply` makes) is held to the same
+    /// rule where it is read into items: a Markdown piece at an empty place, a run past the
+    /// limit and a link to a file past its bounds are each left out with a problem.
+    #[test]
+    fn an_answer_that_never_arrived_is_held_to_the_same_bounds() {
+        let s = settings("");
+        let made = Given {
+            items: vec![
+                GivenItem::Markdown {
+                    place: "".into(),
+                    text: "- [ ] no place".into(),
+                },
+                GivenItem::Markdown {
+                    place: "ok".into(),
+                    text: "- [ ] kept".into(),
+                },
+            ]
+            .into(),
+            ..Given::default()
+        };
+        let read = read("Board.canvas", &made, &s);
+        assert_eq!(
+            said(&read),
+            [": its place is empty or longer than 1024 bytes"]
+        );
+        assert_eq!(read.items.len(), 1);
+
+        let answer = given(json!({
+            "items": [{"place": "r", "role": "item", "text": ["short"]}],
+            "links": [{"target": "Lava", "place": "f"}],
+        }));
+        let long = Change::Runs {
+            place: "r".into(),
+            cell: None,
+            text: vec![Run::Plain("x".repeat((1 << 20) + 1).into())],
+        };
+        let far = Change::Link {
+            place: "f".into(),
+            link: "Lava".into(),
+            to: "L".repeat(Target::MOST + 1),
+        };
+        let read = super::read("A.sheet", &apply(&answer, &[long, far]), &s);
+        assert_eq!(
+            said(&read),
+            [
+                "r: its text is longer than 1 MiB",
+                "f: a link to a file: a link's target is empty or longer than 4096 bytes"
+            ]
+        );
+        assert!(read.items.is_empty() && read.links.is_empty());
+    }
 }

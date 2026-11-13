@@ -615,4 +615,20 @@ mod tests {
             .replace("[[Lava]]", "[[Magma]]");
         assert_eq!(edit(&untyped, &asked.changes).unwrap(), want);
     }
+
+    /// Two nodes at one place (a repeated id, then a node whose id is literally its place): a
+    /// change names a node by its place and `edit` writes the first node there, so a rename
+    /// changes the first one's links and leaves the second as it is, rather than writing the
+    /// second's relinked text over the first's.
+    #[test]
+    fn a_rename_never_writes_one_nodes_text_over_another_at_its_place() {
+        let board = r##"{"nodes":[
+            {"id":"t","type":"text","text":"one"},
+            {"id":"t","type":"text","text":"two [[Lava]]"},
+            {"id":"t\u001f1","type":"text","text":"three [[Lava]]"}
+        ]}"##;
+        let asked = relink(board, |_| None, lava_to_magma).unwrap().unwrap();
+        let relinked = edit(board, &asked.changes).unwrap();
+        assert_eq!(relinked, board.replace("two [[Lava]]", "two [[Magma]]"));
+    }
 }
