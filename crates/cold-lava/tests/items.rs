@@ -359,7 +359,6 @@ fn item_set_ticks_a_task_on_a_card_that_repeats_an_id() {
 /// A card whose id is empty gives no task. `items` lists the board's other tasks and says on
 /// stderr which card of which board is left out (the owner's decision of 2026-11-13).
 #[test]
-#[ignore = "red on 210f6d7; held back one run so that the engine's tests run red too"]
 fn items_names_a_card_left_out_and_its_board() {
     let workspace = sandbox("card-left-out");
     let v = workspace.to_str().unwrap();

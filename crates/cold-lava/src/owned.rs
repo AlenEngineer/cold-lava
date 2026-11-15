@@ -24,20 +24,33 @@ pub fn open(root: &Path, registry: &Registry) -> Result<Core> {
 }
 
 /// The workspace at `root` with the owned files whose owners gave something for them as they
-/// are now. Each one left out is named on stderr.
+/// are now. Each one left out is named on stderr, and so is what didn't read in what an
+/// owner gave (a board's card left out), as the menu's status line says it.
 pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspace> {
-    if registry.owned_kinds().is_empty() {
-        return workspace::scan(root);
+    let workspace = match registry.owned_kinds().is_empty() {
+        true => workspace::scan(root)?,
+        false => {
+            let mut core = open(root, registry)?;
+            let reads = core.take_reads();
+            let workspace = core.index.workspace;
+            // A file read from the cache whose owner is asked again isn't left out.
+            let read =
+                |rel: &str| (workspace.owned.iter()).any(|f| f.rel == rel && f.rev.is_some());
+            for (owner, asked) in reads.iter().filter(|(_, r)| !read(&r.path)) {
+                crate::say::problem!(
+                    "{} is left out: {owner} hasn't read it as it is now (open the workspace \
+                     in cold-lava, and {owner} reads it)",
+                    asked.path
+                );
+            }
+            workspace
+        }
+    };
+    for f in workspace.owned.iter().filter(|f| !f.problems.is_empty()) {
+        let problems = crate::problem::joined(&f.problems);
+        crate::say::problem!("{} couldn't read {}: {problems}", f.owner, f.rel);
     }
-    let mut core = open(root, registry)?;
-    for (owner, read) in core.take_reads() {
-        crate::say::problem!(
-            "{} is left out: {owner} hasn't read it as it is now (open the workspace in \
-             cold-lava, and {owner} reads it)",
-            read.path
-        );
-    }
-    Ok(core.index.workspace)
+    Ok(workspace)
 }
 
 /// The owner of the file at workspace-relative `rel`, when it isn't a note: the engine's

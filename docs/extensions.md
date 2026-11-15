@@ -1585,8 +1585,8 @@ each doesn't invent one:
   path>-<owner>-<version>.cache<FORMAT>.json` (`{format, owner, version, files: {path: {rev,
   given, left_out}}}`, `left_out` only when the answer left something out; written after the
   frame an answer came in). A cache of another `FORMAT` is neither read nor rewritten
-  (`owner::cache::FORMAT`), and a cached answer whose items no longer all read is dropped
-  ("Pieces, as built", Bounds). A file it has nothing for is still in the index, with no
+  (`owner::cache::FORMAT`), and a cached answer whose items no longer all read keeps the
+  rest and asks its owner again ("Pieces, as built", Bounds). A file it has nothing for is still in the index, with no
   items, and its owner is asked. The cache keeps the owner's answer, not items, so a change to the
   workspace's types applies at once. The watcher's `FileChanged` for an owned kind reads the
   `rev` again and asks again when it changed; a file removed leaves the index and the cache.
@@ -1951,8 +1951,12 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)
-  is dropped as it loads, and its owner asked again; until it answers, that file shows
-  nothing. The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
+  keeps its other items, and each that doesn't read is left out where it stood among what
+  the cache already left out (`cache::merged`) and reported; its owner is asked again
+  (#303). What is kept of such an item is the hash of its JSON as the cache wrote it, not as
+  the owner sent it, so until the owner answers, an edit beside it is refused by the
+  read-back; the owner's answer for the same version replaces the cached one
+  (`Core::file_given`). The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
   the file: a cache of another format is neither read nor rewritten, so an upgrade or a
   downgrade asks each owner again once.
   Every field of the types an answer is read into names its bound
@@ -2213,9 +2217,12 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   file by its place, so a place names the first node in the file with that field
   (`canvas::Named`), and only that node's is given, when it is within its bounds, and never
   a later node's instead. A file card whose file is empty or longer than 4096 bytes gives no link.
-  An arrow with a label over 4096 bytes or past the 65,536th is not given. Nothing is
-  reported for any of it: the owner gives what the engine takes, and the rest stays in the
-  file as it is. A rename changes the node its place names (`canvas::relink`); a later node
+  An arrow with a label over 4096 bytes or past the 65,536th is not given. A card the engine
+  doesn't take (its piece refused: an empty or over-long id, or a place another card has) is
+  reported, as an item left out of the answer (`Given::left_out`, `canvas::left_out`): by
+  its number among the nodes and its id, on the status line and on the command line's
+  stderr, naming the board (the owner's decision of 2026-11-13, #303). The rest is not
+  reported: the owner gives what the engine takes, and the rest stays in the file as it is. A rename changes the node its place names (`canvas::relink`); a later node
   with a text or a file at that place stays as it is, never written over the named node's
   (`canvas::edit` refuses two changes to one field, which on main crashed the rename). A coordinate too large for a JSON number, or one that
   isn't a number, makes the file no JSON Canvas at all, as before.

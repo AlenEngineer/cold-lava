@@ -159,6 +159,11 @@ change commands, keys and file formats; patch versions only fix things.
   no `text`, or `"text": null`, names nothing). Renaming a note linked from a canvas with two text or file
   cards at one place used to crash the rename (a panic, nothing written). With such an id,
   one file link fewer is given than before, so a note's backlinks can count one fewer.
+  Such a card is now reported, naming the board, the card's number among its nodes and
+  its id (#303, step A4d): on the status line as the workspace opens and when the board
+  changes (`canvas couldn't read Board.canvas: card 3 (id "") is left out: its place is
+  empty or longer than 1024 bytes`), and on stderr by `items`, `agenda`, `table` and
+  `types`, which also print there what an extension's owned file left out.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80
@@ -205,10 +210,13 @@ change commands, keys and file formats; patch versions only fix things.
   owners, so on the command line alone every owned file stays "left out" until the menu is
   opened once, or a `rename`, `recipe` or `item set` runs; and an owner that crashes or is
   missing keeps all its files hidden for as long as it stays so, where the older binary
-  showed them from its cache. Open the workspace in the menu once after upgrading. A cached
-  answer whose items no longer all read (a bound applies now that didn't when it was saved)
-  is dropped as it loads and its owner asked again: until the owner answers, that file shows
-  nothing, its good items included; with the owner absent or broken, until it is back.
+  showed them from its cache. Open the workspace in the menu once after upgrading.
+- A cached answer whose items no longer all read (a bound applies now that didn't when it
+  was saved) keeps showing its other items, and the ones that don't read are reported,
+  each where it stood, on the status line and on the command line's stderr (#303, step
+  A4d). Its owner is asked again when the menu opens. Until it answers, an edit beside the
+  bad item is refused as `read-back`, since the cache keeps that item as it wrote it and
+  not as the owner sent it; once the owner answers, the edit goes ahead.
 
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and

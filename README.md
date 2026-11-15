@@ -246,6 +246,9 @@ backlinks list the board, the graph draws the board with an edge to the note, an
 call the note an orphan. Arrows between cards and web page cards aren't links. Renaming the note
 updates the card and the links in the text, changing those strings in the file and nothing
 else. Extensions keep running while a board is open, and their status shows in its status line.
+A card whose id is empty or longer than 1024 bytes (another program wrote it) gives no tasks
+and no links; cold-lava says so on the status line, and `cold-lava items` on stderr, naming the
+board and the card.
 
 **Safe to use alongside Obsidian.** If the same board is open in both and changes on disk,
 cold-lava merges instead of overwriting: cards and arrows are matched by id and merged field
@@ -929,7 +932,8 @@ in the graph, and a link to the CSV leads somewhere. The CSV's own backlinks sho
 table, as a note's show under the reader: `Tab` moves into them, `Enter` opens the note (or the
 other CSV) at the link, `b` hides them. What an owner said is kept by file version under
 `~/.cache/cold-lava/owners/`, so a workspace opens without waiting for it; it is asked again
-only when a file changes.
+only when a file changes, or when something it said no longer reads (after an upgrade): the
+rest of the file keeps showing meanwhile, and what doesn't read is reported.
 
 An owner whose format has nothing to do with Markdown doesn't have to write any. It can hand
 over **pieces** instead: what each thing is (an item, a row, a section), what it carries

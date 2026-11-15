@@ -4,6 +4,7 @@
 //! `~/.cache/cold-lava/owners`. A workspace then opens with every owned file's items and links
 //! from the cache, and an owner is asked again only for a file whose `rev` changed.
 
+use crate::owner::answer::LeftOut;
 use crate::owner::given::Given;
 use crate::tasks::fnv;
 use serde::{Deserialize, Serialize};
@@ -64,14 +65,14 @@ struct Cache {
 struct Answer {
     rev: String,
     given: Given,
-    /// Whether the answer read back from the cache as it was saved. One whose items no longer
-    /// all read (a bound applies now that didn't when it was saved) is dropped as it loads,
-    /// and its owner asked again: the positions of what was left out then and what is left
-    /// out now can't be put in one order without the owner's answer. So the file shows
-    /// nothing, its good items included, until its owner answers; with its owner absent or
-    /// broken, until it is back. The owner decided otherwise on 2026-11-13 (the cached good
-    /// items keep showing and the bad one is reported); that changes in A4d, not here.
-    read_as_saved: bool,
+    /// Whether its owner is to be asked again: some of its items no longer read (a bound
+    /// applies now that didn't when it was saved). Its other items are kept and the bad ones
+    /// left out where they stood (`merged`), so the file shows what still reads and reports
+    /// the rest (the owner's decision of 2026-11-13). What is kept of a bad item is the hash of
+    /// its JSON as the cache wrote it, not as its owner sent it, so the read-back of an edit
+    /// beside it would refuse a change its owner made faithfully: the owner's next answer,
+    /// for the same version, replaces it (`Core::file_given`).
+    ask_again: bool,
 }
 
 /// An answer as the cache file holds it: the answer as its owner gives it, and the items it
@@ -81,7 +82,7 @@ struct Stored {
     rev: String,
     given: Given,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    left_out: Vec<(usize, crate::owner::answer::LeftOut)>,
+    left_out: Vec<(usize, LeftOut)>,
 }
 
 impl From<Stored> for Answer {
@@ -92,14 +93,39 @@ impl From<Stored> for Answer {
             mut given,
             left_out,
         } = stored;
-        let read_as_saved = given.left_out.is_empty();
-        given.left_out = left_out;
+        let now = std::mem::take(&mut given.left_out);
+        let ask_again = !now.is_empty();
+        given.left_out = merged(left_out, now);
         Answer {
             rev,
             given,
-            read_as_saved,
+            ask_again,
         }
     }
+}
+
+/// What a cached answer leaves out, in the answer's order: what was left out when it was
+/// saved (`saved`, each after the number of saved items before it) and the saved items that
+/// no longer read (`now`, each after the number of saved items before it that still read).
+/// The `k`th of `now` was saved item `at + k`, since every saved item read then. A record
+/// saved after `p` items stands before saved item `p`, so before an item of `now` that was
+/// item `p`, and after the items of `now` that were before it, which it is then no longer
+/// after the count of.
+fn merged(saved: Vec<(usize, LeftOut)>, now: Vec<(usize, LeftOut)>) -> Vec<(usize, LeftOut)> {
+    let mut now = (now.into_iter().enumerate())
+        .map(|(k, (at, l))| (at + k, at, l))
+        .peekable();
+    let mut out = Vec::new();
+    let mut before = 0;
+    for (p, l) in saved {
+        while let Some((_, at, item)) = now.next_if(|(was, _, _)| *was < p) {
+            out.push((at, item));
+            before += 1;
+        }
+        out.push((p - before, l));
+    }
+    out.extend(now.map(|(_, at, l)| (at, l)));
+    out
 }
 
 impl From<Answer> for Stored {
@@ -108,7 +134,7 @@ impl From<Answer> for Stored {
         let Answer {
             rev,
             given,
-            read_as_saved: _,
+            ask_again: _,
         } = answer;
         let left_out = given.left_out.clone();
         Stored {
@@ -143,7 +169,6 @@ impl Owners {
             let cache = (path.as_deref())
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .and_then(|t| serde_json::from_str::<Cache>(&t).ok())
-                .map(Cache::read_as_saved)
                 .filter(|c| c.format == FORMAT && c.owner == k.owner && c.version == k.version)
                 .unwrap_or_else(|| Cache {
                     format: FORMAT,
@@ -187,6 +212,13 @@ impl Owners {
         (a.rev == rev).then_some(&a.given)
     }
 
+    /// Whether the owner is to be asked again for the file at `rel`, though what it gave is
+    /// kept: some of it no longer reads (`Answer::ask_again`).
+    pub fn ask_again(&mut self, owner: &str, rel: &str) -> bool {
+        let answer = self.cache(owner).and_then(|c| c.files.get(rel));
+        answer.is_some_and(|a| a.ask_again)
+    }
+
     /// Ask the owner for the file at `read.path`, unless it was asked for that version already.
     pub fn ask(&mut self, owner: &str, read: FileRead) {
         if self.asked.get(&read.path) == Some(&read.rev) {
@@ -224,7 +256,7 @@ impl Owners {
         let answer = Answer {
             rev: rev.to_string(),
             given: given.clone(),
-            read_as_saved: true,
+            ask_again: false,
         };
         cache.files.insert(path.to_string(), answer);
         cache.dirty = true;
@@ -249,16 +281,6 @@ impl Owners {
                 let _ = crate::write::write_atomic(path, &json);
             }
         }
-    }
-}
-
-impl Cache {
-    /// It without the answers that didn't read back as they were saved (`Answer`).
-    fn read_as_saved(mut self) -> Cache {
-        let before = self.files.len();
-        self.files.retain(|_, answer| answer.read_as_saved);
-        self.dirty = self.files.len() != before;
-        self
     }
 }
 

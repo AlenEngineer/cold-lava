@@ -75,6 +75,9 @@ pub struct Owned {
     /// What the owner gave for `rev`: its Markdown pieces' texts, typed items' fields and links,
     /// which an edit or a rename changes and asks the owner to write (`file/edit`).
     pub given: crate::owner::given::Given,
+    /// What didn't read in what the owner gave for `rev` (`given::Read::problems`): reported
+    /// wherever the file is read, a canvas read by the scan included.
+    pub problems: Vec<crate::problem::Problem>,
 }
 
 impl Owned {
@@ -89,11 +92,12 @@ impl Owned {
             places: HashMap::new(),
             links: Vec::new(),
             given: Default::default(),
+            problems: Vec::new(),
         }
     }
 
     /// Take what its owner gave for version `rev`, and its items and links read from it
-    /// (`given::read`). Returns what didn't read.
+    /// (`given::read`). Returns what didn't read, which it keeps too.
     pub fn take(
         &mut self,
         rev: String,
@@ -105,7 +109,8 @@ impl Owned {
         self.places = read.places;
         self.links = read.links;
         self.given = given;
-        read.problems
+        self.problems = read.problems;
+        self.problems.clone()
     }
 }
 

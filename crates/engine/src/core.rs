@@ -137,6 +137,7 @@ impl Core {
     pub fn open(root: &Path) -> Result<Core> {
         let index = Index::build(workspace::scan(root)?);
         let (fs_events, watcher) = watch(&index.workspace.root);
+        let unseen = owned_trouble(&index.workspace);
         Ok(Core {
             bookmarks: read_bookmarks(&index.workspace.root),
             index,
@@ -150,7 +151,7 @@ impl Core {
             bookmarks_changed: false,
             due: None,
             subscribers: Vec::new(),
-            unseen: Vec::new(),
+            unseen,
             items: Subscriptions::default(),
             news: Vec::new(),
             owners: Owners::default(),
@@ -236,6 +237,7 @@ impl Core {
             let _ = self.owned_scan();
             self.index.relink();
         }
+        self.unseen.extend(owned_trouble(&self.index.workspace));
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
     }
@@ -317,6 +319,20 @@ impl Core {
             return self.edit_read_back(path, given);
         }
         self.owners.answered(owner, path, rev, given.as_ref().ok());
+        // An answer for the version already read replaces what was kept for it when the two
+        // differ: what the cache kept of an item that no longer reads (`cache::Answer`).
+        let owned = self
+            .index
+            .workspace
+            .owned
+            .iter_mut()
+            .find(|f| f.rel == path);
+        if let (Some(file), Ok(new)) = (owned, &given)
+            && file.rev.as_deref() == Some(rev)
+            && file.given != *new
+        {
+            file.rev = None;
+        }
         let events = match given {
             Ok(_) => self.owned_changed(&[path.to_string()]),
             Err(message) => vec![Event::OwnerTrouble {
@@ -377,7 +393,17 @@ impl Core {
                 message,
             };
             let given = match self.owners.given(&owner, rel, &rev) {
-                Some(given) => given.clone(),
+                Some(given) => {
+                    let given = given.clone();
+                    if self.owners.ask_again(&owner, rel)
+                        && let Ok(text) = String::from_utf8(bytes)
+                    {
+                        let path = rel.clone();
+                        let rev = rev.clone();
+                        self.owners.ask(&owner, FileRead { path, rev, text });
+                    }
+                    given
+                }
                 None => {
                     let Ok(text) = String::from_utf8(bytes) else {
                         events.push(trouble("it isn't UTF-8 text".into()));
@@ -1315,6 +1341,20 @@ fn classify(root: &Path, path: &Path) -> Kind {
         None if !path.is_file() => Kind::Folder,
         _ => Kind::Ignored,
     }
+}
+
+/// What didn't read in the owned files of `workspace` (`Owned::problems`), as `OwnerTrouble`:
+/// for a whole read of the workspace, which doesn't say it as it reads (a canvas's card left
+/// out, read by the scan).
+fn owned_trouble(workspace: &workspace::Workspace) -> Vec<Event> {
+    (workspace.owned.iter())
+        .filter(|f| !f.problems.is_empty())
+        .map(|f| Event::OwnerTrouble {
+            owner: f.owner.clone(),
+            path: f.rel.clone(),
+            message: problem::joined(&f.problems),
+        })
+        .collect()
 }
 
 fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {
