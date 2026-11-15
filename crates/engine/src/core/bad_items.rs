@@ -698,3 +698,139 @@ fn a_tick_on_a_board_with_cards_left_out_writes_only_its_own_card() {
     assert_eq!(boards, 256);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The owners' cache file in `cache`, as JSON, with where it is.
+fn the_cache(cache: &Path) -> (PathBuf, Json) {
+    let files: Vec<PathBuf> = (std::fs::read_dir(cache).unwrap())
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    let json = serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+    (files[0].clone(), json)
+}
+
+/// An answer kept in the owners' cache whose items no longer all read (a bound applies now
+/// that didn't when it was saved; here, an older binary's copy of two entries this reader
+/// refuses, written in its own key order): its other items keep showing, and the bad ones
+/// are reported, each where it stood among what the cache already left out (the owner's
+/// decision of 2026-11-13). Its owner is asked again, and once it answers, an edit beside the
+/// bad items goes ahead: what is left out is then what the owner sent, not the cache's copy.
+#[test]
+fn a_cached_answer_keeps_its_items_when_one_no_longer_reads() {
+    let base = std::env::temp_dir().join(format!("cold-lava-bad-stale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let cache = base.join("owners");
+    std::fs::create_dir_all(&cache).unwrap();
+    let stale = |mut entry: Json| {
+        entry["stale"] = json!(true);
+        entry
+    };
+    let reversed = |entry: &Json| {
+        let keys = entry.as_object().unwrap().iter().rev();
+        Json::Object(keys.map(|(k, v)| (k.clone(), v.clone())).collect())
+    };
+    // As the owner gives it: the chore, a malformed item, the row, the typed item and the
+    // Markdown piece, with a key on the chore and the typed item that the reader refuses.
+    let bads = bads();
+    let mut file = file_with(&[&bads[0]]);
+    file["items"][0] = stale(file["items"][0].clone());
+    file["items"][3] = stale(file["items"][3].clone());
+    let dir = open("stale", &file, Some(&cache)).root().to_path_buf();
+    // As a binary that read those two saved it: both among its items, and only the
+    // malformed one left out, after the one item before it.
+    let (path, mut saved) = the_cache(&cache);
+    let entry = &mut saved["files"][FILE];
+    let kept = entry["given"]["items"].as_array().unwrap().clone();
+    assert_eq!(kept.len(), 2, "the row and the Markdown piece read");
+    entry["given"]["items"] = json!([
+        reversed(&file["items"][0]),
+        kept[0],
+        reversed(&file["items"][3]),
+        kept[1]
+    ]);
+    let left = entry["left_out"].as_array().unwrap().clone();
+    let malformed = left.iter().find(|l| l[1]["place"] == "bad").unwrap();
+    entry["left_out"] = json!([[1, malformed[1]]]);
+    std::fs::write(&path, saved.to_string()).unwrap();
+
+    let mut core = Core::open(&dir).unwrap();
+    let kind = OwnedKind {
+        extension: "probe".into(),
+        owner: OWNER.into(),
+        version: "1".into(),
+    };
+    core.set_owners(vec![kind], Some(&cache));
+    item(&core, "eruption", "row");
+    item(&core, "task", "md");
+    let events = core.poll();
+    let trouble: Vec<&String> = (events.iter())
+        .filter_map(|e| match e {
+            Event::OwnerTrouble { path, message, .. } if path == FILE => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(trouble.len(), 1, "{events:?}");
+    let at = |words: &str| {
+        let message = trouble[0];
+        (message.find(words)).unwrap_or_else(|| panic!("{words}: {message}"))
+    };
+    assert!(at("chore: unknown field `stale`") < at("bad: unknown field `colour`"));
+    assert!(at("bad: unknown field `colour`") < at("ty: unknown field `stale`"));
+    let given = &core.index.workspace.owned[0].given;
+    let left: Vec<usize> = given.left_out.iter().map(|(at, _)| *at).collect();
+    assert_eq!(left, [0, 0, 1], "each after the items before it that read");
+
+    let mut asked = core.take_reads();
+    assert_eq!(asked.len(), 1, "its owner is asked again");
+    let (_, again) = asked.pop().unwrap();
+    core.file_given(OWNER, FILE, &again.rev, read(&again.text));
+    core.poll();
+    let edit = tick(&item(&core, "task", "md"));
+    let answer = through_the_probe(&mut core, &edit, honest);
+    assert!(answer.is_ok(), "beside the bad items: {:?}", answer.err());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A board with a card the engine doesn't take (here, an empty id) is reported as the
+/// workspace opens, naming the board and the card, and its other cards' tasks are listed
+/// (the owner's decision of 2026-11-13).
+#[test]
+fn a_board_with_a_card_left_out_is_reported_as_it_opens() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-opens-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let board = json!({"nodes": [
+        {"id": "", "type": "text", "text": "- [ ] Hidden", "x": 0, "y": 0, "width": 1, "height": 1},
+        {"id": "g", "type": "text", "text": "- [ ] Shown", "x": 0, "y": 9, "width": 1, "height": 1},
+    ], "edges": []});
+    std::fs::write(dir.join("Board.canvas"), board.to_string()).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let events = core.poll();
+    let trouble: Vec<(&str, &str, &str)> = (events.iter())
+        .filter_map(|e| match e {
+            Event::OwnerTrouble {
+                owner,
+                path,
+                message,
+            } => Some((owner.as_str(), path.as_str(), message.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        trouble,
+        [(
+            "canvas",
+            "Board.canvas",
+            "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes"
+        )],
+        "{events:?}"
+    );
+    let file = &core.index.workspace.owned[0];
+    let words: Vec<Json> = (file.items.iter())
+        .filter(|i| i.data.kind() == "task")
+        .map(|i| serde_json::to_value(i).unwrap()["text"].clone())
+        .collect();
+    assert_eq!(words, [json!("Shown")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

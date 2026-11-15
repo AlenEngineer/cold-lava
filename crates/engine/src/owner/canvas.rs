@@ -522,6 +522,54 @@ mod tests {
         }
     }
 
+    /// A card the engine doesn't take gives no tasks and no links, so it is reported (the
+    /// owner's decision of 2026-11-13): by its number among the board's nodes and its id, cut
+    /// to 80 characters, after the items given before it. An empty id, an id over 1024 bytes
+    /// and an id another card's place already has are each one record, whatever the card
+    /// holds; a group, which is never given, is not one.
+    #[test]
+    fn a_card_left_out_is_reported_by_its_number_and_id() {
+        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
+        let board = format!(
+            r##"{{"nodes":[
+                {{"id":"","type":"text","text":"- [ ] No id"}},
+                {{"id":"{long}","type":"file","file":"A.md"}},
+                {{"id":"t","type":"text","text":"- [ ] one"}},
+                {{"id":"t","type":"text","text":"- [ ] two"}},
+                {{"id":"t\u001f1","type":"text","text":"- [ ] three"}},
+                {{"id":"","type":"group","label":"Trip"}}
+            ]}}"##
+        );
+        let given = read(&board).unwrap();
+        let said: Vec<(usize, &str)> = (given.left_out.iter())
+            .map(|(at, l)| (*at, l.said.as_str()))
+            .collect();
+        let cut = crate::problem::cut(&long, 80);
+        assert_eq!(
+            said,
+            [
+                (
+                    0,
+                    "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes"
+                ),
+                (
+                    0,
+                    format!(
+                        "card 2 (id \"{cut}\") is left out: its place is empty or longer than \
+                         1024 bytes"
+                    )
+                    .as_str()
+                ),
+                (
+                    4,
+                    "card 5 (id \"t\\u001f1\") is left out: another piece is at this place"
+                ),
+            ]
+        );
+        // What the owner gives reads back as it was, and so does what it left out.
+        assert_eq!(read(&board).unwrap(), given);
+    }
+
     /// A canvas is another program's file. Whatever its nodes say, everything the owner
     /// gives is what the engine takes (the owner's decision of 2026-11-13, one rule for a
     /// place in every form): a node whose id can't be a place gives no piece, no text and no
