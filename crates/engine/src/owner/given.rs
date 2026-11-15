@@ -3040,4 +3040,124 @@ fields.star = { flag = "⭐", type = "bool" }
             "{why}"
         );
     }
+
+    /// The answer of #301's second review: good and bad items in turn (`bad` and the long
+    /// place left out as they arrive, `orphan` and `ty2` as they are read), a good and a bad
+    /// link to a file, a good and a bad link between pieces.
+    fn in_turn() -> (Vec<Json>, Vec<Json>) {
+        let items = vec![
+            json!({"place": "chore", "role": "item", "text": ["Water plants"],
+                   "attributes": {"task": true, "checkbox": "open"}}),
+            json!({"place": "row", "role": "row", "cells": [{"name": "vei", "text": ["6"]}]}),
+            json!({"place": "bad", "role": "item", "text": ["x"], "colour": "red"}),
+            json!({"place": "ty", "type": "task", "fields": {"text": "Typed"}}),
+            json!({"place": "orphan", "role": "item", "in": "ghost", "text": ["Orphan"]}),
+            json!({"place": "x".repeat(1025), "text": "- [ ] long place"}),
+            json!({"place": "md", "text": "- [ ] Markdown task"}),
+            json!({"place": "ty2", "type": "volcano", "fields": {"vei": 6}}),
+        ];
+        let links = vec![
+            json!({"target": "Lava", "place": "chore"}),
+            json!({"target": "", "place": "f"}),
+            json!({"from": "chore", "to": "row"}),
+            json!({"from": "chore", "to": "nowhere"}),
+        ];
+        (items, links)
+    }
+
+    /// Why `in_turn` given again with `change` made to its items and links is refused.
+    fn refused(change: impl FnOnce(&mut Vec<Json>, &mut Vec<Json>)) -> String {
+        let s = settings("");
+        let (mut items, mut links) = in_turn();
+        let asked = read_back(
+            "A.sheet",
+            &given(json!({"items": items, "links": links})),
+            &s,
+        );
+        change(&mut items, &mut links);
+        let gave = given(json!({"items": items, "links": links}));
+        same(&asked, &read_back("A.sheet", &gave, &s)).unwrap_err()
+    }
+
+    /// How the item with the long place is named: its place, cut.
+    fn long() -> String {
+        format!("{}…: its place", "x".repeat(80))
+    }
+
+    /// A bad item given twice is named, not one after it that only stands elsewhere.
+    #[test]
+    fn a_bad_item_given_twice_is_named() {
+        let why = refused(|items, _| items.insert(3, items[2].clone()));
+        assert!(why.starts_with("bad: unknown field `colour`"), "{why}");
+        let why = refused(|items, _| items.insert(6, items[5].clone()));
+        assert!(why.starts_with(&long()), "{why}");
+    }
+
+    /// A bad item moved is named, not those it passed.
+    #[test]
+    fn a_bad_item_moved_is_named_and_not_those_it_passed() {
+        let to_front = |from: usize| {
+            refused(move |items, _| {
+                let moved = items.remove(from);
+                items.insert(0, moved);
+            })
+        };
+        let why = to_front(5);
+        assert!(why.starts_with(&long()), "{why}");
+        let why = to_front(7);
+        assert!(why.starts_with("ty2: no type called volcano"), "{why}");
+        let why = refused(|items, _| {
+            let moved = items.remove(2);
+            items.push(moved);
+        });
+        assert!(why.starts_with("bad: unknown field `colour`"), "{why}");
+    }
+
+    /// A good item added, moved or dropped before a bad one is named, and the bad ones, which
+    /// only stand elsewhere because of it, are not.
+    #[test]
+    fn a_good_item_added_moved_or_dropped_is_named_and_not_a_bad_one() {
+        let new = json!({"place": "ng", "role": "item", "text": ["New good"]});
+        let why = refused(|items, _| items.insert(0, new));
+        assert!(
+            why.contains("New good") && !why.contains("left out"),
+            "{why}"
+        );
+        let moved = |from: usize, to: usize| {
+            refused(move |items, _| {
+                let moved = items.remove(from);
+                items.insert(to, moved);
+            })
+        };
+        let why = moved(3, 0);
+        assert!(why.starts_with("the item at ty "), "{why}");
+        let why = moved(6, 7);
+        assert!(why.starts_with("the item at md "), "{why}");
+        let why = refused(|items, _| drop(items.remove(6)));
+        assert!(
+            why.contains("Markdown task") && !why.contains("left out"),
+            "{why}"
+        );
+    }
+
+    /// In the links, what was added, dropped or given twice is named, and not a bad link that
+    /// only stands elsewhere because of it.
+    #[test]
+    fn the_links_name_what_changed_in_them() {
+        let why = refused(|_, links| links.insert(0, json!({"target": "Lava", "place": "row"})));
+        assert!(why.contains("Lava") && !why.contains("left out"), "{why}");
+        let why = refused(|_, links| links.insert(2, json!({"from": "row", "to": "chore"})));
+        assert!(
+            why.contains("links between pieces") && !why.contains("left out"),
+            "{why}"
+        );
+        let why = refused(|_, links| drop(links.remove(0)));
+        assert!(why.contains("Lava") && !why.contains("left out"), "{why}");
+        let why = refused(|_, links| links.insert(0, links[0].clone()));
+        assert!(why.contains("Lava") && !why.contains("left out"), "{why}");
+        let why = refused(|_, links| links.push(links[3].clone()));
+        assert!(why.starts_with("a link from chore to nowhere"), "{why}");
+        let why = refused(|_, links| links.insert(2, links[1].clone()));
+        assert!(why.starts_with("f: "), "{why}");
+    }
 }
