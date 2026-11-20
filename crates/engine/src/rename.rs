@@ -620,7 +620,7 @@ pub(crate) fn owned_edit(
 ) -> Result<FileEdit, String> {
     let text =
         std::fs::read_to_string(&f.path).map_err(|e| format!("{} can't be read: {e}", f.rel))?;
-    if f.rev.as_deref() != Some(crate::files::rev(text.as_bytes()).as_str()) {
+    if f.rev.as_deref() != Some(crate::read::rev(text.as_bytes()).as_str()) {
         return Err(format!("{} hasn't read {} as it is now", f.owner, f.rel));
     }
     Ok(FileEdit {

@@ -9,10 +9,11 @@
 
 use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
+use crate::read::Contents;
 use crate::rename::{self, FileEdit, Move, Written};
 use crate::resolver::{Files, Rewriter};
 use crate::style::Style;
-use crate::trash::{self, Bin, Contents, Trashed};
+use crate::trash::{self, Bin, Trashed};
 use crate::write;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};

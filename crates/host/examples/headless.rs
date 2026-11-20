@@ -10,7 +10,7 @@
 //! manifest's permissions hold here as in the terminal UI.
 
 use cold_lava_engine::core::{Core, Event};
-use cold_lava_engine::{files, paths};
+use cold_lava_engine::{paths, read};
 use cold_lava_host::{Effect, ExtId, Extension, FileNews, Host, Registry, installed};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -63,7 +63,7 @@ fn frame(registry: &mut Registry, core: &mut Core) {
         if let Event::FileChanged(path) = event
             && let Some((owner, _)) = registry.owner_of(&path)
         {
-            let rev = files::rev_at(core.root(), &path);
+            let rev = read::rev_at(core.root(), &path);
             let news = FileNews::Changed { path, rev };
             call(registry, core, owner, |e, host| e.file(news, host));
         }

@@ -5,10 +5,10 @@
 //! `"none"` deletes permanently; cold-lava still uses `.trash`. When the system trash can't take
 //! the file (none on this platform, or it is on another disk), it goes to `.trash` too.
 
+use crate::read::Contents;
 use crate::write::{WriteError, move_file};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 /// The workspace's `trashOption`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,42 +78,6 @@ pub struct Trashed {
     pub went: Went,
     /// The freedesktop `.trashinfo` written for it.
     info: Option<PathBuf>,
-}
-
-/// What the user was shown of a file or folder, so a delete is refused if it changed since.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Contents {
-    File(Vec<u8>),
-    /// Everything inside the folder (relative paths, sorted), with each file's size and time.
-    Folder(Vec<(PathBuf, u64, Option<SystemTime>)>),
-    /// A symlink, by where it points: the link is what goes, and it is never followed.
-    Link(PathBuf),
-}
-
-impl Contents {
-    pub fn read(path: &Path) -> Result<Contents, WriteError> {
-        let err = |e: io::Error| WriteError::Io(path.to_path_buf(), e);
-        let meta = std::fs::symlink_metadata(path).map_err(err)?;
-        if meta.file_type().is_symlink() {
-            return std::fs::read_link(path).map(Contents::Link).map_err(err);
-        }
-        if !meta.is_dir() {
-            return std::fs::read(path).map(Contents::File).map_err(err);
-        }
-        let mut entries = Vec::new();
-        for e in walkdir::WalkDir::new(path).min_depth(1).sort_by_file_name() {
-            let e = e.map_err(|e| err(e.into()))?;
-            let meta = e.metadata().map_err(|e| err(e.into()))?;
-            let rel = e
-                .path()
-                .strip_prefix(path)
-                .unwrap_or(e.path())
-                .to_path_buf();
-            let size = if meta.is_file() { meta.len() } else { 0 };
-            entries.push((rel, size, meta.modified().ok()));
-        }
-        Ok(Contents::Folder(entries))
-    }
 }
 
 /// Move `path` (a file or a folder) to the trash `trashOption` names, if it still has the

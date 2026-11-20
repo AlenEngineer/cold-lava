@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::{Error, Reason};
-use crate::identity;
 use crate::index::Index;
-use crate::trash::{self, Bin, Contents, Trashed, Went};
+use crate::read::{Contents, rev};
+use crate::trash::{self, Bin, Trashed, Went};
 use crate::write::{self, WriteError};
 
 /// What an extension asks of the workspace gateway about files (extension → host).
@@ -159,16 +159,6 @@ pub struct Restored {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Folder {
     pub path: String,
-}
-
-/// A file's version: a hash of its bytes, as 16 hex digits.
-pub fn rev(bytes: &[u8]) -> String {
-    identity::hash(bytes)
-}
-
-/// The version of the file at `rel` now, `None` when it is gone or can't be read.
-pub fn rev_at(root: &Path, rel: &str) -> Option<String> {
-    std::fs::read(root.join(rel)).ok().map(|b| rev(&b))
 }
 
 /// The suffix of a path or file name (`Data/Eruptions.CSV` → `csv`), lowercase.
@@ -328,29 +318,6 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
     }
 }
 
-/// The version of what is at a path, as a delete checks it. A folder's is a hash of its
-/// listing: every path in it with its size and modified time.
-fn rev_of(contents: &Contents) -> String {
-    match contents {
-        Contents::File(bytes) => rev(bytes),
-        Contents::Folder(entries) => {
-            let mut listing = b"folder\n".to_vec();
-            for (path, size, modified) in entries {
-                let since = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-                let nanos = since.map_or(0, |d| d.as_nanos());
-                listing.extend(path.to_string_lossy().as_bytes());
-                listing.extend(format!("\0{size}\0{nanos}\n").as_bytes());
-            }
-            rev(&listing)
-        }
-        Contents::Link(target) => {
-            let mut link = b"link\n".to_vec();
-            link.extend(target.to_string_lossy().as_bytes());
-            rev(&link)
-        }
-    }
-}
-
 /// What is at `rel` now. Nothing there is `changed`.
 fn contents(root: &Path, rel: &str) -> Result<(PathBuf, Contents), Error> {
     let path = resolve_entry(root, rel)?;
@@ -379,7 +346,7 @@ pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
     let rel = &normal(rel)?;
     let (path, read) = contents(root, rel)?;
     let mut stat = Stat {
-        rev: rev_of(&read),
+        rev: crate::read::rev_of(&read),
         inside: None,
         more: 0,
         hidden: 0,
@@ -413,7 +380,7 @@ pub fn delete(
 ) -> Result<Trashed, Error> {
     let rel = &normal(rel)?;
     let (path, now) = contents(root, rel)?;
-    if rev_of(&now) != expect {
+    if crate::read::rev_of(&now) != expect {
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
