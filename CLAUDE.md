@@ -129,7 +129,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read; the engine's only, `Seen::replace` outside it), `create`,
   `move_file`. A write to a symlink lands in the file it leads to and the link stays
-  (`landing`, found once per write); a link to nothing or to a folder is `NotAFile`. Where a
+  (`landing`, found once per write). A link to nothing or to a folder is `NotAFile`. Where a
   link may lead is the caller's to bound: `write.rs` follows it anywhere, and the gateway
   never follows one (`files::resolve`). `taken` is the one test of whether something is at a
   path, a link to nothing included: `create` and `files::free_name` ask it. Never call

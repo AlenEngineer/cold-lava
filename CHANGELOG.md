@@ -28,7 +28,7 @@ change commands, keys and file formats; patch versions only fix things.
   refused, as is creating a file where such a link is (#349).
 - Extensions can no longer read or write through a symlink. Their file messages refuse a
   path that is a link, or has a link on the way to it, as `refused`, wherever the link
-  leads; a new file by name passes over a link instead. Before, a link inside the workspace
+  leads. A new file by name passes over a link instead. Before, a link inside the workspace
   was followed while permissions went by the path's name, so a note linked to `.git/config`,
   a folder linked to `.git`, or a file of an extension's kind linked to a note let an
   extension read, write or delete what its permissions didn't cover. **Breaking for

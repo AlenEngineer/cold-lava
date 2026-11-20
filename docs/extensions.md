@@ -1312,7 +1312,7 @@ graph all see the new date. None of them knew what a canvas is.
   A `rev` is 16 hex digits of the FNV-1a hash of the file's bytes. A write checks it, then
   writes through `write::replace`, which checks the bytes again just before the atomic rename,
   so an edit made in Obsidian meanwhile is never overwritten. A create goes through
-  `write::create`, refused as `exists` where any entry is; a name picked for `{name,
+  `write::create`, refused as `exists` where any entry is. A name picked for `{name,
   extension}` passes over any entry, a link that leads nowhere included. A note written or
   created this way is read again at once, like an item edit, so the next query sees it. A
   path is refused unless it is relative, has no `..`, `.` or hidden part (`.obsidian`,
