@@ -1929,25 +1929,36 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   (`given::check_change`, the one rule for both, asked before the owner is: a change that
   would leave out something new is refused there, naming it, as `{file}: the change would
   leave out {place}: {why}`). The read-back then compares everything the engine leaves out
-  of the owner's new answer with what it left out of the expected one, in order: an item
-  left out as it arrived by its position and the hash of the JSON value it was sent as; an
-  item, a link to a file or a link between pieces left out as it is read by its position
-  and the JSON it reads as, whole. A link between pieces is compared too by the places its
-  ends name, so one past the count an answer may have, reported once, is held to it as
-  well. **The JSON value, not the bytes**: the host reads each message into one JSON value
-  before any of it is an answer, so what parsing drops is not compared. For an item left
-  out as it arrived: space between tokens, how a character is escaped (`\u0041` is `A`),
-  a key's earlier values when it is written twice, and a number's digits past what a
-  64-bit integer or float holds (`100000000000000000001` and `100000000000000000002`
-  parse alike, as do `0.1` and `0.10000000000000001`); the order of its keys counts. For
-  one that reads, the same, and the order of its own keys doesn't count either (it reads
-  the same), while the order inside a map it holds (a piece's `attributes`, a typed item's
-  `fields`) does. An owner that drops, changes, fixes, moves, duplicates or swaps one, or
-  writes the change into it (the other of two items at one place), is refused as
-  `read-back`, naming it in the words it is reported in (one that is gone or new before
-  one that only moved): `{owner}'s new text for {file} doesn't read back as asked (bad: unknown
-  field `colour`, … was left out, and came back changed, moved or not at all); nothing was
-  written`. An item with both `role` and `type` is read as a piece and left
+  of the owner's new answer with what it left out of the expected one: an item left out as
+  it arrived by the hash of the JSON value it was sent as; an item, a link to a file or a
+  link between pieces left out as it is read by the JSON it reads as, whole; and each by
+  where it stands in its list (the items, the links to files, the links between pieces). A
+  link between pieces is compared too by the places its ends name, so one past the count
+  an answer may have, reported once, is held to it as well. **The JSON value, not the
+  bytes**: the host reads each message into one JSON value before any of it is an answer,
+  so what parsing drops is not compared. For an item left out as it arrived: space between
+  tokens; how a character is escaped (`\u0041` is `A`); how a number is written, since any
+  two that parse to the same 64-bit integer or float are one (`1.5`, `1.50` and `15e-1`;
+  `100.0` and `1e2`; `-0` and `-0.0`; digits past what 64 bits hold, so
+  `100000000000000000001` is `100000000000000000002`); and a key written twice, which keeps
+  the place of its first and the value of its last. The order of its keys counts. Two
+  values whose 48-bit hashes are alike are one item: an owner that crafts a collision
+  (#301's review found one in about ten seconds) is not told apart. For one that reads, the
+  same, and the order of its own keys doesn't count either (it reads the same), while the
+  order inside a map it holds (a piece's `attributes`, a typed item's `fields`) does. An
+  owner that drops, changes, fixes, moves, duplicates or swaps one, or writes the change
+  into it (the other of two items at one place), is refused as `read-back`, naming it in
+  the words it is reported in: `{owner}'s new text for {file} doesn't read back as asked
+  (bad: unknown field `colour`, … was left out, and came back changed, moved or not at
+  all); nothing was written`. One that is gone or new is named first, then one that moved:
+  what moved is what the fewest changes to its list explain, and of a left-out item and its
+  neighbour swapped, the left-out one, which didn't come back where it was. One that only
+  stands elsewhere because an item or a link that reads moved past it, was added before it
+  or was dropped from before it is not named: that item or link is, by the comparison of
+  the items, the links and the pieces when it sees the change (`{"kind":"list","text":"New
+  good"} wasn't asked for`), else as `the item at ty moved`, `… wasn't asked for` or `… is
+  missing` (`the link to Lava …`, `the link from a to b …` for links). An item with both
+  `role` and `type` is read as a piece and left
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)

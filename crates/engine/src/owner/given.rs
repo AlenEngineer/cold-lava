@@ -23,6 +23,7 @@ use crate::items::{Data, Item, Settings};
 use crate::matcher::{Asked, Carried};
 use crate::owner::answer::{Kept, LeftOut};
 use crate::owner::markdown;
+use crate::owner::order;
 use crate::problem::{Problem, cut};
 use crate::tasks::{FNV_START, StatusType, TasksSettings, fnv_from, line_id};
 use crate::types::On;
@@ -1169,18 +1170,25 @@ fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run>
 }
 
 /// Whether what an owner gave reads as what was asked of it: the same things left out, each
-/// where it was and holding what it held; the same items (their kinds and fields, wherever
-/// they are and whatever their ids), the same link targets, and the same pieces in the same
-/// order, each saying what was asked and inside the same piece. So a piece the change wasn't
-/// for says what it said and stands where it stood, a change that lands on another piece
-/// that says the same is caught by where it is, and one that lands on an item the engine
-/// leaves out (the other of two items at a place) is caught by what that item holds. Places may
-/// differ, since an owner's place can be part of what changed (a CSV row's first cell). Else
-/// what differs, for a message, which names what was left out by the words it is reported in.
+/// holding what it held and where it was; the same items (their kinds and fields, wherever
+/// they are and whatever their ids), the same link targets, the same pieces in the same
+/// order, each saying what was asked and inside the same piece, and the same links between
+/// them. So a piece the change wasn't for says what it said and stands where it stood, a
+/// change that lands on another piece that says the same is caught by where it is, and one
+/// that lands on an item the engine leaves out (the other of two items at a place) is caught
+/// by what that item holds. Places may differ, since an owner's place can be part of what
+/// changed (a CSV row's first cell). Else what differs, for a message, which names what
+/// changed and not what only stands elsewhere because of it.
 pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
+    // What the engine leaves out is no item, and no change is for one: it comes back as it
+    // was, where it was, or the owner changed what the engine couldn't read. Asked first, so
+    // that the refusal names it, in the words it is reported in. One that stands elsewhere
+    // only because something else moved past it is said last, so that the other parts name
+    // what moved, in their words, when they can.
+    left_out_kept(&asked.lists, &gave.lists)?;
+    let past = left_out_stands(&asked.lists, &gave.lists)?;
     let (want_pieces, got_pieces) = (&asked.pieces, &gave.pieces);
     let (want_between, got_between) = (&asked.between, &gave.between);
-    let (want_left, got_left) = (&asked.left_out, &gave.left_out);
     let (asked, gave) = (&asked.read, &gave.read);
     let items = |r: &Read| -> Vec<String> {
         let mut v: Vec<String> = r.items.iter().map(data_key).collect();
@@ -1210,50 +1218,6 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             false => s,
         }
     };
-    // What the engine leaves out is no item, and no change is for one: it comes back as it
-    // was, where it was, or the owner changed what the engine couldn't read. Asked first, so
-    // that the refusal names it, in the words it is reported in.
-    let one = |a: &Left, b: &Left| a.at == b.at && a.holds == b.holds;
-    let alike =
-        want_left.len() == got_left.len() && want_left.iter().zip(got_left).all(|(a, b)| one(a, b));
-    if !alike {
-        // Those of `these` that `those` doesn't have, each matched once.
-        let only = |these: &[Left], those: &[Left]| -> Vec<Left> {
-            let mut those: Vec<&Left> = those.iter().collect();
-            let mut out = Vec::new();
-            for l in these {
-                match those.iter().position(|t| one(l, t)) {
-                    Some(i) => {
-                        those.remove(i);
-                    }
-                    None => out.push(l.clone()),
-                }
-            }
-            out
-        };
-        let (gone, new) = (only(want_left, got_left), only(got_left, want_left));
-        // One whose content the other side doesn't hold at all is named first: another may
-        // only stand elsewhere because something before it changed.
-        let absent = |l: &&Left, those: &[Left]| !those.iter().any(|t| t.holds == l.holds);
-        let truly_gone = gone.iter().find(|l| absent(l, got_left));
-        let truly_new = new.iter().find(|l| absent(l, want_left));
-        let came_back = |l: &Left| {
-            format!(
-                "{} was left out, and came back changed, moved or not at all",
-                l.words
-            )
-        };
-        let added = |l: &Left| format!("it leaves out {}, which was asked to read", l.words);
-        return Err(match (truly_gone, truly_new) {
-            (Some(l), _) => came_back(l),
-            (None, Some(l)) => added(l),
-            (None, None) => match (gone.first(), new.first()) {
-                (Some(l), _) => came_back(l),
-                (None, Some(l)) => added(l),
-                (None, None) => "what was left out came back in another order".to_string(),
-            },
-        });
-    }
     let (want, got) = (items(asked), items(gave));
     if want != got {
         let (missing, extra) = (only(&want, &got), only(&got, &want));
@@ -1270,15 +1234,6 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             "links to {} where links to {} were asked",
             short(extra),
             short(missing)
-        ));
-    }
-    // No change makes, moves or relabels a link between two pieces: they come back as they
-    // were, in order, each between the pieces at the same positions.
-    if want_between != got_between {
-        return Err(format!(
-            "the links between pieces are {} where {} were asked",
-            short(got_between.clone()),
-            short(want_between.clone())
         ));
     }
     // Pieces are compared in the order given: *follows* is a relation, and no change to an
@@ -1321,7 +1276,117 @@ pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
             ));
         }
     }
+    // No change makes, moves or relabels a link between two pieces: they come back as they
+    // were, in order, each between the pieces at the same positions. After the pieces, which
+    // its ends name by position.
+    if want_between != got_between {
+        return Err(format!(
+            "the links between pieces are {} where {} were asked",
+            short(got_between.clone()),
+            short(want_between.clone())
+        ));
+    }
+    match past {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
+/// Whether what the engine leaves out of each of an answer's lists (`ReadBack::lists`) holds
+/// what it held, as many times: else the first that is gone, then one that is new, in the
+/// words it is reported in. One given twice is new, and named as one that came back. Where
+/// each stands is `left_out_stands`'s to say, among the whole list.
+fn left_out_kept(want: &Lists, got: &Lists) -> Result<(), String> {
+    for (want, got) in want.iter().zip(got) {
+        let w: Vec<&Left> = stands(want).map(|(_, l)| l).collect();
+        let g: Vec<&Left> = stands(got).map(|(_, l)| l).collect();
+        let wh: Vec<&str> = w.iter().map(|l| l.holds.as_str()).collect();
+        let gh: Vec<&str> = g.iter().map(|l| l.holds.as_str()).collect();
+        let d = order::diff(&wh, &gh, |_| false);
+        let why = match (d.dropped.first(), d.added.first()) {
+            (Some(&i), _) => came_back(w[i]),
+            (None, Some(&j)) if wh.contains(&gh[j]) => came_back(g[j]),
+            (None, Some(&j)) => format!("it leaves out {}, which was asked to read", g[j].words),
+            (None, None) => continue,
+        };
+        return Err(why);
+    }
     Ok(())
+}
+
+/// Whether each thing the engine leaves out stands where it stood among the rest of its list
+/// (`ReadBack::lists`), in the same order: refused when one moved, in its words. What moved
+/// is what the fewest changes to the whole list explain (`order::diff`), and when as few
+/// explain either way (a left-out item and its neighbour swapped), it is the one left out,
+/// which didn't come back where it was. Else, when one stands elsewhere only because another
+/// entry moved past it, is new before it or is gone from before it, that entry, for `same`
+/// to say once the other parts are the same: they name it in their own words when they can.
+fn left_out_stands(want: &Lists, got: &Lists) -> Result<Option<String>, String> {
+    let mut past = None;
+    for (want, got) in want.iter().zip(got) {
+        let at_w = stands(want).map(|(i, l)| (i, &l.holds));
+        if at_w.eq(stands(got).map(|(i, l)| (i, &l.holds))) {
+            continue;
+        }
+        let wk: Vec<(bool, &str)> = want.iter().map(Entry::key).collect();
+        let gk: Vec<(bool, &str)> = got.iter().map(Entry::key).collect();
+        let d = order::diff(&wk, &gk, |k| !k.0);
+        let left = |&(i, _): &(usize, usize)| match &want[i] {
+            Entry::Left(l) => Some(l),
+            Entry::Read { .. } => None,
+        };
+        if let Some(l) = d.moved.iter().find_map(left) {
+            return Err(came_back(l));
+        }
+        if past.is_some() {
+            continue;
+        }
+        // Nothing left out moved, so an entry that crossed one, or is new or gone before one,
+        // is what moved them: the number of them before it differs.
+        let (before_w, before_g) = (lefts_before(want), lefts_before(got));
+        let lefts = stands(want).count();
+        let crossed = d.moved.iter().find(|&&(i, j)| before_w[i] != before_g[j]);
+        let new = d.added.iter().find(|&&j| before_g[j] < lefts);
+        let gone = d.dropped.iter().find(|&&i| before_w[i] < lefts);
+        let says = |e: &Entry, what: &str| match e {
+            Entry::Read { name, .. } => format!("{name} {what}"),
+            Entry::Left(l) => came_back(l),
+        };
+        past = Some(match (crossed, new, gone) {
+            (Some(&(i, _)), _, _) => says(&want[i], "moved"),
+            (None, Some(&j), _) => says(&got[j], "wasn't asked for"),
+            (None, None, Some(&i)) => says(&want[i], "is missing"),
+            (None, None, None) => "what was left out stands elsewhere".to_string(),
+        });
+    }
+    Ok(past)
+}
+
+/// For each entry of a list, how many the engine leaves out stand before it.
+fn lefts_before(list: &[Entry]) -> Vec<usize> {
+    let mut n = 0;
+    let mut out = Vec::with_capacity(list.len());
+    for e in list {
+        out.push(n);
+        n += usize::from(matches!(e, Entry::Left(_)));
+    }
+    out
+}
+
+/// The words of a refusal for something the engine left out that didn't come back as it was.
+fn came_back(l: &Left) -> String {
+    format!(
+        "{} was left out, and came back changed, moved or not at all",
+        l.words
+    )
+}
+
+/// What the engine leaves out of a list, with where each stands in it.
+fn stands(list: &[Entry]) -> impl Iterator<Item = (usize, &Left)> {
+    list.iter().enumerate().filter_map(|(i, e)| match e {
+        Entry::Left(l) => Some((i, l)),
+        Entry::Read { .. } => None,
+    })
 }
 
 /// Whether two items say the same: their kinds and fields, not where they are.
@@ -1348,9 +1413,9 @@ pub struct Read {
 }
 
 /// An answer read for the read-back check (`same`): its items and links, what each of its
-/// pieces says, which pieces its links between pieces join, and what the engine leaves out
-/// of it. Reading a file for the workspace (`read`) makes none of the last three, since only
-/// an edit compares them.
+/// pieces says, which pieces its links between pieces join, and its lists with what the
+/// engine leaves out of each. Reading a file for the workspace (`read`) makes none of the
+/// last three, since only an edit compares them.
 pub struct ReadBack {
     pub read: Read,
     /// Every piece in the order given, whether or not it is an item.
@@ -1358,8 +1423,33 @@ pub struct ReadBack {
     /// Every link between two pieces, in the order given: which pieces it joins, by their
     /// positions among the answer's pieces, and its label.
     between: Vec<String>,
-    /// Everything the engine leaves out of the answer (`Subject`), in order.
-    left_out: Vec<Left>,
+    /// Its items, its links to files and its links between pieces, each list in the order
+    /// given: an item left out as it arrived stands where it was among the items.
+    lists: Lists,
+}
+
+/// An answer's items, links to files and links between pieces, as the read-back compares what
+/// is left out of each and where it stands.
+type Lists = [Vec<Entry>; 3];
+
+/// An entry of one of an answer's lists.
+enum Entry {
+    /// One the engine reads: what tells it from the others of its list (an item's place, a
+    /// link's place and target, a link between pieces as JSON), and its name in a refusal,
+    /// its places cut (`the item at p`, `the link to Lava`, `the link from a to b`).
+    Read { key: String, name: String },
+    /// One the engine leaves out: what `read` reports a problem about (`Subject`).
+    Left(Left),
+}
+
+impl Entry {
+    /// What it is matched by in the other answer: its key, or what it holds.
+    fn key(&self) -> (bool, &str) {
+        match self {
+            Entry::Read { key, .. } => (false, key.as_str()),
+            Entry::Left(l) => (true, l.holds.as_str()),
+        }
+    }
 }
 
 /// A piece as the read-back compares it: its place, whether it holds the place (`Places`),
@@ -1370,18 +1460,19 @@ struct Said {
     says: String,
 }
 
-/// Something the engine leaves out of an answer, as the read-back compares it.
-#[derive(Clone)]
+/// Something the engine leaves out of an answer, as the read-back compares it. Where it
+/// stands is where it is in its list (`ReadBack::lists`).
 struct Left {
-    /// Which it is and where it stands: `item 3`, `link 1`, `between 2`, or for an item left
-    /// out as it arrived `left out 1, after item 2` (after the items read before it).
-    at: String,
-    /// What it holds. For an item, a link or a link between pieces, the JSON it reads as,
-    /// compared whole. For an item left out as it arrived, what is kept of it, here and in
-    /// the owners' cache: the 48-bit hash (`tasks::line_id`) of the JSON value it was sent
-    /// as, once parsed (`LeftOut::key`). Two that differ there and hash alike by chance
-    /// compare the same: a hash is enough against an owner's mistake, not against one that
-    /// crafts a collision, and nothing else of an item that didn't read is kept to compare.
+    /// What it holds. For an item, a link or a link between pieces left out as it is read,
+    /// the JSON it reads as, compared whole: two answers that read alike hold the same, so
+    /// what parsing drops (`LeftOut`) and the order of its own keys don't count. For an item
+    /// left out as it arrived, what is kept of it, here and in the owners' cache: the 48-bit
+    /// hash of the JSON value it was sent as, once parsed (`LeftOut::key`), so the order of
+    /// its keys counts and what parsing drops doesn't: two numbers that parse to the same
+    /// 64-bit integer or float, or a key written twice, which keeps its first place and its
+    /// last value. Two values that hash alike hold the same: enough against an owner's
+    /// mistake, while an owner that crafts a collision is not told apart (`LeftOut`), and
+    /// nothing else of an item that didn't read is kept to compare.
     holds: String,
     /// The words it is reported in, for a refusal.
     words: String,
@@ -1452,50 +1543,67 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
     };
     // What the engine leaves out is what `read` reports a problem about: an item left out
     // as it arrived (kept as it was sent), and an item, a link or a link between pieces
-    // left out as it is read (kept as it reads). Each is compared by where it stands and
-    // what it holds, so an owner that changes, moves, drops, adds or fixes one is caught.
+    // left out as it is read (kept as it reads). Each is compared by what it holds and where
+    // it stands, so an owner that changes, moves, drops, adds or fixes one is caught; the
+    // rest are named, so that what moved past one is told from it.
     let mut read = read_all(file, given, s);
     let said: HashMap<String, String> = (read.problems.iter())
         .filter_map(|p| Some((p.subject()?.to_string(), p.one_line())))
         .collect();
     let json = |value: serde_json::Result<String>| value.unwrap_or_default();
     // The words it is reported in, when what `about` names is left out.
-    let left = |about: Subject| said.get(&about.to_string()).cloned();
-    let records = (given.left_out.iter().enumerate()).filter_map(|(k, (at, l))| {
-        Some(Left {
-            at: format!("left out {}, after item {at}", k + 1),
-            holds: l.key.to_string(),
-            words: left(Subject::LeftOut(k))?,
-        })
+    let words = |about: Subject| said.get(&about.to_string()).map(String::as_str);
+    let mut items = Vec::new();
+    let mut records = given.left_out.iter().enumerate().peekable();
+    let record = |(k, (_, l)): (usize, &(usize, LeftOut))| {
+        let read = || (l.place.to_string(), format!("the item at {}", l.place));
+        entry(words(Subject::LeftOut(k)), || l.key.to_string(), read)
+    };
+    for (i, item) in given.items.iter().enumerate() {
+        items.extend(std::iter::from_fn(|| records.next_if(|(_, (at, _))| *at <= i)).map(record));
+        let holds = || json(serde_json::to_string(item));
+        let place = item.place();
+        let read = || (place.to_string(), format!("the item at {}", short(place)));
+        items.push(entry(words(Subject::Item(i)), holds, read));
+    }
+    items.extend(records.map(record));
+    let links = (given.links.iter().enumerate()).map(|(i, l)| {
+        let holds = || json(serde_json::to_string(l));
+        let key = || json(serde_json::to_string(&(&l.place, &l.target)));
+        let read = || (key(), format!("the link to {}", short(&l.target)));
+        entry(words(Subject::Link(i)), holds, read)
     });
-    let items = (given.items.iter().enumerate()).filter_map(|(i, item)| {
-        Some(Left {
-            words: left(Subject::Item(i))?,
-            at: format!("item {}", i + 1),
-            holds: json(serde_json::to_string(item)),
-        })
+    let betweens = (given.between.iter().enumerate()).map(|(n, l)| {
+        let holds = || json(serde_json::to_string(l));
+        let name = || format!("the link from {} to {}", short(&l.from), short(&l.to));
+        entry(words(Subject::Between(n)), holds, || (holds(), name()))
     });
-    let links = (given.links.iter().enumerate()).filter_map(|(i, l)| {
-        Some(Left {
-            words: left(Subject::Link(i))?,
-            at: format!("link {}", i + 1),
-            holds: json(serde_json::to_string(l)),
-        })
-    });
-    let betweens = (given.between.iter().enumerate()).filter_map(|(n, l)| {
-        Some(Left {
-            words: left(Subject::Between(n))?,
-            at: format!("between {}", n + 1),
-            holds: json(serde_json::to_string(l)),
-        })
-    });
-    let left_out = (records.chain(items).chain(links).chain(betweens)).collect();
+    let lists = [items, links.collect(), betweens.collect()];
     read.problems = crate::problem::capped(read.problems);
     ReadBack {
         read,
         pieces,
         between: given.between.iter().map(joins).collect(),
-        left_out,
+        lists,
+    }
+}
+
+/// An entry of a list for the read-back: left out when there are `words` for why, with what
+/// it holds, made only then; else read, with its key and its name (`read`).
+fn entry(
+    words: Option<&str>,
+    holds: impl FnOnce() -> String,
+    read: impl FnOnce() -> (String, String),
+) -> Entry {
+    match words {
+        Some(words) => Entry::Left(Left {
+            holds: holds(),
+            words: words.to_string(),
+        }),
+        None => {
+            let (key, name) = read();
+            Entry::Read { key, name }
+        }
     }
 }
 
