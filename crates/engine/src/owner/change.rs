@@ -23,7 +23,7 @@ use crate::gateway::{Error, Op, Reason};
 use crate::items::{Data, Item, Settings};
 use crate::matcher::Typed;
 use crate::owner::given::{CHECKBOX, Change, Piece, Run, clears, reword, words};
-use crate::tasks::StatusType;
+use crate::tasks_settings::StatusType;
 use crate::types::{Source, Value};
 use serde_json::Value as Json;
 

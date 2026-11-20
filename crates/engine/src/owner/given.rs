@@ -26,7 +26,7 @@ use crate::owner::answer::{Kept, LeftOut};
 use crate::owner::markdown;
 use crate::owner::order;
 use crate::problem::{Problem, cut};
-use crate::tasks::{StatusType, TasksSettings};
+use crate::tasks_settings::{StatusType, TasksSettings};
 use crate::types::On;
 use crate::workspace::{Ref, clean_target};
 use serde::{Deserialize, Serialize};
