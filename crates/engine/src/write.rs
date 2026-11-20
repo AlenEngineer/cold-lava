@@ -131,8 +131,8 @@ pub(crate) fn refuse_link(path: &Path) -> Result<(), WriteError> {
 
 /// As `replace`, but a symlink at `path` is followed (`landing`): the file it leads to is
 /// replaced, and the link stays. Only for the user's own save of a file the scan doesn't read
-/// and that the user opened by its path: a board's canvas, `bookmarks.json`, `shapes.toml`, a
-/// note the menu's tree lists. Never for a path the gateway or an extension gave.
+/// and that the user opened by its path: a board's canvas, `shapes.toml`, a note the menu's
+/// tree lists. Never for a path the gateway or an extension gave.
 pub(crate) fn replace_through_link(
     path: &Path,
     expected: &[u8],

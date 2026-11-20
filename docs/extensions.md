@@ -1367,7 +1367,7 @@ graph all see the new date. None of them knew what a canvas is.
 - **Where owned files show.** In the note tree (`▤`, by their whole file name; the right pane
   says `CSV table · ⏎ to open it in csv-table`), in the quick switcher after the notes (with
   their folder and kind), as links (`[[Eruptions.csv]]` resolves to the file the way an
-  attachment link does), and as bookmarks. Enter on any of these, or following the link, sends
+  attachment link does). Enter on any of these, or following the link, sends
   the owner `file/open {path}`. The owner shows the file in a view; the view's `view/open`
   puts where you were in Back's history, so `Ctrl-o` returns to the note the link was in. A
   kind nobody owns behaves as before: not in the tree, and a link to it creates a note. A link
@@ -1402,7 +1402,7 @@ graph all see the new date. None of them knew what a canvas is.
   reaches a link either. The scan and the watcher read no symlinked note or owned file
   (`workspace::first_link`), so no item is in one. Only the user's own saves of a file they
   opened by its path (the whiteboard's canvas, the menu's tag edit of a note its tree lists,
-  the shapes file, the bookmarks) go through a link, by a write named for it
+  the shapes file) go through a link, by a write named for it
   (`write::replace_through_link`): the file it leads to is replaced, with the temporary file
   beside that file, and the link stays a link (`write::landing`).
 
@@ -2518,7 +2518,7 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   the reader shows the note.
 - **Opening.** An open of the whole note hands it to the claim's extension as `file/open
   {path}` (the path with `.md`) instead of showing the reader: Enter in the tree, the quick
-  switcher, a link without a heading or block, a bookmark of the note, and `workspace/open`
+  switcher, a link without a heading or block, and `workspace/open`
   without a line. An open that points into the text goes to the reader there: a link to a
   heading or a block, a backlink, a search hit, `workspace/open` with a line (the agenda's
   Enter on a task, the example's Enter on a card). Moving through the tree still previews the
@@ -3497,7 +3497,7 @@ design for an extension that needs it, and nothing is built of it.
   command run, and `board-keeps-unsaved.drive` edits a refused save left. The menu's own
   prompts and dialogs are kept by the same check (`Mode::unsaved`, #269): a prompt being
   typed, a dialog waiting for an answer or for owners, and the switcher, the palette, the
-  search, the outline and the bookmarks once something is typed in them. Each mode says
+  search and the outline once something is typed in them. Each mode says
   what it holds, in a match with no arm for the rest, so a new mode has to answer, and a
   mode that names a tool asks the tool: link hints (a label begun), Tidy (marks), a recipe
   (options, a plan). The view in front answers for itself like the board (`Open::unsaved`:

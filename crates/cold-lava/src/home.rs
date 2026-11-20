@@ -3,7 +3,6 @@
 //! embedded Neovim when it's installed).
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE, Render};
-use crate::bookmarks::{self, Entry as Bookmark, Target};
 use crate::commands::{
     self, Entry, HistoryAction, Key, KeyHint, Keymap, MenuAction, MenuCommand, PaneAction,
     ReaderAction,
@@ -444,11 +443,6 @@ enum Mode {
         from: PeekFrom,
         view: Peek,
     },
-    /// The workspace's bookmarks (Obsidian's); `sel` is a row of `bookmark_rows`.
-    Bookmarks {
-        query: String,
-        sel: usize,
-    },
     /// What nothing uses: orphan notes, unused attachments, empty folders, unresolved links.
     Tidy(Box<TidyView>),
     /// `recipe.run`: picking a recipe, filling its options, or looking at its plan.
@@ -504,9 +498,6 @@ impl Mode {
             Mode::Palette(palette) => palette.unsaved(),
             Mode::Search { query, .. } => (!query.is_empty()).then_some("a search is being typed"),
             Mode::Outline(outline) => outline.unsaved(),
-            Mode::Bookmarks { query, .. } => {
-                (!query.is_empty()).then_some("a bookmark is being typed")
-            }
             Mode::Recipe(view) => view.unsaved(),
         }
     }
@@ -706,8 +697,6 @@ pub struct Home {
     /// Marked tree rows (workspace-relative, as `Item::rel`), for moving, deleting and tagging
     /// several at once.
     marks: BTreeSet<String>,
-    /// Bookmark groups folded in the bookmarks popup (as `Bookmark::at`).
-    folded: HashSet<Vec<usize>>,
     /// A screen a link led to, gone to once the key that followed it is handled.
     go_to: Option<Place>,
     /// `Some` while the pane shows the reader: always without an editor, else after
@@ -797,7 +786,6 @@ impl Home {
             undo: Vec::new(),
             kept: HashMap::new(),
             marks: BTreeSet::new(),
-            folded: HashSet::new(),
             go_to: None,
             reader: None,
             flavour: markdown::flavour_for(Path::new("")),
@@ -1502,7 +1490,6 @@ impl Home {
         self.expanded.clear();
         self.filter.clear();
         self.marks.clear();
-        self.folded.clear();
         self.nsel = 0;
         self.nscroll = 0;
         self.core = None; // a different workspace: start a fresh core
@@ -2070,7 +2057,6 @@ impl Home {
             | CoreEvent::OwnerTrouble { .. }
             | CoreEvent::OwnedLeavesOut { .. }
             | CoreEvent::GraphSettingsChanged
-            | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
             _ => true,
         });
@@ -2105,7 +2091,6 @@ impl Home {
             | CoreEvent::OwnerTrouble { .. }
             | CoreEvent::OwnedLeavesOut { .. }
             | CoreEvent::GraphSettingsChanged
-            | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. }
             | CoreEvent::Deleted { .. }
             | CoreEvent::Restored { .. }
@@ -2463,10 +2448,6 @@ impl Home {
             self.outline_key(k);
             return Ok(());
         }
-        if matches!(self.mode, Mode::Bookmarks { .. }) {
-            self.bookmarks_key(k);
-            return Ok(());
-        }
         if matches!(self.mode, Mode::Tidy(_)) {
             self.tidy_key(k);
             return Ok(());
@@ -2624,7 +2605,6 @@ impl Home {
             | Mode::ConfirmRestore(_)
             | Mode::Hints(_)
             | Mode::Outline(_)
-            | Mode::Bookmarks { .. }
             | Mode::Tidy(_)
             | Mode::Recipe(_)
             | Mode::View { .. }
@@ -2694,15 +2674,8 @@ impl Home {
                         .any(|e| self.registry.stopped(e).is_some())
             }
             MenuCommand::Ext(ext, _) => self.registry.running(ext),
-            MenuCommand::Core(
-                MenuAction::Bookmarks
-                | MenuAction::Bookmark
-                | MenuAction::Tidy
-                | MenuAction::Table
-                | MenuAction::Agenda,
-            ) => self.core.is_some(),
-            MenuCommand::Core(MenuAction::BookmarkSearch) => {
-                matches!(self.mode, Mode::Search { .. })
+            MenuCommand::Core(MenuAction::Tidy | MenuAction::Table | MenuAction::Agenda) => {
+                self.core.is_some()
             }
             MenuCommand::Core(MenuAction::Read) => {
                 (self.running_editor().is_some() && self.shown.is_some())
@@ -3057,15 +3030,9 @@ impl Home {
             }
             MenuAction::Palette => self.mode = Mode::Palette(Palette::new()),
             MenuAction::Switcher => self.open_switcher(),
-            MenuAction::Bookmarks => self.open_bookmarks(),
             MenuAction::Tidy => self.open_tidy(),
             MenuAction::Table => self.hand_to(TABLE, type_table::OPEN),
             MenuAction::Agenda => self.hand_to(AGENDA, agenda::OPEN),
-            MenuAction::Bookmark => match self.bookmark_target() {
-                Some(target) => self.toggle_bookmark(target),
-                None => self.flash("select a note or folder to bookmark"),
-            },
-            MenuAction::BookmarkSearch => self.bookmark_search(),
             MenuAction::Rename => self.start_rename(false),
             MenuAction::Move if !self.marks.is_empty() => {
                 self.mode = Mode::MoveMarked(String::new())
@@ -3477,242 +3444,6 @@ impl Home {
         }
     }
 
-    // ---------- bookmarks ----------
-
-    fn open_bookmarks(&mut self) {
-        match self.core.as_ref().map(Core::bookmarks) {
-            Some(Ok(_)) => {}
-            Some(Err(e)) => return self.flash(format!("can't read the bookmarks: {e}")),
-            None => return,
-        }
-        self.back_to_editor = self.focus == Focus::Pane;
-        if self.focus == Focus::Pane {
-            self.focus = Focus::Notes;
-        }
-        self.mode = Mode::Bookmarks {
-            query: String::new(),
-            sel: 0,
-        };
-    }
-
-    /// The bookmarks popup's rows: every bookmark outside folded groups, or with a query the
-    /// ones (not groups) whose name matches, with the match.
-    fn bookmark_rows(&self, query: &str) -> Vec<(Bookmark, Option<crate::search::Fuzzy>)> {
-        let Some(Ok(b)) = self.core.as_ref().map(Core::bookmarks) else {
-            return Vec::new();
-        };
-        let all = b.entries().into_iter();
-        if query.trim().is_empty() {
-            let folded = |e: &Bookmark| (1..e.at.len()).any(|n| self.folded.contains(&e.at[..n]));
-            return all.filter(|e| !folded(e)).map(|e| (e, None)).collect();
-        }
-        all.filter(|e| e.target != Target::Group)
-            .filter_map(|e| {
-                let m = crate::search::fuzzy(query, &e.label())?;
-                Some((e, Some(m)))
-            })
-            .collect()
-    }
-
-    /// Whether what a bookmark points at is in the workspace.
-    fn bookmark_found(&self, b: &Bookmark) -> bool {
-        let Some(root) = self.root.as_ref() else {
-            return false;
-        };
-        match &b.target {
-            Target::File { path, .. } => root.join(path).is_file(),
-            Target::Folder(path) => root.join(path).is_dir(),
-            _ => true,
-        }
-    }
-
-    fn bookmarks_key(&mut self, k: KeyEvent) {
-        let Mode::Bookmarks { query, sel } = &self.mode else {
-            return;
-        };
-        let (mut q, mut s) = (query.clone(), *sel);
-        let rows = self.bookmark_rows(&q);
-        s = s.min(rows.len().saturating_sub(1));
-        let selected = rows.get(s).map(|(b, _)| b.clone());
-        let group = selected.as_ref().filter(|b| b.target == Target::Group);
-        match k.code {
-            KeyCode::Esc => return self.close_overlay(),
-            KeyCode::Right if group.is_some() => {
-                self.folded.remove(&group.unwrap().at);
-            }
-            KeyCode::Left if group.is_some_and(|g| !self.folded.contains(&g.at)) => {
-                self.folded.insert(group.unwrap().at.clone());
-            }
-            // Out of a group, onto it.
-            KeyCode::Left if q.is_empty() => {
-                if let Some(b) = selected.as_ref().filter(|b| b.at.len() > 1) {
-                    let parent = &b.at[..b.at.len() - 1];
-                    s = rows.iter().position(|(r, _)| r.at == parent).unwrap_or(s);
-                }
-            }
-            KeyCode::Delete => {
-                if let Some(b) = selected {
-                    self.remove_bookmark(&b);
-                }
-            }
-            KeyCode::Enter => {
-                let Some(b) = selected else { return };
-                if b.target == Target::Group {
-                    if !self.folded.remove(&b.at) {
-                        self.folded.insert(b.at.clone());
-                    }
-                } else {
-                    return self.open_bookmark(b);
-                }
-            }
-            _ => {
-                if pick_list::key(&mut q, &mut s, rows.len(), k, CtrlU::Clears)
-                    == Some(Picked::Typed)
-                {
-                    s = 0;
-                }
-            }
-        }
-        self.mode = Mode::Bookmarks { query: q, sel: s };
-    }
-
-    /// Go where a bookmark points, like Obsidian: a note (at its heading or block), a folder in
-    /// the tree, a search, the graph, a board, a link in the browser.
-    fn open_bookmark(&mut self, b: Bookmark) {
-        let Some(root) = self.root.clone() else {
-            return;
-        };
-        let from = self.here();
-        self.mode = Mode::Normal;
-        self.back_to_editor = false;
-        if !self.bookmark_found(&b) {
-            return self.flash(format!("{} is missing", b.label()));
-        }
-        match b.target {
-            Target::File { path, .. } if self.registry.owner_of(&path).is_some() => {
-                self.open_file(&root.join(&path));
-            }
-            Target::File { path, subpath } => {
-                let p = root.join(&path);
-                match workspace::attachment_kind(&path) {
-                    None => self.open_found(from, &p, subpath.as_deref().and_then(bookmarks::jump)),
-                    Some("whiteboard") => {
-                        self.go_to = Some(Place::Board {
-                            path: p,
-                            node: None,
-                        })
-                    }
-                    Some(_) if term::open_url(&p.to_string_lossy()) => {
-                        self.flash(format!("opened {path}"))
-                    }
-                    Some(_) => self.flash(format!("couldn't open {path}")),
-                }
-            }
-            Target::Folder(path) => {
-                self.filter.clear();
-                self.expanded.insert(path.clone());
-                self.select_path(&root.join(&path));
-                self.focus = Focus::Notes;
-            }
-            Target::Search(query) => {
-                if let Some(from) = from {
-                    self.history.visit(from);
-                }
-                self.search_for(query);
-            }
-            Target::Graph => self.hand_to(GRAPH, graph_ext::OPEN),
-            Target::Url(url) => {
-                if !term::open_url(&url) {
-                    self.flash(format!("couldn't open {url}"));
-                }
-            }
-            Target::Group => {}
-            Target::Other(kind) => self.flash(format!("cold-lava can't open {kind} bookmarks yet")),
-        }
-    }
-
-    /// What `note.bookmark` bookmarks: the tree's selection when it has the focus, else the
-    /// note shown, at the heading the reader is in.
-    fn bookmark_target(&self) -> Option<Target> {
-        let root = self.root.as_ref()?;
-        if self.focus == Focus::Notes {
-            let it = self.current()?;
-            return Some(match it.kind {
-                ItemKind::Folder => Target::Folder(it.rel.clone()),
-                ItemKind::Note | ItemKind::Board | ItemKind::File => Target::File {
-                    path: it.rel.clone(),
-                    subpath: None,
-                },
-            });
-        }
-        let shown = self.shown.as_ref()?;
-        let reading = self.reader.as_ref().filter(|_| self.focus == Focus::Pane);
-        let heading = reading.and_then(|r| Some(&r.headings()[*crumbs(r, shown).last()?]));
-        Some(Target::File {
-            path: rel_path::of(root, shown)?,
-            subpath: heading.map(|h| format!("#{}", h.text)),
-        })
-    }
-
-    fn toggle_bookmark(&mut self, target: Target) {
-        let Some(root) = self.root.clone() else {
-            return;
-        };
-        let label = target.label();
-        let done = bookmarks::edit(&root, |b| b.toggle(target.clone(), bookmarks::now_ms()));
-        if let Some(core) = self.core.as_mut() {
-            core.reload_bookmarks();
-        }
-        self.flash(match done {
-            Ok(true) => format!(
-                "bookmarked {label} · {} bookmarks",
-                self.keys.label("bookmarks.open")
-            ),
-            Ok(false) => format!("removed the bookmark {label}"),
-            Err(e) => format!("couldn't change the bookmarks: {e:#}"),
-        });
-    }
-
-    fn remove_bookmark(&mut self, b: &Bookmark) {
-        let Some(root) = self.root.clone() else {
-            return;
-        };
-        // By what it points at, not where: Obsidian may have moved things around since.
-        let done = bookmarks::edit(&root, |all| {
-            match all.entries().iter().find(|e| {
-                e.target == b.target
-                    && e.title == b.title
-                    && (e.target != Target::Group || e.at == b.at)
-            }) {
-                Some(e) => {
-                    all.remove(&e.at);
-                    true
-                }
-                None => false,
-            }
-        });
-        if let Some(core) = self.core.as_mut() {
-            core.reload_bookmarks();
-        }
-        match done {
-            Ok(true) => self.flash(format!("removed the bookmark {}", b.label())),
-            Ok(false) => self.flash("that bookmark is already gone"),
-            Err(e) => self.flash(format!("couldn't change the bookmarks: {e:#}")),
-        }
-    }
-
-    /// Bookmark (or unbookmark) the open search's query.
-    fn bookmark_search(&mut self) {
-        let Mode::Search { query, .. } = &self.mode else {
-            return self.flash("open a search to bookmark it");
-        };
-        let query = query.trim().to_string();
-        if query.is_empty() {
-            return self.flash("type a search to bookmark it");
-        }
-        self.toggle_bookmark(Target::Search(query));
-    }
-
     fn palette_hits(&self, query: &str) -> Vec<commands::Match<'_>> {
         commands::matching(self.registry.commands(), query)
             .into_iter()
@@ -3764,9 +3495,6 @@ impl Home {
     }
 
     fn search_key(&mut self, k: KeyEvent) {
-        if self.keys.get(k) == Some(MenuCommand::Core(MenuAction::BookmarkSearch)) {
-            return self.bookmark_search();
-        }
         let n = self.result_rows.len();
         let page = 10;
         let Mode::Search { query, sel } = &mut self.mode else {
@@ -4327,7 +4055,7 @@ impl Home {
                 destination(ms),
             ),
         };
-        let mut msg = if links == 0 {
+        let msg = if links == 0 {
             format!("{verb} to {to} (no links needed updating)")
         } else {
             format!(
@@ -4336,9 +4064,6 @@ impl Home {
                 plural(files.max(1), "file")
             )
         };
-        if let Some(b) = &plan.bookmarks {
-            msg.push_str(&format!(" · {} followed", plural(b.links, "bookmark")));
-        }
         self.flash(msg);
     }
 
@@ -4427,12 +4152,6 @@ impl Home {
             },
             Style::new().fg(NOTE),
         )]);
-        if let Some(b) = &plan.bookmarks {
-            lines.push(Line::styled(
-                format!(" {} will follow it.", plural(b.links, "bookmark")),
-                Style::new().fg(NOTE),
-            ));
-        }
         for w in &plan.warnings {
             lines.push(Line::styled(format!(" ! {w}"), Style::new().fg(HIT)));
         }
@@ -4812,12 +4531,6 @@ impl Home {
             },
             text,
         ));
-        if let Some(b) = &plan.bookmarks {
-            lines.push(Line::styled(
-                format!(" {} will follow it.", plural(b.links, "bookmark")),
-                text,
-            ));
-        }
         for w in &plan.warnings {
             lines.push(Line::styled(format!(" ! {w}"), Style::new().fg(HIT)));
         }
@@ -6046,9 +5759,6 @@ impl Home {
         if let (Mode::Outline(o), Some(r)) = (&self.mode, &self.reader) {
             o.draw(f, main, r);
         }
-        if matches!(self.mode, Mode::Bookmarks { .. }) {
-            self.draw_bookmarks(f, main);
-        }
         if let Mode::Tidy(view) = &self.mode {
             self.draw_tidy(f, main, view);
         }
@@ -6356,105 +6066,6 @@ impl Home {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn draw_bookmarks(&self, f: &mut Frame, area: Rect) {
-        let Mode::Bookmarks { query, sel } = &self.mode else {
-            return;
-        };
-        let hint = " ↑↓ choose · ⏎ open · ←→ fold · Del remove · Esc close ";
-        let inner = popup::picker(f, area, " Bookmarks ", hint);
-        let rows = self.bookmark_rows(query);
-        let count = match query.is_empty() {
-            true => (self.core.as_ref().and_then(|c| c.bookmarks().ok())).map_or(0, |b| {
-                b.entries()
-                    .iter()
-                    .filter(|e| e.target != Target::Group)
-                    .count()
-            }),
-            false => rows.len(),
-        };
-        let summary = match (query.is_empty(), count) {
-            (true, 0) => format!(
-                "  no bookmarks yet · {} bookmarks a note",
-                self.keys.label("note.bookmark")
-            ),
-            (true, _) => format!("  {} · type to filter", plural(count, "bookmark")),
-            (false, _) => format!("  {count} match"),
-        };
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(summary, Style::new().fg(MUTED)),
-            ]),
-            Line::raw(""),
-        ];
-        let height = inner.height.saturating_sub(2) as usize;
-        let sel = (*sel).min(rows.len().saturating_sub(1));
-        let start = sel.saturating_sub(height.saturating_sub(1));
-        let width = inner.width as usize;
-        for (row, (b, m)) in rows.iter().enumerate().skip(start).take(height) {
-            let selected = row == sel;
-            let found = self.bookmark_found(b);
-            let icon = match &b.target {
-                Target::Group if self.folded.contains(&b.at) => "▸ ",
-                Target::Group => "▾ ",
-                Target::File {
-                    subpath: Some(_), ..
-                } => "§ ",
-                Target::File { .. } => "• ",
-                Target::Folder(_) => "▤ ",
-                Target::Search(_) => "⌕ ",
-                Target::Graph => "◎ ",
-                Target::Url(_) => "↗ ",
-                Target::Other(_) => "? ",
-            };
-            let base = match (selected, found) {
-                (true, _) => Style::new().fg(Color::Black).bg(ACCENT),
-                (false, false) => Style::new().fg(DIM),
-                (false, true) if b.target == Target::Group => {
-                    Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD)
-                }
-                (false, true) => Style::new().fg(NOTE),
-            };
-            let hl = match selected {
-                true => base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                false => Style::new().fg(HIT).add_modifier(Modifier::BOLD),
-            };
-            let indent = match query.is_empty() {
-                true => "  ".repeat(b.depth()),
-                false => String::new(),
-            };
-            let mut spans = vec![Span::styled(format!(" {indent}{icon}"), base)];
-            let label = b.label();
-            for (ci, ch) in label.chars().enumerate() {
-                let on = m.as_ref().is_some_and(|m| m.positions.contains(&ci));
-                spans.push(Span::styled(ch.to_string(), if on { hl } else { base }));
-            }
-            let right = match &b.target {
-                _ if !found => "missing ".to_string(),
-                Target::File { path, .. } => format!("{} ", dir_of_rel(path)),
-                Target::Search(_) => "search ".to_string(),
-                Target::Graph => "graph ".to_string(),
-                Target::Url(_) => "link ".to_string(),
-                Target::Folder(_) | Target::Group | Target::Other(_) => String::new(),
-            };
-            let used: usize = spans.iter().map(Span::width).sum();
-            let pad = width.saturating_sub(used + right.chars().count());
-            let dim = if selected {
-                base
-            } else {
-                Style::new().fg(MUTED)
-            };
-            spans.push(Span::styled(" ".repeat(pad), base));
-            spans.push(Span::styled(right, dim));
-            lines.push(Line::from(spans));
-        }
-        if rows.is_empty() && !query.is_empty() {
-            lines.push(Line::styled(" no bookmarks match", Style::new().fg(MUTED)));
-        }
-        f.render_widget(Paragraph::new(lines), inner);
-    }
-
     fn draw_search(&self, f: &mut Frame, area: Rect) {
         let Mode::Search { query, sel } = &self.mode else {
             return;
@@ -6465,11 +6076,8 @@ impl Home {
         let w = (area.width * 4 / 5).clamp(50.min(area.width), 140);
         let h = area.height.saturating_sub(4).max(8.min(area.height));
         let r = popup::centred(area, w, h, 2.min(area.height / 8));
-        let hint = format!(
-            " ↑↓ choose · ⏎ open at the match · {} bookmark · Esc close ",
-            self.keys.label("search.bookmark")
-        );
-        let inner = popup::frame(f, r, " Search ", &hint, ACCENT);
+        let hint = " ↑↓ choose · ⏎ open at the match · Esc close ";
+        let inner = popup::frame(f, r, " Search ", hint, ACCENT);
         let matches: usize = self.results.iter().map(|r| r.count).sum();
         let summary = if query.trim().is_empty() {
             "  words must all appear in a note · \"quotes\" for a phrase".to_string()
@@ -6648,10 +6256,6 @@ impl Home {
         }
         let w = inner.width as usize;
         let flat = !self.filter.is_empty();
-        let bookmarked = (self.core.as_ref())
-            .and_then(|c| c.bookmarks().ok())
-            .map(|b| b.paths())
-            .unwrap_or_default();
         let mut lines = Vec::new();
         for (r, &i) in self.rows.iter().enumerate().skip(self.nscroll).take(h) {
             let it = &self.items[i];
@@ -6675,14 +6279,9 @@ impl Home {
             } else {
                 it.name.clone()
             };
-            let links = match (it.kind, self.links.get(&it.rel)) {
+            let badge = match (it.kind, self.links.get(&it.rel)) {
                 (ItemKind::Note, Some(&(inc, _))) if inc > 0 => format!("←{inc}"),
                 _ => String::new(),
-            };
-            let badge = match bookmarked.contains(&it.rel) {
-                true if links.is_empty() => "★".to_string(),
-                true => format!("★ {links}"),
-                false => links,
             };
             let room = w.saturating_sub(indent.chars().count() + 2 + badge.chars().count() + 1);
             let mut text: String = label.chars().take(room).collect();
@@ -7553,7 +7152,6 @@ mod tests {
                 moves: Vec::new(),
                 moving: Vec::new(),
                 edits: Vec::new(),
-                bookmarks: None,
                 warnings: Vec::new(),
             }),
             scroll: 0,
@@ -7638,7 +7236,7 @@ mod tests {
         }
 
         type Picker = fn(String) -> Mode;
-        let pickers: [(Picker, &str); 5] = [
+        let pickers: [(Picker, &str); 4] = [
             (
                 |query: String| Mode::Switcher {
                     query,
@@ -7676,10 +7274,6 @@ mod tests {
                     Mode::Outline(outline)
                 },
                 "a heading is being typed",
-            ),
-            (
-                |query: String| Mode::Bookmarks { query, sel: 0 },
-                "a bookmark is being typed",
             ),
         ];
         for (picker, why) in pickers {

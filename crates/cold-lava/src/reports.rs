@@ -216,7 +216,7 @@ mod tests {
         );
         assert_eq!(reports.pop(), None, "once");
 
-        let done: Notice = "bookmarked Krakatoa".into();
+        let done: Notice = "duplicated as Krakatoa 1".into();
         assert_eq!(reports.heard(&trouble, Some(&done)), said);
         assert_eq!(
             reports.pop(),
