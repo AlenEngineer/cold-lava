@@ -22,6 +22,7 @@ pub mod links;
 pub mod markdown;
 pub mod matcher;
 pub mod merge;
+pub mod origin;
 pub mod owner;
 pub mod paths;
 pub mod problem;

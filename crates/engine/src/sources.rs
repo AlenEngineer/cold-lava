@@ -1,12 +1,11 @@
 //! The words a type definition and an attribute reading are both written in: what a shape is
-//! found on (`On`), where a field is read (`Source`, `Sources`), where a definition came from
-//! (`Origin`), the workspace's settings `${…}` stands for (`Provided`, `fill`), and patterns with
-//! their placeholders (`compile`). `types.rs` reads type definitions in them and re-exports them;
-//! the Markdown owner's attribute readings (`owner/markdown/attributes.rs`) are written in them
-//! too. A leaf, so neither of those two depends on the other for them.
+//! found on (`On`), where a field is read (`Source`, `Sources`), the workspace's settings `${…}`
+//! stands for (`Provided`, `fill`), and patterns with their placeholders (`compile`). `types.rs`
+//! reads type definitions in them; the Markdown owner's attribute readings
+//! (`owner/markdown/attributes.rs`) are written in them too. A leaf, so neither of those two
+//! depends on the other for them.
 
 use std::fmt;
-use std::path::PathBuf;
 
 use indexmap::IndexMap;
 use regex::{Regex, RegexBuilder};
@@ -416,42 +415,6 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for OneEntry<'_, A> {
         seed: V,
     ) -> Result<V::Value, A::Error> {
         self.map.next_value_seed(seed)
-    }
-}
-
-/// Where a type was defined.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum Origin {
-    /// `types/*.toml` in the engine: the task.
-    BuiltIn,
-    /// An extension's manifest; its types are named `<extension>.<name>`.
-    Extension { name: String },
-    /// `[types.*]` in config.toml.
-    Config { path: PathBuf },
-    /// The workspace's `.cold-lava/types.toml`.
-    Workspace { path: PathBuf },
-}
-
-impl Origin {
-    /// What an error line starts with: the file, or the extension.
-    pub(crate) fn place(&self) -> String {
-        match self {
-            Origin::BuiltIn => "built in".into(),
-            Origin::Extension { name } => format!("extension {name}"),
-            Origin::Config { path } | Origin::Workspace { path } => path.display().to_string(),
-        }
-    }
-}
-
-impl fmt::Display for Origin {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Origin::BuiltIn => f.write_str("built in"),
-            Origin::Extension { name } => write!(f, "extension {name}"),
-            Origin::Config { path } => write!(f, "config {}", path.display()),
-            Origin::Workspace { path } => write!(f, "workspace {}", path.display()),
-        }
     }
 }
 

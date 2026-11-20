@@ -16,8 +16,9 @@ use std::sync::OnceLock;
 
 use serde::Serialize;
 
+use crate::origin::Origin;
 use crate::problem::Problem;
-use crate::sources::{self, On, Origin, Provided, Source, Sources};
+use crate::sources::{self, On, Provided, Source, Sources};
 
 /// The only `version` an attributes file can have today.
 pub const VERSION: i64 = 1;

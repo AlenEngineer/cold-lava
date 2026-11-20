@@ -20,13 +20,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::daily;
 use crate::markdown::Syntax;
+pub use crate::origin::Origin;
 use crate::problem::Problem;
-pub use crate::sources::{
-    InfoPart, InlineKind, NotePart, On, Origin, PLACEHOLDERS, PROVIDERS, Provided, Rest,
-    SectionPart, Source, Sources, Yes,
-};
-pub(crate) use crate::sources::{compile, is_name};
-use crate::sources::{fill, source, unknown_provider};
+pub(crate) use crate::sources::compile;
+pub use crate::sources::{InlineKind, NotePart, On, Provided, SectionPart, Source};
+use crate::sources::{PROVIDERS, Sources, fill, is_name, source, unknown_provider};
 
 /// The only `version` a types file can have today.
 pub const VERSION: i64 = 1;
@@ -1207,6 +1205,7 @@ fn placeholders(template: &str) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sources::{InfoPart, Rest};
     use std::path::PathBuf;
 
     /// Each error as `--json` writes it, on one line.

@@ -15,9 +15,10 @@ use crate::identity;
 use crate::markdown::{self, Flavour, Source, Syntax};
 use crate::matcher::{self, Matcher, Typed};
 use crate::owner::markdown::attributes::{self, Readings};
+use crate::sources::{self, On};
 use crate::tasks_settings::{StatusType, TasksSettings};
 use crate::templates;
-use crate::types::{self, On, Types};
+use crate::types::{self, Types};
 use crate::workspace::clean_target;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -85,7 +86,7 @@ impl Settings {
                 .position(|k| k == *c)
                 .unwrap_or(usize::MAX)
         });
-        let provided = types::Provided {
+        let provided = sources::Provided {
             statuses: statuses
                 .into_iter()
                 .map(|(c, t)| (c.to_string(), t.name().to_string()))
@@ -155,7 +156,7 @@ pub enum Data {
 ///   `section` path runs through that title.
 /// - `block`: whatever a `^id` names, most often a `text`, also a table or an `aside`. It
 ///   says that a block has a name, not what the block is.
-/// - a typed item: the role its shape is `on` (`types::On::role`); an inline type's item is a
+/// - a typed item: the role its shape is `on` (`sources::On::role`); an inline type's item is a
 ///   reading of a piece's text and has no role of its own.
 pub const KINDS: &[&str] = &["list", "heading", "block"];
 
