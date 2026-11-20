@@ -341,8 +341,8 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `is_name`) are `sources.rs`, a leaf, and where a layer of definitions came from (`Origin`:
   types, attribute readings and shapes are loaded in layers) is `origin.rs`, another.
   `types.rs` and `owner/markdown/attributes.rs` both read them there, so neither depends on
-  the other for them (`types.rs` re-exports the ones `matcher.rs` still names through it,
-  #343). A shape's `on` (`sources::On`) is a role or
+  the other for them (`types.rs` re-exports the ones `matcher.rs` and the table's
+  `Source` still name through it, #343). A shape's `on` (`sources::On`) is a role or
   `inline` (a reading of a piece's text, not a role). The names `on` had before (`note`,
   `heading`, `paragraph`, `list-item`, `table-row`, `quote`, `code`) are aliases
   (`On::alias`): they always read, a definition's JSON still says `on` in them with `role`
