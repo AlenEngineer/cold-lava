@@ -7,7 +7,8 @@ wait-for Vesuvius
 keys enter
 wait-for Volcanoes/Vesuvius  reading
 keys n
-wait-for new note · Tab template · ⏎ create · Esc cancel
+wait-for new note in Volcanoes/ · ⏎ create · Esc cancel
+expect template · Tab
 expect │▸ No template
 expect │  Daily
 expect │  Volcano
@@ -27,7 +28,7 @@ expect A volcano in ... Is it on the Ring of Fire, or over a Hotspot?
 expect-not {{
 expect example-workspace 36 notes
 keys n
-wait-for new note · Tab template
+wait-for new note in Volcanoes/
 type Plain
 keys enter
 wait-for created Volcanoes/Plain.md

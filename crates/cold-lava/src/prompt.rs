@@ -1,7 +1,7 @@
 //! The menu's one-line prompts: a new folder's name, a folder to add as a workspace, a note's
 //! or folder's new name, a folder to move to. Each holds what is typed and what it asks for,
-//! with the target it was opened on, so what changes under it (the tree's selection) never
-//! changes what Enter does. The new note's prompt and the tag prompt hold a list as well:
+//! with the target it was opened on and the workspace it is in, so what changes under it (the
+//! tree's selection, the marks, the workspace open) never changes what Enter does. The new note's prompt and the tag prompt hold a list as well:
 //! `new_note.rs` and `tag_prompt.rs`.
 
 use crate::line_input::{self, CtrlU};
@@ -11,17 +11,45 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use std::path::PathBuf;
 
+/// The folder a new note or a new folder goes in, as it was when its prompt opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Folder {
+    /// The workspace it is in.
+    pub root: PathBuf,
+    /// Relative to `root`, empty for the root itself.
+    pub rel: String,
+}
+
+impl Folder {
+    /// `name` in it, workspace-relative.
+    pub fn join(&self, name: &str) -> String {
+        match self.rel.as_str() {
+            "" => name.to_string(),
+            rel => format!("{rel}/{name}"),
+        }
+    }
+
+    /// How a prompt's title names it.
+    pub fn shown(&self) -> String {
+        match self.rel.as_str() {
+            "" => "the workspace root".to_string(),
+            rel => format!("{rel}/"),
+        }
+    }
+}
+
 /// What a prompt asks for, and what it was opened on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Asks {
-    /// A new folder's name, to make in `dir` (workspace-relative, empty for the root).
-    NewFolder { dir: String },
+    /// A new folder's name, to make in `in_folder`.
+    NewFolder { in_folder: Folder },
     /// A folder to add as a workspace.
     AddWorkspace,
     /// `path`'s new name, or with `moving` the folder to move it into.
     Rename { path: PathBuf, moving: bool },
-    /// The folder to move the marked notes and folders into.
-    MoveMarked,
+    /// The folder to move `marked` into: the notes and folders marked when it opened, relative
+    /// to `root`.
+    MoveMarked { root: PathBuf, marked: Vec<String> },
 }
 
 /// What the menu should do after a key.
@@ -52,7 +80,7 @@ impl Prompt {
             Asks::NewFolder { .. } => "a new folder's name is being typed",
             Asks::AddWorkspace => "a workspace's folder is being typed",
             Asks::Rename { moving: false, .. } => "a new name is being typed",
-            Asks::Rename { moving: true, .. } | Asks::MoveMarked => {
+            Asks::Rename { moving: true, .. } | Asks::MoveMarked { .. } => {
                 "a folder to move to is being typed"
             }
         }
@@ -66,7 +94,7 @@ impl Prompt {
                     "" => Action::Close,
                     name => Action::Done(self.asks.clone(), name.to_string()),
                 },
-                Asks::Rename { .. } | Asks::MoveMarked => {
+                Asks::Rename { .. } | Asks::MoveMarked { .. } => {
                     Action::Done(self.asks.clone(), self.line.clone())
                 }
             },
@@ -77,12 +105,14 @@ impl Prompt {
         }
     }
 
-    /// Draw it over `area`. `marked` is how many notes and folders are marked, which the
-    /// marked move's title counts.
-    pub fn draw(&self, f: &mut Frame, area: Rect, marked: usize) {
-        let (title, label) = match self.asks {
-            Asks::NewFolder { .. } => (
-                " new folder · ⏎ create · Esc cancel ".to_string(),
+    /// Draw it over `area`, its title naming where Enter acts.
+    pub fn draw(&self, f: &mut Frame, area: Rect) {
+        let (title, label) = match &self.asks {
+            Asks::NewFolder { in_folder } => (
+                format!(
+                    " new folder in {} · ⏎ create · Esc cancel ",
+                    in_folder.shown()
+                ),
                 "folder name: ",
             ),
             Asks::AddWorkspace => (
@@ -97,8 +127,11 @@ impl Prompt {
                 " move to folder · ⏎ preview · Esc cancel ".to_string(),
                 "folder: ",
             ),
-            Asks::MoveMarked => (
-                format!(" move {marked} marked into folder · ⏎ preview · Esc cancel "),
+            Asks::MoveMarked { marked, .. } => (
+                format!(
+                    " move {} marked into folder · ⏎ preview · Esc cancel ",
+                    marked.len()
+                ),
                 "folder: ",
             ),
         };
@@ -125,9 +158,23 @@ mod tests {
         p
     }
 
+    fn in_folder(rel: &str) -> Folder {
+        Folder {
+            root: PathBuf::from("/w"),
+            rel: rel.into(),
+        }
+    }
+
     fn folder() -> Asks {
         Asks::NewFolder {
-            dir: "Volcanoes".into(),
+            in_folder: in_folder("Volcanoes"),
+        }
+    }
+
+    fn move_marked() -> Asks {
+        Asks::MoveMarked {
+            root: PathBuf::from("/w"),
+            marked: vec!["Volcanoes/Krakatoa.md".into(), "People".into()],
         }
     }
 
@@ -157,10 +204,10 @@ mod tests {
             Action::Done(rename(false), " Krakatau".into()),
             "a new name goes as typed"
         );
-        let mut p = typed(Asks::MoveMarked, "");
+        let mut p = typed(move_marked(), "");
         assert_eq!(
             press(&mut p, KeyCode::Enter),
-            Action::Done(Asks::MoveMarked, String::new()),
+            Action::Done(move_marked(), String::new()),
             "the move says itself that a folder is wanted"
         );
     }
@@ -206,15 +253,12 @@ mod tests {
         );
         assert_eq!(words(rename(false)), "a new name is being typed");
         assert_eq!(words(rename(true)), "a folder to move to is being typed");
-        assert_eq!(
-            words(Asks::MoveMarked),
-            "a folder to move to is being typed"
-        );
+        assert_eq!(words(move_marked()), "a folder to move to is being typed");
     }
 
-    fn drawn(p: &Prompt, marked: usize) -> Vec<String> {
+    fn drawn(p: &Prompt) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|f| p.draw(f, f.area(), marked)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area())).unwrap();
         let buffer = terminal.backend().buffer();
         (0..24u16)
             .map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol()).collect())
@@ -223,20 +267,35 @@ mod tests {
 
     #[test]
     fn it_draws_its_title_its_label_and_the_line() {
-        let shown = |p: &Prompt, marked, title: &str, line: &str| {
-            let text = drawn(p, marked);
+        let shown = |p: &Prompt, title: &str, line: &str| {
+            let text = drawn(p);
             assert!(text.iter().any(|r| r.contains(title)), "{title}: {text:#?}");
             assert!(text.iter().any(|r| r.contains(line)), "{line}: {text:#?}");
         };
         let p = typed(folder(), "Calderas");
-        shown(&p, 0, " new folder · ⏎ create", "folder name: Calderas▏");
+        shown(
+            &p,
+            " new folder in Volcanoes/ · ⏎ create",
+            "folder name: Calderas▏",
+        );
+        let p = Prompt::new(
+            Asks::NewFolder {
+                in_folder: in_folder(""),
+            },
+            String::new(),
+        );
+        shown(
+            &p,
+            " new folder in the workspace root · ⏎ create · Esc cancel",
+            "folder name: ▏",
+        );
         let p = typed(Asks::AddWorkspace, "~/notes");
-        shown(&p, 0, " add a workspace · ⏎ add", "folder: ~/notes▏");
+        shown(&p, " add a workspace · ⏎ add", "folder: ~/notes▏");
         let p = typed(rename(false), "Krakatau");
-        shown(&p, 0, " rename · ⏎ preview", "new name: Krakatau▏");
+        shown(&p, " rename · ⏎ preview", "new name: Krakatau▏");
         let p = typed(rename(true), "Archive/");
-        shown(&p, 0, " move to folder · ⏎ preview", "folder: Archive/▏");
-        let p = typed(Asks::MoveMarked, "Archive");
-        shown(&p, 3, " move 3 marked into folder", "folder: Archive▏");
+        shown(&p, " move to folder · ⏎ preview", "folder: Archive/▏");
+        let p = typed(move_marked(), "Archive");
+        shown(&p, " move 2 marked into folder", "folder: Archive▏");
     }
 }

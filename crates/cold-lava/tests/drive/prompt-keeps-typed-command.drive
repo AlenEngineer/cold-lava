@@ -7,7 +7,7 @@ env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
 wait-for ☐ 16 open tasks
 keys n
-wait-for new note · Tab template · ⏎ create · Esc cancel
+wait-for new note in Concepts/ · ⏎ create · Esc cancel
 type Half a thought
 wait-for name: Half a thought▏
 write Inbox/Chores.md - [ ] Sweep the ash off the roof\n

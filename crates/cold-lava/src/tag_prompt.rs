@@ -1,5 +1,7 @@
-//! The tag prompt: a tag to add to the marked notes, or to the note it was opened on when none
-//! is marked; `-tag` removes it. Tab and the arrows complete it from the workspace's tags.
+//! The tag prompt: a tag to add to the notes marked when it opened, or to the note it was
+//! opened on when none were; `-tag` removes it. Tab and the arrows complete it from the
+//! workspace's tags. It holds whom it tags and the workspace they are in, and its title names
+//! them, so a tag goes where the prompt says whatever is selected or marked by Enter.
 
 use crate::app::{ACCENT, ACCENT_SOFT, NOTE};
 use crate::line_input::{self, CtrlU};
@@ -13,22 +15,35 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use std::path::PathBuf;
 
+/// Whom a tag goes on, as it was when the prompt opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Whom {
+    /// The marked notes and folders, relative to the workspace's root (a folder is skipped).
+    Marked(Vec<String>),
+    /// The note selected, with nothing marked.
+    Note(PathBuf),
+    /// Nothing marked and no note selected.
+    Nobody,
+}
+
 /// What the menu should do after a key.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Stay,
     Close,
-    /// Close, then add `tag` as shown (or remove it, for `-tag`) on the marked notes, or on
-    /// `note` when none is marked.
+    /// Close, then add `tag` as shown and trimmed (or remove it, for `-tag`) on `whom`, in the
+    /// workspace at `root`.
     Apply {
         tag: String,
-        note: Option<PathBuf>,
+        whom: Whom,
+        root: PathBuf,
     },
 }
 
 pub struct TagPrompt {
-    /// The note selected when it opened, if one was: tagged when none is marked.
-    note: Option<PathBuf>,
+    /// The workspace `whom` is in.
+    root: PathBuf,
+    whom: Whom,
     typed: String,
     /// The workspace's tags.
     all: Vec<String>,
@@ -37,9 +52,10 @@ pub struct TagPrompt {
 }
 
 impl TagPrompt {
-    pub fn new(all: Vec<String>, note: Option<PathBuf>) -> TagPrompt {
+    pub fn new(all: Vec<String>, root: PathBuf, whom: Whom) -> TagPrompt {
         TagPrompt {
-            note,
+            root,
+            whom,
             typed: String::new(),
             all,
             sel: None,
@@ -87,8 +103,9 @@ impl TagPrompt {
                 Action::Stay
             }
             KeyCode::Enter => Action::Apply {
-                tag: self.shown(),
-                note: self.note.clone(),
+                tag: self.shown().trim().to_string(),
+                whom: self.whom.clone(),
+                root: self.root.clone(),
             },
             _ => {
                 let mut line = self.shown();
@@ -101,12 +118,16 @@ impl TagPrompt {
         }
     }
 
-    /// Draw it over `area`, with the matching tags under it. `marked` is how many notes are
-    /// marked, which its title counts.
-    pub fn draw(&self, f: &mut Frame, area: Rect, marked: usize) {
-        let whom = match marked {
-            0 => "the note".to_string(),
-            n => plural(n, "marked note"),
+    /// Draw it over `area`, its title naming whom it tags, with the matching tags under it.
+    pub fn draw(&self, f: &mut Frame, area: Rect) {
+        let whom = match &self.whom {
+            Whom::Marked(marked) => plural(marked.len(), "marked note"),
+            Whom::Note(path) => path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into(),
+            Whom::Nobody => "the note".to_string(),
         };
         let title = format!(" tag {whom} · -tag removes · Tab · ⏎ ");
         let r = popup::prompt(f, area, &title, "tag: #", &self.shown());
@@ -158,23 +179,28 @@ mod tests {
         t.key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    fn note() -> Option<PathBuf> {
-        Some(PathBuf::from("/w/Volcanoes/Krakatoa.md"))
+    fn note() -> Whom {
+        Whom::Note(PathBuf::from("/w/Volcanoes/Krakatoa.md"))
     }
 
-    fn typed(text: &str) -> TagPrompt {
+    fn typed_on(whom: Whom, text: &str) -> TagPrompt {
         let all = ["ash", "ashfall", "lava", "lava/flow"].map(String::from);
-        let mut t = TagPrompt::new(all.to_vec(), note());
+        let mut t = TagPrompt::new(all.to_vec(), PathBuf::from("/w"), whom);
         for c in text.chars() {
             assert_eq!(press(&mut t, KeyCode::Char(c)), Action::Stay);
         }
         t
     }
 
+    fn typed(text: &str) -> TagPrompt {
+        typed_on(note(), text)
+    }
+
     fn applied(t: &mut TagPrompt) -> String {
         match press(t, KeyCode::Enter) {
-            Action::Apply { tag, note: n } => {
-                assert_eq!(n, note(), "the note it was opened on");
+            Action::Apply { tag, whom, root } => {
+                assert_eq!(whom, note(), "the note it was opened on");
+                assert_eq!(root, PathBuf::from("/w"), "the workspace it was opened in");
                 tag
             }
             other => panic!("applied nothing: {other:?}"),
@@ -185,7 +211,18 @@ mod tests {
     fn enter_applies_what_is_typed_to_the_note_it_was_opened_on() {
         assert_eq!(applied(&mut typed("#ember")), "#ember");
         assert_eq!(applied(&mut typed("-lava")), "-lava");
+        assert_eq!(applied(&mut typed("  ember ")), "ember", "trimmed");
         assert_eq!(press(&mut typed("ash"), KeyCode::Esc), Action::Close);
+        let marked = Whom::Marked(vec!["Volcanoes/Krakatoa.md".into()]);
+        assert_eq!(
+            press(&mut typed_on(marked.clone(), "ash"), KeyCode::Enter),
+            Action::Apply {
+                tag: "ash".into(),
+                whom: marked,
+                root: PathBuf::from("/w"),
+            },
+            "the marks as they were when it opened"
+        );
     }
 
     #[test]
@@ -237,14 +274,14 @@ mod tests {
     #[test]
     fn it_holds_work_with_nothing_typed() {
         assert_eq!(
-            TagPrompt::new(Vec::new(), None).unsaved(),
+            TagPrompt::new(Vec::new(), PathBuf::new(), Whom::Nobody).unsaved(),
             "a tag is being typed"
         );
     }
 
-    fn drawn(t: &TagPrompt, marked: usize) -> Vec<String> {
+    fn drawn(t: &TagPrompt) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
-        terminal.draw(|f| t.draw(f, f.area(), marked)).unwrap();
+        terminal.draw(|f| t.draw(f, f.area())).unwrap();
         let buffer = terminal.backend().buffer();
         (0..30u16)
             .map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol()).collect())
@@ -255,17 +292,19 @@ mod tests {
     fn it_draws_whom_it_tags_and_the_matching_tags() {
         let mut t = typed("la");
         press(&mut t, KeyCode::Tab);
-        let text = drawn(&t, 0);
+        let text = drawn(&t);
         let at = |s: &str| text.iter().position(|r| r.contains(s)).expect(s);
-        assert!(at(" tag the note · -tag removes") < at("tag: #lava▏"));
+        assert!(at(" tag Krakatoa · -tag removes") < at("tag: #lava▏"));
         assert!(at("tag: #lava▏") < at(" 2 tags "));
         assert!(at("▸ #lava ") < at("  #lava/flow"));
-        assert!(
-            drawn(&t, 3)
-                .iter()
-                .any(|r| r.contains(" tag 3 marked notes "))
-        );
-        let none = drawn(&typed("zz"), 0);
+        let marked = Whom::Marked(vec!["a.md".into(), "b.md".into(), "c".into()]);
+        let shown = |whom, title: &str| {
+            let text = drawn(&typed_on(whom, ""));
+            assert!(text.iter().any(|r| r.contains(title)), "{title}: {text:#?}");
+        };
+        shown(marked, " tag 3 marked notes · -tag removes");
+        shown(Whom::Nobody, " tag the note · -tag removes");
+        let none = drawn(&typed("zz"));
         assert!(!none.iter().any(|r| r.contains(" tags ")), "{none:#?}");
     }
 }

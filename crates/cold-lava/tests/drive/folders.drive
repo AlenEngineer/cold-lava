@@ -37,7 +37,7 @@ keys enter
 wait-for moved the folder to Guide/Volcanologists · 5 links updated in 2 files
 expect Guide/Volcanologists/David A. Johnston  reader
 keys N
-wait-for new folder · ⏎ create · Esc cancel
+wait-for new folder in Guide/Volcanologists/ · ⏎ create
 type Field Notes
 keys enter
 wait-for created Guide/Volcanologists/Field Notes/

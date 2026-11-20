@@ -1,0 +1,71 @@
+# A prompt acts in the workspace it was opened in (track E3). A new note, a new folder, a tag and
+# a marked move, each opened on Krakatoa in the example workspace, are refused when a click on
+# the workspace list opens another workspace under the prompt, and nothing is written in
+# either. tests/drive.rs adds the other workspace, notes2, to the list and checks both.
+size 120x40
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+keys p krakat
+wait-for Krakatoa
+keys enter
+wait-for Volcanoes/Krakatoa  reading
+keys esc
+wait-gone reading · Esc / q back
+keys n
+wait-for new note in Volcanoes/
+type Elsewhere
+click 3 5
+wait-for notes2 1 note
+expect new note in Volcanoes/
+keys enter
+wait-for can't create Volcanoes/Elsewhere.md: the workspace changed
+click 2 5
+wait-for example-workspace 35 notes
+keys p krakat
+wait-for Krakatoa
+keys enter
+wait-for Volcanoes/Krakatoa  reading
+keys esc
+wait-gone reading · Esc / q back
+keys N
+wait-for new folder in Volcanoes/
+type Ashes
+click 3 5
+wait-for notes2 1 note
+keys enter
+wait-for can't create Volcanoes/Ashes/: the workspace changed
+click 2 5
+wait-for example-workspace 35 notes
+keys p krakat
+wait-for Krakatoa
+keys enter
+wait-for Volcanoes/Krakatoa  reading
+keys esc
+wait-gone reading · Esc / q back
+keys #
+wait-for tag Krakatoa
+type elsewhere
+click 3 5
+wait-for notes2 1 note
+keys enter
+wait-for can't tag: the workspace changed
+click 2 5
+wait-for example-workspace 35 notes
+keys p krakat
+wait-for Krakatoa
+keys enter
+wait-for Volcanoes/Krakatoa  reading
+keys esc
+wait-gone reading · Esc / q back
+keys space
+wait-for 1 marked
+keys m
+wait-for move 1 marked into folder
+type Archive
+click 3 5
+wait-for notes2 1 note
+keys enter
+wait-for can't move: the workspace changed
+expect notes2 1 note
+keys q
+exits 0

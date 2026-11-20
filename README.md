@@ -386,7 +386,8 @@ The style is the whole workspace's; a folder written differently follows the wor
 ### New notes and templates
 
 Press `n` and type a name to create a note in the selected folder (or next to the selected note),
-then `Enter`: it opens right away. If the workspace has templates, a list under the name offers them,
+then `Enter`: it opens right away. The prompt's title names the folder, and the note goes there
+whatever is selected by `Enter`; if the folder is deleted meanwhile, nothing is made. If the workspace has templates, a list under the name offers them,
 with **No template** first and chosen. `Tab` / `Shift-Tab` (or `↓`/`↑`) picks another, so a plain
 note is still just `n`, a name and `Enter`. The new file is never written over an existing one.
 
@@ -490,7 +491,9 @@ everything in it goes along. With marks, the status line says how many and what 
   one line like `tags: a, b`) is left alone and named in the message, and so is one that
   changed on disk since it was read.
 
-Marks follow the tree: a marked note that is renamed or deleted elsewhere drops out.
+Marks follow the tree: a marked note that is renamed or deleted elsewhere drops out. A move or a
+tag acts on the marks as they were when its prompt opened (its title counts them): a marked
+note gone by `Enter` is named, and a move with one gone is refused.
 
 ### Recipes: changes to the whole workspace
 

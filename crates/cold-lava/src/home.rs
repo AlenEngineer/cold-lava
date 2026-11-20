@@ -30,13 +30,13 @@ use crate::palette::{self, Palette};
 use crate::paths::{self, config_dir, home_dir};
 use crate::pick_list::{self, Picked};
 use crate::previews::{self, Previews};
-use crate::prompt::{self, Asks, Prompt};
+use crate::prompt::{self, Asks, Folder, Prompt};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
 use crate::refused::Refused;
 use crate::reports::Reports;
 use crate::resolver::dir_of;
-use crate::tag_prompt::{self, TagPrompt};
+use crate::tag_prompt::{self, TagPrompt, Whom};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
 use crate::type_table;
@@ -398,8 +398,8 @@ enum Mode {
         query: String,
         sel: usize,
     },
-    /// Typing a tag to add to the marked notes (or the note selected when it opened), or to
-    /// remove.
+    /// Typing a tag to add to the notes marked when it opened (or the note selected then), or
+    /// to remove.
     Tag(TagPrompt),
     /// Showing what a rename will change before doing it.
     ConfirmRename {
@@ -2979,7 +2979,11 @@ impl Home {
             MenuAction::BookmarkSearch => self.bookmark_search(),
             MenuAction::Rename => self.start_rename(false),
             MenuAction::Move if !self.marks.is_empty() => {
-                self.mode = Mode::Prompt(Prompt::new(Asks::MoveMarked, String::new()))
+                if let Some(root) = self.root.clone() {
+                    let marked = self.marks.iter().cloned().collect();
+                    let asks = Asks::MoveMarked { root, marked };
+                    self.mode = Mode::Prompt(Prompt::new(asks, String::new()))
+                }
             }
             MenuAction::Move => self.start_rename(true),
             MenuAction::Delete => self.start_delete(false),
@@ -3020,15 +3024,19 @@ impl Home {
             MenuAction::Boards => self.open_boards(None)?,
             MenuAction::History(a) => self.travel(a)?,
             MenuAction::NewNote => {
-                self.mode = Mode::NewNote(NewNote::new(self.selected_dir(), self.templates()))
+                if let Some(in_folder) = self.selected_dir() {
+                    self.mode = Mode::NewNote(NewNote::new(in_folder, self.templates()))
+                }
             }
             MenuAction::Today => self.open_today(),
             MenuAction::AddWorkspace => {
                 self.mode = Mode::Prompt(Prompt::new(Asks::AddWorkspace, String::new()))
             }
             MenuAction::NewFolder => {
-                let dir = self.selected_dir();
-                self.mode = Mode::Prompt(Prompt::new(Asks::NewFolder { dir }, String::new()))
+                if let Some(in_folder) = self.selected_dir() {
+                    let asks = Asks::NewFolder { in_folder };
+                    self.mode = Mode::Prompt(Prompt::new(asks, String::new()))
+                }
             }
             MenuAction::RestartExtensions => {
                 self.tell_workspace(true);
@@ -3793,10 +3801,12 @@ impl Home {
             prompt::Action::Done(asks, answer) => {
                 self.mode = Mode::Normal;
                 match asks {
-                    Asks::NewFolder { dir } => self.create_folder(&dir, &answer),
+                    Asks::NewFolder { in_folder } => self.create_folder(&in_folder, &answer),
                     Asks::AddWorkspace => self.add_workspace(&answer),
                     Asks::Rename { path, moving } => self.plan_rename(&path, &answer, moving),
-                    Asks::MoveMarked => self.plan_move_marked(&answer),
+                    Asks::MoveMarked { root, marked } => {
+                        self.plan_move_marked(&root, &marked, &answer)
+                    }
                 }
             }
         }
@@ -3810,12 +3820,12 @@ impl Home {
             new_note::Action::Stay => {}
             new_note::Action::Close => self.mode = Mode::Normal,
             new_note::Action::Create {
-                dir,
+                in_folder,
                 name,
                 template,
             } => {
                 self.mode = Mode::Normal;
-                self.create_note(&dir, &name, template.as_deref())?;
+                self.create_note(&in_folder, &name, template.as_deref())?;
             }
         }
         Ok(())
@@ -3893,22 +3903,22 @@ impl Home {
         }
     }
 
-    /// Plan moving every marked note and folder into the folder typed (`/` is the workspace's root).
-    fn plan_move_marked(&mut self, input: &str) {
+    /// Plan moving `marked`, the notes and folders marked in the workspace at `root` when the
+    /// prompt opened, into the folder typed (`/` is the workspace's root).
+    fn plan_move_marked(&mut self, root: &Path, marked: &[String], input: &str) {
         let folder = input.trim();
         if folder.is_empty() {
             return self.flash("type a folder, e.g. Archive/ (or / for the workspace root)");
         }
+        if !self.is_open(root) {
+            return self.flash("can't move: the workspace changed");
+        }
         self.save_editor();
         self.reload_tree();
-        let items: Vec<String> = self.marks.iter().cloned().collect();
         let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
             return;
         };
-        if items.is_empty() {
-            return self.flash("the marked notes are no longer there");
-        }
-        match crate::rename::plan_into(ix, &items, folder) {
+        match crate::rename::plan_into(ix, marked, folder) {
             Ok(plan) => {
                 self.mode = Mode::ConfirmRename {
                     plan: Box::new(plan),
@@ -3951,8 +3961,15 @@ impl Home {
         let all: BTreeSet<String> = (ix.workspace.notes.iter())
             .flat_map(|n| n.tags.iter().cloned())
             .collect();
-        let note = self.rename_target();
-        self.mode = Mode::Tag(TagPrompt::new(all.into_iter().collect(), note));
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let whom = match (self.marks.is_empty(), self.rename_target()) {
+            (false, _) => Whom::Marked(self.marks.iter().cloned().collect()),
+            (true, Some(note)) => Whom::Note(note),
+            (true, None) => Whom::Nobody,
+        };
+        self.mode = Mode::Tag(TagPrompt::new(all.into_iter().collect(), root, whom));
     }
 
     fn tag_key(&mut self, k: KeyEvent) {
@@ -3962,18 +3979,17 @@ impl Home {
         match t.key(k) {
             tag_prompt::Action::Stay => {}
             tag_prompt::Action::Close => self.mode = Mode::Normal,
-            tag_prompt::Action::Apply { tag, note } => {
+            tag_prompt::Action::Apply { tag, whom, root } => {
                 self.mode = Mode::Normal;
-                self.apply_tag(&tag, note);
+                self.apply_tag(&tag, whom, &root);
             }
         }
     }
 
-    /// Add `input`'s tag to the marked notes' frontmatter (or to `note`, the one selected when
-    /// the prompt opened, when none is marked), or remove it for `-tag`. A note that changed
-    /// since it was read, or whose tags can't be edited safely, is left alone and named.
-    fn apply_tag(&mut self, input: &str, note: Option<PathBuf>) {
-        let input = input.trim();
+    /// Add `input`'s tag to the frontmatter of `whom`, in the workspace at `root`, or remove it
+    /// for `-tag`. A note that is gone, that changed since it was read, or whose tags can't be
+    /// edited safely, is left alone and named.
+    fn apply_tag(&mut self, input: &str, whom: Whom, root: &Path) {
         let (edit, tag) = match input.strip_prefix('-') {
             Some(t) => (TagEdit::Remove, t.trim().trim_start_matches('#')),
             None => (TagEdit::Add, input.trim_start_matches('#')),
@@ -3983,15 +3999,17 @@ impl Home {
                 "\"{tag}\" isn't a tag: letters, digits, _ - and /, not only digits"
             ));
         }
-        let Some(root) = self.root.clone() else {
-            return;
-        };
-        let (notes, skipped): (Vec<String>, Vec<String>) = match self.marks.is_empty() {
-            false => self.marks.iter().cloned().partition(|r| r.ends_with(".md")),
-            true => match note {
-                Some(p) => (vec![rel_path::or_whole(&root, &p)], Vec::new()),
-                None => return self.flash("select a note to tag"),
-            },
+        if !self.is_open(root) {
+            return self.flash("can't tag: the workspace changed");
+        }
+        let (notes, skipped): (Vec<String>, Vec<String>) = match whom {
+            Whom::Marked(marked) => marked.into_iter().partition(|r| r.ends_with(".md")),
+            Whom::Note(p) if !p.is_file() => {
+                let name = p.file_stem().unwrap_or_default().to_string_lossy();
+                return self.flash(format!("{name} is no longer there"));
+            }
+            Whom::Note(p) => (vec![rel_path::or_whole(root, &p)], Vec::new()),
+            Whom::Nobody => return self.flash("select a note to tag"),
         };
         if notes.is_empty() {
             return self.flash("only notes have tags: mark some notes");
@@ -3999,7 +4017,7 @@ impl Home {
         self.save_editor();
         let style = match self.core.as_ref() {
             Some(core) => core.index.workspace.style(),
-            None => crate::style::Style::of_root(&root),
+            None => crate::style::Style::of_root(root),
         };
         let (mut changed, mut unchanged, mut refused) = (Vec::new(), 0, Vec::new());
         for rel in &notes {
@@ -4009,21 +4027,27 @@ impl Home {
                 .next()
                 .unwrap_or(rel)
                 .trim_end_matches(".md");
-            let result = std::fs::read_to_string(&path)
-                .map_err(|e| e.to_string())
-                .and_then(
-                    |text| match frontmatter::edit_tag(&text, tag, edit, &style)? {
-                        Some(new) => read::Seen::kept(&path, text.as_bytes())
-                            .replace(new.as_bytes())
-                            .map(|()| true)
-                            .map_err(|e| e.to_string()),
-                        None => Ok(false),
-                    },
-                );
+            let result = match std::fs::read_to_string(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err(format!("{name} is no longer there"))
+                }
+                read => read
+                    .map_err(|e| e.to_string())
+                    .and_then(
+                        |text| match frontmatter::edit_tag(&text, tag, edit, &style)? {
+                            Some(new) => read::Seen::kept(&path, text.as_bytes())
+                                .replace(new.as_bytes())
+                                .map(|()| true)
+                                .map_err(|e| e.to_string()),
+                            None => Ok(false),
+                        },
+                    )
+                    .map_err(|why| format!("{name}: {why}")),
+            };
             match result {
                 Ok(true) => changed.push(path),
                 Ok(false) => unchanged += 1,
-                Err(why) => refused.push(format!("{name}: {why}")),
+                Err(refusal) => refused.push(refusal),
             }
         }
         self.reload_tree();
@@ -5761,23 +5785,24 @@ impl Home {
         found
     }
 
-    /// Create the note `name` in `folder` (workspace-relative, empty for the root), from
-    /// `template` (workspace-relative, without `.md`) if one is given, and open it.
-    fn create_note(&mut self, folder: &str, name: &str, template: Option<&str>) -> Result<()> {
-        let Some(root) = self.root.clone() else {
-            return Ok(());
-        };
-        let folder = folder.to_string();
+    /// Create the note `name` in `in_folder`, from `template` (workspace-relative, without
+    /// `.md`) if one is given, and open it.
+    fn create_note(
+        &mut self,
+        in_folder: &Folder,
+        name: &str,
+        template: Option<&str>,
+    ) -> Result<()> {
         let file = if name.ends_with(".md") {
             name.to_string()
         } else {
             format!("{name}.md")
         };
-        let rel = if folder.is_empty() {
-            file
-        } else {
-            format!("{folder}/{file}")
-        };
+        let rel = in_folder.join(&file);
+        if !self.can_create_in(in_folder, &rel) {
+            return Ok(());
+        }
+        let root = in_folder.root.clone();
         let path = root.join(&rel);
         if path.exists() {
             self.flash(format!("{rel} already exists"));
@@ -5794,8 +5819,8 @@ impl Home {
                 None => format!("# {title}\n\n"),
             };
             crate::write::create(&path, body.as_bytes())?;
-            if !folder.is_empty() {
-                self.expanded.insert(folder);
+            if !in_folder.rel.is_empty() {
+                self.expanded.insert(in_folder.rel.clone());
             }
             self.flash(match template {
                 Some(t) => format!("created {rel} from {}", t.rsplit('/').next().unwrap_or(t)),
@@ -5814,26 +5839,45 @@ impl Home {
         Ok(())
     }
 
-    /// Where new notes and folders go: the selected folder, or the selected note's.
-    fn selected_dir(&self) -> String {
-        match self.current() {
+    /// Where new notes and folders go: the selected folder, or the selected note's, in the
+    /// workspace open.
+    fn selected_dir(&self) -> Option<Folder> {
+        let rel = match self.current() {
             Some(it) if it.kind == ItemKind::Folder => it.rel.clone(),
             Some(it) => dir_of_rel(&it.rel).to_string(),
             None => String::new(),
-        }
+        };
+        let root = self.root.clone()?;
+        Some(Folder { root, rel })
     }
 
-    /// Make the folder `name` in `parent` (workspace-relative, empty for the root).
-    fn create_folder(&mut self, parent: &str, name: &str) {
-        let Some(root) = self.root.clone() else {
-            return;
-        };
-        let name = name.trim_matches('/');
-        let rel = if parent.is_empty() {
-            name.to_string()
+    /// Whether the workspace at `root`, where a prompt was opened, is still the one open.
+    fn is_open(&self, root: &Path) -> bool {
+        self.root.as_deref() == Some(root)
+    }
+
+    /// Whether `rel` can be made in `in_folder`, where a prompt was opened: the workspace is
+    /// still open and the folder still there. If not, the status line says why. A folder gone
+    /// is not made again: another program deleted it.
+    fn can_create_in(&mut self, in_folder: &Folder, rel: &str) -> bool {
+        let why = if !self.is_open(&in_folder.root) {
+            "the workspace changed".to_string()
+        } else if !in_folder.root.join(&in_folder.rel).is_dir() {
+            format!("{}/ is no longer there", in_folder.rel)
         } else {
-            format!("{parent}/{name}")
+            return true;
         };
+        self.flash(format!("can't create {rel}: {why}"));
+        false
+    }
+
+    /// Make the folder `name` in `in_folder`.
+    fn create_folder(&mut self, in_folder: &Folder, name: &str) {
+        let rel = in_folder.join(name.trim_matches('/'));
+        if !self.can_create_in(in_folder, &format!("{rel}/")) {
+            return;
+        }
+        let root = in_folder.root.clone();
         let Some(core) = self.core.as_mut() else {
             return;
         };
@@ -6008,10 +6052,10 @@ impl Home {
             self.draw_confirm_merge(f, main);
         }
         if let Mode::Prompt(prompt) = &self.mode {
-            prompt.draw(f, main, self.marks.len());
+            prompt.draw(f, main);
         }
         if let Mode::Tag(prompt) = &self.mode {
-            prompt.draw(f, main, self.marks.len());
+            prompt.draw(f, main);
         }
         match &self.mode {
             Mode::Help => {
@@ -7333,11 +7377,15 @@ mod tests {
             Mode::Prompt(Prompt::new(asks, String::new()))
         };
         let prompt = |asks| Mode::Prompt(Prompt::new(asks, String::new()));
+        let nowhere = || Folder {
+            root: PathBuf::new(),
+            rel: String::new(),
+        };
         // A prompt counts with nothing typed yet, and a dialog as long as it is open.
         let always = [
             (Mode::Filter, "the notes are being filtered"),
             (
-                Mode::NewNote(NewNote::new(String::new(), Vec::new())),
+                Mode::NewNote(NewNote::new(nowhere(), Vec::new())),
                 "a new note's name is being typed",
             ),
             (
@@ -7345,17 +7393,22 @@ mod tests {
                 "a workspace's folder is being typed",
             ),
             (
-                prompt(Asks::NewFolder { dir: String::new() }),
+                prompt(Asks::NewFolder {
+                    in_folder: nowhere(),
+                }),
                 "a new folder's name is being typed",
             ),
             (renaming(false), "a new name is being typed"),
             (renaming(true), "a folder to move to is being typed"),
             (
-                prompt(Asks::MoveMarked),
+                prompt(Asks::MoveMarked {
+                    root: PathBuf::new(),
+                    marked: Vec::new(),
+                }),
                 "a folder to move to is being typed",
             ),
             (
-                Mode::Tag(TagPrompt::new(Vec::new(), None)),
+                Mode::Tag(TagPrompt::new(Vec::new(), PathBuf::new(), Whom::Nobody)),
                 "a tag is being typed",
             ),
             (rename(None), "a rename waits for your answer"),

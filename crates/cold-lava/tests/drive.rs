@@ -1803,6 +1803,87 @@ fn a_prompt_does_what_it_was_opened_for_whatever_an_extension_selects() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A prompt acts only in the workspace it was opened in: once a click on the workspace list
+/// opens another under it, Enter is refused, and nothing is written in either workspace.
+#[test]
+fn a_prompt_refuses_once_another_workspace_is_open() {
+    let dir = sandbox("prompt-workspace-changed");
+    let home = dir.join("home");
+    let workspace = dir.join("example-workspace");
+    let other = dir.join("notes2");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("Two.md"), "# Two\n").unwrap();
+    let config = home.join(".config/cold-lava");
+    std::fs::create_dir_all(&config).unwrap();
+    let recent = serde_json::json!({"workspaces": [{"path": other, "opened": 1}]});
+    std::fs::write(config.join("workspaces.json"), recent.to_string()).unwrap();
+    let krakatoa = std::fs::read(workspace.join("Volcanoes/Krakatoa.md")).unwrap();
+    let out = drive_with(
+        "prompt-workspace-changed.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let shown: Vec<String> = (std::fs::read_dir(&other).unwrap())
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    assert_eq!(shown, ["Two.md"], "nothing made in the workspace opened");
+    let after = std::fs::read(workspace.join("Volcanoes/Krakatoa.md")).unwrap();
+    assert_eq!(after, krakatoa, "Krakatoa neither tagged nor moved");
+    for made in ["Volcanoes/Elsewhere.md", "Volcanoes/Ashes", "Archive"] {
+        assert!(!workspace.join(made).exists(), "{made}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Plays another program that deletes a file or a folder while a prompt is open: each time a
+/// script writes `Inbox/zz-gone.md`, the path written in it goes, and the file with it, until
+/// `stop` is set.
+fn delete_when_asked(
+    workspace: PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let asked = workspace.join("Inbox/zz-gone.md");
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let path = std::fs::read_to_string(&asked).unwrap_or_default();
+            if !path.trim().is_empty() {
+                let gone = workspace.join(path.trim());
+                let _ = match gone.is_dir() {
+                    true => std::fs::remove_dir_all(&gone),
+                    false => std::fs::remove_file(&gone),
+                };
+                let _ = std::fs::remove_file(&asked);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    })
+}
+
+/// A folder or a note a prompt was opened on and another program deletes is not made again:
+/// the new note, the new folder and the tag are refused, naming what is gone.
+#[test]
+fn a_prompt_doesnt_make_again_what_was_deleted_under_it() {
+    let dir = sandbox("prompt-target-gone");
+    let workspace = dir.join("example-workspace");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let deleting = delete_when_asked(workspace.clone(), stop.clone());
+    let out = drive("prompt-target-gone.drive", &dir);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    deleting.join().unwrap();
+    assert_passed(&out);
+    for gone in [
+        "People",
+        "Volcanoes",
+        "Concepts/Lava.md",
+        "Inbox/zz-gone.md",
+    ] {
+        assert!(!workspace.join(gone).exists(), "{gone} stays gone");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Needs python3, which CI's runners have.
 #[test]
 fn an_extension_cant_run_a_command_over_a_prompt_being_typed() {

@@ -46,11 +46,18 @@ change commands, keys and file formats; patch versions only fix things.
   about half the runs). The rest of the output is skipped quietly, and the command still does
   everything else it was asked (its errors on stderr included) and exits as it would have, as
   `items | head` already did (#339).
-- The new note, new folder and tag prompts act on what was selected when they opened. An
-  extension that moved the tree's selection while one was open (an editor reporting the note
-  it shows, `editor/opened`) made Enter create the note or folder in another folder, or tag
-  another note (#269, #286). If the folder or the note is gone by then, the note or folder is
-  made there anyway (the folder made again), and the tag is refused naming the note.
+- The new note, new folder, tag and marked move prompts act on what was selected and marked
+  when they opened, in the workspace they opened in, and the title says where: "new note in
+  Volcanoes/", "new folder in the workspace root", "tag Krakatoa" (the hint for templates is
+  now on their list, "template · Tab"). An extension that moved the tree's selection while one
+  was open (an editor reporting the note it shows, `editor/opened`) made Enter create the note
+  or folder in another folder, or tag another note (#269, #286). A click in the tree while one
+  is open no longer changes its target either: the title still names it. If another workspace
+  was opened under the prompt, Enter is refused ("the workspace changed") and nothing is
+  written. If the folder is gone by Enter (another program deleted it), the note or folder is
+  refused naming it ("People/ is no longer there") instead of made in whatever was selected
+  next, and a tag on a note gone by then says so ("Krakatoa is no longer there") instead of an
+  error from the system.
 
 ## [0.7.0] - 2026-11-20
 
