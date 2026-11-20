@@ -1968,7 +1968,9 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   is shown (`Owners::kept`, #303). What is kept of such an item is the hash of its JSON as
   the cache wrote it, not as the owner sent it, so until the owner answers, an edit beside
   it is refused by the read-back; the owner's answer for the same version replaces the cached
-  one, and the file takes it, since it no longer shows what is kept (`Owned::shows`). The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
+  one, and the file takes it, since it no longer shows what is kept (`Owned::shows`). Until
+  then the cache saves that answer as it was read (`Answer::as_read`), so every session asks
+  the owner again, however often the cache is saved meanwhile. The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
   the file: a cache of another format is neither read nor rewritten, so an upgrade or a
   downgrade asks each owner again once.
   Every field of the types an answer is read into names its bound

@@ -220,9 +220,14 @@ change commands, keys and file formats; patch versions only fix things.
 - A cached answer whose items no longer all read (a bound applies now that didn't when it
   was saved) keeps showing its other items, and the ones that don't read are reported,
   each where it stood, on the status line and on the command line's stderr (#303, step
-  A4d). Its owner is asked again when the menu opens. Until it answers, an edit beside the
-  bad item is refused as `read-back`, since the cache keeps that item as it wrote it and
-  not as the owner sent it; once the owner answers, the edit goes ahead.
+  A4d). Its owner is asked again each time the menu opens, until it answers: the cache
+  keeps such an answer as it was read, however often it is saved meanwhile. An edit beside
+  the bad item is refused as `read-back` until the owner's new answer is kept, since the
+  cache keeps that item as it wrote it and not as the owner sent it (the refusal says the
+  owner's new text doesn't read back as asked, though what differs is the cache's copy). In
+  the menu the edit goes ahead once the owner has answered there. `item set` on the command
+  line doesn't keep the owner's new answer, so it refuses such an edit until the menu has
+  kept one.
 
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and

@@ -8,6 +8,7 @@ use crate::owner::answer::LeftOut;
 use crate::owner::given::Given;
 use crate::tasks::fnv;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -42,6 +43,10 @@ pub struct FileRead {
 /// before anything was written: a binary of the same format that refuses those edits reads
 /// the same answer it would have been given, and this binary trusts nothing from that binary
 /// that it wouldn't have kept itself.
+///
+/// Nor did keeping a cached answer whose items no longer all read (#303): until its owner
+/// answers again, it is saved as it was read (`Answer::as_read`), so the cache holds only
+/// what a binary of this format wrote.
 const FORMAT: u32 = 2;
 
 /// What one owner gave, by file, as kept on disk.
@@ -61,19 +66,21 @@ struct Cache {
 /// `given.left_out`, and the cache file holds them beside the answer (`Stored`): what is
 /// saved is what is read back, through any number of loads and saves.
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(from = "Stored", into = "Stored")]
+#[serde(try_from = "Box<RawValue>", into = "Saved")]
 struct Answer {
     rev: String,
     given: Given,
-    /// Whether its owner is to be asked again when it is shown (`Owners::kept`): some of its
-    /// items no longer read (a bound applies now that didn't when it was saved). Its other
-    /// items are kept and the bad ones left out where they stood (`merged`), so the file shows
-    /// what still reads and reports the rest (the owner's decision of 2026-11-13). What is kept
-    /// of a bad item is the hash of its JSON as the cache wrote it, not as its owner sent it,
-    /// so the read-back of an edit beside it would refuse a change its owner made faithfully:
-    /// the owner's next answer, for the same version, replaces it, and a file that shows this
-    /// one takes that one (`Owned::shows`).
-    ask_again: bool,
+    /// The answer as the cache file held it, when some of its items no longer read (a bound
+    /// applies now that didn't when it was saved). Its other items are kept and the bad ones
+    /// left out where they stood (`merged`), so the file shows what still reads and reports
+    /// the rest (the owner's decision of 2026-11-13), and its owner is asked again when it is
+    /// shown (`Owners::kept`). What is kept of a bad item is the hash of its JSON as the cache
+    /// wrote it, not as its owner sent it, so the read-back of an edit beside it would refuse
+    /// a change its owner made faithfully: the owner's next answer, for the same version,
+    /// replaces it, and a file that shows this one takes that one (`Owned::shows`). Until
+    /// then it is saved as it was read, however often the cache is saved: every session reads
+    /// it as this one did and asks again, and a binary of this `FORMAT` finds what it wrote.
+    as_read: Option<Box<RawValue>>,
 }
 
 /// An answer as the cache file holds it: the answer as its owner gives it, and the items it
@@ -86,22 +93,33 @@ struct Stored {
     left_out: Vec<(usize, LeftOut)>,
 }
 
-impl From<Stored> for Answer {
-    fn from(stored: Stored) -> Answer {
+/// What the cache file is given of an answer: the answer as it was read (`Answer::as_read`),
+/// or as it is now.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Saved {
+    AsRead(Box<RawValue>),
+    Now(Stored),
+}
+
+impl TryFrom<Box<RawValue>> for Answer {
+    type Error = serde_json::Error;
+
+    fn try_from(raw: Box<RawValue>) -> Result<Answer, serde_json::Error> {
         // Every field named, so one added to `Stored` says here how it is read back.
         let Stored {
             rev,
             mut given,
             left_out,
-        } = stored;
+        } = serde_json::from_str(raw.get())?;
         let now = std::mem::take(&mut given.left_out);
-        let ask_again = !now.is_empty();
+        let as_read = (!now.is_empty()).then_some(raw);
         given.left_out = merged(left_out, now);
-        Answer {
+        Ok(Answer {
             rev,
             given,
-            ask_again,
-        }
+            as_read,
+        })
     }
 }
 
@@ -129,20 +147,23 @@ fn merged(saved: Vec<(usize, LeftOut)>, now: Vec<(usize, LeftOut)>) -> Vec<(usiz
     out
 }
 
-impl From<Answer> for Stored {
-    fn from(answer: Answer) -> Stored {
+impl From<Answer> for Saved {
+    fn from(answer: Answer) -> Saved {
         // Every field named, so one added to `Answer` says here whether it is saved.
         let Answer {
             rev,
             given,
-            ask_again: _,
+            as_read,
         } = answer;
+        if let Some(raw) = as_read {
+            return Saved::AsRead(raw);
+        }
         let left_out = given.left_out.clone();
-        Stored {
+        Saved::Now(Stored {
             rev,
             given,
             left_out,
-        }
+        })
     }
 }
 
@@ -220,11 +241,11 @@ impl Owners {
     }
 
     /// What to show for the file at `rel` at version `rev`: what its owner gave for that
-    /// version. When some of that no longer reads (`Answer::ask_again`), it is shown all the
+    /// version. When some of that no longer reads (`Answer::as_read`), it is shown all the
     /// same and the owner is asked again, with the file's text (`bytes`) when it is text.
     pub fn kept(&mut self, owner: &str, rel: &str, rev: &str, bytes: &[u8]) -> Option<Given> {
         let answer = self.answer(owner, rel).filter(|a| a.rev == rev)?;
-        let (given, again) = (answer.given.clone(), answer.ask_again);
+        let (given, again) = (answer.given.clone(), answer.as_read.is_some());
         if again && let Ok(text) = std::str::from_utf8(bytes) {
             let (path, rev, text) = (rel.to_string(), rev.to_string(), text.to_string());
             self.ask(owner, FileRead { path, rev, text });
@@ -282,7 +303,7 @@ impl Owners {
         let answer = Answer {
             rev: rev.to_string(),
             given: given.clone(),
-            ask_again: false,
+            as_read: None,
         };
         cache.files.insert(path.to_string(), answer);
         cache.dirty = true;
