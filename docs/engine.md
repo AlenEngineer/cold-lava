@@ -543,9 +543,10 @@ issue #100 is the one list of open work and says which step each feature waits f
 2. One door into the engine.
 3. Types and identity.
 4. The terminal views (lists, tables, the graph).
-5. Drawings. *Paused on 2026-11-20:* a placed shape's data is a new kind of book that needs an
-   owner and doesn't fit the story yet, so shapes, bindings and the shape editor get no new
-   work (ARCHITECTURE.md, "Where the story is ahead of the code").
+5. Drawings. *Paused on 2026-11-20 (#375):* foundations 11 and 12 still describe them, but a
+   placed shape's data is a new kind of book with no owner yet, so shapes, bindings and the
+   shape editor get no new work until one is decided (ARCHITECTURE.md, "Where the story is
+   ahead of the code").
 6. The notebook: cold-lava's own editor and the page. Whether the page is built for the
    terminal or a graphical frontend first is open (#196), to decide after real use.
 

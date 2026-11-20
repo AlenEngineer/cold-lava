@@ -118,12 +118,14 @@ never lends it to a reader (an extension).
   is why the engine depends on `canvas`. They are meant to be readers that come through the
   door like any other: the rule and its test first, then the split into crates (both #226,
   decided in #185), after which the core depends on nothing of the project's.
-- **Shapes, bindings and the shape editor are paused** (decided 2026-11-20). A placed shape
-  with its bindings is a new kind of book, and every book needs a translator that reads its
-  language; nobody has been hired for this one, and the story has no place for it yet. Until it
-  does, nothing new is built on them (`crates/canvas`, `shapes.rs`, `bind.rs`, `shows.rs`,
-  `act.rs`, the shape editor), and the code stays as it is. The whiteboard's own refactors
-  (track F, #273) and its undo fix (#348) go ahead.
+- **Shapes, bindings and the shape editor are paused** (decided 2026-11-20, #375). Drawings
+  bound to data are still the design (foundations 11 and 12, Frontends 5 and 6). What is
+  missing is a translator: a placed shape with its bindings is a new kind of book, and every
+  book needs a translator that reads its language. Nobody has been hired for this one, so the
+  library's story doesn't hold for it yet. Until one is, nothing new is built on them
+  (`crates/canvas`, `shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`, the shape editor), and the
+  code stays as it is. #375 says what must be decided to unpause. The whiteboard's own
+  refactors (track F, #273) and its undo fix (#348) go ahead.
 - No translator checks a reference's place half yet, and none declares its place forms. The
   design proposed for it: Markdown declares headings and block anchors, a canvas card ids, a CSV
   file row keys, so the librarian can tell a reference that points nowhere from one it can't
