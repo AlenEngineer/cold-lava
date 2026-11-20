@@ -7,6 +7,7 @@
 //! ticks a task the way the plugin does: done dates, recurrence and status cycles.
 
 use crate::daily;
+use crate::identity::line_id;
 use crate::items::{self, Data, Item};
 use crate::workspace::Workspace;
 use anyhow::{Context, Result, bail};
@@ -275,26 +276,6 @@ fn re() -> &'static Re {
     RE.get_or_init(|| Re {
         task: Regex::new(r"^(\s*(?:[-*+]|\d+[.)])\s+\[)(.)(\]\s+)(.*)$").unwrap(),
     })
-}
-
-/// FNV-1a of some bytes: stable across runs and machines, unlike `std`'s hasher.
-pub fn fnv(bytes: &[u8]) -> u64 {
-    fnv_from(FNV_START, bytes)
-}
-
-pub const FNV_START: u64 = 0xcbf2_9ce4_8422_2325;
-
-/// `fnv` of what was hashed into `h`, then `bytes`.
-pub fn fnv_from(h: u64, bytes: &[u8]) -> u64 {
-    bytes
-        .iter()
-        .fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
-}
-
-/// Fingerprint of a line, as 12 hex digits.
-pub fn line_id(line: &str) -> String {
-    let h = fnv(line.trim_end_matches(['\r', '\n']).as_bytes());
-    format!("{:012x}", h & 0xffff_ffff_ffff)
 }
 
 /// Splits a line into its blockquote / callout markers (`> > `) and the rest.

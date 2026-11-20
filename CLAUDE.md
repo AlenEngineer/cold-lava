@@ -392,6 +392,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
+  digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
+  each two, hashed) and a rev of text (`line_id`). A leaf. Each owner makes its own key: a
+  note's items in `items::identify` (a typed item's in `matcher.rs`), an owner's pieces and
+  typed items from the place it gave. Changing a key moves ids as surely as changing
+  `identity.rs`, and either is the owner's decision; its tests pin ids given before. A note's
+  key moves with the Markdown walk into its owner in step D-3 (#272).
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
   bound, and the table of bounds, one type each (the trait `Limit`; the owner's limits of

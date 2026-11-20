@@ -14,6 +14,7 @@ pub mod fields;
 pub mod files;
 pub mod frontmatter;
 pub mod gateway;
+pub mod identity;
 pub mod index;
 pub mod items;
 pub mod json_canvas;

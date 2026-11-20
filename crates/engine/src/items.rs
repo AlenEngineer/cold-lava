@@ -11,10 +11,11 @@
 
 use crate::cst::{self, Kind, Step};
 use crate::daily;
+use crate::identity;
 use crate::markdown::{self, Flavour, Source, Syntax};
 use crate::matcher::{self, Matcher, Typed};
 use crate::owner::markdown::attributes::{self, Readings};
-use crate::tasks::{self, FNV_START, TasksSettings, fnv, fnv_from};
+use crate::tasks::{self, TasksSettings};
 use crate::templates;
 use crate::types::{self, On, Types};
 use crate::workspace::clean_target;
@@ -1223,9 +1224,13 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
                 path.push_str(text);
                 path
             }
-            (None, Data::List { text }) => format!("{parent_key}/{:016x}", fnv(text.as_bytes())),
+            (None, Data::List { text }) => {
+                format!("{parent_key}/{}", identity::hash(text.as_bytes()))
+            }
             (None, Data::Typed(_)) if raw.key.is_empty() => parent_key.to_string(),
-            (None, Data::Typed(_)) => format!("{parent_key}/{:016x}", fnv(raw.key.as_bytes())),
+            (None, Data::Typed(_)) => {
+                format!("{parent_key}/{}", identity::hash(raw.key.as_bytes()))
+            }
             (None, Data::Block) => String::new(),
         };
         let n = seen.entry((kind.to_string(), anchor.clone())).or_default();
@@ -1234,9 +1239,7 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
             n => format!("{anchor}.{n}"),
         };
         *n += 1;
-        let id = [note, "\0", kind, "\0", &key]
-            .iter()
-            .fold(FNV_START, |h, part| fnv_from(h, part.as_bytes()));
+        let id = identity::id(&[note, kind, &key]);
         own.clear();
         for (i, line) in (lines.get(raw.line - 1..raw.end_line.min(lines.len())))
             .unwrap_or_default()
@@ -1249,14 +1252,14 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
             own.push_str(line);
         }
         items.push(Item {
-            id: format!("{id:016x}"),
+            id,
             note: note.to_string(),
             line: raw.line,
             end_line: raw.end_line,
             section: raw.section,
             parent: raw.parent.map(|p| items[p].id.clone()),
             block_id: raw.block_id,
-            rev: tasks::line_id(&own),
+            rev: identity::line_id(&own),
             data: raw.data,
         });
         keys.push(key);
@@ -1595,7 +1598,7 @@ Setext
         );
         assert_eq!(
             all[0].rev,
-            tasks::line_id("- [ ] real %%with a comment%%"),
+            identity::line_id("- [ ] real %%with a comment%%"),
             "rev is of the line as written"
         );
     }
@@ -1694,9 +1697,12 @@ Setext
     fn rev_is_the_line_id_of_a_one_line_task() {
         let line = "- [ ] Pay rent 📅 2026-11-01";
         let all = items(&format!("intro\n\n{line}\n"));
-        assert_eq!(all[0].rev, tasks::line_id(line));
+        assert_eq!(all[0].rev, identity::line_id(line));
         let two = items("- [ ] Pay rent\n  by transfer\n");
-        assert_eq!(two[0].rev, tasks::line_id("- [ ] Pay rent\n  by transfer"));
+        assert_eq!(
+            two[0].rev,
+            identity::line_id("- [ ] Pay rent\n  by transfer")
+        );
     }
 
     #[test]

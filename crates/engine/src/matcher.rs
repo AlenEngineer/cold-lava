@@ -1642,7 +1642,7 @@ fields = { vei = { column = "VEI" }, example = { column = "Example" },
         assert_eq!(spans(VEI, rows[1], "year"), ["1980"], "after a comment");
         assert_eq!(
             rows[0].rev,
-            crate::tasks::line_id(VEI.lines().nth(5).unwrap())
+            crate::identity::line_id(VEI.lines().nth(5).unwrap())
         );
     }
 
@@ -1851,7 +1851,7 @@ Survey the rim ~3h, not `~4h`, not~6h.
         assert_eq!(haul.section, ["Plan ~1h"]);
         assert_eq!(
             haul.rev,
-            crate::tasks::line_id(SPRINT.lines().nth(4).unwrap())
+            crate::identity::line_id(SPRINT.lines().nth(4).unwrap())
         );
     }
 
@@ -2162,7 +2162,7 @@ Survey the rim ~3h, not `~4h`, not~6h.
         let item = one(&all, "eruption");
         let wire = json!({
             "id": item.id, "note": "Note.md", "line": 3, "end_line": 3, "section": [],
-            "parent": null, "block_id": null, "rev": crate::tasks::line_id("| 4 | x |"),
+            "parent": null, "block_id": null, "rev": crate::identity::line_id("| 4 | x |"),
             "kind": "eruption", "is": ["block"], "vei": 4, "place": null, "links": []
         });
         assert_eq!(serde_json::to_value(item).unwrap(), wire);
