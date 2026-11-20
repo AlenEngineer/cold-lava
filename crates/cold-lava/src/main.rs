@@ -15,10 +15,13 @@ mod history;
 mod home;
 mod image;
 mod kitty;
+mod line_input;
 mod list;
 mod looks;
 mod notice;
 mod owned;
+mod pick_list;
+mod popup;
 mod previews;
 mod reader;
 mod recipe_view;
@@ -37,9 +40,9 @@ mod whichkey;
 
 use cold_lava_engine::{
     act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
-    json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rename,
-    resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types, workspace,
-    write,
+    json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rel_path,
+    rename, resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types,
+    workspace, write,
 };
 
 use anyhow::Result;
