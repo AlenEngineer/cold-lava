@@ -1104,6 +1104,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A write goes through a link to the file it leads to, and a link to nothing is never
+    /// replaced by a new file.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_to_a_symlink_lands_in_the_file_it_leads_to() {
+        let dir = workspace("write-link");
+        let is_link = |rel: &str| {
+            let meta = dir.join(rel).symlink_metadata().unwrap();
+            meta.file_type().is_symlink()
+        };
+        std::os::unix::fs::symlink("Eruptions.csv", dir.join("Data/Linked.csv")).unwrap();
+        let was = read(&dir, "Data/Linked.csv").unwrap();
+        let text = "name,year\nTambora,1815\n";
+        replace(&dir, "Data/Linked.csv", text, &was.rev).unwrap();
+        assert!(is_link("Data/Linked.csv"), "still a link");
+        let target = std::fs::read_to_string(dir.join("Data/Eruptions.csv")).unwrap();
+        assert_eq!(target, text);
+        let stale = replace(&dir, "Data/Linked.csv", "lost", &was.rev).unwrap_err();
+        assert_eq!(stale.reason, Reason::Changed);
+
+        std::os::unix::fs::symlink("Gone.csv", dir.join("Data/Dangling.csv")).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let at = Create {
+            at: NewFile::At {
+                path: "Data/Dangling.csv".into(),
+            },
+            text: "x".into(),
+        };
+        assert_eq!(core.create_file(&at).unwrap_err().reason, Reason::Exists);
+        let gone = replace(&dir, "Data/Dangling.csv", "x", &was.rev).unwrap_err();
+        assert_eq!(gone.reason, Reason::Changed);
+        assert!(is_link("Data/Dangling.csv"), "still a link");
+        assert!(
+            !dir.join("Data/Gone.csv").exists(),
+            "nothing made through it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The delete goes to the link, never through it.
     #[cfg(unix)]
     #[test]

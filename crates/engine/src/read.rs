@@ -413,6 +413,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_file_seen_through_a_link_is_written_through_it() {
+        let d = dir("write-through");
+        let (target, link) = (d.join("Lava.md"), d.join("Link.md"));
+        std::fs::write(&target, "hot").unwrap();
+        std::os::unix::fs::symlink("Lava.md", &link).unwrap();
+        let seen = Seen::file(&link).unwrap();
+        seen.replace(b"cooling").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"cooling");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("Lava.md"));
+        assert!(
+            matches!(seen.replace(b"lost"), Err(WriteError::Changed(at)) if at == link),
+            "a stale read is still refused"
+        );
+        Seen::kept(&link, "cooling").replace(b"cold").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"cold");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("Lava.md"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_file_is_read_through_a_link_and_an_entry_is_the_link() {
         let d = dir("link");
         let (target, link) = (d.join("Lava.md"), d.join("Link.md"));

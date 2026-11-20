@@ -178,4 +178,88 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    #[cfg(unix)]
+    fn is_link(path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_write_to_a_symlink_lands_in_the_file_it_leads_to() {
+        let d = dir("through");
+        std::fs::create_dir_all(d.join("Elsewhere")).unwrap();
+        std::fs::create_dir_all(d.join("Notes")).unwrap();
+        let target = d.join("Elsewhere/Lava.md");
+        std::fs::write(&target, "v1").unwrap();
+        let (link, hop) = (d.join("Notes/Lava.md"), d.join("Notes/Hop.md"));
+        std::os::unix::fs::symlink("../Elsewhere/Lava.md", &link).unwrap();
+        std::os::unix::fs::symlink("Lava.md", &hop).unwrap();
+
+        write_atomic(&link, b"v2").unwrap();
+        replace(&hop, b"v2", b"v3").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"v3");
+        let led = |p: &Path| std::fs::read_link(p).unwrap();
+        assert_eq!(
+            led(&link),
+            Path::new("../Elsewhere/Lava.md"),
+            "still a link"
+        );
+        assert_eq!(led(&hop), Path::new("Lava.md"), "still a link");
+        assert!(
+            matches!(replace(&link, b"v2", b"lost"), Err(WriteError::Changed(_))),
+            "a stale read is refused through a link too"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"v3");
+        assert_eq!(files(&d.join("Notes")), ["Hop.md", "Lava.md"]);
+        assert_eq!(
+            files(&d.join("Elsewhere")),
+            ["Lava.md"],
+            "no temp file left"
+        );
+
+        move_file(&hop, &d.join("Notes/Moved.md")).unwrap();
+        assert!(
+            is_link(&d.join("Notes/Moved.md")),
+            "a move takes the link itself"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nothing_is_written_over_a_symlink_to_nothing_or_to_a_folder() {
+        let d = dir("not-through");
+        std::fs::create_dir(d.join("Folder")).unwrap();
+        std::fs::write(d.join("Mover.md"), "m").unwrap();
+        std::os::unix::fs::symlink("Gone.md", d.join("Dangling.md")).unwrap();
+        std::os::unix::fs::symlink("Folder", d.join("Folder.md")).unwrap();
+        for name in ["Dangling.md", "Folder.md"] {
+            let at = d.join(name);
+            assert!(
+                matches!(write_atomic(&at, b"x"), Err(WriteError::Io(p, _)) if p == at),
+                "write {name}"
+            );
+            assert!(
+                matches!(create(&at, b"x"), Err(WriteError::Exists(_))),
+                "create {name}"
+            );
+            assert!(!create_if_missing(&at, b"x").unwrap(), "{name}");
+            assert!(
+                matches!(
+                    move_file(&d.join("Mover.md"), &at),
+                    Err(WriteError::Exists(_))
+                ),
+                "move onto {name}"
+            );
+            assert!(is_link(&at), "{name} is still a link");
+        }
+        assert_eq!(
+            files(&d),
+            ["Dangling.md", "Folder", "Folder.md", "Mover.md"],
+            "nothing made through a link to nothing"
+        );
+        assert!(files(&d.join("Folder")).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
