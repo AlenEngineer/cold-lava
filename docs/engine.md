@@ -6,7 +6,8 @@ engine as it is and as it is planned.
 Status: **overview**. Parts are built, parts are designed in [extensions.md](extensions.md), and
 parts are still to be designed; each layer says which.
 
-cold-lava is two things: an **engine** that understands a workspace of Markdown notes, and
+cold-lava is two things: an **engine** that understands a workspace of plain files (Markdown notes, canvases, and
+any format an owner reads), and
 **frontends** that show it (today one, the terminal UI). Extensions reach them through two
 gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
 plans in detail.
@@ -70,36 +71,45 @@ That is cold-lava. The rest of the cast keeps the books safe.
 | The catalogue | The index: every item, link and backlink, kept from the translators' reports | `index.rs` |
 | The door, and its forms | The workspace gateway's messages | `gateway.rs`, `files.rs` |
 | The front desk | The extension host: checks every visitor's badge (its permissions) before the librarian hears a word | `crates/host` |
-| The readers | The terminal app, a GUI, the coming language server, and extensions that only ask | `crates/cold-lava` |
+| The readers | The terminal app and extensions that only ask; a GUI and a language server to come | `crates/cold-lava`, `crates/gui` |
 
-**The librarian speaks no book's language.** It doesn't need to. When a translator says a page
-should now read differently, the librarian hands the new page back to the same translator and
-asks for a fresh report on it. It then compares the before and after reports, both in the common
-language. If anything moved besides what was asked, the page is refused (`given::same`). Whether
-someone else wrote in the book meanwhile is a comparison of bytes, not a reading: the bytes it
-read against the bytes there now (`write::replace`; over the gateway, a fingerprint of them,
-`rev`). Swapping the page in is copying bytes, atomically (`write.rs`), and a page torn out goes
-to the trash, never the fire (`trash.rs`).
+**The librarian needs no book's language to check a translator's work.** When the librarian
+asks for a change to a page (`file/edit`, for an item edit or a rename), the translator answers
+with the new page. The librarian hands it back to the same translator and asks for a fresh
+report on it. It compares that report with the one it expected: the old report with the asked
+change made, both in the common language. If anything else moved, the page is refused
+(`given::same`). Whether someone else wrote in the book meanwhile is a comparison of bytes, not a
+reading: the bytes it read against the bytes there now (`write::replace`; over the gateway, a
+fingerprint of them, `rev`). Swapping the page in is copying bytes, atomically (`write.rs`), and
+a page taken out goes to the trash, never deleted for good (`trash.rs`).
 
-**No translator writes in a book.** A translator says what the page should say; the librarian
-writes it. An outside translator is a stranger: every report it gives is measured against limits
-as it arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note
-saying why (`Given::left_out`). This is why a code editor's language server returns edits
-instead of saving files, and it is the same rule here.
+**An outside translator is a stranger.** Every report it gives is measured against limits as it
+arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note saying
+why (`Given::left_out`). A code editor's language server returns edits instead of saving files
+for the same reason.
 
 **Where the story is ahead of the code.**
 
-- The Markdown translator still has a key to the stacks: the engine reads and edits notes itself
-  instead of asking it like any other. Track D (#272) takes the key away.
-- The librarian does a lot of paperwork that belongs to clerks of their own (the watcher, the
-  cache of reports, the trouble reports). Track C (#271) gives each its own desk, so the librarian
-  only calls on them in order.
+- The librarian still reads one language itself: Markdown. The core walks notes into items and
+  the matcher reads their text, and a note's edit is checked by Markdown's own read-back
+  (`edit::read_back`), not by `given::same`. Track D (#272) moves Markdown's reading out of the
+  core into its owner.
+- A translator can still write its own books without the librarian's check: an owner may save
+  its own kind of file with `workspace/write`, which is checked only for changes made elsewhere
+  (`rev`), and its new text is not read back. Whether to keep that door is the owner's decision
+  (#310).
+- Not every reader comes through the door yet: the terminal app still reads the index and writes
+  some files itself (`crates/cold-lava/tests/one_door.rs` lists each). Track B (#270) closes
+  those.
+- The librarian keeps some state machines that belong to clerks of their own: the owned-file edit
+  and rename, and the pairs of messages it sends to each reader. Track C (#271) moves them out, so
+  the librarian only calls on its clerks in order.
 - Characters not hired yet: **the archivist**, who keeps every page the librarian replaces
   (#305); **the logbook**, where every change is written down with who asked and which
   translator wrote it (#306); **the bookmark**, a name stuck on a page the first time something
-  refers to it, so the reference survives a move (#190); **dictionaries**, which let the
-  librarian read a book itself and check a write by its bytes (#307); and a **ladder of trust**
-  for how far an outside translator may write (#308).
+  refers to it, so the reference survives a move (#190). Two more are proposals the owner hasn't
+  decided: **dictionaries**, a format described as data, so the librarian could check a write by
+  its bytes (#307), and a **ladder of trust** for how far an outside translator may write (#308).
 
 ## The layers
 
