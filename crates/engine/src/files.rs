@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::{Error, Reason};
 use crate::index::Index;
-use crate::read::rev_of;
 use crate::tasks::fnv;
 use crate::trash::{self, Bin, Contents, Trashed, Went};
 use crate::write::{self, WriteError};
@@ -357,7 +356,7 @@ pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
     let rel = &normal(rel)?;
     let (path, read) = contents(root, rel)?;
     let mut stat = Stat {
-        rev: rev_of(&read),
+        rev: crate::read::rev_of(&read),
         inside: None,
         more: 0,
         hidden: 0,
@@ -391,7 +390,7 @@ pub fn delete(
 ) -> Result<Trashed, Error> {
     let rel = &normal(rel)?;
     let (path, now) = contents(root, rel)?;
-    if rev_of(&now) != expect {
+    if crate::read::rev_of(&now) != expect {
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
