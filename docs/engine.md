@@ -8,7 +8,7 @@ parts are still to be designed; each layer says which.
 
 cold-lava is two things: an **engine** that understands a workspace of plain files (Markdown notes, canvases, and
 any format an owner reads), and
-**frontends** that show it (today the terminal UI and a first GUI). Extensions reach them through two
+**frontends** that show it (today the terminal UI). Extensions reach them through two
 gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the engine's layers and frontends as built; the picture as a story and a map of
 the code is [ARCHITECTURE.md](../ARCHITECTURE.md), and [extensions.md](extensions.md) has the protocol and
 plans in detail.
@@ -17,7 +17,7 @@ plans in detail.
  you ─ keys, mouse ─────────────────────────────────────────┐
                                                             ▼
 ┌───────────────────────────────────────────────────────────▼────────────────────┐
-│ FRONTEND · the terminal UI and a first GUI; a language server could be another │
+│ FRONTEND · the terminal UI; a graphical app could be another                   │
 │ draws views its own way: braille or pixels, a real canvas in a GUI             │
 │ owns keys, mouse and frame rate                                                │
 └─────────────▲─────────────────────────────────────────────┬────────────────────┘
@@ -187,8 +187,8 @@ chosen Markdown flavour). Frontends sit above the engine, and reach extensions t
 host:
 
 ```
- cold-lava (the terminal UI, the main frontend)      cold-lava-gui      cold-lava lsp
-     │                                                (crates/gui)       (planned, #195)
+ cold-lava (the terminal UI, the main frontend)
+     │
      │   each frontend: its built-in extensions, applying Effects, keys, drawing
      ▼
  cold-lava-host    manifests · permissions · Host (the gateway's guard) · Extension
@@ -216,7 +216,7 @@ what the core has for them and applies the `Effect`s they return, or ignores tho
 no screen for. `crates/host/examples/headless.rs` is that loop with no terminal, and
 `crates/host/tests/permissions.rs` checks the permissions on the `open-tasks` example the
 same way. The terminal UI keeps Neovim in a pane, its command table and keys, and drawing.
-The GUI depends only on the engine today; putting it on the host is the next step.
+A second frontend, graphical or not, starts from that example.
 
 A frontend asks the engine and draws; the engine never knows which frontend is asking. That's
 what lets a language server, a graphical app or a script use exactly the same understanding of
@@ -268,7 +268,7 @@ change what it shows, never how it works.
     an arrow drawn between two concepts on the map can add the link in the text.
   - **In a terminal there is no pencil:** freehand with the mouse works in braille but is coarse,
     so the quick path is placing shapes, typing labels and connecting them by keyboard. Pencil
-    and stylus belong to the GUI, on the same canvas engine and the same files.
+    and stylus belong to a graphical frontend, on the same canvas engine and the same files.
   - **Other editors are extensions** over the gateway (Neovim today, in a pane), for people who
     want to keep theirs.
 - **A lossless Markdown tree for the editor** *(built: `cst.rs`; #140 step 1)*. A note is a
@@ -492,7 +492,8 @@ change what it shows, never how it works.
 
 ## Direction and order
 
-*(decided 2026-11-11; the work, in this order, is the first section of roadmap issue #100)*
+*(decided 2026-11-11, the language server dropped from it on 2026-11-20; the work, in this
+order, is the first section of roadmap issue #100)*
 
 cold-lava has a code editor's architecture, for human notes: owners are to file formats what
 language servers are to languages, types are the type system, and extensions are the plugins.
@@ -509,11 +510,12 @@ What was decided:
 - **Identity** (#190). An item gets an anchor the first time a shape, a link or an extension
   keeps a reference to it; items nobody refers to are never written to.
 - **One door** (#179, #180, #193, #194). Every program is a client of one versioned protocol:
-  the terminal app, a GUI, `cold-lava lsp`, the command line and extensions. The extension host
+  the terminal app, a GUI, the command line and extensions. The extension host
   and its permission check are shared by all frontends *(built: `cold-lava-host`, #179)*, settings belong to each open workspace,
   and what the menu does to files goes through gateway messages *(built for delete, restore
-  and new folders, the first group of #193; rename, merge, recipes, undo and bookmarks
-  follow)*.
+  and new folders, the first group of #193; rename, merge, recipes and undo follow)*.
+  Obsidian's bookmarks, a saved list, are to be removed instead (#373): a bookmark here is the
+  anchor on a passage (#190).
 - **Built-in surfaces, extension data.** Extensions bring data, file formats, types and simple
   views. The page and the whiteboard are built in ("The frontend", above). The earlier goal
   that the menu and the canvas become extensions is dropped.
@@ -524,7 +526,13 @@ What was decided:
   "Who decides what").
 - **The language server comes before the editor** (#195). It is the smallest frontend, it puts
   types, links and renames into the editor you already use, and cold-lava's own editor later
-  builds on the same pieces.
+  builds on the same pieces. *Reversed on 2026-11-20:* the notebook, cold-lava's own editor,
+  comes first, and `cold-lava lsp` is not planned. A language server stays possible later, as
+  an ordinary reader through the same door. The reasons: here the owners are the language
+  servers (cold-lava asks them; a language server points the other way); LSP fits only text
+  formats; an LSP rename has the editor write cold-lava's changes, around the safe write path
+  (and the archive and the logbook to come, #305, #306); and it takes effort from the one
+  opinionated frontend.
 
 The order, engine-facing work first and the UX last. Since 2026-11-12, a refactor goes before
 the feature that lands on its code (`docs/foundations.md`, "How the code is built"); roadmap
@@ -533,12 +541,14 @@ issue #100 is the one list of open work and says which step each feature waits f
 1. Finish the half-done migrations, so there is one path for each thing: one Markdown reading
    (the tree), one path for owned files, the whiteboard's screens in the menu's loop.
 2. One door into the engine.
-3. `cold-lava lsp`, used daily on real notes.
-4. Types and identity.
-5. The terminal views (lists, tables, the graph).
-6. Drawings.
-7. The notebook: cold-lava's own editor and the page. Whether the page is built for the
-   terminal or the GUI first is open (#196), to decide after real use.
+3. Types and identity.
+4. The terminal views (lists, tables, the graph).
+5. Drawings. *Paused on 2026-11-20 (#375):* foundations 11 and 12 still describe them, but a
+   placed shape's data is a new kind of book with no owner yet, so shapes, bindings and the
+   shape editor get no new work until one is decided (ARCHITECTURE.md, "Where the story is
+   ahead of the code").
+6. The notebook: cold-lava's own editor and the page. Whether the page is built for the
+   terminal or a graphical frontend first is open (#196), to decide after real use.
 
 ## What stays fixed
 

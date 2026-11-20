@@ -17,9 +17,7 @@
 //! touches files.
 //!
 //! It reads the terminal app, and the host only for its reads of the core's index. Nothing
-//! else guards the host or the engine's own feature modules (#226's test isn't written), and
-//! nothing here reads `crates/gui`, which is outside the Cargo workspace and scans a
-//! workspace itself (`crates/gui/src/main.rs`, `workspace::scan`).
+//! else guards the host or the engine's own feature modules (#226's test isn't written).
 
 use std::path::Path;
 

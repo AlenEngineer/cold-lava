@@ -3,8 +3,8 @@
 //! It computes what a frontend draws and never draws it: shapes made of parts in their own unit
 //! box, placed by the user (move, stretch, rotate); regions combined from parts with `&`, `|`
 //! and `-`; and, built on those, rasterizing to terminal cells, braille dots or pixels, fitting
-//! text and labels inside regions, and hit testing. The terminal UI and a GUI paint the same
-//! results, so neither re-derives geometry. It must not depend on a UI crate (ratatui,
+//! text and labels inside regions, and hit testing. Every frontend paints the same results, so
+//! none re-derives geometry. It must not depend on a UI crate (ratatui,
 //! crossterm, portable-pty, vt100).
 
 pub mod area;

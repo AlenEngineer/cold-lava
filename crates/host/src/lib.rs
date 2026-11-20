@@ -1,5 +1,5 @@
 //! The extension host: what runs cold-lava's extensions and guards the workspace gateway, the
-//! same for every frontend (the terminal UI, the GUI, a language server). It has no user
+//! same for every frontend (the terminal UI today, any other tomorrow). It has no user
 //! interface and must not depend on ratatui, crossterm, portable-pty or vt100; frontends depend
 //! on it, and it depends on the engine, never the other way.
 //!

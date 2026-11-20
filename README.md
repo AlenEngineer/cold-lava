@@ -831,6 +831,9 @@ type may take it).
 
 ### Shapes
 
+Shapes, bindings and the shape editor are paused: what is described here works, and nothing new
+is being added to it (#375).
+
 A **shape** says how something is drawn on the canvas: parts (rectangles, circles, lines, arrows,
 paths of lines and curves, text, other shapes) in a box, named regions made from them (`left & right`), the data it
 takes and what it does when you drop or click. They are written in TOML like types: built in
@@ -1026,10 +1029,8 @@ extension host every frontend shares (`crates/host`, no user interface: manifest
 extensions in their own process), the
 frontend framework (`crates/views`, filled as its parts are extracted: today the view
 vocabulary extensions send) and a small headless text
-editor both frontends render (`crates/editor`) and the headless canvas engine shapes are drawn from
-(`crates/canvas`) are crates in one Cargo workspace. A graphical window on Tauri lives in `crates/gui`, outside the workspace so normal
-builds never compile a webview: `cargo run --manifest-path crates/gui/Cargo.toml` (on Linux it
-needs webkit2gtk-4.1). The terminal UI is and stays the main way to use cold-lava.
+editor every frontend renders (`crates/editor`) and the headless canvas engine shapes are drawn from
+(`crates/canvas`) are crates in one Cargo workspace. The terminal UI is and stays the main way to use cold-lava.
 
 ```bash
 cargo test --workspace                                   # unit and integration tests
