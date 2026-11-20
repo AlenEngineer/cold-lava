@@ -587,7 +587,7 @@ pub fn toggle_text(
         ))
         .into());
     }
-    let Some((_, task)) = item else {
+    let Some((item, task)) = item else {
         bail!("line {line} of {shown} is not a task");
     };
     let dataview = || {
@@ -599,11 +599,10 @@ pub fn toggle_text(
         .task
         .captures(rest)
         .with_context(|| format!("line {line} of {shown} is not a task"))?;
-    let (prefix, mid, body) = (
-        format!("{quote}{}", &caps[1]),
-        caps[3].to_string(),
-        caps[4].to_string(),
-    );
+    let (prefix, mid) = (format!("{quote}{}", &caps[1]), caps[3].to_string());
+    // What the tick adds goes before a block id, as Obsidian Tasks writes it, and a new
+    // occurrence gets none: two lines can't share one.
+    let (body, block_id) = split_block_id(&caps[4], item);
     let mut warning = None;
     let mut next = None;
 
@@ -611,15 +610,14 @@ pub fn toggle_text(
     let without = |b: &str, emoji, dv| strip_field(b, emoji, dv);
     let new_body = match settings.status_type(new_char) {
         StatusType::Done => {
-            let mut b = without(&body, "❌", "cancelled");
+            let mut b = without(body, "❌", "cancelled");
             if settings.set_done_date {
                 b = add_field(&b, "✅", "completion", today, dataview());
             }
             if let Some(rule) = &task.recurrence {
                 match next_occurrence(&task, rule, today) {
                     Some(dates) => {
-                        let mut nb =
-                            without(&without(&body, "✅", "completion"), "❌", "cancelled");
+                        let mut nb = without(&without(body, "✅", "completion"), "❌", "cancelled");
                         for (emoji, field, new) in dates {
                             nb = replace_date(&nb, emoji, field, new);
                         }
@@ -635,16 +633,16 @@ pub fn toggle_text(
             b
         }
         StatusType::Cancelled => {
-            let b = without(&body, "✅", "completion");
+            let b = without(body, "✅", "completion");
             match settings.set_cancelled_date {
                 true => add_field(&b, "❌", "cancelled", today, dataview()),
                 false => b,
             }
         }
         // Open again: drop the done / cancelled date.
-        _ => without(&without(&body, "✅", "completion"), "❌", "cancelled"),
+        _ => without(&without(body, "✅", "completion"), "❌", "cancelled"),
     };
-    let new_line = format!("{prefix}{new_char}{mid}{new_body}");
+    let new_line = format!("{prefix}{new_char}{mid}{new_body}{block_id}");
     lines[line - 1] = new_line.clone();
     let mut toggled_line = line;
     let mut next_at = None;
@@ -697,6 +695,16 @@ fn task_at<'a>(
         .iter()
         .filter(|i| i.line == line)
         .find_map(|i| Some((i, Task::of(i, raw, settings)?)))
+}
+
+/// `body` cut before the block id that ends it (` ^rent`), and the id, when the item reads one
+/// on this line. An item of several lines has its id on its last.
+fn split_block_id<'a>(body: &'a str, item: &Item) -> (&'a str, &'a str) {
+    let here = item.block_id.is_some() && item.line == item.end_line;
+    match crate::markdown::block_id_pattern().captures(body) {
+        Some(c) if here => body.split_at(c.get(0).unwrap().start()),
+        _ => (body, ""),
+    }
 }
 
 fn strip_field(body: &str, emoji: &str, dv: &str) -> String {
