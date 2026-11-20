@@ -1136,7 +1136,6 @@ fn the_boards_line_is_said_again_after_an_owner_that_cant_read() {
         &dir,
         &["--home".as_ref(), home.as_os_str()],
     );
-    eprintln!("{}", String::from_utf8_lossy(&out.stdout));
     assert_passed(&out);
     let _ = std::fs::remove_dir_all(dir);
 }
