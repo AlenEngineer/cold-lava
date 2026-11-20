@@ -6,7 +6,12 @@ name: Changelog
 # one of main's required checks.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+# A label added then removed quickly gives two runs; the later one is the answer.
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
