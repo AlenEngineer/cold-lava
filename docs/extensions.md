@@ -293,19 +293,20 @@ alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is 
   later (a duplicated note) is not rewritten: in one note the first copy keeps the id, as for
   any `^id`.
 - **The read-back.** Nothing is written unless the note reads back with nothing new but the
-  anchor. Its tree enters and leaves the same nodes and reads the name as a block id where it
-  is written, so the line ends in text and not in a code block, a table row or a heading's
+  anchor. Its tree enters and leaves the same nodes and reads the name as a block id where it is
+  written, so the line ends in text and not in a code block, a table row or a heading's
   underline. Only the tree can tell: an item's anchor is read off the end of its last own line
-  whatever that line is, an item's indented code included. Its items are the same, each paired
-  with the one of its kind that starts on its line, with the same data, lines, section and
-  parent. And the anchor rule holds (`items::anchors`), with the name counted as the anchored
-  item's own: it is that item's anchor and no other's, and every other anchor is where it
-  was. Ids are not compared, since the key rules move some once: the anchored item's (it keeps
-  its new one after), a later twin's (an item that says the same under the same parent), the
-  children of either, and every typed quote or callout whose first line of words the item
-  ends, so a task in a nested quote moves both quotes' ids (a typed block with no key fields
-  is keyed by its words, a `^name` included, as a tick or a reword on that line already moves
-  it). The corpus test checks that no other id moves. Otherwise it is refused as `read-back`.
+  whatever that line is, so the items alone would take a `^name` written after an item's
+  indented code, after its closing fence or on a callout's empty title. Its items are the same,
+  each paired with the one of its kind that starts on its line, with the same data, lines,
+  section and parent. And the anchor rule holds (`items::anchors`), with the name counted as the
+  anchored item's own: it is that item's anchor and no other's, and every other anchor is where
+  it was. Ids are not compared, since the key rules move some once: the anchored item's (it
+  keeps its new one after), a later twin's (an item that says the same under the same parent),
+  the children of either, and every typed quote or callout whose first line of words the item
+  ends, so a task in a nested quote moves both quotes' ids (a typed block with no key fields is
+  keyed by its words, a `^name` included, as a tick or a reword on that line already moves it).
+  The corpus test checks that no other id moves. Otherwise it is refused as `read-back`.
 - **Refused, saying what to keep instead.** A heading (a link to it by its words,
   `[[Note#Heading]]`); a whole note a type reads (a link to the note); a table row, and a
   quote or a callout a type reads (a link to the heading above it: a quote's `^name` goes on

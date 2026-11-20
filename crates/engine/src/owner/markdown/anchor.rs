@@ -140,8 +140,9 @@ impl Tree {
 /// where it is written. Then the anchor ends a line of text, and nothing around it reads
 /// otherwise: a code block, a table row or a heading's underline would. Only the tree can
 /// tell: the walk reads an item's anchor off the end of its last own line, whatever that line
-/// is (`items.rs`), so it would read a `^name` written in an item's indented code as the
-/// item's. Which anchors the items have is the anchor rule's to compare (`items::anchors`).
+/// is (`items.rs`), so it would take a `^name` written after an item's indented code, after
+/// its closing fence or on a callout's empty title as the item's. Which anchors the items have
+/// is the anchor rule's to compare (`items::anchors`).
 pub(super) fn same_tree(
     was: &Tree,
     is: &Tree,
