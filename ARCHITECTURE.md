@@ -70,13 +70,15 @@ for the same reason.
   the core, which is why the engine depends on `canvas`. They are meant to be readers that come
   through the door like any other: the rule and its test first, then the split into crates
   (both #226, decided in #185), after which the core depends on nothing of the project's.
-- Characters not hired yet. Decided: **the bookmark**, a name stuck on a passage (an item) the
-  first time something refers to it, so the reference survives a reword or a move (#190).
-  Proposed, with decisions still open: **the archivist**, who keeps every page the librarian
-  replaces (#305); **the logbook**, where every change is written down with who asked and which
-  translator wrote it (#306); **dictionaries**, a format described as data, so the librarian
-  could check a write by its bytes (#307); and a **ladder of trust** for how far an outside
-  translator may write (#308).
+- Characters decided but not hired yet: **the bookmark**, a name stuck on a passage (an item)
+  the first time something refers to it, so the reference survives a reword or a move (#190);
+  **the archivist**, who keeps every page the librarian replaces, outside the workspace
+  (#305); **the logbook**, where every change is written down with who asked and which
+  translator wrote it, so any change can be undone, even after a restart (#306);
+  **dictionaries**, a format described as data in a small format of cold-lava's own, so the
+  librarian can check a write by its bytes (#307); and the **ladder of trust** for how far a
+  writer may write unchecked, now one of the foundations (#308; its unchecked rung waits for
+  an owner that needs it). The archivist and the logbook wait for track C (#271).
 
 ## The rules everything stands on
 

@@ -26,6 +26,10 @@ index.
   it was read.
 - Files are written atomically, and deleted only to the trash.
 - What the engine doesn't understand in a file, it keeps.
+- A write is checked as far as its writer lets it be: by its bytes where the engine reads the
+  file itself, by the writer's own reading where it can't. A write nobody checks happens only
+  where the person allowed it, for one writer and one kind of file, and the page it replaced
+  is kept.
 - A note stays a valid Markdown file that other tools can open. New meaning comes from
   readings of text other tools already accept, never from syntax they would choke on.
 
