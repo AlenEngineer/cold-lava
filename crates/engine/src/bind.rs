@@ -18,7 +18,8 @@ use serde_json::Value as Json;
 use crate::act::{Ask, InputData, Inputs, MemberData, Rebind};
 use crate::core::{Core, Event};
 use crate::gateway::{Filter, News, Query, Select, SubId};
-use crate::shapes::{Loaded, Origin, Shapes, fill};
+use crate::origin::Origin;
+use crate::shapes::{Loaded, Shapes, fill};
 use crate::shows::{Cond, Member, Shows};
 
 /// Whom a binding's subscriptions belong to: the canvas, not an extension. The frontend hands

@@ -6,7 +6,7 @@
 
 use cold_lava_engine::items::{self, Settings};
 use cold_lava_engine::markdown::Flavour;
-use cold_lava_engine::tasks::TasksSettings;
+use cold_lava_engine::tasks_settings::TasksSettings;
 use cold_lava_engine::{daily, templates, types};
 use serde_json::{Value, json};
 

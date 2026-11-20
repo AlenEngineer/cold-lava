@@ -240,10 +240,10 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch. What an owned file leaves out is said where
+    /// After the workspace was read from scratch. Returns what an owned file leaves out, where
     /// that is news since the file was read before (`owned_news`), for the files the scan no
-    /// longer finds too.
-    fn rescanned(&mut self, index: Index) {
+    /// longer finds too, for the caller to say with its `Rescanned`.
+    fn rescanned(&mut self, index: Index) -> Vec<Event> {
         let before = std::mem::replace(&mut self.index, index).workspace.owned;
         self.reload_bookmarks();
         self.changed.clear();
@@ -255,9 +255,10 @@ impl Core {
         let gone = (before.iter()).filter(|b| owned_at(now, &b.rel).is_none());
         let gone = gone.map(|b| owned_news(Some(b), None));
         let found = (now.iter()).map(|f| owned_news(owned_at(&before, &f.rel), Some(f)));
-        self.unseen.extend(gone.chain(found).flatten());
+        let leaves_out: Vec<Event> = gone.chain(found).flatten().collect();
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
+        leaves_out
     }
 
     /// The extensions that own these kinds of file: their files' items and links join the
@@ -340,13 +341,12 @@ impl Core {
         if self.owners.owner_of(path) != Some(owner) {
             return;
         }
-        if self.edits.reads_back(path, rev) {
-            let settings = self.index.workspace.item_settings();
-            if let Some(write) = self.edits.read_back(path, given, settings) {
-                self.write_edit(write);
-            }
-            return;
-        }
+        let settings = self.index.workspace.item_settings();
+        let given = match self.edits.read_back(path, rev, given, settings) {
+            Err(given) => given,
+            Ok(Some(write)) => return self.write_edit(write),
+            Ok(None) => return,
+        };
         self.owners.answered(owner, path, rev, given.as_ref().ok());
         let events = match given {
             Ok(_) => self.owned_changed(&[path.to_string()]),
@@ -568,10 +568,7 @@ impl Core {
         };
         let item = (file.items.iter()).find(|it| it.id == edit.id);
         let item = item.filter(|it| it.rev == edit.rev).ok_or_else(gone)?;
-        if let Some(owner) = self.edits.waiting(&file.rel) {
-            let message = format!("{} has an edit waiting for {owner}: try again", file.rel);
-            return Err(error(Reason::Changed, message));
-        }
+        self.edits.free(&file.rel)?;
         let place = file.places[&edit.id].clone();
         // How the owner gave the item: as a piece, as a typed item, or in a Markdown piece;
         // among the items that hold their places (`Places`), so the one the change is for.
@@ -647,14 +644,11 @@ impl Core {
         if after.is_none() && given::same_data(&want, item) {
             return Ok(unchanged());
         }
-        let asked = ItemEdit {
-            by: by.to_string(),
-            item: want,
-            next,
-            what,
-            warning,
-        };
-        let (ticket, write) = (self.edits).edit_item(file, changes, expect, asked, settings)?;
+        let asked = ItemEdit::new(by, want, next, what, warning);
+        let before = read::Seen::file(&file.path)
+            .map_err(|e| error(Reason::Io, format!("{}: {e}", file.rel)))?;
+        let edits = &mut self.edits;
+        let (ticket, write) = edits.edit_item(file, &before, changes, expect, asked, settings)?;
         if let Some(write) = write {
             self.write_edit(write);
         }
@@ -677,54 +671,26 @@ impl Core {
     }
 
     /// An owned file's new text that read back as asked (the edit desk's): write it over the
-    /// text the edit was made on, refused if the file changed since the edit began, take what
-    /// its owner read in it as the file's items and links, and answer whoever asked.
+    /// file as the edit was made on it, refused if it changed since; once it is written, take
+    /// what its owner read in it as the file's items and links, and tell subscribers. Either
+    /// way the desk hears how the write went, and answers whoever asked.
     fn write_edit(&mut self, w: ToWrite) {
-        let error = gateway::Error::new;
         let path = w.path.as_str();
-        let at = self.root().join(path);
-        let written = crate::write::replace(&at, w.before.as_bytes(), w.after.as_bytes());
-        if let Err(e) = written {
-            let reason = match e {
-                crate::write::WriteError::Changed(_) => Reason::Changed,
-                _ => Reason::Io,
-            };
-            let failed = error(reason, format!("{path}: {e}"));
-            return self.edits.answer(w.edit.by, w.ticket, Err(failed));
+        let written = w.before.replace(w.after.as_bytes());
+        let mut events = Vec::new();
+        if written.is_ok() {
+            self.owners.answered(&w.owner, path, &w.rev, Some(&w.given));
+            events = self.owned_changed(&[path.to_string()]);
+            events.push(Event::ItemEdited {
+                note: path.to_string(),
+                item: w.item,
+                by: w.by,
+                what: w.what,
+            });
         }
-        self.owners.answered(&w.owner, path, &w.rev, Some(&w.given));
-        let mut events = self.owned_changed(&[path.to_string()]);
-        let ItemEdit {
-            by,
-            item,
-            next,
-            what,
-            warning,
-        } = w.edit;
         let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
-        let find = |want: &Item| {
-            let items = file.map(|f| f.items.as_slice()).unwrap_or_default();
-            (items.iter().find(|i| i.id == want.id))
-                .or_else(|| items.iter().find(|i| given::same_data(i, want)))
-                .cloned()
-        };
-        let answer = find(&item).map(|found| Edited {
-            item: found,
-            changed: true,
-            next: next.as_deref().and_then(find),
-            warning,
-        });
-        let answer = answer.ok_or_else(|| {
-            let message = format!("{path} was written, but {} isn't in it now", item.id);
-            error(Reason::ReadBack, message)
-        });
-        events.push(Event::ItemEdited {
-            note: path.to_string(),
-            item: item.id.clone(),
-            by: by.clone(),
-            what,
-        });
-        self.edits.answer(by, w.ticket, answer);
+        let items: &[Item] = file.map(|f| f.items.as_slice()).unwrap_or_default();
+        self.edits.wrote(path, written.map(|()| items));
         self.broadcast(&events);
         self.unseen.extend(events);
     }
@@ -743,7 +709,11 @@ impl Core {
         edits: &mut [crate::rename::FileEdit],
     ) -> Result<Option<Ticket>, String> {
         let settings = self.index.workspace.item_settings();
-        self.edits.relink(edits, settings)
+        let planned = |e: &crate::rename::FileEdit| {
+            let seen = read::Seen::kept(&e.path, e.old_text.as_str());
+            seen.unchanged().is_ok()
+        };
+        self.edits.relink(edits, planned, settings)
     }
 
     /// Renames, merges and recipes whose owners have all answered (`apply`), or one refused:
@@ -933,8 +903,9 @@ impl Core {
             }
             Kind::Folder => match workspace::scan(self.root()) {
                 Ok(scanned) => {
-                    self.rescanned(Index::build(scanned));
-                    vec![Event::Rescanned]
+                    let mut events = self.rescanned(Index::build(scanned));
+                    events.push(Event::Rescanned);
+                    events
                 }
                 Err(_) => Vec::new(),
             },
@@ -1011,11 +982,14 @@ impl Core {
     }
 
     /// Read the whole workspace again right away (after cold-lava itself moved files around).
-    /// Subscribers get `Rescanned`.
+    /// Subscribers get what owned files leave out, if that is news, then `Rescanned`; the next
+    /// `poll` returns the first.
     pub fn rescan_now(&mut self) {
         if let Ok(v) = workspace::scan(&self.index.workspace.root) {
-            self.rescanned(Index::build(v));
+            let leaves_out = self.rescanned(Index::build(v));
+            self.broadcast(&leaves_out);
             self.broadcast(&[Event::Rescanned]);
+            self.unseen.extend(leaves_out);
         }
     }
 
@@ -1038,7 +1012,7 @@ impl Core {
         if std::mem::take(&mut self.rescan) {
             self.changed.clear();
             match workspace::scan(self.root()) {
-                Ok(v) => self.rescanned(Index::build(v)),
+                Ok(v) => events.extend(self.rescanned(Index::build(v))),
                 Err(_) => return unseen, // the folder vanished; keep what we had
             }
             events.push(Event::Rescanned);

@@ -15,6 +15,8 @@
 //! - `json`, `json_line`, `Out::json`, `Out::json_pretty`: JSON, which escapes the way JSON
 //!   does and is for a program to read. It is written as it is.
 //!
+//! A reader that stops early (`| head`) ends the output and nothing else: see `write`.
+//!
 //! One call is one line. A line break inside the text of a listing line or a message is
 //! escaped like any other character a terminal acts on, so text from outside can't begin a
 //! line of its own. What has several lines by the app's own structure says so: one call a
@@ -26,6 +28,7 @@ use cold_lava_views::shown::{Level, escape};
 use serde::Serialize;
 use std::fmt::Arguments;
 use std::io::{self, StdoutLock, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// `text` with each of its lines escaped as content. The line ends stay as they are, a CR
 /// before one included (a note whose lines end in CR LF prints as it did).
@@ -53,27 +56,53 @@ fn message(words: Arguments<'_>) -> String {
     escape(&words.to_string(), Level::Message).into_owned()
 }
 
-// The entries below print with `println!` and `eprintln!` themselves, and don't go through
-// `Out`, so that a closed stdout ends the program exactly as it did when each command
-// printed with them: the same panic, from the same place in the standard library.
+/// Whether stdout's reader has gone (`cold-lava --help | head`).
+static GONE: AtomicBool = AtomicBool::new(false);
+
+/// Text on stdout, unless its reader has gone, now or before: then nothing is written from
+/// here on and the answer is `BrokenPipe`. Only the output ends. The command goes on to do
+/// everything else it was asked (a write, its errors on stderr) and exits as it would have,
+/// so a closed stdout is never a reason to stop halfway. The one way stdout is written.
+fn write(out: &mut StdoutLock<'static>, text: Arguments<'_>) -> io::Result<()> {
+    if GONE.load(Ordering::Relaxed) {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    let written = out.write_fmt(text);
+    if let Err(e) = &written
+        && e.kind() == io::ErrorKind::BrokenPipe
+    {
+        GONE.store(true, Ordering::Relaxed);
+    }
+    written
+}
+
+/// Text on stdout for the calls that say nothing back: a gone reader is not an error to
+/// them (`write`). Any other failure to print is a panic, as `println!` made it.
+fn put(text: Arguments<'_>) {
+    if let Err(e) = write(&mut held().0, text)
+        && e.kind() != io::ErrorKind::BrokenPipe
+    {
+        panic!("failed printing to stdout: {e}");
+    }
+}
 
 /// One line of a listing on stdout.
 pub fn listing(words: Arguments<'_>) {
-    println!("{}", content(words));
+    put(format_args!("{}\n", content(words)));
 }
 
 /// Lines of a listing that come as one text (a shape drawn as text, a diff), written as
 /// they are but for what is escaped: no line end is added.
 pub fn listing_block(text: &str) {
-    print!("{}", lines(text));
+    put(format_args!("{}", lines(text)));
 }
 
 /// One line of a message on stdout.
 pub fn message_out(words: Arguments<'_>) {
-    println!("{}", message(words));
+    put(format_args!("{}\n", message(words)));
 }
 
-/// One line of a message on stderr.
+/// One line of a message on stderr. A closed stderr is a panic, as `eprintln!` made it.
 pub fn message_err(words: Arguments<'_>) {
     eprintln!("{}", message(words));
 }
@@ -91,23 +120,24 @@ pub fn problem_lines(problem: &Problem, indent: &str, first: &str) {
 
 /// The app's own text on stdout, as it is: only text known when the app was built.
 pub fn fixed(text: &'static str) {
-    println!("{text}");
+    put(format_args!("{text}\n"));
 }
 
 /// A value as JSON over several lines, on stdout.
 pub fn json<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+    put(format_args!("{}\n", serde_json::to_string_pretty(value)?));
     Ok(())
 }
 
 /// A value as JSON on one line, on stdout.
 pub fn json_line<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<()> {
-    println!("{}", serde_json::to_string(value)?);
+    put(format_args!("{}\n", serde_json::to_string(value)?));
     Ok(())
 }
 
-/// Stdout held for a long listing, which says when its reader is gone (`| head`) instead of
-/// stopping the program.
+/// Stdout held for a long listing. Its writes answer `BrokenPipe` once the reader is gone
+/// (`write`), so a listing that is all its command does can stop early instead of reading
+/// every note for no one.
 pub struct Out(StdoutLock<'static>);
 
 /// Stdout, held until the `Out` is dropped.
@@ -118,17 +148,23 @@ pub fn held() -> Out {
 impl Out {
     /// One line of a listing.
     pub fn listing(&mut self, words: Arguments<'_>) -> io::Result<()> {
-        writeln!(self.0, "{}", content(words))
+        write(&mut self.0, format_args!("{}\n", content(words)))
     }
 
     /// A value as JSON on one line.
     pub fn json<T: Serialize + ?Sized>(&mut self, value: &T) -> io::Result<()> {
-        writeln!(self.0, "{}", serde_json::to_string(value)?)
+        write(
+            &mut self.0,
+            format_args!("{}\n", serde_json::to_string(value)?),
+        )
     }
 
     /// A value as JSON over several lines.
     pub fn json_pretty<T: Serialize + ?Sized>(&mut self, value: &T) -> io::Result<()> {
-        writeln!(self.0, "{}", serde_json::to_string_pretty(value)?)
+        write(
+            &mut self.0,
+            format_args!("{}\n", serde_json::to_string_pretty(value)?),
+        )
     }
 }
 

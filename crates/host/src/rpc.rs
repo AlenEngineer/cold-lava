@@ -516,6 +516,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Keeping a reference writes into a note (#190), so `anchor` is an `items/edit` like the
+    /// others and needs `items.edit`.
+    #[test]
+    fn an_anchor_over_the_wire_needs_items_edit() {
+        use Permission::{ItemsEdit, ItemsRead};
+        let dir = workspace("anchor");
+        let plan = dir.join("Plan.md");
+        let mut core = Core::open(&dir).unwrap();
+        let task = json!({"kind": "task"});
+        let (found, _) = served(&mut core, &[ItemsRead], "items/query", task);
+        let item = found.unwrap()["items"][0].clone();
+        let anchor = json!({"id": item["id"], "rev": item["rev"], "op": "anchor"});
+        let (read_only, _) = served(&mut core, &[ItemsRead], "items/edit", anchor.clone());
+        assert_eq!(reason(&read_only.unwrap_err()), "forbidden");
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), "- [ ] Pay rent\n");
+        let both = [ItemsRead, ItemsEdit];
+        let (anchored, _) = served(&mut core, &both, "items/edit", anchor);
+        let anchored = anchored.unwrap();
+        assert_eq!(anchored["changed"], true);
+        let name = anchored["item"]["block_id"].as_str().unwrap().to_string();
+        let written = std::fs::read_to_string(&plan).unwrap();
+        assert_eq!(written, format!("- [ ] Pay rent ^{name}\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_link_graph_over_the_wire_and_news_when_it_changes() {
         use Permission::ItemsRead;

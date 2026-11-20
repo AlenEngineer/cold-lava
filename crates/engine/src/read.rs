@@ -4,11 +4,10 @@
 //! A file is read through a symlink, as every write reads it (`Seen::file`), or is known by
 //! bytes read earlier or just written (`Seen::kept`). Whatever is at a path, a folder or the
 //! link itself, is read without following one (`Seen::entry`). Each is read again the way it
-//! was seen, at its path or at the one a move took it to (`at`). A delete checks the entry
-//! itself, whatever way it was seen (`unchanged_entry`).
+//! was seen. A delete checks the entry itself, whatever way it was seen (`unchanged_entry`).
 //!
-//! It is the one home of a version, as the gateway names it: `rev` of a file's bytes, `rev_of`
-//! of what is at a path (`Contents`).
+//! It is the one home of a version, as the gateway names it: `rev` of a file's bytes, and
+//! `Seen::rev` of what is at a path.
 
 use crate::identity;
 use crate::write::{self, WriteError};
@@ -73,19 +72,24 @@ impl Seen {
         })
     }
 
-    /// What was seen, at `path`, where a move took it. It is read again the way it was seen.
-    pub fn at(&self, path: &Path) -> Seen {
-        Seen {
-            path: path.to_path_buf(),
-            was: self.was.clone(),
-            way: self.way,
-        }
+    /// Where it was seen.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The bytes read, when it was a file.
     pub fn bytes(&self) -> Option<&[u8]> {
         match &self.was {
             Contents::File(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// What a folder held when it was seen, each path relative to it, sorted; `None` for a file
+    /// or a link.
+    pub fn inside(&self) -> Option<impl Iterator<Item = &Path>> {
+        match &self.was {
+            Contents::Folder(entries) => Some(entries.iter().map(|(path, _, _)| path.as_path())),
             _ => None,
         }
     }
@@ -144,7 +148,7 @@ impl Way {
 
 /// What the user was shown of a file or folder, so a delete is refused if it changed since.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Contents {
+enum Contents {
     File(Vec<u8>),
     /// Everything inside the folder (relative paths, sorted), with each file's size and time.
     Folder(Vec<(PathBuf, u64, Option<SystemTime>)>),
@@ -153,12 +157,8 @@ pub enum Contents {
 }
 
 impl Contents {
-    pub fn read(path: &Path) -> Result<Contents, WriteError> {
-        Contents::at(path).map_err(|e| WriteError::Io(path.to_path_buf(), e))
-    }
-
     /// What is at `path` now, never following a symlink.
-    pub(crate) fn at(path: &Path) -> io::Result<Contents> {
+    fn at(path: &Path) -> io::Result<Contents> {
         let meta = std::fs::symlink_metadata(path)?;
         if meta.file_type().is_symlink() {
             return std::fs::read_link(path).map(Contents::Link);
@@ -189,12 +189,12 @@ pub fn rev(bytes: &[u8]) -> String {
 
 /// The version of the file at `rel` now, `None` when it is gone or can't be read.
 pub fn rev_at(root: &Path, rel: &str) -> Option<String> {
-    std::fs::read(root.join(rel)).ok().map(|b| rev(&b))
+    Seen::file(&root.join(rel)).ok().map(|seen| seen.rev())
 }
 
 /// The version of what is at a path, as a delete checks it. A folder's is a hash of its
 /// listing: every path in it with its size and modified time.
-pub(crate) fn rev_of(contents: &Contents) -> String {
+fn rev_of(contents: &Contents) -> String {
     match contents {
         Contents::File(bytes) => rev(bytes),
         Contents::Folder(entries) => {
@@ -379,32 +379,6 @@ mod tests {
             std::fs::read(&p).unwrap(),
             b"v3",
             "another program's change is kept"
-        );
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn what_was_seen_follows_a_move() {
-        let d = dir("moved");
-        let (from, to) = (d.join("Lava.md"), d.join("Volcanoes/Lava.md"));
-        std::fs::write(&from, "hot").unwrap();
-        let seen = Seen::file(&from).unwrap();
-        write::move_file(&from, &to).unwrap();
-        let Err(WriteError::Io(at, e)) = seen.unchanged() else {
-            panic!("nothing is where it was seen");
-        };
-        assert_eq!((at, e.kind()), (from, io::ErrorKind::NotFound));
-        let moved = seen.at(&to);
-        assert_eq!(moved.text(), Ok("hot"));
-        moved.replace(b"cold").unwrap();
-        assert_eq!(std::fs::read(&to).unwrap(), b"cold");
-        assert!(matches!(moved.unchanged(), Err(WriteError::Changed(at)) if at == to));
-        let (folder, renamed) = (d.join("Volcanoes"), d.join("Mountains"));
-        let listing = Seen::entry(&folder).unwrap();
-        write::move_file(&folder, &renamed).unwrap();
-        assert!(
-            listing.at(&renamed).unchanged().is_ok(),
-            "a folder is read again as its listing"
         );
         let _ = std::fs::remove_dir_all(&d);
     }

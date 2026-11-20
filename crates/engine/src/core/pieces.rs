@@ -635,3 +635,53 @@ fn a_tick_follows_custom_statuses_to_the_next_word() {
     assert_eq!(asked[0]["value"], "done");
     let _ = std::fs::remove_dir_all(core.root());
 }
+
+fn anchor(item: &Item) -> Edit {
+    Edit {
+        id: item.id.clone(),
+        rev: item.rev.clone(),
+        op: Op::Anchor,
+    }
+}
+
+/// A `^name` is Markdown's (#190). An item an owner gave, as a piece or as a typed item, has
+/// the id its place gives it, so an anchor on it is refused before its owner is asked, in
+/// words that name the file.
+#[test]
+fn an_anchor_on_a_piece_or_a_typed_item_is_refused_before_the_owner_is_asked() {
+    let mut core = open("anchor");
+    let plumber = tasks(&core).remove(0);
+    let refused = core.edit_item("binder", &anchor(&plumber)).unwrap_err();
+    assert_eq!(refused.reason, Reason::Refused, "{refused}");
+    assert!(refused.message.contains("Home.chores"), "{refused}");
+    assert!(core.take_file_edits().is_empty(), "the owner isn't asked");
+    assert_eq!(home(&core), HOME);
+    let _ = std::fs::remove_dir_all(core.root());
+
+    let dir = std::env::temp_dir().join(format!("cold-lava-typed-anchor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = " ;Water the plants\n";
+    std::fs::write(dir.join("Plants.list"), file).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let kind = OwnedKind {
+        extension: "list".into(),
+        owner: "lists".into(),
+        version: "1".into(),
+    };
+    core.set_owners(vec![kind], None);
+    let (_, asked) = core.take_reads().pop().unwrap();
+    let fields = json!({"status": " ", "text": "Water the plants"});
+    let given = json!({"items": [{"place": "1", "type": "task", "fields": fields}]});
+    let given: Given = serde_json::from_value(given).unwrap();
+    core.file_given("lists", "Plants.list", &asked.rev, Ok(given));
+    core.poll();
+    let water = tasks(&core).remove(0);
+    let refused = core.edit_item("binder", &anchor(&water)).unwrap_err();
+    assert_eq!(refused.reason, Reason::Refused, "{refused}");
+    assert!(refused.message.contains("Plants.list"), "{refused}");
+    assert!(core.take_file_edits().is_empty(), "the owner isn't asked");
+    let on_disk = std::fs::read_to_string(dir.join("Plants.list")).unwrap();
+    assert_eq!(on_disk, file);
+    let _ = std::fs::remove_dir_all(&dir);
+}

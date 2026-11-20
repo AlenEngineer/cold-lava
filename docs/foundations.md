@@ -129,6 +129,19 @@ choosing how a format is read, by declaring what a thing means or looks like in 
 of data, or by installing an owner for the files they use. Only the alphabet itself is the
 engine's. ([neutral-model.md](neutral-model.md) has the design.)
 
+### 14. A reference has two halves
+
+- A reference written in a file says which file it leads to and, if it says more, where in
+  that file. The two halves have different owners. Which file is the engine's to find, by the
+  workspace's link rules, whatever format either file is in. Where in it is the target's
+  owner's to read, because only that owner reads the target.
+- Each owner declares the forms of place it understands.
+- A reference into what no owner reads (a web address, or a place in a file of a kind nobody
+  owns) is kept as written and never checked. A kind of file gets places that can be checked
+  only by gaining an owner. Nothing stands in for a missing one.
+- A symbolic link is not a reference: it says where a file stands, not what it says. A note
+  reached through a link from another folder is one note at two paths.
+
 ## Frontends
 
 ### 1. A frontend is a client

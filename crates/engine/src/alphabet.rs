@@ -3,7 +3,7 @@
 //! role, the text inside them, the relations between them, and open attributes on each.
 //!
 //! The code holds the roles, the marks and their version. A type's `on` is written in the roles
-//! (`types::On`), an owner in another process gives pieces in them (`owner::given::Piece`), and
+//! (`sources::On`), an owner in another process gives pieces in them (`owner::given::Piece`), and
 //! items keep their own kinds (`items::Data`).
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

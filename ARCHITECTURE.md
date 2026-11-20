@@ -37,19 +37,20 @@ the new page. The librarian hands it back to the same translator and asks for a 
 it. It compares that report with the one it expected: the old report with the asked change made,
 both in the common language. If anything else moved, the page is refused (`given::same`).
 Whether someone else wrote in the book meanwhile is a comparison of bytes, not a reading: the
-bytes it read against the bytes there now (`write::replace`; over the gateway, a fingerprint of
-them, `rev`, made in `read.rs`). `read.rs`'s `Seen` is the one type the writes are to move onto;
-no write uses it yet (track A step A5, #265). Swapping the page in is copying bytes, atomically
-(`write.rs`), and a page taken out goes to the trash, never deleted for good (`trash.rs`).
+bytes it read against the bytes there now (`read.rs`'s `Seen`; over the gateway, a fingerprint
+of them, `rev`, made in `read.rs` too). `Seen` is the one type for it: most writes and deletes
+go through it, and the rest move onto it in track A step A5 (#265). Swapping the page in is
+copying bytes, atomically (`write.rs`), and a page taken out goes to the trash, never deleted
+for good (`trash.rs`).
 
 **A translator changes what a book says, never its name or its place.** Renaming, moving and
-removing a book are the librarian's: the librarian plans a rename and asks each translator only
-how its own pages should read once a name they mention has changed (`Core::relink`). Owning a
-kind of file grants no rename, move or delete, and a translator can't write whole a book another
-translator reads (#323). Removing is a reader's request under its own badge: any extension the
-person gave `files.delete` may send a file to the trash, whoever reads it, and the trash keeps
-it. Renaming and moving have no message at the door yet; when they come (#193), they come as a
-reader's requests under the same rule.
+removing a book are the librarian's to plan and the shelver's to carry out. For a rename, the
+librarian asks each translator only how its own pages should read once a name they mention has
+changed (`Core::relink`). Owning a kind of file grants no rename, move or delete, and a
+translator can't write whole a book another translator reads (#323). Removing is a reader's
+request under its own badge: any extension the person gave `files.delete` may send a file to
+the trash, whoever reads it, and the trash keeps it. Renaming and moving have no message at
+the door yet; when they come (#193), they come as a reader's requests under the same rule.
 
 **The librarian has clerks.** If the librarian did everything alone, it would never keep up, so
 each job that holds its own state belongs to a clerk: a tool the librarian calls in order and
@@ -60,8 +61,9 @@ desk (`core.rs`), and some aren't hired yet:
 | --- | --- | --- |
 | The front desk | checks an extension's badge before the librarian hears a word | `crates/host/src/host.rs` (split out of one file in C1, #312) |
 | The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
-| The edit desk | carries an edit to a translator, waits for its answer and reads it back, then hands the librarian the page to swap in | `owner/edits.rs` (track C step C2) |
+| The edit desk | carries an edit to a translator, waits for its answer and reads it back, hands the librarian the page to swap in, and tells whoever asked once the librarian says how the swap went | `owner/edits.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
+| The shelver | shelves, moves and trashes books, and keeps their shelf marks (symlinks; see References), reading no language | partly at its desk: `write.rs` (`create`, `move_file`) and `trash.rs`; the door's guard on shelf marks comes with #353, and the watcher's linked notes are #357 |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
 | The logbook keeper | writes down every change, who asked and which translator wrote it | not hired yet (#306, after track C) |
 
@@ -69,6 +71,31 @@ desk (`core.rs`), and some aren't hired yet:
 arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note saying
 why (`Given::left_out`). A code editor's language server returns edits instead of saving files
 for the same reason.
+
+## References
+
+The rule is foundation 14 in
+[docs/foundations.md](docs/foundations.md#14-a-reference-has-two-halves). This is how it reads
+in the story; the list below says how far the code has come.
+
+A book that mentions another book writes a **reference** in its own language: a link in a
+note, a file card on a canvas, a link column in a CSV file, a web address. Only the book's
+translator reads a reference or rewrites one, also when the librarian renames the book it
+leads to.
+
+A reference has two halves, with different owners. **Which book** is the librarian's to find
+in the catalogue, whatever language either book is in. **Where in that book** is the target's
+translator's to read, because only that translator reads the target. A reference into what no
+translator reads (a web address, or a place in a book nobody translates) is **foreign**: kept
+as written and never checked. A kind of book gets places that can be checked only by getting a
+translator; nothing stands in for a missing one.
+
+**A symlink is a shelf mark, not a reference.** It is written in no book. It says where a book
+stands, so it is the shelver's, never a translator's. A note linked from another folder is
+meant to be one book with two shelf marks. A shelf mark that leads off the shelves (outside
+the workspace) or into the staff room (the hidden folders, such as `.git` and `.obsidian`) is
+meant to be the person's alone: the person finds it and writes through it, but the front desk
+never lends it to a reader (an extension).
 
 ## Where the story is ahead of the code
 
@@ -92,15 +119,44 @@ for the same reason.
   the core, which is why the engine depends on `canvas`. They are meant to be readers that come
   through the door like any other: the rule and its test first, then the split into crates
   (both #226, decided in #185), after which the core depends on nothing of the project's.
-- Characters decided but not hired yet: **the bookmark**, a name stuck on a passage (an item)
-  the first time something refers to it, so the reference survives a reword or a move (#190);
-  **the archivist**, who keeps every page the librarian replaces, outside the workspace
-  (#305); **the logbook**, where every change is written down with who asked and which
-  translator wrote it, so any change can be undone, even after a restart (#306);
-  **dictionaries**, a format described as data in a small format of cold-lava's own, so the
-  librarian can check a write by its bytes (#307); and the **ladder of trust** for how far a
-  writer may write unchecked, now one of the foundations (#308; its unchecked rung waits for
-  an owner that needs it). The archivist and the logbook wait for track C (#271).
+- No translator checks a reference's place half yet, and none declares its place forms. The
+  design proposed for it: Markdown declares headings and block anchors, a canvas card ids, a CSV
+  file row keys, so the librarian can tell a reference that points nowhere from one it can't
+  check. The librarian finds the book by Obsidian's link rules, the only ones until a workspace
+  can choose a profile (#235; `resolver.rs`), and `cold-lava tidy` reports a reference whose
+  book is missing. The resolver splits `#heading` and `#^block` off every reference by
+  Markdown's rule, whatever language the target is in (`split_link`; the canvas owner reads a
+  file card's `subpath` through it too, in `canvas::anchors`). The reader uses the place only to
+  jump there, and `cold-lava tidy` never reports a reference whose heading is gone. A file
+  card's place half is an attribute of its card, not part of its link (#359). References to
+  items wait for #94.
+- Not every shelf mark is the shelver's yet. The scan skips a symlinked note, but the watcher
+  reads it as a note of its own, so its tasks show twice and the link's copy goes stale, and an
+  item edit on it never meets the door's path checks. #357 proposes one entry in the catalogue,
+  with the link as another name for the book.
+- The front desk's guard on shelf marks is half built. Today the door refuses a path named
+  hidden (`files::normal`) or one that leads outside the workspace (`within`). Until #353
+  merges, it follows a symlink that stays inside the workspace, so an extension can reach a
+  hidden folder through a folder link (`Inbox/Dot -> ../.git`), and a save replaces a linked
+  note with a copy (#349). Once #353 merges, the door never follows a symlink, as
+  `workspace/stat` and `workspace/delete` already don't, so nothing in the staff room is lent
+  even through a link, and the person's own saves (the whiteboard, the menu, an item edit)
+  write through one to the book it leads to.
+- Decided on 2026-11-20, not built: a link that leads outside the workspace or into a hidden
+  folder is listed for the person only (the tree, backlinks, search, the person's own saves),
+  never in an answer to an extension. It needs a person-only kind of entry in the catalogue
+  (#357).
+- **The bookmark** is placed but not yet followed. An extension can stick a name on an item
+  once (`items/edit` with `{"op": "anchor"}` writes a `^name`, #335), and the name survives a
+  reword. Finding the item by its name after its note moves (#190, PR 2) and bindings that
+  bookmark what they name (PR 3) are still ahead.
+- Characters decided but not hired yet: **the archivist**, who keeps every page the librarian
+  replaces, outside the workspace (#305); **the logbook**, where every change is written down
+  with who asked and which translator wrote it, so any change can be undone, even after a
+  restart (#306); **dictionaries**, a format described as data in a small format of cold-lava's
+  own, so the librarian can check a write by its bytes (#307); and the **ladder of trust** for
+  how far a writer may write unchecked, now one of the foundations (#308; its unchecked rung
+  waits for an owner that needs it). The archivist and the logbook wait for track C (#271).
 
 ## The rules everything stands on
 

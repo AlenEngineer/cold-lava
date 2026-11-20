@@ -262,8 +262,12 @@ fn only_listed(what: &str, remedy: &str, found: &[String], listed: &[&str]) {
     assert_eq!(found, listed, "{what}");
 }
 
-/// The engine's modules whose functions change files.
-const WRITES: [&str; 2] = ["trash::", "write::"];
+/// The engine's modules whose functions change files, and `read::Seen`, which is made to write
+/// over what was read (`Seen::replace`). `"Seen::"` matches where a `Seen` is made, not where
+/// it is written over, so a `Seen` the app got some other way and wrote over would not be
+/// counted. That is enough while no public engine function returns a `Seen`: the first that
+/// does must make this guard find the `.replace` as well.
+const WRITES: [&str; 3] = ["trash::", "write::", "Seen::"];
 
 /// The gateway's file messages, which are the core's to call.
 const GATEWAY_FILES: &str = "files::";
@@ -275,15 +279,17 @@ const GATEWAY_FILES: &str = "files::";
 ///
 /// - `trash::system_bin`: the delete prompt's "goes to" line.
 /// - `trash::free_path`: the name an undo offers when the old one is taken. It reads.
-/// - `write::create`, `create_if_missing`, `replace` in `home.rs`: new notes, and a note's
-///   new text. Later groups of #193.
-/// - `write::create_if_missing`, `replace` in `board.rs`: the whiteboard saves its canvas.
+/// - `write::create`, `create_if_missing` and `Seen::kept` (to write over it) in `home.rs`:
+///   new notes, and a note's new text. Later groups of #193.
+/// - `write::create_if_missing` and `Seen::kept` in `board.rs`: the whiteboard saves its
+///   canvas.
 #[test]
 fn the_app_deletes_restores_and_makes_folders_through_the_core() {
     let named = per_file(&sources(), |code| functions_of(code, &WRITES));
     let left = [
+        "board.rs: Seen::kept",
         "board.rs: write::create_if_missing",
-        "board.rs: write::replace",
+        "home.rs: Seen::kept",
         "home.rs: trash::free_path",
         "home.rs: trash::system_bin",
         "home.rs: write::create",
@@ -291,7 +297,6 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
         "home.rs: write::create_if_missing",
         "home.rs: write::create_if_missing",
         "home.rs: write::create_if_missing",
-        "home.rs: write::replace",
     ];
     assert_eq!(named, left);
     let home = sources().into_iter().find(|(file, _)| file == "home.rs");
@@ -763,8 +768,8 @@ fn item_edits(code: &str) -> Vec<String> {
 ///
 /// - `edit::set_field`: `cold-lava item set` on a note (#270, B3).
 /// - `tasks::toggle_in`: `cold-lava task toggle` (#270, B3).
-/// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it with
-///   `write::replace` itself.
+/// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it over the
+///   text read (`Seen::replace`) itself.
 ///
 /// An owner's functions that make a file's new text (`owner::edit`, `owner::markdown::edit`,
 /// `owner::canvas::edit` and `relink`, `owner::change`'s) would be listed; the app names
@@ -1034,6 +1039,7 @@ fn every_lists_module_is_guarded() {
     let names = [
         "trash",
         "write",
+        "Seen",
         "files",
         "merge",
         "rename",
@@ -1131,8 +1137,6 @@ fn the_app_prints_only_through_say() {
         "home.rs: write_raw( ×2",
         "main.rs: stdout() ×2",
         "say.rs: eprintln!( ×1",
-        "say.rs: print!( ×1",
-        "say.rs: println!( ×5",
         "say.rs: stdout() ×1",
         "term.rs: stdout() ×3",
         "term.rs: write_raw( ×1",
