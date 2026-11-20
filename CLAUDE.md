@@ -392,6 +392,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a), the one id formula
+  (`id`: its parts with a NUL between each two, as 16 hex digits) and a line's rev
+  (`line_id`). A leaf. Form an id only through it; whatever changes there moves ids, which is
+  the owner's decision, and its tests pin ids given before.
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
   bound, and the table of bounds, one type each (the trait `Limit`; the owner's limits of

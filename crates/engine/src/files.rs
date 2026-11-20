@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::{Error, Reason};
+use crate::identity::fnv;
 use crate::index::Index;
-use crate::tasks::fnv;
 use crate::trash::{self, Bin, Contents, Trashed, Went};
 use crate::write::{self, WriteError};
 
