@@ -63,6 +63,7 @@ desk (`core.rs`), and some aren't hired yet:
 | The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
 | The edit desk | carries an edit to a translator, waits for its answer and reads it back | `owner/edits.rs` holds the edit; the waiting and checking still sit in `core.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
+| The shelver | shelves, moves and trashes books, and keeps their shelf marks (symlinks; see References), reading no language | `write.rs` (`create`, `move_file`), `trash.rs` |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
 | The logbook keeper | writes down every change, who asked and which translator wrote it | not hired yet (#306, after track C) |
 
@@ -70,6 +71,40 @@ desk (`core.rs`), and some aren't hired yet:
 arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note saying
 why (`Given::left_out`). A code editor's language server returns edits instead of saving files
 for the same reason.
+
+## References
+
+A book that mentions another book writes a **reference** in its own language: `[[Lava]]` or
+`[text](Lava.md)` in a note, a file card on a canvas, a link column in a CSV file, a web
+address. Only the book's translator reads a reference or rewrites one (the Markdown owner's
+`links`, the canvas owner's file cards, the links in an outside translator's `file/read`; for a
+rename, `Core::relink`).
+
+A reference has two halves, and different people own them. **Which book** is the catalogue's.
+The librarian finds the book by Obsidian's rules, whatever language either book is in
+(`resolver.rs`). **Where in that book** (`#heading`, `#^anchor`, `#page=4`) is the target's
+translator's, because only that translator reads the target. So a reference is one of three
+kinds:
+
+| Kind | Leads to | Checked by |
+| --- | --- | --- |
+| Internal | a place in the same book | the book's own translator |
+| External | another book, in any language | the catalogue for the book, the target's translator for the place |
+| Foreign | a web address, or a file no translator reads | nobody; it is kept as written |
+
+A kind of file gets places that can be checked only by getting a translator: an extension that
+owns `.pdf` would make `#page=4` checkable. Nothing stands in for a missing translator. Each
+translator declares the place forms it understands (Markdown: headings and block anchors; a
+canvas: card ids; CSV: row keys), so the librarian can tell a reference that points nowhere
+from one it can't check.
+
+**A symlink is a shelf mark, not a reference.** It is written in no book. It says where a book
+stands, so it is the shelver's, never a translator's. A note linked from another folder is one
+book with two shelf marks: one entry in the catalogue, with the link as another name for it. A
+link that leads off the shelves (outside the workspace) is a book the library doesn't hold. The
+person may open it, but the library never lends it to a visitor (an extension), nor anything in
+the staff room (`.git`, `.obsidian`). So the door never follows a symlink, and the person's own
+saves (the whiteboard, the menu, an item edit) write through one to the file it leads to (#353).
 
 ## Where the story is ahead of the code
 
@@ -94,6 +129,18 @@ for the same reason.
   the core, which is why the engine depends on `canvas`. They are meant to be readers that come
   through the door like any other: the rule and its test first, then the split into crates
   (both #226, decided in #185), after which the core depends on nothing of the project's.
+- No translator checks a reference's place half yet, and none declares its place forms. The
+  resolver splits `#heading` and `#^block` off every reference by Markdown's rule, whatever
+  language the target is in (`split_link`; the canvas owner reads a file card's `subpath`
+  through it too, in `canvas::anchors`). The reader uses the place only to jump there, and
+  `cold-lava tidy` reports a reference whose book is missing, never one whose heading is gone. A
+  file card's place half is an attribute of its card, not part of its link (#359). References
+  to items wait for #94.
+- Not every shelf mark is the shelver's yet. The scan skips a symlinked note, but the watcher
+  reads it as a note of its own, so its tasks show twice and the link's copy goes stale, and an
+  item edit on it never meets the door's path checks (#357). Until #353 merges, the door follows
+  a symlink that stays inside the workspace, and a save replaces a linked note with a copy
+  (#349).
 - Characters decided but not hired yet: **the bookmark**, a name stuck on a passage (an item)
   the first time something refers to it, so the reference survives a reword or a move (#190);
   **the archivist**, who keeps every page the librarian replaces, outside the workspace
