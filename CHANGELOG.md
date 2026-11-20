@@ -65,9 +65,11 @@ change commands, keys and file formats; patch versions only fix things.
   workspace is no longer watched through the link. Before, the watcher read the link as a
   note or file of its own, so its tasks showed twice, its copy went stale, and an item edit
   on it, from an extension or the agenda, replaced the link with a copy. A note swapped for
-  a link after it was read is never written through: an item edit, a rename, a merge or a
-  recipe (an extension's included) is refused there, and a merge or recipe puts back what
-  it wrote. A `.obsidian` folder that is a link to settings shared between workspaces is
+  a link after it was read is never written through: an item edit is refused there, and a
+  rename, a merge or a recipe (an extension's included) is refused whole, before it moves or
+  writes anything, saying the note is a link. A `bookmarks.json` kept as a link is updated
+  where it leads by a rename or a merge, as bookmarking already did. A `.obsidian` folder
+  that is a link, to settings shared between workspaces or to a folder in the workspace, is
   still watched where it leads, so changes to its graph colour groups and bookmarks are
   heard as before (#349).
 

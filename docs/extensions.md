@@ -1404,13 +1404,16 @@ graph all see the new date. None of them knew what a canvas is.
   opened by its path (the whiteboard's canvas, the menu's tag edit of a note its tree lists,
   the shapes file, the bookmarks) go through a link, by a write named for it
   (`write::replace_through_link`): the file it leads to is replaced, with the temporary file
-  beside that file, and the link stays a link (`write::landing`).
+  beside that file, and the link stays a link (`write::landing`). A rename or a merge that
+  changes the bookmarks plans its edit where the link leads (`rename::bookmarks_edit`).
 
   Every other write the engine makes over a file it read, an extension's or the menu's,
   never follows a link: `write::replace` refuses one at the path, and a link swapped in after
   that check is replaced by the rename, never written through. That covers
   `workspace/write`, `workspace/create`, `items/edit` on a note or an owned file, and every
-  file a rename, a merge or a recipe (`recipe/run` included) writes or puts back. A folder on
+  file a rename, a merge or a recipe (`recipe/run` included) writes or puts back. Those three
+  check every file for a link before they move or write any (`rename::check_unchanged`), so
+  a note swapped for one is refused whole, never half renamed. A folder on
   the way swapped for a link is still followed, and so is a read at the path (#366).
 - **`file/changed {path, rev}`** (host → extension, a notification) comes from the core's one
   watcher: every file that isn't a note, outside hidden folders, is now reported as

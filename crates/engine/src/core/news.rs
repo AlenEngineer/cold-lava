@@ -1611,3 +1611,33 @@ fn a_link_the_watcher_reports_is_no_item_so_no_edit_writes_through_it() {
     assert_eq!(notes, ["Concepts/Lava.md", "Inbox/Ash.md"]);
     let _ = std::fs::remove_dir_all(&outside);
 }
+
+/// A recipe a shape's step runs over a note swapped for a symlink since the scan read it, to a
+/// file holding the same text, is refused whole, and says it is for the link, as the menu's
+/// refusal does: the reason a write gives (`Reason::of`) and its words, never a bare "changed".
+#[cfg(unix)]
+#[test]
+fn a_recipe_refused_for_a_link_says_so() {
+    let mut h = workspace("recipe-link");
+    let root = h.core.root().to_path_buf();
+    let outside = temp("recipe-link-outside");
+    let (plan, ash) = (h.read("Plan.md"), h.read("Ash.md"));
+    std::fs::write(outside.join("Ash.md"), &ash).unwrap();
+    std::os::unix::fs::symlink(outside.join("Ash.md"), root.join("Ash.link")).unwrap();
+    std::fs::rename(root.join("Ash.link"), root.join("Ash.md")).unwrap();
+
+    let refused = h
+        .try_recipe("rename-tag", &[("from", "ash"), ("to", "tephra")])
+        .unwrap_err();
+    assert_eq!(refused.reason, Reason::Refused, "{refused}");
+    let words = &refused.message;
+    assert!(words.contains("nothing was changed"), "{words}");
+    assert!(words.contains("Ash.md is a symbolic link"), "{words}");
+    assert_eq!(
+        std::fs::read_to_string(outside.join("Ash.md")).unwrap(),
+        ash
+    );
+    assert!(root.join("Ash.md").symlink_metadata().unwrap().is_symlink());
+    assert_eq!(h.read("Plan.md"), plan);
+    let _ = std::fs::remove_dir_all(&outside);
+}

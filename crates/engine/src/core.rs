@@ -115,7 +115,7 @@ pub struct Core {
     bookmarks: Result<Bookmarks, String>,
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<RecommendedWatcher>,
-    /// `.obsidian`'s own folder, when it is a symlink to one outside the workspace.
+    /// `.obsidian`'s own folder, when it is a symlink to one.
     linked_obsidian: Option<PathBuf>,
     changed: Vec<PathBuf>,
     boards: Vec<String>,
@@ -944,8 +944,11 @@ impl Core {
             self.cancel_relink(ticket);
             return Err(refused(message));
         }
-        let applied = recipe::apply(&plan)
-            .map_err(|e| gateway::Error::new(Reason::Changed, format!("{}: {e}", plan.title())))?;
+        let applied = recipe::apply(&plan).map_err(|e| {
+            let reason =
+                (e.downcast_ref::<crate::write::WriteError>()).map_or(Reason::Changed, Reason::of);
+            gateway::Error::new(reason, format!("{}: {e:#}", plan.title()))
+        })?;
         let paths: Vec<PathBuf> = plan.edits.iter().map(|e| e.path.clone()).collect();
         let mut events = self.refresh(&paths);
         let owned = plan.edits.iter().filter(|e| e.owned.is_some());
@@ -1048,10 +1051,9 @@ impl Core {
         let obsidian = self.linked_obsidian.as_deref();
         let mut any = false;
         for ev in rx.try_iter() {
-            for p in &ev.paths {
-                let p = &named(&root, obsidian, p);
-                match classify(&root, p) {
-                    Kind::Note => self.changed.push(p.clone()),
+            for p in ev.paths.iter().flat_map(|p| names(&root, obsidian, p)) {
+                match classify(&root, &p) {
+                    Kind::Note => self.changed.push(p),
                     Kind::Board(rel) => {
                         if !self.boards.contains(&rel) {
                             self.boards.push(rel);
@@ -1149,10 +1151,11 @@ fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {
     Bookmarks::read(root).map_err(|e| e.to_string())
 }
 
-/// `.obsidian`'s own folder, when `.obsidian` is a symlink to a folder outside the workspace,
-/// as people link one set of Obsidian settings into several workspaces. The watch of the
-/// workspace follows no link, so `watch` watches that folder on its own. Read as the core
-/// opens: a link made or removed later is heard after the next open.
+/// `.obsidian`'s own folder, when `.obsidian` is a symlink to a folder: outside the workspace,
+/// as people link one set of Obsidian settings into several workspaces, or in it. The watch of
+/// the workspace follows no link, so `watch` watches one outside on its own, and `names` names
+/// what is heard in it as under `.obsidian`. Read as the core opens: a link made or removed
+/// later is heard after the next open.
 fn linked_obsidian(root: &Path) -> Option<PathBuf> {
     let at = root.join(".obsidian");
     let link = std::fs::symlink_metadata(&at)
@@ -1160,22 +1163,23 @@ fn linked_obsidian(root: &Path) -> Option<PathBuf> {
         .file_type()
         .is_symlink();
     let real = std::fs::canonicalize(&at).ok()?;
-    (link && real.is_dir() && !real.starts_with(root)).then_some(real)
+    (link && real.is_dir()).then_some(real)
 }
 
-/// `path`, as the watcher reported it, named as in the workspace: one in `obsidian`, the folder
-/// a linked `.obsidian` leads to, is under `.obsidian`, so only `classify`'s settings files
-/// come of it, never a note or a file.
-fn named(root: &Path, obsidian: Option<&Path>, path: &Path) -> PathBuf {
-    match obsidian.and_then(|o| path.strip_prefix(o).ok()) {
-        Some(rest) => root.join(".obsidian").join(rest),
-        None => path.to_path_buf(),
-    }
+/// The names in the workspace of `path`, as the watcher reported it: its own, and, when it is
+/// in `obsidian` (the folder a linked `.obsidian` leads to), the same under `.obsidian`, where
+/// only `classify`'s settings files come of it. A path outside the workspace comes to nothing
+/// under its own name; one in a folder of the workspace, as a note there, still does.
+fn names(root: &Path, obsidian: Option<&Path>, path: &Path) -> impl Iterator<Item = PathBuf> {
+    let settings = obsidian.and_then(|o| path.strip_prefix(o).ok());
+    let settings = settings.map(|rest| root.join(".obsidian").join(rest));
+    std::iter::once(path.to_path_buf()).chain(settings)
 }
 
 /// The watcher of the folder at `root` and everything in it, following no symlink, as the scan
 /// doesn't, and of `obsidian` (a linked `.obsidian`'s folder) without what is inside its
-/// folders: `.obsidian/graph.json` and `bookmarks.json` are heard there.
+/// folders, when it is outside the workspace: `.obsidian/graph.json` and `bookmarks.json` are
+/// heard there.
 fn watch(
     root: &Path,
     obsidian: Option<&Path>,
@@ -1193,7 +1197,7 @@ fn watch(
     match watcher {
         Ok(mut w) => match w.watch(root, RecursiveMode::Recursive) {
             Ok(()) => {
-                if let Some(obsidian) = obsidian {
+                if let Some(obsidian) = obsidian.filter(|o| !o.starts_with(root)) {
                     let _ = w.watch(obsidian, RecursiveMode::NonRecursive);
                 }
                 (Some(rx), Some(w))
@@ -1334,39 +1338,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A `.obsidian` linked to a folder outside the workspace, as one set of Obsidian settings
-    /// shared by several workspaces is, is still heard: its settings files' changes come as
-    /// they do from a `.obsidian` in the workspace, and nothing else in its folder is news.
+    /// A `.obsidian` linked to a folder is still heard, outside the workspace, as one set of
+    /// Obsidian settings shared by several workspaces is, or in it: its settings files' changes
+    /// come as they do from a `.obsidian` in the workspace, and the rest of its folder is what
+    /// it was without the link, nothing outside, a note inside.
     #[cfg(unix)]
     #[test]
     fn a_linked_obsidian_folder_is_still_heard() {
-        let name = format!("cold-lava-core-linked-obsidian-{}", std::process::id());
-        let dir = std::env::temp_dir().join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("shared")).unwrap();
-        std::fs::create_dir_all(dir.join("w")).unwrap();
-        std::fs::write(dir.join("w/A.md"), "hi\n").unwrap();
-        std::os::unix::fs::symlink("../shared", dir.join("w/.obsidian")).unwrap();
-        let mut core = Core::open(&dir.join("w")).unwrap();
-        if core.is_live() {
-            std::fs::write(dir.join("shared/Stray.md"), "not a note\n").unwrap();
-            std::fs::write(dir.join("shared/graph.json"), "{}").unwrap();
-            let ev = wait_for(&mut core, |e| e.contains(&Event::GraphSettingsChanged));
-            assert!(
-                ev.contains(&Event::GraphSettingsChanged) || ev.contains(&Event::Rescanned),
-                "{ev:?}"
+        for (layout, link, settings) in [
+            ("outside", "../shared", "shared"),
+            ("inside", "_settings", "w/_settings"),
+        ] {
+            let name = format!(
+                "cold-lava-core-linked-obsidian-{layout}-{}",
+                std::process::id()
             );
-            let bookmarks = r#"{"items":[{"type":"search","ctime":1,"query":"lava"}]}"#;
-            std::fs::write(dir.join("shared/bookmarks.json"), bookmarks).unwrap();
-            let ev = wait_for(&mut core, |e| e.contains(&Event::BookmarksChanged));
-            assert!(
-                ev.contains(&Event::BookmarksChanged) || ev.contains(&Event::Rescanned),
-                "{ev:?}"
-            );
-            assert_eq!(core.bookmarks().unwrap().entries().len(), 1);
-            assert_eq!(core.index.workspace.notes.len(), 1, "only A is a note");
+            let dir = std::env::temp_dir().join(name);
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join(settings)).unwrap();
+            std::fs::create_dir_all(dir.join("w")).unwrap();
+            std::fs::write(dir.join("w/A.md"), "hi\n").unwrap();
+            std::os::unix::fs::symlink(link, dir.join("w/.obsidian")).unwrap();
+            let mut core = Core::open(&dir.join("w")).unwrap();
+            if core.is_live() {
+                let settings = dir.join(settings);
+                std::fs::write(settings.join("Stray.md"), "a note only inside\n").unwrap();
+                if layout == "inside" {
+                    let stray = Event::NoteCreated("_settings/Stray".into());
+                    let ev = wait_for(&mut core, |e| e.contains(&stray));
+                    assert!(
+                        ev.contains(&stray) || ev.contains(&Event::Rescanned),
+                        "{layout}: {ev:?}"
+                    );
+                }
+                std::fs::write(settings.join("graph.json"), "{}").unwrap();
+                let ev = wait_for(&mut core, |e| e.contains(&Event::GraphSettingsChanged));
+                assert!(
+                    ev.contains(&Event::GraphSettingsChanged) || ev.contains(&Event::Rescanned),
+                    "{layout}: {ev:?}"
+                );
+                let bookmarks = r#"{"items":[{"type":"search","ctime":1,"query":"lava"}]}"#;
+                std::fs::write(settings.join("bookmarks.json"), bookmarks).unwrap();
+                let ev = wait_for(&mut core, |e| e.contains(&Event::BookmarksChanged));
+                assert!(
+                    ev.contains(&Event::BookmarksChanged) || ev.contains(&Event::Rescanned),
+                    "{layout}: {ev:?}"
+                );
+                assert_eq!(core.bookmarks().unwrap().entries().len(), 1, "{layout}");
+                let notes = core.index.workspace.notes.len();
+                assert_eq!(notes, 1 + usize::from(layout == "inside"), "{layout}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

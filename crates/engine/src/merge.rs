@@ -574,6 +574,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A backlink swapped after the plan for a symlink to a file that holds the same text is
+    /// refused before anything is written or trashed, and nothing is written through it.
+    #[cfg(unix)]
+    #[test]
+    fn a_backlink_swapped_for_a_symlink_stops_the_merge_before_it_writes() {
+        let files = [
+            ("Lava.md", "# Lava\n"),
+            ("Pāhoehoe.md", "Smooth.\n"),
+            ("Kīlauea.md", "[[Pāhoehoe]]\n"),
+        ];
+        let (dir, ix) = workspace_with("swapped", &files);
+        let m = merge(&ix, "Pāhoehoe", "Lava");
+        let copy = dir.join("Kīlauea.md");
+        std::fs::write(&copy, "[[Pāhoehoe]]\n").unwrap();
+        let at = dir.join("workspace/Kīlauea.md");
+        std::os::unix::fs::symlink(&copy, dir.join("workspace/Kīlauea.link")).unwrap();
+        std::fs::rename(dir.join("workspace/Kīlauea.link"), &at).unwrap();
+        let err = format!("{:#}", apply(&m, None).unwrap_err());
+        assert!(err.contains("Kīlauea.md is a symbolic link"), "{err}");
+        assert!(err.contains("nothing was changed"), "{err}");
+        assert_eq!(read(&dir, "Lava.md"), "# Lava\n");
+        assert_eq!(read(&dir, "Pāhoehoe.md"), "Smooth.\n");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "[[Pāhoehoe]]\n");
+        assert!(
+            at.symlink_metadata().unwrap().is_symlink(),
+            "the link stays"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_refused_merge_or_undo_says_why_in_its_words() {
         let files = [

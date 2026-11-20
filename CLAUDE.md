@@ -133,7 +133,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   is still followed (#366). It is every write over a file the engine found by its scan or
   the gateway let through. `replace_through_link` (`Seen::replace_through_link`) is the
   exception, by name: the user's own save of a file they opened by its path (the board's
-  canvas, the menu's tag edit of a note its tree lists, `shapes/file.rs`, `bookmarks.rs`)
+  canvas, the menu's tag edit of a note its tree lists, `shapes/file.rs`, `bookmarks.rs` and
+  a rename's or merge's `rename::bookmarks_edit`)
   lands in the file a link leads to and the link stays (`landing`, found once per write), as
   `write_atomic` does. A link to nothing or to a folder is `NotAFile`. The gateway never lets
   a link through (`files::resolve`).
