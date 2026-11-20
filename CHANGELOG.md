@@ -166,10 +166,20 @@ change commands, keys and file formats; patch versions only fix things.
   cards at one place used to crash the rename (a panic, nothing written). With such an id,
   one file link fewer is given than before, so a note's backlinks can count one fewer.
   Such a card is now reported, naming the board, the card's number among its nodes and
-  its id (#303, step A4d): on the status line as the workspace opens and when the board
-  changes (`canvas couldn't read Board.canvas: card 3 (id "") is left out: its place is
-  empty or longer than 1024 bytes`), and on stderr by `items`, `agenda`, `table` and
-  `types`, which also print there what an extension's owned file left out.
+  its id (#303, step A4d): on the status line as the workspace opens, and again when what
+  the board leaves out changes (`canvas couldn't read Board.canvas: card 3 (id "") is left
+  out: its place is empty or longer than 1024 bytes`), and on stderr by `items`, `agenda`,
+  `table` and `types` (not `types --json`, which reads no file), which also print there
+  what an extension's owned file left out. Of the cards whose id is empty, only the first
+  in the file is such a card: a later one has a place of its own and gives its tasks and
+  links.
+- What an owned file leaves out waits on the status line until nothing else is said there
+  (#303): a report never takes the place of the message of what you just did (a merge, a
+  duplicate, a new note, the whiteboard's delete or undo), and several show one after
+  another, three seconds each, where only the last showed as the workspace opened. A board
+  is reported again only when what it leaves out changes, never on a rescan or after a
+  change that leaves out the same cards; an extension's file is reported whenever its
+  owner's answer is taken, as before.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80

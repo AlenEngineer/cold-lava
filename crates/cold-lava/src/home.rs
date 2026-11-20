@@ -28,6 +28,7 @@ use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
 use crate::refused::Refused;
+use crate::reports::Reports;
 use crate::resolver::dir_of;
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
@@ -711,6 +712,8 @@ pub struct Home {
     msg: Option<(Notice, Instant)>,
     /// What extensions asked for that was not done, to keep what is in front (`refused`).
     refusals: Refused,
+    /// What owned files leave out, waiting for the status line in front (`show_report`).
+    reports: Reports,
     areas: [Rect; 4],
     quit: bool,
 }
@@ -793,6 +796,7 @@ impl Home {
             mode: Mode::Normal,
             msg: None,
             refusals: Refused::default(),
+            reports: Reports::default(),
             areas: [Rect::default(); 4],
             quit: false,
         };
@@ -901,6 +905,7 @@ impl Home {
                 self.refresh_backlinks();
             }
             let scene_wait = self.tick_scene();
+            self.show_report();
             self.picture_wanted = None;
             terminal.draw(|f| self.draw(f))?;
             self.place_picture()?;
@@ -955,6 +960,22 @@ impl Home {
         let s = self.front_scene_mut()?;
         s.navigate(nav);
         Some(s.tick())
+    }
+
+    /// The next report of what an owned file leaves out, when the status line in front (the
+    /// whiteboard's, a scene's or the menu's) has nothing else to say.
+    fn show_report(&mut self) {
+        let scene = self
+            .front_scene()
+            .and_then(|(o, v)| self.views.get(o, v)?.scene());
+        let quiet = match (&self.mode, &self.board, scene) {
+            (Mode::Board, Some(board), _) => board.quiet(),
+            (_, _, Some(scene)) => scene.quiet(),
+            _ => self.msg.is_none(),
+        };
+        if quiet && let Some(report) = self.reports.pop() {
+            self.flash(report);
+        }
     }
 
     /// The view in front, when it is a scene: drawn over the whole screen.
@@ -1454,6 +1475,7 @@ impl Home {
         self.nsel = 0;
         self.nscroll = 0;
         self.core = None; // a different workspace: start a fresh core
+        self.reports = Reports::default();
         self.history.clear();
         self.reload_tree();
         if let (Some(core), Some(kept)) = (self.core.as_mut(), self.kept.remove(&v.path)) {
@@ -2076,7 +2098,10 @@ impl Home {
                     owner,
                     path,
                     message,
-                } => self.flash(crate::owned::couldnt_read(owner, path, message)),
+                } => {
+                    let report = crate::owned::couldnt_read(owner, path, message);
+                    self.reports.add(path, report.into());
+                }
                 // The menu says its own; an extension's show under its name.
                 CoreEvent::Deleted { path, by } if by != MENU => {
                     self.flash(format!("{by}: deleted {path}"));

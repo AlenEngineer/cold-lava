@@ -246,9 +246,11 @@ backlinks list the board, the graph draws the board with an edge to the note, an
 call the note an orphan. Arrows between cards and web page cards aren't links. Renaming the note
 updates the card and the links in the text, changing those strings in the file and nothing
 else. Extensions keep running while a board is open, and their status shows in its status line.
-A card whose id is empty or longer than 1024 bytes (another program wrote it) gives no tasks
-and no links; cold-lava says so on the status line, and `cold-lava items` on stderr, naming the
-board and the card.
+A card whose id is longer than 1024 bytes, or the first card in the file whose id is empty
+(another program wrote it), gives no tasks and no links; a later card with an empty id has a
+place of its own and gives them as any card does. cold-lava says so, naming the board and the
+card: on the status line as the workspace opens and again when what a board leaves out
+changes, after the message of whatever you just did, and in `cold-lava items` on stderr.
 
 **Safe to use alongside Obsidian.** If the same board is open in both and changes on disk,
 cold-lava merges instead of overwriting: cards and arrows are matched by id and merged field

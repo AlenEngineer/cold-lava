@@ -195,6 +195,12 @@ impl SceneView {
         self.msg = Some((s.into(), Instant::now()));
     }
 
+    /// Whether its status line has no message to show. What else the menu has to say waits
+    /// for this (`Home::show_report`).
+    pub fn quiet(&self) -> bool {
+        self.msg.is_none()
+    }
+
     /// Once a frame: the layout takes a step and the camera eases. How long the menu may wait
     /// for input before the next frame.
     pub fn tick(&mut self) -> Duration {

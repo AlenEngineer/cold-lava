@@ -1525,6 +1525,12 @@ impl Board {
 
     // ---------- editing operations ----------
 
+    /// Whether its status line has nothing to say now, or waiting to: no message and no
+    /// alert. What else the menu has to say waits for this (`Home::show_report`).
+    pub fn quiet(&self) -> bool {
+        self.msg.is_none() && self.alert.is_none()
+    }
+
     pub fn flash(&mut self, s: impl Into<Notice>) {
         let s: Notice = s.into();
         let now = Instant::now();

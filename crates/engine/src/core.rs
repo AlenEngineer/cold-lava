@@ -228,9 +228,10 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch.
+    /// After the workspace was read from scratch. What an owned file leaves out is reported
+    /// where it isn't what the file left out before.
     fn rescanned(&mut self, index: Index) {
-        self.index = index;
+        let before = std::mem::replace(&mut self.index, index).workspace.owned;
         self.reload_bookmarks();
         self.changed.clear();
         if !self.owners.kinds().is_empty() {
@@ -238,7 +239,11 @@ impl Core {
             self.index.relink();
         }
         let owned = self.index.workspace.owned.iter();
-        self.unseen.extend(owned.filter_map(owned_trouble));
+        let news = owned.filter(|f| {
+            let at = before.binary_search_by(|b| b.rel.cmp(&f.rel));
+            !at.is_ok_and(|i| before[i].problems == f.problems)
+        });
+        self.unseen.extend(news.filter_map(owned_trouble));
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
     }
@@ -387,15 +392,18 @@ impl Core {
                 path: rel.clone(),
                 message,
             };
-            let given = match self.owners.kept(&owner, rel, &rev, &bytes) {
-                Some(given) => given,
+            // What an owner answered is reported whenever a file takes it, as before #303. The
+            // engine's own owner reads a file on every change: what it leaves out is reported
+            // when that changed.
+            let (given, answered) = match self.owners.kept(&owner, rel, &rev, &bytes) {
+                Some(given) => (given, true),
                 None => {
                     let Ok(text) = String::from_utf8(bytes) else {
                         events.push(trouble("it isn't UTF-8 text".into()));
                         continue;
                     };
                     match crate::owner::give(&owner, rel, &text) {
-                        Some(Ok(given)) => given,
+                        Some(Ok(given)) => (given, false),
                         Some(Err(message)) => {
                             events.push(trouble(message));
                             continue;
@@ -414,8 +422,11 @@ impl Core {
             };
             let read = given::read(rel, &given, self.index.workspace.item_settings());
             let file = &mut self.index.workspace.owned[i];
+            let news = answered || read.problems != file.problems;
             file.take(rev, given, read);
-            events.extend(owned_trouble(file));
+            if news {
+                events.extend(owned_trouble(file));
+            }
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
             }
