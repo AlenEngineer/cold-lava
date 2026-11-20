@@ -727,7 +727,7 @@ fn keeps_anchors(
         Some(_) if i.line > ticked.line => i.line + 1,
         _ => i.line,
     };
-    let mut same = anchors::by_line(before, after, &lands);
+    let mut same = anchors::by_line(before, after, lands);
     let k = before.iter().position(|i| std::ptr::eq(i, ticked));
     let k = k.expect("the ticked task is one of the note's items");
     // A tick may make the task another type's: it is still the item on its line.
