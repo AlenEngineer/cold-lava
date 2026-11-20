@@ -441,6 +441,19 @@ fn files_write_does_not_reach_a_kind_another_owner_reads() {
         forbidden,
         "nor the built-in canvas owner's"
     );
+    for (path, names) in [
+        ("Volcanoes/Eruptions.csv/", csv),
+        ("Volcanoes/Eruptions.csv//", csv),
+        ("Welcome.canvas/", board),
+    ] {
+        let rev = ask(&mut r, &mut core, write, |h| h.read_file(names))
+            .unwrap()
+            .rev;
+        let rewritten = ask(&mut r, &mut core, write, |h| {
+            h.write_file(path, "x\n", &rev)
+        });
+        assert_eq!(rewritten.map(drop), forbidden, "{path} names {names}");
+    }
     let made = |at: NewFile| Create {
         at,
         text: "x\n".into(),
@@ -456,9 +469,24 @@ fn files_write_does_not_reach_a_kind_another_owner_reads() {
         NewFile::At {
             path: "New.canvas".into(),
         },
+        NewFile::At {
+            path: "Volcanoes/New.csv/".into(),
+        },
+        NewFile::At {
+            path: "Volcanoes/New.csv//".into(),
+        },
+        NewFile::At {
+            path: "New.canvas/".into(),
+        },
     ] {
-        let created = ask(&mut r, &mut core, write, |h| h.create_file(&made(at)));
-        assert_eq!(created.map(drop), forbidden, "a new one is a write too");
+        let created = ask(&mut r, &mut core, write, |h| {
+            h.create_file(&made(at.clone()))
+        });
+        assert_eq!(
+            created.map(drop),
+            forbidden,
+            "a new one is a write too: {at:?}"
+        );
     }
     assert_eq!(on_disk(csv), Some(table.clone()), "nothing was written");
     assert_eq!(on_disk(board), Some(canvas), "nothing was written");
@@ -494,6 +522,15 @@ fn files_write_does_not_reach_a_kind_another_owner_reads() {
     };
     let created = ask(&mut r, &mut core, owner, |h| h.create_file(&made(at)));
     assert_eq!(created.map(drop), Ok(()), "and makes one");
+    let slashed = "Volcanoes/Eruptions.csv/";
+    let mine = ask(&mut r, &mut core, owner, |h| h.read_file(slashed));
+    let mine = mine.expect("the file it names is the owner's");
+    let more = format!("{more}y\n");
+    let saved = ask(&mut r, &mut core, owner, |h| {
+        h.write_file(slashed, &more, &mine.rev)
+    });
+    assert_eq!(saved.map(drop), Ok(()), "{slashed} is its own kind too");
+    assert_eq!(on_disk(csv), Some(more.clone()));
 
     let stat = ask(&mut r, &mut core, write, |h| h.stat_file(csv)).unwrap();
     let gone = ask(&mut r, &mut core, write, |h| h.delete_file(csv, &stat.rev)).unwrap();
@@ -504,6 +541,20 @@ fn files_write_does_not_reach_a_kind_another_owner_reads() {
     let restored = ask(&mut r, &mut core, write, |h| h.restore_file(&elsewhere));
     assert_eq!(restored.map(drop), forbidden, "a new name is a write");
     assert!(!root.join("Volcanoes/Eruptions 2.csv").exists());
+    for to in [
+        "Volcanoes/Eruptions 2.csv/",
+        "Volcanoes/Eruptions 2.csv//",
+        "Eruptions 2.canvas/",
+    ] {
+        let elsewhere = Restore {
+            trashed: gone.trashed.clone(),
+            to: Some(to.into()),
+        };
+        let restored = ask(&mut r, &mut core, write, |h| h.restore_file(&elsewhere));
+        assert_eq!(restored.map(drop), forbidden, "{to} is a new name too");
+    }
+    assert!(!root.join("Volcanoes/Eruptions 2.csv").exists());
+    assert!(!root.join("Eruptions 2.canvas").exists());
     let back = Restore {
         trashed: gone.trashed,
         to: None,
