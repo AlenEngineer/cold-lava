@@ -64,6 +64,11 @@ for the same reason.
   and rename, and the nine places it both sends events to subscribers and keeps them for `poll`.
   Track C (#271) moves them out, so
   the librarian only calls on its clerks in order.
+- Features live inside the library: tasks, daily notes, recipes, and the shapes and bindings
+  that draw data (`shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`) share the engine's crate with
+  the core, which is why the engine depends on `canvas`. They are meant to be readers that come
+  through the door like any other: the rule and its test first (#226), then the split into
+  crates (#185), after which the core depends on nothing of the project's.
 - Characters not hired yet. Decided: **the bookmark**, a name stuck on a passage (an item) the
   first time something refers to it, so the reference survives a reword or a move (#190).
   Proposed, with decisions still open: **the archivist**, who keeps every page the librarian
@@ -92,7 +97,8 @@ the one place it lives.
 ## Code map
 
 Six crates in the Cargo workspace and the GUI beside it. The dependency direction is frontends →
-host → views → engine → canvas: the engine depends only on `canvas`, which depends on nothing,
+host → views → engine → canvas: the engine depends only on `canvas` (for its shapes and bindings, a feature still in its crate:
+see above), which depends on nothing,
 and `editor` stands alone.
 
 - **`crates/engine`**, the library: no user interface. Start with `core.rs` (the librarian),
