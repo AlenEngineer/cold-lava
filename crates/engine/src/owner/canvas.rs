@@ -124,6 +124,16 @@ fn attributes(n: &CNode) -> Map<String, Json> {
     out
 }
 
+/// The anchors a board's file cards point at, in what `read` gave (#190): a card whose
+/// `subpath` is `#^name` names the block `name` of its file, as `[[file#^name]]` would.
+pub fn anchors(given: &Given) -> impl Iterator<Item = String> {
+    let subpaths = given.placed().filter_map(|item| match item {
+        GivenItem::Piece(card) => card.attributes.get("subpath")?.as_str(),
+        _ => None,
+    });
+    subpaths.filter_map(|subpath| crate::resolver::split_link(subpath).block)
+}
+
 /// A canvas's items and links: each card a piece, placed; a text card's text a Markdown piece
 /// at the same place; a file card a link to its file; an arrow a link between two pieces.
 ///

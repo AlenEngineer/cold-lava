@@ -881,7 +881,7 @@ fn read_back(
         }
     };
     let same: Vec<Option<usize>> = (0..before.len()).map(|i| Some(image(i))).collect();
-    if let Some(change) = items::anchors::change(before, after, &same, k, text) {
+    if let Some(change) = items::anchors::change(before, after, &same, k, text, None) {
         return Err(Anchor(change.to_string()));
     }
     let renamed = |id: &Option<String>| -> Option<String> {
