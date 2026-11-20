@@ -632,12 +632,15 @@ pub(crate) fn owned_edit(
 }
 
 /// Refuse when a file among `edits` isn't what it was when `what` (a rename, a merge) was
-/// planned.
+/// planned, or is a symlink now, which its write would refuse (`write::refuse_link`) after
+/// others were written: a note swapped for a link to the same text is refused here, whole.
 pub(crate) fn check_unchanged<'a>(
     edits: impl IntoIterator<Item = &'a FileEdit>,
     what: &str,
 ) -> Result<()> {
     for e in edits {
+        crate::write::refuse_link(&e.path)
+            .with_context(|| format!("writing {}; nothing was changed", e.file))?;
         let now =
             std::fs::read_to_string(&e.path).with_context(|| format!("reading {}", e.file))?;
         if now != e.old_text {
@@ -1360,6 +1363,67 @@ mod tests {
             want.contains("\"Rocky.md\""),
             "a name that only starts the same stays"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn is_link(path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    /// A note that links to what moves, swapped after the plan for a symlink to a file that
+    /// holds the same text, stops the rename before anything moves, as a changed note does:
+    /// nothing is half renamed, and nothing is written through the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_backlink_swapped_for_a_symlink_stops_the_whole_rename() {
+        let (dir, ix) = workspace_with(
+            "swapped-backlink",
+            &[
+                ("Rock/Lava.md", "x"),
+                ("Ash.md", "[[Lava]]\n"),
+                ("Kilauea.md", "[[Lava]]\n"),
+                (".git/Kilauea.md", "[[Lava]]\n"),
+            ],
+        );
+        let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
+        assert_eq!(p.links(), 2);
+        let link = dir.join("Kilauea.link");
+        std::os::unix::fs::symlink(dir.join(".git/Kilauea.md"), &link).unwrap();
+        std::fs::rename(&link, dir.join("Kilauea.md")).unwrap();
+        let err = format!("{:#}", apply(&p).unwrap_err());
+        assert!(err.contains("Kilauea.md is a symbolic link"), "{err}");
+        assert!(dir.join("Rock/Lava.md").exists(), "nothing moved");
+        assert!(!dir.join("Rock/Basalt.md").exists(), "nothing moved");
+        assert_eq!(read(&dir, "Ash.md"), "[[Lava]]\n", "no link updated");
+        assert_eq!(read(&dir, ".git/Kilauea.md"), "[[Lava]]\n");
+        assert!(is_link(&dir.join("Kilauea.md")), "the link stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `bookmarks.json` kept as a symlink stops a rename that would update it, whole: the
+    /// rename writes no file through a link, and only the bookmarks' own save follows one.
+    #[cfg(unix)]
+    #[test]
+    fn bookmarks_kept_as_a_symlink_stop_the_whole_rename() {
+        let (dir, ix) = workspace_with(
+            "bookmarks-linked",
+            &[
+                ("Rock/Lava.md", "# Textures\n"),
+                ("Rocky.md", "[[Lava]]\n"),
+                (".shared/bookmarks.json", MARKS),
+            ],
+        );
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        let at = dir.join(".obsidian/bookmarks.json");
+        std::os::unix::fs::symlink("../.shared/bookmarks.json", &at).unwrap();
+        let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
+        let err = format!("{:#}", apply(&p).unwrap_err());
+        assert!(err.contains("bookmarks.json is a symbolic link"), "{err}");
+        assert!(dir.join("Rock/Lava.md").exists(), "nothing moved");
+        assert_eq!(read(&dir, "Rocky.md"), "[[Lava]]\n", "no link updated");
+        assert_eq!(read(&dir, ".shared/bookmarks.json"), MARKS);
+        assert!(is_link(&at), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

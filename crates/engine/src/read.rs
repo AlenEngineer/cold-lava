@@ -126,12 +126,26 @@ impl Seen {
         Ok(())
     }
 
-    /// Write `bytes` over the file seen, through `write::replace`. Refused with
+    /// Write `bytes` over the file seen, through `write::replace`, which never follows a
+    /// symlink: a link at the path is refused (`WriteError::Link`). Refused with
     /// `WriteError::Changed` if it changed since, or if it wasn't seen as a file (`file`,
-    /// `kept`), since a write reads through a symlink and an entry never follows one.
+    /// `kept`).
     pub fn replace(&self, bytes: &[u8]) -> Result<(), WriteError> {
+        write::replace(&self.path, self.written_over()?, bytes)
+    }
+
+    /// As `replace`, but a symlink at the path is followed, through
+    /// `write::replace_through_link`: the file it leads to is replaced, and the link stays. Only
+    /// for the user's own save of a file the scan doesn't read; that function names them.
+    pub fn replace_through_link(&self, bytes: &[u8]) -> Result<(), WriteError> {
+        write::replace_through_link(&self.path, self.written_over()?, bytes)
+    }
+
+    /// The bytes a write compares before it goes over the file: only a file seen as a file
+    /// (`file`, `kept`) is written over, anything else is `Changed`.
+    fn written_over(&self) -> Result<&[u8], WriteError> {
         match (self.way, &self.was) {
-            (Way::File, Contents::File(was)) => write::replace(&self.path, was, bytes),
+            (Way::File, Contents::File(was)) => Ok(was.as_slice()),
             _ => Err(WriteError::Changed(self.path.clone())),
         }
     }
@@ -351,7 +365,7 @@ mod tests {
         assert_eq!(
             std::fs::read(&p).unwrap(),
             b"hot",
-            "a write reads through a link, which an entry never follows"
+            "only a file seen as a file is written over"
         );
         Seen::file(&p).unwrap().replace(b"cold").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"cold");
@@ -408,6 +422,34 @@ mod tests {
             entry.unchanged_entry().is_ok(),
             "the link still points where it did"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_seen_through_a_link_is_written_through_it() {
+        let d = dir("write-through");
+        let (target, link) = (d.join("Lava.md"), d.join("Link.md"));
+        std::fs::write(&target, "hot").unwrap();
+        std::os::unix::fs::symlink("Lava.md", &link).unwrap();
+        let seen = Seen::file(&link).unwrap();
+        assert!(
+            matches!(seen.replace(b"lost"), Err(WriteError::Link(at)) if at == link),
+            "only a write named for it follows a link"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"hot");
+        seen.replace_through_link(b"cooling").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"cooling");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("Lava.md"));
+        assert!(
+            matches!(seen.replace_through_link(b"lost"), Err(WriteError::Changed(at)) if at == link),
+            "a stale read is still refused"
+        );
+        Seen::kept(&link, "cooling")
+            .replace_through_link(b"cold")
+            .unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"cold");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("Lava.md"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -225,6 +225,25 @@ pub fn note_paths(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
         .map(|e| e.into_path())
 }
 
+/// The first part of `rel` under `root` that is a symlink: `rel` itself or a folder on the way
+/// to it, `rel` being parts joined by `/`. The scan reads no link (`note_paths`, which never
+/// follows one), and neither do the watcher's reads (`Workspace::refresh_path`,
+/// `Core::owned_read`) nor the gateway (`files::resolve`). Below a part that isn't there,
+/// nothing is a link.
+pub fn first_link<'a>(root: &Path, rel: &'a str) -> std::io::Result<Option<&'a str>> {
+    let ends = rel.match_indices('/').map(|(end, _)| end);
+    for end in ends.chain([rel.len()]).filter(|&end| end > 0) {
+        let part = &rel[..end];
+        match fs::symlink_metadata(root.join(part)) {
+            Ok(meta) if meta.file_type().is_symlink() => return Ok(Some(part)),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
 pub fn scan(root: &Path) -> Result<Workspace> {
     let root = root
         .canonicalize()
@@ -337,11 +356,16 @@ impl Workspace {
     }
 
     /// Bring one path up to date with the disk: read it again, add it, or drop it.
-    /// Returns what changed, if anything did (rel paths without `.md`).
+    /// Returns what changed, if anything did (rel paths without `.md`). A path that is a
+    /// symlink, or has one on the way to it, is no note, as the scan reads none (`first_link`).
     pub fn refresh_path(&mut self, path: &Path) -> Option<NoteChange> {
         let path = &self.under_root(path);
         let pos = self.notes.iter().position(|n| n.path == *path);
-        match (read_note(&self.root, path), pos) {
+        let rel = path.strip_prefix(&self.root).map(|r| r.to_string_lossy());
+        let rel = rel.map(|r| r.replace('\\', "/")).unwrap_or_default();
+        let unlinked = matches!(first_link(&self.root, &rel), Ok(None));
+        let note = unlinked.then(|| read_note(&self.root, path)).flatten();
+        match (note, pos) {
             (Some(note), Some(i)) => {
                 if self.notes[i].text == note.text {
                     return None;
@@ -358,7 +382,7 @@ impl Workspace {
             }
             (None, Some(i)) => {
                 // Still on disk but unreadable (e.g. mid-write): keep the last good version.
-                if path.exists() {
+                if unlinked && path.exists() {
                     return None;
                 }
                 Some(NoteChange::Removed(self.notes.remove(i).rel))

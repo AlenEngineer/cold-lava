@@ -286,7 +286,7 @@ impl Bookmarks {
         let text = self.text();
         match &self.read {
             Some(read) if *read == text => Ok(()),
-            Some(read) => Seen::kept(path, read.as_bytes()).replace(text.as_bytes()),
+            Some(read) => Seen::kept(path, read.as_bytes()).replace_through_link(text.as_bytes()),
             None => write::create(path, text.as_bytes()),
         }
     }

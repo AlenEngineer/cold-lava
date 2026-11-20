@@ -46,6 +46,31 @@ change commands, keys and file formats; patch versions only fix things.
   about half the runs). The rest of the output is skipped quietly, and the command still does
   everything else it was asked (its errors on stderr included) and exits as it would have, as
   `items | head` already did (#339).
+- A note or file kept in the workspace as a symlink is saved where the link leads. Before,
+  a save to the link (the whiteboard's, the menu's tag edit, `cold-lava task toggle` and
+  `item set`) put
+  a regular file where the link was, and the file the link led to kept its old text, so a
+  note linked from another folder silently became a copy. The link now stays, the file it
+  leads to is replaced atomically, and a save to a link that leads nowhere or to a folder is
+  refused, as is creating a file where such a link is (#349).
+- Extensions can no longer read or write through a symlink. Their file messages refuse a
+  path that is a link, or has a link on the way to it, as `refused`, wherever the link
+  leads. A new file by name passes over a link instead. Before, a link inside the workspace
+  was followed while permissions went by the path's name, so a note linked to `.git/config`,
+  a folder linked to `.git`, or a file of an extension's kind linked to a note let an
+  extension read, write or delete what its permissions didn't cover. **Breaking for
+  extensions** that read or wrote notes kept as links (#349).
+- A note or file that becomes a symlink while cold-lava runs (a `git pull` or a sync can
+  make one) is skipped, as the scan at start already skipped it, and a folder linked into the
+  workspace is no longer watched through the link. Before, the watcher read the link as a
+  note or file of its own, so its tasks showed twice, its copy went stale, and an item edit
+  on it, from an extension or the agenda, replaced the link with a copy. A note swapped for
+  a link after it was read is never written through: an item edit is refused there, and a
+  rename, a merge or a recipe (an extension's included) is refused whole, before it moves or
+  writes anything, saying the note is a link. A `.obsidian` folder
+  that is a link, to settings shared between workspaces or to a folder in the workspace, is
+  still watched where it leads, so changes to its graph colour groups and bookmarks are
+  heard as before (#349).
 
 ## [0.7.0] - 2026-11-20
 

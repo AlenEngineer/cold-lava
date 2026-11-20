@@ -327,8 +327,10 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
   Reading any other file, a note included, needs `files.read`; writing or creating a note
   or a file nobody owns, or making a folder, needs `files.write`. Deleting and restoring need `files.delete`, for your
   own kind too: `files.write` doesn't include it.
-  Paths are relative to the workspace and can't leave it: `..`, absolute paths,
-  hidden folders (`.obsidian`) and symlinks that lead outside are refused.
+  Paths are relative to the workspace and can't leave it: `..`, absolute paths and
+  hidden folders (`.obsidian`) are refused, and so is a symlink, at the path or on the way
+  to it, wherever it leads: a permission goes by the path's name, and a link leads to a
+  file of another name.
 - **Only you write your kind.** Another extension, whatever its permissions, can't write,
   create or restore under a new name a file of a kind you own, nor a `.canvas`: it is
   refused as `forbidden`, and changes one through `items/edit`, which asks you with

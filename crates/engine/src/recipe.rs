@@ -688,6 +688,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A recipe an extension runs (`Host::run_recipe`) writes only over the files it read: a
+    /// note swapped for a link after the plan, to a file holding the same text, is refused, and
+    /// the file the link leads to keeps its bytes, whether the recipe applies or is undone.
+    #[cfg(unix)]
+    #[test]
+    fn a_note_swapped_for_a_link_is_never_written_through() {
+        let (dir, ix) = workspace_with("swapped", &[("A.md", "#lava\n"), ("B.md", "#lava too\n")]);
+        let outside = dir.join(".git/config");
+        let swap = |note: &str, text: &str| {
+            std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+            std::fs::write(&outside, text).unwrap();
+            let link = dir.join(format!("{note}.link"));
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            std::fs::rename(&link, dir.join(note)).unwrap();
+        };
+        let is_link = |note: &str| {
+            let meta = std::fs::symlink_metadata(dir.join(note)).unwrap();
+            meta.file_type().is_symlink()
+        };
+
+        let p = rename(&ix, "lava", "magma").unwrap();
+        swap("B.md", "#lava too\n");
+        let err = format!("{:#}", apply(&p).unwrap_err());
+        assert!(err.contains("B.md is a symbolic link"), "{err}");
+        assert_eq!(read(&dir, ".git/config"), "#lava too\n");
+        assert!(is_link("B.md"), "the link stays");
+        assert_eq!(
+            read(&dir, "A.md"),
+            "#lava\n",
+            "what was written is put back"
+        );
+
+        std::fs::remove_file(dir.join("B.md")).unwrap();
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let done = apply(&rename(&ix, "lava", "magma").unwrap()).unwrap();
+        swap("A.md", "#magma\n");
+        assert!(undo(&done).is_err());
+        assert_eq!(read(&dir, ".git/config"), "#magma\n");
+        assert!(is_link("A.md"), "the link stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn options_are_checked() {
         let (dir, ix) = workspace_with("options", &[("A.md", "#lava\n")]);
