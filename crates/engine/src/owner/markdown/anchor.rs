@@ -162,8 +162,9 @@ pub(super) fn same_tree(
 /// `before[i]` is, the one of its kind that starts on its line (`items::anchors::by_line`).
 /// Each says what it said (its kind and its data as the wire carries them), on the same
 /// lines, under the same section and parent, and `name` is that one's anchor. Ids aren't
-/// compared: the item's own, its children's and a later twin's move by the key rules. The
-/// anchored item is `after`'s at the place it answers.
+/// compared: the item's own, its children's, a later twin's and a typed quote's or callout's
+/// whose first line of words it ends move by the key rules. The anchored item is `after`'s at
+/// the place it answers.
 pub(super) fn read_back(
     before: &[Item],
     after: &[Item],
@@ -230,8 +231,9 @@ mod tests {
     use crate::gateway::{Edit, Error, Op, Reason};
     use crate::identity;
     use crate::items::tests::{TRICKY, settings, with_types};
-    use crate::items::{Item, Settings};
+    use crate::items::{Data, Item, Settings};
     use crate::owner::markdown::{self, After, Made};
+    use crate::types::On;
     use serde_json::Value as Json;
 
     /// Types on every role a piece of a note can have, and on a reading of a block's text.
@@ -476,8 +478,8 @@ fields.w = { capture = "w" }
     }
 
     /// What each item says: everything but its id, its rev and its parent's id, which an
-    /// anchor may move by the key rules (its own, its children's, a later twin's); its parent
-    /// by the line and the kind it starts on instead.
+    /// anchor may move by the key rules (`ids_moved`); its parent by the line and the kind it
+    /// starts on instead.
     fn said(items: &[Item]) -> Vec<Json> {
         let find = |id: &String| items.iter().find(|i| i.id == *id);
         (items.iter())
@@ -507,6 +509,7 @@ fields.w = { capture = "w" }
         kept: usize,
         refused: usize,
         unread: Vec<String>,
+        asides: Vec<String>,
         moved: Vec<String>,
     }
 
@@ -556,32 +559,63 @@ fields.w = { capture = "w" }
             let after = markdown::items(note, &made.text, s);
             let is = sorted(said(&after));
             assert_eq!(is, sorted(want), "{at}: the note reads otherwise");
-            let moved = ids_moved_beyond_the_key_rules(&before, &after, k).into_iter();
-            tally.moved.extend(moved.map(|by| format!("{at}: {by}")));
+            let Moved { asides, beyond } = ids_moved(&before, &after, k, text, s);
+            for by in asides {
+                tally.asides.push(format!("{at}: {by}"));
+            }
+            for by in beyond {
+                tally.moved.push(format!("{at}: {by}"));
+            }
             tally.anchored += 1;
         }
     }
 
-    /// The items whose ids moved beyond what the design note says the key rules move
-    /// (`items::identify`): the anchored item's, a later twin's (an item that says the same
-    /// under the same parent, after it), and the ids of the items under either. Each item is
-    /// paired with the one of its kind that is the same nth on its line after.
-    fn ids_moved_beyond_the_key_rules(before: &[Item], after: &[Item], k: usize) -> Vec<String> {
+    /// The ids an anchor moved besides the anchored item's, a later twin's (an item that says
+    /// the same under the same parent, after it) and the ids of the items under either, which
+    /// the key rules move (`items::identify`).
+    #[derive(Default)]
+    struct Moved {
+        /// A typed quote's or callout's whose first line of words the anchored item ends on.
+        /// The key rules move it too: a typed block with no key fields is keyed by its words,
+        /// a `^id` included, so a tick or a reword on that line moves it as well (#335).
+        asides: Vec<String>,
+        /// Any other, beyond the key rules.
+        beyond: Vec<String>,
+    }
+
+    /// What anchoring `before[k]` moved, of the note written `text`. Each item is paired with
+    /// the one of its kind that is the same nth on its line after.
+    fn ids_moved(before: &[Item], after: &[Item], k: usize, text: &str, s: &Settings) -> Moved {
         let data = |i: &Item| serde_json::to_value(&i.data).unwrap();
         let parent = |i: &Item| before.iter().position(|p| Some(&p.id) == i.parent.as_ref());
         let twin = |i: usize| {
             let (b, a) = (&before[i], &before[k]);
             i > k && data(b) == data(a) && b.parent == a.parent
         };
+        let aside_ending_there = |b: &Item| {
+            let Data::Typed(t) = &b.data else {
+                return false;
+            };
+            let ty = s.types.types.iter().find(|ty| ty.name == t.kind);
+            let aside = ty.is_some_and(|ty| ty.definition.from[t.place.shape].on == On::Aside);
+            let words = text[..t.place.text.start].matches('\n').count() + 1;
+            aside && words == before[k].end_line
+        };
         let mut may = vec![false; before.len()];
-        let mut moved = Vec::new();
+        let mut moved = Moved::default();
         for (i, b) in before.iter().enumerate() {
             may[i] = i == k || twin(i) || parent(b).is_some_and(|p| may[p]);
             let on_line = |x: &&Item| x.line == b.line && x.data.kind() == b.data.kind();
             let nth = before[..i].iter().filter(on_line).count();
             let paired = after.iter().filter(on_line).nth(nth).expect("paired");
-            if !may[i] && paired.id != b.id {
-                moved.push(format!("the {} on line {}", b.data.kind(), b.line));
+            if may[i] || paired.id == b.id {
+                continue;
+            }
+            let by = format!("the {} on line {}", b.data.kind(), b.line);
+            if aside_ending_there(b) {
+                moved.asides.push(by);
+            } else {
+                moved.beyond.push(by);
             }
         }
         moved
@@ -594,7 +628,9 @@ fields.w = { capture = "w" }
     /// last own line ends no text, and no others: an item that ends in indented code, one
     /// that ends in a setext heading's underline, one that ends in a closing fence, a
     /// callout's title line with no words, three empty list items, two empty tasks, and a
-    /// list item that is a link definition.
+    /// list item that is a link definition. Seven anchors move a typed quote's or callout's
+    /// id, by ending its first line of words, and no anchor moves any other id beyond the key
+    /// rules.
     #[test]
     fn every_item_of_the_corpus_takes_an_anchor_alone_or_is_refused_with_a_reason() {
         let mut tally = Tally::default();
@@ -617,6 +653,7 @@ fields.w = { capture = "w" }
             kept,
             refused,
             mut unread,
+            asides,
             moved,
         } = tally;
         let counts = format!("{anchored} anchored, {kept} kept, {refused} refused");
@@ -635,6 +672,19 @@ fields.w = { capture = "w" }
                 "Tricky 6.md:11 line",
                 "Tricky 8.md:9 line",
                 "Tricky 9.md:12 para",
+            ],
+            "{counts}"
+        );
+        assert_eq!(
+            asides,
+            [
+                "Tricky 9.md:4 para: the said on line 4",
+                "Tricky 19.md:1 para: the said on line 1",
+                "Tricky 19.md:5 task: the said on line 5",
+                "Tricky 22.md:6 para: the said on line 6",
+                "Tricky 22.md:21 para: the said on line 21",
+                "Tricky 31.md:5 para: the said on line 5",
+                "Tricky 42.md:4 para: the said on line 4",
             ],
             "{counts}"
         );

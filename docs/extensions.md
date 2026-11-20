@@ -292,8 +292,12 @@ alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is 
   the line ends in text and not in a code block, a table row or a heading's underline. Its items
   are the same, each paired with the one of its kind that starts on its line, with the same
   data, lines, section and parent, the anchored one's `block_id` is the name, and every other
-  anchor is where it was (`items::anchors`). Ids are not compared: the anchored item's, its
-  children's and a later twin's move by the key rules. Otherwise it is refused as `read-back`.
+  anchor is where it was (`items::anchors`). Ids are not compared, since the key rules move
+  some once: the anchored item's (it keeps its new one after), its children's, a later twin's
+  with the same words, and a typed quote's or callout's whose first line of words the item
+  ends (a typed block with no key fields is keyed by its words, a `^name` included, as a tick
+  or a reword on that line already moves it). The corpus test checks that no other id moves.
+  Otherwise it is refused as `read-back`.
 - **Refused, saying what to keep instead.** A heading (a link to it by its words,
   `[[Note#Heading]]`); a whole note a type reads (a link to the note); a table row, and a
   quote or a callout a type reads (a link to the heading above it: a quote's `^name` goes on

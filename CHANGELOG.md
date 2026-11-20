@@ -16,7 +16,9 @@ change commands, keys and file formats; patch versions only fix things.
   again, it writes nothing. The name is six letters and digits, derived from the item's
   address and written nowhere else in the workspace. A reference keeps the name, never the
   id: the anchored item keeps its id through new words, a tick, a field, a reorder and a
-  renamed heading above it. An item Markdown has no place for a `^name` on (a heading, a
+  renamed heading above it. Writing the anchor moves some ids once, as the id rules say: the
+  item's own, its children's, a later item's with the same words, and a typed quote's or
+  callout's whose first line the item ends, as a tick on that line already does. An item Markdown has no place for a `^name` on (a heading, a
   table row, a quote or a whole note a type reads, an item read in another item's words), an
   item of a file another owner reads, and every item of a workspace read as `github`, which
   has no block ids, are refused, saying what to keep instead. So is an item whose last line
