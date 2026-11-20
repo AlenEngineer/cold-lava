@@ -446,6 +446,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `rel_path.rs`: a path as the workspace names it (relative to its root, `/` between
+  folders). A leaf. The menu asks it; the engine's and the binary's other copies of the rule
+  are listed on #365.
 - `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
   digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
   each two, hashed) and a rev of text (`line_id`). A leaf. Each owner makes its own key: a
