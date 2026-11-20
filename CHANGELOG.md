@@ -40,7 +40,7 @@ change commands, keys and file formats; patch versions only fix things.
   everything else it was asked (its errors on stderr included) and exits as it would have, as
   `items | head` already did (#339).
 - A note or file kept in the workspace as a symlink is saved where the link leads. Before,
-  a save to the link (the whiteboard's, an item edit, any write the engine makes for you) put
+  a save to the link (the whiteboard's, the menu's, any write the engine makes for you) put
   a regular file where the link was, and the file the link led to kept its old text, so a
   note linked from another folder silently became a copy. The link now stays, the file it
   leads to is replaced atomically, and a save to a link that leads nowhere or to a folder is
@@ -52,6 +52,11 @@ change commands, keys and file formats; patch versions only fix things.
   a folder linked to `.git`, or a file of an extension's kind linked to a note let an
   extension read, write or delete what its permissions didn't cover. **Breaking for
   extensions** that read or wrote notes kept as links (#349).
+- A note or file that becomes a symlink while cold-lava runs (a `git pull` or a sync can
+  make one) is skipped, as the scan at start already skipped it, and a folder linked into the
+  workspace is no longer watched through the link. Before, the watcher read the link as a
+  note or file of its own, so its tasks showed twice, its copy went stale, and an item edit
+  on it, from an extension or the agenda, replaced the link with a copy (#349).
 
 ## [0.7.0] - 2026-11-20
 

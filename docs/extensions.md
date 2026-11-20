@@ -1384,23 +1384,32 @@ graph all see the new date. None of them knew what a canvas is.
   | `workspace/files {extension}` | `{files}`, every file with that extension (any case, with or without the dot) outside hidden folders, sorted |
 
   A `rev` is 16 hex digits of the FNV-1a hash of the file's bytes. A write checks it, then
-  writes through `write::replace`, which checks the bytes again just before the atomic rename,
-  so an edit made in Obsidian meanwhile is never overwritten. A create goes through
-  `write::create`, refused as `exists` where any entry is. A name picked for `{name,
-  extension}` passes over any entry, a link that leads nowhere included. A note written or
-  created this way is read again at once, like an item edit, so the next query sees it. A
-  path is refused unless it is relative, has no `..`, `.` or hidden part (`.obsidian`,
-  `.trash`, `.git`), and neither it nor a folder on the way to it is a symlink.
+  writes through `write::replace_entry`, which checks the bytes again just before the atomic
+  rename over the path, so an edit made in Obsidian meanwhile is never overwritten. A create
+  goes through `write::create`, refused as `exists` where any entry is. A name picked for
+  `{name, extension}` passes over any entry, a link that leads nowhere included. A note
+  written or created this way is read again at once, like an item edit, so the next query
+  sees it. A path is refused unless it is relative, has no `..`, `.` or hidden part
+  (`.obsidian`, `.trash`, `.git`), and neither it nor a folder on the way to it is a symlink.
 
-  The gateway never follows a symlink, for reads and writes alike (#349): a path that is a
-  link, or has one on the way to it, is `refused` (`Notes/x.md: Notes/x.md is a symbolic
-  link`), whatever the link leads to and whoever asks. A permission is judged by the path's
-  name, and a link leads to a file of another name: a note in a shared repository can be a
-  link to `.git/config`, to Obsidian's settings or to a canvas only its owner writes, and a
-  file of an owner's kind can be a link to a note. The user's own saves (the whiteboard, the
-  menu, an item edit) go through a link instead: the engine's writes replace the file it
+  The gateway never follows a symlink, for reads and writes alike (#349). A file message on
+  a path that is a link, or has one on the way to it, is `refused` (`Notes/x.md is a symbolic
+  link, which the gateway never follows`, or `Notes/Dot/x.md: Notes/Dot is a symbolic link,
+  …` for a folder on the way), whatever the link leads to and whoever asks. A permission is
+  judged by the path's name, and a link leads to a file of another name: a note in a shared
+  repository can be a link to `.git/config`, to Obsidian's settings or to a canvas only its
+  owner writes, and a file of an owner's kind can be a link to a note. `items/edit` never
+  reaches a link either. The scan and the watcher read no symlinked note or owned file
+  (`workspace::first_link`), so no item is in one. The user's own saves (the whiteboard, the
+  menu's edits of a note) go through a link instead. The engine's writes replace the file it
   leads to, with the temporary file beside that file, and the link stays a link
   (`write::landing`).
+
+  The check comes before the system call, so a link swapped in between them is a race. At
+  the path itself it is closed for writes: `workspace/write`, `workspace/create` and
+  `items/edit` on a note rename over the path, so a link put there since is replaced and
+  nothing is written through it. A folder on the way swapped for a link is still followed,
+  and so are a read at the path and an owner's write after it answers (#366).
 - **`file/changed {path, rev}`** (host → extension, a notification) comes from the core's one
   watcher: every file that isn't a note, outside hidden folders, is now reported as
   `Event::FileChanged` once things settle, and the menu tells the owner of its kind, with its

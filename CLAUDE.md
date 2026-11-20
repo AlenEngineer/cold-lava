@@ -131,9 +131,11 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `move_file`. A write to a symlink lands in the file it leads to and the link stays
   (`landing`, found once per write). A link to nothing or to a folder is `NotAFile`. Where a
   link may lead is the caller's to bound: `write.rs` follows it anywhere, and the gateway
-  never follows one (`files::resolve`). `taken` is the one test of whether something is at a
-  path, a link to nothing included: `create` and `files::free_name` ask it. Never call
-  `std::fs::write` on workspace files.
+  never follows one (`files::resolve`). The gateway's own writes rename over the path itself
+  (`replace_entry`, through `Seen::replace_entry`; `create`), so a link swapped in there
+  after its check is replaced; a folder swapped in on the way is still followed (#366).
+  `taken` is the one test of whether something is at a path, a link to nothing included:
+  `create` and `files::free_name` ask it. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
@@ -415,7 +417,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `resolve` keeps a path out of hidden folders and never follows a symlink, at the path or
   on the way to it (#349): a permission is judged by the path's name, and a link leads to a
   file of another name. With no link and no `..`, a path stays inside the workspace. The
-  user's own saves go through the engine's writes, which follow a link. `Core` answers them,
+  scan and the watcher read no link either (`workspace::first_link`, the one rule, which
+  `resolve` asks), so no item is in one and `items/edit` never reaches one. The user's own
+  saves go through the engine's writes, which follow a link. `Core` answers them,
   and its watcher reports other files as `Event::FileChanged`. Also here (#193,
   docs/extensions.md "Deleting, restoring and making folders"): `workspace/stat` (the `rev` of
   any file, or of a folder's listing, which leaves out hidden entries and is bounded),
