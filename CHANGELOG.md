@@ -317,6 +317,12 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- An edit of a file whose owner gives many pieces no longer slows down with the square of
+  their number (#319). Before writing, cold-lava compares the owner's new answer with the
+  one it asked for, and it looked up each piece's place by searching the whole answer: a
+  tick on a file of 40,000 pieces took 6 s, four times as long as on 20,000. Each place is
+  now looked up in a table made once, so the check grows with the size of the answer. What
+  is refused, and the words it is refused in, are as before.
 - Ticking a task whose line ends in a block id (`^rent`) writes the done or cancelled date
   before the id, as Obsidian Tasks does (#315). The date went after it
   (`… ^rent ✅ 2026-11-07`), so the id no longer read as one: links to `#^rent` stopped

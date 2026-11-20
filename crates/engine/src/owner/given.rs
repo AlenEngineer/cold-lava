@@ -1184,92 +1184,109 @@ fn normal<'a>(runs: &'a [Run], fields: &mut Vec<(&'a str, &'a str)>) -> Vec<Run>
 /// that the refusal names it, in the words it is reported in. One that stands elsewhere only
 /// because something else moved past it is said last, so that the other steps name what
 /// moved, in their words, when they can.
+///
+/// In O(n log n) for an answer of n entries: the items' and the links' keys are sorted, a
+/// list whose left-out entries stand elsewhere is diffed once (`order::diff`, within its
+/// bound on repeats), and every other step is one pass, a holder looked up by its place in a
+/// map (`same_holders`). It must stay so: an owned file may give tens of thousands of pieces,
+/// and every edit of one compares them (#319).
 pub fn same(asked: &ReadBack, gave: &ReadBack) -> Result<(), String> {
     left_out_kept(&asked.lists, &gave.lists)?;
-    left_out_moved(&asked.lists, &gave.lists)?;
+    let shifted = shifted(&asked.lists, &gave.lists);
+    left_out_moved(&shifted)?;
     same_items(&asked.read, &gave.read)?;
     same_links(&asked.read, &gave.read)?;
     same_pieces(&asked.pieces, &gave.pieces)?;
     same_holders(&asked.pieces, &gave.pieces)?;
     same_between(&asked.between, &gave.between)?;
-    moved_past_left_out(&asked.lists, &gave.lists)
+    moved_past_left_out(&shifted)
 }
 
 /// Whether the same items were read, by their kinds and fields, wherever they are and
 /// whatever their ids: else those missing and those not asked for.
 fn same_items(asked: &Read, gave: &Read) -> Result<(), String> {
-    let items = |r: &Read| -> Vec<String> {
-        let mut v: Vec<String> = r.items.iter().map(data_key).collect();
-        v.sort();
-        v
-    };
-    let (want, got) = (items(asked), items(gave));
-    if want == got {
-        return Ok(());
-    }
-    let (missing, extra) = more_of(&want, &got);
-    Err(match (missing.is_empty(), extra.is_empty()) {
-        (false, false) => format!("{} where {} was asked", listed(&extra), listed(&missing)),
-        (false, true) => format!("{} is missing", listed(&missing)),
-        _ => format!("{} wasn't asked for", listed(&extra)),
+    let items = |r: &Read| r.items.iter().map(data_key).collect();
+    Err(match unlike(items(asked), items(gave)) {
+        None => return Ok(()),
+        Some(Unlike::Both { missing, extra }) => format!("{extra} where {missing} was asked"),
+        Some(Unlike::Missing(missing)) => format!("{missing} is missing"),
+        Some(Unlike::Extra(extra)) => format!("{extra} wasn't asked for"),
     })
 }
 
 /// Whether the same links to files were read, by their targets: else those missing and
 /// those not asked for.
 fn same_links(asked: &Read, gave: &Read) -> Result<(), String> {
-    let links = |r: &Read| -> Vec<String> {
-        let mut v: Vec<String> = r.links.iter().map(|(l, _)| l.target.clone()).collect();
-        v.sort();
-        v
-    };
-    let (want, got) = (links(asked), links(gave));
-    if want == got {
-        return Ok(());
-    }
-    let (missing, extra) = more_of(&want, &got);
-    Err(match (missing.is_empty(), extra.is_empty()) {
-        (false, false) => format!(
-            "links to {} where links to {} were asked",
-            listed(&extra),
-            listed(&missing)
-        ),
-        (false, true) => format!("links to {} are missing", listed(&missing)),
-        _ => format!("links to {} weren't asked for", listed(&extra)),
+    let links = |r: &Read| r.links.iter().map(|(l, _)| l.target.clone()).collect();
+    Err(match unlike(links(asked), links(gave)) {
+        None => return Ok(()),
+        Some(Unlike::Both { missing, extra }) => {
+            format!("links to {extra} where links to {missing} were asked")
+        }
+        Some(Unlike::Missing(missing)) => format!("links to {missing} are missing"),
+        Some(Unlike::Extra(extra)) => format!("links to {extra} weren't asked for"),
     })
 }
 
-/// What `want` holds more of than `got`, and `got` more of than `want` (`order::counts`).
-fn more_of(want: &[String], got: &[String]) -> (Vec<String>, Vec<String>) {
-    let (dropped, added) = order::counts(want, got);
-    let of = |list: &[String], at: Vec<usize>| -> Vec<String> {
-        at.into_iter().map(|i| list[i].clone()).collect()
-    };
-    (of(want, dropped), of(got, added))
+/// How two lists compared whatever their order differ: what `want` holds more of than `got`
+/// (missing) and `got` more of than `want` (extra), each listed in sorted order (`listed`).
+enum Unlike {
+    Both { missing: String, extra: String },
+    Missing(String),
+    Extra(String),
 }
 
-/// Some of a message's entries, one after the other, cut to 200 characters.
-fn listed(entries: &[String]) -> String {
-    cut(&entries.join(", "), 200)
+/// How `got` differs from `want`, whatever their order (`order::counts`): nothing when they
+/// hold the same.
+fn unlike(mut want: Vec<String>, mut got: Vec<String>) -> Option<Unlike> {
+    want.sort();
+    got.sort();
+    if want == got {
+        return None;
+    }
+    let (dropped, added) = order::counts(&want, &got);
+    let listed = |list: &[String], at: Vec<usize>| -> String {
+        let entries: Vec<&str> = at.into_iter().map(|i| list[i].as_str()).collect();
+        cut(&entries.join(", "), 200)
+    };
+    let (missing, extra) = (listed(&want, dropped), listed(&got, added));
+    Some(match (missing.is_empty(), extra.is_empty()) {
+        (false, false) => Unlike::Both { missing, extra },
+        (false, true) => Unlike::Missing(missing),
+        _ => Unlike::Extra(extra),
+    })
+}
+
+/// Where two lists compared in order differ: at the first entry that differs, or, one being
+/// the start of the other, in how many there are.
+enum Apart {
+    At(usize),
+    Count,
+}
+
+/// Where `got` differs from `want`, entry by entry (`same`): nothing when they are alike.
+fn apart<T>(want: &[T], got: &[T], same: impl Fn(&T, &T) -> bool) -> Option<Apart> {
+    match want.iter().zip(got).position(|(a, b)| !same(a, b)) {
+        Some(i) => Some(Apart::At(i)),
+        None if want.len() != got.len() => Some(Apart::Count),
+        None => None,
+    }
 }
 
 /// Whether the same pieces were given, in the order given, each saying what was asked:
 /// *follows* is a relation, and no change to an attribute, a text or a link moves a piece.
 /// Else the first that differs, or how many there are.
 fn same_pieces(want: &[Said], got: &[Said]) -> Result<(), String> {
-    let differs = want.iter().zip(got).position(|(a, b)| a.says != b.says);
-    if differs.is_none() && want.len() == got.len() {
-        return Ok(());
-    }
-    Err(match differs {
-        Some(i) => format!(
+    Err(match apart(want, got, |a, b| a.says == b.says) {
+        None => return Ok(()),
+        Some(Apart::At(i)) => format!(
             "the piece {} of {} is {} where {} was asked",
             i + 1,
             got.len(),
             cut(&got[i].says, 200),
             cut(&want[i].says, 200)
         ),
-        None => format!(
+        Some(Apart::Count) => format!(
             "the pieces are {} where {} were asked",
             got.len(),
             want.len()
@@ -1282,14 +1299,22 @@ fn same_pieces(want: &[Said], got: &[Said]) -> Result<(), String> {
 /// change made to the twin, with the two then named as each other. An owner that renamed the
 /// place leaves nothing to check it against. A place names the piece that holds it
 /// (`Places`): another piece there is left out, and was compared before.
+///
+/// The holders `got` gave are looked up by place in a map made once, so this is linear in
+/// the pieces: a search of `got` for each piece made it quadratic, 6 s an edit on 40,000
+/// (#319).
 fn same_holders(want: &[Said], got: &[Said]) -> Result<(), String> {
-    let holder = |place: &str| got.iter().find(|p| p.holds_place && p.place == place);
+    let mut holders: HashMap<&str, &str> = HashMap::with_capacity(got.len());
+    for p in got.iter().filter(|p| p.holds_place) {
+        holders.entry(p.place.as_str()).or_insert(p.says.as_str());
+    }
     for asked in want.iter().filter(|p| p.holds_place) {
-        if let Some(gave) = holder(&asked.place).filter(|gave| gave.says != asked.says) {
+        let gave = holders.get(asked.place.as_str());
+        if let Some(gave) = gave.filter(|&&gave| gave != asked.says) {
             return Err(format!(
                 "the piece at {} is {} where {} was asked",
                 short(&asked.place),
-                cut(&gave.says, 200),
+                cut(gave, 200),
                 cut(&asked.says, 200)
             ));
         }
@@ -1302,19 +1327,16 @@ fn same_holders(want: &[Said], got: &[Said]) -> Result<(), String> {
 /// pieces, which their ends name by position. Else the first that differs, or how many
 /// there are.
 fn same_between(want: &[String], got: &[String]) -> Result<(), String> {
-    if want == got {
-        return Ok(());
-    }
-    let differs = want.iter().zip(got).position(|(a, b)| a != b);
-    Err(match differs {
-        Some(n) => format!(
+    Err(match apart(want, got, |a, b| a == b) {
+        None => return Ok(()),
+        Some(Apart::At(n)) => format!(
             "the link {} of {} between pieces is {} where {} was asked",
             n + 1,
             got.len(),
             cut(&got[n], 200),
             cut(&want[n], 200)
         ),
-        None => format!(
+        Some(Apart::Count) => format!(
             "the links between pieces are {} where {} were asked",
             got.len(),
             want.len()
@@ -1350,16 +1372,13 @@ fn left_out_kept(want: &Lists, got: &Lists) -> Result<(), String> {
 /// on repeats), and when as few explain either a left-out entry or one that reads moving, the
 /// left-out one is named, since it didn't come back where it was: a left-out item and its
 /// neighbour swapped, or a left-out item and the one before it moved past two others.
-fn left_out_moved(want: &Lists, got: &Lists) -> Result<(), String> {
-    for (want, got) in want.iter().zip(got) {
-        let Some(d) = shifted(want, got) else {
-            continue;
-        };
+fn left_out_moved(shifted: &[Shifted]) -> Result<(), String> {
+    for Shifted { want, diff, .. } in shifted {
         let left = |&(i, _): &(usize, usize)| match &want[i] {
             Entry::Left(l) => Some(l),
             Entry::Read { .. } => None,
         };
-        if let Some(l) = d.moved.iter().find_map(left) {
+        if let Some(l) = diff.moved.iter().find_map(left) {
             return Err(came_back(l));
         }
     }
@@ -1369,42 +1388,52 @@ fn left_out_moved(want: &Lists, got: &Lists) -> Result<(), String> {
 /// When what the engine leaves out stands elsewhere only because an entry that reads moved
 /// past it, is new before it or is gone from before it: that entry, named. Asked last, so
 /// that the other steps name it in their own words when they can.
-fn moved_past_left_out(want: &Lists, got: &Lists) -> Result<(), String> {
-    for (want, got) in want.iter().zip(got) {
-        let Some(d) = shifted(want, got) else {
-            continue;
-        };
-        // Nothing left out moved (`left_out_moved`), so an entry that crossed one, or is new
-        // or gone before one, is what moved them: the number of them before it differs.
-        let (before_w, before_g) = (lefts_before(want), lefts_before(got));
-        let lefts = stands(want).count();
-        let crossed = d.moved.iter().find(|&&(i, j)| before_w[i] != before_g[j]);
-        let new = d.added.iter().find(|&&j| before_g[j] < lefts);
-        let gone = d.dropped.iter().find(|&&i| before_w[i] < lefts);
-        let says = |e: &Entry, what: &str| match e {
-            Entry::Read { name, .. } => format!("{name} {what}"),
-            Entry::Left(l) => came_back(l),
-        };
-        return Err(match (crossed, new, gone) {
-            (Some(&(i, _)), _, _) => says(&want[i], "moved"),
-            (None, Some(&j), _) => says(&got[j], "wasn't asked for"),
-            (None, None, Some(&i)) => says(&want[i], "is missing"),
-            (None, None, None) => "what was left out stands elsewhere".to_string(),
-        });
-    }
-    Ok(())
+fn moved_past_left_out(shifted: &[Shifted]) -> Result<(), String> {
+    let Some(Shifted { want, got, diff: d }) = shifted.first() else {
+        return Ok(());
+    };
+    // Nothing left out moved (`left_out_moved`), so an entry that crossed one, or is new or
+    // gone before one, is what moved them: the number of them before it differs.
+    let (before_w, before_g) = (lefts_before(want), lefts_before(got));
+    let lefts = stands(want).count();
+    let crossed = d.moved.iter().find(|&&(i, j)| before_w[i] != before_g[j]);
+    let new = d.added.iter().find(|&&j| before_g[j] < lefts);
+    let gone = d.dropped.iter().find(|&&i| before_w[i] < lefts);
+    let says = |e: &Entry, what: &str| match e {
+        Entry::Read { name, .. } => format!("{name} {what}"),
+        Entry::Left(l) => came_back(l),
+    };
+    Err(match (crossed, new, gone) {
+        (Some(&(i, _)), _, _) => says(&want[i], "moved"),
+        (None, Some(&j), _) => says(&got[j], "wasn't asked for"),
+        (None, None, Some(&i)) => says(&want[i], "is missing"),
+        (None, None, None) => "what was left out stands elsewhere".to_string(),
+    })
 }
 
-/// How a list differs from the one asked for (`order::diff`) when what the engine leaves out
-/// of it doesn't stand where it stood, holding what it held: else nothing.
-fn shifted(want: &[Entry], got: &[Entry]) -> Option<order::Diff> {
-    let at_w = stands(want).map(|(i, l)| (i, &l.holds));
-    if at_w.eq(stands(got).map(|(i, l)| (i, &l.holds))) {
-        return None;
-    }
-    let wk: Vec<(bool, &str)> = want.iter().map(Entry::key).collect();
-    let gk: Vec<(bool, &str)> = got.iter().map(Entry::key).collect();
-    Some(order::diff(&wk, &gk, |k| !k.0))
+/// One of an answer's lists (`ReadBack::lists`) in which what the engine leaves out doesn't
+/// stand where it stood, holding what it held, with how it differs from the one asked for.
+struct Shifted<'a> {
+    want: &'a [Entry],
+    got: &'a [Entry],
+    diff: order::Diff,
+}
+
+/// The lists in which what the engine leaves out stands elsewhere, in order, each diffed
+/// once (`order::diff`) for the two steps that read it (`left_out_moved`,
+/// `moved_past_left_out`).
+fn shifted<'a>(want: &'a Lists, got: &'a Lists) -> Vec<Shifted<'a>> {
+    let shifted = |(want, got): (&'a Vec<Entry>, &'a Vec<Entry>)| {
+        let at_w = stands(want).map(|(i, l)| (i, &l.holds));
+        if at_w.eq(stands(got).map(|(i, l)| (i, &l.holds))) {
+            return None;
+        }
+        let wk: Vec<(bool, &str)> = want.iter().map(Entry::key).collect();
+        let gk: Vec<(bool, &str)> = got.iter().map(Entry::key).collect();
+        let diff = order::diff(&wk, &gk, |k| !k.0);
+        Some(Shifted { want, got, diff })
+    };
+    want.iter().zip(got).filter_map(shifted).collect()
 }
 
 /// For each entry of a list, how many the engine leaves out stand before it.
@@ -1483,8 +1512,10 @@ enum Entry {
     /// place, which no other item that reads has (`Places`); a link's place and target; a
     /// link between pieces as JSON), and its name in a refusal, its places cut (`the piece
     /// at p`, `the Markdown piece at p`, `the typed item at ty`, `the link to Lava`, `the
-    /// link from a to b`). A link's key repeats where an owner gives one link twice, and
-    /// `order::diff` weighs every way to pair the copies.
+    /// link from a to b`). A link's key, to a file or between pieces, repeats where an owner
+    /// gives one link twice, and `order::diff` weighs every way to pair the copies while they
+    /// are within its bound on repeats (`order::MORE_PAIRS`); past it, the k-th copy in one
+    /// answer is paired with the k-th in the other.
     Read { key: String, name: String },
     /// One the engine leaves out: what `read` reports a problem about (`Subject`).
     Left(Left),
@@ -1602,13 +1633,17 @@ pub fn read_back(file: &str, given: &Given, s: &Settings) -> ReadBack {
     // The words it is reported in, when what `about` names is left out.
     let words = |about: Subject| said.get(&about.to_string()).map(String::as_str);
     let mut items = Vec::new();
-    let mut records = given.left_out.iter().enumerate().peekable();
-    let record = |(k, (_, l)): (usize, &(usize, LeftOut))| {
-        let read = || (l.place.to_string(), format!("the item at {}", l.place));
-        entry(words(Subject::LeftOut(k)), || l.key.to_string(), read)
+    // A record of an item left out as it arrived is always left out, in the words `read`
+    // reports it in.
+    let mut records = given.left_out.iter().peekable();
+    let record = |(_, l): &(usize, LeftOut)| {
+        Entry::Left(Left {
+            holds: l.key.to_string(),
+            words: l.problem().one_line(),
+        })
     };
     for (i, item) in given.items.iter().enumerate() {
-        items.extend(std::iter::from_fn(|| records.next_if(|(_, (at, _))| *at <= i)).map(record));
+        items.extend(std::iter::from_fn(|| records.next_if(|(at, _)| *at <= i)).map(record));
         let holds = || json(serde_json::to_string(item));
         let place = item.place();
         let key = || json(serde_json::to_string(&(form(item), place)));
@@ -2567,6 +2602,44 @@ mod tests {
         let gave = given(json!({"items": [t1, other]}));
         let why = same(&asked, &read_back("Home.chores", &gave, &s)).unwrap_err();
         assert!(why.starts_with("the pieces are 2 where 3 "), "{why}");
+    }
+
+    /// The read-back is linear in the pieces (#319): an answer of 100,000 pieces, each
+    /// holding its place, is compared with itself and with the last two places traded, in
+    /// well under the 5 s allowed, in a debug build too. Looking each piece's holder up by
+    /// searching the other answer, as before, makes 5 billion comparisons here.
+    #[test]
+    fn a_large_answer_is_compared_in_linear_time() {
+        const PIECES: usize = 100_000;
+        let said = |k: usize, place: usize| Said {
+            place: format!("g{place}"),
+            holds_place: true,
+            says: format!("in nothing: words {k}"),
+        };
+        let answer = |place: fn(usize) -> usize| ReadBack {
+            read: Read::default(),
+            pieces: (0..PIECES).map(|k| said(k, place(k))).collect(),
+            between: Vec::new(),
+            lists: Default::default(),
+        };
+        let (asked, alike) = (answer(|k| k), answer(|k| k));
+        // Each piece says what was asked at its position: only the holders tell the change.
+        let traded = answer(|k| match PIECES - k {
+            2 => k + 1,
+            1 => k - 1,
+            _ => k,
+        });
+        let t = std::time::Instant::now();
+        let same_answer = same(&asked, &alike);
+        let why = same(&asked, &traded);
+        let took = t.elapsed();
+        assert_eq!(same_answer, Ok(()));
+        assert_eq!(
+            why.unwrap_err(),
+            "the piece at g99998 is in nothing: words 99999 where in nothing: words 99998 was \
+             asked"
+        );
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
     }
 
     /// A change that lands on another piece that says the same is caught by where it is,
