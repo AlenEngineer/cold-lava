@@ -71,7 +71,7 @@ That is cold-lava. The rest of the cast keeps the books safe.
 | The catalogue | The index: every item, link and backlink, kept from the translators' reports | `index.rs` |
 | The door, and its forms | The workspace gateway's messages | `gateway.rs`, `files.rs` |
 | The front desk | The extension host: checks every visitor's badge (its permissions) before the librarian hears a word | `crates/host` |
-| The readers | The terminal app and extensions that only ask; a GUI and a language server to come | `crates/cold-lava`, `crates/gui` |
+| The readers | The terminal app, extensions that only ask, and a first GUI; a language server to come | `crates/cold-lava`, `crates/gui` |
 
 **The librarian needs no book's language to check a translator's work.** When the librarian
 asks for a change to a page (`file/edit`, for an item edit or a rename), the translator answers
@@ -91,25 +91,28 @@ for the same reason.
 **Where the story is ahead of the code.**
 
 - The librarian still reads one language itself: Markdown. The core walks notes into items and
-  the matcher reads their text, and a note's edit is checked by Markdown's own read-back
-  (`edit::read_back`), not by `given::same`. Track D (#272) moves Markdown's reading out of the
+  the matcher reads their text. A note's `set-field` is checked by Markdown's own read-back
+  (`edit::read_back`), and a tick only by finding a task on its line; neither by `given::same`. Track D (#272) moves Markdown's reading out of the
   core into its owner.
 - A translator can still write its own books without the librarian's check: an owner may save
   its own kind of file with `workspace/write`, which is checked only for changes made elsewhere
   (`rev`), and its new text is not read back. Whether to keep that door is the owner's decision
   (#310).
 - Not every reader comes through the door yet: the terminal app still reads the index and writes
-  some files itself (`crates/cold-lava/tests/one_door.rs` lists each). Track B (#270) closes
-  those.
+  some files itself (`crates/cold-lava/tests/one_door.rs` lists each), and track B (#270)
+  closes those. The GUI scans the workspace itself, beside the core, and is outside that test's
+  lists (#277 deletes it until the GUI is real).
 - The librarian keeps some state machines that belong to clerks of their own: the owned-file edit
-  and rename, and the pairs of messages it sends to each reader. Track C (#271) moves them out, so
+  and rename, and the nine places it both sends events to subscribers and keeps them for `poll`.
+  Track C (#271) moves them out, so
   the librarian only calls on its clerks in order.
-- Characters not hired yet: **the archivist**, who keeps every page the librarian replaces
-  (#305); **the logbook**, where every change is written down with who asked and which
-  translator wrote it (#306); **the bookmark**, a name stuck on a page the first time something
-  refers to it, so the reference survives a move (#190). Two more are proposals the owner hasn't
-  decided: **dictionaries**, a format described as data, so the librarian could check a write by
-  its bytes (#307), and a **ladder of trust** for how far an outside translator may write (#308).
+- Characters not hired yet. Decided: **the bookmark**, a name stuck on a passage (an item) the
+  first time something refers to it, so the reference survives a reword or a move (#190).
+  Proposed, with decisions still open: **the archivist**, who keeps every page the librarian
+  replaces (#305); **the logbook**, where every change is written down with who asked and which
+  translator wrote it (#306); **dictionaries**, a format described as data, so the librarian
+  could check a write by its bytes (#307); and a **ladder of trust** for how far an outside
+  translator may write (#308).
 
 ## The layers
 
