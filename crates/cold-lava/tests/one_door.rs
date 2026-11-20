@@ -635,14 +635,14 @@ fn the_scan_reads_on_after_a_test_module() {
 /// - `main.rs`: `cold-lava rename` and `recipe` plan on the core's index, and `graph` asks it
 ///   whether there are notes.
 /// - `owned.rs`: the command line's workspace with its owned files, and `item set`'s item.
-/// - The host's `lib.rs`: `Host` answers `types/list` and `workspace/style` from it.
+/// - The host's `host.rs`: `Host` answers `types/list` and `workspace/style` from it.
 #[test]
 fn the_index_is_still_read_outside_the_core_here() {
     let mut files = sources();
     files.extend(host_sources());
     let found = tally(per_file(&files, |code| times(code, &[".index"])));
     let left = [
-        "../host/src/lib.rs: .index ×2",
+        "../host/src/host.rs: .index ×2",
         "home.rs: .index ×39",
         "main.rs: .index ×3",
         "owned.rs: .index ×2",

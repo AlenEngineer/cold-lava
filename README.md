@@ -626,8 +626,9 @@ custom statuses follow the Tasks plugin's settings.
 
 `task toggle` works like Obsidian Tasks: it moves the status to its next one (the Tasks plugin's
 custom statuses say which; else done, and back to todo), adds the done date (`✅`, or
-`[completion:: …]`), removes it when unticking, and for recurring tasks inserts the next
-occurrence with its dates moved forward. Pass the `id` from the agenda: if the line has changed since, nothing is touched
+`[completion:: …]`) before a block id that ends the line (`^rent`), removes it when unticking,
+and for recurring tasks inserts the next occurrence with its dates moved forward (the block id
+stays on the done task). Pass the `id` from the agenda: if the line has changed since, nothing is touched
 and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note,
 and `x` in the reader ticks a task the same way. Custom statuses whose next status is a
 cancelled one get the cancelled date (`❌`, or `[cancelled:: …]`) unless the plugin's "set

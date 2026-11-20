@@ -325,6 +325,30 @@ fn a_task_is_set_through_its_checkbox_and_markers() {
 }
 
 #[test]
+fn a_task_date_set_goes_before_the_block_id_and_the_id_stays() {
+    let s = settings("");
+    let id = |text: &str, line: usize| {
+        let item = extract("Note.md", text, &s)
+            .into_iter()
+            .find(|i| i.line == line)
+            .unwrap();
+        (item.id, item.block_id)
+    };
+    let t = "- [ ] Pay rent ^rent\n";
+    let due = after(&s, t, 1, "task", "due", json!("2026-12-01"));
+    assert_eq!(due, "- [ ] Pay rent 📅 2026-12-01 ^rent\n");
+    assert_eq!(id(&due, 1), id(t, 1));
+    assert_eq!(id(t, 1).1.as_deref(), Some("rent"));
+    let t = "- [ ] Sweep\r\n- [x] Pay rent 📅 2026-11-12 ^crlf\r\n";
+    let done = after(&s, t, 2, "task", "done", json!("2026-11-10"));
+    assert_eq!(
+        done,
+        "- [ ] Sweep\r\n- [x] Pay rent 📅 2026-11-12 ✅ 2026-11-10 ^crlf\r\n"
+    );
+    assert_eq!(id(&done, 2), id(t, 2), "on a CRLF line");
+}
+
+#[test]
 fn a_missing_task_date_is_written_as_the_line_and_the_workspace_write_them() {
     let s = settings("");
     assert_eq!(

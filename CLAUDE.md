@@ -130,7 +130,23 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
   these: they ask the core (`Core::delete_file`, `restore_file`: `workspace/delete`,
   `workspace/restore`). `Core::set_system_trash` names the system trash; a test that
-  deletes sets one under its own folder.
+  deletes sets one under its own folder. What a delete compares (`Contents`) is `read.rs`'s.
+- `read.rs` holds `Seen`, what was at a path when it was read, so a later write or delete can
+  be refused if it changed since. No path uses it yet: the rest of track A step A5 (#265)
+  moves the writes and deletes that check for a change onto it. `Seen::file` reads a file's
+  bytes through a symlink, as a write does; `Seen::kept` holds bytes read earlier or just
+  written, checked as `file` is; `Seen::entry` reads a file, a folder by its listing or a
+  symlink by where it points, never following one. `at` is the same at the path a move took
+  it to. `unchanged` reads it again the way it was seen; `unchanged_entry` reads the entry
+  itself, whatever the way, as a delete must (a file seen through a link is not the link).
+  `replace` writes through `write::replace`, only over a file seen as a file. `rev` is the
+  gateway's version (a folder's is its listing's); `text` refuses bytes that aren't UTF-8
+  with `NotText`, whose `about` is the one wording of "isn't UTF-8 text". The gateway's
+  `Reason::of` names a `WriteError`'s reason. It is also the one home of a version: `read::rev`
+  (a file's bytes), `rev_at` (the file at a path now), `rev_of` and `Contents` (what is at a
+  path, a link never followed, as `workspace/stat` and a delete read it). It needs only
+  `write`, `identity`, std and walkdir; `files.rs` and `trash.rs` depend on it, never the
+  other way.
 - `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text, each read by its owner. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
@@ -365,21 +381,21 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
 - `links.rs`: the link graph for `links/query` (every file links come from, where each leads,
   Obsidian's graph colour groups); `links/subscribe` news is queued with the items' news.
-- `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`,
-  `workspace/write` refused unless the file is still that version, `workspace/create` where
-  Obsidian puts a new file, `workspace/files`) and their pinned JSON; `resolve` keeps a path
-  inside the workspace and out of hidden folders. `Core` answers them, and its watcher reports
-  other files as `Event::FileChanged`. Also here (#193, docs/extensions.md "Deleting,
-  restoring and making folders"): `workspace/stat` (the `rev` of any file, or of a folder's
-  listing, which leaves out hidden entries and is bounded), `workspace/delete` (to the
-  trash, refused unless still that `rev`; answers a random token that only the client it
-  was given to can use, kept in the core's `Trash` and gone with the core),
-  `workspace/restore` (never over something; `to` is a new name) and
-  `workspace/create-folder`. `stat` and `delete` never follow a symlink: the link is what
-  goes (`resolve_entry`). A frontend that drops a core carries its own deletes to the next
-  one with `Core::take_trashed` / `keep_trashed`. The core reads what moved at once and emits
-  `Event::Deleted`, `Restored` or `FolderCreated` naming the client. The next groups of #193
-  (rename, merge, recipes, undo, bookmarks) follow the pattern that section ends with.
+- `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`, which
+  `read.rs` makes, `workspace/write` refused unless the file is still that version,
+  `workspace/create` where Obsidian puts a new file, `workspace/files`) and their pinned JSON;
+  `resolve` keeps a path inside the workspace and out of hidden folders. `Core` answers them,
+  and its watcher reports other files as `Event::FileChanged`. Also here (#193,
+  docs/extensions.md "Deleting, restoring and making folders"): `workspace/stat` (the `rev` of
+  any file, or of a folder's listing, which leaves out hidden entries and is bounded),
+  `workspace/delete` (to the trash, refused unless still that `rev`; answers a random token that
+  only the client it was given to can use, kept in the core's `Trash` and gone with the core),
+  `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
+  `stat` and `delete` never follow a symlink: the link is what goes (`resolve_entry`). A
+  frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
+  `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
+  `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo,
+  bookmarks) follow the pattern that section ends with.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
   `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
   notes settings, moment.js date formats.
@@ -405,6 +421,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
+  digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
+  each two, hashed) and a rev of text (`line_id`). A leaf. Each owner makes its own key: a
+  note's items in `items::identify` (a typed item's in `matcher.rs`), an owner's pieces and
+  typed items from the place it gave. Changing a key moves ids as surely as changing
+  `identity.rs`, and either is the owner's decision; its tests pin ids given before. A note's
+  key moves with the Markdown walk into its owner in step D-3 (#272).
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
   bound, and the table of bounds, one type each (the trait `Limit`; the owner's limits of
@@ -437,12 +460,15 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 Every frontend runs extensions through it, so the permission check exists once. Don't write
 another host or check in a frontend:
 
-- `lib.rs`: `Extension` (one method per host→extension JSON-RPC method), `Host` (one method
-  per extension→host method; it queues `Effect`s and checks `Permission`s), the manifest types
-  (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`), `Effect`s as data, and `Registry`
-  (loaded extensions and their manifests, who owns which kind of file, who shows which notes,
-  what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's built-in
-  extensions and the folder of installed ones). Three rules:
+- `lib.rs` names the five modules' items at the crate's root (`cold_lava_host::Host`, …).
+  `extension.rs`: `Extension` (one method per host→extension JSON-RPC method). `registry.rs`:
+  `Registry` (loaded extensions and their manifests, who owns which kind of file, who shows
+  which notes, what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's
+  built-in extensions and the folder of installed ones). `host.rs`: `Host` (one method per
+  extension→host method; it queues `Effect`s and checks `Permission`s). `manifest.rs`: the
+  manifest types (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`, `Permission`) and
+  their rules (`namespaced`, `claimable`, `leave_out_definitions`). `protocol.rs`: `Effect`s
+  and the other messages as data. Three rules:
   - An extension can only do what a message can say: every type that crosses derives serde.
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
     into panes, and draws the lists and tables they send (`view/open`), telling them what the

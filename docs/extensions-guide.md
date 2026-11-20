@@ -14,6 +14,27 @@ This guide builds on the example in
 example carries its own copy of the helper, so it can be installed alone. The protocol itself is in
 [extensions.md](extensions.md#transport-as-built).
 
+**Which part you play.** [engine.md](engine.md#the-library-the-engine-as-a-story) tells the
+engine as a library: your files are books in many languages, the engine's core is the librarian
+who keeps them safe, and everyone speaks one common language at the door. An extension can play
+any of these parts, alone or together:
+
+- **A reader** asks for items and follows them as they change (`items/query`,
+  `items/subscribe`), and asks for one change at a time (`items/edit`). `open-tasks` is one.
+- **A translator** owns a kind of file: it tells the librarian what a file holds, in the common
+  language, and when the librarian asks for a change (`file/edit`) it answers with the new page,
+  which the librarian reads back through it and checks before writing.
+  [Owning a kind of file](#owning-a-kind-of-file) is this part; `csv-table` is one. A translator
+  can also save its own files with `workspace/write` ("Saving", below); that save is checked only
+  for changes made elsewhere, not read back.
+- **A notice board** shows a list or a table that cold-lava draws for it (`view/open`). It never
+  draws, and never sees a key: cold-lava tells it what you did.
+- **A coiner of words** brings data: types that say what things mean, and shapes that say what
+  they look like ([Shipping a type](#shipping-a-type), [Shipping a shape](#shipping-a-shape)).
+
+Whatever part it plays, it comes in through the front desk, which checks its badge: the
+`permissions` in its manifest ([Security](#security)).
+
 ## Install the example
 
 Extensions live in one folder each under `~/.config/cold-lava/extensions/` (or

@@ -37,8 +37,8 @@ mod whichkey;
 
 use cold_lava_engine::{
     act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
-    json_canvas, links, markdown, merge, owner, paths, problem, recipe, rename, resolver, search,
-    shapes, style, tasks, templates, tidy, trash, types, workspace, write,
+    json_canvas, links, markdown, merge, owner, paths, problem, read, recipe, rename, resolver,
+    search, shapes, style, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;

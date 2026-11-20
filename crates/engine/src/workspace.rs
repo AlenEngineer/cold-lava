@@ -263,7 +263,7 @@ fn built_in_owned(v: &Workspace) -> Vec<Owned> {
             let text = std::str::from_utf8(&bytes).ok();
             if let Some(Some(Ok(given))) = text.map(|t| crate::owner::give(owner, &file.rel, t)) {
                 let read = crate::owner::given::read(&file.rel, &given, v.item_settings());
-                file.take(crate::files::rev(&bytes), given, read);
+                file.take(crate::read::rev(&bytes), given, read);
             }
             Some(file)
         })

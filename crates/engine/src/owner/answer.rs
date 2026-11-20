@@ -12,10 +12,10 @@ use serde_json::Value as Json;
 
 use crate::alphabet::Role;
 use crate::bounded::{FieldName, Fields, Message, Place, Text, TypeName, TypedFields, ValueText};
+use crate::identity::line_id;
 use crate::owner::given::{FieldRun, GivenItem, Label, LinkRun, Marked, Piece, Run};
 use crate::problem::{Problem, cut};
 use crate::serde_words;
-use crate::tasks::line_id;
 
 /// What a run of a piece's text is, said when one is neither.
 pub const A_RUN: &str = "a run is text, or a map with a link, a label, a field or a text";
@@ -46,7 +46,7 @@ pub fn said(e: &serde_json::Error) -> Option<String> {
 }
 
 /// An item left out of an answer, as it is kept: its place (cut to 80 characters, `NAME`), a
-/// 48-bit hash (`tasks::line_id`) of what identifies it, and what was said of it. What
+/// 48-bit hash (`identity::line_id`) of what identifies it, and what was said of it. What
 /// identifies it is one of two things:
 ///
 /// - For an item of an owner's answer that didn't read, the JSON value it was sent as. The

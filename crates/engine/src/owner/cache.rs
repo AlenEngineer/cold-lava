@@ -4,9 +4,9 @@
 //! `~/.cache/cold-lava/owners`. A workspace then opens with every owned file's items and links
 //! from the cache, and an owner is asked again only for a file whose `rev` changed.
 
+use crate::identity::fnv;
 use crate::owner::answer::LeftOut;
 use crate::owner::given::Given;
-use crate::tasks::fnv;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::collections::{BTreeMap, HashMap};

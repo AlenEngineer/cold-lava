@@ -2885,7 +2885,7 @@ Paths in the `editor/*` messages are absolute and inside the workspace; items, `
 and the file messages name them relative to the workspace. A message's tag is its method name, for example
 `{"method": "pane/input", "params": {"pane": 1, "text": ":w\r"}}`.
 
-Built-in extensions already use, in-process (`crates/host/src/lib.rs`): `initialize`
+Built-in extensions already use, in-process (`crates/host/src/extension.rs` and `host.rs`): `initialize`
 (with `commands`), `command/run`, `editor/open`, `editor/save`, `editor/renamed`,
 `editor/deleted`, `pane/message`, `pane/exited`, `items/changed`, `items/reset`, `view/event`,
 `view/closed`, `file/open` and `file/changed` from the host, and `ui/notify`, `ui/status`, `command/run`, `editor/opened`,
@@ -3121,7 +3121,7 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
 
 - **Where it lives.** The messages are `crates/views/src/view.rs` (`Content`, `Event`,
   `ViewNews`, in `cold-lava-views` with the list, the table, the image and the scene they
-  carry) and the `Effect`s in `crates/host/src/lib.rs`, pinned by tests; the terminal's open
+  carry) and the `Effect`s in `crates/host/src/protocol.rs`, pinned by tests; the terminal's open
   views are `crates/cold-lava/src/views.rs`, drawn with its list and table views. An extension reaches
   them through `Host` (`open_view`, `update_view`, `close_view`, `open_note`), and one in a
   process through `rpc::serve`, so both take one path.
@@ -3405,10 +3405,10 @@ surface that needs every frame doesn't fit a protocol of lists, tables and scene
 the engine through the same gateway as everyone. Daily notes, rename, delete and recipes are
 engine features that get gateway messages (#193), so any frontend or extension can use them.
 
-A built-in extension implements the `Extension` trait (`crates/host/src/lib.rs`)
-instead of reading messages from a transport. The trait is the protocol: each of its methods is
-one host→extension method, and the `Host` it is given has one method per extension→host
-method. Every type that crosses derives serde, and tests pin its JSON, so an extension can move
+A built-in extension implements the `Extension` trait (`crates/host/src/extension.rs`)
+instead of reading messages from a transport. Each of the trait's methods is one host→extension
+method, carrying the messages `crates/host/src/protocol.rs` holds as data, and the `Host` it is
+given has one method per extension→host method. Every type that crosses derives serde, and tests pin its JSON, so an extension can move
 to its own process without changing shape. What an extension asks for is queued and applied
 after its call returns, so it never holds the menu's state.
 

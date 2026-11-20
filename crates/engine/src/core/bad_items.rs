@@ -860,7 +860,7 @@ fn reported(events: &[Event]) -> Vec<String> {
 fn board_written(core: &mut Core, text: &str) -> Vec<Event> {
     let rel = core.index.workspace.owned[0].rel.clone();
     std::fs::write(core.root().join(&rel), text).unwrap();
-    let rev = files::rev(text.as_bytes());
+    let rev = read::rev(text.as_bytes());
     let mut events = Vec::new();
     for _ in 0..100 {
         core.boards.push(rel.clone());

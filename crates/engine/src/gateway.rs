@@ -190,6 +190,17 @@ pub enum Reason {
     Exists,
 }
 
+impl Reason {
+    /// The reason a write refused or failed with, as its kind says.
+    pub fn of(e: &write::WriteError) -> Reason {
+        match e {
+            write::WriteError::Changed(_) => Reason::Changed,
+            write::WriteError::Exists(_) => Reason::Exists,
+            write::WriteError::Io(..) => Reason::Io,
+        }
+    }
+}
+
 impl Error {
     pub fn new(reason: Reason, message: impl Into<String>) -> Error {
         let message = message.into();
@@ -1376,5 +1387,17 @@ fields.text = { rest = true }
             },
             json!({"method": "items/reset", "params": {"subscription": 1}}),
         );
+    }
+
+    #[test]
+    fn a_write_error_has_the_reason_its_kind_says() {
+        let at = || PathBuf::from("Lava.md");
+        let io = || std::io::Error::other("disk full");
+        assert_eq!(
+            Reason::of(&write::WriteError::Changed(at())),
+            Reason::Changed
+        );
+        assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
+        assert_eq!(Reason::of(&write::WriteError::Io(at(), io())), Reason::Io);
     }
 }

@@ -14,6 +14,7 @@ use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
 use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Relink, Stage};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
+use crate::read;
 use crate::trash::{Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned};
 use anyhow::Result;
@@ -377,7 +378,7 @@ impl Core {
                 }
                 continue;
             };
-            let rev = files::rev(&bytes);
+            let rev = read::rev(&bytes);
             let i = match at {
                 Ok(i) if owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) => continue,
                 Ok(i) => i,
@@ -642,7 +643,7 @@ impl Core {
         }
         let text = std::fs::read(&file.path)
             .map_err(|e| error(Reason::Io, format!("{}: {e}", file.rel)))?;
-        if file.rev.as_deref() != Some(files::rev(&text).as_str()) {
+        if file.rev.as_deref() != Some(read::rev(&text).as_str()) {
             let message = format!("{} changed since it was read: read it again", file.rel);
             return Err(error(Reason::Changed, message));
         }
@@ -660,7 +661,7 @@ impl Core {
         };
         let pending = Pending {
             owner,
-            rev: files::rev(text.as_bytes()),
+            rev: read::rev(text.as_bytes()),
             text,
             expect: Some(expect),
             goal,
@@ -730,7 +731,7 @@ impl Core {
                 self.edit_failed(path, error(Reason::ReadBack, message));
             }
             Ok(text) => {
-                let rev = files::rev(text.as_bytes());
+                let rev = read::rev(text.as_bytes());
                 let read = FileRead {
                     path: path.to_string(),
                     rev: rev.clone(),
@@ -884,7 +885,7 @@ impl Core {
                 let o = e.owned.as_ref().expect("owned");
                 let pending = Pending {
                     owner: o.owner.clone(),
-                    rev: files::rev(e.old_text.as_bytes()),
+                    rev: read::rev(e.old_text.as_bytes()),
                     text: e.old_text.clone(),
                     expect,
                     goal: Goal::Relink(ticket),
@@ -971,7 +972,7 @@ impl Core {
             let path = moved(&e.path);
             let rel = path.strip_prefix(self.root()).unwrap_or(&path);
             let rel = rel.to_string_lossy().replace('\\', "/");
-            let rev = files::rev(e.new_text.as_bytes());
+            let rev = read::rev(e.new_text.as_bytes());
             self.owners.answered(&o.owner, &rel, &rev, Some(after));
         }
     }
@@ -2178,7 +2179,7 @@ mod tests {
         let refused = core.edit_item("agenda", &tick(&task)).unwrap_err();
         assert_eq!(refused.reason, Reason::Changed);
         assert_eq!(read(&dir.join("Board.canvas")), theirs);
-        let rev = files::rev(theirs.as_bytes());
+        let rev = read::rev(theirs.as_bytes());
         let mut events = Vec::new();
         for _ in 0..100 {
             core.boards.push("Board.canvas".into());

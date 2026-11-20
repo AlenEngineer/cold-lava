@@ -340,6 +340,12 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
+- Ticking a task whose line ends in a block id (`^rent`) writes the done or cancelled date
+  before the id, as Obsidian Tasks does (#315). The date went after it
+  (`… ^rent ✅ 2026-11-07`), so the id no longer read as one: links to `#^rent` stopped
+  reaching the task, and the item's id moved. When a recurring task is ticked, the done task
+  keeps the block id and the new occurrence gets none, as in Obsidian Tasks; before, the new
+  occurrence took it.
 - The shape editor no longer takes another definition's error for the draft's when that
   error's words, or the workspace's path, happen to hold `shape ID: ` (#265, track A step
   A3). A glyph named `shape x` that doesn't load no longer stops a draft called `x` from

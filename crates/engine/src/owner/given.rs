@@ -19,13 +19,14 @@ use crate::bounded::{
     ValueList, ValueText, WithAnswer,
 };
 use crate::gateway;
+use crate::identity::{self, line_id};
 use crate::items::{Data, Item, Settings};
 use crate::matcher::{Asked, Carried};
 use crate::owner::answer::{Kept, LeftOut};
 use crate::owner::markdown;
 use crate::owner::order;
 use crate::problem::{Problem, cut};
-use crate::tasks::{FNV_START, StatusType, TasksSettings, fnv_from, line_id};
+use crate::tasks::{StatusType, TasksSettings};
 use crate::types::On;
 use crate::workspace::{Ref, clean_target};
 use serde::{Deserialize, Serialize};
@@ -550,18 +551,12 @@ fn short(place: &str) -> String {
 /// The id of the item a piece is: its file, its kind and the owner's place for it, set apart
 /// from a typed item's id at the same place, so neither can take the other's.
 pub fn piece_id(file: &str, kind: &str, place: &str) -> String {
-    let id = [file, "\0", kind, "\0", place, "\0", "piece"]
-        .iter()
-        .fold(FNV_START, |h, part| fnv_from(h, part.as_bytes()));
-    format!("{id:016x}")
+    identity::id(&[file, kind, place, "piece"])
 }
 
 /// The id of a typed item an owner gave: its file, its type and the owner's place for it.
 pub fn typed_id(file: &str, kind: &str, place: &str) -> String {
-    let id = [file, "\0", kind, "\0", place]
-        .iter()
-        .fold(FNV_START, |h, part| fnv_from(h, part.as_bytes()));
-    format!("{id:016x}")
+    identity::id(&[file, kind, place])
 }
 
 /// The pieces of an answer read so far, for the ones that say they are `in` one of them.
