@@ -14,7 +14,7 @@ This guide builds on the example in
 example carries its own copy of the helper, so it can be installed alone. The protocol itself is in
 [extensions.md](extensions.md#transport-as-built).
 
-**Which part you play.** [engine.md](engine.md#the-library-the-engine-as-a-story) tells the
+**Which part you play.** [ARCHITECTURE.md](../ARCHITECTURE.md#the-library) tells the
 engine as a library: your files are books in many languages, the engine's core is the librarian
 who keeps them safe, and everyone speaks one common language at the door. An extension can play
 any of these parts, alone or together:
@@ -55,7 +55,9 @@ note*.
 
 An extension runs as you, with your files, like an Obsidian plugin or a Neovim plugin. Install
 only extensions you trust. Its `permissions` limit what it may ask cold-lava for (read items,
-edit items). They don't stop the program itself from opening files: the operating system does
+edit items, read and write notes). A file of a kind another extension owns, or a `.canvas`,
+changes only through its owner, whatever the permissions ([Owning a kind of
+file](#owning-a-kind-of-file)). They don't stop the program itself from opening files: the operating system does
 not sandbox it.
 
 For that reason cold-lava loads extensions only from your own config folder. A workspace can
@@ -83,7 +85,7 @@ keys = ["R"]                     # optional default keys; config.toml can change
 
 | Field | Meaning |
 | --- | --- |
-| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` and `links/query`, `links/subscribe`, `links/unsubscribe`; `items.edit` for `items/edit`; `files.read` and `files.write` to read and write files of kinds it doesn't own; `files.delete` to move a file or folder to the trash and put it back. A request without its permission is refused as `forbidden`. |
+| `permissions` | `items.read` (the default) for `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list` and `links/query`, `links/subscribe`, `links/unsubscribe`; `items.edit` for `items/edit`; `files.read` and `files.write` to read and write notes and files of kinds nobody owns (`files.read` reads another owner's kind too; nothing writes one but its owner); `files.delete` to move a file or folder to the trash and put it back. A request without its permission is refused as `forbidden`. |
 | `[[file-types]]` | Kinds of file it opens: `extension`, `title`, and `new`, one of its commands that makes one ([Owning a kind of file](#owning-a-kind-of-file)). |
 | `transport` | How cold-lava talks to it. Only `stdio` exists, and it is the default. |
 | `api` | The protocol version it was written for. Only `1` exists, and it is the default. |
@@ -312,11 +314,16 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
   of that kind, with a line on the status line and in `cold-lava keys`. `.md` and `.canvas`
   can't be claimed. `cold-lava ext list` prints who opens what.
 - **Permissions.** An owner reads, writes, creates and lists its own kind without asking.
-  Reading any other file, a note included, needs `files.read`; writing or creating one, or
-  making a folder, needs `files.write`. Deleting and restoring need `files.delete`, for your
+  Reading any other file, a note included, needs `files.read`; writing or creating a note
+  or a file nobody owns, or making a folder, needs `files.write`. Deleting and restoring need `files.delete`, for your
   own kind too: `files.write` doesn't include it.
   Paths are relative to the workspace and can't leave it: `..`, absolute paths,
   hidden folders (`.obsidian`) and symlinks that lead outside are refused.
+- **Only you write your kind.** Another extension, whatever its permissions, can't write,
+  create or restore under a new name a file of a kind you own, nor a `.canvas`: it is
+  refused as `forbidden`, and changes one through `items/edit`, which asks you with
+  `file/edit` and reads your answer back. So every change to your files that isn't yours
+  comes to you as an edit, never as a whole new text.
 
 ## Showing Markdown notes
 

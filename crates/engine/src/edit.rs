@@ -33,13 +33,19 @@ pub enum EditError {
     Refused(String),
     /// The note wouldn't read back as asked.
     ReadBack(String),
+    /// A block id would be lost, moved or made (`items::anchors`): words for the person, which
+    /// say why and what to do. It is a `read-back` on the wire.
+    Anchor(String),
     Io(String),
 }
 
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            EditError::Changed(m) | EditError::Refused(m) | EditError::Io(m) => f.write_str(m),
+            EditError::Changed(m)
+            | EditError::Refused(m)
+            | EditError::Anchor(m)
+            | EditError::Io(m) => f.write_str(m),
             EditError::ReadBack(m) => write!(f, "refused, the note would not read back: {m}"),
         }
     }
@@ -47,7 +53,7 @@ impl fmt::Display for EditError {
 
 impl std::error::Error for EditError {}
 
-use EditError::{Changed, ReadBack, Refused};
+use EditError::{Anchor, Changed, ReadBack, Refused};
 
 /// Set `field` of the item `id` to `value`, in the form items carry it (an ISO date, minutes
 /// for a duration, an enum's name, a link's target); a string is also read as the field's type
@@ -186,7 +192,8 @@ pub fn plan(
     if new == text {
         return Ok(unchanged());
     }
-    let item = read_back(note, &new, s, &before, k, field, &value)?;
+    let after = items::extract(note, &new, s);
+    let item = read_back(text, &before, &after, k, field, &value)?;
     Ok(Set {
         text: new,
         item,
@@ -792,19 +799,18 @@ fn duration(minutes: f64, old: Option<&str>) -> String {
     if out.is_empty() { "0m".into() } else { out }
 }
 
-/// The note read again: the same item (by place; its id changes with its key) must have
-/// exactly the new value and its other fields, and every other item must be unchanged but for
-/// what follows from the edit: a new parent id, a renamed heading above it.
+/// The note read again (`after`; `text` is the note before the edit): the same item (by place;
+/// its id changes with its key) must have exactly the new value and its other fields, every
+/// block id must stay where it was (`items::anchors`), and every other item must be unchanged
+/// but for what follows from the edit: a new parent id, a renamed heading above it.
 fn read_back(
-    note: &str,
     text: &str,
-    s: &Settings,
     before: &[Item],
+    after: &[Item],
     k: usize,
     field: &str,
     value: &Json,
 ) -> Result<Item, EditError> {
-    let after = items::extract(note, text, s);
     if after.len() != before.len() {
         return Err(ReadBack(format!(
             "it would have {} items instead of {}",
@@ -824,7 +830,7 @@ fn read_back(
     let j = after
         .iter()
         .position(|a| a.id == old.id)
-        .or_else(|| at_line(&after).get(nth?).copied())
+        .or_else(|| at_line(after).get(nth?).copied())
         .ok_or_else(|| ReadBack("the item would not be there any more".into()))?;
     let new = &after[j];
     let (Data::Typed(was), Data::Typed(is)) = (&old.data, &new.data) else {
@@ -864,15 +870,25 @@ fn read_back(
             is.fields[name]
         )));
     }
+    // What each item became: the edited one is `j`, the others keep their order around it.
+    let image = |i: usize| match i {
+        _ if i == k => j,
+        i => {
+            let i = i - (i > k) as usize;
+            i + (i >= j) as usize
+        }
+    };
+    let same: Vec<Option<usize>> = (0..before.len()).map(|i| Some(image(i))).collect();
+    if let Some(change) = items::anchors::change(before, after, &same, k, text) {
+        return Err(Anchor(change.to_string()));
+    }
     let renamed = |id: &Option<String>| -> Option<String> {
         let id = id.as_ref()?;
         if *id == old.id {
             return Some(new.id.clone());
         }
         let i = before.iter().position(|b| &b.id == id)?;
-        let i = i - (i > k) as usize;
-        let i = i + (i >= j) as usize;
-        Some(after[i].id.clone())
+        Some(after[image(i)].id.clone())
     };
     // A heading's own text is the section of what is under it; setting a field written in it
     // renames that one section, the same way for every item.
@@ -880,11 +896,9 @@ fn read_back(
     let others = |items: &'_ [Item], skip: usize| -> Vec<usize> {
         (0..items.len()).filter(|&i| i != skip).collect()
     };
-    for (bi, ai) in others(before, k).into_iter().zip(others(&after, j)) {
+    for (bi, ai) in others(before, k).into_iter().zip(others(after, j)) {
         let (b, a) = (&before[bi], &after[ai]);
-        let mut ok = same_data(&b.data, &a.data)
-            && b.block_id == a.block_id
-            && renamed(&b.parent) == a.parent;
+        let mut ok = same_data(&b.data, &a.data) && renamed(&b.parent) == a.parent;
         let resectioned = b.section != a.section;
         if resectioned {
             let diff: Vec<(&String, &String)> = b

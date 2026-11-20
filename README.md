@@ -629,7 +629,14 @@ custom statuses follow the Tasks plugin's settings.
 custom statuses say which; else done, and back to todo), adds the done date (`✅`, or
 `[completion:: …]`) before a block id that ends the line (`^rent`), removes it when unticking,
 and for recurring tasks inserts the next occurrence with its dates moved forward (the block id
-stays on the done task). Pass the `id` from the agenda: if the line has changed since, nothing is touched
+stays on the done task, and the new occurrence gets none). A tick that would lose a block id,
+move it to another item or make a new one is refused, nothing is written, and the refusal
+says why and what to do: with the Tasks plugin's "next recurrence on the line below", an id on
+a later line of the task would go to the new occurrence (put the task on one line ending in
+its id), and a two-line task whose first line ends in `^x` would give the new occurrence `^x`
+as a new anchor. Unticking a line cold-lava 0.6.0 ticked after its id (`- [x] Pay rent ^rent
+✅ 2026-11-07`) gives `- [ ] Pay rent ^rent`, and the task its anchor back.
+Pass the `id` from the agenda: if the line has changed since, nothing is touched
 and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note,
 and `x` in the reader ticks a task the same way. Custom statuses whose next status is a
 cancelled one get the cancelled date (`❌`, or `[cancelled:: …]`) unless the plugin's "set
@@ -900,7 +907,8 @@ every overdue open task to today* and *list the open tasks by note* to the palet
 list is its own view: `x` ticks a task, `t` makes it due today, Enter opens its note (`Ctrl-o`
 comes back to the list), Esc closes it. Its `extension.toml` names the program
 to run, its commands and its permissions: `items.read` (the default) to read items,
-`items.edit` to change them, `files.read` and `files.write` for whole files, and
+`items.edit` to change them, `files.read` and `files.write` for whole files (a file of a kind
+another extension owns, or a canvas, is written only by its owner: others change it as items), and
 `files.delete` to move a file or folder to the trash and put it back. An extension runs as you, like an Obsidian or Neovim plugin, so
 install only ones you trust; permissions limit what cold-lava does for it, not what the program
 can do on its own. Extensions inside a workspace (`.cold-lava/extensions/`) are never run. A
@@ -1002,8 +1010,9 @@ links, or stops with its reason and changes nothing.
 
 ## Development
 
-How it fits together: [docs/engine.md](docs/engine.md) (the engine, its layers and the
-frontends) and [docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
+How it fits together: [ARCHITECTURE.md](ARCHITECTURE.md) (the picture, as a story, and a map
+of the code), [docs/engine.md](docs/engine.md) (the engine, its layers and the frontends) and
+[docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
 
 The engine (`crates/engine`, no user interface), the terminal UI (`crates/cold-lava`), the
 extension host every frontend shares (`crates/host`, no user interface: manifests, permissions,

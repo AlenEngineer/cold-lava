@@ -193,8 +193,10 @@ always in the model's terms, never in a format's:
 | add, move or remove a piece | a new `item` after this place |
 | repoint a link | this link now leads there |
 
-The engine then asks the owner to read its own answer back and checks that it says what was
-asked, and only then writes. That step exists today and stays.
+The engine then checks the new text before it writes: by its bytes when a dictionary describes
+the format (#307), else by asking the owner to read its own answer back and checking that it
+says what was asked. The read-back exists today and stays. A writer the engine can't check
+writes only where the person allowed it (#308).
 
 **It says what it can store.** A table file's cell can't hold a nested list. A plain text file
 can't hold a mark. An owner declares which roles, marks, relations and attributes it can write

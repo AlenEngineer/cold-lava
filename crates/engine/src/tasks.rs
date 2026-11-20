@@ -602,7 +602,7 @@ pub fn toggle_text(
     let (prefix, mid) = (format!("{quote}{}", &caps[1]), caps[3].to_string());
     // What the tick adds goes before a block id, as Obsidian Tasks writes it, and a new
     // occurrence gets none: two lines can't share one.
-    let (body, block_id) = split_block_id(&caps[4], item);
+    let (body, block_id) = cut_own_block_id(&caps[4], item);
     let mut warning = None;
     let mut next = None;
 
@@ -664,6 +664,7 @@ pub fn toggle_text(
         out.push_str(nl);
     }
     let new_items = items::extract(rel, &out, item_settings);
+    keeps_anchors(text, &note_items, &new_items, item, next_at)?;
     let rev_at = |at: usize| {
         task_at(&new_items, at, &lines[at - 1], settings)
             .map_or_else(|| line_id(&lines[at - 1]), |(i, _)| i.rev.clone())
@@ -697,14 +698,61 @@ fn task_at<'a>(
         .find_map(|i| Some((i, Task::of(i, raw, settings)?)))
 }
 
-/// `body` cut before the block id that ends it (` ^rent`), and the id, when the item reads one
-/// on this line. An item of several lines has its id on its last.
-fn split_block_id<'a>(body: &'a str, item: &Item) -> (&'a str, &'a str) {
+/// `body` cut before the block id that ends it (` ^rent`), and the id as written, when the
+/// item reads one on this line. An item of several lines has its id on its last.
+fn cut_own_block_id<'a>(body: &'a str, item: &Item) -> (&'a str, &'a str) {
     let here = item.block_id.is_some() && item.line == item.end_line;
-    match crate::markdown::block_id_pattern().captures(body) {
-        Some(c) if here => body.split_at(c.get(0).unwrap().start()),
+    match crate::markdown::split_block_id(body) {
+        Some(cut) if here => (cut.before, cut.written),
         _ => (body, ""),
     }
+}
+
+/// Refused when the tick of `ticked` would lose, move or make a block id (`items::anchors`):
+/// `before` and `after` are the note's items, `text` the note before the tick, and `next` the
+/// line the next occurrence went on. The words say why and what to do.
+fn keeps_anchors(
+    text: &str,
+    before: &[Item],
+    after: &[Item],
+    ticked: &Item,
+    next: Option<usize>,
+) -> Result<()> {
+    use items::anchors::{self, Change};
+    // The next occurrence goes on a line of its own: what starts after the ticked task moves
+    // down one, and the task too when it goes above. A block the task opens (a list named by
+    // `^list`) starts where it did, now on the next occurrence.
+    let lands = |i: &Item| match next {
+        Some(next) if std::ptr::eq(i, ticked) => i.line + (next == i.line) as usize,
+        Some(_) if i.line > ticked.line => i.line + 1,
+        _ => i.line,
+    };
+    let mut same = anchors::by_line(before, after, lands);
+    let k = before.iter().position(|i| std::ptr::eq(i, ticked));
+    let k = k.expect("the ticked task is one of the note's items");
+    // A tick may make the task another type's: it is still the item on its line.
+    if same[k].is_none() {
+        let free = |j: &usize| after[*j].line == lands(ticked) && !same.contains(&Some(*j));
+        let found = (0..after.len()).find(free);
+        same[k] = found;
+    }
+    let Some(change) = anchors::change(before, after, &same, k, text) else {
+        return Ok(());
+    };
+    let words = match &change {
+        Change::Moved { id, to, .. } if Some(*to) == next => format!(
+            "^{id} is on a later line of this task, and the next occurrence, which goes right \
+             under the task's first line, would take it; put the task on one line ending in \
+             ^{id}, or turn off the Tasks plugin's \"next recurrence on the line below\""
+        ),
+        Change::Made { id, on } if Some(*on) == next => format!(
+            "the next occurrence would be a copy of the task's first line, which ends in ^{id}, \
+             and would take ^{id} as a new anchor; move ^{id} to the end of the task's last \
+             line, or take it off"
+        ),
+        _ => change.to_string(),
+    };
+    Err(crate::edit::EditError::Anchor(words).into())
 }
 
 fn strip_field(body: &str, emoji: &str, dv: &str) -> String {
@@ -1127,6 +1175,87 @@ mod tests {
         );
         assert_eq!(at(&after, 2).block_id.as_deref(), Some("rent"));
         assert_eq!(at(&after, 1).block_id, None, "the next one has none");
+    }
+
+    #[test]
+    fn a_tick_that_would_take_the_block_id_from_the_task_is_refused() {
+        let v = temp_workspace("anchor");
+        let plugin = v.join(".obsidian/plugins/obsidian-tasks-plugin");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("data.json"),
+            r#"{"recurrenceOnNextLine": true}"#,
+        )
+        .unwrap();
+        let f = v.join("Bills.md");
+        // The new occurrence would go under the first line, and the line with the id would be
+        // its continuation: the done task would lose `^rent` to it.
+        let open = "- [ ] Rent 🔁 every month 📅 2026-11-01\n  paid by card ^rent\n";
+        std::fs::write(&f, open).unwrap();
+        let err = toggle(&f, 1, None, d("2026-11-02")).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "^rent is on a later line of this task, and the next occurrence, which goes right \
+             under the task's first line, would take it; put the task on one line ending in \
+             ^rent, or turn off the Tasks plugin's \"next recurrence on the line below\"",
+            "why, and what to do"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            open,
+            "nothing written"
+        );
+
+        std::fs::write(&f, "- [ ] Rent 🔁 every month 📅 2026-11-01 ^rent\n").unwrap();
+        toggle(&f, 1, None, d("2026-11-02")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "- [x] Rent 🔁 every month 📅 2026-11-01 ✅ 2026-11-02 ^rent\n\
+             - [ ] Rent 🔁 every month 📅 2026-12-01\n",
+            "on one line, the id stays on the done line, the new occurrence below it"
+        );
+        let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
+    fn a_tick_that_would_give_the_next_occurrence_an_anchor_is_refused() {
+        let v = temp_workspace("anchor-made");
+        let f = v.join("Bills.md");
+        // `^x` ends the first of the task's two lines, so it is words there. The next
+        // occurrence is that line alone, which would read `^x` as a new anchor.
+        let open = "- [ ] Rent 🔁 every month 📅 2026-11-01 ^x\n  paid by card\n";
+        std::fs::write(&f, open).unwrap();
+        let err = toggle(&f, 1, None, d("2026-11-02")).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "the next occurrence would be a copy of the task's first line, which ends in ^x, \
+             and would take ^x as a new anchor; move ^x to the end of the task's last line, or \
+             take it off",
+            "why, and what to do"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            open,
+            "nothing written"
+        );
+        let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
+    fn an_untick_gives_back_an_anchor_already_written_in_the_line() {
+        // cold-lava 0.6.0 wrote the done date after the id, and the task lost its anchor.
+        let s = settings(serde_json::json!({}), "");
+        let style: crate::style::Lazy = crate::style::Style::default().into();
+        let anchor = |text: &str| items::extract("N.md", text, &s)[0].block_id.clone();
+        let done = "- [x] Pay rent ^rent ✅ 2026-11-07\n";
+        assert_eq!(anchor(done), None);
+        let t = toggle_text("N.md", "N.md", done, &s, &style, 1, None, d("2026-11-09")).unwrap();
+        assert_eq!(t.text, "- [ ] Pay rent ^rent\n");
+        assert_eq!(
+            anchor(&t.text).as_deref(),
+            Some("rent"),
+            "the anchor is back"
+        );
     }
 
     #[test]

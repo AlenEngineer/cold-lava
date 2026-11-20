@@ -230,11 +230,11 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                             } else {
                                 src_line(last)
                             };
-                            match markdown::block_id_pattern().captures(own_last) {
-                                Some(c) if last == frame.line => {
-                                    (&first[..c.get(0).unwrap().start()], Some(c[1].to_string()))
+                            match markdown::split_block_id(own_last) {
+                                Some(cut) if last == frame.line => {
+                                    (cut.before, Some(cut.id.to_string()))
                                 }
-                                Some(c) => (first, Some(c[1].to_string())),
+                                Some(cut) => (first, Some(cut.id.to_string())),
                                 None => (first, None),
                             }
                         } else {
@@ -274,13 +274,13 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                         }
                         let id = flavour
                             .has(Syntax::BlockIds)
-                            .then(|| markdown::block_id_pattern().captures(src_line(last)))
+                            .then(|| markdown::split_block_id(src_line(last)))
                             .flatten();
                         let alone = id
                             .as_ref()
-                            .is_some_and(|c| last == frame.line && c.get(0).unwrap().start() == 0);
+                            .is_some_and(|cut| last == frame.line && cut.before.is_empty());
                         let mut raw = None;
-                        if let Some(c) = &id {
+                        if let Some(cut) = &id {
                             let line = match parent_prev {
                                 Some(prev) if alone => prev,
                                 _ => frame.line,
@@ -291,17 +291,17 @@ fn pass(lines: &Lines, flavour: &Flavour, wants: Wants) -> Pass {
                                 end_line: last,
                                 section: names(&headings),
                                 parent: enclosing(&open),
-                                block_id: Some(c[1].to_string()),
+                                block_id: Some(cut.id.to_string()),
                                 data: Data::Block,
                                 key: String::new(),
                             });
                         }
                         if (want_paragraphs || want_inline) && !alone {
                             let mut text = src[frame.start..range.end].trim_end();
-                            if let Some(c) = markdown::block_id_pattern().captures(text)
+                            if let Some(cut) = markdown::split_block_id(text)
                                 && id.is_some()
                             {
-                                text = text[..c.get(0).unwrap().start()].trim_end();
+                                text = cut.before.trim_end();
                             }
                             let text = frame.start..frame.start + text.len();
                             candidates.push(Candidate {

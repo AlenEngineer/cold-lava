@@ -37,7 +37,11 @@ pub const BUILT_IN: &[(&str, &str)] = &[(canvas::EXTENSION, canvas::OWNER)];
 
 /// The built-in owner of the file at workspace-relative `rel`, by its extension.
 pub fn built_in(rel: &str) -> Option<&'static str> {
-    let x = crate::files::extension_of(rel)?;
+    built_in_kind(&crate::files::extension_of(rel)?)
+}
+
+/// The built-in owner of files of kind `x` (lowercase, without the dot).
+pub fn built_in_kind(x: &str) -> Option<&'static str> {
     BUILT_IN.iter().find(|(e, _)| *e == x).map(|(_, o)| *o)
 }
 

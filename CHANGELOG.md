@@ -32,7 +32,7 @@ change commands, keys and file formats; patch versions only fix things.
   anything is written the owner reads its new text back, and now every piece must say what
   was asked and stand where it stood, so an owner that quietly changes another piece,
   changes the other of two identical chores (where it keeps their places) or moves one
-  is refused. New words are
+  is refused; the comparison grows with the size of the answer, not its square (#319). New words are
   refused when some of the piece's words don't show in the field being set (a type's
   `marker`, `pattern` or `without` took them out), since they would be dropped unseen. With custom Tasks statuses a tick goes on
   to the next status that is another of the four words. Ticking a recurring task in a piece
@@ -102,6 +102,22 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- **Breaking for extensions:** `files.write` no longer reaches a kind of file another owner
+  reads (#323, the owner's decision on #308). An extension that isn't a file's owner can no
+  longer write a `.csv` that `csv-table` opens, or a `.canvas`, as a whole new text: an
+  owned file changes on one checked path, through `items/edit`, which asks its owner and
+  reads the answer back before anything is written (#183). `workspace/write`,
+  `workspace/create` and `workspace/restore` under a new name (`to`) of such a kind are
+  refused as `forbidden` whatever the extension's permissions, saying so: `open-tasks may
+  not write .csv files: their owner reads them, so they change only through it, with
+  items/edit`. Reading them with `files.read`, deleting them with `files.delete` and
+  restoring them where they were are unchanged, and so are notes, files nobody owns and an
+  owner's writes to its own kind. A path's kind is the kind of the file it names, however
+  it is spelled: `Eruptions.csv/` is a `.csv`, so it is refused to others and its owner
+  reads and writes it without `files.read` or `files.write`, as `Eruptions.csv`. A link written
+  with a trailing slash to a kind an extension owns (`[[Volcanoes/Eruptions.csv/]]`) now
+  opens that file in its owner, as the link without the slash does; it used to offer to
+  create a note and fail.
 - One bad item in an owner's answer no longer makes its file read-only (#257, step A4c).
   An edit to a good item (a tick, a date, new words, a row's cell, a typed item's field, a
   Markdown piece) goes ahead beside an item cold-lava leaves out, as a rename already did,
@@ -354,6 +370,23 @@ change commands, keys and file formats; patch versions only fix things.
   reaching the task, and the item's id moved. When a recurring task is ticked, the done task
   keeps the block id and the new occurrence gets none, as in Obsidian Tasks; before, the new
   occurrence took it.
+- A tick or a field's edit that would lose a block id, move it to another item or make a new
+  one is refused, and nothing is written (#318). The id (`^rent`) is the anchor links point
+  at. Two ticks did it before:
+  - With the Tasks plugin's "next recurrence on the line below", ticking a recurring task
+    whose `^id` is on a later line of the task put the next occurrence above that line, so
+    the id went to the next occurrence and links to it stopped reaching the done task.
+  - A recurring task of two lines whose first line ends in `^x` (words there, since an id
+    is read on a task's last line) gave the next occurrence, that first line alone, `^x` as
+    a new anchor.
+
+  The refusal says why and what to do (`^rent is on a later line of this task, and the next
+  occurrence … would take it; put the task on one line ending in ^rent, or turn off …`):
+  `task toggle` prints it and exits with 1, the agenda and the reader show it after "not
+  ticked", and `items/edit` answers it as `read-back`.
+- Unticking a task cold-lava 0.6.0 ticked after its block id (`- [x] Pay rent ^rent ✅
+  2026-11-07`) gives the task its anchor back: `- [ ] Pay rent ^rent` (#318). An edit may
+  give an item a block id only when it is already written in the item's own text.
 - The shape editor no longer takes another definition's error for the draft's when that
   error's words, or the workspace's path, happen to hold `shape ID: ` (#265, track A step
   A3). A glyph named `shape x` that doesn't load no longer stops a draft called `x` from

@@ -119,12 +119,12 @@ pub fn edit(
             }
             let line = item.line;
             let t = tasks::toggle_text(note, note, text, s, style, line, Some(&req.rev), today)
-                .map_err(|e| {
-                    let reason = match e.downcast_ref::<tasks::Changed>() {
-                        Some(_) => Reason::Changed,
-                        None => Reason::Refused,
-                    };
-                    Error::new(reason, format!("{e:#}"))
+                .map_err(|e| match e.downcast::<edit::EditError>() {
+                    Ok(e) => Error::from(e),
+                    Err(e) => match e.downcast_ref::<tasks::Changed>() {
+                        Some(_) => Error::new(Reason::Changed, format!("{e:#}")),
+                        None => Error::new(Reason::Refused, format!("{e:#}")),
+                    },
                 })?;
             Ok(Made {
                 text: t.text,

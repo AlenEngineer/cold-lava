@@ -16,8 +16,9 @@ with ratatui). Three things define it:
   data, file formats, types and simple views (lists, tables, scenes). The surfaces you work in
   (the page with the reader and the editor, the whiteboard) are built into the frontend.
 
-The ideas the project is built on are `docs/foundations.md`: read it before designing anything,
-and where it and another document disagree about an idea, it is right. The order of work is
+The picture, told as a library with translators and a librarian, and a map of the crates, is
+`ARCHITECTURE.md`. The ideas the project is built on are `docs/foundations.md`: read it before
+designing anything, and where it and another document disagree about an idea, it is right. The order of work is
 the first section of roadmap issue #100: the engine-facing work first (one
 path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
 
@@ -318,6 +319,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   that compares the two on every note of the corpus. pulldown-cmark is a dev-dependency of
   the engine: those two test modules (`items/pulldown.rs`, `markdown/pulldown.rs`) are all
   that use it, and nothing shipped may. Read tasks through items, not by scanning lines.
+  `items/anchors.rs` is the anchor rule: an edit loses no block id, moves none to another
+  item and makes none, but one already written in the edited item's own text (an untick of
+  a line 0.6.0 ticked after `^rent`). `set-field`'s and the tick's read-backs both ask it
+  (`anchors::change`); don't check block ids anywhere else.
 - `alphabet.rs`, `types.rs`, `matcher.rs`: the alphabet and the type language.
   `alphabet::Role` is the nine roles a piece of writing can have (`document`, `section`,
   `text`, `item`, `row`, `aside`, `verbatim`, `embed`, `opaque`), `alphabet::Mark` the six
@@ -476,7 +481,8 @@ another host or check in a frontend:
   - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
     returns, so extensions never hold `&mut Home`. The gateway's `items/*` and `types/list` are
     answered during the call by the core, after `Host` checks the manifest's `permissions`
-    (`items.read` by default, `items.edit`; `files.read` and `files.write` for whole files;
+    (`items.read` by default, `items.edit`; `files.read` and `files.write` for whole files,
+    though `files.write` never reaches a kind another owner reads, `.canvas` included (#323);
     `files.delete` for `workspace/delete` and `workspace/restore`, which `files.write` and
     owning a kind don't include). The reader's `x` uses the same `Host`, as
     `Registry::screen`; the agenda and the table are built-in `Extension`s.
@@ -651,7 +657,10 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   PR. Keep stacks to two or three PRs, one track step per refactor PR. A pushed branch is
   never rebased or force-pushed: bring a lower PR's changes up with an ordinary merge commit.
 - Every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and the
-  README is updated with it.
+  README is updated with it. The `changelog` check (`scripts/changelog-check.sh`) fails a PR
+  that changes `crates/` or `examples/extensions/` without touching `CHANGELOG.md` (a release PR
+  changes it anyway); a refactor or a tests-only change there carries the `no-changelog` label
+  instead. It doesn't check the README half of this rule.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
   commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,
@@ -683,7 +692,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
 
 ## Where things stand
 
-- The whole picture (engine layers, engine vs. frontends) is `docs/engine.md`; the crate split
+- The whole picture is `ARCHITECTURE.md`; the engine's layers and engine vs. frontends are
+  `docs/engine.md`; the crate split
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - The direction and the order of work were decided on 2026-11-11 (`docs/engine.md`, "Direction

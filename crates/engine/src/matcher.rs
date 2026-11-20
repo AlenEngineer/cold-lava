@@ -586,7 +586,8 @@ impl Matcher {
             // A list item's text comes without its block id; a `^x` left on its first line,
             // when more lines follow, names nothing and is words.
             if b.on != On::Item {
-                used.extend(markdown::block_id_pattern().find(b.text).map(|m| m.range()));
+                let cut = markdown::split_block_id(b.text);
+                used.extend(cut.map(|c| c.before.len()..c.before.len() + c.written.len()));
             }
             for w in without {
                 used.extend(
