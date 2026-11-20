@@ -102,6 +102,22 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- **Breaking for extensions:** `files.write` no longer reaches a kind of file another owner
+  reads (#323, the owner's decision on #308). An extension that isn't a file's owner can no
+  longer write a `.csv` that `csv-table` opens, or a `.canvas`, as a whole new text: an
+  owned file changes on one checked path, through `items/edit`, which asks its owner and
+  reads the answer back before anything is written (#183). `workspace/write`,
+  `workspace/create` and `workspace/restore` under a new name (`to`) of such a kind are
+  refused as `forbidden` whatever the extension's permissions, saying so: `open-tasks may
+  not write .csv files: their owner reads them, so they change only through it, with
+  items/edit`. Reading them with `files.read`, deleting them with `files.delete` and
+  restoring them where they were are unchanged, and so are notes, files nobody owns and an
+  owner's writes to its own kind. A path's kind is the kind of the file it names, however
+  it is spelled: `Eruptions.csv/` is a `.csv`, so it is refused to others and its owner
+  reads and writes it without `files.read` or `files.write`, as `Eruptions.csv`. A link written
+  with a trailing slash to a kind an extension owns (`[[Volcanoes/Eruptions.csv/]]`) now
+  opens that file in its owner, as the link without the slash does; it used to offer to
+  create a note and fail.
 - One bad item in an owner's answer no longer makes its file read-only (#257, step A4c).
   An edit to a good item (a tick, a date, new words, a row's cell, a typed item's field, a
   Markdown piece) goes ahead beside an item cold-lava leaves out, as a rename already did,

@@ -1325,10 +1325,28 @@ graph all see the new date. None of them knew what a canvas is.
 - **Permissions.** An owner may read, write, create and list files of its own kinds with no
   permission at all: opening them is what it is for. Anything else needs `files.read`
   (`workspace/read`, `workspace/files`) or `files.write` (`workspace/write`,
-  `workspace/create`), which together cover notes too, as text. The check is `Host::files_core`,
-  beside the items' permissions, so it holds for built-in extensions and over the wire alike. The
-  menu's screens (`reader`, `table`) get neither. Refusals are `forbidden`, naming the
-  permission.
+  `workspace/create`), which together cover notes too, as text. The check is in the host,
+  beside the items' permissions, so it holds for built-in extensions and over the wire alike:
+  `Host::files_core` for reads, writes and creates, and `Host::restore_file` for a restore
+  under a new name. The menu's screens (`reader`, `table`) get neither. Refusals are
+  `forbidden`, naming the permission. A path's kind is that of the file it names:
+  `files::extension_of` reads the last part as `files::normal` spells the path, so
+  `Eruptions.csv/` is a `.csv` as the file the engine writes is.
+- **`files.write` doesn't reach another owner's kind** (#323, the owner's decision on #308).
+  An owned file changes on one checked path (#183): an item edit asks its owner and reads
+  the answer back before anything is written. A whole text from someone else would go
+  around that check, so `workspace/write` and `workspace/create` of a kind another
+  extension owns, or a built-in owner's (`.canvas`), are refused as `forbidden` whatever
+  the caller's permissions, in words that name the way that is open: `open-tasks may not
+  write .csv files: their owner reads them, so they change only through it, with
+  items/edit`.
+  Reading them still needs only `files.read`. A restore under a new name (`to`) is a write
+  of that name's kind, so it is refused the same way: without that, a note written with
+  `files.write`, deleted and put back as `x.csv`, would be a new table its owner never
+  wrote. A delete, and a restore where the file was, stay `files.delete`'s: they bring no
+  text the owner didn't write, the trash keeps what went, and "may delete files" is a line
+  of its own in the manifest. The owner's own writes are unchanged; #310 puts them on
+  declared and checked saves.
 - **The example** is `examples/extensions/csv-table` (Python, no dependencies): `file/open` reads
   the file and sends a table view (a text column per header cell, a row per line); `view/event
   edit` sets the cell and sends `workspace/write` with the `rev` it showed, and on `changed`
@@ -1479,13 +1497,14 @@ the same `{reason, message}`.
   for while another workspace is open says which workspace to open, and stays on the stack.
 - **Permissions.** `workspace/delete` and `workspace/restore` need **`files.delete`**, a
   permission of its own that `files.write` does not include; a restore with `to` needs
-  `files.write` too; `workspace/create-folder` needs
+  `files.write` too, and is refused where another owner reads `to`'s kind, as a create is
+  ("File types, as built"); `workspace/create-folder` needs
   `files.write` (creating is a write); `workspace/stat` is a read (`files.read`, or the owner
   of a file's kind; `files.read` for any folder). A manifest is where the user sees what an extension may do, and the trust
   prompt (#89) will list the same words: "may delete files" is a line worth its own, and an
   extension that writes tables should not get it by asking to write. It guards against an
   extension that deletes by mistake, not against a hostile one: `files.write` can already
-  empty any file, with no copy in a trash. Owning a kind of file does not allow deleting it:
+  empty any note or file nobody owns, with no copy in a trash. Owning a kind of file does not allow deleting it:
   opening and saving are what an owner is for, a folder has no kind, and the rule stays one
   line.
 - **Who made it.** Each change is made inside the call, the files it touched are read again
@@ -3008,11 +3027,14 @@ runs the `open-tasks` example with and without `items.edit`.)*
 | `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`, `workspace/style` |
 | `items.edit` | `items/edit` |
 | `files.read` | `workspace/read`, `workspace/files` and `workspace/stat` for kinds of file it doesn't own, and `workspace/stat` of any folder |
-| `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own, and `workspace/create-folder` |
-| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too; a restore to another path needs `files.write` as well |
+| `files.write` | `workspace/write` and `workspace/create` of notes and of kinds of file nobody owns, and `workspace/create-folder`; never a kind another owner reads (an extension's, or `.canvas`) |
+| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too; a restore to another path needs `files.write` as well, and is refused where another owner reads that path's kind |
 
 A request without its permission is refused as `forbidden`, with the permission it needs in
 the message. An owner needs no permission for files of its own kinds ("File types, as built").
+A kind another owner reads is written only by that owner: anyone else changes such a file
+through `items/edit`, and its `workspace/write` or `workspace/create` is refused as
+`forbidden` whatever its permissions (#323).
 Creating is a write, so there is no `files.create`, and a manifest that names it doesn't load.
 Deleting is not: `files.write` doesn't include `files.delete`, and owning a kind doesn't
 either ("Deleting, restoring and making folders").
