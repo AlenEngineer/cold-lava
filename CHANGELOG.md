@@ -323,6 +323,23 @@ change commands, keys and file formats; patch versions only fix things.
   reaching the task, and the item's id moved. When a recurring task is ticked, the done task
   keeps the block id and the new occurrence gets none, as in Obsidian Tasks; before, the new
   occurrence took it.
+- A tick or a field's edit that would lose a block id, move it to another item or make a new
+  one is refused, and nothing is written (#318). The id (`^rent`) is the anchor links point
+  at. Two ticks did it before:
+  - With the Tasks plugin's "next recurrence on the line below", ticking a recurring task
+    whose `^id` is on a later line of the task put the next occurrence above that line, so
+    the id went to the next occurrence and links to it stopped reaching the done task.
+  - A recurring task of two lines whose first line ends in `^x` (words there, since an id
+    is read on a task's last line) gave the next occurrence, that first line alone, `^x` as
+    a new anchor.
+
+  The refusal says why and what to do (`^rent is on a later line of this task, and the next
+  occurrence … would take it; put the task on one line ending in ^rent, or turn off …`):
+  `task toggle` prints it and exits with 1, the agenda and the reader show it after "not
+  ticked", and `items/edit` answers it as `read-back`.
+- Unticking a task cold-lava 0.6.0 ticked after its block id (`- [x] Pay rent ^rent ✅
+  2026-11-07`) gives the task its anchor back: `- [ ] Pay rent ^rent` (#318). An edit may
+  give an item a block id only when it is already written in the item's own text.
 - The shape editor no longer takes another definition's error for the draft's when that
   error's words, or the workspace's path, happen to hold `shape ID: ` (#265, track A step
   A3). A glyph named `shape x` that doesn't load no longer stops a draft called `x` from

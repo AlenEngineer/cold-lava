@@ -885,11 +885,9 @@ impl<'a> Walk<'a> {
             } else {
                 lines.line(last)
             };
-            match markdown::block_id_pattern().captures(own_last) {
-                Some(c) if last == block.line => {
-                    (&first[..c.get(0).unwrap().start()], Some(c[1].to_string()))
-                }
-                Some(c) => (first, Some(c[1].to_string())),
+            match markdown::split_block_id(own_last) {
+                Some(cut) if last == block.line => (cut.before, Some(cut.id.to_string())),
+                Some(cut) => (first, Some(cut.id.to_string())),
                 None => (first, None),
             }
         } else {
@@ -938,15 +936,15 @@ impl<'a> Walk<'a> {
         }
         let ids = self.flavour.has(Syntax::BlockIds);
         let id = ids
-            .then(|| markdown::block_id_pattern().captures(lines.line(last)))
+            .then(|| markdown::split_block_id(lines.line(last)))
             .flatten();
         // A `^id` alone names the block before it.
         let alone = id
             .as_ref()
-            .is_some_and(|c| last == block.line && c.get(0).unwrap().start() == 0);
+            .is_some_and(|cut| last == block.line && cut.before.is_empty());
         let (section, parent) = (self.names(), self.enclosing());
         let mut raw = None;
-        if let Some(c) = &id {
+        if let Some(cut) = &id {
             let line = match before {
                 Some(before) if alone => before,
                 _ => block.line,
@@ -957,17 +955,17 @@ impl<'a> Walk<'a> {
                 end_line: last,
                 section: section.clone(),
                 parent,
-                block_id: Some(c[1].to_string()),
+                block_id: Some(cut.id.to_string()),
                 data: Data::Block,
                 key: String::new(),
             });
         }
         if (self.wants.paragraphs || self.wants.inline) && !alone {
             let mut text = src[block.start..end].trim_end();
-            if let Some(c) = markdown::block_id_pattern().captures(text)
+            if let Some(cut) = markdown::split_block_id(text)
                 && id.is_some()
             {
-                text = text[..c.get(0).unwrap().start()].trim_end();
+                text = cut.before.trim_end();
             }
             let text = block.start..block.start + text.len();
             self.pass.candidates.push(Candidate {
@@ -1388,6 +1386,8 @@ fn list_text(first: &str) -> String {
     text
 }
 
+pub mod anchors;
+
 #[cfg(test)]
 mod pulldown;
 
@@ -1396,7 +1396,7 @@ pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn settings(flavour: &str) -> Settings {
+    pub(crate) fn settings(flavour: &str) -> Settings {
         let nowhere = Path::new("/nonexistent-cold-lava-workspace");
         Settings::new(
             Flavour::built_in(flavour).unwrap(),

@@ -623,7 +623,14 @@ custom statuses follow the Tasks plugin's settings.
 custom statuses say which; else done, and back to todo), adds the done date (`✅`, or
 `[completion:: …]`) before a block id that ends the line (`^rent`), removes it when unticking,
 and for recurring tasks inserts the next occurrence with its dates moved forward (the block id
-stays on the done task). Pass the `id` from the agenda: if the line has changed since, nothing is touched
+stays on the done task, and the new occurrence gets none). A tick that would lose a block id,
+move it to another item or make a new one is refused, nothing is written, and the refusal
+says why and what to do: with the Tasks plugin's "next recurrence on the line below", an id on
+a later line of the task would go to the new occurrence (put the task on one line ending in
+its id), and a two-line task whose first line ends in `^x` would give the new occurrence `^x`
+as a new anchor. Unticking a line cold-lava 0.6.0 ticked after its id (`- [x] Pay rent ^rent
+✅ 2026-11-07`) gives `- [ ] Pay rent ^rent`, and the task its anchor back.
+Pass the `id` from the agenda: if the line has changed since, nothing is touched
 and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note,
 and `x` in the reader ticks a task the same way. Custom statuses whose next status is a
 cancelled one get the cancelled date (`❌`, or `[cancelled:: …]`) unless the plugin's "set
