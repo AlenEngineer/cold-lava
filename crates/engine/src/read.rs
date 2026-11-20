@@ -222,6 +222,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[test]
+    fn only_a_file_seen_as_a_file_is_written_over() {
+        let d = dir("entry-file");
+        let p = d.join("Lava.md");
+        std::fs::write(&p, "hot").unwrap();
+        let entry = Seen::entry(&p).unwrap();
+        assert_eq!(entry.bytes(), Some(&b"hot"[..]));
+        assert!(entry.unchanged().is_ok());
+        assert!(matches!(entry.replace(b"cold"), Err(WriteError::Changed(at)) if at == p));
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"hot",
+            "a write reads through a link, which an entry never follows"
+        );
+        Seen::file(&p).unwrap().replace(b"cold").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"cold");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_file_is_read_through_a_link_and_an_entry_is_the_link() {
