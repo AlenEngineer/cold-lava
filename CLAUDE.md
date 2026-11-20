@@ -52,8 +52,8 @@ scripts/release-check.sh                                # is this commit a relea
 scripts/bench-items.py BINARY...                        # time and peak RSS of items/agenda/table, per binary, on a 3k-note workspace
 ```
 
-All three checks must pass before pushing: CI runs them on Ubuntu and macOS, and they are
-required checks on `main`.
+All three checks must pass before pushing: CI runs them on Ubuntu (Linux only, decided
+2026-11-20; macOS comes back when the owner says), and they are required checks on `main`.
 
 ## Architecture
 
@@ -646,8 +646,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
 
 ## Workflow
 
-- **No direct pushes to `main`**: a ruleset requires a PR with `ubuntu-latest`, `macos-latest`
-  and `release check` passing. Tags `v*` can't be deleted or moved.
+- **No direct pushes to `main`**: a ruleset requires a PR with `ubuntu-latest`, `release check`
+  and `changelog` passing. Tags `v*` can't be deleted or moved.
 - One branch per feature. Work spanning several features goes in a **GitHub native stacked PR**
   (https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests), using the
   `gh stack` extension: `gh stack init`, `gh stack add BRANCH`, `gh stack submit` (or
@@ -667,7 +667,7 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   instead. It doesn't check the README half of this rule.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
-  commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,
+  commit, build Linux binaries (x86-64 and ARM) and publish the release. Before 1.0, minor = may break,
   patch = fixes only.
 - Commit messages: a short summary line, then what changed and why.
 - **Two reviews before a merge, by two different agents.** One checks behaviour (CI's

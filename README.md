@@ -22,7 +22,7 @@ Obsidian and the graph updates on its own.
 
 ## Install
 
-Download a binary for Linux or macOS from the
+Download a binary for Linux from the
 [latest release](https://github.com/AlenEngineer/cold-lava/releases/latest), or build it:
 
 ```bash
@@ -1081,7 +1081,7 @@ Releases are automatic. To cut one, open a PR that:
 CI checks it with [`scripts/release-check.sh`](scripts/release-check.sh) (you can run it
 locally too): a new version needs its changelog section and must be higher than the last
 release. Once the PR is merged into `main`, the [release workflow](.github/workflows/release.yml)
-runs the tests, builds Linux and macOS binaries (x86-64 and ARM), creates the `vx.y.z` tag and
+runs the tests, builds Linux binaries (x86-64 and ARM), creates the `vx.y.z` tag and
 publishes the GitHub Release, with that changelog section as its notes. Pushing a `vx.y.z` tag
 by hand does the same.
 
