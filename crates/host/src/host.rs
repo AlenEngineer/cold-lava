@@ -306,7 +306,7 @@ impl Host<'_> {
             return Ok(());
         };
         let theirs = (self.owners.iter()).any(|(x, owner)| x == kind && Some(*owner) != self.me)
-            || (crate::owner::BUILT_IN.iter()).any(|(built_in, _)| *built_in == kind);
+            || crate::owner::built_in_kind(kind).is_some();
         if !theirs {
             return Ok(());
         }

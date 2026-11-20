@@ -1318,10 +1318,13 @@ graph all see the new date. None of them knew what a canvas is.
 - **Permissions.** An owner may read, write, create and list files of its own kinds with no
   permission at all: opening them is what it is for. Anything else needs `files.read`
   (`workspace/read`, `workspace/files`) or `files.write` (`workspace/write`,
-  `workspace/create`), which together cover notes too, as text. The check is `Host::files_core`,
-  beside the items' permissions, so it holds for built-in extensions and over the wire alike. The
-  menu's screens (`reader`, `table`) get neither. Refusals are `forbidden`, naming the
-  permission.
+  `workspace/create`), which together cover notes too, as text. The check is in the host,
+  beside the items' permissions, so it holds for built-in extensions and over the wire alike:
+  `Host::files_core` for reads, writes and creates, and `Host::restore_file` for a restore
+  under a new name. The menu's screens (`reader`, `table`) get neither. Refusals are
+  `forbidden`, naming the permission. A path's kind is that of the file it names:
+  `files::extension_of` reads the last part as `files::normal` spells the path, so
+  `Eruptions.csv/` is a `.csv` as the file the engine writes is.
 - **`files.write` doesn't reach another owner's kind** (#323, the owner's decision on #308).
   An owned file changes on one checked path (#183): an item edit asks its owner and reads
   the answer back before anything is written. A whole text from someone else would go

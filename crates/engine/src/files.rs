@@ -161,9 +161,10 @@ pub struct Folder {
     pub path: String,
 }
 
-/// The suffix of a path or file name (`Data/Eruptions.CSV` → `csv`), lowercase.
+/// The suffix of a path or file name (`Data/Eruptions.CSV` → `csv`), lowercase: of its last
+/// part as `normal` spells it, so `Eruptions.csv/` is the kind of the file it names.
 pub fn extension_of(path: &str) -> Option<String> {
-    let file = path.rsplit('/').next().unwrap_or(path);
+    let file = path.rsplit('/').find(|part| !part.is_empty())?;
     let (stem, ext) = file.rsplit_once('.')?;
     (!stem.is_empty() && !ext.is_empty()).then(|| ext.to_ascii_lowercase())
 }
