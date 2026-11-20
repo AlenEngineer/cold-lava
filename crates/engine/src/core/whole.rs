@@ -23,36 +23,48 @@ use crate::rename::{self, FileEdit};
 use crate::trash::Bin;
 use std::path::{Path, PathBuf};
 
-/// A plan the core makes (`Core::apply`).
-pub trait Planned {
+/// A plan the core makes (`Core::apply`): a rename, a merge or a recipe, and nothing else. The
+/// trait is sealed (`Sealed`, which nothing outside this module can name), so no frontend's type
+/// can be one, and `Core::apply` writes only the engine's plans, the engine's way.
+pub trait Planned: Sealed {
     /// What it gives back once made: what undoes a merge or a recipe.
     type Made;
-
-    /// The files whose text it changes, each with its new text, or, for a file another owner
-    /// reads, what to ask that owner for (`edits_mut` takes its answer).
-    fn edits(&self) -> &[FileEdit];
-
-    fn edits_mut(&mut self) -> &mut [FileEdit];
-
-    /// Where the file at `path` is once it is made.
-    fn moved(&self, path: &Path) -> PathBuf {
-        path.to_path_buf()
-    }
 
     /// Write it: refused when a file changed since it was planned, or a file another owner
     /// reads has no new text from it yet.
     fn write(&self, door: Door<'_>) -> anyhow::Result<Self::Made>;
 }
 
+mod sealed {
+    use crate::rename::FileEdit;
+    use std::path::{Path, PathBuf};
+
+    /// What the core reads of a plan (`super::Planned`) while it makes it. It must never be
+    /// exported: that it can't be named outside this module is what closes `Planned`.
+    pub trait Sealed {
+        /// The files whose text it changes, each with its new text, or, for a file another
+        /// owner reads, what to ask that owner for (`edits_mut` takes its answer).
+        fn edits(&self) -> &[FileEdit];
+
+        fn edits_mut(&mut self) -> &mut [FileEdit];
+
+        /// Where the file at `path` is once it is made.
+        fn moved(&self, path: &Path) -> PathBuf {
+            path.to_path_buf()
+        }
+    }
+}
+
+use sealed::Sealed;
+
 /// What writing a plan takes from the core: the system trash a merge's source goes to. Nothing
-/// outside this module can make one, so a plan is written by the core alone (`Core::apply`).
+/// outside this module can make one, so only the core calls `Planned::write`. The seal
+/// (`Sealed`), not this, is what keeps a frontend's type from being a plan.
 pub struct Door<'a> {
     system: Option<&'a Bin>,
 }
 
-impl Planned for rename::Plan {
-    type Made = ();
-
+impl Sealed for rename::Plan {
     fn edits(&self) -> &[FileEdit] {
         &self.edits
     }
@@ -64,15 +76,17 @@ impl Planned for rename::Plan {
     fn moved(&self, path: &Path) -> PathBuf {
         rename::Plan::moved(self, path)
     }
+}
+
+impl Planned for rename::Plan {
+    type Made = ();
 
     fn write(&self, _: Door<'_>) -> anyhow::Result<()> {
         rename::apply(self)
     }
 }
 
-impl Planned for Merge {
-    type Made = Merged;
-
+impl Sealed for Merge {
     fn edits(&self) -> &[FileEdit] {
         &self.edits
     }
@@ -80,15 +94,17 @@ impl Planned for Merge {
     fn edits_mut(&mut self) -> &mut [FileEdit] {
         &mut self.edits
     }
+}
+
+impl Planned for Merge {
+    type Made = Merged;
 
     fn write(&self, door: Door<'_>) -> anyhow::Result<Merged> {
         merge::apply(self, door.system)
     }
 }
 
-impl Planned for recipe::Plan {
-    type Made = Applied;
-
+impl Sealed for recipe::Plan {
     fn edits(&self) -> &[FileEdit] {
         &self.edits
     }
@@ -96,6 +112,10 @@ impl Planned for recipe::Plan {
     fn edits_mut(&mut self) -> &mut [FileEdit] {
         &mut self.edits
     }
+}
+
+impl Planned for recipe::Plan {
+    type Made = Applied;
 
     fn write(&self, _: Door<'_>) -> anyhow::Result<Applied> {
         recipe::apply(self)
