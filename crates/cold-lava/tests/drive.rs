@@ -1050,6 +1050,65 @@ fn canvases_join_the_workspace_through_their_owner() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A board at `rel` in the sandbox's workspace whose first card has an empty id, which the
+/// engine doesn't take (its tasks aren't given, and the board is reported), followed by two
+/// cards above it.
+fn board_with_a_card_left_out(dir: &Path, rel: &str) {
+    let card = |id: &str, y: u32, text: &str| {
+        format!(
+            "{{\"id\":\"{id}\",\"type\":\"text\",\"text\":\"{text}\",\"x\":0,\"y\":{y},\
+             \"width\":200,\"height\":80}}"
+        )
+    };
+    let cards = [
+        card("", 200, "- [ ] Sweep the ash"),
+        card("g", 0, "- [ ] Goggles"),
+        card("h", 100, "- [ ] Masks"),
+    ];
+    let board = format!("{{\"nodes\":[{}],\"edges\":[]}}\n", cards.join(","));
+    std::fs::write(dir.join("example-workspace").join(rel), board).unwrap();
+}
+
+/// Several boards' reports as the workspace opens: each shows, in turn (#303's review, S1).
+#[test]
+fn what_files_leave_out_is_reported_each_in_turn_as_the_workspace_opens() {
+    let dir = sandbox("reports-in-turn");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Lahar.canvas");
+    assert_passed(&drive("reports-in-turn.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A report that comes while the user's action has its message waits for the message's time
+/// (#303's review, M2).
+#[test]
+fn a_report_waits_for_the_message_of_what_the_user_did() {
+    let dir = sandbox("reports-wait");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    assert_passed(&drive("reports-wait.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A duplicate reads the workspace again, and a board's report isn't said again (#303's
+/// review, M2).
+#[test]
+fn a_board_is_reported_once_however_often_the_workspace_is_read() {
+    let dir = sandbox("reports-once");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    assert_passed(&drive("reports-once.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Deleting a card on a board that leaves one out, and undoing it, keep their messages, and
+/// the board isn't reported again (#303's review, M2).
+#[test]
+fn the_whiteboards_delete_and_undo_keep_their_messages() {
+    let dir = sandbox("reports-on-the-board");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    assert_passed(&drive("reports-on-the-board.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn ticks_tasks_in_the_reader() {
     let dir = sandbox("reader-tick");

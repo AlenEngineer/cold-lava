@@ -1,0 +1,35 @@
+# What a board leaves out is reported once, and again only when it changes (#303's review,
+# M2): deleting a card on the whiteboard and undoing it save the board, "deleted" and
+# "undone" stay their time, and nothing is reported after them. tests/drive.rs writes
+# Ashfall.canvas: first in the file a card whose id is empty, which the engine doesn't take,
+# then two cards above it.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out
+wait-gone couldn't read
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type ashfall
+keys enter
+wait-for whiteboard Ashfall · 3 cards · 0 arrows
+keys tab
+wait-for text card
+keys d
+wait-for whiteboard Ashfall · 2 cards · 0 arrows
+expect deleted
+wait 1500ms
+expect deleted
+wait-gone deleted
+expect-not couldn't read
+keys u
+wait-for whiteboard Ashfall · 3 cards · 0 arrows
+expect undone
+wait 1500ms
+expect undone
+wait-gone undone
+expect-not couldn't read
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

@@ -1,0 +1,12 @@
+# What owned files leave out is reported as the workspace opens, each file in turn (#303's
+# review, S1). tests/drive.rs writes Ashfall.canvas and Lahar.canvas, each with a card whose
+# id is empty, which the engine doesn't take: both boards' reports show, one after the other.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out: its place is empty or longer than 1024 bytes
+wait-for canvas couldn't read Lahar.canvas: card 1 (id "") is left out: its place is empty or longer than 1024 bytes
+wait-gone couldn't read
+expect ? help  q quit
+keys q
+exits 0
