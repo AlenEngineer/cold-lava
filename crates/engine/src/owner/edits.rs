@@ -564,12 +564,10 @@ mod tests {
         };
         assert_eq!((owner.as_str(), ask), (OWNER, &asked));
 
-        // Answers from someone else, or for another version, change nothing.
         assert!((desk.edited("other", FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
         assert!((desk.edited(OWNER, FILE, "older", Ok(DONE.into()), &s)).is_none());
-        assert!(!desk.has_news(), "nothing to send or hand out");
+        assert!(!desk.has_news(), "someone else's answer changes nothing");
 
-        // The owner's new text is read back before anything is written.
         assert!((desk.edited(OWNER, FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
         let reads = desk.take_reads();
         let [(owner, back)] = &reads[..] else {
