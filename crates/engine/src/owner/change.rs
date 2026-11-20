@@ -151,7 +151,7 @@ pub fn no_anchor(item: &Item) -> Error {
 /// The change that sets `field` of the item `typed`, read from the piece `p`, to `value`.
 fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Result<Change, Error> {
     let kind = &typed.kind;
-    let definition = (s.types.types.iter()).find(|t| t.name == *kind);
+    let definition = s.types.named(kind);
     let definition = definition.map(|t| &t.definition);
     let shape = definition.and_then(|d| d.from.get(typed.place.shape));
     let value_type = definition.and_then(|d| d.fields.get(field));

@@ -880,6 +880,16 @@ impl Types {
             }
         }
     }
+
+    /// The type called `name`.
+    pub fn named(&self, name: &str) -> Option<&Type> {
+        self.types.iter().find(|t| t.name == name)
+    }
+
+    /// What the shape at `shape` of the type called `name` is on: a role, or `inline`.
+    pub fn on(&self, name: &str, shape: usize) -> Option<On> {
+        Some(self.named(name)?.definition.from.get(shape)?.on)
+    }
 }
 
 /// `extends`, `children` and `where.inside` name types that exist, and `extends` doesn't go

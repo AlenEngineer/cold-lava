@@ -46,8 +46,8 @@ pub(super) fn room(item: &Item, text: &str, s: &Settings) -> Room {
     let on = match &item.data {
         Data::List { .. } | Data::Block => return Room::At(item.end_line),
         Data::Heading { text, .. } => return Room::Refused(heading(text)),
-        Data::Typed(t) => match s.types.types.iter().find(|ty| ty.name == t.kind) {
-            Some(ty) => ty.definition.from[t.place.shape].on,
+        Data::Typed(t) => match s.types.on(&t.kind, t.place.shape) {
+            Some(on) => on,
             None => return Room::Refused(format!("no type called {}", t.kind)),
         },
     };
@@ -596,8 +596,7 @@ fields.w = { capture = "w" }
             let Data::Typed(t) = &b.data else {
                 return false;
             };
-            let ty = s.types.types.iter().find(|ty| ty.name == t.kind);
-            let aside = ty.is_some_and(|ty| ty.definition.from[t.place.shape].on == On::Aside);
+            let aside = s.types.on(&t.kind, t.place.shape) == Some(On::Aside);
             let words = text[..t.place.text.start].matches('\n').count() + 1;
             aside && words == before[k].end_line
         };
