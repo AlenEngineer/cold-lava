@@ -1135,8 +1135,6 @@ fn the_app_prints_only_through_say() {
         "home.rs: write_raw( ×2",
         "main.rs: stdout() ×2",
         "say.rs: eprintln!( ×1",
-        "say.rs: print!( ×1",
-        "say.rs: println!( ×5",
         "say.rs: stdout() ×1",
         "term.rs: stdout() ×3",
         "term.rs: write_raw( ×1",

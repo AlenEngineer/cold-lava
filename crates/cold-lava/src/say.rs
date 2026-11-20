@@ -15,6 +15,8 @@
 //! - `json`, `json_line`, `Out::json`, `Out::json_pretty`: JSON, which escapes the way JSON
 //!   does and is for a program to read. It is written as it is.
 //!
+//! A reader that stops early (`| head`) ends the output quietly: the program exits 0.
+//!
 //! One call is one line. A line break inside the text of a listing line or a message is
 //! escaped like any other character a terminal acts on, so text from outside can't begin a
 //! line of its own. What has several lines by the app's own structure says so: one call a
@@ -53,27 +55,36 @@ fn message(words: Arguments<'_>) -> String {
     escape(&words.to_string(), Level::Message).into_owned()
 }
 
-// The entries below print with `println!` and `eprintln!` themselves, and don't go through
-// `Out`, so that a closed stdout ends the program exactly as it did when each command
-// printed with them: the same panic, from the same place in the standard library.
+/// Text on stdout. A reader that has gone (`cold-lava --help | head`) ends the output, and
+/// the program with it, quietly and with exit code 0, as ripgrep and bat do and as the
+/// commands that hold stdout (`Out`) already do by returning. Any other failure to print is
+/// a panic, as `println!` made it.
+fn put(text: Arguments<'_>) {
+    let written = held().0.write_fmt(text);
+    match written {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => panic!("failed printing to stdout: {e}"),
+    }
+}
 
 /// One line of a listing on stdout.
 pub fn listing(words: Arguments<'_>) {
-    println!("{}", content(words));
+    put(format_args!("{}\n", content(words)));
 }
 
 /// Lines of a listing that come as one text (a shape drawn as text, a diff), written as
 /// they are but for what is escaped: no line end is added.
 pub fn listing_block(text: &str) {
-    print!("{}", lines(text));
+    put(format_args!("{}", lines(text)));
 }
 
 /// One line of a message on stdout.
 pub fn message_out(words: Arguments<'_>) {
-    println!("{}", message(words));
+    put(format_args!("{}\n", message(words)));
 }
 
-/// One line of a message on stderr.
+/// One line of a message on stderr. A closed stderr is a panic, as `eprintln!` made it.
 pub fn message_err(words: Arguments<'_>) {
     eprintln!("{}", message(words));
 }
@@ -91,18 +102,18 @@ pub fn problem_lines(problem: &Problem, indent: &str, first: &str) {
 
 /// The app's own text on stdout, as it is: only text known when the app was built.
 pub fn fixed(text: &'static str) {
-    println!("{text}");
+    put(format_args!("{text}\n"));
 }
 
 /// A value as JSON over several lines, on stdout.
 pub fn json<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+    put(format_args!("{}\n", serde_json::to_string_pretty(value)?));
     Ok(())
 }
 
 /// A value as JSON on one line, on stdout.
 pub fn json_line<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<()> {
-    println!("{}", serde_json::to_string(value)?);
+    put(format_args!("{}\n", serde_json::to_string(value)?));
     Ok(())
 }
 
