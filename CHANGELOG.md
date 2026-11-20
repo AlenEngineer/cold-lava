@@ -32,7 +32,7 @@ change commands, keys and file formats; patch versions only fix things.
   anything is written the owner reads its new text back, and now every piece must say what
   was asked and stand where it stood, so an owner that quietly changes another piece,
   changes the other of two identical chores (where it keeps their places) or moves one
-  is refused. New words are
+  is refused; the comparison grows with the size of the answer, not its square (#319). New words are
   refused when some of the piece's words don't show in the field being set (a type's
   `marker`, `pattern` or `without` took them out), since they would be dropped unseen. With custom Tasks statuses a tick goes on
   to the next status that is another of the four words. Ticking a recurring task in a piece

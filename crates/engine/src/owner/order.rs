@@ -30,9 +30,11 @@ const MORE_PAIRS: usize = 1 << 20;
 /// How `got` differs from `want`: nothing when they are equal. The run kept is the longest
 /// both hold in order, and of those as long, the one keeping the most entries `keep` holds
 /// to: what is said to have moved is what the fewest moves explain, and when as few explain
-/// either of two entries moving, it is the one `keep` doesn't hold to. Past `MORE_PAIRS`, the
-/// run kept is one both hold in order. In O((n + p) log n) for `p` pairs of equal entries,
-/// at most `n` and `MORE_PAIRS` together, so an answer of any size is compared.
+/// either of two entries moving, it is the one `keep` doesn't hold to. Of runs as heavy, the
+/// one ending later in `want` is kept, so of two entries `keep` holds to alike, the later
+/// stays and the earlier is said to have moved (`ab` to `ba`: `a` moved). Past `MORE_PAIRS`,
+/// the run kept is one both hold in order. In O((n + p) log n) for `p` pairs of equal
+/// entries, at most `n` and `MORE_PAIRS` together, so an answer of any size is compared.
 pub fn diff<K: Eq + Hash>(want: &[K], got: &[K], keep: impl Fn(&K) -> bool) -> Diff {
     within(want, got, keep, MORE_PAIRS)
 }
