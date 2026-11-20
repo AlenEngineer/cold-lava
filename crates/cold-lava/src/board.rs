@@ -968,7 +968,7 @@ impl Board {
     fn editable(&self, query: &str) -> Vec<(Option<String>, String)> {
         let q = crate::workspace::search_key(query);
         let own = (self.live.shapes.shapes.iter())
-            .filter(|s| matches!(s.origin, crate::shapes::Origin::Workspace { .. }))
+            .filter(|s| matches!(s.origin, crate::origin::Origin::Workspace { .. }))
             .filter(|s| {
                 let words = format!("{} {}", s.id, s.definition.title);
                 crate::workspace::search_key(&words).contains(&q)
