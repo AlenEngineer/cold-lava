@@ -162,6 +162,15 @@ enum Drag {
     },
 }
 
+/// How an edit begun with `Board::begin` ends.
+enum End {
+    Save,
+    /// Nothing changed: its undo step goes.
+    Unchanged,
+    /// The board goes back to what it was before, and is saved.
+    Revert,
+}
+
 /// What a click grabbed on a card or shape.
 #[derive(Clone, Copy, PartialEq)]
 enum Grab {
@@ -732,14 +741,14 @@ impl Board {
                 shape.definition.inputs.clone(),
                 shape.definition.title.clone(),
             );
-            self.checkpoint();
-            if let Some(n) = self.node_mut(id)
-                && let Some(Ok(stored)) = placed::Stored::of(n)
-            {
-                let at = stored.placement(n);
-                placed::place(n, &to.shape, &inputs, &title, &to.inputs, at);
-            }
-            self.commit();
+            self.change(|doc| {
+                if let Some(n) = node_mut(doc, id)
+                    && let Some(Ok(stored)) = placed::Stored::of(n)
+                {
+                    let at = stored.placement(n);
+                    placed::place(n, &to.shape, &inputs, &title, &to.inputs, at);
+                }
+            });
             said.push(format!("now a {}", to.shape));
         }
         if !said.is_empty() {
@@ -904,11 +913,8 @@ impl Board {
             loaded.definition.title.clone(),
         );
         let aspect = loaded.definition.aspect.unwrap_or(1.5);
-        let id = match node {
-            Some(id) => {
-                self.checkpoint();
-                id
-            }
+        let (id, made) = match node {
+            Some(id) => (id, None),
             None => {
                 // About 1200 square world units, the shape's own width over height.
                 let (w, h) = ((1200.0 * aspect).sqrt(), (1200.0 / aspect).sqrt());
@@ -918,20 +924,23 @@ impl Board {
                     (None, Some((_, y0, x1, _))) => Some((x1 + 80.0, y0)),
                     _ => None,
                 };
-                self.add_node("text", at, w, h)
+                let made = self.new_node("text", at, w, h);
+                (made.id.clone(), Some(made))
             }
         };
-        if let Some(n) = self.node_mut(&id) {
-            let at = match placed::Stored::of(n) {
-                Some(Ok(stored)) => stored.placement(n),
-                _ => cold_lava_canvas::Placement::new(
-                    Point::new(n.x, n.y) * (1.0 / placed::UNIT),
-                    Point::new(n.width, n.height) * (1.0 / placed::UNIT),
-                ),
-            };
-            placed::place(n, &shape, &inputs, &title, &sources, at);
-        }
-        self.commit();
+        self.change(|doc| {
+            doc.nodes.extend(made);
+            if let Some(n) = node_mut(doc, &id) {
+                let at = match placed::Stored::of(n) {
+                    Some(Ok(stored)) => stored.placement(n),
+                    _ => cold_lava_canvas::Placement::new(
+                        Point::new(n.x, n.y) * (1.0 / placed::UNIT),
+                        Point::new(n.width, n.height) * (1.0 / placed::UNIT),
+                    ),
+                };
+                placed::place(n, &shape, &inputs, &title, &sources, at);
+            }
+        });
         self.sel = Some(id.clone());
         self.ensure_visible(&id);
     }
@@ -1221,7 +1230,6 @@ impl Board {
         }
     }
 
-    /// Snapshot for undo; call before every change.
     /// Quit, unless the last save was refused: then warn once, and quit on the next try.
     fn request_quit(&mut self) {
         if self.unsaved {
@@ -1232,6 +1240,7 @@ impl Board {
         }
     }
 
+    /// The board as it is now, as the next undo step.
     fn checkpoint(&mut self) {
         self.undo.push(self.doc.clone());
         if self.undo.len() > 300 {
@@ -1240,8 +1249,32 @@ impl Board {
         self.redo.clear();
     }
 
-    fn commit(&mut self) {
+    /// Changes the board, undoably, and saves it.
+    fn change(&mut self, f: impl FnOnce(&mut Doc)) {
+        self.checkpoint();
+        f(&mut self.doc);
         self.save();
+    }
+
+    /// Starts an edit that ends on a later event (a drag, a new card being typed): its undo
+    /// step is taken now, and `end` ends it.
+    fn begin(&mut self) {
+        self.checkpoint();
+    }
+
+    fn end(&mut self, how: End) {
+        match how {
+            End::Save => self.save(),
+            End::Unchanged => {
+                self.undo.pop();
+            }
+            End::Revert => {
+                if let Some(d) = self.undo.pop() {
+                    self.doc = d;
+                }
+                self.save();
+            }
+        }
     }
 
     fn undo(&mut self) {
@@ -1270,10 +1303,6 @@ impl Board {
 
     fn node(&self, id: &str) -> Option<&CNode> {
         self.doc.nodes.iter().find(|n| n.id == id)
-    }
-
-    fn node_mut(&mut self, id: &str) -> Option<&mut CNode> {
-        self.doc.nodes.iter_mut().find(|n| n.id == id)
     }
 
     fn to_screen(&self, x: f64, y: f64) -> (f64, f64) {
@@ -1431,12 +1460,12 @@ impl Board {
         let Some(Some(Ok(stored))) = self.node(&id).map(placed::Stored::of) else {
             return self.flash("only a placed shape turns");
         };
-        self.checkpoint();
-        if let Some(n) = self.node_mut(&id) {
-            let p = stored.placement(n);
-            placed::replace(n, p.rotated(p.rotation + by));
-        }
-        self.commit();
+        self.change(|doc| {
+            if let Some(n) = node_mut(doc, &id) {
+                let p = stored.placement(n);
+                placed::replace(n, p.rotated(p.rotation + by));
+            }
+        });
     }
 
     /// Groups first, then other cards in file order, with the selection on top.
@@ -1601,16 +1630,16 @@ impl Board {
         }
     }
 
-    fn add_node(&mut self, kind: &str, at: Option<(f64, f64)>, w: f64, h: f64) -> String {
-        self.checkpoint();
+    /// A new card with an id of its own, at `at` or else a free spot, not yet on the board.
+    fn new_node(&self, kind: &str, at: Option<(f64, f64)>, w: f64, h: f64) -> CNode {
         let (x, y) = at.unwrap_or_else(|| self.spot_for_new(w, h));
         // Not an id the file may still hold: a twin's, whose first node was deleted here.
         let mut id = new_id();
         while self.node(&id).is_some() || self.twins.values().any(|theirs| *theirs == id) {
             id = new_id();
         }
-        self.doc.nodes.push(CNode {
-            id: id.clone(),
+        CNode {
+            id,
             kind: kind.to_string(),
             text: (kind == "text").then(String::new),
             file: None,
@@ -1622,29 +1651,16 @@ impl Board {
             height: h,
             color: None,
             extra: Map::new(),
-        });
-        id
-    }
-
-    fn add_edge(&mut self, from: &str, to: &str) {
-        self.doc.edges.push(CEdge {
-            id: new_id(),
-            from_node: from.to_string(),
-            from_side: None,
-            from_end: None,
-            to_node: to.to_string(),
-            to_side: None,
-            to_end: None,
-            color: None,
-            label: None,
-            extra: Map::new(),
-        });
+        }
     }
 
     fn new_text_card(&mut self, at: Option<(f64, f64)>, connect_from: Option<String>) {
-        let id = self.add_node("text", at, 260.0, 100.0);
+        let card = self.new_node("text", at, 260.0, 100.0);
+        let id = card.id.clone();
+        self.begin();
+        self.doc.nodes.push(card);
         if let Some(from) = connect_from {
-            self.add_edge(&from, &id);
+            add_edge(&mut self.doc, &from, &id);
         }
         self.sel = Some(id.clone());
         self.ensure_visible(&id);
@@ -1657,12 +1673,10 @@ impl Board {
 
     fn delete_selected(&mut self) {
         let Some(id) = self.sel.take() else { return };
-        self.checkpoint();
-        self.doc.nodes.retain(|n| n.id != id);
-        self.doc
-            .edges
-            .retain(|e| e.from_node != id && e.to_node != id);
-        self.commit();
+        self.change(|doc| {
+            doc.nodes.retain(|n| n.id != id);
+            doc.edges.retain(|e| e.from_node != id && e.to_node != id);
+        });
         self.flash("deleted");
     }
 
@@ -1670,49 +1684,52 @@ impl Board {
         if from == to {
             return self.flash("pick a different card");
         }
-        self.checkpoint();
-        let before = self.doc.edges.len();
-        self.doc.edges.retain(|e| {
-            !((e.from_node == from && e.to_node == to) || (e.from_node == to && e.to_node == from))
-        });
-        if self.doc.edges.len() == before {
-            self.add_edge(from, to);
-            self.flash("connected");
+        let joins = |e: &CEdge| {
+            (e.from_node == from && e.to_node == to) || (e.from_node == to && e.to_node == from)
+        };
+        let connect = !self.doc.edges.iter().any(joins);
+        self.flash(if connect {
+            "connected"
         } else {
-            self.flash("arrow removed");
-        }
-        self.commit();
+            "arrow removed"
+        });
+        self.change(|doc| {
+            doc.edges.retain(|e| !joins(e));
+            if connect {
+                add_edge(doc, from, to);
+            }
+        });
     }
 
     fn set_color(&mut self, c: Option<&str>) {
         let Some(id) = self.sel.clone() else { return };
-        self.checkpoint();
-        if let Some(n) = self.node_mut(&id) {
-            n.color = c.map(String::from);
-        }
-        self.commit();
+        self.change(|doc| {
+            if let Some(n) = node_mut(doc, &id) {
+                n.color = c.map(String::from);
+            }
+        });
     }
 
     fn move_selected(&mut self, dx: f64, dy: f64) {
         let Some(id) = self.sel.clone() else { return };
-        self.checkpoint();
         let ids = self.group_members(&id);
-        for n in self.doc.nodes.iter_mut().filter(|n| ids.contains(&n.id)) {
-            n.x += dx;
-            n.y += dy;
-        }
-        self.commit();
+        self.change(|doc| {
+            for n in doc.nodes.iter_mut().filter(|n| ids.contains(&n.id)) {
+                n.x += dx;
+                n.y += dy;
+            }
+        });
         self.ensure_visible(&id);
     }
 
     fn resize_selected(&mut self, dw: f64, dh: f64) {
         let Some(id) = self.sel.clone() else { return };
-        self.checkpoint();
-        if let Some(n) = self.node_mut(&id) {
-            n.width = (n.width + dw).max(60.0);
-            n.height = (n.height + dh).max(40.0);
-        }
-        self.commit();
+        self.change(|doc| {
+            if let Some(n) = node_mut(doc, &id) {
+                n.width = (n.width + dw).max(60.0);
+                n.height = (n.height + dh).max(40.0);
+            }
+        });
     }
 
     /// A card id plus, for groups, every card fully inside it (they move together).
@@ -1738,12 +1755,11 @@ impl Board {
             Some(n) => (n.x - 40.0, n.y - 60.0, n.width + 80.0, n.height + 100.0),
             None => (self.cam.0 - 250.0, self.cam.1 - 150.0, 500.0, 300.0),
         };
-        let id = self.add_node("group", Some((x, y)), snap(w), snap(h));
-        // Put the group first so it renders beneath its contents in Obsidian too.
-        if let Some(pos) = self.doc.nodes.iter().position(|n| n.id == id) {
-            let g = self.doc.nodes.remove(pos);
-            self.doc.nodes.insert(0, g);
-        }
+        let group = self.new_node("group", Some((x, y)), snap(w), snap(h));
+        let id = group.id.clone();
+        self.begin();
+        // First, so it renders beneath its contents in Obsidian too.
+        self.doc.nodes.insert(0, group);
         self.sel = Some(id.clone());
         self.mode = Mode::Edit {
             id,
@@ -1817,11 +1833,11 @@ impl Board {
             self.flash(err);
         } else if let Ok(text) = std::fs::read_to_string(&tmp) {
             let text = text.trim_end_matches('\n').to_string();
-            self.checkpoint();
-            if let Some(n) = self.node_mut(&id) {
-                n.text = Some(text);
-            }
-            self.commit();
+            self.change(|doc| {
+                if let Some(n) = node_mut(doc, &id) {
+                    n.text = Some(text);
+                }
+            });
         }
         let _ = std::fs::remove_file(tmp);
         Ok(())
@@ -1832,30 +1848,30 @@ impl Board {
             return;
         };
         if is_new && buf.trim().is_empty() {
-            // An empty new card is discarded (undo the creation).
-            if let Some(d) = self.undo.pop() {
-                self.doc = d;
-            }
+            // An empty new card is discarded.
             self.sel = None;
-            self.save();
-            return;
+            return self.end(End::Revert);
         }
-        if !is_new {
-            self.checkpoint();
-        }
-        if let Some(n) = self.node_mut(&id) {
-            match n.kind.as_str() {
-                "group" => n.label = Some(buf),
-                "link" => n.url = Some(buf),
-                _ => {
-                    n.text = Some(buf);
-                    if !n.extra.contains_key(placed::FIELD) {
-                        grow_to_fit(n);
+        let typed = |doc: &mut Doc| {
+            if let Some(n) = node_mut(doc, &id) {
+                match n.kind.as_str() {
+                    "group" => n.label = Some(buf),
+                    "link" => n.url = Some(buf),
+                    _ => {
+                        n.text = Some(buf);
+                        if !n.extra.contains_key(placed::FIELD) {
+                            grow_to_fit(n);
+                        }
                     }
                 }
             }
+        };
+        if is_new {
+            typed(&mut self.doc);
+            self.end(End::Save);
+        } else {
+            self.change(typed);
         }
-        self.commit();
     }
 
     fn workspace_notes(&mut self) -> &Vec<String> {
@@ -1903,11 +1919,12 @@ impl Board {
     }
 
     fn add_file_card(&mut self, rel: String) {
-        let id = self.add_node("file", None, 400.0, 400.0);
-        if let Some(n) = self.node_mut(&id) {
-            n.file = Some(rel);
-        }
-        self.commit();
+        let card = CNode {
+            file: Some(rel),
+            ..self.new_node("file", None, 400.0, 400.0)
+        };
+        let id = card.id.clone();
+        self.change(|doc| doc.nodes.push(card));
         self.sel = Some(id.clone());
         self.ensure_visible(&id);
     }
@@ -2415,7 +2432,7 @@ impl Board {
                             }
                             return;
                         }
-                        self.checkpoint();
+                        self.begin();
                         if let Grab::Corner(handle) = grab {
                             self.drag = Some(Drag::Resize {
                                 id,
@@ -2476,7 +2493,7 @@ impl Board {
                     *moved = true;
                     let offsets = offsets.clone();
                     for (id, ox, oy) in offsets {
-                        if let Some(n) = self.node_mut(&id) {
+                        if let Some(n) = node_mut(&mut self.doc, &id) {
                             n.x = ox + dx;
                             n.y = oy + dy;
                         }
@@ -2486,7 +2503,7 @@ impl Board {
                     *moved = true;
                     let (id, handle) = (id.clone(), *handle);
                     let to = Point::new(world.0, world.1) * (1.0 / placed::UNIT);
-                    if let Some(n) = self.node_mut(&id) {
+                    if let Some(n) = node_mut(&mut self.doc, &id) {
                         match placed::Stored::of(n) {
                             Some(Ok(stored)) => {
                                 let min = Point::new(4.0, 2.0);
@@ -2505,7 +2522,7 @@ impl Board {
                     *moved = true;
                     let id = id.clone();
                     let to = Point::new(world.0, world.1) * (1.0 / placed::UNIT);
-                    if let Some(n) = self.node_mut(&id)
+                    if let Some(n) = node_mut(&mut self.doc, &id)
                         && let Some(Ok(stored)) = placed::Stored::of(n)
                     {
                         let p = stored.placement(n);
@@ -2525,7 +2542,7 @@ impl Board {
                 {
                     let (id, from, item, moved) = (id.clone(), from.clone(), item.clone(), *moved);
                     self.drag = None;
-                    self.undo.pop();
+                    self.end(End::Unchanged);
                     if !moved {
                         return self.click(&id, m.column, m.row, core, registry);
                     }
@@ -2549,7 +2566,7 @@ impl Board {
                     && let Some((id, col, row)) = press
                 {
                     self.drag = None;
-                    self.undo.pop();
+                    self.end(End::Unchanged);
                     return self.click(&id, col, row, core, registry);
                 }
                 if let Some(
@@ -2558,11 +2575,7 @@ impl Board {
                     | Drag::Turn { moved, .. },
                 ) = self.drag.take()
                 {
-                    if moved {
-                        self.commit();
-                    } else {
-                        self.undo.pop(); // nothing changed: drop the snapshot
-                    }
+                    self.end(if moved { End::Save } else { End::Unchanged });
                 }
             }
             _ => {}
@@ -3359,6 +3372,25 @@ pub(crate) fn tint(t: Token) -> Color {
 
 fn snap(v: f64) -> f64 {
     (v / GRID_SNAP).round() * GRID_SNAP
+}
+
+fn node_mut<'a>(doc: &'a mut Doc, id: &str) -> Option<&'a mut CNode> {
+    doc.nodes.iter_mut().find(|n| n.id == id)
+}
+
+fn add_edge(doc: &mut Doc, from: &str, to: &str) {
+    doc.edges.push(CEdge {
+        id: new_id(),
+        from_node: from.to_string(),
+        from_side: None,
+        from_end: None,
+        to_node: to.to_string(),
+        to_side: None,
+        to_end: None,
+        color: None,
+        label: None,
+        extra: Map::new(),
+    });
 }
 
 /// Make a text card tall enough for its content (never shrinks it).
@@ -4158,10 +4190,91 @@ mod tests {
         assert_eq!(ids(&saved_twins(&path), "nodes"), ["s", "t"]);
 
         // A card made now gets an id of its own, and the twin keeps the file's.
-        let made = b.add_node("text", None, 200.0, 100.0);
-        b.commit();
+        let card = b.new_node("text", None, 200.0, 100.0);
+        let made = card.id.clone();
+        b.change(|doc| doc.nodes.push(card));
         assert_ne!(made, "s");
         assert_eq!(ids(&saved_twins(&path), "nodes"), ["s", "t", made.as_str()]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Each edit is one undo step: undo after undo puts the file back as it was before each
+    /// edit, and redo after redo as it was after each.
+    #[test]
+    fn each_edit_is_one_undo_step_and_redo_brings_it_back() {
+        let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
+        let (dir, path, _core) = workspace("board-undo-steps", cards);
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.save();
+        b.sel = Some("a".into());
+        let edits: [fn(&mut Board); 7] = [
+            |b| b.set_color(Some("3")),
+            |b| b.move_selected(20.0, 0.0),
+            |b| b.resize_selected(20.0, 20.0),
+            |b| b.toggle_edge("a", "b"),
+            |b| {
+                b.mode = Mode::Edit {
+                    id: "a".into(),
+                    buf: "Alpha, retyped".into(),
+                    is_new: false,
+                };
+                b.finish_edit();
+            },
+            |b| b.toggle_edge("a", "b"),
+            |b| b.delete_selected(),
+        ];
+        let read = || std::fs::read(&path).unwrap();
+        let mut files = vec![read()];
+        for edit in edits {
+            edit(&mut b);
+            let file = read();
+            assert_ne!(Some(&file), files.last(), "each edit changes the file");
+            files.push(file);
+        }
+        for before in files.iter().rev().skip(1) {
+            b.undo();
+            assert_eq!(&read(), before);
+        }
+        b.undo();
+        assert_eq!(read(), files[0], "nothing more to undo");
+        for after in &files[1..] {
+            b.redo();
+            assert_eq!(&read(), after);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A new card is one undo step once typed, and none when left empty: it goes as if it was
+    /// never made.
+    #[test]
+    fn a_new_card_left_empty_leaves_no_undo_step() {
+        let (dir, path, _core) = workspace("board-undo-new", vec![card("a", 0, "Alpha")]);
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.save();
+        b.sel = Some("a".into());
+        let read = || std::fs::read(&path).unwrap();
+        let before = read();
+        b.set_color(Some("3"));
+        let coloured = read();
+
+        b.new_text_card(None, None);
+        b.finish_edit();
+        assert_eq!(read(), coloured, "the empty card is not saved");
+
+        b.new_text_card(None, None);
+        if let Mode::Edit { buf, .. } = &mut b.mode {
+            buf.push_str("Delta");
+        }
+        b.finish_edit();
+        assert_eq!(on_disk(&path)["nodes"].as_array().map(Vec::len), Some(2));
+        b.undo();
+        assert_eq!(read(), coloured, "undo takes the typed card away");
+        b.undo();
+        assert_eq!(
+            read(),
+            before,
+            "and then the colour: the empty card took no step"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
