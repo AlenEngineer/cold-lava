@@ -246,6 +246,12 @@ backlinks list the board, the graph draws the board with an edge to the note, an
 call the note an orphan. Arrows between cards and web page cards aren't links. Renaming the note
 updates the card and the links in the text, changing those strings in the file and nothing
 else. Extensions keep running while a board is open, and their status shows in its status line.
+A card whose id is longer than 1024 bytes, or the first card in the file whose id is empty
+(another program wrote it), gives no tasks and no links; a later card with an empty id has a
+place of its own and gives them as any card does. cold-lava says so on the status line, after
+the message of whatever you just did: naming the board and the card, or naming the boards in
+one line when several wait (as the workspace opens); and in `cold-lava items` on stderr, a
+line per board.
 
 **Safe to use alongside Obsidian.** If the same board is open in both and changes on disk,
 cold-lava merges instead of overwriting: cards and arrows are matched by id and merged field
@@ -907,7 +913,8 @@ every overdue open task to today* and *list the open tasks by note* to the palet
 list is its own view: `x` ticks a task, `t` makes it due today, Enter opens its note (`Ctrl-o`
 comes back to the list), Esc closes it. Its `extension.toml` names the program
 to run, its commands and its permissions: `items.read` (the default) to read items,
-`items.edit` to change them, `files.read` and `files.write` for whole files, and
+`items.edit` to change them, `files.read` and `files.write` for whole files (a file of a kind
+another extension owns, or a canvas, is written only by its owner: others change it as items), and
 `files.delete` to move a file or folder to the trash and put it back. An extension runs as you, like an Obsidian or Neovim plugin, so
 install only ones you trust; permissions limit what cold-lava does for it, not what the program
 can do on its own. Extensions inside a workspace (`.cold-lava/extensions/`) are never run. A
@@ -943,7 +950,8 @@ in the graph, and a link to the CSV leads somewhere. The CSV's own backlinks sho
 table, as a note's show under the reader: `Tab` moves into them, `Enter` opens the note (or the
 other CSV) at the link, `b` hides them. What an owner said is kept by file version under
 `~/.cache/cold-lava/owners/`, so a workspace opens without waiting for it; it is asked again
-only when a file changes.
+only when a file changes, or when something it said no longer reads (after an upgrade): the
+rest of the file keeps showing meanwhile, and what doesn't read is reported.
 
 An owner whose format has nothing to do with Markdown doesn't have to write any. It can hand
 over **pieces** instead: what each thing is (an item, a row, a section), what it carries

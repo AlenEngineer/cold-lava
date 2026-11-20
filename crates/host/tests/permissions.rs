@@ -3,7 +3,7 @@
 //! These use the host as a second frontend would, through its public API, with no terminal.
 
 use cold_lava_engine::core::{Core, Event};
-use cold_lava_engine::files::Restore;
+use cold_lava_engine::files::{Create, NewFile, Restore};
 use cold_lava_engine::gateway::{self, Reason};
 use cold_lava_engine::trash::Bin;
 use cold_lava_host::process::Process;
@@ -396,6 +396,186 @@ fn a_delete_needs_files_delete_which_neither_files_write_nor_owning_the_kind_giv
     let made = ask(&mut r, &mut core, write, |h| h.create_folder(folder)).unwrap();
     assert_eq!(made.path, folder);
     assert!(root.join(folder).is_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Owned files change only through their owner (#183): anyone else asks it with `items/edit`.
+/// So `files.write` reaches notes and kinds nobody owns, never a kind another owner reads,
+/// whatever the caller's permissions (#323): not a write, not a create, not a restore under a
+/// new name. The owner writes its own kind as before, and a delete stays `files.delete`'s.
+#[test]
+fn files_write_does_not_reach_a_kind_another_owner_reads() {
+    use Permission::{FilesDelete, FilesRead, FilesWrite};
+    let (dir, root) = workspace("owned");
+    let mut core = core_with_trash(&dir, &root);
+    let mut r = Registry::new(vec![
+        quiet("csv-table", &[], &["csv"]),
+        quiet("write", &[FilesRead, FilesWrite, FilesDelete], &[]),
+    ]);
+    let (owner, write) = (ExtId(0), ExtId(1));
+    let (csv, board) = ("Volcanoes/Eruptions.csv", "Welcome.canvas");
+    let on_disk = |path: &str| std::fs::read_to_string(root.join(path)).ok();
+    let forbidden = Err(Reason::Forbidden);
+    let (table, canvas) = (on_disk(csv).unwrap(), on_disk(board).unwrap());
+    let tables = ask(&mut r, &mut core, owner, |h| h.list_files("csv")).unwrap();
+
+    let read = ask(&mut r, &mut core, write, |h| h.read_file(csv)).unwrap();
+    assert_eq!(read.text, table, "files.read still reads it");
+    let mut refusal = None;
+    r.call(write, Some(&mut core), |_, h| {
+        refusal = h.write_file(csv, "x\n", &read.rev).err()
+    });
+    let refusal = refusal.expect("files.write doesn't write another owner's kind");
+    assert_eq!(refusal.reason, Reason::Forbidden);
+    assert!(
+        (refusal.message).contains("write may not") && (refusal.message).contains("items/edit"),
+        "the refusal names who asked and the way that is open: {}",
+        refusal.message
+    );
+    let read = ask(&mut r, &mut core, write, |h| h.read_file(board)).unwrap();
+    let rewritten = ask(&mut r, &mut core, write, |h| {
+        h.write_file(board, "{}\n", &read.rev)
+    });
+    assert_eq!(
+        rewritten.map(drop),
+        forbidden,
+        "nor the built-in canvas owner's"
+    );
+    for (path, names) in [
+        ("Volcanoes/Eruptions.csv/", csv),
+        ("Volcanoes/Eruptions.csv//", csv),
+        ("Welcome.canvas/", board),
+    ] {
+        let rev = ask(&mut r, &mut core, write, |h| h.read_file(names))
+            .unwrap()
+            .rev;
+        let rewritten = ask(&mut r, &mut core, write, |h| {
+            h.write_file(path, "x\n", &rev)
+        });
+        assert_eq!(rewritten.map(drop), forbidden, "{path} names {names}");
+    }
+    let made = |at: NewFile| Create {
+        at,
+        text: "x\n".into(),
+    };
+    for at in [
+        NewFile::At {
+            path: "Volcanoes/New.csv".into(),
+        },
+        NewFile::Named {
+            name: "New".into(),
+            extension: "CSV".into(),
+        },
+        NewFile::At {
+            path: "New.canvas".into(),
+        },
+        NewFile::At {
+            path: "Volcanoes/New.csv/".into(),
+        },
+        NewFile::At {
+            path: "Volcanoes/New.csv//".into(),
+        },
+        NewFile::At {
+            path: "New.canvas/".into(),
+        },
+    ] {
+        let created = ask(&mut r, &mut core, write, |h| {
+            h.create_file(&made(at.clone()))
+        });
+        assert_eq!(
+            created.map(drop),
+            forbidden,
+            "a new one is a write too: {at:?}"
+        );
+    }
+    assert_eq!(on_disk(csv), Some(table.clone()), "nothing was written");
+    assert_eq!(on_disk(board), Some(canvas), "nothing was written");
+    let now = ask(&mut r, &mut core, owner, |h| h.list_files("csv")).unwrap();
+    assert_eq!(now, tables, "nothing was made");
+    assert!(!root.join("New.canvas").exists(), "nothing was made");
+
+    let note = ask(&mut r, &mut core, write, |h| h.read_file(NOTE)).unwrap();
+    let saved = ask(&mut r, &mut core, write, |h| {
+        h.write_file(NOTE, "- [ ] Check it\n", &note.rev)
+    });
+    assert_eq!(saved.map(drop), Ok(()), "a note still is its to write");
+    assert_eq!(on_disk(NOTE).as_deref(), Some("- [ ] Check it\n"));
+    for path in ["Inbox/New.md", "Inbox/Readings.txt"] {
+        let at = NewFile::At { path: path.into() };
+        let created = ask(&mut r, &mut core, write, |h| h.create_file(&made(at)));
+        assert_eq!(
+            created.map(drop),
+            Ok(()),
+            "{path}: a note, or a kind nobody owns"
+        );
+    }
+
+    let mine = ask(&mut r, &mut core, owner, |h| h.read_file(csv)).unwrap();
+    let more = format!("{table}x\n");
+    let saved = ask(&mut r, &mut core, owner, |h| {
+        h.write_file(csv, &more, &mine.rev)
+    });
+    assert_eq!(saved.map(drop), Ok(()), "the owner writes its own kind");
+    assert_eq!(on_disk(csv), Some(more.clone()));
+    let at = NewFile::At {
+        path: "Volcanoes/New.csv".into(),
+    };
+    let created = ask(&mut r, &mut core, owner, |h| h.create_file(&made(at)));
+    assert_eq!(created.map(drop), Ok(()), "and makes one");
+    let slashed = "Volcanoes/Eruptions.csv/";
+    let mine = ask(&mut r, &mut core, owner, |h| h.read_file(slashed));
+    let mine = mine.expect("the file it names is the owner's");
+    let more = format!("{more}y\n");
+    let saved = ask(&mut r, &mut core, owner, |h| {
+        h.write_file(slashed, &more, &mine.rev)
+    });
+    assert_eq!(saved.map(drop), Ok(()), "{slashed} is its own kind too");
+    assert_eq!(on_disk(csv), Some(more.clone()));
+
+    let stat = ask(&mut r, &mut core, write, |h| h.stat_file(csv)).unwrap();
+    let gone = ask(&mut r, &mut core, write, |h| h.delete_file(csv, &stat.rev)).unwrap();
+    let elsewhere = Restore {
+        trashed: gone.trashed.clone(),
+        to: Some("Volcanoes/Eruptions 2.csv".into()),
+    };
+    let restored = ask(&mut r, &mut core, write, |h| h.restore_file(&elsewhere));
+    assert_eq!(restored.map(drop), forbidden, "a new name is a write");
+    assert!(!root.join("Volcanoes/Eruptions 2.csv").exists());
+    for to in [
+        "Volcanoes/Eruptions 2.csv/",
+        "Volcanoes/Eruptions 2.csv//",
+        "Eruptions 2.canvas/",
+    ] {
+        let elsewhere = Restore {
+            trashed: gone.trashed.clone(),
+            to: Some(to.into()),
+        };
+        let restored = ask(&mut r, &mut core, write, |h| h.restore_file(&elsewhere));
+        assert_eq!(restored.map(drop), forbidden, "{to} is a new name too");
+    }
+    assert!(!root.join("Volcanoes/Eruptions 2.csv").exists());
+    assert!(!root.join("Eruptions 2.canvas").exists());
+    let back = Restore {
+        trashed: gone.trashed,
+        to: None,
+    };
+    let restored = ask(&mut r, &mut core, write, |h| h.restore_file(&back));
+    assert_eq!(restored.map(drop), Ok(()), "where it was, as it was");
+    assert_eq!(on_disk(csv), Some(more), "the owner's own bytes");
+
+    let stat = ask(&mut r, &mut core, write, |h| h.stat_file(NOTE)).unwrap();
+    let gone = ask(&mut r, &mut core, write, |h| h.delete_file(NOTE, &stat.rev)).unwrap();
+    let renamed = Restore {
+        trashed: gone.trashed,
+        to: Some("Volcanoes/Seismograph.csv".into()),
+    };
+    let restored = ask(&mut r, &mut core, write, |h| h.restore_file(&renamed));
+    assert_eq!(
+        restored.map(drop),
+        forbidden,
+        "a note can't come back as a table"
+    );
+    assert!(!root.join("Volcanoes/Seismograph.csv").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

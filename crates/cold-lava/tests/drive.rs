@@ -1050,6 +1050,144 @@ fn canvases_join_the_workspace_through_their_owner() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A board at `rel` in the sandbox's workspace whose first card has an empty id, which the
+/// engine doesn't take (its tasks aren't given, and the board is reported), followed by two
+/// cards above it.
+fn board_with_a_card_left_out(dir: &Path, rel: &str) {
+    let card = |id: &str, y: u32, text: &str| {
+        format!(
+            "{{\"id\":\"{id}\",\"type\":\"text\",\"text\":\"{text}\",\"x\":0,\"y\":{y},\
+             \"width\":200,\"height\":80}}"
+        )
+    };
+    let cards = [
+        card("", 200, "- [ ] Sweep the ash"),
+        card("g", 0, "- [ ] Goggles"),
+        card("h", 100, "- [ ] Masks"),
+    ];
+    let board = format!("{{\"nodes\":[{}],\"edges\":[]}}\n", cards.join(","));
+    std::fs::write(dir.join("example-workspace").join(rel), board).unwrap();
+}
+
+/// Boards that leave cards out are named in one line as the workspace opens, two of the
+/// same name by their paths, and a board that doesn't read is said at once, on its own, as
+/// before #303 (the owner's decision of 2026-11-20).
+#[test]
+fn boards_that_leave_cards_out_are_named_in_one_line_as_the_workspace_opens() {
+    let dir = sandbox("reports-at-open");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Inbox/Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Lahar.canvas");
+    std::fs::write(dir.join("example-workspace/Broken.canvas"), "{\"nodes\": [").unwrap();
+    assert_passed(&drive("reports-at-open.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// What an extension's file leaves out is said as soon as its owner answers, as before #303,
+/// never after the boards' report (the owner's decision of 2026-11-20): on the first open,
+/// when csv-table answers in its own time, and on the next, from what it gave before.
+#[test]
+fn an_extensions_report_is_said_at_once_beside_the_boards() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("reports-beside-an-extension");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        main.replace(
+            "return {\"items\": items}",
+            "return {\"items\": items + [{\"place\": \"bad\", \"role\": \"nope\"}]}",
+        )
+    });
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Lahar.canvas");
+    for script in [
+        "reports-beside-an-extension.drive",
+        "reports-beside-an-extension-kept.drive",
+    ] {
+        let out = drive_with(script, &dir, &["--home".as_ref(), home.as_os_str()]);
+        assert_passed(&out);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An owner that can't read its files is said at once as the workspace opens, as before #303,
+/// and the boards' line it takes the place of is said again after it, for its time (the
+/// owner's decision of 2026-11-20: shown once for 3 s).
+#[test]
+fn the_boards_line_is_said_again_after_an_owner_that_cant_read() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("reports-after-trouble");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        main.replace(
+            "return given(params[\"text\"], pieces=ext.alphabet >= 2)",
+            "raise ValueError(\"it can't read today\")",
+        )
+    });
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Lahar.canvas");
+    let out = drive_with(
+        "reports-after-trouble.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A board's report never takes the place of the shape editor's own message, its warning
+/// that the drawing isn't saved included (#303's behaviour review, round 2, M3).
+#[test]
+fn a_report_waits_for_the_shape_editors_message() {
+    let dir = sandbox("reports-under-the-shape-editor");
+    assert_passed(&drive("reports-under-the-shape-editor.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A report waiting for its turn is dropped once the board no longer leaves the card out
+/// (#303's behaviour review, round 2, should-fix 1).
+#[test]
+fn a_waiting_report_is_dropped_when_the_board_no_longer_leaves_its_card_out() {
+    let dir = sandbox("reports-stale");
+    assert_passed(&drive("reports-stale.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A report that comes while the user's action has its message waits for the message's time
+/// (#303's review, M2).
+#[test]
+fn a_report_waits_for_the_message_of_what_the_user_did() {
+    let dir = sandbox("reports-wait");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    assert_passed(&drive("reports-wait.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A duplicate reads the workspace again, and a board's report isn't said again (#303's
+/// review, M2).
+#[test]
+fn a_board_is_reported_once_however_often_the_workspace_is_read() {
+    let dir = sandbox("reports-once");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    assert_passed(&drive("reports-once.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Deleting a card on a board that leaves one out, and undoing it, keep their messages, and
+/// the board isn't reported again (#303's review, M2).
+#[test]
+fn the_whiteboards_delete_and_undo_keep_their_messages() {
+    let dir = sandbox("reports-on-the-board");
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    assert_passed(&drive("reports-on-the-board.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn ticks_tasks_in_the_reader() {
     let dir = sandbox("reader-tick");

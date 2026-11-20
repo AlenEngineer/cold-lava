@@ -35,13 +35,11 @@ fn written(src: &str, flavour: &Flavour, wants: Wants) -> matcher::Written {
     written
 }
 
-/// The tags in a piece of text, as `markdown::TAG` finds them.
+/// The tags in a piece of text, as `markdown::tag_name::pattern` finds them.
 fn tags_in(text: &str) -> Vec<String> {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(markdown::TAG).unwrap());
-    let names = re.captures_iter(text).filter_map(|c| c.get(1));
+    let names = (markdown::tag_name::pattern().captures_iter(text)).filter_map(|c| c.get(1));
     names
-        .filter(|m| !m.as_str().chars().all(|c| c.is_ascii_digit()))
+        .filter(|m| !markdown::tag_name::is_number(m.as_str()))
         .map(|m| m.as_str().to_string())
         .collect()
 }

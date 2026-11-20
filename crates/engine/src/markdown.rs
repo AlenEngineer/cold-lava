@@ -18,6 +18,7 @@ use crate::cst::{self, Kind, Step};
 mod entities;
 #[cfg(test)]
 pub(crate) mod pulldown;
+pub mod tag_name;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Syntax {
@@ -1519,16 +1520,6 @@ fn is_blank(inline: &Inline) -> bool {
 
 // Text: what the tree leaves to the reader.
 
-/// `#tag`: after the start of the text, a space, `(` or `,`; at least one non-digit. The workspace
-/// index finds tags with the same pattern.
-pub const TAG: &str = r"(?:^|[\s(,])#([\p{L}\p{N}_/\-]+)";
-
-/// `TAG` in a note's own text, where the markers that open emphasis, a strikethrough or a
-/// highlight may stand between what a tag follows and its `#` (`**#tag**`). The syntax tree
-/// finds tags with it, and checks the markers, which it reads back from the `#`, against the
-/// flavour.
-pub const MARKED_TAG: &str = r"(?:^|[\s(,])[*_~=]*#([\p{L}\p{N}_/\-]+)";
-
 /// Text next to text is one text.
 fn merge_text(inlines: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::with_capacity(inlines.len());
@@ -1563,12 +1554,10 @@ fn safe_cut(text: &str, at: usize, tags: bool) -> bool {
 }
 
 fn tag(text: &str, from: usize) -> Option<(Range<usize>, Inline)> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(TAG).unwrap());
     let mut from = from;
-    while let Some(c) = re.captures_at(text, from) {
+    while let Some(c) = tag_name::pattern().captures_at(text, from) {
         let name = c.get(1).unwrap();
-        if !name.as_str().chars().all(|c| c.is_ascii_digit()) {
+        if !tag_name::is_number(name.as_str()) {
             return Some((
                 name.start() - 1..name.end(),
                 Inline::Tag(name.as_str().to_string()),
@@ -1907,6 +1896,86 @@ mod tests {
             ]
         );
         assert_eq!(para(github("#tag")), [t("#tag")]);
+    }
+
+    /// What each reader of tags takes for one: the syntax tree in the index's syntax (the
+    /// index, the items, renames: `owner::markdown::tags_in`) and in Obsidian's (the reader),
+    /// the reader's check that a cut keeps its tags (`tag`), a value of the frontmatter's
+    /// `tags`, and a name given on its own (the tag dialog, a `tags` edit, rename-tag's
+    /// options). Pinned as each read them before the tag-name rule was one function.
+    #[test]
+    fn every_reader_takes_the_tags_it_took() {
+        let index = |text: &str| -> Vec<String> {
+            let found = crate::owner::markdown::tags_in(text).into_iter();
+            found.map(|t| text[t.name].to_string()).collect()
+        };
+        let reader = |text: &str| {
+            let mut found = Vec::new();
+            let gates = cst::Gates::of(&Flavour::built_in("obsidian").unwrap());
+            cst::read(text, gates, &mut |step| {
+                if let Step::Token(Kind::Tag, tag, _) = step {
+                    found.push(tag[1..].to_string());
+                }
+            });
+            found
+        };
+        let cut = |text: &str| {
+            let (mut found, mut from) = (Vec::new(), 0);
+            while let Some((range, _)) = tag(text, from) {
+                from = range.end;
+                found.push(text[range.start + 1..range.end].to_string());
+            }
+            found
+        };
+        // A note's text: the tree's tags, then the cut check's.
+        let texts: [(&str, &[&str], &[&str]); 20] = [
+            ("#tag", &["tag"], &["tag"]),
+            ("#123", &[], &[]),
+            ("#123abc", &["123abc"], &["123abc"]),
+            ("#2026-11-20", &["2026-11-20"], &["2026-11-20"]),
+            ("#١٢٣", &["١٢٣"], &["١٢٣"]),
+            ("#nested/tag/", &["nested/tag/"], &["nested/tag/"]),
+            ("#café", &["café"], &["café"]),
+            ("#हिंदी", &["ह"], &["ह"]),
+            ("#Ⓐ", &[], &[]),
+            ("#_", &["_"], &["_"]),
+            ("#tag. #a,b", &["tag", "a"], &["tag", "a"]),
+            ("a#b c#d", &[], &[]),
+            ("#a#b", &["a"], &["a"]),
+            ("#1 #x", &["x"], &["x"]),
+            ("(#in) x,#by", &["in", "by"], &["in", "by"]),
+            ("**#b** _#u_ #tag_", &["b", "u", "tag_"], &["tag_"]),
+            ("~#one~ ~~#two~~ ==#three== =#four=", &["two", "three"], &[]),
+            ("*#star* ***#both***", &["star", "both"], &[]),
+            ("`#code` #real", &["real"], &["real"]),
+            ("x _#_ y", &[], &[]),
+        ];
+        for (text, tree, by_cut) in texts {
+            assert_eq!(index(text), tree, "the index, {text:?}");
+            assert_eq!(reader(text), tree, "the reader, {text:?}");
+            assert_eq!(cut(text), by_cut, "the cut check, {text:?}");
+        }
+        // A name: what the frontmatter's `tags` lists for it, then whether it is one given on
+        // its own.
+        let names: [(&str, Option<&str>, bool); 11] = [
+            ("tag", Some("tag"), true),
+            ("123", None, false),
+            ("١٢٣", Some("١٢٣"), true),
+            ("nested/tag", Some("nested/tag"), true),
+            ("nested/tag/", Some("nested/tag/"), true),
+            ("café", Some("café"), true),
+            ("हिंदी", Some("हिंदी"), true),
+            ("Ⓐ", Some("Ⓐ"), true),
+            ("_", Some("_"), true),
+            ("a.b", Some("a.b"), false),
+            ("two words", Some("two words"), false),
+        ];
+        for (name, listed, given) in names {
+            let note = format!("---\ntags:\n  - {name}\n---\n");
+            assert_eq!(index(&note), Vec::from_iter(listed), "listed, {name:?}");
+            assert_eq!(tag_name::is_name(name), given, "given, {name:?}");
+        }
+        assert!(!tag_name::is_name(""));
     }
 
     #[test]

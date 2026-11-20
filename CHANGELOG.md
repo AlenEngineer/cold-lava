@@ -7,6 +7,17 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
+Owners speak the model's language, and nothing they send can harm a file. An extension that
+owns a kind of file can say what it holds as pieces with attributes, and its edits are made in
+those terms; every answer is bounded and read item by item, so one bad item costs only itself
+and an edit beside it goes ahead when what was left out is untouched. Ticks never lose a block
+id, and large owned files edit in linear time. **Breaking for extensions:** `files.write` no
+longer reaches a kind another owner reads (see Changed), and **breaking for csv-table users:**
+its rows are pieces now, so their ids change and a cell is plain characters unless its column
+says otherwise (see Changed).
+
 ### Added
 
 - An extension can keep a reference to an item (#190, the bookmark). `items/edit` with
@@ -116,6 +127,22 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- **Breaking for extensions:** `files.write` no longer reaches a kind of file another owner
+  reads (#323, the owner's decision on #308). An extension that isn't a file's owner can no
+  longer write a `.csv` that `csv-table` opens, or a `.canvas`, as a whole new text: an
+  owned file changes on one checked path, through `items/edit`, which asks its owner and
+  reads the answer back before anything is written (#183). `workspace/write`,
+  `workspace/create` and `workspace/restore` under a new name (`to`) of such a kind are
+  refused as `forbidden` whatever the extension's permissions, saying so: `open-tasks may
+  not write .csv files: their owner reads them, so they change only through it, with
+  items/edit`. Reading them with `files.read`, deleting them with `files.delete` and
+  restoring them where they were are unchanged, and so are notes, files nobody owns and an
+  owner's writes to its own kind. A path's kind is the kind of the file it names, however
+  it is spelled: `Eruptions.csv/` is a `.csv`, so it is refused to others and its owner
+  reads and writes it without `files.read` or `files.write`, as `Eruptions.csv`. A link written
+  with a trailing slash to a kind an extension owns (`[[Volcanoes/Eruptions.csv/]]`) now
+  opens that file in its owner, as the link without the slash does; it used to offer to
+  create a note and fail.
 - One bad item in an owner's answer no longer makes its file read-only (#257, step A4c).
   An edit to a good item (a tick, a date, new words, a row's cell, a typed item's field, a
   Markdown piece) goes ahead beside an item cold-lava leaves out, as a rename already did,
@@ -152,8 +179,7 @@ change commands, keys and file formats; patch versions only fix things.
   piece's text over 1 MiB (one run's, or all its runs and cells together, a field run's
   value included, so a field of exactly 1 MiB beside any other text is left out), a link's words
   in a piece over 4096 bytes, a text attribute or field value over 1 MiB, a row of more than
-  4096 cells (a row of 4097 cells with text is told "more than 4096 cells", where it was
-  told "more than 4096 runs"), a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
+  4096 cells (a row of 4097 cells with text is told "more than 4096 cells"), a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
   typed item's type that is empty or over 256 bytes, more than 256 fields, a field name
   that is empty or over 256 bytes, a field holding a list of more than 4096 values, a table
   or a list of lists. A link to a file whose place is empty or over 1024 bytes, whose target
@@ -161,7 +187,7 @@ change commands, keys and file formats; patch versions only fix things.
   named, and the rest of the answer read. An answer to `shape/region` showing more than
   50,000 items, or to `shape/gesture` with more than 64 steps, a name in a step over 256
   bytes or a value over 64 KiB, is refused, naming the limit; a shape's own steps in
-  `shapes.toml` are held to the same names and values. Before, only the 64 MB message
+  `shapes.toml` are held to the same names and values. Before, only the 64 MiB message
   bounded these.
 - One item of each kind at a place. Two Markdown pieces an owner gave at one place were
   both listed, and ticking a task in the first gave the second the first's text; two typed
@@ -182,19 +208,41 @@ change commands, keys and file formats; patch versions only fix things.
   no `text`, or `"text": null`, names nothing). Renaming a note linked from a canvas with two text or file
   cards at one place used to crash the rename (a panic, nothing written). With such an id,
   one file link fewer is given than before, so a note's backlinks can count one fewer.
+  Such a card is now reported, naming the board, the card's number among its nodes and
+  its id (#303, step A4d): on the status line, and on stderr by `items`, `agenda`, `table`
+  and `types` (not `types --json`, which reads no file), a line per board (`canvas couldn't
+  read Board.canvas: card 3 (id "") is left out: its place is empty or longer than 1024
+  bytes`); stderr also says there what an extension's owned file left out. Of the cards
+  whose id is empty, only the first in the file is such a card: a later one has a place of
+  its own and gives its tasks and links.
+- What a board leaves out waits on the status line until nothing else is said there
+  (#303): it never takes the place of the message of what you just did (a merge, a
+  duplicate, a new note, the whiteboard's delete or undo) or of the shape editor's (its
+  warning of unsaved changes included). Boards whose reports wait together are named in one
+  line, shown once for three seconds (`3 boards have cards left out (cold-lava items shows
+  each): Mixed, Twins, Late`, two boards of one name by their paths), as when the workspace
+  opens; a board alone has its own line. A board is reported again only when what it leaves
+  out changes, never on a rescan or after a change that leaves out the same cards, and a
+  report still waiting is dropped once its board leaves nothing out or is gone (deleted, or
+  moved with its folder, when it is reported at its new path). An owner that can't read a
+  file at all (a board that isn't JSON Canvas included) and what an extension's file leaves
+  out are said at once, as before: an extension's file whenever an answer for a version of
+  it leaves something out, but not again when its owner leaves out what the cache did for a
+  version already shown. When one of them takes the place of the boards' line, the line is
+  said again after it.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80
   characters, as every other problem with an answer is.
 - An owner's piece that is `in` no piece, or that an attribute leaves out, still holds its
-  place: a second piece at that place is left out, where it used to be read.
+  place: a second piece at that place is left out.
 - An item left out of an owner's answer is not relinked by a rename: its links keep the
   old name, as nothing reads them.
 
 - An owner's item that doesn't read costs only itself (#265, step A4). An item with a key its
   kind doesn't have, a value of the wrong kind or a role that isn't one of the nine used to
   refuse the whole `file/read` answer, so the file showed nothing, and the status line said
-  only "its answer to file/read doesn't read as one". Now that item alone is left out and the
+  only that the answer didn't read, in serde's words. Now that item alone is left out and the
   rest of the file's items show; the status line names its place and what was wrong
   (`p3: unknown field `colour`, expected one of `place`, `role`, …`, `p4: its role "slide" is
   not a role: one of document, section, …`). An answer that isn't `{items, links}`, or a link
@@ -204,7 +252,7 @@ change commands, keys and file formats; patch versions only fix things.
   item as it was; if its owner drops or changes it (reordering its keys counts), the whole
   rename is refused, where the rename used to go ahead and leave that file alone.
 - A piece with an attribute's name over 256 bytes is reported as "an attribute's name is
-  empty or longer than 256 bytes" (it said "a attribute's").
+  empty or longer than 256 bytes".
 - At most 100 problems with an owner's answer are reported, then how many more (`and 49900
   more`); 50,000 bad items made one message of about 4 MB. The same holds for the steps of an
   extension's answer to `shape/gesture`.
@@ -212,8 +260,8 @@ change commands, keys and file formats; patch versions only fix things.
   core keeps no answer in the wrong form, or with steps that break a rule on their own (with
   only their rebinds kept, so the refusal still names a rebind to a shape that isn't loaded).
   An answer is read as before: `items` that read make it a region's answer, else `do` that
-  reads a gesture's. One that doesn't read now says what was wrong where it said "doesn't
-  read as one": "an answer to shape/region has items, and an answer to shape/gesture has do"
+  reads a gesture's. One that doesn't read now says what was wrong, where 0.6.0 named a Rust
+  type: "an answer to shape/region has items, and an answer to shape/gesture has do"
   when neither form reads, and serde's words otherwise ("invalid type: null, expected a
   map", "unknown variant `explode`, expected one of `edit`, `create`, `rebind`", "missing
   field `label`"), cut to 200 characters and never naming a Rust type.
@@ -228,10 +276,19 @@ change commands, keys and file formats; patch versions only fix things.
   owners, so on the command line alone every owned file stays "left out" until the menu is
   opened once, or a `rename`, `recipe` or `item set` runs; and an owner that crashes or is
   missing keeps all its files hidden for as long as it stays so, where the older binary
-  showed them from its cache. Open the workspace in the menu once after upgrading. A cached
-  answer whose items no longer all read (a bound applies now that didn't when it was saved)
-  is dropped as it loads and its owner asked again: until the owner answers, that file shows
-  nothing, its good items included; with the owner absent or broken, until it is back.
+  showed them from its cache. Open the workspace in the menu once after upgrading.
+- A cached answer whose items no longer all read (a bound applies now that didn't when it
+  was saved) keeps showing its other items, and the ones that don't read are reported,
+  each where it stood, on the status line and on the command line's stderr (#303, step
+  A4d). Its owner is asked again each time the menu opens, until it answers: the cache
+  keeps such an answer as it was read, however often it is saved meanwhile. An edit beside
+  the bad item is refused as `read-back` until the owner's new answer is kept, since the
+  cache keeps that item as it wrote it and not as the owner sent it (the refusal says the
+  owner's new text doesn't read back as asked, though what differs is the cache's copy). In
+  the menu the edit goes ahead once the owner has answered there. `item set` on the command
+  line doesn't keep the owner's new answer, so it refuses such an edit until one is kept:
+  by the menu, or by a `rename` or a `recipe` on the command line that changes files (not
+  `--dry-run`), which asks the owners first and keeps their answers.
 
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and
@@ -266,16 +323,19 @@ change commands, keys and file formats; patch versions only fix things.
   `cold-lava keys`, and an extension's `extension.toml` in `cold-lava ext list`. A status
   line (the menu's, the shape editor's) still says the message alone, and `--json` and
   what extensions are sent keep the one line they had.
-- An extension's answer that doesn't read is said in plain words: "its answer to
-  shape/gesture doesn't read as one" instead of "its answer doesn't read: data did not
-  match any variant of untagged enum Reply". serde's own words stay only where they say
-  just what the answer wrote and what a value should be (a missing, duplicate or unknown
-  field or variant, a value of the wrong kind): "its answer to file/edit doesn't read:
-  missing field `text`". Anything else, a name of cold-lava's own types among it, is "doesn't
-  read as one". The same for `file/read`, `file/edit`, `file/preview`, `shape/region` and
-  `shape/gesture`, wherever it is said: the status line, an owner's trouble notice, and the
-  refusal `cold-lava item set` prints, `--json`'s `{"error": …}` included.
-- The csv-table example gives its rows as pieces, and a cell is plain characters (#243). A
+- An extension's answer that doesn't read is said in plain words, naming the request it
+  answers, where 0.6.0 gave serde's words naming a Rust type (for a shape answer, "its answer
+  doesn't read: data did not match any variant of untagged enum Answered"). serde's own words
+  stay only where they say just what the answer wrote and what a value should be (a missing,
+  duplicate or unknown field or variant, a value of the wrong kind): "its answer to file/edit
+  doesn't read: missing field `text`". Anything else, a name of cold-lava's own types among
+  it, is "doesn't read as one", except a shape answer that fits neither form, which says what
+  each form has (see the entry on bounded shape answers). The same for `file/read`,
+  `file/edit`, `file/preview`, `shape/region` and `shape/gesture`, wherever it is said: the
+  status line, an owner's trouble notice, and the refusal `cold-lava item set` prints,
+  `--json`'s `{"error": …}` included.
+- **Breaking for csv-table users:** the csv-table example gives its rows as pieces, and a cell
+  is plain characters (#243). A
   row is a `row` with its cells by column, so `#42`, `$5`, `[[x]]`, `**x**` and `- [ ] y` in
   a cell make no tag, no math, no link, no bold and no task. What else a column holds, its
   header says: `Volcano (link)` makes each cell a link to the file it names (in backlinks
@@ -403,9 +463,7 @@ change commands, keys and file formats; patch versions only fix things.
   else (an item, another kind of edit) used to run the recipe, `options` without a recipe
   were ignored, an `edit` with a `set-field` and a `toggle` together used to set the field
   and ignore the toggle, and a `set-field` with two of `value`, `add` and `remove` used to
-  take the first. An answer that doesn't read at all now names `Reply` where its message
-  named `Answered` (`its answer doesn't read: data did not match any variant of untagged
-  enum Reply`). A shape's own steps load and run as before.
+  take the first. A shape's own steps load and run as before.
 - An extension can no longer close a prompt, a dialog or a typed query (#269). While a new
   note's or folder's name, a workspace's folder, a new name, a folder to move to, a tag, the
   notes filter or a recipe's options were being typed, an extension that opened a note,
@@ -1381,7 +1439,9 @@ The first release.
 - Live updates when notes change on disk, accent-insensitive matching everywhere, and an example
   vault that shows every feature.
 
-[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/AlenEngineer/cold-lava/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AlenEngineer/cold-lava/compare/v0.2.0...v0.3.0
