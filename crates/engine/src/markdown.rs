@@ -1909,6 +1909,86 @@ mod tests {
         assert_eq!(para(github("#tag")), [t("#tag")]);
     }
 
+    /// What each reader of tags takes for one: the syntax tree in the index's syntax (the
+    /// index, the items, renames: `owner::markdown::tags_in`) and in Obsidian's (the reader),
+    /// the reader's check that a cut keeps its tags (`tag`), a value of the frontmatter's
+    /// `tags`, and a name given on its own (the tag dialog, a `tags` edit, rename-tag's
+    /// options). Pinned as each read them before the tag-name rule was one function.
+    #[test]
+    fn every_reader_takes_the_tags_it_took() {
+        let index = |text: &str| -> Vec<String> {
+            let found = crate::owner::markdown::tags_in(text).into_iter();
+            found.map(|t| text[t.name].to_string()).collect()
+        };
+        let reader = |text: &str| {
+            let mut found = Vec::new();
+            let gates = cst::Gates::of(&Flavour::built_in("obsidian").unwrap());
+            cst::read(text, gates, &mut |step| {
+                if let Step::Token(Kind::Tag, tag, _) = step {
+                    found.push(tag[1..].to_string());
+                }
+            });
+            found
+        };
+        let cut = |text: &str| {
+            let (mut found, mut from) = (Vec::new(), 0);
+            while let Some((range, _)) = tag(text, from) {
+                from = range.end;
+                found.push(text[range.start + 1..range.end].to_string());
+            }
+            found
+        };
+        // A note's text: the tree's tags, then the cut check's.
+        let texts: [(&str, &[&str], &[&str]); 20] = [
+            ("#tag", &["tag"], &["tag"]),
+            ("#123", &[], &[]),
+            ("#123abc", &["123abc"], &["123abc"]),
+            ("#2026-11-20", &["2026-11-20"], &["2026-11-20"]),
+            ("#١٢٣", &["١٢٣"], &["١٢٣"]),
+            ("#nested/tag/", &["nested/tag/"], &["nested/tag/"]),
+            ("#café", &["café"], &["café"]),
+            ("#हिंदी", &["ह"], &["ह"]),
+            ("#Ⓐ", &[], &[]),
+            ("#_", &["_"], &["_"]),
+            ("#tag. #a,b", &["tag", "a"], &["tag", "a"]),
+            ("a#b c#d", &[], &[]),
+            ("#a#b", &["a"], &["a"]),
+            ("#1 #x", &["x"], &["x"]),
+            ("(#in) x,#by", &["in", "by"], &["in", "by"]),
+            ("**#b** _#u_ #tag_", &["b", "u", "tag_"], &["tag_"]),
+            ("~#one~ ~~#two~~ ==#three== =#four=", &["two", "three"], &[]),
+            ("*#star* ***#both***", &["star", "both"], &[]),
+            ("`#code` #real", &["real"], &["real"]),
+            ("x _#_ y", &[], &[]),
+        ];
+        for (text, tree, by_cut) in texts {
+            assert_eq!(index(text), tree, "the index, {text:?}");
+            assert_eq!(reader(text), tree, "the reader, {text:?}");
+            assert_eq!(cut(text), by_cut, "the cut check, {text:?}");
+        }
+        // A name: what the frontmatter's `tags` lists for it, then whether it is one given on
+        // its own.
+        let names: [(&str, Option<&str>, bool); 11] = [
+            ("tag", Some("tag"), true),
+            ("123", None, false),
+            ("١٢٣", Some("١٢٣"), true),
+            ("nested/tag", Some("nested/tag"), true),
+            ("nested/tag/", Some("nested/tag/"), true),
+            ("café", Some("café"), true),
+            ("हिंदी", Some("हिंदी"), true),
+            ("Ⓐ", Some("Ⓐ"), true),
+            ("_", Some("_"), true),
+            ("a.b", Some("a.b"), false),
+            ("two words", Some("two words"), false),
+        ];
+        for (name, listed, given) in names {
+            let note = format!("---\ntags:\n  - {name}\n---\n");
+            assert_eq!(index(&note), Vec::from_iter(listed), "listed, {name:?}");
+            assert_eq!(crate::frontmatter::is_tag(name), given, "given, {name:?}");
+        }
+        assert!(!crate::frontmatter::is_tag(""));
+    }
+
     #[test]
     fn obsidian_callouts() {
         let blocks = obsidian("> [!warning]- Watch **out**\n> body\n>\n> more\n");
