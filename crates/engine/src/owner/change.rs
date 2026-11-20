@@ -133,6 +133,7 @@ pub fn piece(p: &Piece, item: &Item, op: &Op, s: &Settings) -> Result<Made, Erro
             let what = what(field, value);
             Ok(Made { changes, what })
         }
+        Op::Anchor => Err(refused("anchor: not built yet".into())),
     }
 }
 
@@ -328,5 +329,6 @@ pub fn typed(place: &str, item: &Item, op: &Op, s: &Settings) -> Result<Made, Er
             let what = "ticked".to_string();
             Ok(Made { changes, what })
         }
+        Op::Anchor => Err(refused("anchor: not built yet".into())),
     }
 }

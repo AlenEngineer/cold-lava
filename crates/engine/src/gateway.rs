@@ -136,6 +136,11 @@ pub enum Op {
     /// Tick a task the way the Tasks plugin does, through `tasks::toggle_text`: done dates,
     /// recurrence, custom statuses.
     Toggle,
+    /// Keep a reference to the item (#190): the first time, the engine writes an anchor on
+    /// it, a `^name` it chooses; an item that has one is answered unchanged. The answer's
+    /// `item.block_id` is the name to keep. Refused for an item Markdown gives no place for
+    /// one, in words that say what to keep instead.
+    Anchor,
 }
 
 /// The answer to `items/edit`.
@@ -1090,6 +1095,24 @@ fields.text = { rest = true }
         }
     }
 
+    fn anchor(item: &Item) -> Edit {
+        Edit {
+            id: item.id.clone(),
+            rev: item.rev.clone(),
+            op: Op::Anchor,
+        }
+    }
+
+    /// The list item whose words hold `text`.
+    fn list(core: &Core, text: &str) -> Item {
+        let filter = Filter {
+            text: Some(text.into()),
+            ..Filter::default()
+        };
+        let found = core.query_items(&all(select("list", filter))).unwrap();
+        found.items.into_iter().next().unwrap()
+    }
+
     /// How many items each piece of news adds, updates and removes.
     fn counts(news: &[(String, News)]) -> Vec<(usize, usize, usize)> {
         (news.iter())
@@ -1268,6 +1291,171 @@ fields.text = { rest = true }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The bookmark (#190): asked to keep a reference, the engine writes a name on the item
+    /// once. The name is derived from the item's address (`identity::anchor`, pinned there).
+    #[test]
+    fn anchoring_writes_a_name_on_the_item_once_and_names_who_asked() {
+        let dir = workspace("anchor-op");
+        let plan = dir.join("Plan.md");
+        let mut core = Core::open(&dir).unwrap();
+        let plain = list(&core, "plain item");
+        assert_eq!(
+            plain.id, "8c129b98cb8ad550",
+            "the address its name comes from"
+        );
+        let before = std::fs::read_to_string(&plan).unwrap();
+        let done = now(core.edit_item("binder", &anchor(&plain))).unwrap();
+        assert!(done.changed);
+        assert_eq!(done.item.block_id.as_deref(), Some("79el6x"));
+        let after = std::fs::read_to_string(&plan).unwrap();
+        assert_eq!(
+            after,
+            before.replace("- plain item\n", "- plain item ^79el6x\n")
+        );
+        assert_eq!(
+            list(&core, "plain item"),
+            done.item,
+            "the core read it at once"
+        );
+        let edited = Event::ItemEdited {
+            note: "Plan".into(),
+            item: plain.id.clone(),
+            by: "binder".into(),
+            what: "anchored".into(),
+        };
+        assert_eq!(core.poll(), [Event::NoteChanged("Plan".into()), edited]);
+
+        let again = now(core.edit_item("binder", &anchor(&done.item))).unwrap();
+        assert!(!again.changed, "asked twice");
+        assert_eq!(again.item, done.item);
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), after);
+        assert_eq!(core.poll(), [], "nothing written, nothing to hear");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_anchor_on_a_stale_item_is_changed_and_nothing_is_written() {
+        let dir = workspace("anchor-stale");
+        let plan = dir.join("Plan.md");
+        let mut core = Core::open(&dir).unwrap();
+        let plain = list(&core, "plain item");
+        let stale = Edit {
+            rev: "000000000000".into(),
+            ..anchor(&plain)
+        };
+        let e = now(core.edit_item("binder", &stale)).unwrap_err();
+        assert_eq!(e.reason, Reason::Changed, "{e}");
+        // Another program rewords it after the core read the note.
+        let text = std::fs::read_to_string(&plan).unwrap();
+        let text = text.replace("- plain item\n", "- plain item, reworded\n");
+        std::fs::write(&plan, &text).unwrap();
+        let e = now(core.edit_item("binder", &anchor(&plain))).unwrap_err();
+        assert_eq!(e.reason, Reason::Changed, "{e}");
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), text, "untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name is written only where it appears nowhere yet: not in a note's text (a link to
+    /// it, a mention), nor in what an owner gave (a whiteboard card's `subpath`). The first
+    /// name of "plain item" is `79el6x`, its next `3ckj6e` (`identity`'s tests).
+    #[test]
+    fn a_name_written_anywhere_in_the_workspace_is_passed_over() {
+        let card = "{\"nodes\":[{\"id\":\"c\",\"type\":\"file\",\"file\":\"Plan.md\",\
+                    \"subpath\":\"#^79el6x\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}],\
+                    \"edges\":[]}\n";
+        for (name, rel, text) in [
+            (
+                "anchor-taken-note",
+                "Elsewhere.md",
+                "See [[Plan#^79el6x]].\n",
+            ),
+            ("anchor-taken-card", "Board.canvas", card),
+        ] {
+            let dir = workspace(name);
+            std::fs::write(dir.join(rel), text).unwrap();
+            let mut core = Core::open(&dir).unwrap();
+            let plain = list(&core, "plain item");
+            let done = now(core.edit_item("binder", &anchor(&plain))).unwrap();
+            assert_eq!(done.item.block_id.as_deref(), Some("3ckj6e"), "{rel}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// An anchored item's id is `^name` hashed with its note and kind (`items::identify`), so
+    /// it survives what moves an address: new words, a tick, a field, lines around it and a
+    /// renamed heading above it.
+    #[test]
+    fn an_anchored_item_keeps_its_id_through_a_reword_a_tick_a_field_a_reorder_and_its_heading() {
+        let dir = workspace("anchor-keeps");
+        let plan = dir.join("Plan.md");
+        let mut core = Core::open(&dir).unwrap();
+        let rent = task(&core, "Pay rent");
+        let anchored = now(core.edit_item("binder", &anchor(&rent))).unwrap().item;
+        let name = anchored.block_id.clone().expect("anchored");
+        let by_name = |core: &Core| -> Item {
+            let workspace = &core.index.workspace;
+            let mut items = (workspace.notes.iter()).flat_map(|n| workspace.items(n));
+            let found = items.find(|i| i.block_id.as_deref() == Some(name.as_str()));
+            found.expect("the anchored item").clone()
+        };
+        // Another program changes the note, and the core reads it again.
+        let change = |core: &mut Core, f: &dyn Fn(String) -> String| {
+            let text = std::fs::read_to_string(&plan).unwrap();
+            std::fs::write(&plan, f(text)).unwrap();
+            core.note_changed_now(&plan);
+        };
+        change(&mut core, &|t| t.replace("Pay rent", "Pay the rent"));
+        assert_eq!(by_name(&core).id, anchored.id, "reworded");
+        let item = by_name(&core);
+        now(core.edit_item("agenda", &tick(&item))).unwrap();
+        assert_eq!(by_name(&core).id, anchored.id, "ticked");
+        let item = by_name(&core);
+        now(core.edit_item("table", &set(&item, "due", json!("2026-12-01")))).unwrap();
+        assert_eq!(by_name(&core).id, anchored.id, "re-dated");
+        let tag = format!("^{name}");
+        change(&mut core, &|t| {
+            let line = t.lines().find(|l| l.contains(&tag)).unwrap().to_string();
+            t.replace(&format!("{line}\n"), "") + &line + "\n"
+        });
+        assert_eq!(by_name(&core).line, 8, "below the others now");
+        assert_eq!(by_name(&core).id, anchored.id, "moved");
+        change(&mut core, &|t| t.replace("# Plan\n", "# Budget\n"));
+        assert_eq!(by_name(&core).section, ["Budget"]);
+        assert_eq!(by_name(&core).id, anchored.id, "under a renamed heading");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A whiteboard card is its owner's, which names it by its place; a workspace read as
+    /// `github` has no block ids. Both are refused, and nothing is written.
+    #[test]
+    fn an_anchor_has_no_place_in_a_canvas_or_a_workspace_without_block_ids() {
+        let dir = workspace("anchor-canvas");
+        let board = "{\"nodes\":[{\"id\":\"s\",\"type\":\"text\",\
+                     \"text\":\"- [ ] Check the seismograph\",\
+                     \"x\":0,\"y\":0,\"width\":1,\"height\":1}],\"edges\":[]}\n";
+        std::fs::write(dir.join("Board.canvas"), board).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let card = task(&core, "seismograph");
+        let e = now(core.edit_item("binder", &anchor(&card))).unwrap_err();
+        assert_eq!(e.reason, Reason::Refused, "{e}");
+        assert!(e.message.contains("Board.canvas"), "{e}");
+        let on_disk = std::fs::read_to_string(dir.join("Board.canvas")).unwrap();
+        assert_eq!(on_disk, board);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = workspace("anchor-github");
+        std::fs::remove_dir_all(dir.join(".obsidian")).unwrap();
+        let plan = dir.join("Plan.md");
+        let before = std::fs::read_to_string(&plan).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let plain = list(&core, "plain item");
+        let e = now(core.edit_item("binder", &anchor(&plain))).unwrap_err();
+        assert_eq!(e.reason, Reason::Refused, "{e}");
+        assert!(e.message.contains("github"), "{e}");
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn item() -> Item {
         serde_json::from_value(json!({
             "id": "81e7d3e0c9328c61", "note": "Plan.md", "line": 5, "end_line": 5,
@@ -1336,6 +1524,12 @@ fields.text = { rest = true }
             Request::Edit(tick(&item)),
             json!({"method": "items/edit", "params": {
                 "id": "81e7d3e0c9328c61", "rev": "c1e0d4d17c74", "op": "toggle",
+            }}),
+        );
+        wire(
+            Request::Edit(anchor(&item)),
+            json!({"method": "items/edit", "params": {
+                "id": "81e7d3e0c9328c61", "rev": "c1e0d4d17c74", "op": "anchor",
             }}),
         );
         wire(Request::TypesList, json!({"method": "types/list"}));

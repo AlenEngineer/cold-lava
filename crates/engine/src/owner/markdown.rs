@@ -17,6 +17,7 @@ use crate::workspace::{Ref, attachment_kind, clean_target};
 use chrono::NaiveDate;
 use std::ops::Range;
 
+mod anchor;
 pub mod attributes;
 
 /// What reading a note gives besides its items, which are read on first use (`items`).
@@ -137,7 +138,22 @@ pub fn edit(
                 warning: t.warning,
             })
         }
+        Op::Anchor => Err(Error::new(Reason::Refused, "anchor: not built yet")),
     }
+}
+
+/// `items/edit`'s `anchor` on the item `req` names in the note at workspace-relative `note`
+/// whose text is `text`. `taken` says whether a name is written anywhere else in the
+/// workspace. Nothing is written.
+pub fn anchor(
+    note: &str,
+    text: &str,
+    s: &Settings,
+    req: &Edit,
+    taken: &dyn Fn(&str) -> bool,
+) -> Result<Made, Error> {
+    let _ = (note, text, s, req, taken);
+    Err(Error::new(Reason::Refused, "anchor: not built yet"))
 }
 
 /// How a link's target is written in a note.

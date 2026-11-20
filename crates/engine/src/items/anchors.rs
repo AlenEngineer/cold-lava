@@ -208,6 +208,102 @@ mod tests {
         );
     }
 
+    /// No edit but `items/edit`'s `anchor` gives an item an anchor (#190). Each alone, over the
+    /// tricky notes and the example workspace: a tick of every task and a due date set on
+    /// every typed item add no block id; renaming every note of the example workspace and
+    /// every tag in it leave each note's block ids as they were.
+    #[test]
+    fn no_tick_field_rename_or_recipe_writes_an_anchor() {
+        use crate::edit::{self, SetField};
+        use crate::items::Data;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        let ix = crate::index::Index::build(crate::workspace::scan(&root).unwrap());
+        let ws = ix.workspace.item_settings();
+        let tricky = settings("obsidian");
+        let mut notes: Vec<(String, String, &items::Settings)> = (items::tests::TRICKY.iter())
+            .enumerate()
+            .map(|(k, text)| (format!("Tricky {k}.md"), text.to_string(), &tricky))
+            .collect();
+        let example = ix.workspace.notes.iter();
+        notes.extend(example.map(|n| (format!("{}.md", n.rel), n.text.clone(), ws)));
+        let anchors = |note: &str, text: &str, s: &items::Settings| -> Vec<String> {
+            let read = items::extract(note, text, s).into_iter();
+            let mut ids: Vec<String> = read.filter_map(|i| i.block_id).collect();
+            ids.sort();
+            ids
+        };
+        let style: crate::style::Lazy = crate::style::Style::default().into();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        let mut edits = 0;
+        for (note, text, s) in &notes {
+            let had = anchors(note, text, s);
+            for item in items::extract(note, text, s) {
+                let mut made = Vec::new();
+                if item.data.answers_to("task") {
+                    let rev = Some(item.rev.as_str());
+                    let ticked = crate::tasks::toggle_text(
+                        note, note, text, s, &style, item.line, rev, today,
+                    );
+                    made.extend(ticked.ok().map(|t| t.text));
+                }
+                if matches!(item.data, Data::Typed(_)) {
+                    let set = SetField {
+                        id: &item.id,
+                        rev: Some(item.rev.as_str()),
+                        field: "due",
+                        value: serde_json::json!("2026-12-01"),
+                    };
+                    let set = edit::plan(note, text, s, &style, &set).ok();
+                    made.extend(set.filter(|set| set.changed).map(|set| set.text));
+                }
+                for new in made {
+                    let has = anchors(note, &new, s);
+                    let line = item.line;
+                    assert!(
+                        has.iter().all(|id| had.contains(id)),
+                        "{note}:{line}: {has:?} after, {had:?} before"
+                    );
+                    edits += 1;
+                }
+            }
+        }
+        assert!(edits > 30, "{edits} ticks and fields");
+        let same = |e: &crate::rename::FileEdit, what: &str| {
+            let (was, is) = (
+                anchors(&e.file, &e.old_text, ws),
+                anchors(&e.file, &e.new_text, ws),
+            );
+            assert_eq!(is, was, "{what}: {}", e.file);
+        };
+        let mut files = 0;
+        for note in 0..ix.workspace.notes.len() {
+            let plan = crate::rename::plan(&ix, note, "Moved Elsewhere/Renamed Note.md").unwrap();
+            for e in plan.edits.iter().filter(|e| e.file.ends_with(".md")) {
+                same(e, "a rename");
+                files += 1;
+            }
+        }
+        let mut tags: Vec<&String> = ix.workspace.notes.iter().flat_map(|n| &n.tags).collect();
+        tags.sort();
+        tags.dedup();
+        let recipe = crate::recipe::find("rename-tag").unwrap();
+        for tag in tags {
+            let to = format!("{tag}x");
+            let options = crate::recipe::Options::from([
+                ("from".to_string(), tag.clone()),
+                ("to".to_string(), to),
+            ]);
+            let Ok(plan) = crate::recipe::plan(&ix, recipe, options) else {
+                continue;
+            };
+            for e in plan.edits.iter().filter(|e| e.file.ends_with(".md")) {
+                same(e, "a tag renamed");
+                files += 1;
+            }
+        }
+        assert!(files > 20, "{files} files renamed into");
+    }
+
     #[test]
     fn items_that_moved_down_a_line_are_paired_by_where_they_start() {
         let (b, a) = (read("- one\n- two ^a\n"), read("- new\n- one\n- two ^a\n"));
