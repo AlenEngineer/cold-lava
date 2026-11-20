@@ -28,6 +28,7 @@ use super::Kind::{self, *};
 use super::block::Ev;
 use super::{Definitions, Gates, Sink};
 use crate::markdown::Syntax as S;
+use crate::markdown::tag_name;
 
 /// Build `events` into `b`, reading each line of text as it comes; `defs` are the link
 /// definitions of the whole note, which make a `[label]` a link.
@@ -287,11 +288,6 @@ struct Line<'t, 'd> {
     colons: bool,
 }
 
-fn tag_pattern() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(crate::markdown::MARKED_TAG).unwrap())
-}
-
 /// Whether `markers`, written between what a tag may follow and its `#`, open emphasis (`*`,
 /// `_`), a strikethrough (`~~`) or a highlight (`==`) in the syntax `g`. The tag after them is
 /// then a tag, as in Obsidian.
@@ -329,7 +325,7 @@ impl<'t, 'd> Line<'t, 'd> {
             let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
             let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
             let line = &text[start..end];
-            for c in tag_pattern().captures_iter(line) {
+            for c in tag_name::marked_pattern().captures_iter(line) {
                 let name = c.get(1).expect("the pattern has a name");
                 let hash = name.start() - 1;
                 let before = line[..hash].trim_end_matches(['*', '_', '~', '=']);
@@ -342,7 +338,7 @@ impl<'t, 'd> Line<'t, 'd> {
                     true => name.as_str().trim_end_matches('_'),
                     false => name.as_str(),
                 };
-                if !named.bytes().all(|b| b.is_ascii_digit()) {
+                if !tag_name::is_number(named) {
                     let hash = start + hash;
                     tags.push(hash..hash + 1 + named.len());
                 }

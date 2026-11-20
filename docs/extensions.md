@@ -910,7 +910,7 @@ style.minutes = { badge = true, icon = "⏱" }
   (`tests/golden/items-task.json`). `agenda --json`, `agenda` and `task toggle` give the same
   bytes as before on the example workspace.
 - **The known differences,** settled (`known_differences_follow_the_tasks_plugin`):
-  - Tags are read as the workspace reads them (`markdown::TAG`): `#2026` is no tag, `(#paren)` is.
+  - Tags are read as the workspace reads them (`markdown::tag_name`): `#2026` is no tag, `(#paren)` is.
   - A marker in a code span is words: no source reads in code.
   - The same field twice (`📅 a 📅 b`): the first, both out of the words, as the Tasks plugin,
     which reads fields from the end of the line, so the earlier one is read last and wins.
