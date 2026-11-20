@@ -528,8 +528,8 @@ another host or check in a frontend:
 - `tests/permissions.rs` runs the `open-tasks` example with and without `items.edit` and the
   file permissions in-process, with no terminal. `examples/headless.rs` is the least a
   frontend writes to host extensions (open a `Core`, `Registry::load`, tell them the
-  workspace, each frame hand them the core's news and apply or ignore their `Effect`s): the
-  GUI starts from it, and so would any other frontend.
+  workspace, each frame hand them the core's news and apply or ignore their `Effect`s): a
+  GUI, or any other frontend, would start from it.
 
 **Extensions in the terminal UI** (`crates/cold-lava/src/ext.rs`, `ext/`): what only this
 frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `ext::view`).
@@ -724,8 +724,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - The direction and the order of work were decided on 2026-11-11 (`docs/engine.md`, "Direction
-  and order"): finish the half-done migrations, one door into the engine, `cold-lava lsp`,
-  types and identity, the terminal views, drawings, then the notebook. On 2026-11-12 the
+  and order"): finish the half-done migrations, one door into the engine, `cold-lava lsp`
+  (dropped below), types and identity, the terminal views, drawings, then the notebook. On 2026-11-12 the
   refactor tracks were put in front of the features they underlie. On 2026-11-20 `cold-lava
   lsp` was dropped from the order (#195): the notebook, cold-lava's own editor, comes first,
   and a language server is not planned. **Roadmap issue #100 is the
