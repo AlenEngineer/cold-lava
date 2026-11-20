@@ -30,12 +30,12 @@ pub struct Outline {
 }
 
 impl Outline {
-    /// The outline of `reader`, on the heading being read.
-    pub fn open(reader: Option<&Reader>) -> Outline {
-        Outline {
+    /// The outline of `reader`, on the heading being read; none when it has no headings.
+    pub fn open(reader: &Reader) -> Option<Outline> {
+        (!reader.headings().is_empty()).then(|| Outline {
             query: String::new(),
-            sel: start(reader, ""),
-        }
+            sel: start(Some(reader), ""),
+        })
     }
 
     /// What closing it would lose, in words for the status line: a heading being typed.
@@ -181,18 +181,18 @@ mod tests {
     fn it_opens_on_the_heading_being_read() {
         let mut r = reader();
         assert_eq!(
-            press(&mut Outline::open(Some(&r)), &r, KeyCode::Enter),
+            press(&mut Outline::open(&r).unwrap(), &r, KeyCode::Enter),
             Action::Jump(0)
         );
         r.go_to_heading(2);
-        let mut o = Outline::open(Some(&r));
+        let mut o = Outline::open(&r).unwrap();
         assert_eq!(press(&mut o, &r, KeyCode::Enter), Action::Jump(2), "Deep");
     }
 
     #[test]
     fn typing_chooses_the_best_match_and_enter_jumps_to_it() {
         let r = reader();
-        let mut o = Outline::open(Some(&r));
+        let mut o = Outline::open(&r).unwrap();
         typed(&mut o, &r, "vol");
         assert_eq!(press(&mut o, &r, KeyCode::Enter), Action::Jump(4));
     }
@@ -201,7 +201,7 @@ mod tests {
     fn a_cleared_query_goes_back_to_the_heading_being_read() {
         let mut r = reader();
         r.go_to_heading(1);
-        let mut o = Outline::open(Some(&r));
+        let mut o = Outline::open(&r).unwrap();
         typed(&mut o, &r, "vol");
         press(&mut o, &r, KeyCode::Backspace);
         press(&mut o, &r, KeyCode::Backspace);
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn the_cursor_moves_down_the_rows_and_stops_at_the_end() {
         let r = reader();
-        let mut o = Outline::open(Some(&r));
+        let mut o = Outline::open(&r).unwrap();
         for _ in 0..10 {
             assert_eq!(press(&mut o, &r, KeyCode::Down), Action::Stay);
         }
@@ -223,19 +223,27 @@ mod tests {
     #[test]
     fn esc_closes_and_enter_with_nothing_matching_closes() {
         let r = reader();
-        let mut o = Outline::open(Some(&r));
+        let mut o = Outline::open(&r).unwrap();
         typed(&mut o, &r, "zzzz");
         assert_eq!(o.unsaved(), Some("a heading is being typed"));
         assert_eq!(press(&mut o, &r, KeyCode::Enter), Action::Close);
         assert_eq!(
-            press(&mut Outline::open(Some(&r)), &r, KeyCode::Esc),
+            press(&mut Outline::open(&r).unwrap(), &r, KeyCode::Esc),
             Action::Close
         );
     }
 
     #[test]
-    fn without_a_reader_it_types_and_offers_nothing() {
-        let mut o = Outline::open(None);
+    fn it_does_not_open_on_a_note_without_headings() {
+        let doc = parse("para\n", &Flavour::built_in("obsidian").unwrap());
+        let mut r = Reader::new(doc, Looks::default());
+        r.layout(40, &|_| true, &|_, _| None);
+        assert!(Outline::open(&r).is_none());
+    }
+
+    #[test]
+    fn without_the_reader_any_more_it_types_and_offers_nothing() {
+        let mut o = Outline::open(&reader()).unwrap();
         let k = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
         assert_eq!(o.key(k, None), Action::Stay);
         assert_eq!(o.unsaved(), Some("a heading is being typed"));
@@ -246,7 +254,7 @@ mod tests {
     #[test]
     fn it_draws_the_count_and_indents_each_heading_by_its_level() {
         let r = reader();
-        let o = Outline::open(Some(&r));
+        let o = Outline::open(&r).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
         terminal.draw(|f| o.draw(f, f.area(), &r)).unwrap();
         let buffer = terminal.backend().buffer();

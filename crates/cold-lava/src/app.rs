@@ -1,8 +1,8 @@
-//! The palette, and how the graph and pictures are drawn: Kitty pixels or text.
+//! The colours, and how the graph and pictures are drawn: Kitty pixels or text.
 
 use ratatui::style::Color;
 
-// Palette (truecolor; Ghostty, Kitty, WezTerm, iTerm2 all support it).
+// Colours (truecolor; Ghostty, Kitty, WezTerm, iTerm2 all support it).
 pub const ACCENT: Color = Color::Rgb(167, 139, 250);
 pub const ACCENT_SOFT: Color = Color::Rgb(214, 200, 255);
 pub const NOTE: Color = Color::Rgb(205, 205, 215);

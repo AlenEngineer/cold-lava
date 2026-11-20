@@ -7,6 +7,7 @@ use crate::commands::{Keymap, Match, MenuCommand};
 use crate::line_input::CtrlU;
 use crate::pick_list::{self, Picked};
 use crate::popup;
+use crate::words::plural;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -23,7 +24,7 @@ pub enum Action {
     Run(MenuCommand),
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Palette {
     query: String,
     /// A row of the commands that match `query`.
@@ -44,12 +45,12 @@ impl Palette {
         (!self.query.is_empty()).then_some("a command is being typed")
     }
 
-    /// `hits` are the commands that match the query, as drawn.
-    pub fn key(&mut self, k: KeyEvent, hits: &[Match]) -> Action {
+    /// `hits` are the commands that match the query, in the order drawn.
+    pub fn key(&mut self, k: KeyEvent, hits: &[MenuCommand]) -> Action {
         match k.code {
             KeyCode::Esc => Action::Close,
             KeyCode::Enter => match hits.get(self.sel) {
-                Some(m) => Action::Run(m.command.action),
+                Some(&c) => Action::Run(c),
                 None => Action::Close,
             },
             _ => {
@@ -74,10 +75,8 @@ impl Palette {
                 Span::styled(
                     if query.is_empty() {
                         "  type a command's name or id".to_string()
-                    } else if hits.len() == 1 {
-                        "  1 command".to_string()
                     } else {
-                        format!("  {} commands", hits.len())
+                        format!("  {}", plural(hits.len(), "command"))
                     },
                     Style::new().fg(MUTED),
                 ),
@@ -148,6 +147,7 @@ mod tests {
 
     fn press(p: &mut Palette, table: &[Entry<MenuCommand>], code: KeyCode) -> Action {
         let hits = commands::matching(table, p.query());
+        let hits: Vec<MenuCommand> = hits.iter().map(|m| m.command.action).collect();
         p.key(KeyEvent::new(code, KeyModifiers::NONE), &hits)
     }
 

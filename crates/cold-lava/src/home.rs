@@ -38,6 +38,7 @@ use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
 use crate::type_table;
 use crate::views::{self, Views};
+use crate::words::plural;
 use crate::{
     agenda, board, files, graph_ext, items, popup, read, rel_path, templates, term, whichkey,
     workspace,
@@ -3435,10 +3436,10 @@ impl Home {
     }
 
     fn open_outline(&mut self) {
-        if self.reader.as_ref().is_none_or(|r| r.headings().is_empty()) {
-            return self.flash("no headings in this note");
+        match self.reader.as_ref().and_then(Outline::open) {
+            Some(outline) => self.mode = Mode::Outline(outline),
+            None => self.flash("no headings in this note"),
         }
-        self.mode = Mode::Outline(Outline::open(self.reader.as_ref()));
     }
 
     fn outline_key(&mut self, k: KeyEvent) {
@@ -3711,14 +3712,21 @@ impl Home {
             .collect()
     }
 
+    /// How the menu keys an overlay, the pattern every overlay's routing copies (E3's prompts
+    /// too): what the overlay needs from the menu is worked out first, while `self.mode` is only
+    /// read, then the overlay takes the key where it is in `self.mode`, and the menu does what
+    /// its `Action` says.
     fn palette_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         let Mode::Palette(p) = &self.mode else {
             return Ok(());
         };
-        let mut p = p.clone();
         let hits = self.palette_hits(p.query());
+        let hits: Vec<MenuCommand> = hits.iter().map(|m| m.command.action).collect();
+        let Mode::Palette(p) = &mut self.mode else {
+            return Ok(());
+        };
         match p.key(k, &hits) {
-            palette::Action::Stay => self.mode = Mode::Palette(p),
+            palette::Action::Stay => {}
             palette::Action::Close => self.mode = Mode::Normal,
             palette::Action::Run(c) => {
                 self.mode = Mode::Normal;
@@ -7149,14 +7157,6 @@ fn link_changes(e: &crate::rename::FileEdit, width: u16) -> Vec<Line<'static>> {
     out
 }
 
-fn plural(n: usize, word: &str) -> String {
-    if n == 1 {
-        format!("1 {word}")
-    } else {
-        format!("{n} {word}s")
-    }
-}
-
 /// The workspace's tags that start with what was typed (after a `-` and a `#`).
 fn tag_matches<'a>(typed: &str, all: &'a [String]) -> Vec<&'a String> {
     let q = typed
@@ -7670,10 +7670,14 @@ mod tests {
             ),
             (
                 |query: String| {
-                    let mut outline = Outline::open(None);
+                    let doc =
+                        markdown::parse("# Krakatoa\n", &Flavour::built_in("obsidian").unwrap());
+                    let mut reader = Reader::new(doc, Looks::default());
+                    reader.layout(40, &|_| true, &|_, _| None);
+                    let mut outline = Outline::open(&reader).expect("a heading");
                     for c in query.chars() {
                         let k = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-                        outline.key(k, None);
+                        outline.key(k, Some(&reader));
                     }
                     Mode::Outline(outline)
                 },
