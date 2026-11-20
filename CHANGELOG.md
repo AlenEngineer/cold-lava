@@ -310,14 +310,16 @@ says otherwise (see Changed).
   line (the menu's, the shape editor's) still says the message alone, and `--json` and
   what extensions are sent keep the one line they had.
 - An extension's answer that doesn't read is said in plain words, naming the request it
-  answers, where 0.6.0 gave serde's words naming a Rust type ("its answer doesn't read: data
-  did not match any variant of untagged enum Answered"). serde's own words stay only where
-  they say just what the answer wrote and what a value should be (a missing, duplicate or
-  unknown field or variant, a value of the wrong kind): "its answer to file/edit doesn't read:
-  missing field `text`". Anything else, a name of cold-lava's own types among it, is "doesn't
-  read as one". The same for `file/read`, `file/edit`, `file/preview`, `shape/region` and
-  `shape/gesture`, wherever it is said: the status line, an owner's trouble notice, and the
-  refusal `cold-lava item set` prints, `--json`'s `{"error": …}` included.
+  answers, where 0.6.0 gave serde's words naming a Rust type (for a shape answer, "its answer
+  doesn't read: data did not match any variant of untagged enum Answered"). serde's own words
+  stay only where they say just what the answer wrote and what a value should be (a missing,
+  duplicate or unknown field or variant, a value of the wrong kind): "its answer to file/edit
+  doesn't read: missing field `text`". Anything else, a name of cold-lava's own types among
+  it, is "doesn't read as one", except a shape answer that fits neither form, which says what
+  each form has (see the entry on bounded shape answers). The same for `file/read`,
+  `file/edit`, `file/preview`, `shape/region` and `shape/gesture`, wherever it is said: the
+  status line, an owner's trouble notice, and the refusal `cold-lava item set` prints,
+  `--json`'s `{"error": …}` included.
 - **Breaking for csv-table users:** the csv-table example gives its rows as pieces, and a cell
   is plain characters (#243). A
   row is a `row` with its cells by column, so `#42`, `$5`, `[[x]]`, `**x**` and `- [ ] y` in
