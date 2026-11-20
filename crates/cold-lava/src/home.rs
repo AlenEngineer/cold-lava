@@ -2118,17 +2118,8 @@ impl Home {
                     let name = note.rsplit('/').next().unwrap_or(note);
                     self.flash(format!("{by}: {what} on {name}"));
                 }
-                CoreEvent::OwnerTrouble {
-                    owner,
-                    path,
-                    message,
-                } => self.flash(crate::owned::couldnt_read(owner, path, message)),
-                CoreEvent::LeftOut {
-                    owner,
-                    path,
-                    message,
-                } => {
-                    if let Some(now) = self.reports.heard(owner, path, message.as_deref()) {
+                CoreEvent::OwnerTrouble { .. } | CoreEvent::LeftOut { .. } => {
+                    if let Some(now) = self.reports.heard(e) {
                         self.flash(now);
                     }
                 }
