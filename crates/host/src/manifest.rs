@@ -3,6 +3,7 @@
 //! permissions the host checks.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Who an extension is, from `initialize`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -162,4 +163,88 @@ pub struct Spec {
 pub enum Role {
     /// Opens notes for editing: gets the `editor/*` requests.
     Editor,
+}
+
+/// Whether an extension may claim files with extension `x`: not notes, the engine's own, nor a
+/// kind one of the engine's built-in owners reads (`owner::BUILT_IN`: canvases).
+pub(crate) fn claimable(x: &str) -> bool {
+    x != "md" && !crate::owner::BUILT_IN.iter().any(|(b, _)| *b == x)
+}
+
+/// Whether `id` is in the extension `name`'s namespace: `<name>.<something>`. Its commands'
+/// and its types' ids must be.
+pub fn namespaced(name: &str, id: &str) -> bool {
+    (id.strip_prefix(name))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|rest| !rest.is_empty())
+}
+
+/// Leaves out of `m` the types and shapes it can't define, as commands are: an id outside its
+/// namespace (`<name>.<type>`), or one it gave already. Returns why, one line each.
+pub(crate) fn leave_out_definitions(m: &mut Manifest) -> Vec<String> {
+    let name = m.name.clone();
+    let mut why = leave_out(&name, "type", &mut m.types);
+    why.extend(leave_out(&name, "shape", &mut m.shapes));
+    why
+}
+
+fn leave_out(name: &str, what: &str, specs: &mut Vec<Spec>) -> Vec<String> {
+    let mut why = Vec::new();
+    let mut ids = HashSet::new();
+    specs.retain(|t| {
+        let id = &t.id;
+        let problem = if !namespaced(name, id) {
+            format!("its id must start with \"{name}.\"")
+        } else if !ids.insert(id.clone()) {
+            "that id is taken".into()
+        } else {
+            return true;
+        };
+        why.push(format!("{name}: {what} {id:?} was left out: {problem}"));
+        false
+    });
+    why
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn types_outside_the_namespace_or_taken_are_left_out() {
+        let spec = |id: &str| Spec {
+            id: id.into(),
+            definition: toml::from_str("on = \"note\"").unwrap(),
+        };
+        let mut m = Manifest {
+            name: "wc".into(),
+            title: "wc".into(),
+            version: String::new(),
+            description: String::new(),
+            roles: Vec::new(),
+            hints: Vec::new(),
+            commands: Vec::new(),
+            types: ["doc", "wcx.doc", "wc.", "wc.doc", "wc.doc"]
+                .map(spec)
+                .to_vec(),
+            shapes: ["lane", "wc.lane"].map(spec).to_vec(),
+            permissions: read_only(),
+            file_types: Vec::new(),
+            shows: Vec::new(),
+        };
+        let refused = leave_out_definitions(&mut m);
+        let ids: Vec<&str> = m.types.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["wc.doc"]);
+        assert_eq!(m.shapes.len(), 1);
+        assert_eq!(refused.len(), 5, "{refused:?}");
+        assert_eq!(
+            refused[4],
+            "wc: shape \"lane\" was left out: its id must start with \"wc.\""
+        );
+        assert_eq!(
+            refused[0],
+            "wc: type \"doc\" was left out: its id must start with \"wc.\""
+        );
+        assert!(refused[3].ends_with("that id is taken"), "{refused:?}");
+    }
 }

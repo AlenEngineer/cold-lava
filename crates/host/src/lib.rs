@@ -26,6 +26,7 @@ pub mod process;
 pub mod rpc;
 pub mod transport;
 
+mod extension;
 mod host;
 mod manifest;
 mod protocol;
@@ -33,12 +34,13 @@ mod registry;
 
 pub use cold_lava_views::view;
 
+pub use extension::Extension;
 pub use host::{ExtId, Host};
-pub use manifest::{CommandSpec, FileType, Manifest, Permission, Role, Shows, Spec};
+pub use manifest::{CommandSpec, FileType, Manifest, Permission, Role, Shows, Spec, namespaced};
 pub use protocol::{
     CommandRequest, EditorRequest, Effect, FileNews, FilePreview, PaneId, PaneNews, PaneSpec,
 };
-pub use registry::{AGENDA, Extension, GRAPH, MENU, NVIM, READER, Registry, TABLE, namespaced};
+pub use registry::{AGENDA, GRAPH, MENU, NVIM, READER, Registry, TABLE};
 
 use cold_lava_engine::{act, files, gateway, links, matcher, owner, paths, recipe, style, types};
 #[cfg(test)]

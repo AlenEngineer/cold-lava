@@ -424,14 +424,15 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 Every frontend runs extensions through it, so the permission check exists once. Don't write
 another host or check in a frontend:
 
-- `lib.rs` names the four modules' items at the crate's root (`cold_lava_host::Host`, …).
-  `registry.rs`: `Extension` (one method per host→extension JSON-RPC method) and `Registry`
-  (loaded extensions and their manifests, who owns which kind of file, who shows which notes,
-  what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's built-in
-  extensions and the folder of installed ones). `host.rs`: `Host` (one method per
+- `lib.rs` names the five modules' items at the crate's root (`cold_lava_host::Host`, …).
+  `extension.rs`: `Extension` (one method per host→extension JSON-RPC method). `registry.rs`:
+  `Registry` (loaded extensions and their manifests, who owns which kind of file, who shows
+  which notes, what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's
+  built-in extensions and the folder of installed ones). `host.rs`: `Host` (one method per
   extension→host method; it queues `Effect`s and checks `Permission`s). `manifest.rs`: the
-  manifest types (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`, `Permission`).
-  `protocol.rs`: `Effect`s and the other messages as data. Three rules:
+  manifest types (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`, `Permission`) and
+  their rules (`namespaced`, `claimable`, `leave_out_definitions`). `protocol.rs`: `Effect`s
+  and the other messages as data. Three rules:
   - An extension can only do what a message can say: every type that crosses derives serde.
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
     into panes, and draws the lists and tables they send (`view/open`), telling them what the

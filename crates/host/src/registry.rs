@@ -1,26 +1,17 @@
-//! The loaded extensions (`Extension`, `Registry`): who they are, who owns which kind of file
-//! and shows which notes, and calling one with its `Host`.
+//! The loaded extensions (`Registry`): who they are, who owns which kind of file and shows
+//! which notes, and calling one with its `Host`.
 
+use crate::extension::Extension;
 use crate::host::{ExtId, Host};
-use crate::manifest::{FileType, Manifest, Permission, Shows, Spec};
-use crate::protocol::{CommandRequest, EditorRequest, Effect, FileNews, FilePreview, PaneNews};
-use crate::view::ViewNews;
+use crate::manifest::{FileType, Manifest, Permission, Shows, claimable, leave_out_definitions};
+use crate::protocol::Effect;
 use crate::{installed, process};
 use cold_lava_engine::act::Ask;
 use cold_lava_engine::core::Core;
 use cold_lava_engine::files;
-use cold_lava_engine::gateway::{self, Edited, News, Ticket};
-use cold_lava_engine::owner::cache::{FileRead, Kind};
-use cold_lava_engine::owner::edits::FileEdit;
+use cold_lava_engine::owner::cache::Kind;
 use cold_lava_engine::problem::Problem;
-use std::collections::HashSet;
 use std::path::Path;
-
-/// Whether an extension may claim files with extension `x`: not notes, the engine's own, nor a
-/// kind one of the engine's built-in owners reads (`owner::BUILT_IN`: canvases).
-fn claimable(x: &str) -> bool {
-    x != "md" && !crate::owner::BUILT_IN.iter().any(|(b, _)| *b == x)
-}
 
 /// The reader, a screen of the menu's built the way an extension will be: it reaches notes as
 /// data only through `Host`, under this name (`Registry::screen`), which edits are attributed to.
@@ -36,73 +27,6 @@ pub const TABLE: &str = "table";
 pub const GRAPH: &str = "graph";
 pub const NVIM: &str = "nvim";
 const SCREEN_PERMISSIONS: &[Permission] = &[Permission::ItemsRead, Permission::ItemsEdit];
-
-/// An extension: built into cold-lava, or a `process::Process` speaking for one in its own
-/// process. Its methods run on the UI thread: they must return at once and never wait for a pane
-/// or a process.
-pub trait Extension {
-    /// `initialize`: who it is.
-    fn initialize(&mut self) -> Manifest;
-    /// `pane/message`, `pane/exited`: news from a pane it opened.
-    fn pane(&mut self, news: PaneNews, host: &mut Host<'_>);
-    /// `editor/open`, `editor/save`, `editor/renamed`, for the extension in the editor role.
-    fn editor(&mut self, request: EditorRequest, host: &mut Host<'_>);
-    /// `command/run`: one of its commands, from a key, the palette or an extension.
-    fn command(&mut self, _request: CommandRequest, _host: &mut Host<'_>) {}
-    /// `items/changed`, `items/reset`: news for a subscription it made.
-    fn items(&mut self, _news: News, _host: &mut Host<'_>) {}
-    /// `view/event`, `view/closed`: what the user did in a view it opened.
-    fn view(&mut self, _news: ViewNews, _host: &mut Host<'_>) {}
-    /// `file/open`, `file/changed`: a file of a kind it owns.
-    fn file(&mut self, _news: FileNews, _host: &mut Host<'_>) {}
-    /// `file/read`: the items and links of a file of a kind it owns, answered now or later
-    /// with `Host::file_given`.
-    fn read_file(&mut self, read: FileRead, host: &mut Host<'_>) {
-        let why = "it doesn't read files".to_string();
-        host.file_given(&read.path, &read.rev, Err(why));
-    }
-    /// `file/edit`: the new text of a file of a kind it owns with some changes made, answered
-    /// now or later with `Host::file_edited`.
-    fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
-        let why = "it doesn't edit files".to_string();
-        host.file_edited(&edit.path, &edit.rev, Err(why));
-    }
-    /// `file/preview`: a small view of a file of a kind it owns, answered now or later with
-    /// `Host::file_previewed`.
-    fn preview_file(&mut self, preview: FilePreview, host: &mut Host<'_>) {
-        let why = "it doesn't preview files".to_string();
-        host.file_previewed(&preview.path, &preview.rev, Err(why));
-    }
-    /// `shape/region`, `shape/gesture`: what a region of a shape it ships shows, or what a
-    /// gesture on one does, answered now or later with `Host::shape_answered`.
-    fn shape(&mut self, ask: Ask, host: &mut Host<'_>) {
-        host.shape_answered(&ask, Err("it doesn't answer for shapes".into()));
-    }
-    /// The answer to an `items/edit` that `Host::edit_item` answered `Later`: an edit of a file
-    /// another owner reads, now written, or why not.
-    fn edited(
-        &mut self,
-        _ticket: Ticket,
-        _answer: Result<Edited, gateway::Error>,
-        _host: &mut Host<'_>,
-    ) {
-    }
-    /// The menu opened a workspace (`None`: it has none open). An extension in a process starts
-    /// here, with `initialize`, and stops when the workspace closes.
-    fn workspace(&mut self, _root: Option<&Path>, _host: &mut Host<'_>) {}
-    /// Once a frame: answer what it asked since the last one.
-    fn poll(&mut self, _host: &mut Host<'_>) {}
-    /// Whether its commands can run now.
-    fn running(&self) -> bool {
-        true
-    }
-    /// Why it stopped, when it did.
-    fn stopped(&self) -> Option<&str> {
-        None
-    }
-    /// cold-lava is quitting.
-    fn shutdown(&mut self) {}
-}
 
 /// The loaded extensions and their manifests, who owns which kind of file and who shows
 /// which notes. A frontend keeps one, calls extensions through it (`call`) and applies the
@@ -125,41 +49,6 @@ pub struct Registry {
     owners: Vec<(String, ExtId)>,
     /// The claims to show notes that hold, in load order: the extension and its claim's index.
     shows: Vec<(ExtId, usize)>,
-}
-
-/// Whether `id` is in the extension `name`'s namespace: `<name>.<something>`. Its commands'
-/// and its types' ids must be.
-pub fn namespaced(name: &str, id: &str) -> bool {
-    (id.strip_prefix(name))
-        .and_then(|rest| rest.strip_prefix('.'))
-        .is_some_and(|rest| !rest.is_empty())
-}
-
-/// Leaves out of `m` the types and shapes it can't define, as commands are: an id outside its
-/// namespace (`<name>.<type>`), or one it gave already. Returns why, one line each.
-fn leave_out_definitions(m: &mut Manifest) -> Vec<String> {
-    let name = m.name.clone();
-    let mut why = leave_out(&name, "type", &mut m.types);
-    why.extend(leave_out(&name, "shape", &mut m.shapes));
-    why
-}
-
-fn leave_out(name: &str, what: &str, specs: &mut Vec<Spec>) -> Vec<String> {
-    let mut why = Vec::new();
-    let mut ids = HashSet::new();
-    specs.retain(|t| {
-        let id = &t.id;
-        let problem = if !namespaced(name, id) {
-            format!("its id must start with \"{name}.\"")
-        } else if !ids.insert(id.clone()) {
-            "that id is taken".into()
-        } else {
-            return true;
-        };
-        why.push(format!("{name}: {what} {id:?} was left out: {problem}"));
-        false
-    });
-    why
 }
 
 impl Registry {
@@ -404,49 +293,5 @@ impl Registry {
             owners: &self.owners,
             core: Some(core),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::manifest::read_only;
-
-    #[test]
-    fn types_outside_the_namespace_or_taken_are_left_out() {
-        let spec = |id: &str| Spec {
-            id: id.into(),
-            definition: toml::from_str("on = \"note\"").unwrap(),
-        };
-        let mut m = Manifest {
-            name: "wc".into(),
-            title: "wc".into(),
-            version: String::new(),
-            description: String::new(),
-            roles: Vec::new(),
-            hints: Vec::new(),
-            commands: Vec::new(),
-            types: ["doc", "wcx.doc", "wc.", "wc.doc", "wc.doc"]
-                .map(spec)
-                .to_vec(),
-            shapes: ["lane", "wc.lane"].map(spec).to_vec(),
-            permissions: read_only(),
-            file_types: Vec::new(),
-            shows: Vec::new(),
-        };
-        let refused = leave_out_definitions(&mut m);
-        let ids: Vec<&str> = m.types.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, ["wc.doc"]);
-        assert_eq!(m.shapes.len(), 1);
-        assert_eq!(refused.len(), 5, "{refused:?}");
-        assert_eq!(
-            refused[4],
-            "wc: shape \"lane\" was left out: its id must start with \"wc.\""
-        );
-        assert_eq!(
-            refused[0],
-            "wc: type \"doc\" was left out: its id must start with \"wc.\""
-        );
-        assert!(refused[3].ends_with("that id is taken"), "{refused:?}");
     }
 }
