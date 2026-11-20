@@ -1166,12 +1166,12 @@ mod tests {
         let open = "- [ ] Rent 🔁 every month 📅 2026-11-01\n  paid by card ^rent\n";
         std::fs::write(&f, open).unwrap();
         let err = toggle(&f, 1, None, d("2026-11-02")).unwrap_err();
-        assert!(
-            matches!(
-                err.downcast_ref::<crate::edit::EditError>(),
-                Some(crate::edit::EditError::ReadBack(m)) if m.contains("^rent")
-            ),
-            "{err:#}"
+        assert_eq!(
+            format!("{err:#}"),
+            "^rent is on a later line of this task, and the next occurrence, which goes right \
+             under the task's first line, would take it; put the task on one line ending in \
+             ^rent, or turn off the Tasks plugin's \"next recurrence on the line below\"",
+            "why, and what to do"
         );
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
@@ -1188,6 +1188,47 @@ mod tests {
             "on one line, the id stays on the done line, the new occurrence below it"
         );
         let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
+    fn a_tick_that_would_give_the_next_occurrence_an_anchor_is_refused() {
+        let v = temp_workspace("anchor-made");
+        let f = v.join("Bills.md");
+        // `^x` ends the first of the task's two lines, so it is words there. The next
+        // occurrence is that line alone, which would read `^x` as a new anchor.
+        let open = "- [ ] Rent 🔁 every month 📅 2026-11-01 ^x\n  paid by card\n";
+        std::fs::write(&f, open).unwrap();
+        let err = toggle(&f, 1, None, d("2026-11-02")).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "the next occurrence would be a copy of the task's first line, which ends in ^x, \
+             and would take ^x as a new anchor; move ^x to the end of the task's last line, or \
+             take it off",
+            "why, and what to do"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            open,
+            "nothing written"
+        );
+        let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
+    fn an_untick_gives_back_an_anchor_already_written_in_the_line() {
+        // cold-lava 0.6.0 wrote the done date after the id, and the task lost its anchor.
+        let s = settings(serde_json::json!({}), "");
+        let style: crate::style::Lazy = crate::style::Style::default().into();
+        let anchor = |text: &str| items::extract("N.md", text, &s)[0].block_id.clone();
+        let done = "- [x] Pay rent ^rent ✅ 2026-11-07\n";
+        assert_eq!(anchor(done), None);
+        let t = toggle_text("N.md", "N.md", done, &s, &style, 1, None, d("2026-11-09")).unwrap();
+        assert_eq!(t.text, "- [ ] Pay rent ^rent\n");
+        assert_eq!(
+            anchor(&t.text).as_deref(),
+            Some("rent"),
+            "the anchor is back"
+        );
     }
 
     #[test]

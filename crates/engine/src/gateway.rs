@@ -1254,6 +1254,12 @@ fields.text = { rest = true }
         assert_eq!(rent.block_id.as_deref(), Some("rent"));
         let refused = now(core.edit_item("agenda", &tick(&rent))).unwrap_err();
         assert_eq!(refused.reason, Reason::ReadBack, "{refused}");
+        assert!(
+            refused
+                .message
+                .starts_with("^rent is on a later line of this task"),
+            "words that say why: {refused}"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("Bills.md")).unwrap(),
             bills,
