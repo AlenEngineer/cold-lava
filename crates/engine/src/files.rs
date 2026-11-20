@@ -16,6 +16,7 @@ use crate::gateway::{Error, Reason};
 use crate::index::Index;
 use crate::read::{Seen, rev};
 use crate::trash::{self, Bin, Trashed, Went};
+use crate::workspace;
 use crate::write::{self, WriteError};
 
 /// What an extension asks of the workspace gateway about files (extension → host).
@@ -174,7 +175,7 @@ pub fn extension_of(path: &str) -> Option<String> {
 /// way to it is a symlink (`unlinked`).
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
     let path = normal(rel)?;
-    unlinked(root, rel, &path)?;
+    unlinked(root, &path, &path)?;
     Ok(root.join(path))
 }
 
@@ -184,7 +185,7 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
 fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
     let path = normal(rel)?;
     let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
-    unlinked(root, rel, folder)?;
+    unlinked(root, &path, folder)?;
     Ok(root.join(path))
 }
 
@@ -212,27 +213,27 @@ pub fn normal(rel: &str) -> Result<String, Error> {
 }
 
 /// Refused when `parts` under `root`, or a folder on the way to it, is a symlink: the gateway
-/// never follows one (#349). `parts` is a `normal` path, or the folders at its start. A
+/// never follows one (#349). `parts` is the `normal` path `rel`, or the folders at its start. A
 /// permission is judged by a path's name, and a link leads to a file of another name, such as
 /// a note's link to `.git/config` or to a canvas only its owner writes. With no link and no
-/// `..`, a path stays inside the workspace. Below a part that isn't there yet, nothing is a
-/// link.
+/// `..`, a path stays inside the workspace. The scan and the watcher read no link either
+/// (`workspace::first_link`, the one rule), so no item is in one.
+///
+/// Checked, then acted on: a folder on the way swapped for a link between this check and the
+/// call after it is still followed (#366). A file swapped for a link at the path itself is
+/// not: the gateway's writes rename over the path (`Seen::replace_entry`, `write::create`).
 fn unlinked(root: &Path, rel: &str, parts: &str) -> Result<(), Error> {
     root.metadata().map_err(io(rel))?;
-    let ends = parts.match_indices('/').map(|(end, _)| end);
-    for end in ends.chain([parts.len()]).filter(|&end| end > 0) {
-        let part = &parts[..end];
-        match std::fs::symlink_metadata(root.join(part)) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let message = format!("{rel}: {part} is a symbolic link");
-                return Err(Error::new(Reason::Refused, message));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(io(rel)(e)),
-        }
-    }
-    Ok(())
+    let Some(link) = workspace::first_link(root, parts).map_err(io(rel))? else {
+        return Ok(());
+    };
+    let why = format!("{link} is a symbolic link, which the gateway never follows");
+    let message = if link == rel {
+        why
+    } else {
+        format!("{rel}: {why}")
+    };
+    Err(Error::new(Reason::Refused, message))
 }
 
 fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
@@ -264,7 +265,7 @@ pub fn read(root: &Path, rel: &str) -> Result<Text, Error> {
     })
 }
 
-/// `workspace/write`, through `Seen::replace`.
+/// `workspace/write`, through `Seen::replace_entry`.
 pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Written, Error> {
     let rel = &normal(rel)?;
     let path = resolve(root, rel)?;
@@ -279,7 +280,7 @@ pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Writt
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
-    now.replace(text.as_bytes()).map_err(written(rel))?;
+    now.replace_entry(text.as_bytes()).map_err(written(rel))?;
     Ok(Written {
         rev: rev(text.as_bytes()),
     })

@@ -721,7 +721,9 @@ pub(crate) struct Written {
 }
 
 /// Make the edit on disk: the note's owner makes its new text, which is written with
-/// `write::replace`, refused if the note changed since it was read. An anchor's name is
+/// `write::replace_entry`, refused if the note changed since it was read. No note is a
+/// symlink (`workspace::first_link`), so the rename replaces the note's path itself, and a link
+/// swapped in there since is replaced, never written through. An anchor's name is
 /// checked against the names the whole workspace holds (`anchor_names`), which only the core
 /// can read.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
@@ -748,7 +750,7 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
         }
     }?;
     if made.changed {
-        write::replace(&path, text.as_bytes(), made.text.as_bytes())
+        write::replace_entry(&path, text.as_bytes(), made.text.as_bytes())
             .map_err(|e| Error::new(Reason::of(&e), e.to_string()))?;
     }
     Ok(Written {

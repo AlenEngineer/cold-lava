@@ -368,7 +368,8 @@ impl Core {
 
     /// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
     /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
-    /// items or links changed, and what went wrong. Links are not resolved again here.
+    /// items or links changed, and what went wrong. Links are not resolved again here. A file
+    /// at a symlink, or behind one, is gone, as the scan reads none (`workspace::first_link`).
     fn owned_read(&mut self, rels: &[String]) -> (Vec<String>, Vec<Event>) {
         let root = self.root().to_path_buf();
         let (mut changed, mut events) = (Vec::new(), Vec::new());
@@ -378,7 +379,9 @@ impl Core {
             };
             let owned = &mut self.index.workspace.owned;
             let at = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
-            let Ok(bytes) = std::fs::read(root.join(rel)) else {
+            let unlinked = matches!(workspace::first_link(&root, rel), Ok(None));
+            let read = unlinked.then(|| std::fs::read(root.join(rel)).ok());
+            let Some(bytes) = read.flatten() else {
                 if let Ok(i) = at {
                     let gone = owned.remove(i);
                     events.extend(owned_news(Some(&gone), None));
@@ -1378,15 +1381,19 @@ fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {
     Bookmarks::read(root).map_err(|e| e.to_string())
 }
 
+/// The watcher of the folder at `root` and everything in it, following no symlink, as the scan
+/// doesn't.
 fn watch(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
     let (tx, rx) = mpsc::channel();
-    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    let heard = move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res
             && !matches!(ev.kind, notify::EventKind::Access(_))
         {
             let _ = tx.send(ev);
         }
-    });
+    };
+    let unfollowed = notify::Config::default().with_follow_symlinks(false);
+    let watcher = RecommendedWatcher::new(heard, unfollowed);
     match watcher {
         Ok(mut w) => match w.watch(root, RecursiveMode::Recursive) {
             Ok(()) => (Some(rx), Some(w)),

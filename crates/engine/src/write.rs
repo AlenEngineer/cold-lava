@@ -52,8 +52,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
 /// Where a write to `path` lands: `path`, or the file a symlink there leads to, every link on
 /// the way followed, so the rename replaces that file, beside it, and the link stays a link. A
 /// link to nothing, or to something that isn't a file, is `NotAFile`. Where a link may lead is
-/// the caller's to bound: this follows it anywhere, and the gateway never lets one through
-/// (`files::resolve`).
+/// the caller's to bound: this follows it anywhere. The gateway never lets one through
+/// (`files::resolve`) and never lands its own writes here: they rename over the path itself
+/// (`replace_entry`, `create`), so a link swapped in at the path after its check is replaced,
+/// not followed. A folder on the way swapped for a link is still followed (#366).
 fn landing(path: &Path) -> Result<PathBuf, WriteError> {
     let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !link {
@@ -103,12 +105,22 @@ fn write_at(path: &Path, file: &Path, bytes: &[u8]) -> Result<(), WriteError> {
 /// the engine, `read::Seen::replace` is the way. Where it lands is found once, and the bytes
 /// compared are the ones the rename replaces.
 pub(crate) fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
-    let file = landing(path)?;
-    let now = std::fs::read(&file).map_err(io_err(path))?;
+    replace_at(path, &landing(path)?, expected, bytes)
+}
+
+/// As `replace`, but the rename replaces `path` itself: a symlink found there is replaced, and
+/// what it leads to is only read, to compare. The gateway's write (`Seen::replace_entry`),
+/// which follows no link.
+pub(crate) fn replace_entry(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
+    replace_at(path, path, expected, bytes)
+}
+
+fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
+    let now = std::fs::read(file).map_err(io_err(path))?;
     if now != expected {
         return Err(WriteError::Changed(path.to_path_buf()));
     }
-    write_at(path, &file, bytes)
+    write_at(path, file, bytes)
 }
 
 /// Whether something is at `path`: a file, a folder or a symlink, a link to nothing included.
@@ -117,12 +129,13 @@ pub fn taken(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-/// Create a new file; refused if something is already there (`taken`).
+/// Create a new file; refused if something is already there (`taken`). The rename puts it at
+/// `path` itself, so a link made there after the check is replaced, never written through.
 pub fn create(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     if taken(path) {
         return Err(WriteError::Exists(path.to_path_buf()));
     }
-    write_atomic(path, bytes)
+    write_at(path, path, bytes)
 }
 
 /// Create a new file unless it already exists (then leave it alone). Returns whether it was made.
@@ -267,6 +280,30 @@ mod tests {
             is_link(&d.join("Notes/Moved.md")),
             "a move takes the link itself"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The gateway's write renames over the path itself: a link swapped in at the path after
+    /// the gateway checked it is replaced, and the file it leads to keeps its bytes.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_to_the_entry_replaces_a_link_and_never_follows_it() {
+        let d = dir("entry");
+        let (target, at) = (d.join("config"), d.join("Note.md"));
+        std::fs::write(&target, "v1").unwrap();
+        std::os::unix::fs::symlink("config", &at).unwrap();
+        let stale = replace_entry(&at, b"other", b"lost");
+        assert!(matches!(stale, Err(WriteError::Changed(_))), "{stale:?}");
+        assert!(is_link(&at), "a stale read writes nothing");
+        replace_entry(&at, b"v1", b"v2").unwrap();
+        assert!(!is_link(&at), "the link is replaced");
+        assert_eq!(std::fs::read(&at).unwrap(), b"v2");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"v1",
+            "nothing written through"
+        );
+        assert_eq!(files(&d), ["Note.md", "config"], "no temp file left");
         let _ = std::fs::remove_dir_all(&d);
     }
 

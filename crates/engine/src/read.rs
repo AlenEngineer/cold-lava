@@ -135,6 +135,16 @@ impl Seen {
             _ => Err(WriteError::Changed(self.path.clone())),
         }
     }
+
+    /// As `replace`, but over the path itself, through `write::replace_entry`: a symlink found
+    /// there now is replaced, never written through. The gateway's write, which follows no
+    /// link, so one swapped in after its check can't lead the write to another file.
+    pub fn replace_entry(&self, bytes: &[u8]) -> Result<(), WriteError> {
+        match (self.way, &self.was) {
+            (Way::File, Contents::File(was)) => write::replace_entry(&self.path, was, bytes),
+            _ => Err(WriteError::Changed(self.path.clone())),
+        }
+    }
 }
 
 impl Way {
