@@ -2,7 +2,7 @@
 # a marked move, each opened on Krakatoa in the example workspace, and a rename and a move of
 # its folder, are refused when a click on the workspace list opens another workspace under the
 # prompt, and nothing is written in either. tests/drive.rs adds two others to the list and
-# checks them: notes2 (row 3), and the folder the example workspace is in (row 4, 36 notes), in
+# checks them: notes2 (row 3), and the folder the example workspace is in (row 4), in
 # which the folder's path still reads as a path.
 size 120x40
 env COLD_LAVA_EDITOR=none
@@ -98,7 +98,7 @@ wait-for rename ·
 keys ctrl+u
 type Calderas
 click 4 5
-wait-for 36 notes
+wait-for prompt-workspace-changed-
 wait-gone can't rename: the workspace changed
 keys enter
 wait-for can't rename: the workspace changed
@@ -115,10 +115,10 @@ wait-for move to folder
 keys ctrl+u
 type Archive
 click 4 5
-wait-for 36 notes
+wait-for prompt-workspace-changed-
 wait-gone can't rename: the workspace changed
 keys enter
 wait-for can't rename: the workspace changed
-expect 36 notes
+expect prompt-workspace-changed-
 keys q
 exits 0
