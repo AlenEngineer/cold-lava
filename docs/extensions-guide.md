@@ -327,8 +327,10 @@ view, as it does under a note, and `Enter` there opens the linking note or file.
   Reading any other file, a note included, needs `files.read`; writing or creating a note
   or a file nobody owns, or making a folder, needs `files.write`. Deleting and restoring need `files.delete`, for your
   own kind too: `files.write` doesn't include it.
-  Paths are relative to the workspace and can't leave it: `..`, absolute paths,
-  hidden folders (`.obsidian`) and symlinks that lead outside are refused.
+  Paths are relative to the workspace and can't leave it: `..`, absolute paths and
+  hidden folders (`.obsidian`) are refused, and so is a symlink, at the path or on the way
+  to it, wherever it leads: a permission goes by the path's name, and a link leads to a
+  file of another name.
 - **Only you write your kind.** Another extension, whatever its permissions, can't write,
   create or restore under a new name a file of a kind you own, nor a `.canvas`: it is
   refused as `forbidden`, and changes one through `items/edit`, which asks you with
@@ -354,7 +356,7 @@ title = "Kanban board"
 where.property = { kanban-plugin = "basic" }     # as a type's note shape writes it
 ```
 
-Opening a note the claim matches (Enter in the tree, the quick switcher, a link, a bookmark)
+Opening a note the claim matches (Enter in the tree, the quick switcher, a link)
 sends `file/open` with the note's path, `.md` included, instead of showing the reader. You don't
 read or parse the note: cold-lava already reads it, so ask for its items and change them through
 the gateway, and every edit is checked and written the way the reader's are.

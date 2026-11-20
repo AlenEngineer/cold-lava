@@ -10,7 +10,6 @@
 //! any other is rewritten in the style it was written in. So `[[Lava]]` survives a folder move,
 //! but becomes a path when the move makes another `Lava` the shallowest one.
 
-use crate::bookmarks::{self, Bookmarks};
 use crate::index::Index;
 use crate::owner::canvas;
 use crate::owner::given::{Change as Ask, Given, GivenItem};
@@ -118,8 +117,6 @@ pub struct Plan {
     pub moving: Vec<String>,
     /// Files whose links change, moving ones included (under their path as it is now).
     pub edits: Vec<FileEdit>,
-    /// Obsidian's bookmarks file, when bookmarks point at what moves (`links` counts them).
-    pub bookmarks: Option<FileEdit>,
     pub warnings: Vec<String>,
 }
 
@@ -387,52 +384,12 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
     }
     let mut edits = edits(ix, &rw, &mut warnings)?;
     edits.extend(owned_edits(ix, &rw, &mut warnings));
-    let bookmarks = match bookmarks_edit(&ix.workspace.root, &moves) {
-        Ok(b) => b,
-        Err(e) => {
-            warnings.push(format!("bookmarks aren't updated: {e}"));
-            None
-        }
-    };
     Ok(Plan {
         moves,
         moving,
         edits,
-        bookmarks,
         warnings,
     })
-}
-
-/// Obsidian's bookmarks of what moves, pointed at where it goes (Obsidian does the same).
-pub(crate) fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileEdit>> {
-    let mut b = Bookmarks::read(root)?;
-    let Some(old_text) = b.read_text().map(str::to_string) else {
-        return Ok(None);
-    };
-    let changed = b.moved(|p| {
-        (moves.iter()).find_map(|m| match m.folder && p == m.from {
-            true => Some(m.to.clone()),
-            false => m.moved_rel(p),
-        })
-    });
-    if changed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(FileEdit {
-        file: bookmarks::FILE.to_string(),
-        path: root.join(bookmarks::FILE),
-        old_text,
-        new_text: b.text(),
-        links: changed.len(),
-        changes: (changed.into_iter())
-            .map(|(before, after)| Change {
-                line: 0,
-                before,
-                after,
-            })
-            .collect(),
-        owned: None,
-    }))
 }
 
 /// Every note and canvas whose links change. A canvas that can't be searched for links is
@@ -632,12 +589,15 @@ pub(crate) fn owned_edit(
 }
 
 /// Refuse when a file among `edits` isn't what it was when `what` (a rename, a merge) was
-/// planned.
+/// planned, or is a symlink now, which its write would refuse (`write::refuse_link`) after
+/// others were written: a note swapped for a link to the same text is refused here, whole.
 pub(crate) fn check_unchanged<'a>(
     edits: impl IntoIterator<Item = &'a FileEdit>,
     what: &str,
 ) -> Result<()> {
     for e in edits {
+        crate::write::refuse_link(&e.path)
+            .with_context(|| format!("writing {}; nothing was changed", e.file))?;
         let now =
             std::fs::read_to_string(&e.path).with_context(|| format!("reading {}", e.file))?;
         if now != e.old_text {
@@ -707,7 +667,7 @@ impl Written {
 /// fails) and write each changed file atomically.
 pub(crate) fn apply(plan: &Plan) -> Result<()> {
     check_answered(&plan.edits)?;
-    check_unchanged(plan.edits.iter().chain(&plan.bookmarks), "rename")?;
+    check_unchanged(&plan.edits, "rename")?;
     for m in &plan.moves {
         if !m.from_path.exists() {
             bail!("{} no longer exists", m.from);
@@ -725,7 +685,7 @@ pub(crate) fn apply(plan: &Plan) -> Result<()> {
         }
     }
     let mut failed = Vec::new();
-    for e in plan.edits.iter().chain(&plan.bookmarks) {
+    for e in &plan.edits {
         // Still guarded: a file edited between the check above and now is left alone.
         let path = plan.moved(&e.path);
         let seen = Seen::kept(&path, e.old_text.as_bytes());
@@ -1277,104 +1237,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    const MARKS: &str = r##"{
-  "items": [
-    {
-      "type": "file",
-      "ctime": 1,
-      "path": "Rock/Lava.md",
-      "subpath": "#Textures",
-      "colour": "kept"
-    },
-    {
-      "type": "group",
-      "ctime": 2,
-      "items": [
-        {
-          "type": "folder",
-          "ctime": 3,
-          "path": "Rock"
-        },
-        {
-          "type": "file",
-          "ctime": 4,
-          "path": "Rock/Deep/Magma.md"
-        },
-        {
-          "type": "file",
-          "ctime": 5,
-          "path": "Rocky.md"
-        }
-      ],
-      "title": "Geology"
-    },
-    {
-      "type": "mystery",
-      "path": "Rock/Lava.md"
-    }
-  ]
-}"##;
-
     #[test]
-    fn bookmarks_follow_a_renamed_note_keeping_the_heading() {
+    fn obsidians_bookmarks_are_left_as_they_were() {
+        let marks = r#"{"items":[{"type":"file","ctime":1,"path":"Rock/Lava.md"},{"type":"folder","ctime":2,"path":"Rock"}]}"#;
         let (dir, ix) = workspace_with(
-            "bookmarks-note",
+            "obsidian-bookmarks",
+            &[("Rock/Lava.md", "x"), (".obsidian/bookmarks.json", marks)],
+        );
+        let p = plan_folder(&ix, "Rock", "Earth/Stone").unwrap();
+        assert!(p.edits.is_empty(), "{:?}", p.edits);
+        apply(&p).unwrap();
+        assert!(dir.join("Earth/Stone/Lava.md").exists());
+        assert_eq!(read(&dir, ".obsidian/bookmarks.json"), marks);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn is_link(path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    /// A note that links to what moves, swapped after the plan for a symlink to a file that
+    /// holds the same text, stops the rename before anything moves, as a changed note does:
+    /// nothing is half renamed, and nothing is written through the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_backlink_swapped_for_a_symlink_stops_the_whole_rename() {
+        let (dir, ix) = workspace_with(
+            "swapped-backlink",
             &[
-                ("Rock/Lava.md", "# Textures\n"),
-                ("Rocky.md", "x"),
-                (".obsidian/bookmarks.json", MARKS),
+                ("Rock/Lava.md", "x"),
+                ("Ash.md", "[[Lava]]\n"),
+                ("Kilauea.md", "[[Lava]]\n"),
+                (".git/Kilauea.md", "[[Lava]]\n"),
             ],
         );
         let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
-        assert_eq!(p.bookmarks.as_ref().map(|b| b.links), Some(1));
-        assert_eq!(p.links(), 0, "bookmarks aren't links");
-        apply(&p).unwrap();
-        assert_eq!(
-            read(&dir, ".obsidian/bookmarks.json"),
-            MARKS.replacen("\"Rock/Lava.md\"", "\"Rock/Basalt.md\"", 1),
-            "the unknown item that names the same path is left alone"
-        );
+        assert_eq!(p.links(), 2);
+        let link = dir.join("Kilauea.link");
+        std::os::unix::fs::symlink(dir.join(".git/Kilauea.md"), &link).unwrap();
+        std::fs::rename(&link, dir.join("Kilauea.md")).unwrap();
+        let err = format!("{:#}", apply(&p).unwrap_err());
+        assert!(err.contains("Kilauea.md is a symbolic link"), "{err}");
+        assert!(dir.join("Rock/Lava.md").exists(), "nothing moved");
+        assert!(!dir.join("Rock/Basalt.md").exists(), "nothing moved");
+        assert_eq!(read(&dir, "Ash.md"), "[[Lava]]\n", "no link updated");
+        assert_eq!(read(&dir, ".git/Kilauea.md"), "[[Lava]]\n");
+        assert!(is_link(&dir.join("Kilauea.md")), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `bookmarks.json` kept as a symlink is never touched by a rename: the rename goes
+    /// ahead, the link stays and what it leads to keeps the old path.
+    #[cfg(unix)]
     #[test]
-    fn bookmarks_follow_a_moved_folder_and_what_is_in_it() {
+    fn bookmarks_kept_as_a_symlink_are_never_touched() {
+        let marks = r#"{"items":[{"type":"file","ctime":1,"path":"Rock/Lava.md"}]}"#;
         let (dir, ix) = workspace_with(
-            "bookmarks-folder",
+            "bookmarks-linked",
             &[
-                ("Rock/Lava.md", "x"),
-                ("Rock/Deep/Magma.md", "y"),
-                ("Rocky.md", "z"),
-                (".obsidian/bookmarks.json", MARKS),
+                ("Rock/Lava.md", "# Textures\n"),
+                ("Rocky.md", "[[Lava]]\n"),
+                (".shared/bookmarks.json", marks),
             ],
         );
-        let p = plan_folder(&ix, "Rock", "Earth/Stone").unwrap();
-        assert_eq!(p.bookmarks.as_ref().map(|b| b.links), Some(3));
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        let at = dir.join(".obsidian/bookmarks.json");
+        std::os::unix::fs::symlink("../.shared/bookmarks.json", &at).unwrap();
+        let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
         apply(&p).unwrap();
-        let want = MARKS
-            .replacen("\"Rock/Lava.md\"", "\"Earth/Stone/Lava.md\"", 1)
-            .replace("\"Rock\"", "\"Earth/Stone\"")
-            .replace("\"Rock/Deep/Magma.md\"", "\"Earth/Stone/Deep/Magma.md\"");
-        assert_eq!(read(&dir, ".obsidian/bookmarks.json"), want);
-        assert!(
-            want.contains("\"Rocky.md\""),
-            "a name that only starts the same stays"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn bookmarks_changed_since_the_plan_stop_the_rename() {
-        let (dir, ix) = workspace_with(
-            "bookmarks-changed",
-            &[("Rock/Lava.md", "x"), (".obsidian/bookmarks.json", MARKS)],
-        );
-        let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Basalt.md").unwrap();
-        let theirs = MARKS.replace("\"colour\"", "\"color\"");
-        std::fs::write(dir.join(".obsidian/bookmarks.json"), &theirs).unwrap();
-        assert!(apply(&p).is_err());
-        assert!(dir.join("Rock/Lava.md").exists(), "nothing moved");
-        assert_eq!(read(&dir, ".obsidian/bookmarks.json"), theirs);
+        assert!(dir.join("Rock/Basalt.md").exists());
+        assert_eq!(read(&dir, "Rocky.md"), "[[Basalt]]\n");
+        assert_eq!(read(&dir, ".shared/bookmarks.json"), marks);
+        assert!(is_link(&at), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

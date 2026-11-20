@@ -579,6 +579,48 @@ fn files_write_does_not_reach_a_kind_another_owner_reads() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A permission is judged by the path's name, so the gateway never follows a symlink (#349):
+/// a link names one file and leads to another. Git keeps links, so a shared folder can hold a
+/// note that leads to Obsidian's settings, to git's config or to a canvas, and an owner's kind
+/// can lead to a note. Reading or writing through each is refused, whoever asks, and the file
+/// it leads to keeps its bytes. The links lead inside the test's own folder.
+#[cfg(unix)]
+#[test]
+fn no_permission_reaches_through_a_symlink() {
+    use Permission::{FilesRead, FilesWrite};
+    let (dir, root) = workspace("links");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
+    let mut core = Core::open(&root).unwrap();
+    let mut r = Registry::new(vec![
+        quiet("probe", &[], &["probe"]),
+        quiet("write", &[FilesRead, FilesWrite], &[]),
+    ]);
+    let (owner, write) = (ExtId(0), ExtId(1));
+    for (ext, link, target) in [
+        (write, "Inbox/Graph.md", ".obsidian/graph.json"),
+        (write, "Inbox/Git.md", ".git/config"),
+        (write, "Inbox/Board.md", "Welcome.canvas"),
+        (owner, "Inbox/Lava.probe", "Concepts/Lava.md"),
+    ] {
+        let to = format!("../{target}");
+        std::os::unix::fs::symlink(&to, root.join(link)).unwrap();
+        let bytes = std::fs::read(root.join(target)).unwrap();
+        let rev = cold_lava_engine::read::rev(&bytes);
+        let read = ask(&mut r, &mut core, ext, |h| h.read_file(link));
+        assert_eq!(read.map(drop), Err(Reason::Refused), "read {link}");
+        let written = ask(&mut r, &mut core, ext, |h| {
+            h.write_file(link, "lost\n", &rev)
+        });
+        assert_eq!(written.map(drop), Err(Reason::Refused), "write {link}");
+        let now = std::fs::read(root.join(target)).unwrap();
+        assert!(now == bytes, "{target} keeps its bytes");
+        let kept = std::fs::read_link(root.join(link)).unwrap();
+        assert_eq!(kept, Path::new(&to), "{link} is still a link");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The `trash-can` extension of this folder in a process of its own, installed in `dir` with
 /// `permissions` in place of its manifest's and the examples' `cold_lava.py` beside it.
 fn trash_can(dir: &Path, permissions: &str) -> Registry {

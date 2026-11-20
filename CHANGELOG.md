@@ -38,6 +38,18 @@ change commands, keys and file formats; patch versions only fix things.
   a binary in any release; it read the workspace around the gateway and carried its own
   `Cargo.lock` that every engine dependency had to be written into. The terminal UI is the one
   frontend. A graphical one, when it comes, starts from `crates/host/examples/headless.rs`.
+- **Breaking:** Obsidian's bookmarks (#373). cold-lava no longer reads or writes
+  `.obsidian/bookmarks.json`, Obsidian's saved list of notes, headings, folders and searches.
+  Gone with it: `'` (`bookmarks.open`, the bookmarks list), `B` (`note.bookmark`), `Ctrl-b` in
+  the search (`search.bookmark`), the `★` on bookmarked notes and folders in the tree, and
+  bookmarks following a rename, move or merge (the preview's "N bookmarks will follow it", the
+  `bookmark` lines of `cold-lava rename` and the `bookmarks` field of its `--json` plan).
+  Obsidian's file is left on disk untouched and keeps working in Obsidian; a rename made in
+  cold-lava no longer updates it, so a bookmark there of a note renamed in cold-lava shows as
+  missing in Obsidian. A key bound to one of the three commands under `[keys]` in
+  `config.toml` is skipped and reported as not a command (`cold-lava keys` says which).
+  A bookmark in cold-lava is the anchor on a passage (see Added); a
+  saved list is something an extension may offer.
 
 ### Fixed
 
@@ -65,6 +77,31 @@ change commands, keys and file formats; patch versions only fix things.
   folder renamed or moved went where the typed name pointed in that one, and could leave its
   workspace (a move to `Archive` made `Archive/` beside it); with an unrelated workspace it was
   refused with words that didn't say why ("that's the workspace itself").
+- A note or file kept in the workspace as a symlink is saved where the link leads. Before,
+  a save to the link (the whiteboard's, the menu's tag edit, `cold-lava task toggle` and
+  `item set`) put
+  a regular file where the link was, and the file the link led to kept its old text, so a
+  note linked from another folder silently became a copy. The link now stays, the file it
+  leads to is replaced atomically, and a save to a link that leads nowhere or to a folder is
+  refused, as is creating a file where such a link is (#349).
+- Extensions can no longer read or write through a symlink. Their file messages refuse a
+  path that is a link, or has a link on the way to it, as `refused`, wherever the link
+  leads. A new file by name passes over a link instead. Before, a link inside the workspace
+  was followed while permissions went by the path's name, so a note linked to `.git/config`,
+  a folder linked to `.git`, or a file of an extension's kind linked to a note let an
+  extension read, write or delete what its permissions didn't cover. **Breaking for
+  extensions** that read or wrote notes kept as links (#349).
+- A note or file that becomes a symlink while cold-lava runs (a `git pull` or a sync can
+  make one) is skipped, as the scan at start already skipped it, and a folder linked into the
+  workspace is no longer watched through the link. Before, the watcher read the link as a
+  note or file of its own, so its tasks showed twice, its copy went stale, and an item edit
+  on it, from an extension or the agenda, replaced the link with a copy. A note swapped for
+  a link after it was read is never written through: an item edit is refused there, and a
+  rename, a merge or a recipe (an extension's included) is refused whole, before it moves or
+  writes anything, saying the note is a link. A `.obsidian` folder
+  that is a link, to settings shared between workspaces or to a folder in the workspace, is
+  still watched where it leads, so changes to its graph colour groups are heard as before
+  (#349).
 
 ## [0.7.0] - 2026-11-20
 

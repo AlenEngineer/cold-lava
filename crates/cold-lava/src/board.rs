@@ -1225,7 +1225,8 @@ impl Board {
         }
         // Only over the bytes we last read: a change made since (that the merge above didn't
         // see, or a file that doesn't parse, so it couldn't be merged) is never overwritten.
-        match crate::read::Seen::kept(&self.path, self.disk.as_slice()).replace(&buf) {
+        let seen = crate::read::Seen::kept(&self.path, self.disk.as_slice());
+        match seen.replace_through_link(&buf) {
             Ok(()) => {
                 self.base = self.doc.clone();
                 self.disk = buf;
@@ -3812,6 +3813,26 @@ mod tests {
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(ids(&saved, "nodes"), ["a", "ours", "theirs"]);
         assert!(!b.unsaved);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_board_saved_through_a_symlink_lands_in_the_canvas_it_leads_to() {
+        let dir = std::env::temp_dir().join(format!("cold-lava-board-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Real")).unwrap();
+        let (target, path) = (dir.join("Real/B.canvas"), dir.join("B.canvas"));
+        std::fs::write(&target, canvas(vec![card("a", 0, "A")])).unwrap();
+        std::os::unix::fs::symlink("Real/B.canvas", &path).unwrap();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);
+        b.doc = parse(ours.as_bytes(), &path).unwrap().0;
+        b.save();
+        assert!(!b.unsaved);
+        let link = path.symlink_metadata().unwrap();
+        assert!(link.file_type().is_symlink(), "still a link");
+        assert_eq!(ids(&on_disk(&target), "nodes"), ["a", "ours"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

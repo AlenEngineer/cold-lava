@@ -1,5 +1,5 @@
 # A report never takes the place of what the user just did (#303's review, M2): a board that
-# another program writes while a bookmark's message shows is reported after the message's
+# another program writes while a duplicate's message shows is reported after the message's
 # time. tests/drive.rs writes Ashfall.canvas, with a card whose id is empty, which the engine
 # doesn't take.
 size 160x44
@@ -15,11 +15,11 @@ type krakatoa
 wait-for 1 notes
 keys enter
 wait-for Volcanoes/Krakatoa  reading
-keys B
-wait-for bookmarked Krakatoa · ' bookmarks
+keys D
+wait-for duplicated as Krakatoa 1 · R rename
 write Inbox/Tephra.canvas {"nodes":[{"id":"","type":"text","text":"- [ ] Sweep the roof","x":0,"y":0,"width":200,"height":80}],"edges":[]}\n
 wait 1500ms
-expect bookmarked Krakatoa · ' bookmarks
+expect duplicated as Krakatoa 1 · R rename
 wait-for 10s canvas couldn't read Inbox/Tephra.canvas: card 1 (id "") is left out
 wait-gone canvas couldn't read Inbox/Tephra.canvas
 keys esc
