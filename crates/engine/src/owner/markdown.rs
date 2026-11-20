@@ -16,6 +16,7 @@ use crate::style::{self, Lazy};
 use crate::tasks;
 use crate::workspace::{Ref, attachment_kind, clean_target};
 use chrono::NaiveDate;
+use std::collections::HashSet;
 use std::ops::Range;
 
 mod anchor;
@@ -152,15 +153,16 @@ const ATTEMPTS: u32 = 100;
 /// `items/edit`'s `anchor` on the item `req` names in the note at workspace-relative `note`
 /// whose text is `text` (#190): a `^name` written at the end of the item's last own line
 /// (`anchor::room`), the first name derived from its address (`identity::anchor`) that is
-/// written nowhere, in this note or where `taken` looks, then the note read back as it was
-/// but for that anchor, every other anchor where it was (`items::anchors`). An item that has
-/// one is answered as it is. Nothing is written.
+/// written nowhere, neither among `taken` (the names the workspace holds, read once for the
+/// op) nor in this note as it is now, then the note read back as it was but for that anchor,
+/// which is the item's and no other's, every other anchor where it was (`items::anchors`). An
+/// item that has one is answered as it is. Nothing is written.
 pub fn anchor(
     note: &str,
     text: &str,
     s: &Settings,
     req: &Edit,
-    taken: &dyn Fn(&str) -> bool,
+    taken: &HashSet<String>,
 ) -> Result<Made, Error> {
     let before = items(note, text, s);
     let k = (before.iter().position(|i| i.id == req.id)).ok_or_else(|| {
@@ -187,7 +189,8 @@ pub fn anchor(
         anchor::Room::Refused(why) => return Err(Error::new(Reason::Refused, why)),
         anchor::Room::At(line) => line,
     };
-    let written = |name: &str| taken(name) || text.contains(&format!("^{name}"));
+    let here: HashSet<&str> = anchor_names(text).collect();
+    let written = |name: &String| taken.contains(name) || here.contains(name.as_str());
     let mut names = (0..ATTEMPTS).map(|attempt| identity::anchor(&item.id, attempt));
     let name = names.find(|name| !written(name)).ok_or_else(|| {
         let message = format!(
@@ -206,6 +209,18 @@ pub fn anchor(
         return Err(edit::EditError::Anchor(change.to_string()).into());
     }
     Ok(made(new, true, &after[j]))
+}
+
+/// Every name written after a `^` in `text`: an anchor (`^name`), a link to one
+/// (`[[Note#^name]]`) or words, each a run of letters, digits and dashes, as Obsidian writes
+/// a block id. The engine names a new anchor with none of them (#190).
+pub fn anchor_names(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices('^').filter_map(move |(at, _)| {
+        let rest = &text[at + 1..];
+        let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+        let name = &rest[..end.unwrap_or(rest.len())];
+        (!name.is_empty()).then_some(name)
+    })
 }
 
 /// A note's tree as the anchor's read-back compares it, in the workspace's flavour.
@@ -739,6 +754,15 @@ mod tests {
     fn a_link_to_a_heading_is_not_a_tag() {
         let (_, tags) = links_and_tags("See [the agenda](#agenda), (#real) and #also.");
         assert_eq!(tags, ["real", "also"]);
+    }
+
+    /// A name is the whole run after a `^`, wherever it is written: `^k3q9x2-old` names
+    /// `k3q9x2-old`, not `k3q9x2`.
+    #[test]
+    fn anchor_names_are_whole_runs_after_a_caret() {
+        let text = "- a ^k3q9x2\nSee [[N#^k3q9x2-old|it]], ^ and ^^z, `^code` and 2^10.\n";
+        let names: Vec<&str> = anchor_names(text).collect();
+        assert_eq!(names, ["k3q9x2", "k3q9x2-old", "z", "code", "10"]);
     }
 
     #[test]

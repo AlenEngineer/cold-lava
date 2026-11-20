@@ -220,6 +220,7 @@ mod tests {
     use crate::owner::markdown::{self, After, Made};
     use crate::types::On;
     use serde_json::Value as Json;
+    use std::collections::HashSet;
 
     /// Types on every role a piece of a note can have, and on a reading of a block's text.
     const EVERY_ROLE: &str = r#"
@@ -277,7 +278,7 @@ fields.w = { capture = "w" }
     }
 
     fn anchor(text: &str, s: &Settings, item: &Item) -> Result<Made, Error> {
-        markdown::anchor("N.md", text, s, &ask(item), &|_| false)
+        markdown::anchor("N.md", text, s, &ask(item), &HashSet::new())
     }
 
     /// What anchoring the item writes, and the name it took: the one the answer reads back.
@@ -431,7 +432,7 @@ fields.w = { capture = "w" }
             ..ask(&item)
         };
         for req in [stale, gone] {
-            let Err(e) = markdown::anchor("N.md", text, &s, &req, &|_| false) else {
+            let Err(e) = markdown::anchor("N.md", text, &s, &req, &HashSet::new()) else {
                 panic!("anchored")
             };
             assert_eq!(e.reason, Reason::Changed, "{e}");
@@ -446,7 +447,7 @@ fields.w = { capture = "w" }
         let text = "- [ ] Pay rent\n";
         let item = at(text, &s, 1, "task");
         let (first, second) = (identity::anchor(&item.id, 0), identity::anchor(&item.id, 1));
-        let elsewhere = |name: &str| name == first;
+        let elsewhere = HashSet::from([first.clone()]);
         let Ok(made) = markdown::anchor("N.md", text, &s, &ask(&item), &elsewhere) else {
             panic!("refused")
         };
@@ -505,7 +506,7 @@ fields.w = { capture = "w" }
         let before = markdown::items(note, text, s);
         for (k, item) in before.iter().enumerate() {
             let at = format!("{note}:{} {}", item.line, item.data.kind());
-            let made = match markdown::anchor(note, text, s, &ask(item), &|_| false) {
+            let made = match markdown::anchor(note, text, s, &ask(item), &HashSet::new()) {
                 Err(e) if e.reason == Reason::Refused => {
                     assert!(!e.message.is_empty(), "{at}");
                     tally.refused += 1;

@@ -721,7 +721,8 @@ pub(crate) struct Written {
 
 /// Make the edit on disk: the note's owner makes its new text, which is written with
 /// `write::replace`, refused if the note changed since it was read. An anchor's name is
-/// checked against the whole workspace (`written_anywhere`), which only the core holds.
+/// checked against the names the whole workspace holds (`anchor_names`), which only the core
+/// can read.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
     let item = (workspace.notes.iter())
         .flat_map(|n| workspace.items(n))
@@ -739,10 +740,7 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
         .map_err(|e| Error::new(Reason::Io, format!("{}: {e}", path.display())))?;
     let settings = Settings::load(root);
     let made = match req.op {
-        Op::Anchor => {
-            let taken = |name: &str| written_anywhere(workspace, name);
-            markdown::anchor(&note, &text, &settings, req, &taken)
-        }
+        Op::Anchor => markdown::anchor(&note, &text, &settings, req, &anchor_names(workspace)),
         _ => {
             let style = crate::style::Lazy::new(|| workspace.style());
             markdown::edit(&note, &text, &settings, &style, item, req, tasks::today())
@@ -766,13 +764,15 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
     })
 }
 
-/// Whether `^name` is written anywhere the workspace holds text: in a note (an anchor, a link
-/// to one, words), or in what an owner gave for its file (a card's text, a file card's
-/// `subpath`). The engine names an anchor only with a name written nowhere yet (#190).
-fn written_anywhere(workspace: &Workspace, name: &str) -> bool {
-    let tag = format!("^{name}");
-    let given = |file: &Owned| serde_json::to_string(&file.given).is_ok_and(|g| g.contains(&tag));
-    (workspace.notes.iter()).any(|n| n.text.contains(&tag)) || workspace.owned.iter().any(given)
+/// Every anchor name the workspace holds (#190): each note's, as its Markdown owner reads them
+/// (an anchor, a link to one, words), and each owned file's, as its owner gave them
+/// (`owner::anchors`). The engine names a new anchor with none of them. Read once for an
+/// anchor op, whatever number of names it tries: one pass over the workspace's text, as
+/// finding the item already is.
+fn anchor_names(workspace: &Workspace) -> HashSet<String> {
+    let notes = (workspace.notes.iter()).flat_map(|n| markdown::anchor_names(&n.text));
+    let owned = workspace.owned.iter().flat_map(crate::owner::anchors);
+    notes.map(String::from).chain(owned).collect()
 }
 
 /// The answer to an edit, from the note as the core has read it since.

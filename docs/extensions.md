@@ -283,10 +283,15 @@ alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is 
 - **The name.** Six characters of `a-z0-9`, the form Obsidian gives the names it writes.
   `identity::anchor` hashes the item's address and an attempt number, so two processes
   anchoring one item derive one name: the second write is refused as `changed`, and its retry
-  finds the anchor there. The first name written nowhere yet is taken: in no note's text (an
-  anchor, a link to one, words), not in what an owner gave for its file (a card's text, a file
-  card's `subpath`), and not in the note as it is on disk. A copy made later (a duplicated note)
-  is not rewritten: in one note the first copy keeps the id, as for any `^id`.
+  finds the anchor there. The first name written nowhere yet is taken. A name is the whole run
+  of letters, digits and dashes after a `^`, and the names already written are read once for
+  the op, each by what reads its file: a note's text (an anchor, a link to one, words), by the
+  Markdown owner; what an owner gave for its file, its Markdown pieces (a card's text) by the
+  Markdown owner, the links it gave by the resolver (`Note#^name`), and a board's file cards'
+  `subpath`s by the canvas owner (`owner::anchors`); and the note as it is on disk. A piece's
+  plain words are characters, not Markdown, so a `^name` in them takes no name. A copy made
+  later (a duplicated note) is not rewritten: in one note the first copy keeps the id, as for
+  any `^id`.
 - **The read-back.** Nothing is written unless the note reads back with nothing new but the
   anchor. Its tree enters and leaves the same nodes and reads the name as a block id where it
   is written, so the line ends in text and not in a code block, a table row or a heading's
