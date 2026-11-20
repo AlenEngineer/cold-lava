@@ -29,7 +29,7 @@ That is cold-lava. The rest of the cast keeps the books safe.
 | The catalogue | The index: every item, link and backlink, kept from the translators' reports | `index.rs` |
 | The door, and its forms | The workspace gateway's messages | `gateway.rs`, `files.rs` |
 | The front desk | The extension host: checks every extension's badge (its permissions) before the librarian hears a word | `crates/host` |
-| The readers | The terminal app, extensions that only ask, and a first GUI; a language server to come | `crates/cold-lava`, `crates/gui` |
+| The readers | The terminal app and extensions that only ask; anyone may build another, a graphical app or a language server included | `crates/cold-lava` |
 
 **The librarian needs no book's language to check a translator's work.** When the librarian asks
 for a change to a page (`file/edit`, for an item edit or a rename), the translator answers with
@@ -61,7 +61,7 @@ desk (`core.rs`), and some aren't hired yet:
 | --- | --- | --- |
 | The front desk | checks an extension's badge before the librarian hears a word | `crates/host/src/host.rs` (split out of one file in C1, #312) |
 | The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
-| The edit desk | carries an edit to a translator, waits for its answer and reads it back | `owner/edits.rs` holds the edit; the waiting and checking still sit in `core.rs` (track C step C2) |
+| The edit desk | carries an edit to a translator, waits for its answer and reads it back, hands the librarian the page to swap in, and tells whoever asked once the librarian says how the swap went | `owner/edits.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
 | The shelver | shelves, moves and trashes books, and keeps their shelf marks (symlinks; see References), reading no language | partly at its desk: `write.rs` (`create`, `move_file`) and `trash.rs`; the door, the scan and the watcher pass every shelf mark by (`files::resolve`, `workspace::first_link`), and a book with two shelf marks is #357 |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
@@ -109,17 +109,23 @@ never lends it to a reader (an extension).
   (#310).
 - Not every reader comes through the door yet: the terminal app still reads the index and writes
   some files itself (`crates/cold-lava/tests/one_door.rs` lists each), and track B (#270)
-  closes those. The GUI scans the workspace itself, beside the core, and is outside that test's
-  lists (#277 deletes it until the GUI is real).
-- The librarian keeps some state machines that belong to clerks of their own: the owned-file edit
-  and rename, and the nine places it both sends events to subscribers and keeps them for `poll`.
-  Track C (#271) moves them out, so
+  closes those.
+- The librarian keeps a state machine that belongs to a clerk of its own: the nine places it
+  both sends events to subscribers and keeps them for `poll`. Track C (#271) moves it out, so
   the librarian only calls on its clerks in order.
 - Features live inside the library: tasks, daily notes, recipes, and the shapes and bindings
-  that draw data (`shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`) share the engine's crate with
-  the core, which is why the engine depends on `canvas`. They are meant to be readers that come
-  through the door like any other: the rule and its test first, then the split into crates
-  (both #226, decided in #185), after which the core depends on nothing of the project's.
+  (`shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`) share the engine's crate with the core, which
+  is why the engine depends on `canvas`. They are meant to be readers that come through the
+  door like any other: the rule and its test first, then the split into crates (both #226,
+  decided in #185), after which the core depends on nothing of the project's.
+- **Shapes, bindings and the shape editor are paused** (decided 2026-11-20, #375). Drawings
+  bound to data are still the design (foundations 11 and 12, Frontends 5 and 6). What is
+  missing is a translator: a placed shape with its bindings is a new kind of book, and every
+  book needs a translator that reads its language. Nobody has been hired for this one, so the
+  library's story doesn't hold for it yet. Until one is, nothing new is built on them
+  (`crates/canvas`, `shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`, the shape editor), and the
+  code stays as it is. #375 says what must be decided to unpause. The whiteboard's own
+  refactors (track F, #273) and its undo fix (#348) go ahead.
 - No translator checks a reference's place half yet, and none declares its place forms. The
   design proposed for it: Markdown declares headings and block anchors, a canvas card ids, a CSV
   file row keys, so the librarian can tell a reference that points nowhere from one it can't
@@ -148,8 +154,8 @@ never lends it to a reader (an extension).
   (#357).
 - **The bookmark** is placed but not yet followed. An extension can stick a name on an item
   once (`items/edit` with `{"op": "anchor"}` writes a `^name`, #335), and the name survives a
-  reword. Finding the item by its name after its note moves (#190, PR 2) and bindings that
-  bookmark what they name (PR 3) are still ahead.
+  reword. Finding the item by its name after its note moves (#190, PR 2) is still ahead;
+  bindings that bookmark what they name (PR 3) wait with the shapes, which are paused (above).
 - Characters decided but not hired yet: **the archivist**, who keeps every page the librarian
   replaces, outside the workspace (#305); **the logbook**, where every change is written down
   with who asked and which translator wrote it, so any change can be undone, even after a
@@ -170,7 +176,7 @@ where it lives. Where the code doesn't meet a rule yet, the line says so.
 - **One door.** Every program reaches the engine through the gateway's messages, and every
   extension behind the host's permission check (`gateway.rs`, `files.rs`, `crates/host`).
   `crates/cold-lava/tests/one_door.rs` lists what still goes around it, and the lists only
-  shrink; the GUI, which scans the workspace itself, is outside that test (#277).
+  shrink.
 - **The core knows data, not syntax.** Formats belong to owners (`owner/`); the core holds
   items, links, types, identity (`identity.rs`), the index and safe writes. Not yet for
   Markdown, which the core still reads itself
@@ -184,10 +190,10 @@ where it lives. Where the code doesn't meet a rule yet, the line says so.
 
 ## Code map
 
-Six crates in the Cargo workspace and the GUI beside it. The dependency direction is frontends →
+Six crates in the Cargo workspace. The dependency direction is frontends →
 host → views → engine → canvas: the engine depends only on `canvas` (for its shapes and
-bindings, a feature still in its crate: see above), which depends on nothing, and `editor`
-stands alone.
+bindings, a paused feature still in its crate: see above), which depends on nothing, and
+`editor` stands alone.
 
 - **`crates/engine`**, the library: no user interface. Start with `core.rs` (the librarian),
   `owner/` (the translators: `markdown.rs`, `canvas.rs`, and `given.rs` for an extension's),
@@ -205,7 +211,6 @@ stands alone.
   (`main.rs`, `say.rs`). `tests/` holds the drive scripts and the one-door guard.
 - **`crates/canvas`**, geometry with no dependencies: shapes, regions, rasterizing, hit testing.
 - **`crates/editor`**, the headless text editor to come.
-- **`crates/gui`**, a first Tauri window, outside the Cargo workspace.
 - **`examples/extensions/`**: `open-tasks` (a reader and a notice board: open tasks as a list),
   `csv-table` (a translator, a notice board and a coiner of words: CSV files as tables, with a
   type of its own) and `kanban-board` (a reader and a notice board: Obsidian Kanban boards as

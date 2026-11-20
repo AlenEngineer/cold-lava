@@ -32,6 +32,13 @@ change commands, keys and file formats; patch versions only fix things.
   On macOS, build from source (`cargo install --path crates/cold-lava`); it isn't tested there
   until macOS checks come back.
 
+### Removed
+
+- The graphical window stub, `crates/gui` (#277). It was never built by CI and never shipped as
+  a binary in any release; it read the workspace around the gateway and carried its own
+  `Cargo.lock` that every engine dependency had to be written into. The terminal UI is the one
+  frontend. A graphical one, when it comes, starts from `crates/host/examples/headless.rs`.
+
 ### Fixed
 
 - `cold-lava --help | head` and every other command that prints to a reader that stops early

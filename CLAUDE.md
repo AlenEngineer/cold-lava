@@ -20,7 +20,9 @@ The picture, told as a library with translators and a librarian, and a map of th
 `ARCHITECTURE.md`. The ideas the project is built on are `docs/foundations.md`: read it before
 designing anything, and where it and another document disagree about an idea, it is right. The order of work is
 the first section of roadmap issue #100: the engine-facing work first (one
-path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
+path for each thing, one door, types and identity), the notebook's UX last. cold-lava's own
+editor comes before any language server: `cold-lava lsp` was dropped from the order on
+2026-11-20, and stays a reader anyone may build later through the same door.
 
 **How code is built** is the last section of `docs/foundations.md` ("Tools, called by a
 simple loop, all the way down"): every unit is a caller (it only calls its tools in order) or
@@ -59,7 +61,7 @@ drive tests) run nowhere.
 
 ## Architecture
 
-A Cargo workspace of six crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
+A Cargo workspace of six crates. The version lives in the root `Cargo.toml` under
 `[workspace.package]`; `example-workspace/`, `docs/` and `scripts/` stay at the root.
 
 - `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
@@ -86,7 +88,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   "The frontend").
 - `crates/editor`: `cold-lava-editor`, cold-lava's own text editor (the main writing surface to come,
   docs/engine.md "The notebook"; other editors are extensions), headless (text, cursors, edits,
-  undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
+  undo; no drawing) so every frontend renders it alike. Empty until the document view edits
   in place. Saves go through the engine's safe writes.
 - `crates/canvas`: `cold-lava-canvas`, the canvas engine of `docs/shapes.md`, headless and with
   no dependencies. Shapes are parts in their own unit box, placed by the user (move, stretch,
@@ -103,14 +105,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   UI crates (`cargo tree -p cold-lava-canvas`). Labels (`label` parts, text at a point) are
   placed by `fit::anchored` so they never overlap; `draw.rs` paints a whole placed shape and
   previews it as text. Shape definitions are read by the engine (`shapes.rs`), not here, so the
-  crate keeps no dependencies. Nothing places shapes yet; that comes after scenes (#91).
-- `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
-  workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
-  a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
-  webkit2gtk-4.1). The terminal UI stays the main frontend. A new engine dependency must also
-  go into `crates/gui/Cargo.lock`: `cargo metadata --format-version 1 --manifest-path
-  crates/gui/Cargo.toml >/dev/null` resolves and writes it without building, and CI's "GUI lock
-  up to date" step fails while it is stale.
+  crate keeps no dependencies. **Paused 2026-11-20, no new work** on shapes, bindings and the
+  shape editor (this crate, `shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`, `shape_editor.rs`).
+  Foundations 11 and 12 still describe the design; what is missing is an owner for a placed
+  shape's data, a new kind of book (ARCHITECTURE.md, "Where the story is ahead of the code";
+  #375 says what must be decided to unpause). The whiteboard's own refactors (track F) go
+  ahead.
 
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 
@@ -145,9 +145,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `read.rs` holds `Seen`, what was at a path when it was read, so a later write or delete can
   be refused if it changed since. Every write or delete that checks for a change goes through
   it (`files.rs`, `trash.rs`, `merge.rs`, `rename.rs`'s `Written` and `apply`, set-field, the
-  tick, bookmarks, the shapes file, the board's save and the menu's tag edit), except the ones
-  in `core.rs`, `gateway.rs`'s item edit, `rename::check_unchanged` and `rename::owned_edit`,
-  which move next (track A step A5, #265). `Seen::file` reads a file's bytes through a
+  tick, bookmarks, the shapes file, the board's save, the menu's tag edit, and the owned
+  file's edit and the relink check the core makes for the edit desk), except `gateway.rs`'s
+  item edit, `rename::check_unchanged` and `rename::owned_edit`, which move next (track A step
+  A5, #265). `Seen::file` reads a file's bytes through a
   symlink, as a write does; `Seen::kept` holds bytes read earlier or just written, checked as
   `file` is; `Seen::entry` reads a file, a folder by its listing (`inside`) or a symlink by
   where it points, never following one. `unchanged` reads it again the way it was seen;
@@ -232,9 +233,14 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   and change notes through the owner. An extension
   can own another kind: `owner/given.rs` reads its `file/read` answer (pieces, Markdown
   pieces, typed items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
-  `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` holds an edit while
-  its owner answers `file/edit` and reads the new text back. `Core::set_owners`, `take_reads`,
-  `take_file_edits` and `file_given` run it and never wait; an `items/edit` of an owned file
+  `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` (the edit desk, a tool
+  with private state) holds an edit while its owner answers `file/edit` and reads the new text
+  back, then hands the core what to write over what (`ToWrite`: the file as the core read it,
+  a `read::Seen`), and answers whoever asked once the core says how the write went
+  (`Edits::wrote`). The owners' answers for a rename, merge or recipe wait there under its
+  ticket (`Edits::relinked`). The desk reads and writes no file and tells no subscriber: the
+  core does. `Core::set_owners`, `take_reads`, `take_file_edits` and `file_given` run it and
+  never wait; an `items/edit` of an owned file
   is answered `Later` (`take_edited`). Owned files are `Workspace::owned`, beside the notes,
   and the index, the gateway, the graph and tidy read them too. `owner/canvas.rs` is the
   engine's `.canvas` owner (`owner::BUILT_IN`). It speaks the alphabet: each card is a piece
@@ -430,21 +436,24 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   folder on the way to it may be one (`resolve_entry`). A
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
-  `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo,
-  bookmarks) follow the pattern that section ends with.
+  `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo)
+  follow the pattern that section ends with. Obsidian's saved list (`bookmarks.rs`) is not one
+  of them: it is to be removed (#373), since a bookmark in cold-lava's story is the anchor on a
+  passage (#190).
 - `tasks_settings.rs`: Obsidian Tasks settings (statuses, global filter), a leaf that `items`,
   `tasks`, `style` and the owners read (`tasks.rs` re-exports it for `matcher.rs`, #343).
 - `tasks.rs`, `daily.rs`: `agenda` and `toggle` on items of the built-in `task` type
   (`types/task.toml`, read by `Task::of`); Daily notes settings, moment.js date formats.
-- `shapes.rs`: shape definitions (docs/shapes.md): `[[shapes]]` and `[glyphs]` from the
-  built-in file (`shapes/built-in.toml`: text, rect, circle, line, arrow, card, sticky, table,
-  venn2, the glyphs), extensions' manifests, config.toml and `.cold-lava/shapes.toml`, in the
-  order types load (`Origin`, `origin.rs`). Checked at load, a broken one dropped with its error;
-  each is built into a `cold_lava_canvas::Shape` (nested shapes flattened, anchors resolved,
-  glyphs looked up). Built-ins are TOML: add a shape by writing it there, never a match arm;
-  extend the format when it can't say something. `cold-lava shapes` lists and `--render`s them.
-  `shapes/file.rs` writes one shape back as its `[[shapes]]` block, keeping the rest of the file
-  as text and refusing a file changed since it was read; `with_draft` loads an unsaved one.
+- `shapes.rs` (paused, see `crates/canvas`). Shape definitions (docs/shapes.md): `[[shapes]]`
+  and `[glyphs]` from the built-in file (`shapes/built-in.toml`: text, rect, circle, line,
+  arrow, card, sticky, table, venn2, the glyphs), extensions' manifests, config.toml and
+  `.cold-lava/shapes.toml`, in the order types load (`Origin`, `origin.rs`). Checked at load, a
+  broken one dropped with its error; each is built into a `cold_lava_canvas::Shape` (nested
+  shapes flattened, anchors resolved, glyphs looked up). Built-ins are TOML: add a shape by
+  writing it there, never a match arm; extend the format when it can't say something.
+  `cold-lava shapes` lists and `--render`s them. `shapes/file.rs` writes one shape back as its `[[shapes]]`
+  block, keeping the rest of the file as text and refusing a file changed since it was read;
+  `with_draft` loads an unsaved one.
 - `bind.rs`, `shows.rs`: bindings (docs/shapes.md, "Bindings, as built"). A `Binding` is a
   placed shape's inputs bound to `Source`s (a gateway query, a note, labels, text), followed
   with `items/subscribe` as `canvas` (`heard`, `noticed`), and answers what it shows now
@@ -458,6 +467,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `rel_path.rs`: a path as the workspace names it (relative to its root, `/` between
+  folders). A leaf. The menu asks it; the engine's and the binary's other copies of the rule
+  are listed on #365.
 - `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
   digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
   each two, hashed) and a rev of text (`line_id`). A leaf. Each owner makes its own key: a
@@ -539,8 +551,8 @@ another host or check in a frontend:
 - `tests/permissions.rs` runs the `open-tasks` example with and without `items.edit` and the
   file permissions in-process, with no terminal. `examples/headless.rs` is the least a
   frontend writes to host extensions (open a `Core`, `Registry::load`, tell them the
-  workspace, each frame hand them the core's news and apply or ignore their `Effect`s): the
-  GUI and the language server start from it.
+  workspace, each frame hand them the core's news and apply or ignore their `Effect`s): a
+  GUI, or any other frontend, would start from it.
 
 **Extensions in the terminal UI** (`crates/cold-lava/src/ext.rs`, `ext/`): what only this
 frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `ext::view`).
@@ -614,14 +626,15 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   table). `agenda.rs` is the agenda as a built-in extension: it follows tasks with
   `items/query` and `items/subscribe`, sends its list with `view/open` and ticks with
   `items/edit toggle` (`A`, `agenda.open`, a core command the menu hands to it).
-- `shape_editor.rs`: the shape editor (`S` on the whiteboard, a layer over it with no loop of
-  its own: `Board::editor` gets the board's keys and mouse and the core's news and is drawn
-  instead of it, so the menu's loop goes on and extensions are answered while it is open): draws a
-  shape and saves the same `[[shapes]]` TOML into the workspace's `.cold-lava/shapes.toml`.
-  `shape_editor/draft.rs` is the editing on the `Definition` itself (grips, bending sides into
-  `curve`s, regions read from what contains a click, anchors, a selection made into one shape),
-  with no drawing; the guides are `snap.rs` in the canvas crate; the block written back as text,
-  everything else in the file kept byte for byte, is `shapes/file.rs` in the engine.
+- `shape_editor.rs` (paused, see `crates/canvas`). The shape editor (`S` on the whiteboard, a
+  layer over it with no loop of its own: `Board::editor` gets the board's keys and mouse and the
+  core's news and is drawn instead of it, so the menu's loop goes on and extensions are answered
+  while it is open): draws a shape and saves the same `[[shapes]]` TOML into the workspace's
+  `.cold-lava/shapes.toml`. `shape_editor/draft.rs` is the editing on the `Definition` itself
+  (grips, bending sides into `curve`s, regions read from what contains a click, anchors, a
+  selection made into one shape), with no drawing; the guides are `snap.rs` in the canvas crate;
+  the block written back as text, everything else in the file kept byte for byte, is
+  `shapes/file.rs` in the engine.
 - `main.rs`: CLI. `term.rs`: suspend/editor/Obsidian-URI helpers. `config.rs`: `config.toml`.
 - `cells.rs`: the only module that sets a symbol on a screen cell (`cells::put`,
   `put_char`). Text drawn through ratatui (`Span`, `Line`, `Paragraph`, `set_string`) loses
@@ -660,7 +673,13 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   with vt100, cursor-position queries answered, the mouse clicked, dragged and scrolled.
   `graph.drive` and `board.drive` pin the graph and the whiteboard.
 
-## Rules that keep it compatible with Obsidian
+## Sharing files with other programs
+
+cold-lava works on files that other programs (Obsidian, an editor, git) edit at the same time.
+How another product reads them is a profile a workspace can choose, never the core's
+definition; Obsidian's reading is the default profile today, until a workspace can choose
+another (foundation 7, #235, #236). These rules keep the files safe for every program that
+shares them, and the Obsidian ones are that profile's:
 
 - Never overwrite edits made elsewhere: canvases three-way merge (`board.rs::merge3`), renames
   and task toggles check the file didn't change since it was read.
@@ -735,11 +754,13 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - The direction and the order of work were decided on 2026-11-11 (`docs/engine.md`, "Direction
-  and order"): finish the half-done migrations, one door into the engine, `cold-lava lsp`,
-  types and identity, the terminal views, drawings, then the notebook. On 2026-11-12 the
-  refactor tracks were put in front of the features they underlie. **Roadmap issue #100 is the
-  one list of open work**: every open issue is on it exactly once, in order. When you open
-  an issue, add it there; an order written anywhere else is history.
+  and order"): finish the half-done migrations, one door into the engine, `cold-lava lsp`
+  (dropped below), types and identity, the terminal views, drawings (paused on 2026-11-20,
+  #375), then the notebook. On 2026-11-12 the refactor tracks were put in front of the
+  features they underlie. On 2026-11-20 `cold-lava lsp` was dropped from the order (#195): the
+  notebook, cold-lava's own editor, comes first, and a language server is not planned.
+  **Roadmap issue #100 is the one list of open work**: every open issue is on it exactly once,
+  in order. When you open an issue, add it there; an order written anywhere else is history.
 - The `Extension` interface exists and Neovim runs on it, and so do the agenda, the table and
   the graph (over the view gateway). The menu, the page and the whiteboard stay built into the
   frontend: they are not meant to become extensions.

@@ -61,11 +61,35 @@ pub struct Through {
     pub after: Option<Given>,
 }
 
-/// Put the owners' answers (`Core::take_relinked`) into `edits`, by file.
+/// An owner's answer for `file` as `Core::take_relinked` hands it out, for `answered`: the
+/// file's new text, and what its owner read in it. Nothing else in it is set.
+pub(crate) fn answer(file: String, new_text: String, after: Given) -> FileEdit {
+    FileEdit {
+        file,
+        path: PathBuf::new(),
+        old_text: String::new(),
+        new_text,
+        links: 0,
+        changes: Vec::new(),
+        owned: Some(Through {
+            owner: String::new(),
+            changes: Vec::new(),
+            given: None,
+            after: Some(after),
+        }),
+    }
+}
+
+/// Put the owners' answers (`Core::take_relinked`) into `edits`, by file: each file's new text,
+/// and what its owner read in it.
 pub fn answered(edits: &mut [FileEdit], answers: Vec<FileEdit>) {
     for a in answers {
-        if let Some(e) = edits.iter_mut().find(|e| e.file == a.file) {
-            *e = a;
+        let Some(e) = edits.iter_mut().find(|e| e.file == a.file) else {
+            continue;
+        };
+        e.new_text = a.new_text;
+        if let Some(o) = e.owned.as_mut() {
+            o.after = a.owned.and_then(|answer| answer.after);
         }
     }
 }

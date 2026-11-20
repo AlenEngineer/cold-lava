@@ -16,9 +16,9 @@
 //! `file/edit`), and the answer comes in through `Core::file_given` or `Core::file_edited`,
 //! where it is read back before anything is written (`edits`). An extension answers later,
 //! from its own process (`given`, `cache`). `.canvas` files have the engine's other owner
-//! (`canvas`), which answers the same requests in the same terms, inside the call: the core
-//! asks through `give` and `edit` below, and an answer from either kind of owner is handled by
-//! the same code from there on.
+//! (`canvas`), which answers the same requests in the same terms, inside the call: the core and
+//! its edit desk ask through `give` and `edit` below, and an answer from either kind of owner is
+//! handled by the same code from there on.
 
 pub mod answer;
 pub mod cache;
