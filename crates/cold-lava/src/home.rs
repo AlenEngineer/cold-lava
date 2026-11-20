@@ -20,10 +20,12 @@ use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
 use crate::index::Backlink;
+use crate::line_input::{self, CtrlU};
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::notice::Notice;
 use crate::paths::{self, config_dir, home_dir};
+use crate::pick_list::{self, Picked};
 use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
@@ -2417,7 +2419,6 @@ impl Home {
         if matches!(self.mode, Mode::Board) {
             return self.board_key(k, terminal);
         }
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Keys go straight to the pane's program, except pane.leave (back to the menu).
         if self.focus == Focus::Pane && self.reader.is_none() {
             match (self.pane_keys.get(k), self.pane.as_mut()) {
@@ -2526,25 +2527,19 @@ impl Home {
                     }
                     KeyCode::Down => self.select_row(self.nsel + 1),
                     KeyCode::Up => self.select_row(self.nsel.saturating_sub(1)),
-                    KeyCode::Backspace => {
-                        self.filter.pop();
-                        self.nsel = 0;
-                        self.refresh_rows();
-                        self.select_row(0);
-                    }
-                    KeyCode::Char('u') if ctrl => {
-                        self.filter.clear();
-                        self.nsel = 0;
-                        self.refresh_rows();
-                    }
-                    KeyCode::Char(_) if ctrl => {}
-                    KeyCode::Char(c) => {
-                        self.filter.push(c);
-                        self.nsel = 0;
-                        self.refresh_rows();
-                        self.select_row(0);
-                    }
-                    _ => {}
+                    _ => match line_input::key(&mut self.filter, k, CtrlU::Clears) {
+                        // Unlike typing, Ctrl-U leaves the note shown as it is (#365).
+                        Some(line_input::Edit::Cleared) => {
+                            self.nsel = 0;
+                            self.refresh_rows();
+                        }
+                        Some(_) => {
+                            self.nsel = 0;
+                            self.refresh_rows();
+                            self.select_row(0);
+                        }
+                        None => {}
+                    },
                 }
                 return Ok(());
             }
@@ -2555,9 +2550,6 @@ impl Home {
             } => {
                 match k.code {
                     KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Backspace => {
-                        name.pop();
-                    }
                     KeyCode::Tab | KeyCode::Down if !templates.is_empty() => {
                         *template = match *template {
                             None => Some(0),
@@ -2572,9 +2564,6 @@ impl Home {
                             Some(i) => Some(i - 1),
                         };
                     }
-                    KeyCode::Char('u') if ctrl => name.clear(),
-                    KeyCode::Char(_) if ctrl => {}
-                    KeyCode::Char(c) => name.push(c),
                     KeyCode::Enter => {
                         let text = name.trim().to_string();
                         let template = template.map(|i| templates[i].0.clone());
@@ -2583,19 +2572,15 @@ impl Home {
                             self.create_note(&text, template.as_deref())?;
                         }
                     }
-                    _ => {}
+                    _ => {
+                        line_input::key(name, k, CtrlU::Clears);
+                    }
                 }
                 return Ok(());
             }
             Mode::NewFolder(name) => {
                 match k.code {
                     KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Backspace => {
-                        name.pop();
-                    }
-                    KeyCode::Char('u') if ctrl => name.clear(),
-                    KeyCode::Char(_) if ctrl => {}
-                    KeyCode::Char(c) => name.push(c),
                     KeyCode::Enter => {
                         let text = name.trim().to_string();
                         self.mode = Mode::Normal;
@@ -2603,19 +2588,15 @@ impl Home {
                             self.create_folder(&text);
                         }
                     }
-                    _ => {}
+                    _ => {
+                        line_input::key(name, k, CtrlU::Clears);
+                    }
                 }
                 return Ok(());
             }
             Mode::AddWorkspace(name) => {
                 match k.code {
                     KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Backspace => {
-                        name.pop();
-                    }
-                    KeyCode::Char('u') if ctrl => name.clear(),
-                    KeyCode::Char(_) if ctrl => {}
-                    KeyCode::Char(c) => name.push(c),
                     KeyCode::Enter => {
                         let text = name.trim().to_string();
                         self.mode = Mode::Normal;
@@ -2623,7 +2604,9 @@ impl Home {
                             self.add_workspace(&text);
                         }
                     }
-                    _ => {}
+                    _ => {
+                        line_input::key(name, k, CtrlU::Clears);
+                    }
                 }
                 return Ok(());
             }
@@ -3394,7 +3377,6 @@ impl Home {
         else {
             return;
         };
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let (mut q, mut s, merging) = (query.clone(), *sel, merging.clone());
         if let Some(source) = merging.as_deref()
             && k.code == KeyCode::Enter
@@ -3416,16 +3398,6 @@ impl Home {
         let total = self.switcher_targets(&q, merging.as_deref()).len() + files + create as usize;
         match k.code {
             KeyCode::Esc => return self.close_overlay(),
-            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(total.saturating_sub(1)),
-            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
-                s = (s + 1).min(total.saturating_sub(1))
-            }
-            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
-            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
-            KeyCode::Backspace => {
-                q.pop();
-                s = 0;
-            }
             KeyCode::Enter => {
                 let hits = self.switcher_hits(&q);
                 let file = s.checked_sub(hits.len()).and_then(|f| {
@@ -3461,11 +3433,11 @@ impl Home {
                 self.back_to_editor = false;
                 return;
             }
-            KeyCode::Char(c) if !ctrl => {
-                q.push(c);
-                s = 0;
+            _ => {
+                if pick_list::key(&mut q, &mut s, total, k, CtrlU::Ignored) == Some(Picked::Typed) {
+                    s = 0;
+                }
             }
-            _ => {}
         }
         self.mode = Mode::Switcher {
             query: q,
@@ -3509,26 +3481,12 @@ impl Home {
         let Mode::Outline { query, sel } = &self.mode else {
             return;
         };
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let (mut q, mut s) = (query.clone(), *sel);
         let hits = self.outline_hits(&q);
-        let last = hits.len().saturating_sub(1);
         match k.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 return;
-            }
-            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(last),
-            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => s = (s + 1).min(last),
-            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
-            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
-            KeyCode::Backspace => {
-                q.pop();
-                s = self.outline_start(&q);
-            }
-            KeyCode::Char('u') if ctrl => {
-                q.clear();
-                s = self.outline_start(&q);
             }
             KeyCode::Enter => {
                 self.mode = Mode::Normal;
@@ -3537,11 +3495,13 @@ impl Home {
                 }
                 return;
             }
-            KeyCode::Char(c) if !ctrl => {
-                q.push(c);
-                s = self.outline_start(&q);
+            _ => {
+                if pick_list::key(&mut q, &mut s, hits.len(), k, CtrlU::Clears)
+                    == Some(Picked::Typed)
+                {
+                    s = self.outline_start(&q);
+                }
             }
-            _ => {}
         }
         self.mode = Mode::Outline { query: q, sel: s };
     }
@@ -3612,19 +3572,13 @@ impl Home {
         let Mode::Bookmarks { query, sel } = &self.mode else {
             return;
         };
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let (mut q, mut s) = (query.clone(), *sel);
         let rows = self.bookmark_rows(&q);
-        let last = rows.len().saturating_sub(1);
-        s = s.min(last);
+        s = s.min(rows.len().saturating_sub(1));
         let selected = rows.get(s).map(|(b, _)| b.clone());
         let group = selected.as_ref().filter(|b| b.target == Target::Group);
         match k.code {
             KeyCode::Esc => return self.close_overlay(),
-            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(last),
-            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => s = (s + 1).min(last),
-            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
-            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
             KeyCode::Right if group.is_some() => {
                 self.folded.remove(&group.unwrap().at);
             }
@@ -3643,14 +3597,6 @@ impl Home {
                     self.remove_bookmark(&b);
                 }
             }
-            KeyCode::Backspace => {
-                q.pop();
-                s = 0;
-            }
-            KeyCode::Char('u') if ctrl => {
-                q.clear();
-                s = 0;
-            }
             KeyCode::Enter => {
                 let Some(b) = selected else { return };
                 if b.target == Target::Group {
@@ -3661,11 +3607,13 @@ impl Home {
                     return self.open_bookmark(b);
                 }
             }
-            KeyCode::Char(c) if !ctrl => {
-                q.push(c);
-                s = 0;
+            _ => {
+                if pick_list::key(&mut q, &mut s, rows.len(), k, CtrlU::Clears)
+                    == Some(Picked::Typed)
+                {
+                    s = 0;
+                }
             }
-            _ => {}
         }
         self.mode = Mode::Bookmarks { query: q, sel: s };
     }
@@ -3818,27 +3766,12 @@ impl Home {
         let Mode::Palette { query, sel } = &mut self.mode else {
             return Ok(());
         };
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let (mut q, mut s) = (query.clone(), *sel);
         let total = self.palette_hits(&q).len();
         match k.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 return Ok(());
-            }
-            KeyCode::Down | KeyCode::Tab => s = (s + 1).min(total.saturating_sub(1)),
-            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
-                s = (s + 1).min(total.saturating_sub(1))
-            }
-            KeyCode::Up | KeyCode::BackTab => s = s.saturating_sub(1),
-            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => s = s.saturating_sub(1),
-            KeyCode::Backspace => {
-                q.pop();
-                s = 0;
-            }
-            KeyCode::Char('u') if ctrl => {
-                q.clear();
-                s = 0;
             }
             KeyCode::Enter => {
                 let action = self.palette_hits(&q).get(s).map(|m| m.command.action);
@@ -3848,11 +3781,11 @@ impl Home {
                     None => Ok(()),
                 };
             }
-            KeyCode::Char(c) if !ctrl => {
-                q.push(c);
-                s = 0;
+            _ => {
+                if pick_list::key(&mut q, &mut s, total, k, CtrlU::Clears) == Some(Picked::Typed) {
+                    s = 0;
+                }
             }
-            _ => {}
         }
         self.mode = Mode::Palette { query: q, sel: s };
         Ok(())
@@ -3881,7 +3814,6 @@ impl Home {
         if self.keys.get(k) == Some(MenuCommand::Core(MenuAction::BookmarkSearch)) {
             return self.bookmark_search();
         }
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let n = self.result_rows.len();
         let page = 10;
         let Mode::Search { query, sel } = &mut self.mode else {
@@ -3889,22 +3821,8 @@ impl Home {
         };
         match k.code {
             KeyCode::Esc => self.close_overlay(),
-            KeyCode::Down | KeyCode::Tab => *sel = (*sel + 1).min(n.saturating_sub(1)),
-            KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
-                *sel = (*sel + 1).min(n.saturating_sub(1))
-            }
-            KeyCode::Up | KeyCode::BackTab => *sel = sel.saturating_sub(1),
-            KeyCode::Char('p') | KeyCode::Char('k') if ctrl => *sel = sel.saturating_sub(1),
             KeyCode::PageDown => *sel = (*sel + page).min(n.saturating_sub(1)),
             KeyCode::PageUp => *sel = sel.saturating_sub(page),
-            KeyCode::Backspace => {
-                query.pop();
-                self.run_search();
-            }
-            KeyCode::Char(c) if !ctrl => {
-                query.push(c);
-                self.run_search();
-            }
             KeyCode::Enter => {
                 let s = *sel;
                 let target = self.result_rows.get(s).and_then(|row| {
@@ -3926,7 +3844,11 @@ impl Home {
                 }
                 self.back_to_editor = false;
             }
-            _ => {}
+            _ => {
+                if pick_list::key(query, sel, n, k, CtrlU::Ignored) == Some(Picked::Typed) {
+                    self.run_search();
+                }
+            }
         }
     }
 
@@ -4007,33 +3929,25 @@ impl Home {
                 moving,
             } => match k.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Backspace => {
-                    input.pop();
-                }
-                KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => input.clear(),
-                KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
-                KeyCode::Char(c) => input.push(c),
                 KeyCode::Enter => {
                     let (path, input, moving) = (path.clone(), input.clone(), *moving);
                     self.mode = Mode::Normal;
                     self.plan_rename(&path, &input, moving);
                 }
-                _ => {}
+                _ => {
+                    line_input::key(input, k, CtrlU::Clears);
+                }
             },
             Mode::MoveMarked(input) => match k.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Backspace => {
-                    input.pop();
-                }
-                KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => input.clear(),
-                KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
-                KeyCode::Char(c) => input.push(c),
                 KeyCode::Enter => {
                     let input = std::mem::take(input);
                     self.mode = Mode::Normal;
                     self.plan_move_marked(&input);
                 }
-                _ => {}
+                _ => {
+                    line_input::key(input, k, CtrlU::Clears);
+                }
             },
             Mode::ConfirmRename {
                 scroll, waiting, ..
@@ -4183,26 +4097,18 @@ impl Home {
             KeyCode::BackTab | KeyCode::Up if matches > 0 => {
                 *sel = Some(sel.map_or(matches - 1, |i| (i + matches - 1) % matches));
             }
-            KeyCode::Backspace => {
-                *typed = shown;
-                *sel = None;
-                typed.pop();
-            }
-            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                typed.clear();
-                *sel = None;
-            }
-            KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
-            KeyCode::Char(c) => {
-                *typed = shown;
-                *sel = None;
-                typed.push(c);
-            }
             KeyCode::Enter => {
                 self.mode = Mode::Normal;
                 self.apply_tag(&shown);
             }
-            _ => {}
+            // What is typed goes on the tag shown, the one picked if one is.
+            _ => {
+                let mut line = shown;
+                if line_input::key(&mut line, k, CtrlU::Clears).is_some() {
+                    *typed = line;
+                    *sel = None;
+                }
+            }
         }
     }
 
