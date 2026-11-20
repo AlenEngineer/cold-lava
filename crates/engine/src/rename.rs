@@ -43,8 +43,8 @@ pub struct FileEdit {
     pub links: usize,
     pub changes: Vec<Change>,
     /// For a file another owner reads (an extension, or the engine's canvas owner), what to ask
-    /// it. `new_text` is the owner's answer, empty until `Core::relink` has it; nothing moves
-    /// before then.
+    /// it. `new_text` is the owner's answer, empty until the core has it (`Core::apply`);
+    /// nothing moves before then.
     #[serde(skip)]
     pub owned: Option<Through>,
 }
@@ -59,39 +59,6 @@ pub struct Through {
     pub changes: Vec<Ask>,
     pub given: Option<Given>,
     pub after: Option<Given>,
-}
-
-/// An owner's answer for `file` as `Core::take_relinked` hands it out, for `answered`: the
-/// file's new text, and what its owner read in it. Nothing else in it is set.
-pub(crate) fn answer(file: String, new_text: String, after: Given) -> FileEdit {
-    FileEdit {
-        file,
-        path: PathBuf::new(),
-        old_text: String::new(),
-        new_text,
-        links: 0,
-        changes: Vec::new(),
-        owned: Some(Through {
-            owner: String::new(),
-            changes: Vec::new(),
-            given: None,
-            after: Some(after),
-        }),
-    }
-}
-
-/// Put the owners' answers (`Core::take_relinked`) into `edits`, by file: each file's new text,
-/// and what its owner read in it.
-pub(crate) fn answered(edits: &mut [FileEdit], answers: Vec<FileEdit>) {
-    for a in answers {
-        let Some(e) = edits.iter_mut().find(|e| e.file == a.file) else {
-            continue;
-        };
-        e.new_text = a.new_text;
-        if let Some(o) = e.owned.as_mut() {
-            o.after = a.owned.and_then(|answer| answer.after);
-        }
-    }
 }
 
 /// Refuse a plan whose files other owners read have no new text from their owners yet.
@@ -799,13 +766,14 @@ mod tests {
         std::fs::read_to_string(dir.join(rel)).unwrap()
     }
 
-    /// Apply a plan that changes canvases, as every caller does: their owner gives their new
-    /// texts first (`Core::relink`), which the engine's own owner does inside the call.
-    fn apply_through_owners(ix: &Index, mut plan: Plan) -> Result<()> {
+    /// Apply a plan that changes canvases, as every caller does: through the core
+    /// (`Core::apply`), whose canvas owner gives their new texts inside the call.
+    fn apply_through_owners(ix: &Index, mut plan: Plan) -> Result<(), crate::core::NotApplied> {
         let mut core = crate::core::Core::open(&ix.workspace.root).unwrap();
-        let waiting = core.relink(&mut plan.edits).unwrap();
-        assert_eq!(waiting, None, "the canvas owner answers at once");
-        apply(&plan)
+        let crate::core::Applying::Now(made) = core.apply(&mut plan) else {
+            panic!("the canvas owner answers at once");
+        };
+        made
     }
 
     #[test]

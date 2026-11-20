@@ -72,7 +72,7 @@ pub struct Plan {
     pub recipe: &'static Recipe,
     pub options: Options,
     /// Notes with their new text; files other owners read with the changes to ask them for,
-    /// their new text to come from the owner (`Core::relink`, then `rename::answered`).
+    /// their new text to come from the owner (`Core::apply`).
     pub edits: Vec<FileEdit>,
     pub warnings: Vec<String>,
 }

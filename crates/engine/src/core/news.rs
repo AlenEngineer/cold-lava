@@ -337,19 +337,20 @@ impl Harness {
     }
 
     /// The renames whose owners have all answered, or one refused (`Core::take_relinked`).
-    pub(crate) fn relinked(&mut self) -> Vec<(Ticket, Result<Vec<rename::FileEdit>, String>)> {
+    pub(crate) fn relinked(&mut self) -> Vec<Ticket> {
         self.core.take_relinked()
     }
 
-    /// The rename that waited is made with its owners' `answer` (`Core::apply_answered`), and
-    /// everything is read again.
+    /// The rename that waited under `ticket` is made with its owners' answer
+    /// (`Core::apply_answered`), and everything is read again; or why it isn't.
     pub(crate) fn renamed(
         &mut self,
         plan: &mut rename::Plan,
-        answer: Result<Vec<rename::FileEdit>, String>,
-    ) {
-        self.call(|core| core.apply_answered(plan, answer)).unwrap();
+        ticket: Ticket,
+    ) -> Result<(), NotApplied> {
+        self.call(|core| core.apply_answered(plan, ticket))?;
         self.rescan();
+        Ok(())
     }
 
     /// A recipe as its screen runs it, when no extension has to answer: planned, made by the
@@ -994,16 +995,12 @@ fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
     );
     assert!(h.relinked().is_empty(), "nor before it read its new text");
     h.owner_reads();
-    let relinked = h.relinked();
-    let [(t, Ok(answers))] = &relinked[..] else {
-        panic!("{relinked:?}");
-    };
-    assert_eq!(*t, ticket);
+    assert_eq!(h.relinked(), [ticket]);
     assert_eq!(h.read("Board.canvas"), LINKED_BOARD, "nothing written yet");
     assert_eq!(h.read("Reading.lines"), LINKED_READING);
     assert!(h.deliver().is_empty(), "nor is anything said");
 
-    h.renamed(&mut plan, Ok(answers.clone()));
+    h.renamed(&mut plan, ticket).unwrap();
     assert_eq!(h.deliver().names("agenda"), ["items/reset"]);
     assert_eq!(h.read("Board.canvas"), relinked_board());
     let reading = "- [ ] Read the report on [[Tephra]]\n";
@@ -1024,11 +1021,10 @@ fn a_rename_one_owner_refuses_changes_nothing_anywhere() {
         .apply_rename(&mut plan)
         .expect("the extension answers later");
     h.owner_refuses("it is read-only");
-    let relinked = h.relinked();
-    let [(t, Err(why))] = &relinked[..] else {
-        panic!("{relinked:?}");
+    assert_eq!(h.relinked(), [ticket]);
+    let Err(NotApplied::Refused(why)) = h.renamed(&mut plan, ticket) else {
+        panic!("made though an owner refused");
     };
-    assert_eq!(*t, ticket);
     assert_eq!(why, "lines didn't edit Reading.lines: it is read-only");
     assert!(
         rename::apply(&plan).is_err(),

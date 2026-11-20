@@ -1771,9 +1771,10 @@ each doesn't invent one:
   What each owner read in its new text is kept for the file's new `rev` (`Core::relinked`), so
   nothing is asked again after the move. `Core::apply` makes the plan at once when it has no
   owned file, or every owner answered inside the call, as the engine's canvas owner does. When
-  an extension has to answer, it waits under a ticket: `Core::take_relinked` hands back the
-  answer, and `Core::apply_answered` makes the plan with it, the same way. So a caller writes
-  one thing, whoever owns the files.
+  an extension has to answer, it waits under a ticket: `Core::take_relinked` says the ticket is
+  ready, and `Core::apply_answered` makes the plan the same way, with the answer the edit desk
+  kept, which never goes out to the caller. So a caller writes one thing, whoever owns the
+  files.
 - **Merges** relink owned files the same way: `merge::plan` lists them with the notes (the
   source is planned as moving onto the target, so each link to it gets `{place, link, to}` or a
   piece's new text), the merge dialog waits for the owners after Enter, and the core

@@ -4353,13 +4353,13 @@ impl Home {
         self.renamed(made, marked);
     }
 
-    /// Hand the owners' answer to the rename, merge or recipe that waited for it, for the core to
-    /// make it (`Core::apply_answered`), or say why one isn't made.
+    /// Have the core make the rename, merge or recipe whose owners have answered, with their
+    /// answer (`Core::apply_answered`), or say why one isn't made.
     fn deliver_relinked(&mut self) {
         let Some(core) = self.core.as_mut() else {
             return;
         };
-        for (ticket, answer) in core.take_relinked() {
+        for ticket in core.take_relinked() {
             let ours = match &self.mode {
                 Mode::ConfirmRename { waiting, .. } | Mode::ConfirmMerge { waiting, .. } => {
                     *waiting == Some(ticket)
@@ -4370,7 +4370,11 @@ impl Home {
                 _ => false,
             };
             if !ours {
-                // Its dialog is gone, so nothing is made of the answer: never without a word.
+                // Its dialog is gone, so nothing is made of the answer, which is dropped: never
+                // without a word.
+                if let Some(core) = self.core.as_mut() {
+                    core.cancel_relink(ticket);
+                }
                 self.flash(
                     "a rename, merge or recipe was closed before its owners answered; \
                      nothing was changed",
@@ -4384,18 +4388,18 @@ impl Home {
                 Mode::ConfirmRename {
                     mut plan, marked, ..
                 } => {
-                    let made = core.apply_answered(&mut *plan, answer).map(|()| *plan);
+                    let made = core.apply_answered(&mut *plan, ticket).map(|()| *plan);
                     self.renamed(made, marked);
                 }
                 Mode::ConfirmMerge { mut plan, .. } => {
-                    let made = core.apply_answered(&mut *plan, answer);
+                    let made = core.apply_answered(&mut *plan, ticket);
                     self.merged(made.map(|done| (*plan, done)));
                 }
                 Mode::Recipe(view) => {
                     let recipe_view::Step::Plan { mut plan, .. } = view.step else {
                         continue;
                     };
-                    let made = core.apply_answered(&mut *plan, answer);
+                    let made = core.apply_answered(&mut *plan, ticket);
                     self.recipe_applied(made.map(|done| (*plan, done)));
                 }
                 _ => {}

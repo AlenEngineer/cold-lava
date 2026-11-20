@@ -1609,10 +1609,9 @@ mod tests {
         let owned = p.edits.iter().find(|e| e.file == "Eruptions.csv").unwrap();
         assert_eq!(owned.links, 1, "listed in the plan");
         assert!(rename::apply(&p).is_err(), "not before the owner answered");
-        let ticket = core
-            .relink(&mut p.edits)
-            .unwrap()
-            .expect("waits for the owner");
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         assert!(
             core.relink(&mut p.edits).is_err(),
             "one edit of a file at a time"
@@ -1631,14 +1630,8 @@ mod tests {
         );
         assert!(dir.join("Krakatoa.md").is_file(), "nothing moved yet");
         assert_eq!(csv_now(), csv("Krakatoa", "Tambora"), "nothing written yet");
-        let relinked = core.take_relinked();
-        let [(t, Ok(answers))] = &relinked[..] else {
-            panic!("{relinked:?}");
-        };
-        assert_eq!(*t, ticket);
-        rename::answered(&mut p.edits, answers.clone());
-        rename::apply(&p).unwrap();
-        core.relinked(&p.edits, |path| p.moved(path));
+        assert_eq!(core.take_relinked(), [ticket]);
+        core.apply_answered(&mut p, ticket).unwrap();
         core.rescan_now();
         assert_eq!(csv_now(), csv("Krakatau", "Tambora"));
         assert!(core.take_reads().is_empty(), "what it read back is kept");
@@ -1652,7 +1645,9 @@ mod tests {
         // A link the owner reported, and an owner that doesn't write what was asked, or
         // refuses: the rename is cancelled and nothing changes.
         let mut p = plan(&core, "Tambora", "Tambora volcano");
-        let ticket = core.relink(&mut p.edits).unwrap().unwrap();
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         let ask = answer(
             &mut core,
             Ok(csv("Krakatau", "x")),
@@ -1660,22 +1655,28 @@ mod tests {
         );
         assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
             if link == "Tambora" && to == "Tambora volcano"));
-        let relinked = core.take_relinked();
+        assert_eq!(core.take_relinked(), [ticket]);
+        let made = core.apply_answered(&mut p, ticket);
         assert!(
-            matches!(&relinked[..], [(t, Err(m))] if *t == ticket && m.contains("links to x")),
-            "{relinked:?}"
+            matches!(&made, Err(NotApplied::Refused(m)) if m.contains("links to x")),
+            "{made:?}"
         );
-        core.relink(&mut p.edits).unwrap().unwrap();
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         answer(&mut core, Err("it is read-only"), None);
-        let relinked = core.take_relinked();
+        assert_eq!(core.take_relinked(), [ticket]);
+        let made = core.apply_answered(&mut p, ticket);
         assert!(
-            matches!(&relinked[..], [(_, Err(m))]
+            matches!(&made, Err(NotApplied::Refused(m))
                 if m == "csv-table didn't edit Eruptions.csv: it is read-only"),
-            "{relinked:?}"
+            "{made:?}"
         );
 
         // Cancelled while it waits: a late answer is dropped.
-        let ticket = core.relink(&mut p.edits).unwrap().unwrap();
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         core.cancel_relink(ticket);
         assert!(core.take_file_edits().is_empty(), "not asked after all");
         core.file_edited("csv-table", "Eruptions.csv", &ask.rev, Ok(csv("a", "b")));
@@ -1687,7 +1688,7 @@ mod tests {
 
     #[test]
     fn a_recipe_changes_owned_files_through_their_owner() {
-        use crate::{recipe, rename};
+        use crate::recipe;
         let dir =
             std::env::temp_dir().join(format!("cold-lava-owned-recipe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1719,10 +1720,9 @@ mod tests {
         let files: Vec<_> = p.edits.iter().map(|e| e.file.as_str()).collect();
         assert_eq!(files, ["Note.md", "Samples.csv"]);
         assert!(recipe::apply(&p).is_err(), "not before the owner answered");
-        let ticket = core
-            .relink(&mut p.edits)
-            .unwrap()
-            .expect("waits for the owner");
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         let (_, ask) = core.take_file_edits().pop().unwrap();
         assert_eq!(
             ask.changes,
@@ -1734,18 +1734,12 @@ mod tests {
         core.file_edited("csv-table", "Samples.csv", &ask.rev, Ok(csv("magma")));
         let (_, back) = core.take_reads().pop().unwrap();
         core.file_given("csv-table", "Samples.csv", &back.rev, Ok(given("magma")));
-        let relinked = core.take_relinked();
-        let [(t, Ok(answers))] = &relinked[..] else {
-            panic!("{relinked:?}");
-        };
-        assert_eq!(*t, ticket);
+        assert_eq!(core.take_relinked(), [ticket]);
         assert_eq!(
             std::fs::read_to_string(dir.join("Note.md")).unwrap(),
             "#lava\n"
         );
-        rename::answered(&mut p.edits, answers.clone());
-        let done = recipe::apply(&p).unwrap();
-        core.relinked(&p.edits, Path::to_path_buf);
+        let done = core.apply_answered(&mut p, ticket).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("Note.md")).unwrap(),
             "#magma\n"
@@ -1768,7 +1762,7 @@ mod tests {
 
     #[test]
     fn a_merge_relinks_owned_files_through_their_owner() {
-        use crate::{merge, rename};
+        use crate::merge;
         let dir =
             std::env::temp_dir().join(format!("cold-lava-owned-merge-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1806,7 +1800,10 @@ mod tests {
             merge::apply(&m, Some(&bin)).is_err(),
             "not before csv-table answered"
         );
-        core.relink(&mut m.edits).unwrap().unwrap();
+        core.set_system_trash(Some(bin));
+        let Applying::Later(ticket) = core.apply(&mut m) else {
+            panic!("waits for csv-table");
+        };
         let (_, ask) = core.take_file_edits().pop().unwrap();
         assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
             if link == "Krakatoa" && to == "Krakatau"));
@@ -1823,10 +1820,8 @@ mod tests {
             &back.rev,
             Ok(given("Krakatau")),
         );
-        let (_, answers) = core.take_relinked().pop().unwrap();
-        rename::answered(&mut m.edits, answers.unwrap());
-        merge::apply(&m, Some(&bin)).unwrap();
-        core.relinked(&m.edits, Path::to_path_buf);
+        assert_eq!(core.take_relinked(), [ticket]);
+        core.apply_answered(&mut m, ticket).unwrap();
         core.rescan_now();
         let csv = std::fs::read_to_string(ws.join("Eruptions.csv")).unwrap();
         assert_eq!(csv, "Krakatau\n");
@@ -1947,14 +1942,17 @@ mod tests {
         );
 
         // Renamed: the card's path and the sticky's link, in place, through the owner, which
-        // answers inside `relink`.
+        // answers inside `Core::apply`.
         let rename = |core: &mut Core, from: &str, to: &str| {
             let note = core.index.by_rel(from).unwrap();
             let mut plan = crate::rename::plan(&core.index, note, to).unwrap();
             assert!(plan.edits.iter().all(|e| e.owned.is_some()), "its owner's");
-            assert_eq!(core.relink(&mut plan.edits), Ok(None), "answered at once");
+            let made = core.apply(&mut plan);
+            assert!(
+                matches!(&made, Applying::Now(Ok(()))),
+                "answered at once: {made:?}"
+            );
             assert!(core.take_file_edits().is_empty() && core.take_relinked().is_empty());
-            crate::rename::apply(&plan).unwrap();
             core.rescan_now();
         };
         rename(&mut core, "Lava", "Hot/Lava");

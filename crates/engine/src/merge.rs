@@ -512,8 +512,9 @@ mod tests {
         assert_eq!(m.own_links, 1, "./Sib, relative to the source's folder");
         assert!(apply(&m, None).is_err(), "not before the canvas's owner");
         let mut core = crate::core::Core::open(&ix.workspace.root).unwrap();
-        assert_eq!(core.relink(&mut m.edits), Ok(None), "it answers at once");
-        apply(&m, None).unwrap();
+        let made = core.apply(&mut m);
+        let at_once = matches!(&made, crate::core::Applying::Now(Ok(_)));
+        assert!(at_once, "it answers at once: {made:?}");
         assert_eq!(
             read(&dir, "Top.md"),
             "---\nrelated: \"[[B/Lava]]\"\n---\n[[Lava#Flow|ropy]] ![[Lava]] \

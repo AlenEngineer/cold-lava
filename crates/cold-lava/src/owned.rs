@@ -203,19 +203,17 @@ impl<'a> Owners<'a> {
             Applying::Now(made) => return made.map_err(said),
             Applying::Later(ticket) => ticket,
         };
-        let mut answer = None;
+        let mut answered = false;
         self.serve(core, |c| {
-            answer = (c.take_relinked().into_iter()).find_map(|(t, a)| (t == ticket).then_some(a));
-            answer.is_some()
+            answered = c.take_relinked().contains(&ticket);
+            answered
         });
-        match answer {
-            Some(answer) => core.apply_answered(plan, answer).map_err(said),
-            None => {
-                core.cancel_relink(ticket);
-                let secs = PATIENCE.as_secs();
-                bail!("the owners didn't answer in {secs} s; nothing was changed")
-            }
+        if !answered {
+            core.cancel_relink(ticket);
+            let secs = PATIENCE.as_secs();
+            bail!("the owners didn't answer in {secs} s; nothing was changed")
         }
+        core.apply_answered(plan, ticket).map_err(said)
     }
 
     /// Asks the extension `name` about a shape it ships (`shape/region`, `shape/gesture`),

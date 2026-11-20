@@ -119,10 +119,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   runs in the menu's loop on it. Don't add another watcher or full rescan loop.
   `core/whole.rs` is `Core::apply`, the one call that makes a rename, a merge or a recipe once
   it is planned and shown: the owners of the files other owners read give their new texts
-  (`relink`), then it is written, then what they read is kept (`relinked`); an extension's
-  answer comes later, from `take_relinked`, for `apply_answered`. `rename::apply`,
-  `merge::apply` and `recipe::apply` are the engine's own, so no frontend writes a plan
-  around it. Reading the workspace again afterwards is still the caller's.
+  (`relink`), then it is written, then what they read is kept (`relinked`); when an extension
+  has to answer, `take_relinked` says its ticket is ready and `apply_answered` makes the plan
+  with the answer the edit desk kept. The owners' answers never go out to a frontend, which
+  holds only the plan and the ticket. `rename::apply`, `merge::apply` and `recipe::apply` are
+  the engine's own, so no frontend writes a plan around it. Reading the workspace again
+  afterwards is still the caller's.
   `core/news.rs` (tests only) is the harness for what subscribers hear and in which order: it
   plays the watcher and an owner, applies steps (outside write, `items/edit`, rescan, rename,
   recipe, an owner's answers) and collects each delivery, with no waiting. Test a change to how
