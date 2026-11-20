@@ -1,9 +1,11 @@
-//! A file, folder or link as it was read, so what is done to it later is refused if it changed
+//! A file, folder or link as it was seen, so what is done to it later is refused if it changed
 //! since: `Seen` says whether it is `unchanged`, and `replace` writes over a file only then.
 //!
-//! A file is read through a symlink, as every write reads it (`Seen::file`); whatever is at a
-//! path, a folder or the link itself, is read without following one, as a delete checks it
-//! (`Seen::entry`). Either is read again the same way it was read first.
+//! A file is read through a symlink, as every write reads it (`Seen::file`), or is known by
+//! bytes read earlier or just written (`Seen::kept`). Whatever is at a path, a folder or the
+//! link itself, is read without following one (`Seen::entry`). Each is read again the way it
+//! was seen, at its path or at the one a move took it to (`at`). A delete checks the entry
+//! itself, whatever way it was seen (`unchanged_entry`).
 
 use crate::files::rev;
 use crate::trash::Contents;
@@ -50,12 +52,31 @@ impl Seen {
         Seen::by(Way::Entry, path)
     }
 
+    /// The file at `path` as holding `bytes`, read earlier or just written. It is checked and
+    /// written over as a file seen now (`file`) is.
+    pub fn kept(path: &Path, bytes: impl Into<Vec<u8>>) -> Seen {
+        Seen {
+            path: path.to_path_buf(),
+            was: Contents::File(bytes.into()),
+            way: Way::File,
+        }
+    }
+
     fn by(way: Way, path: &Path) -> io::Result<Seen> {
         Ok(Seen {
             path: path.to_path_buf(),
             was: way.read(path)?,
             way,
         })
+    }
+
+    /// What was seen, at `path`, where a move took it. It is read again the way it was seen.
+    pub fn at(&self, path: &Path) -> Seen {
+        Seen {
+            path: path.to_path_buf(),
+            was: self.was.clone(),
+            way: self.way,
+        }
     }
 
     /// The bytes read, when it was a file.
@@ -77,9 +98,21 @@ impl Seen {
         rev_of(&self.was)
     }
 
-    /// Refused with `WriteError::Changed` unless the path still holds what was seen.
+    /// Refused with `WriteError::Changed` unless the path still holds what was seen, read again
+    /// the way it was seen.
     pub fn unchanged(&self) -> Result<(), WriteError> {
-        let now = self.way.read(&self.path);
+        self.unchanged_as(self.way)
+    }
+
+    /// Refused with `WriteError::Changed` unless the entry at the path, a symlink never
+    /// followed, still holds what was seen, whatever way it was seen: the check before a delete,
+    /// which moves the entry itself. A file seen through a link is not the link.
+    pub fn unchanged_entry(&self) -> Result<(), WriteError> {
+        self.unchanged_as(Way::Entry)
+    }
+
+    fn unchanged_as(&self, way: Way) -> Result<(), WriteError> {
+        let now = way.read(&self.path);
         if now.map_err(|e| WriteError::Io(self.path.clone(), e))? != self.was {
             return Err(WriteError::Changed(self.path.clone()));
         }
@@ -87,8 +120,8 @@ impl Seen {
     }
 
     /// Write `bytes` over the file seen, through `write::replace`. Refused with
-    /// `WriteError::Changed` if it changed since, or if it wasn't seen as a file (`file`), since
-    /// a write reads through a symlink and an entry never follows one.
+    /// `WriteError::Changed` if it changed since, or if it wasn't seen as a file (`file`,
+    /// `kept`), since a write reads through a symlink and an entry never follows one.
     pub fn replace(&self, bytes: &[u8]) -> Result<(), WriteError> {
         match (self.way, &self.was) {
             (Way::File, Contents::File(was)) => write::replace(&self.path, was, bytes),
