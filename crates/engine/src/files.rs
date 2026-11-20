@@ -1104,42 +1104,112 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A write goes through a link to the file it leads to, and a link to nothing is never
-    /// replaced by a new file.
+    /// The gateway never follows a symlink (#349): a path names the entry at that path, and no
+    /// link at it or on the way to it picks another file, such as `.git/config` behind a
+    /// note's name. Reading, writing, creating, restoring and making a folder at or through a
+    /// link are refused, naming the link, and what it leads to is left alone. A link is still
+    /// stated as itself. The links lead inside the test's own folder.
     #[cfg(unix)]
     #[test]
-    fn a_write_to_a_symlink_lands_in_the_file_it_leads_to() {
-        let dir = workspace("write-link");
-        let is_link = |rel: &str| {
-            let meta = dir.join(rel).symlink_metadata().unwrap();
-            meta.file_type().is_symlink()
+    fn the_gateway_never_follows_a_symlink() {
+        let dir = workspace("never-follows");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/config"), "[core]\n").unwrap();
+        let link = |to: &str, at: &str| std::os::unix::fs::symlink(to, dir.join(at)).unwrap();
+        link("Eruptions.csv", "Data/Linked.csv");
+        link("../.git/config", "Data/Git.md");
+        link("Gone.csv", "Data/Dangling.csv");
+        link("../.git", "Data/Dot");
+        let (mut core, bin) = core_with_bin(&dir);
+        let git = fingerprint(&dir.join(".git"));
+        let table = fingerprint(&dir.join("Data/Eruptions.csv"));
+        let said = |e: Error| (e.reason, e.message);
+        let refused = |path: &str, link: &str| {
+            let message = format!("{path}: {link} is a symbolic link");
+            (Reason::Refused, message)
         };
-        std::os::unix::fs::symlink("Eruptions.csv", dir.join("Data/Linked.csv")).unwrap();
-        let was = read(&dir, "Data/Linked.csv").unwrap();
-        let text = "name,year\nTambora,1815\n";
-        replace(&dir, "Data/Linked.csv", text, &was.rev).unwrap();
-        assert!(is_link("Data/Linked.csv"), "still a link");
-        let target = std::fs::read_to_string(dir.join("Data/Eruptions.csv")).unwrap();
-        assert_eq!(target, text);
-        let stale = replace(&dir, "Data/Linked.csv", "lost", &was.rev).unwrap_err();
-        assert_eq!(stale.reason, Reason::Changed);
+        let new = |path: &str| Create {
+            at: NewFile::At { path: path.into() },
+            text: "lost\n".into(),
+        };
+        for (path, link) in [
+            ("Data/Linked.csv", "Data/Linked.csv"),
+            ("Data/Git.md", "Data/Git.md"),
+            ("Data/Dangling.csv", "Data/Dangling.csv"),
+            ("Data/Dot/config", "Data/Dot"),
+            ("Data/Dot/hooks/post-checkout", "Data/Dot"),
+        ] {
+            let why = refused(path, link);
+            let leads_to = std::fs::read(dir.join(path)).map(|b| rev(&b));
+            let leads_to = leads_to.unwrap_or_default();
+            assert_eq!(said(core.read_file(path).unwrap_err()), why, "read {path}");
+            let written = core.write_file(path, "lost\n", &leads_to).unwrap_err();
+            assert_eq!(said(written), why, "write {path}");
+            let created = core.create_file(&new(path)).unwrap_err();
+            assert_eq!(said(created), why, "create {path}");
+        }
+        let through = refused("Data/Dot/config", "Data/Dot");
+        let stat = core.stat_file("Data/Dot/config").unwrap_err();
+        assert_eq!(said(stat), through, "stat");
+        let deleted = core.delete_file("tidy", "Data/Dot/config", "").unwrap_err();
+        assert_eq!(said(deleted), through, "delete");
+        let folder = core.create_folder("tidy", "Data/Dot/made").unwrap_err();
+        assert_eq!(said(folder), refused("Data/Dot/made", "Data/Dot"));
+        assert!(core.stat_file("Data/Git.md").is_ok(), "a link is itself");
 
-        std::os::unix::fs::symlink("Gone.csv", dir.join("Data/Dangling.csv")).unwrap();
-        let mut core = Core::open(&dir).unwrap();
-        let at = Create {
-            at: NewFile::At {
-                path: "Data/Dangling.csv".into(),
-            },
-            text: "x".into(),
-        };
-        assert_eq!(core.create_file(&at).unwrap_err().reason, Reason::Exists);
-        let gone = replace(&dir, "Data/Dangling.csv", "x", &was.rev).unwrap_err();
-        assert_eq!(gone.reason, Reason::Changed);
-        assert!(is_link("Data/Dangling.csv"), "still a link");
+        let plan = core.stat_file("Plan.md").unwrap();
+        let gone = core.delete_file("tidy", "Plan.md", &plan.rev).unwrap();
+        for (to, link) in [
+            ("Data/Linked.csv", "Data/Linked.csv"),
+            ("Data/Dot/Plan.md", "Data/Dot"),
+        ] {
+            let there = back(&gone.trashed, Some(to));
+            let there = core.restore_file("tidy", &there).unwrap_err();
+            assert_eq!(said(there), refused(to, link), "restore to {to}");
+        }
+        core.restore_file("tidy", &back(&gone.trashed, None))
+            .unwrap();
+
+        assert_eq!(fingerprint(&dir.join(".git")), git, "nothing reached .git");
+        assert_eq!(fingerprint(&dir.join("Data/Eruptions.csv")), table);
+        for at in [
+            "Data/Linked.csv",
+            "Data/Git.md",
+            "Data/Dangling.csv",
+            "Data/Dot",
+        ] {
+            let meta = dir.join(at).symlink_metadata().unwrap();
+            assert!(meta.file_type().is_symlink(), "{at} is still a link");
+        }
         assert!(
             !dir.join("Data/Gone.csv").exists(),
             "nothing made through it"
         );
+        let _ = std::fs::remove_dir_all(&bin);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A new file's name is never one a link holds, a link to nothing included: `free_name`
+    /// asks `write::taken`, as `write::create` does, so a create by name takes the next number
+    /// instead of being refused, and nothing is made through the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_name_passes_over_a_link_to_nothing() {
+        let dir = workspace("free-name");
+        std::os::unix::fs::symlink("Gone.csv", dir.join("Untitled.csv")).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let untitled = Create {
+            at: NewFile::Named {
+                name: "Untitled".into(),
+                extension: "csv".into(),
+            },
+            text: "a,b\n".into(),
+        };
+        let made = core.create_file(&untitled).unwrap();
+        assert_eq!(made.path, "Untitled 1.csv");
+        let link = std::fs::read_link(dir.join("Untitled.csv")).unwrap();
+        assert_eq!(link, Path::new("Gone.csv"), "the link stays");
+        assert!(!dir.join("Gone.csv").exists(), "nothing made through it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
