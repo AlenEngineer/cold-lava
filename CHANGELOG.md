@@ -17,8 +17,9 @@ change commands, keys and file formats; patch versions only fix things.
 
 - `cold-lava --help | head` and every other command that prints to a reader that stops early
   no longer panic with "failed printing to stdout: Broken pipe" and exit 101 (0.7.0 did in
-  about half the runs). Printing ends quietly and the command exits 0, as `items | head`
-  already did (#339).
+  about half the runs). The rest of the output is skipped quietly, and the command still does
+  everything else it was asked (its errors on stderr included) and exits as it would have, as
+  `items | head` already did (#339).
 
 ## [0.7.0] - 2026-11-20
 
