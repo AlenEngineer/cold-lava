@@ -29,7 +29,7 @@
 
 use crate::alphabet::Role;
 use crate::json_canvas::{self, CNode, Field};
-use crate::owner::answer::LeftOut;
+use crate::owner::answer::{LeftOut, NAME};
 use crate::owner::given::{Between, Change, Given, GivenItem, GivenLink, Piece, Places};
 use serde_json::{Map, Value as Json};
 use std::collections::{HashMap, HashSet};
@@ -174,30 +174,26 @@ pub fn read(text: &str) -> Result<Given, String> {
             id: n.id,
             items: [card, markdown],
             link,
+            keep: [false; 3],
+            refused: None,
         });
     }
     // What the engine takes, asked in the answer's order, and why a card isn't taken.
     let mut taken = Places::default();
-    let mut kept: Vec<[bool; 3]> = Vec::with_capacity(nodes.len());
-    let mut refused: Vec<Option<String>> = Vec::with_capacity(nodes.len());
-    for node in &nodes {
-        let mut keep = [false; 3];
-        let mut why = None;
+    for node in &mut nodes {
         for (k, item) in node.items.iter().enumerate() {
             let Some(item) = item.as_ref() else { continue };
             let admitted = taken.admit(item);
-            keep[k] = admitted.is_ok();
+            node.keep[k] = admitted.is_ok();
             match (admitted, item) {
                 (Ok(()), GivenItem::Piece(card)) => {
                     taken.take(card);
                 }
-                (Err(e), GivenItem::Piece(_)) => why = Some(e),
+                (Err(e), GivenItem::Piece(_)) => node.refused = Some(e),
                 _ => {}
             }
         }
-        keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
-        kept.push(keep);
-        refused.push(why);
+        node.keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
     }
     // An arrow names two ids, and the first node of an id has the id as its place.
     let mut between: Vec<Between> = Vec::new();
@@ -215,40 +211,40 @@ pub fn read(text: &str) -> Result<Given, String> {
         between: between.into(),
         ..Given::default()
     };
-    let all = nodes.into_iter().zip(kept).zip(refused).enumerate();
-    for (n, ((node, [card, markdown, link]), why)) in all {
-        if let Some(why) = why {
-            let left = left_out(n, &node.id, &why);
+    for (n, node) in nodes.into_iter().enumerate() {
+        if let Some(why) = &node.refused {
+            let left = left_out(n, &places[n], &node.id, why);
             given.left_out.push((given.items.len(), left));
         }
-        let [card_item, markdown_item] = node.items;
-        given.items.extend(card_item.filter(|_| card));
-        given.items.extend(markdown_item.filter(|_| markdown));
-        given.links.extend(node.link.filter(|_| link));
+        let [card, markdown] = node.items;
+        given.items.extend(card.filter(|_| node.keep[0]));
+        given.items.extend(markdown.filter(|_| node.keep[1]));
+        given.links.extend(node.link.filter(|_| node.keep[2]));
     }
     Ok(given)
 }
 
 /// What one node gives, before the engine is asked which of it it takes: its card and the
-/// Markdown written on it, and its link to a file.
+/// Markdown written on it, and its link to a file. Then which of the three the engine takes
+/// (`keep`), and why it doesn't take the card, when it doesn't (`refused`).
 struct Node {
     id: String,
     items: [Option<GivenItem>; 2],
     link: Option<GivenLink>,
+    keep: [bool; 3],
+    refused: Option<String>,
 }
 
-/// The record of a card the engine doesn't take, the `n`th node (from 0) with id `id`: it
-/// gives no tasks and no links, so it is reported (the owner's decision of 2026-11-13), by
-/// its number among the nodes, from 1, and its id cut to 80 characters, since an empty id
-/// names nothing. What it holds, for the read-back, is the hash of its id: an edit or a
-/// rename may change its text (`Named` names it), and that is no change to what is left out.
-fn left_out(n: usize, id: &str, why: &str) -> LeftOut {
-    let shown = Json::String(crate::problem::cut(id, 80)).to_string();
-    LeftOut {
-        place: crate::problem::cut(id, 80).into(),
-        key: crate::tasks::line_id(id).into(),
-        said: format!("card {} (id {shown}) is left out: {why}", n + 1).into(),
-    }
+/// The record of the `n`th node (from 0), at `place`, with id `id`, whose card the engine
+/// doesn't take for `why`. It gives no tasks and no links, so it is reported (the owner's
+/// decision of 2026-11-13) by its number among the nodes, from 1, and its id, since an empty
+/// id names nothing and its place is the engine's own address (`places`), which the file
+/// doesn't say. Its place is kept as any item's is, and what identifies it is its id
+/// (`LeftOut`).
+fn left_out(n: usize, place: &str, id: &str, why: &str) -> LeftOut {
+    let shown = Json::String(crate::problem::cut(id, NAME));
+    let said = format!("card {} (id {shown}) is left out: {why}", n + 1);
+    LeftOut::new(place, id, said)
 }
 
 /// The canvas's new text with `changes` made: a Markdown piece's new text is its node's `text`,
@@ -601,6 +597,20 @@ mod tests {
         );
         // What the owner gives reads back as it was, and so does what it left out.
         assert_eq!(read(&board).unwrap(), given);
+
+        // The second `t` has the place `t\u{1f}1`, which the card with that id took first: it
+        // is named by its id, and its record keeps its place, as any item's does.
+        let twins = r#"{"nodes":[
+            {"id":"t","type":"text","text":"- [ ] one"},
+            {"id":"t\u001f1","type":"text","text":"- [ ] two"},
+            {"id":"t","type":"text","text":"- [ ] three"}
+        ]}"#;
+        let given = read(twins).unwrap();
+        let kept: Vec<(&str, &str)> = (given.left_out.iter())
+            .map(|(_, l)| (l.place.as_str(), l.said.as_str()))
+            .collect();
+        let said = "card 3 (id \"t\") is left out: another piece is at this place";
+        assert_eq!(kept, [("t\u{1f}1", said)]);
     }
 
     /// A canvas is another program's file. Whatever its nodes say, everything the owner

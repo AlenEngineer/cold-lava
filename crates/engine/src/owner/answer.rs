@@ -30,6 +30,10 @@ const OWN: [&str; 2] = [A_RUN, A_REPLY];
 /// The most characters of serde's message that are shown: it may quote the answer.
 const SAID: usize = 200;
 
+/// The most characters a report shows of a name another program wrote (an item's place, a
+/// card's id, a role), and that a record of an item left out keeps of its place.
+pub const NAME: usize = 80;
+
 /// Why something another program sent doesn't read, in words that say nothing but what it
 /// wrote and what was expected: the reader's own (a bound's, `bounded::is_past`, or `OWN`),
 /// and serde's where it is one of the forms that carry only what the answer wrote
@@ -41,16 +45,24 @@ pub fn said(e: &serde_json::Error) -> Option<String> {
     (ours || serde_words::only_the_answer(&message)).then(|| cut(&message, SAID))
 }
 
-/// An item of an answer that didn't read, as it is kept: its place (cut to 80 characters),
-/// a hash of the JSON value it was sent as, which is its identity, and what was said of it.
-/// The value is hashed once parsed, not as the bytes that were sent: the host reads a whole
-/// message into one JSON value before any of it is an answer, and the bytes are gone. So the
-/// order of its keys counts (an owner that gives it again with its keys reordered has changed
-/// it), and what parsing drops doesn't: space between tokens, how a character is escaped
-/// (`A` is `A`), a key's earlier values when it is written twice, and the digits of a
-/// number past what a 64-bit integer or float holds (`100000000000000000001` and
-/// `100000000000000000002` parse alike, as do `0.1` and `0.10000000000000001`). It is kept in the owners' cache, and read back from it, as a part of the answer it
-/// was left out of (`owner::cache`); the cache is the engine's own file, which bounds it.
+/// An item left out of an answer, as it is kept: its place (cut to 80 characters, `NAME`), a
+/// hash of what identifies it (`tasks::line_id`), and what was said of it. What identifies it
+/// is one of two things:
+///
+/// - For an item of an owner's answer that didn't read, the JSON value it was sent as. The
+///   value is hashed once parsed, not as the bytes that were sent: the host reads a whole
+///   message into one JSON value before any of it is an answer, and the bytes are gone. So
+///   the order of its keys counts (an owner that gives it again with its keys reordered has
+///   changed it), and what parsing drops doesn't: space between tokens, how a character is
+///   escaped (`A` is `A`), a key's earlier values when it is written twice, and the digits
+///   of a number past what a 64-bit integer or float holds (`100000000000000000001` and
+///   `100000000000000000002` parse alike, as do `0.1` and `0.10000000000000001`).
+/// - For a card the canvas owner doesn't take (`canvas::read`), the node's id: an edit or a
+///   rename may change the card's text (`canvas::Named` names it), and that is no change to
+///   what is left out.
+///
+/// It is kept in the owners' cache, and read back from it, as a part of the answer it was
+/// left out of (`owner::cache`); the cache is the engine's own file, which bounds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LeftOut {
     pub place: Text<Message>,
@@ -59,6 +71,15 @@ pub struct LeftOut {
 }
 
 impl LeftOut {
+    /// The record of an item left out at `place`, which `holds` identifies, said as `said`.
+    pub fn new(place: &str, holds: &str, said: String) -> LeftOut {
+        LeftOut {
+            place: cut(place, NAME).into(),
+            key: line_id(holds).into(),
+            said: said.into(),
+        }
+    }
+
     /// What is wrong with it, as reported.
     pub fn problem(&self) -> Problem {
         Problem::line(self.said.to_string())
@@ -80,22 +101,19 @@ pub(crate) enum Kept {
 impl<'de> Deserialize<'de> for Kept {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let value = Json::deserialize(d)?;
+        // What a record of it is made of, taken before reading it takes the value.
         let place = value
             .get("place")
             .and_then(Json::as_str)
-            .map(|p| cut(p, 80));
-        let key = line_id(&value.to_string());
+            .map(|p| cut(p, NAME));
+        let sent = value.to_string();
         Ok(match GivenItem::read(value) {
             Ok(item) => Kept::Item(item),
             Err(why) => {
                 // A place that isn't text (a number, a list) is none.
                 let place = place.unwrap_or_else(|| "an item with no place".to_string());
                 let said = format!("{place}: {}", cut(&why, SAID));
-                Kept::Left(LeftOut {
-                    place: place.into(),
-                    key: key.into(),
-                    said: said.into(),
-                })
+                Kept::Left(LeftOut::new(&place, &sent, said))
             }
         })
     }
@@ -139,7 +157,7 @@ impl GivenItem {
             let roles: Vec<&str> = Role::ALL.iter().map(|r| r.name()).collect();
             return Err(format!(
                 "its role {:?} is not a role: one of {}",
-                cut(name, 80),
+                cut(name, NAME),
                 roles.join(", ")
             ));
         }
