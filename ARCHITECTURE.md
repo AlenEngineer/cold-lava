@@ -29,7 +29,7 @@ That is cold-lava. The rest of the cast keeps the books safe.
 | The catalogue | The index: every item, link and backlink, kept from the translators' reports | `index.rs` |
 | The door, and its forms | The workspace gateway's messages | `gateway.rs`, `files.rs` |
 | The front desk | The extension host: checks every extension's badge (its permissions) before the librarian hears a word | `crates/host` |
-| The readers | The terminal app, extensions that only ask, and a first GUI; anyone may build another, a language server included | `crates/cold-lava`, `crates/gui` |
+| The readers | The terminal app and extensions that only ask; anyone may build another, a graphical app or a language server included | `crates/cold-lava` |
 
 **The librarian needs no book's language to check a translator's work.** When the librarian asks
 for a change to a page (`file/edit`, for an item edit or a rename), the translator answers with
@@ -109,8 +109,7 @@ never lends it to a reader (an extension).
   (#310).
 - Not every reader comes through the door yet: the terminal app still reads the index and writes
   some files itself (`crates/cold-lava/tests/one_door.rs` lists each), and track B (#270)
-  closes those. The GUI scans the workspace itself, beside the core, and is outside that test's
-  lists (#277 deletes it until the GUI is real).
+  closes those.
 - The librarian keeps a state machine that belongs to a clerk of its own: the nine places it
   both sends events to subscribers and keeps them for `poll`. Track C (#271) moves it out, so
   the librarian only calls on its clerks in order.
@@ -170,7 +169,7 @@ where it lives. Where the code doesn't meet a rule yet, the line says so.
 - **One door.** Every program reaches the engine through the gateway's messages, and every
   extension behind the host's permission check (`gateway.rs`, `files.rs`, `crates/host`).
   `crates/cold-lava/tests/one_door.rs` lists what still goes around it, and the lists only
-  shrink; the GUI, which scans the workspace itself, is outside that test (#277).
+  shrink.
 - **The core knows data, not syntax.** Formats belong to owners (`owner/`); the core holds
   items, links, types, identity (`identity.rs`), the index and safe writes. Not yet for
   Markdown, which the core still reads itself
@@ -184,7 +183,7 @@ where it lives. Where the code doesn't meet a rule yet, the line says so.
 
 ## Code map
 
-Six crates in the Cargo workspace and the GUI beside it. The dependency direction is frontends →
+Six crates in the Cargo workspace. The dependency direction is frontends →
 host → views → engine → canvas: the engine depends only on `canvas` (for its shapes and
 bindings, a feature still in its crate: see above), which depends on nothing, and `editor`
 stands alone.
@@ -205,7 +204,6 @@ stands alone.
   (`main.rs`, `say.rs`). `tests/` holds the drive scripts and the one-door guard.
 - **`crates/canvas`**, geometry with no dependencies: shapes, regions, rasterizing, hit testing.
 - **`crates/editor`**, the headless text editor to come.
-- **`crates/gui`**, a first Tauri window, outside the Cargo workspace.
 - **`examples/extensions/`**: `open-tasks` (a reader and a notice board: open tasks as a list),
   `csv-table` (a translator, a notice board and a coiner of words: CSV files as tables, with a
   type of its own) and `kanban-board` (a reader and a notice board: Obsidian Kanban boards as
