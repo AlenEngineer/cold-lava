@@ -61,7 +61,7 @@ desk (`core.rs`), and some aren't hired yet:
 | --- | --- | --- |
 | The front desk | checks an extension's badge before the librarian hears a word | `crates/host/src/host.rs` (split out of one file in C1, #312) |
 | The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
-| The edit desk | carries an edit to a translator, waits for its answer and reads it back, then hands the librarian the page to swap in | `owner/edits.rs` (track C step C2) |
+| The edit desk | carries an edit to a translator, waits for its answer and reads it back, hands the librarian the page to swap in, and tells whoever asked once the librarian says how the swap went | `owner/edits.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
 | The logbook keeper | writes down every change, who asked and which translator wrote it | not hired yet (#306, after track C) |
