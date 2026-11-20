@@ -323,6 +323,11 @@ change commands, keys and file formats; patch versions only fix things.
   reaching the task, and the item's id moved. When a recurring task is ticked, the done task
   keeps the block id and the new occurrence gets none, as in Obsidian Tasks; before, the new
   occurrence took it.
+- A tick that would take a task's block id from it is refused, and nothing is written
+  (#318). With the Tasks plugin's "next recurrence on the line below", ticking a recurring
+  task whose `^id` is on a later line of the task put the new occurrence above that line, so
+  the id went to the new occurrence and links to it stopped reaching the done task.
+  `task toggle` prints why and exits with 1; `items/edit` refuses it as `read-back`.
 - The shape editor no longer takes another definition's error for the draft's when that
   error's words, or the workspace's path, happen to hold `shape ID: ` (#265, track A step
   A3). A glyph named `shape x` that doesn't load no longer stops a draft called `x` from

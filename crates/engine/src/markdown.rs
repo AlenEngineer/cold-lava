@@ -1580,9 +1580,32 @@ fn tag(text: &str, from: usize) -> Option<(Range<usize>, Inline)> {
 }
 
 /// A trailing `^id`, after a space or alone: the block's id is group 1.
-pub fn block_id_pattern() -> &'static Regex {
+fn block_id_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?:^|\s)\^([A-Za-z0-9-]+)\s*$").unwrap())
+}
+
+/// A text cut before the block id that ends it (`split_block_id`).
+pub struct BlockIdCut<'t> {
+    /// The text before the id and the space that sets it apart.
+    pub before: &'t str,
+    /// The id as written: that space, `^`, its name and any space after it (` ^rent`).
+    pub written: &'t str,
+    /// The id's name, without the `^` (`rent`).
+    pub id: &'t str,
+}
+
+/// `text` cut before the `^id` that ends it, after a space or alone, if it ends with one.
+/// Whether that id names a block is the reader's to say (the flavour, the block's last line).
+pub fn split_block_id(text: &str) -> Option<BlockIdCut<'_>> {
+    let c = block_id_pattern().captures(text)?;
+    let (before, written) = text.split_at(c.get(0).unwrap().start());
+    let id = c.get(1).unwrap().as_str();
+    Some(BlockIdCut {
+        before,
+        written,
+        id,
+    })
 }
 
 /// A trailing `^id` (after a space, or alone on the paragraph's last line) names the block.
@@ -1601,11 +1624,11 @@ fn trailing_block_id(inlines: &mut Vec<Inline>) {
     let Some(Inline::Text(text)) = inlines.last_mut() else {
         return;
     };
-    let Some(c) = block_id_pattern().captures(text) else {
+    let Some(cut) = split_block_id(text) else {
         return;
     };
-    let id = c[1].to_string();
-    let start = c.get(0).unwrap().start();
+    let id = cut.id.to_string();
+    let start = cut.before.len();
     text.truncate(start);
     while inlines.last().is_some_and(is_blank) {
         inlines.pop();

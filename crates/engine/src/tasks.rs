@@ -602,7 +602,7 @@ pub fn toggle_text(
     let (prefix, mid) = (format!("{quote}{}", &caps[1]), caps[3].to_string());
     // What the tick adds goes before a block id, as Obsidian Tasks writes it, and a new
     // occurrence gets none: two lines can't share one.
-    let (body, block_id) = split_block_id(&caps[4], item);
+    let (body, block_id) = cut_own_block_id(&caps[4], item);
     let mut warning = None;
     let mut next = None;
 
@@ -664,6 +664,8 @@ pub fn toggle_text(
         out.push_str(nl);
     }
     let new_items = items::extract(rel, &out, item_settings);
+    let ticked = task_at(&new_items, toggled_line, &new_line, settings);
+    keeps_anchor(item, ticked.map(|(i, _)| i))?;
     let rev_at = |at: usize| {
         task_at(&new_items, at, &lines[at - 1], settings)
             .map_or_else(|| line_id(&lines[at - 1]), |(i, _)| i.rev.clone())
@@ -697,14 +699,33 @@ fn task_at<'a>(
         .find_map(|i| Some((i, Task::of(i, raw, settings)?)))
 }
 
-/// `body` cut before the block id that ends it (` ^rent`), and the id, when the item reads one
-/// on this line. An item of several lines has its id on its last.
-fn split_block_id<'a>(body: &'a str, item: &Item) -> (&'a str, &'a str) {
+/// `body` cut before the block id that ends it (` ^rent`), and the id as written, when the
+/// item reads one on this line. An item of several lines has its id on its last.
+fn cut_own_block_id<'a>(body: &'a str, item: &Item) -> (&'a str, &'a str) {
     let here = item.block_id.is_some() && item.line == item.end_line;
-    match crate::markdown::block_id_pattern().captures(body) {
-        Some(c) if here => body.split_at(c.get(0).unwrap().start()),
+    match crate::markdown::split_block_id(body) {
+        Some(cut) if here => (cut.before, cut.written),
         _ => (body, ""),
     }
+}
+
+/// Refused when the ticked task would not keep the block id it had (`was`): its anchor, which
+/// links point at, is never moved or dropped quietly. `now` is the ticked task read back.
+fn keeps_anchor(was: &Item, now: Option<&Item>) -> Result<()> {
+    let (was, now) = (
+        was.block_id.as_deref(),
+        now.and_then(|i| i.block_id.as_deref()),
+    );
+    if was == now {
+        return Ok(());
+    }
+    let named = |id: Option<&str>| id.map_or_else(|| "none".to_string(), |id| format!("^{id}"));
+    Err(crate::edit::EditError::ReadBack(format!(
+        "the task's block id would change from {} to {}",
+        named(was),
+        named(now)
+    ))
+    .into())
 }
 
 fn strip_field(body: &str, emoji: &str, dv: &str) -> String {
