@@ -3822,22 +3822,23 @@ impl Home {
     }
 
     fn rename_key(&mut self, k: KeyEvent) {
-        match &mut self.mode {
-            Mode::ConfirmRename {
-                scroll, waiting, ..
-            } => match k.code {
-                KeyCode::Esc | KeyCode::Char('n') => {
-                    if let (Some(t), Some(core)) = (*waiting, self.core.as_mut()) {
-                        core.cancel_relink(t);
-                    }
-                    self.mode = Mode::Normal;
-                    self.flash("rename cancelled");
+        let Mode::ConfirmRename {
+            scroll, waiting, ..
+        } = &mut self.mode
+        else {
+            return;
+        };
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('n') => {
+                if let (Some(t), Some(core)) = (*waiting, self.core.as_mut()) {
+                    core.cancel_relink(t);
                 }
-                KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
-                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::Enter | KeyCode::Char('y') if waiting.is_none() => self.confirm_rename(),
-                _ => {}
-            },
+                self.mode = Mode::Normal;
+                self.flash("rename cancelled");
+            }
+            KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
+            KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Char('y') if waiting.is_none() => self.confirm_rename(),
             _ => {}
         }
     }
