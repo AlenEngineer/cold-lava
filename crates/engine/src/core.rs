@@ -1494,6 +1494,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The watcher follows no symlink, as the scan doesn't (#349): a folder linked into the
+    /// workspace is watched only where it is, so a note's change is heard under its own path.
+    /// inotify watches a folder once, under the path it was given last, and that path could be
+    /// the link's.
+    #[cfg(unix)]
+    #[test]
+    fn a_change_behind_a_folder_link_is_heard_as_the_note_s_own() {
+        let name = format!("cold-lava-core-folder-link-{}", std::process::id());
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(dir.join("Concepts")).unwrap();
+        std::fs::write(dir.join("Concepts/Lava.md"), "- [ ] Measure\n").unwrap();
+        for at in ["Con", "Linked"] {
+            std::os::unix::fs::symlink(dir.join("Concepts"), dir.join(at)).unwrap();
+        }
+        let mut core = Core::open(&dir).unwrap();
+        if core.is_live() {
+            let lava = Event::NoteChanged("Concepts/Lava".into());
+            std::fs::write(dir.join("Concepts/Lava.md"), "- [ ] Measure the lava\n").unwrap();
+            let ev = wait_for(&mut core, |e| e.contains(&lava));
+            assert!(
+                ev.contains(&lava) || ev.contains(&Event::Rescanned),
+                "{ev:?}"
+            );
+            for at in ["Con/Lava", "Linked/Lava"] {
+                assert!(core.index.by_rel(at).is_none(), "{at} is no note");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn owned_files_join_the_index_with_what_their_owner_gave() {
         use crate::gateway::{Page, Query, Select};

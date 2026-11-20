@@ -1545,3 +1545,69 @@ fn an_anchor_in_a_file_another_owner_reads_is_refused_before_it_is_asked() {
         assert!(h.deliver().is_empty(), "{file}: nothing to hear");
     }
 }
+
+/// A symlink is no note and no owned file, as the scan reads none (#349, #357). One the
+/// watcher reports, at a note's path or on the way to it, is never an item, so no `items/edit`
+/// writes through it: not into a git hook, the trash or a file outside the workspace, and not,
+/// by a file of an owner's kind, into a note. A file at that path that a link replaced is
+/// gone, its items with it. Every link leads into the test's own folders.
+#[cfg(unix)]
+#[test]
+fn a_link_the_watcher_reports_is_no_item_so_no_edit_writes_through_it() {
+    let outside = temp("links-outside");
+    std::fs::write(outside.join("Out.md"), "- [ ] Leave the workspace\n").unwrap();
+    let mut h = Harness::with(
+        "links",
+        &[
+            (".git/hooks/pre-commit", "- [ ] Run the hook\n"),
+            (".trash/Old.md", "- [ ] Bury the old note\n"),
+            ("Concepts/Lava.md", "- [ ] Measure the lava\n"),
+            ("Inbox/Ash.md", ASH),
+        ],
+    );
+    h.follow("agenda", tasks());
+    let root = h.core.root().to_path_buf();
+    let is_link = |at: &str| root.join(at).symlink_metadata().unwrap().is_symlink();
+    for (at, target) in [
+        ("Inbox/Hook.md", root.join(".git/hooks/pre-commit")),
+        ("Inbox/Old.md", root.join(".trash/Old.md")),
+        ("Inbox/Out.md", outside.join("Out.md")),
+        ("Inbox/Lava.lines", root.join("Concepts/Lava.md")),
+    ] {
+        let bytes = std::fs::read(&target).unwrap();
+        std::fs::write(root.join(at), &bytes).unwrap();
+        h.saw(at);
+        h.deliver();
+        h.owner_reads();
+        h.deliver();
+        let mine = |i: &Item| i.note == at;
+        let task = h.items("agenda").into_iter().find(mine).unwrap();
+
+        std::fs::remove_file(root.join(at)).unwrap();
+        std::os::unix::fs::symlink(&target, root.join(at)).unwrap();
+        h.saw(at);
+        h.deliver();
+        h.owner_reads();
+        h.deliver();
+        assert!(!h.items("agenda").iter().any(mine), "{at} holds no items");
+        let edit = h.edit("tidy", &tick(&task));
+        h.owner_edits();
+        h.owner_reads();
+        h.deliver();
+        let refused = edit.map(drop).unwrap_err();
+        assert_eq!(refused.reason, Reason::Changed, "{at}: {refused}");
+        assert_eq!(std::fs::read(&target).unwrap(), bytes, "{at} wrote nothing");
+        assert!(is_link(at), "{at} is still a link");
+    }
+
+    let hook = root.join(".git/hooks/pre-commit");
+    std::os::unix::fs::symlink(&hook, root.join("Hook.md")).unwrap();
+    std::os::unix::fs::symlink(root.join("Concepts"), root.join("Inbox/Con")).unwrap();
+    h.saw("Hook.md");
+    h.saw("Inbox/Con/Lava.md");
+    let batch = h.deliver();
+    assert!(batch.is_empty(), "a new link is no news: {batch:?}");
+    let notes: Vec<String> = h.items("agenda").into_iter().map(|i| i.note).collect();
+    assert_eq!(notes, ["Concepts/Lava.md", "Inbox/Ash.md"]);
+    let _ = std::fs::remove_dir_all(&outside);
+}

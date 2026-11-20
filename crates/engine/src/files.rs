@@ -1133,7 +1133,12 @@ mod tests {
         let table = fingerprint(&dir.join("Data/Eruptions.csv"));
         let said = |e: Error| (e.reason, e.message);
         let refused = |path: &str, link: &str| {
-            let message = format!("{path}: {link} is a symbolic link");
+            let why = format!("{link} is a symbolic link, which the gateway never follows");
+            let message = if path == link {
+                why
+            } else {
+                format!("{path}: {why}")
+            };
             (Reason::Refused, message)
         };
         let new = |path: &str| Create {
