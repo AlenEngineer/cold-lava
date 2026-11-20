@@ -188,8 +188,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   parse Markdown for the reader anywhere else. `markdown/entities.rs` is HTML5's named
   character references. `markdown/tag_name.rs` is what a tag's name is (the patterns that
   find `#tag`, `is_number`, and `is_name` for a name given on its own), the one rule the
-  tree, the reader, the frontmatter's `tags`, the tag dialog and rename-tag ask (#272, D-4):
-  don't spell a tag's characters anywhere else.
+  tree, the reader, the frontmatter's `tags`, the tag dialog and rename-tag ask (#272, D-4).
+  Two places don't ask it yet, recorded on #272: the matcher's frontmatter gate and its
+  `Value::Tag` (which a `set-field` on a tag field uses). Don't add a third.
 - `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
   (every byte a token; printing it gives the note back), blocks found line by line as
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
