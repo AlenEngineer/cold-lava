@@ -1102,3 +1102,56 @@ fn a_board_says_when_it_leaves_nothing_out_any_more() {
     assert_eq!(said(&events), [None], "gone");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A board that a rescan no longer finds says so, so that a report still waiting about it is
+/// dropped: one deleted, and one whose folder moved, which is reported at its new path
+/// (#303's design review, round 4, M1).
+#[test]
+fn a_board_a_rescan_no_longer_finds_says_so() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-unfound-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Ash")).unwrap();
+    let board = json!({"nodes": [
+        {"id": "", "type": "text", "text": "- [ ] Sweep", "x": 0, "y": 0, "width": 1, "height": 1},
+    ], "edges": []})
+    .to_string();
+    std::fs::write(dir.join("Ash/A.canvas"), &board).unwrap();
+    std::fs::write(dir.join("B.canvas"), &board).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
+    let left = |path: &str, message: Option<&str>| (path.to_string(), message.map(String::from));
+    /// What `events` say each owned file leaves out, by its path.
+    fn told(events: &[Event]) -> Vec<(String, Option<String>)> {
+        let mut told: Vec<(String, Option<String>)> = (events.iter())
+            .filter_map(|e| match e {
+                Event::OwnedLeavesOut { path, message, .. } => {
+                    Some((path.clone(), message.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        told.sort();
+        told
+    }
+    assert_eq!(
+        told(&core.poll()),
+        [
+            left("Ash/A.canvas", Some(empty)),
+            left("B.canvas", Some(empty))
+        ]
+    );
+
+    std::fs::rename(dir.join("Ash"), dir.join("Cinder")).unwrap();
+    std::fs::remove_file(dir.join("B.canvas")).unwrap();
+    core.rescan_now();
+    assert_eq!(
+        told(&core.poll()),
+        [
+            left("Ash/A.canvas", None),
+            left("B.canvas", None),
+            left("Cinder/A.canvas", Some(empty)),
+        ],
+        "the boards the rescan no longer finds say they leave nothing out"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
