@@ -61,7 +61,7 @@ drive tests) run nowhere.
 
 ## Architecture
 
-A Cargo workspace of six crates, plus the GUI beside it. The version lives in the root `Cargo.toml` under
+A Cargo workspace of six crates. The version lives in the root `Cargo.toml` under
 `[workspace.package]`; `example-workspace/`, `docs/` and `scripts/` stay at the root.
 
 - `crates/engine`: the `cold-lava-engine` library (the core below). It has no UI and must not
@@ -88,7 +88,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   "The frontend").
 - `crates/editor`: `cold-lava-editor`, cold-lava's own text editor (the main writing surface to come,
   docs/engine.md "The notebook"; other editors are extensions), headless (text, cursors, edits,
-  undo; no drawing) so the TUI and the GUI render it alike. Empty until the document view edits
+  undo; no drawing) so every frontend renders it alike. Empty until the document view edits
   in place. Saves go through the engine's safe writes.
 - `crates/canvas`: `cold-lava-canvas`, the canvas engine of `docs/shapes.md`, headless and with
   no dependencies. Shapes are parts in their own unit box, placed by the user (move, stretch,
@@ -106,13 +106,6 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   placed by `fit::anchored` so they never overlap; `draw.rs` paints a whole placed shape and
   previews it as text. Shape definitions are read by the engine (`shapes.rs`), not here, so the
   crate keeps no dependencies. Nothing places shapes yet; that comes after scenes (#91).
-- `crates/gui`: `cold-lava-gui`, a Tauri window on the same engine. It is excluded from the Cargo
-  workspace (its own `[workspace]` and `Cargo.lock`) so `cargo build`/`test` and CI never compile
-  a webview; build it with `cargo build --manifest-path crates/gui/Cargo.toml` (Linux needs
-  webkit2gtk-4.1). The terminal UI stays the main frontend. A new engine dependency must also
-  go into `crates/gui/Cargo.lock`: `cargo metadata --format-version 1 --manifest-path
-  crates/gui/Cargo.toml >/dev/null` resolves and writes it without building, and CI's "GUI lock
-  up to date" step fails while it is stale.
 
 **Core** (`crates/engine/src`; no UI; other code asks it instead of re-parsing files):
 

@@ -1026,10 +1026,8 @@ extension host every frontend shares (`crates/host`, no user interface: manifest
 extensions in their own process), the
 frontend framework (`crates/views`, filled as its parts are extracted: today the view
 vocabulary extensions send) and a small headless text
-editor both frontends render (`crates/editor`) and the headless canvas engine shapes are drawn from
-(`crates/canvas`) are crates in one Cargo workspace. A graphical window on Tauri lives in `crates/gui`, outside the workspace so normal
-builds never compile a webview: `cargo run --manifest-path crates/gui/Cargo.toml` (on Linux it
-needs webkit2gtk-4.1). The terminal UI is and stays the main way to use cold-lava.
+editor every frontend renders (`crates/editor`) and the headless canvas engine shapes are drawn from
+(`crates/canvas`) are crates in one Cargo workspace. The terminal UI is and stays the main way to use cold-lava.
 
 ```bash
 cargo test --workspace                                   # unit and integration tests
