@@ -5612,7 +5612,7 @@ impl Home {
         };
         let tall: usize = lines.iter().map(rows).sum::<usize>() + 1 + detail.len();
         let h = (tall as u16 + 2).clamp(6.min(area.height), 24);
-        let r = popup::centred(area, w, h.min(area.height), area.height / 6);
+        let r = popup::upper(area, w, h.min(area.height));
         let inner = popup::frame(f, r, title, hint, HIT);
         let mut lines = lines;
         let room = (inner.height as usize).saturating_sub(lines.len());

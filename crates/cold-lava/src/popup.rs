@@ -13,15 +13,21 @@ pub fn centred(area: Rect, w: u16, h: u16, top: u16) -> Rect {
     Rect::new(area.x + (area.width - w) / 2, area.y + top, w, h)
 }
 
+/// A `w`×`h` popup centred across `area`, a sixth of the way down it.
+pub fn upper(area: Rect, w: u16, h: u16) -> Rect {
+    centred(area, w, h, area.height / 6)
+}
+
 /// The width of a dialog that confirms a change (rename, merge, delete) in `area`.
 pub fn width(area: Rect) -> u16 {
     (area.width * 3 / 4).clamp(50.min(area.width), 120)
 }
 
-/// Where the rename and the merge dialogs go in `area`.
+/// Where a dialog that confirms a change goes in `area`: as tall as two thirds of it, within
+/// bounds.
 pub fn confirm(area: Rect) -> Rect {
     let h = (area.height * 2 / 3).clamp(10.min(area.height), 34);
-    centred(area, width(area), h, area.height / 6)
+    upper(area, width(area), h)
 }
 
 /// Clear `r` and draw a popup's frame on it: a rounded border in `colour`, the title in bold,
@@ -41,12 +47,12 @@ pub fn frame(f: &mut Frame, r: Rect, title: &str, hint: &str, colour: Color) -> 
     inner
 }
 
-/// The centred popup shared by the quick switcher, the palette, the outline, the bookmarks,
-/// tidy and the recipes; returns its inside.
+/// Draw a picker's popup in `area`: two thirds of it each way, within bounds, a sixth of the
+/// way down. Returns its inside.
 pub fn picker(f: &mut Frame, area: Rect, title: &str, hint: &str) -> Rect {
     let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
     let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
-    frame(f, centred(area, w, h, area.height / 6), title, hint, ACCENT)
+    frame(f, upper(area, w, h), title, hint, ACCENT)
 }
 
 /// Draw a one-line prompt in the upper middle of `area`; returns where it went.

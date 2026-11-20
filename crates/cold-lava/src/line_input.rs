@@ -13,8 +13,7 @@ pub enum Edit {
     Cleared,
 }
 
-/// Whether Ctrl-U empties the line. It does in the prompts, the outline, the bookmarks and
-/// the palette; the quick switcher and the search take it and do nothing (#365).
+/// Whether Ctrl-U empties the line, or is taken and does nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CtrlU {
     Clears,

@@ -1,5 +1,4 @@
-//! A list picked from by typing (the quick switcher, the outline, the bookmarks, the palette
-//! and the search): what a key does to its cursor and its query.
+//! A list picked from by typing: what a key does to its cursor and its query.
 
 use crate::line_input::{self, CtrlU};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -24,17 +23,28 @@ pub fn key(
     k: KeyEvent,
     ctrl_u: CtrlU,
 ) -> Option<Picked> {
-    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-    match k.code {
-        KeyCode::Down | KeyCode::Tab => *sel = (*sel + 1).min(rows.saturating_sub(1)),
-        KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
-            *sel = (*sel + 1).min(rows.saturating_sub(1))
+    match moved(*sel, rows, k) {
+        Some(to) => {
+            *sel = to;
+            Some(Picked::Moved)
         }
-        KeyCode::Up | KeyCode::BackTab => *sel = sel.saturating_sub(1),
-        KeyCode::Char('p') | KeyCode::Char('k') if ctrl => *sel = sel.saturating_sub(1),
-        _ => return line_input::key(query, k, ctrl_u).map(|_| Picked::Typed),
+        None => line_input::key(query, k, ctrl_u).map(|_| Picked::Typed),
     }
-    Some(Picked::Moved)
+}
+
+/// Where `k` moves a cursor at `sel` in a list of `rows` rows, or `None` when it is no
+/// movement key.
+fn moved(sel: usize, rows: usize, k: KeyEvent) -> Option<usize> {
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    let down = (sel + 1).min(rows.saturating_sub(1));
+    let up = sel.saturating_sub(1);
+    match k.code {
+        KeyCode::Down | KeyCode::Tab => Some(down),
+        KeyCode::Char('n') | KeyCode::Char('j') if ctrl => Some(down),
+        KeyCode::Up | KeyCode::BackTab => Some(up),
+        KeyCode::Char('p') | KeyCode::Char('k') if ctrl => Some(up),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

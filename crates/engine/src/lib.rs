@@ -28,6 +28,7 @@ pub mod paths;
 pub mod problem;
 pub mod read;
 pub mod recipe;
+pub mod rel_path;
 pub mod rename;
 pub mod resolver;
 pub mod search;

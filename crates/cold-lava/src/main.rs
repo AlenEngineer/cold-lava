@@ -26,7 +26,6 @@ mod previews;
 mod reader;
 mod recipe_view;
 mod refused;
-mod rel_path;
 mod reports;
 mod say;
 mod scene;
@@ -41,9 +40,9 @@ mod whichkey;
 
 use cold_lava_engine::{
     act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
-    json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rename,
-    resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types, workspace,
-    write,
+    json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rel_path,
+    rename, resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types,
+    workspace, write,
 };
 
 use anyhow::Result;
