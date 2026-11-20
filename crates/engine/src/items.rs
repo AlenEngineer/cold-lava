@@ -15,7 +15,7 @@ use crate::identity;
 use crate::markdown::{self, Flavour, Source, Syntax};
 use crate::matcher::{self, Matcher, Typed};
 use crate::owner::markdown::attributes::{self, Readings};
-use crate::tasks::{self, TasksSettings};
+use crate::tasks_settings::{StatusType, TasksSettings};
 use crate::templates;
 use crate::types::{self, On, Types};
 use crate::workspace::clean_target;
@@ -78,7 +78,7 @@ impl Settings {
         mut readings: Readings,
     ) -> Settings {
         // The plugin's core symbols first, so a status set by its type is written as they are.
-        let mut statuses: Vec<(&char, &tasks::StatusType)> = tasks.statuses.iter().collect();
+        let mut statuses: Vec<(&char, &StatusType)> = tasks.statuses.iter().collect();
         statuses.sort_by_key(|(c, _)| {
             [' ', 'x', '/', '-']
                 .iter()

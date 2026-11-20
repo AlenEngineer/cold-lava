@@ -35,6 +35,7 @@ pub mod shapes;
 pub mod shows;
 pub mod style;
 pub mod tasks;
+pub mod tasks_settings;
 pub mod templates;
 pub mod tidy;
 pub mod trash;

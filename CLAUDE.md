@@ -401,9 +401,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
   `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo,
   bookmarks) follow the pattern that section ends with.
-- `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
-  `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
-  notes settings, moment.js date formats.
+- `tasks_settings.rs`: Obsidian Tasks settings (statuses, global filter), a leaf that `items`
+  and `tasks` both read (`tasks::TasksSettings` re-exports it).
+- `tasks.rs`, `daily.rs`: `agenda` and `toggle` on items of the built-in `task` type
+  (`types/task.toml`, read by `Task::of`); Daily notes settings, moment.js date formats.
 - `shapes.rs`: shape definitions (docs/shapes.md): `[[shapes]]` and `[glyphs]` from the
   built-in file (`shapes/built-in.toml`: text, rect, circle, line, arrow, card, sticky, table,
   venn2, the glyphs), extensions' manifests, config.toml and `.cold-lava/shapes.toml`, in the
