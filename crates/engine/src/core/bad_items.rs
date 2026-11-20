@@ -966,3 +966,84 @@ fn a_board_with_a_card_left_out_is_reported_as_it_opens() {
     assert_eq!(words, [json!("Shown")]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A cached answer whose items no longer all read is reported once as the workspace opens,
+/// not again when its owner gives the same for that version (#303's behaviour review, round
+/// 2, should-fix 5). An answer for another version of the file that leaves items out is
+/// reported again, as every such answer was before #303.
+#[test]
+fn a_cached_answer_that_no_longer_reads_is_reported_once() {
+    let (dir, base) = cached_by_a_looser_binary("stale-once");
+    let mut core = Core::open(&dir).unwrap();
+    let kind = OwnedKind {
+        extension: "probe".into(),
+        owner: OWNER.into(),
+        version: "1".into(),
+    };
+    core.set_owners(vec![kind], Some(&base.join("owners")));
+    assert_eq!(reported(&core.poll()).len(), 1, "from the cache");
+    let (_, again) = core.take_reads().pop().expect("its owner is asked again");
+    core.file_given(OWNER, FILE, &again.rev, read(&again.text));
+    assert_eq!(
+        reported(&core.poll()),
+        Vec::<String>::new(),
+        "its owner leaves out what the cache did"
+    );
+
+    std::fs::write(dir.join(FILE), format!("{}\n", again.text)).unwrap();
+    let mut asked = Vec::new();
+    for _ in 0..100 {
+        core.files.push(FILE.to_string());
+        core.schedule(Duration::ZERO);
+        core.poll();
+        asked = core.take_reads();
+        if !asked.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let (_, changed) = asked.pop().expect("asked for its new version");
+    core.file_given(OWNER, FILE, &changed.rev, read(&changed.text));
+    assert_eq!(reported(&core.poll()).len(), 1, "another version's answer");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A board that leaves a card out isn't reported again after a rename rewrites its link to
+/// the renamed note: the engine's own owner reads it again and leaves out the same card, and
+/// what was asked of the owners during the rename doesn't make it news (#303's design
+/// review, round 3, M1).
+#[test]
+fn a_board_isnt_reported_again_after_a_rename() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-renamed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
+    let board = json!({"nodes": [
+        {"id": "", "type": "text", "text": "- [ ] Hidden", "x": 0, "y": 0, "width": 1, "height": 1},
+        {"id": "c", "type": "file", "file": "Lava.md", "x": 0, "y": 9, "width": 1, "height": 1},
+    ], "edges": []});
+    std::fs::write(dir.join("Board.canvas"), board.to_string()).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    assert_eq!(reported(&core.poll()).len(), 1, "as it opens");
+
+    let note = core.index.by_rel("Lava").unwrap();
+    let mut plan = crate::rename::plan(&core.index, note, "Hot/Lava").unwrap();
+    assert_eq!(core.relink(&mut plan.edits), Ok(None), "answered at once");
+    crate::rename::apply(&plan).unwrap();
+    core.relinked(&plan.edits, |p| plan.moved(p));
+    let text = std::fs::read_to_string(dir.join("Board.canvas")).unwrap();
+    assert!(text.contains("Hot/Lava.md"), "{text}");
+    assert_eq!(
+        reported(&board_written(&mut core, &text)),
+        Vec::<String>::new(),
+        "read again after the rename"
+    );
+    core.rescan_now();
+    assert_eq!(
+        reported(&core.poll()),
+        Vec::<String>::new(),
+        "and after a rescan"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
