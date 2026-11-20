@@ -165,8 +165,7 @@ says otherwise (see Changed).
   piece's text over 1 MiB (one run's, or all its runs and cells together, a field run's
   value included, so a field of exactly 1 MiB beside any other text is left out), a link's words
   in a piece over 4096 bytes, a text attribute or field value over 1 MiB, a row of more than
-  4096 cells (a row of 4097 cells with text is told "more than 4096 cells", where it was
-  told "more than 4096 runs"), a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
+  4096 cells (a row of 4097 cells with text is told "more than 4096 cells"), a Markdown piece's or a typed item's place that is empty or over 1024 bytes, a
   typed item's type that is empty or over 256 bytes, more than 256 fields, a field name
   that is empty or over 256 bytes, a field holding a list of more than 4096 values, a table
   or a list of lists. A link to a file whose place is empty or over 1024 bytes, whose target
@@ -174,7 +173,7 @@ says otherwise (see Changed).
   named, and the rest of the answer read. An answer to `shape/region` showing more than
   50,000 items, or to `shape/gesture` with more than 64 steps, a name in a step over 256
   bytes or a value over 64 KiB, is refused, naming the limit; a shape's own steps in
-  `shapes.toml` are held to the same names and values. Before, only the 64 MB message
+  `shapes.toml` are held to the same names and values. Before, only the 64 MiB message
   bounded these.
 - One item of each kind at a place. Two Markdown pieces an owner gave at one place were
   both listed, and ticking a task in the first gave the second the first's text; two typed
@@ -222,14 +221,14 @@ says otherwise (see Changed).
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80
   characters, as every other problem with an answer is.
 - An owner's piece that is `in` no piece, or that an attribute leaves out, still holds its
-  place: a second piece at that place is left out, where it used to be read.
+  place: a second piece at that place is left out.
 - An item left out of an owner's answer is not relinked by a rename: its links keep the
   old name, as nothing reads them.
 
 - An owner's item that doesn't read costs only itself (#265, step A4). An item with a key its
   kind doesn't have, a value of the wrong kind or a role that isn't one of the nine used to
   refuse the whole `file/read` answer, so the file showed nothing, and the status line said
-  only "its answer to file/read doesn't read as one". Now that item alone is left out and the
+  only that the answer didn't read, in serde's words. Now that item alone is left out and the
   rest of the file's items show; the status line names its place and what was wrong
   (`p3: unknown field `colour`, expected one of `place`, `role`, …`, `p4: its role "slide" is
   not a role: one of document, section, …`). An answer that isn't `{items, links}`, or a link
@@ -239,7 +238,7 @@ says otherwise (see Changed).
   item as it was; if its owner drops or changes it (reordering its keys counts), the whole
   rename is refused, where the rename used to go ahead and leave that file alone.
 - A piece with an attribute's name over 256 bytes is reported as "an attribute's name is
-  empty or longer than 256 bytes" (it said "a attribute's").
+  empty or longer than 256 bytes".
 - At most 100 problems with an owner's answer are reported, then how many more (`and 49900
   more`); 50,000 bad items made one message of about 4 MB. The same holds for the steps of an
   extension's answer to `shape/gesture`.
@@ -247,8 +246,8 @@ says otherwise (see Changed).
   core keeps no answer in the wrong form, or with steps that break a rule on their own (with
   only their rebinds kept, so the refusal still names a rebind to a shape that isn't loaded).
   An answer is read as before: `items` that read make it a region's answer, else `do` that
-  reads a gesture's. One that doesn't read now says what was wrong where it said "doesn't
-  read as one": "an answer to shape/region has items, and an answer to shape/gesture has do"
+  reads a gesture's. One that doesn't read now says what was wrong, where 0.6.0 named a Rust
+  type: "an answer to shape/region has items, and an answer to shape/gesture has do"
   when neither form reads, and serde's words otherwise ("invalid type: null, expected a
   map", "unknown variant `explode`, expected one of `edit`, `create`, `rebind`", "missing
   field `label`"), cut to 200 characters and never naming a Rust type.
@@ -310,11 +309,11 @@ says otherwise (see Changed).
   `cold-lava keys`, and an extension's `extension.toml` in `cold-lava ext list`. A status
   line (the menu's, the shape editor's) still says the message alone, and `--json` and
   what extensions are sent keep the one line they had.
-- An extension's answer that doesn't read is said in plain words: "its answer to
-  shape/gesture doesn't read as one" instead of "its answer doesn't read: data did not
-  match any variant of untagged enum Reply". serde's own words stay only where they say
-  just what the answer wrote and what a value should be (a missing, duplicate or unknown
-  field or variant, a value of the wrong kind): "its answer to file/edit doesn't read:
+- An extension's answer that doesn't read is said in plain words, naming the request it
+  answers, where 0.6.0 gave serde's words naming a Rust type ("its answer doesn't read: data
+  did not match any variant of untagged enum Answered"). serde's own words stay only where
+  they say just what the answer wrote and what a value should be (a missing, duplicate or
+  unknown field or variant, a value of the wrong kind): "its answer to file/edit doesn't read:
   missing field `text`". Anything else, a name of cold-lava's own types among it, is "doesn't
   read as one". The same for `file/read`, `file/edit`, `file/preview`, `shape/region` and
   `shape/gesture`, wherever it is said: the status line, an owner's trouble notice, and the
@@ -448,9 +447,7 @@ says otherwise (see Changed).
   else (an item, another kind of edit) used to run the recipe, `options` without a recipe
   were ignored, an `edit` with a `set-field` and a `toggle` together used to set the field
   and ignore the toggle, and a `set-field` with two of `value`, `add` and `remove` used to
-  take the first. An answer that doesn't read at all now names `Reply` where its message
-  named `Answered` (`its answer doesn't read: data did not match any variant of untagged
-  enum Reply`). A shape's own steps load and run as before.
+  take the first. A shape's own steps load and run as before.
 - An extension can no longer close a prompt, a dialog or a typed query (#269). While a new
   note's or folder's name, a workspace's folder, a new name, a folder to move to, a tag, the
   notes filter or a recipe's options were being typed, an extension that opened a note,
