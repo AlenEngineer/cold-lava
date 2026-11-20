@@ -110,25 +110,28 @@ mod tests {
         assert_eq!(of("ab", "ba").moved, [(0, 1)], "neither kept: the first");
     }
 
-    /// The length of the longest common subsequence, by its table.
-    fn lcs(a: &[char], b: &[char]) -> usize {
-        let mut t = vec![vec![0; b.len() + 1]; a.len() + 1];
+    /// The longest run two lists hold in the same order, and of those as long, the most
+    /// uppercase entries one keeps, by the quadratic table.
+    fn best(a: &[char], b: &[char]) -> (usize, usize) {
+        let mut t = vec![vec![(0, 0); b.len() + 1]; a.len() + 1];
         for i in (0..a.len()).rev() {
             for j in (0..b.len()).rev() {
+                let skip = t[i + 1][j].max(t[i][j + 1]);
+                let (n, upper) = t[i + 1][j + 1];
                 t[i][j] = match a[i] == b[j] {
-                    true => t[i + 1][j + 1] + 1,
-                    false => t[i + 1][j].max(t[i][j + 1]),
+                    true => skip.max((n + 1, upper + usize::from(a[i].is_uppercase()))),
+                    false => skip,
                 };
             }
         }
         t[0][0]
     }
 
-    /// Every list of up to four of `a`, `b` and `X` against every other (121 lists): nothing
-    /// is said of two equal lists and something of two that differ; each entry is dropped,
-    /// added, moved or kept, once; what is dropped and added is what each list holds more
-    /// of; what is kept is a run both lists hold in order; and where no value repeats in
-    /// either list (16 lists), it is as long as any run the two share.
+    /// Every list of up to four of `a`, `b` and `X` against every other (121 lists, a value
+    /// repeated or not): nothing is said of two equal lists and something of two that
+    /// differ; each entry is dropped, added, moved or kept, once; what is dropped and added
+    /// is what each list holds more of; what is kept is a run both lists hold in order, as
+    /// long as any run the two share, and of those as long, one keeping the most `X`.
     #[test]
     fn every_short_list_is_told_apart_from_every_other() {
         let mut lists: Vec<Vec<char>> = vec![vec![]];
@@ -140,8 +143,13 @@ mod tests {
             lists.extend(last.clone());
         }
         let count = |l: &[char], c: char| l.iter().filter(|x| **x == c).count();
-        let distinct = |l: &[char]| "abX".chars().all(|c| count(l, c) < 2);
-        let (mut pairs, mut both_distinct) = (0, 0);
+        let once = |mut at: Vec<usize>| {
+            let n = at.len();
+            at.sort_unstable();
+            at.dedup();
+            at.len() == n
+        };
+        let mut pairs = 0;
         for w in &lists {
             for g in &lists {
                 let d = diff(w, g, |c| c.is_uppercase());
@@ -154,6 +162,14 @@ mod tests {
                 }
                 let moved_w: Vec<usize> = d.moved.iter().map(|m| m.0).collect();
                 let moved_g: Vec<usize> = d.moved.iter().map(|m| m.1).collect();
+                assert!(
+                    once([d.dropped.clone(), moved_w.clone()].concat()),
+                    "{w:?} {g:?}"
+                );
+                assert!(
+                    once([d.added.clone(), moved_g.clone()].concat()),
+                    "{w:?} {g:?}"
+                );
                 let kept_w: Vec<char> = (0..w.len())
                     .filter(|i| !d.dropped.contains(i) && !moved_w.contains(i))
                     .map(|i| w[i])
@@ -164,13 +180,11 @@ mod tests {
                     .collect();
                 assert_eq!(kept_w, kept_g, "{w:?} {g:?}");
                 assert!(d.moved.iter().all(|&(i, j)| w[i] == g[j]), "{w:?} {g:?}");
-                if distinct(w) && distinct(g) {
-                    both_distinct += 1;
-                    assert_eq!(kept_w.len(), lcs(w, g), "{w:?} {g:?}");
-                }
+                let upper = kept_w.iter().filter(|c| c.is_uppercase()).count();
+                assert_eq!((kept_w.len(), upper), best(w, g), "{w:?} {g:?}");
                 pairs += 1;
             }
         }
-        assert_eq!((pairs, both_distinct), (121 * 121, 16 * 16));
+        assert_eq!(pairs, 121 * 121);
     }
 }

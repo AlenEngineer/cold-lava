@@ -3175,8 +3175,17 @@ fields.star = { flag = "⭐", type = "bool" }
 
     /// Why `in_turn` given again with `change` made to its items and links is refused.
     fn refused(change: impl FnOnce(&mut Vec<Json>, &mut Vec<Json>)) -> String {
+        let (items, links) = in_turn();
+        refused_from(items, links, change)
+    }
+
+    /// Why `items` and `links` given again with `change` made to them are refused.
+    fn refused_from(
+        mut items: Vec<Json>,
+        mut links: Vec<Json>,
+        change: impl FnOnce(&mut Vec<Json>, &mut Vec<Json>),
+    ) -> String {
         let s = settings("");
-        let (mut items, mut links) = in_turn();
         let asked = read_back(
             "A.sheet",
             &given(json!({"items": items, "links": links})),
@@ -3240,10 +3249,8 @@ fields.star = { flag = "⭐", type = "bool" }
                 items.insert(to, moved);
             })
         };
-        let why = moved(6, 2);
-        assert!(why.starts_with("the item at md "), "{why}");
-        let why = moved(3, 0);
-        assert!(why.starts_with("the item at ty "), "{why}");
+        assert_eq!(moved(6, 2), "the Markdown piece at md moved");
+        assert_eq!(moved(3, 0), "the typed item at ty moved");
         let new = json!({"place": "ng", "role": "item", "text": ["New good"]});
         let why = refused(|items, _| items.insert(0, new));
         assert!(
@@ -3258,23 +3265,85 @@ fields.star = { flag = "⭐", type = "bool" }
     }
 
     /// In the links, what was added, dropped or given twice is named, and not a bad link that
-    /// only stands elsewhere because of it.
+    /// only stands elsewhere because of it. A link between pieces is named by where the two
+    /// lists of them first differ.
     #[test]
     fn the_links_name_what_changed_in_them() {
         let why = refused(|_, links| links.insert(0, json!({"target": "Lava", "place": "row"})));
-        assert!(why.contains("Lava") && !why.contains("left out"), "{why}");
+        assert_eq!(why, "links to Lava weren't asked for");
         let why = refused(|_, links| links.insert(2, json!({"from": "row", "to": "chore"})));
-        assert!(
-            why.contains("links between pieces") && !why.contains("left out"),
-            "{why}"
+        assert_eq!(
+            why,
+            r#"the link 1 of 3 between pieces is piece 2 to piece 1: "" where piece 1 to piece 2: "" was asked"#
         );
         let why = refused(|_, links| drop(links.remove(0)));
-        assert!(why.contains("Lava") && !why.contains("left out"), "{why}");
+        assert_eq!(why, "links to Lava are missing");
         let why = refused(|_, links| links.insert(0, links[0].clone()));
-        assert!(why.contains("Lava") && !why.contains("left out"), "{why}");
+        assert_eq!(why, "links to Lava weren't asked for");
         let why = refused(|_, links| links.push(links[3].clone()));
         assert!(why.starts_with("a link from chore to nowhere"), "{why}");
         let why = refused(|_, links| links.insert(2, links[1].clone()));
         assert!(why.starts_with("f: "), "{why}");
+    }
+
+    /// Where a place holds items of two forms (a board's text card is a piece and a Markdown
+    /// piece; an owner may give a row as a piece and as a typed item) or a link is given
+    /// twice, what the owner moved is named, and not a bad item or a bad link it passed
+    /// (#301's third review).
+    #[test]
+    fn what_moved_is_named_where_a_place_or_a_link_repeats() {
+        let piece =
+            |place: &str, words: &str| json!({"place": place, "role": "item", "text": [words]});
+        let chore = json!({"place": "chore", "role": "item", "text": ["Water plants"],
+                           "attributes": {"task": true, "checkbox": "open"}});
+        let bad = json!({"place": "bad", "role": "item", "text": ["x"], "colour": "red"});
+        let to_end = |items: &mut Vec<Json>, _: &mut Vec<Json>| {
+            let moved = items.remove(1);
+            items.push(moved);
+        };
+        let markdown = json!({"place": "p", "text": "- [ ] Markdown at p"});
+        let items = vec![
+            chore.clone(),
+            piece("p", "Piece at p"),
+            piece("a", "A piece"),
+            markdown,
+            bad.clone(),
+        ];
+        let piece_moved = refused_from(items, vec![], to_end);
+        let typed = json!({"place": "p", "type": "task",
+                           "fields": {"status": " ", "text": "Typed at p"}});
+        let items = vec![
+            chore.clone(),
+            typed,
+            piece("a", "A piece"),
+            piece("p", "Piece at p"),
+            bad,
+        ];
+        let typed_moved = refused_from(items, vec![], to_end);
+        let link = |target: &str| json!({"target": target, "place": "chore"});
+        let links = vec![
+            link("Lava"),
+            link("Magma"),
+            link("Lava"),
+            json!({"target": "", "place": "f"}),
+            json!({"from": "chore", "to": "row"}),
+        ];
+        let items = vec![chore, piece("row", "Row")];
+        let link_moved = refused_from(items, links, |_, links| {
+            let moved = links.remove(0);
+            links.insert(3, moved);
+        });
+        assert_eq!(
+            [
+                piece_moved.as_str(),
+                typed_moved.as_str(),
+                link_moved.as_str()
+            ],
+            [
+                r#"the piece 2 of 3 is in nothing: ["item",{},["A piece"],[]] where in nothing: ["item",{},["Piece at p"],[]] was asked"#,
+                "the typed item at p moved",
+                "the link to Lava moved",
+            ]
+        );
     }
 }
