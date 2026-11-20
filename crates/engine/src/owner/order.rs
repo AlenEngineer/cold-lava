@@ -1,57 +1,96 @@
 //! How one list differs from another list of the same kind of thing, in as few changes as
-//! explain it: what one holds more of than the other, and what stands elsewhere. The
-//! read-back names what an owner changed with it (`given::same`).
+//! explain it (short of a value repeated a thousand times over, `MORE_PAIRS`): what one holds
+//! more of than the other, and what stands elsewhere. The read-back names what an owner
+//! changed with it (`given::same`).
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
-/// How `got` differs from `want`, each entry by its position in its list, in order. The
-/// k-th of a value in one list is the k-th of it in the other.
+/// How `got` differs from `want`, each entry by its position in its list, in order.
 #[derive(Debug, Default, PartialEq)]
 pub struct Diff {
     /// Of `want`, those `got` holds fewer of.
     pub dropped: Vec<usize>,
     /// Of `got`, those `want` holds fewer of.
     pub added: Vec<usize>,
-    /// Of those both hold, the ones outside the longest run both hold in the same order: by
-    /// their position in `want`, then in `got`.
+    /// Of those both hold, the ones outside the run `diff` keeps: by their position in
+    /// `want`, then in `got`.
     pub moved: Vec<(usize, usize)>,
 }
 
-/// How `got` differs from `want`: nothing when they are equal. Of the runs kept in order that
-/// are as long as any, the one keeping the most entries `keep` holds to is kept, so those
-/// are the last to be said to have moved. In O(n log n), so an answer of any size is
-/// compared.
+/// How many pairs of equal entries `diff` weighs beyond one for each entry of `want`: about a
+/// million. Lists in which no value repeats have at most one pair an entry, so they are
+/// always within it, and a diff takes at most about as long as one of lists a million
+/// entries longer. Past it (a value given a thousand times in both lists, which an owner
+/// that gives what its file holds doesn't), the k-th of each value in `want` is paired with
+/// the k-th of it in `got` alone: the run kept is one both lists hold in order, and not
+/// always the longest.
+const MORE_PAIRS: usize = 1 << 20;
+
+/// How `got` differs from `want`: nothing when they are equal. The run kept is the longest
+/// both hold in order, and of those as long, the one keeping the most entries `keep` holds
+/// to: what is said to have moved is what the fewest moves explain, and when as few explain
+/// either of two entries moving, it is the one `keep` doesn't hold to. Past `MORE_PAIRS`, the
+/// run kept is one both hold in order. In O((n + p) log n) for `p` pairs of equal entries,
+/// at most `n` and `MORE_PAIRS` together, so an answer of any size is compared.
 pub fn diff<K: Eq + Hash>(want: &[K], got: &[K], keep: impl Fn(&K) -> bool) -> Diff {
-    let mut out = Diff::default();
+    within(want, got, keep, MORE_PAIRS)
+}
+
+/// What each list holds more of than the other, whatever the order: of `want`, those `got`
+/// holds fewer of, and of `got`, those `want` holds fewer of, each value's last ones.
+pub fn counts<K: Eq + Hash>(want: &[K], got: &[K]) -> (Vec<usize>, Vec<usize>) {
+    let d = pair(want, 0..want.len(), got, 0..got.len());
+    (d.dropped, d.added)
+}
+
+/// `diff`, weighing every pair of equal entries while there are at most `more` more of them
+/// than entries in `want`.
+fn within<K: Eq + Hash>(want: &[K], got: &[K], keep: impl Fn(&K) -> bool, more: usize) -> Diff {
     if want == got {
-        return out;
+        return Diff::default();
     }
-    let mut at: HashMap<&K, VecDeque<usize>> = HashMap::new();
+    let mut at: HashMap<&K, Vec<usize>> = HashMap::new();
     for (j, k) in got.iter().enumerate() {
-        at.entry(k).or_default().push_back(j);
+        at.entry(k).or_default().push(j);
     }
-    let mut both: Vec<(usize, usize)> = Vec::new();
-    for (i, k) in want.iter().enumerate() {
-        match at.get_mut(k).and_then(VecDeque::pop_front) {
-            Some(j) => both.push((i, j)),
-            None => out.dropped.push(i),
-        }
+    let of = |k: &K| at.get(k).map(Vec::as_slice).unwrap_or_default();
+    let pairs = (want.iter()).fold(0usize, |n, k| n.saturating_add(of(k).len()));
+    let pairs: Vec<(usize, usize)> = match pairs <= want.len().saturating_add(more) {
+        // Each entry of `want` with every equal one of `got`, the last first, so that a run
+        // rising in both takes one of them at most.
+        true => (want.iter().enumerate())
+            .flat_map(|(i, k)| of(k).iter().rev().map(move |&j| (i, j)))
+            .collect(),
+        false => pair(want, 0..want.len(), got, 0..got.len()).moved,
+    };
+    let (mut in_w, mut in_g) = (vec![false; want.len()], vec![false; got.len()]);
+    for (i, j) in heaviest(&pairs, got.len(), |i| keep(&want[i])) {
+        in_w[i] = true;
+        in_g[j] = true;
     }
-    out.added = at.into_values().flatten().collect();
-    out.added.sort_unstable();
-    // The run kept: of the entries both hold, in `want`'s order, the heaviest whose positions
-    // in `got` rise. Each weighs more than all the `keep` entries together, so the longest
-    // run is kept, and of those the one with the most `keep` entries.
-    let one = both.len() as u64 + 1;
-    let weight = |i: usize| one + u64::from(keep(&want[i]));
+    let rest_w = (0..want.len()).filter(|&i| !in_w[i]);
+    let rest_g = (0..got.len()).filter(|&j| !in_g[j]);
+    pair(want, rest_w, got, rest_g)
+}
+
+/// Of `pairs` (a position in `want` and one in `got`, in `want`'s order, and for one entry of
+/// `want` from the last in `got` back), the heaviest run whose positions rise in both. Each
+/// pair weighs more than all those `keep` holds to together, so the longest run is kept,
+/// and of those, the one with the most of them.
+fn heaviest(
+    pairs: &[(usize, usize)],
+    got: usize,
+    keep: impl Fn(usize) -> bool,
+) -> Vec<(usize, usize)> {
+    let one = pairs.len() as u64 + 1;
     // A Fenwick tree over the positions in `got`: the heaviest run that ends before each, and
-    // the entry of `both` it ends at.
+    // the pair it ends at.
     let none: (u64, usize) = (0, usize::MAX);
-    let mut tree = vec![none; got.len() + 1];
-    let mut before = vec![usize::MAX; both.len()];
-    let mut heaviest = none;
-    for (n, &(i, j)) in both.iter().enumerate() {
+    let mut tree = vec![none; got + 1];
+    let mut before = vec![usize::MAX; pairs.len()];
+    let mut best = none;
+    for (n, &(i, j)) in pairs.iter().enumerate() {
         let mut run = none;
         let mut x = j;
         while x > 0 {
@@ -59,22 +98,45 @@ pub fn diff<K: Eq + Hash>(want: &[K], got: &[K], keep: impl Fn(&K) -> bool) -> D
             x &= x - 1;
         }
         before[n] = run.1;
-        let run = (run.0 + weight(i), n);
+        let run = (run.0 + one + u64::from(keep(i)), n);
         let mut x = j + 1;
         while x < tree.len() {
             tree[x] = tree[x].max(run);
             x += x.isolate_lowest_one();
         }
-        heaviest = heaviest.max(run);
+        best = best.max(run);
     }
-    let mut kept = vec![false; both.len()];
-    let mut n = heaviest.1;
+    let mut run = Vec::new();
+    let mut n = best.1;
     while n != usize::MAX {
-        kept[n] = true;
+        run.push(pairs[n]);
         n = before[n];
     }
-    let moved = both.into_iter().zip(kept).filter(|(_, kept)| !kept);
-    out.moved = moved.map(|(pair, _)| pair).collect();
+    run
+}
+
+/// How `got` differs from `want` among the entries at `w` and at `g` when no run is kept: the
+/// k-th of each value at `w` is paired with the k-th of it at `g`, in `w`'s order, and the
+/// rest are dropped or added.
+fn pair<K: Eq + Hash>(
+    want: &[K],
+    w: impl Iterator<Item = usize>,
+    got: &[K],
+    g: impl Iterator<Item = usize>,
+) -> Diff {
+    let mut at: HashMap<&K, VecDeque<usize>> = HashMap::new();
+    for j in g {
+        at.entry(&got[j]).or_default().push_back(j);
+    }
+    let mut out = Diff::default();
+    for i in w {
+        match at.get_mut(&want[i]).and_then(VecDeque::pop_front) {
+            Some(j) => out.moved.push((i, j)),
+            None => out.dropped.push(i),
+        }
+    }
+    out.added = at.into_values().flatten().collect();
+    out.added.sort_unstable();
     out
 }
 
@@ -130,8 +192,9 @@ mod tests {
     /// Every list of up to four of `a`, `b` and `X` against every other (121 lists, a value
     /// repeated or not): nothing is said of two equal lists and something of two that
     /// differ; each entry is dropped, added, moved or kept, once; what is dropped and added
-    /// is what each list holds more of; what is kept is a run both lists hold in order, as
-    /// long as any run the two share, and of those as long, one keeping the most `X`.
+    /// is what each list holds more of (`counts` too); what is kept is a run both lists hold
+    /// in order, as long as any run the two share, and of those as long, one keeping the
+    /// most `X`. Past the bound on pairs, all but the last hold.
     #[test]
     fn every_short_list_is_told_apart_from_every_other() {
         let mut lists: Vec<Vec<char>> = vec![vec![]];
@@ -149,42 +212,55 @@ mod tests {
             at.dedup();
             at.len() == n
         };
-        let mut pairs = 0;
+        let keep = |c: &char| c.is_uppercase();
+        let (mut pairs, mut apart) = (0, 0);
         for w in &lists {
             for g in &lists {
-                let d = diff(w, g, |c| c.is_uppercase());
-                assert_eq!(d == Diff::default(), w == g, "{w:?} {g:?}");
-                for c in "abX".chars() {
-                    let more = |a: &[char], b: &[char]| count(a, c).saturating_sub(count(b, c));
-                    let dropped = d.dropped.iter().filter(|&&i| w[i] == c).count();
-                    let added = d.added.iter().filter(|&&j| g[j] == c).count();
-                    assert_eq!((dropped, added), (more(w, g), more(g, w)), "{w:?} {g:?}");
+                let more = |dropped: &[usize], added: &[usize]| {
+                    "abX".chars().all(|c| {
+                        let extra =
+                            |a: &[char], b: &[char]| count(a, c).saturating_sub(count(b, c));
+                        let dropped = dropped.iter().filter(|&&i| w[i] == c).count();
+                        let added = added.iter().filter(|&&j| g[j] == c).count();
+                        (dropped, added) == (extra(w, g), extra(g, w))
+                    })
+                };
+                let (dropped, added) = counts(w, g);
+                assert!(more(&dropped, &added), "{w:?} {g:?}");
+                let (d, past) = (diff(w, g, keep), within(w, g, keep, 0));
+                apart += usize::from(d != past);
+                for (d, longest) in [(d, true), (past, false)] {
+                    assert_eq!(d == Diff::default(), w == g, "{w:?} {g:?}");
+                    assert!(more(&d.dropped, &d.added), "{w:?} {g:?}");
+                    let moved_w: Vec<usize> = d.moved.iter().map(|m| m.0).collect();
+                    let moved_g: Vec<usize> = d.moved.iter().map(|m| m.1).collect();
+                    assert!(
+                        once([d.dropped.clone(), moved_w.clone()].concat()),
+                        "{w:?} {g:?}"
+                    );
+                    assert!(
+                        once([d.added.clone(), moved_g.clone()].concat()),
+                        "{w:?} {g:?}"
+                    );
+                    let kept_w: Vec<char> = (0..w.len())
+                        .filter(|i| !d.dropped.contains(i) && !moved_w.contains(i))
+                        .map(|i| w[i])
+                        .collect();
+                    let kept_g: Vec<char> = (0..g.len())
+                        .filter(|j| !d.added.contains(j) && !moved_g.contains(j))
+                        .map(|j| g[j])
+                        .collect();
+                    assert_eq!(kept_w, kept_g, "{w:?} {g:?}");
+                    assert!(d.moved.iter().all(|&(i, j)| w[i] == g[j]), "{w:?} {g:?}");
+                    if longest {
+                        let upper = kept_w.iter().filter(|c| c.is_uppercase()).count();
+                        assert_eq!((kept_w.len(), upper), best(w, g), "{w:?} {g:?}");
+                    }
                 }
-                let moved_w: Vec<usize> = d.moved.iter().map(|m| m.0).collect();
-                let moved_g: Vec<usize> = d.moved.iter().map(|m| m.1).collect();
-                assert!(
-                    once([d.dropped.clone(), moved_w.clone()].concat()),
-                    "{w:?} {g:?}"
-                );
-                assert!(
-                    once([d.added.clone(), moved_g.clone()].concat()),
-                    "{w:?} {g:?}"
-                );
-                let kept_w: Vec<char> = (0..w.len())
-                    .filter(|i| !d.dropped.contains(i) && !moved_w.contains(i))
-                    .map(|i| w[i])
-                    .collect();
-                let kept_g: Vec<char> = (0..g.len())
-                    .filter(|j| !d.added.contains(j) && !moved_g.contains(j))
-                    .map(|j| g[j])
-                    .collect();
-                assert_eq!(kept_w, kept_g, "{w:?} {g:?}");
-                assert!(d.moved.iter().all(|&(i, j)| w[i] == g[j]), "{w:?} {g:?}");
-                let upper = kept_w.iter().filter(|c| c.is_uppercase()).count();
-                assert_eq!((kept_w.len(), upper), best(w, g), "{w:?} {g:?}");
                 pairs += 1;
             }
         }
         assert_eq!(pairs, 121 * 121);
+        assert!(apart > 0, "past the bound, another run is kept");
     }
 }
