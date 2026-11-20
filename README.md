@@ -831,6 +831,9 @@ type may take it).
 
 ### Shapes
 
+Shapes, bindings and the shape editor are paused: what is described here works, and nothing new
+is being added to it (#375).
+
 A **shape** says how something is drawn on the canvas: parts (rectangles, circles, lines, arrows,
 paths of lines and curves, text, other shapes) in a box, named regions made from them (`left & right`), the data it
 takes and what it does when you drop or click. They are written in TOML like types: built in

@@ -2,6 +2,10 @@
 
 *(design)*
 
+> **Paused since 2026-11-20.** Shapes, bindings and the shape editor get no new work until a
+> placed shape's data has an owner (#375). What is built stays as it is. See ARCHITECTURE.md,
+> "Where the story is ahead of the code".
+
 The frontend is one smart canvas. Everything it shows is a drawing made of **shapes**: letters
 and punctuation, lines, arrows, rectangles, tables, cards. The user doesn't need to know; to them
 it is a note, a board, a table. Shapes are defined and tagged the way types are, and a user or an
