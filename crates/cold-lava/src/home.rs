@@ -2076,7 +2076,7 @@ impl Home {
                     owner,
                     path,
                     message,
-                } => self.flash(format!("{owner} couldn't read {path}: {message}")),
+                } => self.flash(crate::owned::couldnt_read(owner, path, message)),
                 // The menu says its own; an extension's show under its name.
                 CoreEvent::Deleted { path, by } if by != MENU => {
                     self.flash(format!("{by}: deleted {path}"));

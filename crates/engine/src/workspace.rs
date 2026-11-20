@@ -97,20 +97,19 @@ impl Owned {
     }
 
     /// Take what its owner gave for version `rev`, and its items and links read from it
-    /// (`given::read`). Returns what didn't read, which it keeps too.
+    /// (`given::read`), with what didn't read.
     pub fn take(
         &mut self,
         rev: String,
         given: crate::owner::given::Given,
         read: crate::owner::given::Read,
-    ) -> Vec<crate::problem::Problem> {
+    ) {
         self.rev = Some(rev);
         self.items = read.items;
         self.places = read.places;
         self.links = read.links;
         self.given = given;
         self.problems = read.problems;
-        self.problems.clone()
     }
 
     /// Whether it shows what its owner gave for version `rev`: it was read from that version,
@@ -118,6 +117,12 @@ impl Owned {
     /// another answer for a version a file already shows (`owner::cache::Owners::kept`).
     pub fn shows(&self, rev: &str, kept: Option<&crate::owner::given::Given>) -> bool {
         self.rev.as_deref() == Some(rev) && kept.is_none_or(|given| *given == self.given)
+    }
+
+    /// What didn't read in what its owner gave, on one line, as it is reported
+    /// (`core::Event::OwnerTrouble`): `None` when all of it read.
+    pub fn trouble(&self) -> Option<String> {
+        (!self.problems.is_empty()).then(|| crate::problem::joined(&self.problems))
     }
 }
 

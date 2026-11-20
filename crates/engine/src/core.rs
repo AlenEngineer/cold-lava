@@ -14,7 +14,6 @@ use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
 use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Relink, Stage};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
-use crate::problem;
 use crate::trash::{Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned};
 use anyhow::Result;
@@ -137,7 +136,8 @@ impl Core {
     pub fn open(root: &Path) -> Result<Core> {
         let index = Index::build(workspace::scan(root)?);
         let (fs_events, watcher) = watch(&index.workspace.root);
-        let unseen = owned_trouble(&index.workspace);
+        let owned = index.workspace.owned.iter();
+        let unseen = owned.filter_map(owned_trouble).collect();
         Ok(Core {
             bookmarks: read_bookmarks(&index.workspace.root),
             index,
@@ -237,7 +237,8 @@ impl Core {
             let _ = self.owned_scan();
             self.index.relink();
         }
-        self.unseen.extend(owned_trouble(&self.index.workspace));
+        let owned = self.index.workspace.owned.iter();
+        self.unseen.extend(owned.filter_map(owned_trouble));
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
     }
@@ -412,10 +413,9 @@ impl Core {
                 }
             };
             let read = given::read(rel, &given, self.index.workspace.item_settings());
-            let problems = self.index.workspace.owned[i].take(rev, given, read);
-            if !problems.is_empty() {
-                events.push(trouble(problem::joined(&problems)));
-            }
+            let file = &mut self.index.workspace.owned[i];
+            file.take(rev, given, read);
+            events.extend(owned_trouble(file));
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
             }
@@ -1327,18 +1327,16 @@ fn classify(root: &Path, path: &Path) -> Kind {
     }
 }
 
-/// What didn't read in the owned files of `workspace` (`Owned::problems`), as `OwnerTrouble`:
-/// for a whole read of the workspace, which doesn't say it as it reads (a canvas's card left
-/// out, read by the scan).
-fn owned_trouble(workspace: &workspace::Workspace) -> Vec<Event> {
-    (workspace.owned.iter())
-        .filter(|f| !f.problems.is_empty())
-        .map(|f| Event::OwnerTrouble {
-            owner: f.owner.clone(),
-            path: f.rel.clone(),
-            message: problem::joined(&f.problems),
-        })
-        .collect()
+/// What didn't read in what the owner of `file` gave (`Owned::trouble`), as the core reports
+/// it: the one way, whoever read the file (`owned_read`, or the scan, which reads a canvas and
+/// says nothing).
+fn owned_trouble(file: &Owned) -> Option<Event> {
+    let message = file.trouble()?;
+    Some(Event::OwnerTrouble {
+        owner: file.owner.clone(),
+        path: file.rel.clone(),
+        message,
+    })
 }
 
 fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {

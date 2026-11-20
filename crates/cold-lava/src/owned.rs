@@ -40,11 +40,19 @@ pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspac
             core.index.workspace
         }
     };
-    for f in workspace.owned.iter().filter(|f| !f.problems.is_empty()) {
-        let problems = crate::problem::joined(&f.problems);
-        crate::say::problem!("{} couldn't read {}: {problems}", f.owner, f.rel);
+    for f in &workspace.owned {
+        if let Some(message) = f.trouble() {
+            crate::say::problem!("{}", couldnt_read(&f.owner, &f.rel, &message));
+        }
     }
     Ok(workspace)
+}
+
+/// What the status line and stderr say when `owner` couldn't read its file at `path`, or what
+/// it gave didn't all read (`core::Event::OwnerTrouble`): one sentence for both, so they say
+/// it alike.
+pub fn couldnt_read(owner: &str, path: &str, message: &str) -> String {
+    format!("{owner} couldn't read {path}: {message}")
 }
 
 /// The owner of the file at workspace-relative `rel`, when it isn't a note: the engine's
