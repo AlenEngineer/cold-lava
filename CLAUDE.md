@@ -576,6 +576,15 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   `Core::edit_item`, links read by a pattern, and what the built-in extensions use beyond
   the gateway. The lists only shrink: a new use fails, and so does an entry that is gone
   and still listed.
+- `palette.rs`, `outline.rs`: the menu's first overlays, each a module that owns what is typed
+  and which row is chosen, with `key` (giving its own `Action`) and `draw`. `Palette` runs a
+  menu command by name; `Home` hands it the commands it may run now and runs the one picked.
+  `Outline` jumps to one of the reader's headings (`Outline::open` gives none for a note
+  without). `Home::palette_key` is how the menu keys an overlay: what it needs from the menu
+  first, then the key in place in `Mode`, no clone.
+- `line_input.rs`, `pick_list.rs`, `popup.rs`, `words.rs`: leaves the menu and its overlays
+  call: what a key does to a typed line, to a picked list's query and cursor, where a popup
+  goes and its frame, and `plural` (the app's one "1 note" / "2 notes").
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
   plans and undoes through `recipe.rs`, and the core makes it (`Core::apply`), as a merge.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a
@@ -590,7 +599,7 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   sender's go to it as `view/event`.
 - `graph_ext.rs`: the graph as a built-in extension (`g`, `graph.open`): `links/query` made
   into a scene with its filters and colour groups (`graph::build`, `groups.rs`), sent with
-  `view/open`, followed with `links/subscribe`. `app.rs` is the palette.
+  `view/open`, followed with `links/subscribe`. `app.rs` holds the colours.
 - `board.rs`: whiteboard on Obsidian Canvas (JSON Canvas) files (read and saved with the
   engine's `json_canvas`; their items and links are the canvas owner's), and placed shapes on it:
   `board/placed.rs` is how a placed shape is stored on a node (the `cold-lava` field, which node

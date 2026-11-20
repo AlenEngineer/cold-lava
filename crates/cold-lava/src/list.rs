@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use crate::app::{ACCENT, DIM, HIT, MUTED, NOTE};
 use crate::looks;
 use crate::types::Look;
+use crate::words::plural;
 use crate::workspace::search_key;
 
 pub use cold_lava_views::list::{Check, Event, Filter, Group, KeyCommand, List, Piece, Row};
@@ -379,13 +380,6 @@ impl ListView {
 }
 
 const SELECTED: Color = Color::Rgb(45, 45, 62);
-
-fn plural(n: usize, word: &str) -> String {
-    match n {
-        1 => format!("1 {word}"),
-        n => format!("{n} {word}s"),
-    }
-}
 
 /// A row's text and right side, folded for matching.
 fn row_key(row: &Row) -> String {
