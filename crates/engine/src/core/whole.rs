@@ -158,8 +158,9 @@ impl Core {
 
     /// Make `plan`, which waited for its owners under `ticket` (`apply`), once `take_relinked`
     /// says they answered: with the new texts they gave, which the core takes from the edit
-    /// desk. Refused when an owner refused, or their answer isn't in (still to come, or
-    /// cancelled), and then nothing is written.
+    /// desk. Refused when an owner refused, their answer isn't in (still to come, cancelled,
+    /// or dropped by a later `take_relinked`), or a file of `plan` other owners read has none
+    /// (one added after they were asked), and then nothing is written.
     pub fn apply_answered<P: Planned>(
         &mut self,
         plan: &mut P,
@@ -171,8 +172,8 @@ impl Core {
     }
 
     /// Renames, merges and recipes whose owners have all answered (`apply`), or one refused,
-    /// each said once: its ticket is for `apply_answered`, or for `cancel_relink`, which drops
-    /// the answer.
+    /// each said once: its ticket is for `apply_answered` until the next call, which drops the
+    /// answer, as `cancel_relink` does.
     pub fn take_relinked(&mut self) -> Vec<Ticket> {
         self.edits.take_relinked()
     }

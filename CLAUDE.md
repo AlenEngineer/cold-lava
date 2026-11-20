@@ -121,10 +121,13 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   it is planned and shown: the owners of the files other owners read give their new texts
   (`relink`), then it is written, then what they read is kept (`relinked`); when an extension
   has to answer, `take_relinked` says its ticket is ready and `apply_answered` makes the plan
-  with the answer the edit desk kept. The owners' answers never go out to a frontend, which
-  holds only the plan and the ticket. `rename::apply`, `merge::apply` and `recipe::apply` are
-  the engine's own, so no frontend writes a plan around it. Reading the workspace again
-  afterwards is still the caller's.
+  with the answer the edit desk kept. A ticket is good until the next `take_relinked`, which
+  drops an answer not taken. The owners' answers never go out to a frontend, which holds only
+  the plan and the ticket, and a file other owners read that has no answer is refused.
+  `rename::apply`, `merge::apply` and `recipe::apply` are the engine's own, so no frontend
+  writes a plan around it. One hole is left: a frontend that sets an edit's `owned` to `None`
+  has the core write that file without asking its owner, until plans are kept by ticket
+  (#193). Reading the workspace again afterwards is still the caller's.
   `core/news.rs` (tests only) is the harness for what subscribers hear and in which order: it
   plays the watcher and an owner, applies steps (outside write, `items/edit`, rescan, rename,
   recipe, an owner's answers) and collects each delivery, with no waiting. Test a change to how
