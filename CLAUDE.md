@@ -16,7 +16,8 @@ with ratatui). Three things define it:
   data, file formats, types and simple views (lists, tables, scenes). The surfaces you work in
   (the page with the reader and the editor, the whiteboard) are built into the frontend.
 
-The ideas the project is built on are `docs/foundations.md`: read it before designing anything,
+The picture, told as a library with translators and a librarian, and a map of the crates, is
+`ARCHITECTURE.md`. The ideas the project is built on are `docs/foundations.md`: read it before designing anything,
 and where it and another document disagree about an idea, it is right. The order of work is
 the first section of roadmap issue #100: the engine-facing work first (one
 path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
