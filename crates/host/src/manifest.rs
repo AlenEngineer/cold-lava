@@ -98,6 +98,12 @@ impl Shows {
     }
 }
 
+/// Whether an extension may claim files with extension `x`: not notes, the engine's own, nor a
+/// kind one of the engine's built-in owners reads (`owner::BUILT_IN`: canvases).
+pub(crate) fn claimable(x: &str) -> bool {
+    x != "md" && !crate::owner::BUILT_IN.iter().any(|(b, _)| *b == x)
+}
+
 /// A part of the workspace gateway an extension may use, named in its manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Permission {
@@ -163,12 +169,6 @@ pub struct Spec {
 pub enum Role {
     /// Opens notes for editing: gets the `editor/*` requests.
     Editor,
-}
-
-/// Whether an extension may claim files with extension `x`: not notes, the engine's own, nor a
-/// kind one of the engine's built-in owners reads (`owner::BUILT_IN`: canvases).
-pub(crate) fn claimable(x: &str) -> bool {
-    x != "md" && !crate::owner::BUILT_IN.iter().any(|(b, _)| *b == x)
 }
 
 /// Whether `id` is in the extension `name`'s namespace: `<name>.<something>`. Its commands'
