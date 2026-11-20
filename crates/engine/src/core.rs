@@ -236,10 +236,10 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch. What an owned file leaves out is said where
+    /// After the workspace was read from scratch. Returns what an owned file leaves out, where
     /// that is news since the file was read before (`owned_news`), for the files the scan no
-    /// longer finds too.
-    fn rescanned(&mut self, index: Index) {
+    /// longer finds too, for the caller to say with its `Rescanned`.
+    fn rescanned(&mut self, index: Index) -> Vec<Event> {
         let before = std::mem::replace(&mut self.index, index).workspace.owned;
         self.reload_bookmarks();
         self.changed.clear();
@@ -251,9 +251,10 @@ impl Core {
         let gone = (before.iter()).filter(|b| owned_at(now, &b.rel).is_none());
         let gone = gone.map(|b| owned_news(Some(b), None));
         let found = (now.iter()).map(|f| owned_news(owned_at(&before, &f.rel), Some(f)));
-        self.unseen.extend(gone.chain(found).flatten());
+        let leaves_out: Vec<Event> = gone.chain(found).flatten().collect();
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
+        leaves_out
     }
 
     /// The extensions that own these kinds of file: their files' items and links join the
@@ -1138,8 +1139,9 @@ impl Core {
             }
             Kind::Folder => match workspace::scan(self.root()) {
                 Ok(scanned) => {
-                    self.rescanned(Index::build(scanned));
-                    vec![Event::Rescanned]
+                    let mut events = self.rescanned(Index::build(scanned));
+                    events.push(Event::Rescanned);
+                    events
                 }
                 Err(_) => Vec::new(),
             },
@@ -1212,11 +1214,14 @@ impl Core {
     }
 
     /// Read the whole workspace again right away (after cold-lava itself moved files around).
-    /// Subscribers get `Rescanned`.
+    /// Subscribers get what owned files leave out, if that is news, then `Rescanned`; the next
+    /// `poll` returns the first.
     pub fn rescan_now(&mut self) {
         if let Ok(v) = workspace::scan(&self.index.workspace.root) {
-            self.rescanned(Index::build(v));
+            let leaves_out = self.rescanned(Index::build(v));
+            self.broadcast(&leaves_out);
             self.broadcast(&[Event::Rescanned]);
+            self.unseen.extend(leaves_out);
         }
     }
 
@@ -1239,7 +1244,7 @@ impl Core {
         if std::mem::take(&mut self.rescan) {
             self.changed.clear();
             match workspace::scan(self.root()) {
-                Ok(v) => self.rescanned(Index::build(v)),
+                Ok(v) => events.extend(self.rescanned(Index::build(v))),
                 Err(_) => return unseen, // the folder vanished; keep what we had
             }
             events.push(Event::Rescanned);
