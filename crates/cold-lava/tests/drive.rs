@@ -1772,6 +1772,39 @@ fn an_extension_cant_close_a_prompt_a_dialog_or_a_typed_query() {
 
 /// Needs python3, which CI's runners have.
 #[test]
+fn a_prompt_does_what_it_was_opened_for_whatever_an_extension_selects() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("prompt-keeps-target");
+    let home = dir.join("home");
+    let push = "    ext.notify(\"editor/opened\", \
+                {\"note\": ext.workspace[\"root\"] + \"/Volcanoes/Krakatoa.md\"})\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "prompt-keeps-target.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let workspace = dir.join("example-workspace");
+    let read = |rel: &str| std::fs::read_to_string(workspace.join(rel)).unwrap();
+    assert!(
+        read("People/Field notes.md").starts_with("---\ntags: [seismic]\n---\n# Field notes\n"),
+        "{}",
+        read("People/Field notes.md")
+    );
+    assert!(workspace.join("People/Ash").is_dir());
+    assert!(!read("Volcanoes/Krakatoa.md").contains("seismic"));
+    for gone in ["Volcanoes/Field notes.md", "Volcanoes/Ash"] {
+        assert!(!workspace.join(gone).exists(), "{gone}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
 fn an_extension_cant_run_a_command_over_a_prompt_being_typed() {
     if !has_python() {
         eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");

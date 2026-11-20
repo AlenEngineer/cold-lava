@@ -1,0 +1,51 @@
+# A prompt does what it was opened for, whatever an extension moves under it (#269's first
+# item, #286; track E3). tests/drive.rs installs the open-tasks example patched to send
+# editor/opened for Volcanoes/Krakatoa.md whenever the tasks change, before it shows its count:
+# the menu then selects Krakatoa in the tree. A new note, a tag and a new folder each opened on
+# People go to People, not to Volcanoes. tests/drive.rs checks the files.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+keys p johnston
+wait-for David A. Johnston
+keys enter
+wait-for People/David A. Johnston  reading
+keys esc
+wait-gone reading · Esc / q back
+keys n
+wait-for new note · Tab template · ⏎ create · Esc cancel
+type Field notes
+wait-for name: Field notes▏
+write Inbox/Chores.md - [ ] One\n
+wait-for ☐ 17 open tasks
+screen
+keys enter
+wait-for created People/Field notes.md
+keys esc
+wait-gone reading · Esc / q back
+keys #
+wait-for tag the note · -tag removes
+type seismic
+wait-for tag: #seismic▏
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n
+wait-for ☐ 18 open tasks
+keys enter
+wait-for tagged 1 note #seismic
+keys p johnston
+wait-for David A. Johnston
+keys enter
+wait-for People/David A. Johnston  reading
+keys esc
+wait-gone reading · Esc / q back
+keys N
+wait-for new folder · ⏎ create · Esc cancel
+type Ash
+wait-for folder name: Ash▏
+write Inbox/Chores.md - [ ] One\n- [ ] Two\n- [ ] Three\n
+wait-for ☐ 19 open tasks
+keys enter
+wait-for created People/Ash/
+screen
+keys q
+exits 0
