@@ -698,3 +698,460 @@ fn a_tick_on_a_board_with_cards_left_out_writes_only_its_own_card() {
     assert_eq!(boards, 256);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The owners' cache file in `cache`, as JSON, with where it is.
+fn the_cache(cache: &Path) -> (PathBuf, Json) {
+    let files: Vec<PathBuf> = (std::fs::read_dir(cache).unwrap())
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    let json = serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+    (files[0].clone(), json)
+}
+
+/// The workspace `open` makes as `name`, with the owners' cache as a binary that read more
+/// saved it. As the owner gives the file: the chore, a malformed item, the row, the typed
+/// item and the Markdown piece, with a key on the chore and the typed item that the reader
+/// refuses. As the cache holds it: those two among its items, each in its keys' reverse
+/// order (another order than the owner's), and only the malformed one left out, after the
+/// one item before it. The workspace's folder, and the folder whose `owners` holds the cache.
+fn cached_by_a_looser_binary(name: &str) -> (PathBuf, PathBuf) {
+    let base = std::env::temp_dir().join(format!(
+        "cold-lava-bad-{name}-owners-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    let cache = base.join("owners");
+    std::fs::create_dir_all(&cache).unwrap();
+    let stale = |mut entry: Json| {
+        entry["stale"] = json!(true);
+        entry
+    };
+    let reversed = |entry: &Json| {
+        let keys = entry.as_object().unwrap().iter().rev();
+        Json::Object(keys.map(|(k, v)| (k.clone(), v.clone())).collect())
+    };
+    let bads = bads();
+    let mut file = file_with(&[&bads[0]]);
+    file["items"][0] = stale(file["items"][0].clone());
+    file["items"][3] = stale(file["items"][3].clone());
+    let dir = open(name, &file, Some(&cache)).root().to_path_buf();
+    let (path, mut saved) = the_cache(&cache);
+    let entry = &mut saved["files"][FILE];
+    let kept = entry["given"]["items"].as_array().unwrap().clone();
+    assert_eq!(kept.len(), 2, "the row and the Markdown piece read");
+    entry["given"]["items"] = json!([
+        reversed(&file["items"][0]),
+        kept[0],
+        reversed(&file["items"][3]),
+        kept[1]
+    ]);
+    let left = entry["left_out"].as_array().unwrap().clone();
+    let malformed = left.iter().find(|l| l[1]["place"] == "bad").unwrap();
+    entry["left_out"] = json!([[1, malformed[1]]]);
+    std::fs::write(&path, saved.to_string()).unwrap();
+    (dir, base)
+}
+
+/// An answer kept in the owners' cache whose items no longer all read (a bound applies now
+/// that didn't when it was saved; here, an older binary's copy of two entries this reader
+/// refuses, written in its own key order): its other items keep showing, and the bad ones
+/// are reported, each where it stood among what the cache already left out (the owner's
+/// decision of 2026-11-13). Its owner is asked again, and once it answers, an edit beside the
+/// bad items goes ahead: what is left out is then what the owner sent, not the cache's copy.
+#[test]
+fn a_cached_answer_keeps_its_items_when_one_no_longer_reads() {
+    let (dir, base) = cached_by_a_looser_binary("stale");
+    let mut core = Core::open(&dir).unwrap();
+    let kind = OwnedKind {
+        extension: "probe".into(),
+        owner: OWNER.into(),
+        version: "1".into(),
+    };
+    core.set_owners(vec![kind], Some(&base.join("owners")));
+    item(&core, "eruption", "row");
+    item(&core, "task", "md");
+    let events = core.poll();
+    let trouble: Vec<&String> = (events.iter())
+        .filter_map(|e| match e {
+            Event::OwnedLeavesOut {
+                path,
+                message: Some(message),
+                ..
+            } if path == FILE => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(trouble.len(), 1, "{events:?}");
+    let at = |words: &str| {
+        let message = trouble[0];
+        (message.find(words)).unwrap_or_else(|| panic!("{words}: {message}"))
+    };
+    assert!(at("chore: unknown field `stale`") < at("bad: unknown field `colour`"));
+    assert!(at("bad: unknown field `colour`") < at("ty: unknown field `stale`"));
+    let given = &core.index.workspace.owned[0].given;
+    let left: Vec<usize> = given.left_out.iter().map(|(at, _)| *at).collect();
+    assert_eq!(left, [0, 0, 1], "each after the items before it that read");
+
+    assert_eq!(core.unread().count(), 0, "what still reads shows meanwhile");
+    let mut asked = core.take_reads();
+    assert_eq!(asked.len(), 1, "its owner is asked again");
+    let (_, again) = asked.pop().unwrap();
+    core.file_given(OWNER, FILE, &again.rev, read(&again.text));
+    core.poll();
+    let edit = tick(&item(&core, "task", "md"));
+    let answer = through_the_probe(&mut core, &edit, honest);
+    assert!(answer.is_ok(), "beside the bad items: {:?}", answer.err());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A cached answer whose items no longer all read has its owner asked again in every session
+/// until the owner answers, however often the cache is saved meanwhile (here, with another
+/// file's answer, in a session that ends before the owner answers for this one). Once it
+/// answers, an edit beside the bad items goes ahead (#303's review, M1).
+#[test]
+fn a_cached_answer_that_no_longer_reads_is_asked_for_again_after_a_save() {
+    let (dir, base) = cached_by_a_looser_binary("stale-saved");
+    let cache = base.join("owners");
+    let other = json!({"items": [chore("b", "Feed the cat")], "links": []});
+    std::fs::write(dir.join("B.probe"), other.to_string()).unwrap();
+    let session = || {
+        let mut core = Core::open(&dir).unwrap();
+        let kind = OwnedKind {
+            extension: "probe".into(),
+            owner: OWNER.into(),
+            version: "1".into(),
+        };
+        core.set_owners(vec![kind], Some(&cache));
+        let mut reads: Vec<FileRead> = core.take_reads().into_iter().map(|(_, r)| r).collect();
+        reads.sort_by(|a, b| a.path.cmp(&b.path));
+        (core, reads)
+    };
+    let paths =
+        |reads: &[FileRead]| -> Vec<String> { reads.iter().map(|r| r.path.clone()).collect() };
+
+    let (mut core, reads) = session();
+    assert_eq!(paths(&reads), [FILE, "B.probe"]);
+    core.file_given(OWNER, "B.probe", &reads[1].rev, read(&reads[1].text));
+    core.poll();
+    drop(core);
+
+    let (mut core, reads) = session();
+    item(&core, "eruption", "row");
+    assert_eq!(paths(&reads), [FILE], "asked again in the next session");
+    core.file_given(OWNER, FILE, &reads[0].rev, read(&reads[0].text));
+    core.poll();
+    let edit = tick(&item(&core, "task", "md"));
+    let answer = through_the_probe(&mut core, &edit, honest);
+    assert!(answer.is_ok(), "beside the bad items: {:?}", answer.err());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// What `events` report of what owned files leave out.
+fn reported(events: &[Event]) -> Vec<String> {
+    said(events).into_iter().flatten().collect()
+}
+
+/// What `events` say of what owned files leave out, `None` where a file leaves nothing out
+/// any more.
+fn said(events: &[Event]) -> Vec<Option<String>> {
+    (events.iter())
+        .filter_map(|e| match e {
+            Event::OwnedLeavesOut { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Write `text` to the workspace's only board, as another program would, and hand back the
+/// core's events up to when it has read it.
+fn board_written(core: &mut Core, text: &str) -> Vec<Event> {
+    let rel = core.index.workspace.owned[0].rel.clone();
+    std::fs::write(core.root().join(&rel), text).unwrap();
+    let rev = read::rev(text.as_bytes());
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        core.boards.push(rel.clone());
+        core.schedule(Duration::ZERO);
+        events.extend(core.poll());
+        if core.index.workspace.owned[0].rev.as_deref() == Some(rev.as_str()) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    events
+}
+
+/// What a board leaves out is reported again only when it changes: a rescan, or a change to
+/// a card the engine takes, says nothing new, and a change that leaves out another card is
+/// reported (#303's review, M2).
+#[test]
+fn a_board_is_reported_again_only_when_what_it_leaves_out_changes() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-again-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let card = |id: &str, y: u32, text: &str| {
+        json!({"id": id, "type": "text", "text": text,
+               "x": 0, "y": y, "width": 1, "height": 1})
+    };
+    let board = |cards: &[Json]| json!({"nodes": cards, "edges": []}).to_string();
+    let hidden = card("", 0, "- [ ] Hidden");
+    let first = board(&[hidden.clone(), card("g", 9, "- [ ] Shown")]);
+    std::fs::write(dir.join("Board.canvas"), first).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
+    assert_eq!(reported(&core.poll()), [empty]);
+
+    core.rescan_now();
+    assert_eq!(
+        reported(&core.poll()),
+        Vec::<String>::new(),
+        "a rescan reads the same"
+    );
+    let ticked = board(&[hidden.clone(), card("g", 9, "- [x] Shown")]);
+    let events = board_written(&mut core, &ticked);
+    assert_eq!(
+        reported(&events),
+        Vec::<String>::new(),
+        "a card the engine takes changed"
+    );
+
+    let long = "l".repeat(1025);
+    let more = board(&[
+        hidden,
+        card("g", 9, "- [x] Shown"),
+        card(&long, 18, "- [ ] Long"),
+    ]);
+    let said = reported(&board_written(&mut core, &more));
+    assert_eq!(said.len(), 1, "{said:?}");
+    let other = format!("card 3 (id \"{}…\") is left out", "l".repeat(80));
+    assert!(
+        said[0].starts_with(empty) && said[0].contains(&other),
+        "{said:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A board with a card the engine doesn't take (here, an empty id) is reported as the
+/// workspace opens, naming the board and the card, and its other cards' tasks are listed
+/// (the owner's decision of 2026-11-13).
+#[test]
+fn a_board_with_a_card_left_out_is_reported_as_it_opens() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-opens-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let board = json!({"nodes": [
+        {"id": "", "type": "text", "text": "- [ ] Hidden", "x": 0, "y": 0, "width": 1, "height": 1},
+        {"id": "g", "type": "text", "text": "- [ ] Shown", "x": 0, "y": 9, "width": 1, "height": 1},
+    ], "edges": []});
+    std::fs::write(dir.join("Board.canvas"), board.to_string()).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let events = core.poll();
+    let trouble: Vec<(&str, &str, &str)> = (events.iter())
+        .filter_map(|e| match e {
+            Event::OwnedLeavesOut {
+                owner,
+                path,
+                message: Some(message),
+            } => Some((owner.as_str(), path.as_str(), message.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        trouble,
+        [(
+            "canvas",
+            "Board.canvas",
+            "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes"
+        )],
+        "{events:?}"
+    );
+    let file = &core.index.workspace.owned[0];
+    let words: Vec<Json> = (file.items.iter())
+        .filter(|i| i.data.kind() == "task")
+        .map(|i| serde_json::to_value(i).unwrap()["text"].clone())
+        .collect();
+    assert_eq!(words, [json!("Shown")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cached answer whose items no longer all read is reported once as the workspace opens,
+/// not again when its owner gives the same for that version (#303's behaviour review, round
+/// 2, should-fix 5). An answer for another version of the file that leaves items out is
+/// reported again, as every such answer was before #303.
+#[test]
+fn a_cached_answer_that_no_longer_reads_is_reported_once() {
+    let (dir, base) = cached_by_a_looser_binary("stale-once");
+    let mut core = Core::open(&dir).unwrap();
+    let kind = OwnedKind {
+        extension: "probe".into(),
+        owner: OWNER.into(),
+        version: "1".into(),
+    };
+    core.set_owners(vec![kind], Some(&base.join("owners")));
+    assert_eq!(reported(&core.poll()).len(), 1, "from the cache");
+    let (_, again) = core.take_reads().pop().expect("its owner is asked again");
+    core.file_given(OWNER, FILE, &again.rev, read(&again.text));
+    assert_eq!(
+        reported(&core.poll()),
+        Vec::<String>::new(),
+        "its owner leaves out what the cache did"
+    );
+
+    std::fs::write(dir.join(FILE), format!("{}\n", again.text)).unwrap();
+    let mut asked = Vec::new();
+    for _ in 0..100 {
+        core.files.push(FILE.to_string());
+        core.schedule(Duration::ZERO);
+        core.poll();
+        asked = core.take_reads();
+        if !asked.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let (_, changed) = asked.pop().expect("asked for its new version");
+    core.file_given(OWNER, FILE, &changed.rev, read(&changed.text));
+    assert_eq!(reported(&core.poll()).len(), 1, "another version's answer");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A board that leaves a card out isn't reported again after a rename rewrites its link to
+/// the renamed note: the engine's own owner reads it again and leaves out the same card, and
+/// what was asked of the owners during the rename doesn't make it news (#303's design
+/// review, round 3, M1).
+#[test]
+fn a_board_isnt_reported_again_after_a_rename() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-renamed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
+    let board = json!({"nodes": [
+        {"id": "", "type": "text", "text": "- [ ] Hidden", "x": 0, "y": 0, "width": 1, "height": 1},
+        {"id": "c", "type": "file", "file": "Lava.md", "x": 0, "y": 9, "width": 1, "height": 1},
+    ], "edges": []});
+    std::fs::write(dir.join("Board.canvas"), board.to_string()).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    assert_eq!(reported(&core.poll()).len(), 1, "as it opens");
+
+    let note = core.index.by_rel("Lava").unwrap();
+    let mut plan = crate::rename::plan(&core.index, note, "Hot/Lava").unwrap();
+    assert_eq!(core.relink(&mut plan.edits), Ok(None), "answered at once");
+    crate::rename::apply(&plan).unwrap();
+    core.relinked(&plan.edits, |p| plan.moved(p));
+    let text = std::fs::read_to_string(dir.join("Board.canvas")).unwrap();
+    assert!(text.contains("Hot/Lava.md"), "{text}");
+    assert_eq!(
+        reported(&board_written(&mut core, &text)),
+        Vec::<String>::new(),
+        "read again after the rename"
+    );
+    core.rescan_now();
+    assert_eq!(
+        reported(&core.poll()),
+        Vec::<String>::new(),
+        "and after a rescan"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A board that no longer leaves a card out says so, once the card reads and once the board
+/// is gone, so that a report still waiting about it can be dropped (#303's behaviour review,
+/// round 2, should-fix 1).
+#[test]
+fn a_board_says_when_it_leaves_nothing_out_any_more() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-mended-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let card = |id: &str, y: u32| {
+        json!({"id": id, "type": "text", "text": "- [ ] Sweep",
+               "x": 0, "y": y, "width": 1, "height": 1})
+    };
+    let board = |cards: &[Json]| json!({"nodes": cards, "edges": []}).to_string();
+    let left = board(&[card("", 0), card("g", 9)]);
+    std::fs::write(dir.join("Board.canvas"), &left).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
+    assert_eq!(said(&core.poll()), [Some(empty.to_string())]);
+
+    let mended = board(&[card("h", 0), card("g", 9)]);
+    assert_eq!(
+        said(&board_written(&mut core, &mended)),
+        [None],
+        "its card reads"
+    );
+    assert_eq!(
+        said(&board_written(&mut core, &left)),
+        [Some(empty.to_string())],
+        "left out again"
+    );
+    std::fs::remove_file(dir.join("Board.canvas")).unwrap();
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        core.boards.push("Board.canvas".into());
+        core.schedule(Duration::ZERO);
+        events.extend(core.poll());
+        if core.index.workspace.owned.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(said(&events), [None], "gone");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A board that a rescan no longer finds says so, so that a report still waiting about it is
+/// dropped: one deleted, and one whose folder moved, which is reported at its new path
+/// (#303's design review, round 4, M1).
+#[test]
+fn a_board_a_rescan_no_longer_finds_says_so() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-unfound-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Ash")).unwrap();
+    let board = json!({"nodes": [
+        {"id": "", "type": "text", "text": "- [ ] Sweep", "x": 0, "y": 0, "width": 1, "height": 1},
+    ], "edges": []})
+    .to_string();
+    std::fs::write(dir.join("Ash/A.canvas"), &board).unwrap();
+    std::fs::write(dir.join("B.canvas"), &board).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
+    let left = |path: &str, message: Option<&str>| (path.to_string(), message.map(String::from));
+    /// What `events` say each owned file leaves out, by its path.
+    fn told(events: &[Event]) -> Vec<(String, Option<String>)> {
+        let mut told: Vec<(String, Option<String>)> = (events.iter())
+            .filter_map(|e| match e {
+                Event::OwnedLeavesOut { path, message, .. } => {
+                    Some((path.clone(), message.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        told.sort();
+        told
+    }
+    assert_eq!(
+        told(&core.poll()),
+        [
+            left("Ash/A.canvas", Some(empty)),
+            left("B.canvas", Some(empty))
+        ]
+    );
+
+    std::fs::rename(dir.join("Ash"), dir.join("Cinder")).unwrap();
+    std::fs::remove_file(dir.join("B.canvas")).unwrap();
+    core.rescan_now();
+    assert_eq!(
+        told(&core.poll()),
+        [
+            left("Ash/A.canvas", None),
+            left("B.canvas", None),
+            left("Cinder/A.canvas", Some(empty)),
+        ],
+        "the boards the rescan no longer finds say they leave nothing out"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

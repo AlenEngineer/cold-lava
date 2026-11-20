@@ -513,6 +513,7 @@ mod tests {
                 "2".into(),
             )],
             given: Default::default(),
+            problems: Vec::new(),
         });
         let g = of(v, ALL);
         let mut l = labels(&g);

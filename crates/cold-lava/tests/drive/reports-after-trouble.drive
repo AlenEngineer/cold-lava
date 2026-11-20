@@ -1,0 +1,21 @@
+# An owner that can't read its files is said at once as the workspace opens, as before #303,
+# and the boards' line that it takes the place of is said again after it, for its time (the
+# owner's decision of 2026-11-20: shown once for 3 s). tests/drive.rs installs csv-table
+# patched to refuse every file it is asked to read, and writes Ashfall.canvas and
+# Lahar.canvas, each with a card left out. The boards' line shows as the workspace opens,
+# before csv-table has answered.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+wait-for csv-table couldn't read Volcanoes/
+expect-not boards have cards left out
+wait-gone csv-table couldn't read
+wait-for 2 boards have cards left out
+wait 2000ms
+expect 2 boards have cards left out (cold-lava items shows each): Ashfall, Lahar
+wait-gone 2 boards have cards left out
+wait 1000ms
+expect-not left out
+expect-not couldn't read
+keys q
+exits 0

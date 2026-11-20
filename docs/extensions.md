@@ -1612,8 +1612,8 @@ each doesn't invent one:
   path>-<owner>-<version>.cache<FORMAT>.json` (`{format, owner, version, files: {path: {rev,
   given, left_out}}}`, `left_out` only when the answer left something out; written after the
   frame an answer came in). A cache of another `FORMAT` is neither read nor rewritten
-  (`owner::cache::FORMAT`), and a cached answer whose items no longer all read is dropped
-  ("Pieces, as built", Bounds). A file it has nothing for is still in the index, with no
+  (`owner::cache::FORMAT`), and a cached answer whose items no longer all read keeps the
+  rest and asks its owner again ("Pieces, as built", Bounds). A file it has nothing for is still in the index, with no
   items, and its owner is asked. The cache keeps the owner's answer, not items, so a change to the
   workspace's types applies at once. The watcher's `FileChanged` for an owned kind reads the
   `rev` again and asks again when it changed; a file removed leaves the index and the cache.
@@ -1622,8 +1622,11 @@ each doesn't invent one:
   is still that `rev` (else asks again), resolves links again and queues `items/changed` and
   `Event::OwnedChanged`, which the menu reads before it draws (backlinks, counts, news). An
   error, an answer that doesn't parse, no answer in 10 s or an owner that stopped is
-  `Event::OwnerTrouble` on the status line, and the file keeps what it had. Nothing waits for an
-  owner: the scan and the menu go on.
+  `Event::OwnerTrouble`, said on the status line at once, and the file keeps what it had.
+  What an answer leaves out is `Event::OwnedLeavesOut`, decided in one place, `owned_news`
+  in `core.rs`: for an extension's file it is said at once, whenever an answer for a version
+  of the file leaves something out, as before #303 (`owner::answers_once_per_version`).
+  Nothing waits for an owner: the scan and the menu go on.
 - **The example** `examples/extensions/csv-table` answers `file/read` with each row as a
   `row` piece (place: its first cell) whose cells are plain characters, by column name. The
   header says what else a column holds: `Name (link)` makes each cell a link run to the file
@@ -1998,8 +2001,14 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)
-  is dropped as it loads, and its owner asked again; until it answers, that file shows
-  nothing. The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
+  keeps its other items, and each that doesn't read is left out where it stood among what
+  the cache already left out (`cache::merged`) and reported; its owner is asked again as it
+  is shown (`Owners::kept`, #303). What is kept of such an item is the hash of its JSON as
+  the cache wrote it, not as the owner sent it, so until the owner answers, an edit beside
+  it is refused by the read-back; the owner's answer for the same version replaces the cached
+  one, and the file takes it, since it no longer shows what is kept (`Owned::shows`). Until
+  then the cache saves that answer as it was read (`Answer::as_read`), so every session asks
+  the owner again, however often the cache is saved meanwhile. The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
   the file: a cache of another format is neither read nor rewritten, so an upgrade or a
   downgrade asks each owner again once.
   Every field of the types an answer is read into names its bound
@@ -2260,9 +2269,26 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   file by its place, so a place names the first node in the file with that field
   (`canvas::Named`), and only that node's is given, when it is within its bounds, and never
   a later node's instead. A file card whose file is empty or longer than 4096 bytes gives no link.
-  An arrow with a label over 4096 bytes or past the 65,536th is not given. Nothing is
-  reported for any of it: the owner gives what the engine takes, and the rest stays in the
-  file as it is. A rename changes the node its place names (`canvas::relink`); a later node
+  An arrow with a label over 4096 bytes or past the 65,536th is not given. A card the engine
+  doesn't take (its piece refused: its place is over 1024 bytes, or empty, as the first card
+  with an empty id has it and a later one doesn't, or another card's) is reported, as an
+  item left out of the answer (`Given::left_out`, `canvas::left_out`): by its number among
+  the nodes and its id, on the status line and on the command line's stderr, naming the
+  board (the owner's decision of 2026-11-13, #303). The core says what a board leaves out
+  as the workspace opens, and again only when that changes, `None` once it leaves nothing
+  out or is gone, a board a rescan no longer finds included (`Event::OwnedLeavesOut`,
+  `owned_news` in `core.rs`): a rescan, or a change that leaves out the same cards, says
+  nothing new. The menu holds a board's report until the status line in front has nothing
+  else to say (`reports::Reports`), so it never takes the place of the message of what the
+  user just did, nor of the shape editor's; the boards whose reports wait together are
+  named in one line, `3 boards have cards left out (cold-lava items shows each): Mixed,
+  Twins, Late`, the count first so that a line cut at the terminal's width keeps it, and
+  two boards of one name by their paths (the owner's decision of 2026-11-20). An owner
+  that couldn't read a file and what an extension's file leaves out are said at once, as
+  before; when one takes the place of the boards' line, the line waits again and is said
+  after it, so that it shows once for its time. A newer report about a board takes the
+  place of one still waiting, and one about a board that leaves nothing out any more is
+  dropped. The rest is not reported: the owner gives what the engine takes, and the rest stays in the file as it is. A rename changes the node its place names (`canvas::relink`); a later node
   with a text or a file at that place stays as it is, never written over the named node's
   (`canvas::edit` refuses two changes to one field, which on main crashed the rename). A coordinate too large for a JSON number, or one that
   isn't a number, makes the file no JSON Canvas at all, as before.

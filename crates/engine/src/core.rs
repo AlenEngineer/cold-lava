@@ -14,7 +14,6 @@ use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
 use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Relink, Stage};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
-use crate::problem;
 use crate::read;
 use crate::trash::{Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned};
@@ -42,12 +41,19 @@ pub enum Event {
     /// The items and links of a file another owner reads changed: its owner answered, or it
     /// was found, or it is gone. Workspace-relative, with its extension.
     OwnedChanged(String),
-    /// An owner couldn't read one of its files, or what it gave didn't all read. Its items stay
-    /// as they were.
+    /// An owner couldn't read one of its files. Its items stay as they were.
     OwnerTrouble {
         owner: String,
         path: String,
         message: String,
+    },
+    /// What the owner of a file gave didn't all read (`message`, as `Owned::trouble` says
+    /// it), or all of it reads again, or the file is gone (`None`): said when that is news
+    /// (`owned_news`). What read shows.
+    OwnedLeavesOut {
+        owner: String,
+        path: String,
+        message: Option<String>,
     },
     /// Obsidian's graph settings (colour groups) changed.
     GraphSettingsChanged,
@@ -138,6 +144,8 @@ impl Core {
     pub fn open(root: &Path) -> Result<Core> {
         let index = Index::build(workspace::scan(root)?);
         let (fs_events, watcher) = watch(&index.workspace.root);
+        let owned = index.workspace.owned.iter();
+        let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
         Ok(Core {
             bookmarks: read_bookmarks(&index.workspace.root),
             index,
@@ -151,7 +159,7 @@ impl Core {
             bookmarks_changed: false,
             due: None,
             subscribers: Vec::new(),
-            unseen: Vec::new(),
+            unseen,
             items: Subscriptions::default(),
             news: Vec::new(),
             owners: Owners::default(),
@@ -228,15 +236,22 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch.
+    /// After the workspace was read from scratch. What an owned file leaves out is said where
+    /// that is news since the file was read before (`owned_news`), for the files the scan no
+    /// longer finds too.
     fn rescanned(&mut self, index: Index) {
-        self.index = index;
+        let before = std::mem::replace(&mut self.index, index).workspace.owned;
         self.reload_bookmarks();
         self.changed.clear();
         if !self.owners.kinds().is_empty() {
             let _ = self.owned_scan();
             self.index.relink();
         }
+        let now = &self.index.workspace.owned;
+        let gone = (before.iter()).filter(|b| owned_at(now, &b.rel).is_none());
+        let gone = gone.map(|b| owned_news(Some(b), None));
+        let found = (now.iter()).map(|f| owned_news(owned_at(&before, &f.rel), Some(f)));
+        self.unseen.extend(gone.chain(found).flatten());
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
     }
@@ -292,6 +307,14 @@ impl Core {
     /// Whether an owned file waits for its owner to read it (`take_reads`, `file_given`).
     pub fn reading(&self) -> bool {
         self.owners.is_reading()
+    }
+
+    /// The owned files that show nothing until their owner reads them, each with its owner, in
+    /// the order `take_reads` will ask for them: their owner gave nothing for them as they are
+    /// now. A file shown from what its owner gave before, while it is asked again because some
+    /// of that no longer reads, is not one.
+    pub fn unread(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.owners.unread()
     }
 
     /// `file/edit` requests for the owners, each with its owner's name. Their answers come back
@@ -356,7 +379,8 @@ impl Core {
             let at = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
             let Ok(bytes) = std::fs::read(root.join(rel)) else {
                 if let Ok(i) = at {
-                    owned.remove(i);
+                    let gone = owned.remove(i);
+                    events.extend(owned_news(Some(&gone), None));
                     self.owners.forget(rel);
                     changed.push(rel.clone());
                 }
@@ -364,7 +388,7 @@ impl Core {
             };
             let rev = read::rev(&bytes);
             let i = match at {
-                Ok(i) if owned[i].rev.as_deref() == Some(rev.as_str()) => continue,
+                Ok(i) if owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) => continue,
                 Ok(i) => i,
                 Err(i) => {
                     owned.insert(i, Owned::new(rel.clone(), root.join(rel), &owner));
@@ -377,8 +401,8 @@ impl Core {
                 path: rel.clone(),
                 message,
             };
-            let given = match self.owners.given(&owner, rel, &rev) {
-                Some(given) => given.clone(),
+            let given = match self.owners.kept(&owner, rel, &rev, &bytes) {
+                Some(given) => given,
                 None => {
                     let Ok(text) = String::from_utf8(bytes) else {
                         events.push(trouble("it isn't UTF-8 text".into()));
@@ -403,10 +427,9 @@ impl Core {
                 }
             };
             let read = given::read(rel, &given, self.index.workspace.item_settings());
-            let problems = self.index.workspace.owned[i].take(rev, given, read);
-            if !problems.is_empty() {
-                events.push(trouble(problem::joined(&problems)));
-            }
+            let before = self.index.workspace.owned[i].take(rev, given, read);
+            let now = &self.index.workspace.owned[i];
+            events.extend(owned_news(Some(&before), Some(now)));
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
             }
@@ -1318,6 +1341,34 @@ fn classify(root: &Path, path: &Path) -> Kind {
     }
 }
 
+/// What an owned file leaves out (`Event::OwnedLeavesOut`), when that is news between
+/// `before`, the file as it was, and `now`, as it is (`None`: it wasn't there, or it is
+/// gone). The one place the core decides it, whoever read the file: `owned_read`,
+/// `rescanned`, or the scan as the core opens (which reads a canvas and says nothing).
+///
+/// It is news when what the file leaves out changed, `None` once all of it reads or the file
+/// is gone, and when an answer for another version leaves something out, from an owner that
+/// answers once per version (`owner::answers_once_per_version`, which says why).
+fn owned_news(before: Option<&Owned>, now: Option<&Owned>) -> Option<Event> {
+    let file = now.or(before)?;
+    let was = before.map_or(&[][..], |b| b.problems.as_slice());
+    let is = now.map_or(&[][..], |f| f.problems.as_slice());
+    let another = now.is_some_and(|f| before.is_none_or(|b| b.rev != f.rev));
+    let once = crate::owner::answers_once_per_version(&file.rel);
+    let answered = another && once && !is.is_empty();
+    (was != is || answered).then(|| Event::OwnedLeavesOut {
+        owner: file.owner.clone(),
+        path: file.rel.clone(),
+        message: now.and_then(Owned::trouble),
+    })
+}
+
+/// The file at `rel` among `owned`, which is in the order of their paths.
+fn owned_at<'a>(owned: &'a [Owned], rel: &str) -> Option<&'a Owned> {
+    let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
+    i.ok().map(|i| &owned[i])
+}
+
 fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {
     Bookmarks::read(root).map_err(|e| e.to_string())
 }
@@ -1465,6 +1516,8 @@ mod tests {
         let cache = dir.join("cache");
         let mut core = Core::open(&dir.join("w")).unwrap();
         core.set_owners(kinds(), Some(&cache));
+        let unread: Vec<(&str, &str)> = core.unread().collect();
+        assert_eq!(unread, [("csv-table", "Eruptions.csv")]);
         let reads = core.take_reads();
         assert_eq!(reads.len(), 1);
         let (owner, read) = &reads[0];
@@ -1512,10 +1565,10 @@ mod tests {
             "{events:?}"
         );
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::OwnerTrouble { message, .. }
-                if message.contains("no type called nothing"))),
+            events.iter().any(
+                |e| matches!(e, Event::OwnedLeavesOut { message: Some(message), .. }
+                if message.contains("no type called nothing"))
+            ),
             "{events:?}"
         );
         let query = |core: &Core, kind: &str| {
