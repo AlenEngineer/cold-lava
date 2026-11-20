@@ -1605,8 +1605,8 @@ the same `{reason, message}`.
   it lists every engine write, every whole-workspace operation and every `std::fs` change
   the app still makes itself, and why.
 
-**The pattern for the next groups** (rename, move and merge; recipes; undo; bookmarks), so
-each doesn't invent one:
+**The pattern for the next groups** (rename, move and merge; recipes; undo; Obsidian's
+bookmarks, a saved list, are removed instead, #373), so each doesn't invent one:
 
 - One message per engine operation, named `area/verb`, its types in the engine with pinned
   JSON, answered by `Core`, reached through a `Host` method that checks one permission, and

@@ -513,8 +513,9 @@ What was decided:
   the terminal app, a GUI, the command line and extensions. The extension host
   and its permission check are shared by all frontends *(built: `cold-lava-host`, #179)*, settings belong to each open workspace,
   and what the menu does to files goes through gateway messages *(built for delete, restore
-  and new folders, the first group of #193; rename, merge, recipes, undo and bookmarks
-  follow)*.
+  and new folders, the first group of #193; rename, merge, recipes and undo follow)*.
+  Obsidian's bookmarks, a saved list, are to be removed instead (#373): a bookmark here is the
+  anchor on a passage (#190).
 - **Built-in surfaces, extension data.** Extensions bring data, file formats, types and simple
   views. The page and the whiteboard are built in ("The frontend", above). The earlier goal
   that the menu and the canvas become extensions is dropped.
@@ -542,7 +543,9 @@ issue #100 is the one list of open work and says which step each feature waits f
 2. One door into the engine.
 3. Types and identity.
 4. The terminal views (lists, tables, the graph).
-5. Drawings.
+5. Drawings. *Paused on 2026-11-20:* a placed shape's data is a new kind of book that needs an
+   owner and doesn't fit the story yet, so shapes, bindings and the shape editor get no new
+   work (ARCHITECTURE.md, "Where the story is ahead of the code").
 6. The notebook: cold-lava's own editor and the page. Whether the page is built for the
    terminal or a graphical frontend first is open (#196), to decide after real use.
 
