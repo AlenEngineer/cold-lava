@@ -477,7 +477,8 @@ another host or check in a frontend:
   - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
     returns, so extensions never hold `&mut Home`. The gateway's `items/*` and `types/list` are
     answered during the call by the core, after `Host` checks the manifest's `permissions`
-    (`items.read` by default, `items.edit`; `files.read` and `files.write` for whole files;
+    (`items.read` by default, `items.edit`; `files.read` and `files.write` for whole files,
+    though `files.write` never reaches a kind another owner reads, `.canvas` included (#323);
     `files.delete` for `workspace/delete` and `workspace/restore`, which `files.write` and
     owning a kind don't include). The reader's `x` uses the same `Host`, as
     `Registry::screen`; the agenda and the table are built-in `Extension`s.

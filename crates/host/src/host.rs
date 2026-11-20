@@ -275,7 +275,8 @@ impl Host<'_> {
     }
 
     /// The core, for a file message about files of `extension`: the owner of that kind may
-    /// read and write them; any other file needs `files.read`, and `files.write` to change it.
+    /// read and write them; any other file needs `files.read`, and `files.write` to change it
+    /// unless another owner reads it.
     fn files_core(
         &mut self,
         extension: Option<String>,
@@ -290,8 +291,31 @@ impl Host<'_> {
                 .as_deref_mut()
                 .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open")),
             (false, false) => self.core(Permission::FilesRead),
-            (false, true) => self.core(Permission::FilesWrite),
+            (false, true) => {
+                self.not_anothers(extension.as_deref())?;
+                self.core(Permission::FilesWrite)
+            }
         }
+    }
+
+    /// Nothing, unless another owner reads files of `kind`: an extension that claimed it, or a
+    /// built-in owner (`.canvas`). Those change only through their owner, with `items/edit`
+    /// (#183), so no permission lets anyone else write one whole.
+    fn not_anothers(&self, kind: Option<&str>) -> Result<(), gateway::Error> {
+        let Some(kind) = kind else {
+            return Ok(());
+        };
+        let theirs = (self.owners.iter()).any(|(x, owner)| x == kind && Some(*owner) != self.me)
+            || (crate::owner::BUILT_IN.iter()).any(|(built_in, _)| *built_in == kind);
+        if !theirs {
+            return Ok(());
+        }
+        let message = format!(
+            "{} may not write .{kind} files: their owner reads them, so they change only \
+             through it, with items/edit",
+            self.name
+        );
+        Err(gateway::Error::new(Reason::Forbidden, message))
     }
 
     /// `workspace/read`
@@ -344,9 +368,10 @@ impl Host<'_> {
 
     /// `workspace/restore`, under `files.delete` too: whoever may delete may put back what it
     /// deleted. Putting it somewhere else (`to`) makes a file there, so it needs `files.write`
-    /// as well.
+    /// as well, and is refused where another owner reads that kind, as a create is.
     pub fn restore_file(&mut self, restore: &Restore) -> Result<Restored, gateway::Error> {
-        if restore.to.is_some() {
+        if let Some(to) = &restore.to {
+            self.not_anothers(files::extension_of(to).as_deref())?;
             self.may(Permission::FilesWrite)?;
         }
         let name = self.name;
