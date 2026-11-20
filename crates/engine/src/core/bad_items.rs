@@ -1039,9 +1039,11 @@ fn a_board_isnt_reported_again_after_a_rename() {
 
     let note = core.index.by_rel("Lava").unwrap();
     let mut plan = crate::rename::plan(&core.index, note, "Hot/Lava").unwrap();
-    assert_eq!(core.relink(&mut plan.edits), Ok(None), "answered at once");
-    crate::rename::apply(&plan).unwrap();
-    core.relinked(&plan.edits, |p| plan.moved(p));
+    let made = core.apply(&mut plan);
+    assert!(
+        matches!(&made, Applying::Now(Ok(()))),
+        "answered at once: {made:?}"
+    );
     let text = std::fs::read_to_string(dir.join("Board.canvas")).unwrap();
     assert!(text.contains("Hot/Lava.md"), "{text}");
     assert_eq!(
