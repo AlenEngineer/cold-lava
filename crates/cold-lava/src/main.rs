@@ -23,6 +23,7 @@ mod previews;
 mod reader;
 mod recipe_view;
 mod refused;
+mod rel_path;
 mod reports;
 mod say;
 mod scene;

@@ -34,7 +34,9 @@ use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
 use crate::type_table;
 use crate::views::{self, Views};
-use crate::{agenda, board, files, graph_ext, items, read, templates, term, whichkey, workspace};
+use crate::{
+    agenda, board, files, graph_ext, items, read, rel_path, templates, term, whichkey, workspace,
+};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -264,12 +266,7 @@ pub fn scan_tree(root: &Path, owned: impl Fn(&str) -> bool) -> Vec<Item> {
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
         .filter_map(|e| e.ok())
         .filter_map(|e| {
-            let rel = e
-                .path()
-                .strip_prefix(root)
-                .ok()?
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = rel_path::of(root, e.path())?;
             let kind = if e.file_type().is_dir() {
                 ItemKind::Folder
             } else {
@@ -847,10 +844,9 @@ impl Home {
         let (Some(root), Ok(canon)) = (self.root.clone(), path.canonicalize()) else {
             return;
         };
-        let Ok(rel) = canon.strip_prefix(&root) else {
+        let Some(rel) = rel_path::of(&root, &canon) else {
             return;
         };
-        let rel = rel.to_string_lossy().replace('\\', "/");
         let from = self.here();
         self.leave(from, &canon, None);
         self.reload_tree();
@@ -1325,8 +1321,7 @@ impl Home {
             return self.held_back(ext, &format!("open {}", note.display()), why);
         }
         let owned = self.core.as_ref().and_then(|c| {
-            let rel = note.strip_prefix(c.root()).unwrap_or(note);
-            let rel = rel.to_string_lossy().replace('\\', "/");
+            let rel = rel_path::or_whole(c.root(), note);
             (c.index.workspace.owned.iter()).find(|f| f.rel == rel)
         });
         if let Some(f) = owned {
@@ -1888,10 +1883,9 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Ok(rel) = path.strip_prefix(&root) else {
+        let Some(rel) = rel_path::of(&root, path) else {
             return;
         };
-        let rel = rel.to_string_lossy().replace('\\', "/");
         let parts: Vec<&str> = rel.split('/').collect();
         for n in 1..parts.len() {
             self.expanded.insert(parts[..n].join("/"));
@@ -2094,11 +2088,7 @@ impl Home {
             view.update(crate::tidy::report(&core.index));
         }
         self.deliver_item_news();
-        let shown_rel = self
-            .shown
-            .as_ref()
-            .and_then(|p| p.strip_prefix(&root).ok())
-            .map(|r| r.to_string_lossy().replace('\\', "/"));
+        let shown_rel = self.shown.as_ref().and_then(|p| rel_path::of(&root, p));
         let shown_rel = shown_rel.as_deref().map(|r| r.trim_end_matches(".md"));
         let reread = events.iter().any(|e| match e {
             CoreEvent::NoteChanged(rel)
@@ -2253,8 +2243,7 @@ impl Home {
         let ix = &self.core.as_ref()?.index;
         let link = crate::resolver::split_link(target);
         let path = crate::resolver::file(ix, &link.note, from.and_then(|p| ix.by_path(p)))?;
-        let rel = path.strip_prefix(&ix.workspace.root).ok()?;
-        let rel = rel.to_string_lossy().replace('\\', "/");
+        let rel = rel_path::of(&ix.workspace.root, &path)?;
         let root = &ix.workspace.root;
         let Some((owner, _)) = self.registry.owner_of(&rel) else {
             // A picture nobody owns: its kind and size, and a PNG in half blocks.
@@ -2284,8 +2273,7 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let rel = path.strip_prefix(&root).unwrap_or(path);
-        let rel = rel.to_string_lossy().replace('\\', "/");
+        let rel = rel_path::or_whole(&root, path);
         if workspace::attachment_kind(&rel) == Some("whiteboard") {
             self.go_to = Some(Place::Board {
                 path: path.to_path_buf(),
@@ -2383,8 +2371,7 @@ impl Home {
         let items = match ix.by_path(path).map(|i| &workspace.notes[i]) {
             Some(note) if note.text == text => workspace.items(note),
             _ => {
-                let rel = path.strip_prefix(&workspace.root).unwrap_or(path);
-                read = items::extract(&rel.to_string_lossy().replace('\\', "/"), &text, settings);
+                read = items::extract(&rel_path::or_whole(&workspace.root, path), &text, settings);
                 &read
             }
         };
@@ -2826,8 +2813,8 @@ impl Home {
         let Some((id, rev, task)) = task else {
             return self.flash(format!("line {line} is no task"));
         };
-        let rel = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy();
-        self.tick(READER, &id, &rev, &rel.replace('\\', "/"), &task.text);
+        let rel = rel_path::or_whole(&root, &path);
+        self.tick(READER, &id, &rev, &rel, &task.text);
     }
 
     /// Tick the task `id` in `note` (workspace-relative, with `.md`) through the workspace
@@ -3756,7 +3743,7 @@ impl Home {
         let reading = self.reader.as_ref().filter(|_| self.focus == Focus::Pane);
         let heading = reading.and_then(|r| Some(&r.headings()[*crumbs(r, shown).last()?]));
         Some(Target::File {
-            path: (shown.strip_prefix(root).ok()?.to_string_lossy()).replace('\\', "/"),
+            path: rel_path::of(root, shown)?,
             subpath: heading.map(|h| format!("#{}", h.text)),
         })
     }
@@ -3971,10 +3958,7 @@ impl Home {
         let (Some(path), Some(root)) = (target, self.root.clone()) else {
             return self.flash("select a note or folder to rename or move");
         };
-        let rel = path
-            .strip_prefix(&root)
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default();
+        let rel = rel_path::of(&root, &path).unwrap_or_default();
         let rel = rel.trim_end_matches(".md");
         let (dir, name) = rel.rsplit_once('/').unwrap_or(("", rel));
         let input = if moving {
@@ -4086,10 +4070,7 @@ impl Home {
             return;
         };
         let plan = if path.is_dir() {
-            let from = path
-                .strip_prefix(&ix.workspace.root)
-                .map(|r| r.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
+            let from = rel_path::of(&ix.workspace.root, path).unwrap_or_default();
             let name = from.rsplit('/').next().unwrap_or(&from).to_string();
             // Moving to the root: "/" means "no folder".
             let target = if input == "/" {
@@ -4245,15 +4226,7 @@ impl Home {
         let (notes, skipped): (Vec<String>, Vec<String>) = match self.marks.is_empty() {
             false => self.marks.iter().cloned().partition(|r| r.ends_with(".md")),
             true => match self.rename_target() {
-                Some(p) => (
-                    vec![
-                        p.strip_prefix(&root)
-                            .unwrap_or(&p)
-                            .to_string_lossy()
-                            .replace('\\', "/"),
-                    ],
-                    Vec::new(),
-                ),
+                Some(p) => (vec![rel_path::or_whole(&root, &p)], Vec::new()),
                 None => return self.flash("select a note to tag"),
             },
         };
@@ -5308,10 +5281,7 @@ impl Home {
         }
         let mut doomed = Vec::new();
         for path in &paths {
-            let file = path
-                .strip_prefix(&root)
-                .map(|r| r.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
+            let file = rel_path::of(&root, path).unwrap_or_default();
             let stat = match self.core.as_ref().map(|c| c.stat_file(&file)) {
                 Some(Ok(stat)) => stat,
                 refused => {
@@ -5547,10 +5517,9 @@ impl Home {
         let mut back = Vec::new();
         let mut failed = Vec::new();
         for (t, to) in batch {
-            let rel = to.strip_prefix(&root).unwrap_or(&to);
             let restore = files::Restore {
                 trashed: t.trashed.clone(),
-                to: Some(rel.to_string_lossy().replace('\\', "/")),
+                to: Some(rel_path::or_whole(&root, &to)),
             };
             let restored = match self.core.as_mut() {
                 Some(core) => core.restore_file(MENU, &restore).map_err(|e| e.message),
@@ -5566,9 +5535,8 @@ impl Home {
         }
         self.after_core_change();
         for to in back.iter().filter(|to| to.is_dir()) {
-            if let Ok(rel) = to.strip_prefix(&root) {
-                self.expanded
-                    .insert(rel.to_string_lossy().replace('\\', "/"));
+            if let Some(rel) = rel_path::of(&root, to) {
+                self.expanded.insert(rel);
             }
         }
         if let Some(first) = back.first() {
