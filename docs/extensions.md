@@ -1954,14 +1954,22 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   the words it is reported in: `{owner}'s new text for {file} doesn't read back as asked
   (bad: unknown field `colour`, … was left out, and came back changed, moved or not at
   all); nothing was written`. One that is gone or new is named first, then one that moved.
-  What moved is what the fewest changes to its list explain. Of a left-out item and its
-  neighbour swapped, the left-out one is named, since it didn't come back where it was. One
-  that only stands elsewhere because an item or a link that reads moved past it, was added
-  before it or was dropped from before it is not named. That item or link is named instead,
-  by the comparison of the items, the links and the pieces when it sees the change
-  (`{"kind":"list","text":"New good"} wasn't asked for`), and else as `the item at ty
-  moved`, `… wasn't asked for` or `… is missing` (`the link to Lava …`, `the link from a to
-  b …` for links). An item with both
+  What moved is what the fewest moves within its list explain, where a key repeats too (an
+  item that reads is told by its form and place, so a piece and a Markdown piece at one
+  place are two; a link given twice is two of one key). When as few moves explain either a
+  left-out entry or one that reads moving, the left-out one is named, since it didn't come
+  back where it was: a left-out item and its neighbour swapped, or a left-out item and the
+  one before it moved past two others. Past a million pairs of equal entries (a value given
+  a thousand times in both answers), the copies of a value are paired in order instead,
+  which can name a left-out entry that only stands elsewhere (`owner/order.rs`,
+  `MORE_PAIRS`). One that only stands elsewhere because an item or a link that reads moved
+  past it, was added before it or was dropped from before it is not named. That item or
+  link is named instead, by the comparison of the items, the links and the pieces when it
+  sees the change (`{"kind":"list","text":"New good"} wasn't asked for`, `links to Lava are
+  missing`, `the link 1 of 3 between pieces is … where … was asked`), and else as `the
+  typed item at ty moved`, `… wasn't asked for` or `… is missing` (`the piece at p …`,
+  `the Markdown piece at md …`; `the link to Lava …`, `the link from a to b …` for
+  links). An item with both
   `role` and `type` is read as a piece and left
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
