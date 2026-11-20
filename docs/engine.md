@@ -47,6 +47,60 @@ Both gateways are JSON-RPC messages over a transport (stdio, a socket, or in-pro
 built-in extensions), but they are separate protocols: the engine never sees the view gateway,
 and the frontend never parses a note.
 
+## The library: the engine as a story
+
+Someone keeps notes in many books, written in different languages, some in dialects. Looking
+something up means switching languages, and that wears them out. So they hire a translator for
+each language. The translators agree on one common language for their reports, and the reader
+uses that same language to ask, and to ask for changes. Only the translators ever speak a
+book's own language.
+
+That is cold-lava. The rest of the cast keeps the books safe.
+
+| In the story | In cold-lava | Where |
+| --- | --- | --- |
+| The library | The engine | `crates/engine` |
+| The books | Your files: notes, canvases, CSV, anything | the workspace |
+| A book's language | A file format, and its flavour | `markdown.rs`, `json_canvas.rs` |
+| The translators | Owners: each reads one format into items and links, and writes one change back | `owner/` |
+| Staff translators | The built-in owners, Markdown and canvas | `owner/markdown.rs`, `owner/canvas.rs` |
+| Outside translators | Owners that extensions bring, answering `file/read` and `file/edit` | `owner/given.rs` |
+| The common language | The alphabet (roles, marks, attributes, links) and the types written in it | `alphabet.rs`, `types.rs` |
+| The librarian | The core: asks the translators, checks their work, swaps pages in | `core.rs` |
+| The catalogue | The index: every item, link and backlink, kept from the translators' reports | `index.rs` |
+| The door, and its forms | The workspace gateway's messages | `gateway.rs`, `files.rs` |
+| The front desk | The extension host: checks every visitor's badge (its permissions) before the librarian hears a word | `crates/host` |
+| The readers | The terminal app, a GUI, the coming language server, and extensions that only ask | `crates/cold-lava` |
+
+**The librarian speaks no book's language.** It doesn't need to. When a translator says a page
+should now read differently, the librarian hands the new page back to the same translator and
+asks for a fresh report on it. It then compares the before and after reports, both in the common
+language. If anything moved besides what was asked, the page is refused (`given::same`). Whether
+someone else wrote in the book meanwhile is a comparison of bytes, not a reading: the bytes it
+read against the bytes there now (`write::replace`; over the gateway, a fingerprint of them,
+`rev`). Swapping the page in is copying bytes, atomically (`write.rs`), and a page torn out goes
+to the trash, never the fire (`trash.rs`).
+
+**No translator writes in a book.** A translator says what the page should say; the librarian
+writes it. An outside translator is a stranger: every report it gives is measured against limits
+as it arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note
+saying why (`Given::left_out`). This is why a code editor's language server returns edits
+instead of saving files, and it is the same rule here.
+
+**Where the story is ahead of the code.**
+
+- The Markdown translator still has a key to the stacks: the engine reads and edits notes itself
+  instead of asking it like any other. Track D (#272) takes the key away.
+- The librarian does a lot of paperwork that belongs to clerks of their own (the watcher, the
+  cache of reports, the trouble reports). Track C (#271) gives each its own desk, so the librarian
+  only calls on them in order.
+- Characters not hired yet: **the archivist**, who keeps every page the librarian replaces
+  (#305); **the logbook**, where every change is written down with who asked and which
+  translator wrote it (#306); **the bookmark**, a name stuck on a page the first time something
+  refers to it, so the reference survives a move (#190); **dictionaries**, which let the
+  librarian read a book itself and check a write by its bytes (#307); and a **ladder of trust**
+  for how far an outside translator may write (#308).
+
 ## The layers
 
 **0. Workspace** *(built: `core.rs`, `workspace.rs`, `index.rs`, `resolver.rs`, `search.rs`, `write.rs`, `rename.rs`)*.
