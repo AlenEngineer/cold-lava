@@ -1,0 +1,67 @@
+# What a prompt was opened on and another program deletes before Enter is not made again (track
+# E3): a new note and a new folder in a folder gone by then are refused naming the folder, and
+# a tag on a note gone by then names the note. A tag on two marked notes, one gone by then,
+# counts it in the title and tags the other. tests/drive.rs plays the other program: when the
+# script writes Inbox/zz-gone.md, it deletes the path written in it, and the file.
+size 120x40
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+keys p johnston
+wait-for David A. Johnston
+keys enter
+wait-for People/David A. Johnston  reading
+keys esc
+wait-gone reading · Esc / q back
+keys n
+wait-for new note in People/
+type Field notes
+write Inbox/zz-gone.md People
+wait-for example-workspace 32 notes
+keys enter
+wait-for can't create People/Field notes.md: People/ is no longer there
+keys p krakat
+wait-for Krakatoa
+keys enter
+wait-for Volcanoes/Krakatoa  reading
+keys esc
+wait-gone reading · Esc / q back
+keys N
+wait-for new folder in Volcanoes/
+type Ash
+write Inbox/zz-gone.md Volcanoes
+wait-for example-workspace 23 notes
+keys enter
+wait-for can't create Volcanoes/Ash/: Volcanoes/ is no longer there
+keys p lava
+wait-for Lava
+keys enter
+wait-for Concepts/Lava  reading
+keys esc
+wait-gone reading · Esc / q back
+keys #
+wait-for tag Lava · -tag removes
+type seismic
+write Inbox/zz-gone.md Concepts/Lava.md
+wait-for example-workspace 22 notes
+keys enter
+wait-for can't tag: Concepts/Lava.md is no longer there
+keys p hotspot
+wait-for Hotspot
+keys enter
+wait-for Concepts/Hotspot  reading
+keys esc
+wait-gone reading · Esc / q back
+keys space
+wait-for 1 marked
+keys space
+wait-for 2 marked
+keys #
+wait-for tag 2 marked notes · -tag removes
+type seismic
+write Inbox/zz-gone.md Concepts/Hotspot.md
+wait-for example-workspace 21 notes
+wait-for tag 2 marked notes (1 gone) · -tag removes
+keys enter
+wait-for tagged 1 note #seismic · left alone: Concepts/Hotspot.md is no longer there
+keys q
+exits 0

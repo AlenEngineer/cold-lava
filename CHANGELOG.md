@@ -58,6 +58,25 @@ change commands, keys and file formats; patch versions only fix things.
   about half the runs). The rest of the output is skipped quietly, and the command still does
   everything else it was asked (its errors on stderr included) and exits as it would have, as
   `items | head` already did (#339).
+- The new note, new folder, tag and marked move prompts act on what was selected and marked
+  when they opened, in the workspace they opened in, and the title says where: "new note in
+  Volcanoes/", "new folder in the workspace root", "tag Krakatoa" (the hint for templates is
+  now on their list, "template · Tab"). An extension that moved the tree's selection while one
+  was open (an editor reporting the note it shows, `editor/opened`) made Enter create the note
+  or folder in another folder, or tag another note (#269, #286). A click in the tree while one
+  is open no longer changes its target either: the title still names it. If another workspace
+  was opened under the prompt, Enter is refused ("the workspace changed") and nothing is
+  written. If the folder is gone by Enter (another program deleted it), the note or folder is
+  refused naming it ("People/ is no longer there") instead of made in whatever was selected
+  next, and a tag on a note gone by then says so ("can't tag: Volcanoes/Krakatoa.md is no
+  longer there") instead of an error from the system. While marked notes are gone, the tag and
+  move prompts' titles count them ("tag 2 marked notes (1 gone)").
+- A note's or a folder's rename or move prompt acts in the workspace it opened in. If another
+  workspace was opened under it, Enter is refused ("can't rename: the workspace changed") and
+  nothing is written. Before, with the folder of the first workspace open as a workspace, a
+  folder renamed or moved went where the typed name pointed in that one, and could leave its
+  workspace (a move to `Archive` made `Archive/` beside it); with an unrelated workspace it was
+  refused with words that didn't say why ("that's the workspace itself").
 - A note or file kept in the workspace as a symlink is saved where the link leads. Before,
   a save to the link (the whiteboard's, the menu's tag edit, `cold-lava task toggle` and
   `item set`) put

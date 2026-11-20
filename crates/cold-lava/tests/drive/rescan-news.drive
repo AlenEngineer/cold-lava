@@ -11,7 +11,7 @@ expect-not ▾ Today
 keys g j enter
 wait-for Ctrl-o ⟵ agenda
 keys n
-wait-for new note · Tab template · ⏎ create · Esc cancel
+wait-for new note in Journal/ · ⏎ create · Esc cancel
 type Ash fall
 keys enter
 wait-for created Journal/Ash fall.md

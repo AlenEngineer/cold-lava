@@ -602,6 +602,15 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   `Outline` jumps to one of the reader's headings (`Outline::open` gives none for a note
   without). `Home::palette_key` is how the menu keys an overlay: what it needs from the menu
   first, then the key in place in `Mode`, no clone.
+- `prompt.rs`, `new_note.rs`, `tag_prompt.rs`: the menu's prompts, overlays of the same shape.
+  `Prompt` is the one-line prompt (a new folder, a workspace to add, a rename, a move, a marked
+  move; `Asks` says which). `NewNote` adds the templates and `TagPrompt` the tags to complete
+  from. Each holds the target it opened on (a `prompt::Folder`, `tag_prompt::Whom` for the note
+  or the marks, the path) with the workspace's root, and its title names it, so nothing that
+  moves the tree's selection, the marks or the workspace under it changes what Enter does: the
+  menu refuses when that workspace is no longer open (`Home::is_open`) or a folder is gone
+  (`can_create_in`), and never makes a target again. Each says what closing it would lose
+  (`unsaved`).
 - `line_input.rs`, `pick_list.rs`, `popup.rs`, `words.rs`: leaves the menu and its overlays
   call: what a key does to a typed line, to a picked list's query and cursor, where a popup
   goes and its frame, and `plural` (the app's one "1 note" / "2 notes").
