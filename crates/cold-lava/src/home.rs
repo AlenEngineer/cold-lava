@@ -33,7 +33,7 @@ use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
 use crate::type_table;
 use crate::views::{self, Views};
-use crate::{agenda, board, files, graph_ext, items, templates, term, whichkey, workspace};
+use crate::{agenda, board, files, graph_ext, items, read, templates, term, whichkey, workspace};
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -2133,7 +2133,7 @@ impl Home {
             };
             let news = FileNews::Changed {
                 path: rel.clone(),
-                rev: files::rev_at(root, rel),
+                rev: read::rev_at(root, rel),
             };
             self.call(owner, |e, host| e.file(news, host));
         }
@@ -2210,7 +2210,7 @@ impl Home {
             let lines = views::preview(&content, Some(root), width, previews::HEIGHT as usize);
             return Some(lines.into_iter().skip(1).collect());
         };
-        let rev = files::rev_at(root, &rel)?;
+        let rev = read::rev_at(root, &rel)?;
         let name = &self.registry.manifest(owner).name;
         Some(previews.lines(&rel, &rev, name, width as u16, Some(root)))
     }

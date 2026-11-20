@@ -130,7 +130,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
   these: they ask the core (`Core::delete_file`, `restore_file`: `workspace/delete`,
   `workspace/restore`). `Core::set_system_trash` names the system trash; a test that
-  deletes sets one under its own folder.
+  deletes sets one under its own folder. What a delete compares (`Contents`) is `read.rs`'s.
 - `read.rs` holds `Seen`, what was at a path when it was read, so a later write or delete can
   be refused if it changed since. No path uses it yet: the rest of track A step A5 (#265)
   moves the writes and deletes that check for a change onto it. `Seen::file` reads a file's
@@ -142,7 +142,11 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `replace` writes through `write::replace`, only over a file seen as a file. `rev` is the
   gateway's version (a folder's is its listing's); `text` refuses bytes that aren't UTF-8
   with `NotText`, whose `about` is the one wording of "isn't UTF-8 text". The gateway's
-  `Reason::of` names a `WriteError`'s reason.
+  `Reason::of` names a `WriteError`'s reason. It is also the one home of a version: `read::rev`
+  (a file's bytes), `rev_at` (the file at a path now), `rev_of` and `Contents` (what is at a
+  path, a link never followed, as `workspace/stat` and a delete read it). It needs only
+  `write`, `identity`, std and walkdir; `files.rs` and `trash.rs` depend on it, never the
+  other way.
 - `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text, each read by its owner. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
@@ -364,21 +368,21 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
 - `links.rs`: the link graph for `links/query` (every file links come from, where each leads,
   Obsidian's graph colour groups); `links/subscribe` news is queued with the items' news.
-- `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`,
-  `workspace/write` refused unless the file is still that version, `workspace/create` where
-  Obsidian puts a new file, `workspace/files`) and their pinned JSON; `resolve` keeps a path
-  inside the workspace and out of hidden folders. `Core` answers them, and its watcher reports
-  other files as `Event::FileChanged`. Also here (#193, docs/extensions.md "Deleting,
-  restoring and making folders"): `workspace/stat` (the `rev` of any file, or of a folder's
-  listing, which leaves out hidden entries and is bounded), `workspace/delete` (to the
-  trash, refused unless still that `rev`; answers a random token that only the client it
-  was given to can use, kept in the core's `Trash` and gone with the core),
-  `workspace/restore` (never over something; `to` is a new name) and
-  `workspace/create-folder`. `stat` and `delete` never follow a symlink: the link is what
-  goes (`resolve_entry`). A frontend that drops a core carries its own deletes to the next
-  one with `Core::take_trashed` / `keep_trashed`. The core reads what moved at once and emits
-  `Event::Deleted`, `Restored` or `FolderCreated` naming the client. The next groups of #193
-  (rename, merge, recipes, undo, bookmarks) follow the pattern that section ends with.
+- `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`, which
+  `read.rs` makes, `workspace/write` refused unless the file is still that version,
+  `workspace/create` where Obsidian puts a new file, `workspace/files`) and their pinned JSON;
+  `resolve` keeps a path inside the workspace and out of hidden folders. `Core` answers them,
+  and its watcher reports other files as `Event::FileChanged`. Also here (#193,
+  docs/extensions.md "Deleting, restoring and making folders"): `workspace/stat` (the `rev` of
+  any file, or of a folder's listing, which leaves out hidden entries and is bounded),
+  `workspace/delete` (to the trash, refused unless still that `rev`; answers a random token that
+  only the client it was given to can use, kept in the core's `Trash` and gone with the core),
+  `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
+  `stat` and `delete` never follow a symlink: the link is what goes (`resolve_entry`). A
+  frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
+  `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
+  `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo,
+  bookmarks) follow the pattern that section ends with.
 - `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
   `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
   notes settings, moment.js date formats.

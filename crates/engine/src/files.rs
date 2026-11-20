@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::{Error, Reason};
-use crate::identity;
 use crate::index::Index;
-use crate::trash::{self, Bin, Contents, Trashed, Went};
+use crate::read::{Contents, rev};
+use crate::trash::{self, Bin, Trashed, Went};
 use crate::write::{self, WriteError};
 
 /// What an extension asks of the workspace gateway about files (extension → host).
@@ -159,16 +159,6 @@ pub struct Restored {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Folder {
     pub path: String,
-}
-
-/// A file's version: a hash of its bytes, as 16 hex digits.
-pub fn rev(bytes: &[u8]) -> String {
-    identity::hash(bytes)
-}
-
-/// The version of the file at `rel` now, `None` when it is gone or can't be read.
-pub fn rev_at(root: &Path, rel: &str) -> Option<String> {
-    std::fs::read(root.join(rel)).ok().map(|b| rev(&b))
 }
 
 /// The suffix of a path or file name (`Data/Eruptions.CSV` → `csv`), lowercase.

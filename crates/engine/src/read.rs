@@ -6,12 +6,15 @@
 //! link itself, is read without following one (`Seen::entry`). Each is read again the way it
 //! was seen, at its path or at the one a move took it to (`at`). A delete checks the entry
 //! itself, whatever way it was seen (`unchanged_entry`).
+//!
+//! It is the one home of a version, as the gateway names it: `rev` of a file's bytes, `rev_of`
+//! of what is at a path (`Contents`).
 
-use crate::files::rev;
-use crate::trash::Contents;
+use crate::identity;
 use crate::write::{self, WriteError};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// What was at `path` when it was seen.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,6 +142,56 @@ impl Way {
     }
 }
 
+/// What the user was shown of a file or folder, so a delete is refused if it changed since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Contents {
+    File(Vec<u8>),
+    /// Everything inside the folder (relative paths, sorted), with each file's size and time.
+    Folder(Vec<(PathBuf, u64, Option<SystemTime>)>),
+    /// A symlink, by where it points: the link is what goes, and it is never followed.
+    Link(PathBuf),
+}
+
+impl Contents {
+    pub fn read(path: &Path) -> Result<Contents, WriteError> {
+        Contents::at(path).map_err(|e| WriteError::Io(path.to_path_buf(), e))
+    }
+
+    /// What is at `path` now, never following a symlink.
+    pub(crate) fn at(path: &Path) -> io::Result<Contents> {
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            return std::fs::read_link(path).map(Contents::Link);
+        }
+        if !meta.is_dir() {
+            return std::fs::read(path).map(Contents::File);
+        }
+        let mut entries = Vec::new();
+        for e in walkdir::WalkDir::new(path).min_depth(1).sort_by_file_name() {
+            let e = e.map_err(io::Error::from)?;
+            let meta = e.metadata().map_err(io::Error::from)?;
+            let rel = e
+                .path()
+                .strip_prefix(path)
+                .unwrap_or(e.path())
+                .to_path_buf();
+            let size = if meta.is_file() { meta.len() } else { 0 };
+            entries.push((rel, size, meta.modified().ok()));
+        }
+        Ok(Contents::Folder(entries))
+    }
+}
+
+/// A file's version: a hash of its bytes, as 16 hex digits.
+pub fn rev(bytes: &[u8]) -> String {
+    identity::hash(bytes)
+}
+
+/// The version of the file at `rel` now, `None` when it is gone or can't be read.
+pub fn rev_at(root: &Path, rel: &str) -> Option<String> {
+    std::fs::read(root.join(rel)).ok().map(|b| rev(&b))
+}
+
 /// The version of what is at a path, as a delete checks it. A folder's is a hash of its
 /// listing: every path in it with its size and modified time.
 pub(crate) fn rev_of(contents: &Contents) -> String {
@@ -182,6 +235,36 @@ mod tests {
         assert_eq!(seen.bytes(), Some(&b"hot"[..]));
         assert_eq!(seen.text(), Ok("hot"));
         assert_eq!(seen.rev(), rev(b"hot"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Clients compare revs, so each is pinned as the engine gave it before. A file's is the one
+    /// `files.rs`'s wire tests pin; the folder's and the link's are FNV-1a of their listing,
+    /// worked out outside the engine.
+    #[test]
+    fn revs_given_before_are_given_again() {
+        let d = dir("revs");
+        std::fs::write(d.join("a.md"), "a").unwrap();
+        assert_eq!(rev(b"a"), "af63dc4c8601ec8c");
+        assert_eq!(rev_at(&d, "a.md").as_deref(), Some("af63dc4c8601ec8c"));
+        assert_eq!(rev_at(&d, "gone.md"), None);
+        assert_eq!(
+            Seen::file(&d.join("a.md")).unwrap().rev(),
+            "af63dc4c8601ec8c"
+        );
+        let f = d.join("Volcanoes");
+        std::fs::create_dir_all(&f).unwrap();
+        std::fs::write(f.join("Etna.md"), "hot").unwrap();
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let etna = std::fs::File::options().write(true).open(f.join("Etna.md"));
+        etna.unwrap().set_modified(when).unwrap();
+        assert_eq!(Seen::entry(&f).unwrap().rev(), "3923f92ec6909451");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("Lava.md", d.join("Link.md")).unwrap();
+            let link = Seen::entry(&d.join("Link.md")).unwrap();
+            assert_eq!(link.rev(), "af545e6e22634d3a");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
