@@ -116,7 +116,8 @@ pub(crate) struct ToWrite {
     pub what: String,
 }
 
-/// An edit of one owned file, from asking its owner until it is written, or fails.
+/// An edit of one owned file, from asking its owner until it fails, a relink's new text reads
+/// back, or an item edit is written.
 struct Pending {
     owner: String,
     /// The file's version and text the change was made on.
@@ -200,17 +201,26 @@ impl Edits {
     }
 
     /// The owner an edit of the file at `path` waits for, if one does: a file has one edit at
-    /// a time, until it is written.
+    /// a time.
     pub fn waiting(&self, path: &str) -> Option<&str> {
         self.pending.get(path).map(|p| p.owner.as_str())
     }
 
+    /// Refused while an edit of the file at `path` waits for its owner (`waiting`).
+    pub fn free(&self, path: &str) -> Result<(), Error> {
+        let Some(owner) = self.waiting(path) else {
+            return Ok(());
+        };
+        let message = format!("{path} has an edit waiting for {owner}: try again");
+        Err(Error::new(Reason::Changed, message))
+    }
+
     /// `edit` of an item in the owned `file`, made into `changes` on the file as the core read
-    /// it (`before`), after which its owner should give `expect`: refused when the file changed
-    /// since its owner read it, or isn't UTF-8 text. Else its owner is asked for the file's new
-    /// text (`file/edit`). The ticket the answer comes under (`take_edited`), and what to write
-    /// when an owner in the engine answered inside the call. No other edit of the file may be
-    /// waiting (`waiting`).
+    /// it (`before`), after which its owner should give `expect`: refused when another edit of
+    /// the file waits (`free`), the file changed since its owner read it, or it isn't UTF-8
+    /// text. Else its owner is asked for the file's new text (`file/edit`). The ticket the
+    /// answer comes under (`take_edited`), and what to write when an owner in the engine
+    /// answered inside the call.
     pub fn edit_item(
         &mut self,
         file: &Owned,
@@ -220,6 +230,7 @@ impl Edits {
         edit: ItemEdit,
         s: &Settings,
     ) -> Result<(Ticket, Option<ToWrite>), Error> {
+        self.free(&file.rel)?;
         let error = Error::new;
         let rev = before.rev();
         if file.rev.as_deref() != Some(rev.as_str()) {
@@ -351,7 +362,6 @@ impl Edits {
         let owner = p.owner.clone();
         let given = match given {
             Ok(g) => g,
-            // It couldn't read the file before the change either, and gave nothing for it.
             Err(_) if p.expect.is_none() => Given::default(),
             Err(why) => {
                 let message = format!("{owner} couldn't read its new text for {path}: {why}");
@@ -460,7 +470,8 @@ impl Edits {
     /// first owner's refusal, after which nothing else is kept. Refused at once when one of them
     /// has an edit waiting, changed since it was planned (`planned` says whether a file still
     /// holds the text it was planned on), its change would leave out something its owner gave
-    /// (`given::check_change`: a link target past its bound), or an owner in the engine refuses.
+    /// (`given::check_change`, such as a link to a target past its bound), or an owner in the
+    /// engine refuses.
     pub fn relink(
         &mut self,
         edits: &mut [rename::FileEdit],
@@ -476,9 +487,8 @@ impl Edits {
     }
 
     /// The files among `edits` that other owners read, in order, each with what its owner
-    /// should give once it is changed (`None` when the owner couldn't read it before). Refused
-    /// at the first that has an edit waiting, changed since it was planned, or whose change
-    /// would leave out something its owner gave.
+    /// should give once it is changed (`None` when the owner couldn't read it before), or the
+    /// first refusal (`relink`).
     fn check<'a>(
         &self,
         edits: &'a [rename::FileEdit],
@@ -528,7 +538,6 @@ impl Edits {
                 goal: Goal::Relink(ticket),
                 stage: Stage::Editing,
             };
-            // A relink's new text is kept, not written: `ask` hands back nothing to write.
             self.ask(e.file.clone(), o.changes.clone(), pending, s);
         }
         ticket
@@ -672,6 +681,13 @@ mod tests {
         assert!(write.is_none(), "an extension answers later");
         assert_eq!(ticket, Ticket(1));
         assert_eq!(desk.waiting(FILE), Some(OWNER), "one at a time");
+        let (changes2, expect2, edit2) = tick(&s);
+        let busy = desk.edit_item(&owned(), &seen(OPEN), changes2, expect2, edit2, &s);
+        let Err(e) = busy else {
+            panic!("a second edit of the file while the first waits");
+        };
+        let waits = "Samples.csv has an edit waiting for csv-table: try again";
+        assert_eq!((e.reason, e.message.as_str()), (Reason::Changed, waits));
         assert!(desk.has_news());
         let asks = desk.take_file_edits();
         let [(owner, ask)] = &asks[..] else {
@@ -976,8 +992,6 @@ mod tests {
         assert!(!desk.has_news());
     }
 
-    /// The engine's canvas owner answers `file/edit` and reads its new text back inside the
-    /// call, so a relink of a board waits for nothing.
     #[test]
     fn an_owner_in_the_engine_answers_inside_the_call() {
         let canvas = "{\"nodes\":[{\"id\":\"c\",\"type\":\"file\",\"file\":\"Lava.md\",\

@@ -563,10 +563,7 @@ impl Core {
         };
         let item = (file.items.iter()).find(|it| it.id == edit.id);
         let item = item.filter(|it| it.rev == edit.rev).ok_or_else(gone)?;
-        if let Some(owner) = self.edits.waiting(&file.rel) {
-            let message = format!("{} has an edit waiting for {owner}: try again", file.rel);
-            return Err(error(Reason::Changed, message));
-        }
+        self.edits.free(&file.rel)?;
         let place = file.places[&edit.id].clone();
         // How the owner gave the item: as a piece, as a typed item, or in a Markdown piece;
         // among the items that hold their places (`Places`), so the one the change is for.
