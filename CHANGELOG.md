@@ -7,17 +7,6 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-11-20
-
-Owners speak the model's language, and nothing they send can harm a file. An extension that
-owns a kind of file can say what it holds as pieces with attributes, and its edits are made in
-those terms; every answer is bounded and read item by item, so one bad item costs only itself
-and an edit beside it goes ahead when what was left out is untouched. Ticks never lose a block
-id, and large owned files edit in linear time. **Breaking for extensions:** `files.write` no
-longer reaches a kind another owner reads (see Changed), and **breaking for csv-table users:**
-its rows are pieces now, so their ids change and a cell is plain characters unless its column
-says otherwise (see Changed).
-
 ### Added
 
 - An extension can keep a reference to an item (#190, the bookmark). `items/edit` with
@@ -34,6 +23,20 @@ says otherwise (see Changed).
   ends no text (an empty task, a closing code fence), where a `^name` would change how the
   note reads. Nothing but this op writes an anchor. `docs/extensions.md`, "Anchors, as
   built".
+
+## [0.7.0] - 2026-11-20
+
+Owners speak the model's language, and nothing they send can harm a file. An extension that
+owns a kind of file can say what it holds as pieces with attributes, and its edits are made in
+those terms; every answer is bounded and read item by item, so one bad item costs only itself
+and an edit beside it goes ahead when what was left out is untouched. Ticks never lose a block
+id, and large owned files edit in linear time. **Breaking for extensions:** `files.write` no
+longer reaches a kind another owner reads (see Changed), and **breaking for csv-table users:**
+its rows are pieces now, so their ids change and a cell is plain characters unless its column
+says otherwise (see Changed).
+
+### Added
+
 - An extension that owns a kind of file can say what the file holds as **pieces**, with no
   Markdown anywhere (#243, step 3 of the neutral model). A piece in `file/read` is
   `{place, role, attributes, text, …}`: a role of the alphabet, the attributes it carries
