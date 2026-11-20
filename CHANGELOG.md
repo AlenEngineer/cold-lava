@@ -122,8 +122,14 @@ change commands, keys and file formats; patch versions only fix things.
   a piece in no piece or a link between pieces that is left out is refused, where it was
   written. A rename of a file whose owner gives two pieces at one place is no longer refused
   (the read-back took the second for the first). What is compared is the JSON value an item
-  was sent as, once parsed: a number's digits past 64 bits, spaces, escapes and a repeated
-  key's earlier values are not (`docs/extensions.md`, "Pieces, as built").
+  was sent as, once parsed, so how it was spelled is not: spaces, escapes, numbers that
+  parse to the same 64-bit integer or float (`1.5`, `1.50` and `15e-1`; `100.0` and `1e2`;
+  `-0` and `-0.0`; digits past 64 bits) and a key written twice (its first place, its last
+  value). Of an item left out as it arrived only a 48-bit hash is kept, so an owner that
+  crafts a collision is not told apart (`docs/extensions.md`, "Pieces, as built"). The
+  refusal names what changed. An item that reads and was moved, added or dropped before a
+  left-out one is named, not the left-out one (`the item at ty moved`). Of a left-out item
+  and its neighbour swapped, the left-out one is named.
 - The limits the owner decided apply to what an extension answers (#265, step A4b). An
   item past one is left out alone, with the limit named, and the rest of the file shows: a
   piece's text over 1 MiB (one run's, or all its runs and cells together, a field run's

@@ -46,23 +46,27 @@ pub fn said(e: &serde_json::Error) -> Option<String> {
 }
 
 /// An item left out of an answer, as it is kept: its place (cut to 80 characters, `NAME`), a
-/// hash of what identifies it (`tasks::line_id`), and what was said of it. What identifies it
-/// is one of two things:
+/// 48-bit hash (`tasks::line_id`) of what identifies it, and what was said of it. What
+/// identifies it is one of two things:
 ///
 /// - For an item of an owner's answer that didn't read, the JSON value it was sent as. The
 ///   value is hashed once parsed, not as the bytes that were sent: the host reads a whole
 ///   message into one JSON value before any of it is an answer, and the bytes are gone. So
 ///   the order of its keys counts (an owner that gives it again with its keys reordered has
-///   changed it), and what parsing drops doesn't: space between tokens, how a character is
-///   escaped (`A` is `A`), a key's earlier values when it is written twice, and the digits
-///   of a number past what a 64-bit integer or float holds (`100000000000000000001` and
-///   `100000000000000000002` parse alike, as do `0.1` and `0.10000000000000001`).
+///   changed it), and what parsing drops doesn't:
+///   - space between tokens, and how a character is escaped (`\u0041` is `A`);
+///   - how a number is written: any two that parse to the same 64-bit integer or float are
+///     one (`1.5`, `1.50` and `15e-1`; `100.0` and `1e2`; `-0` and `-0.0`; and digits past
+///     what 64 bits hold, so `100000000000000000001` is `100000000000000000002`);
+///   - a key written twice: it keeps the place of its first and takes the value of its last.
 /// - For a card the canvas owner doesn't take (`canvas::read`), the node's id: an edit or a
 ///   rename may change the card's text (`canvas::Named` names it), and that is no change to
 ///   what is left out.
 ///
-/// It is kept in the owners' cache, and read back from it, as a part of the answer it was
-/// left out of (`owner::cache`); the cache is the engine's own file, which bounds it.
+/// Two values that hash alike are one: a hash is enough against an owner's mistake, and an
+/// owner that crafts a collision (#301's review found one in about ten seconds) is not told
+/// apart. It is kept in the owners' cache, and read back from it, as a part of the answer it
+/// was left out of (`owner::cache`); the cache is the engine's own file, which bounds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LeftOut {
     pub place: Text<Message>,
