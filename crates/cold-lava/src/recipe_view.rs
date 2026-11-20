@@ -25,7 +25,7 @@ pub enum Step {
     Plan {
         plan: Box<Plan>,
         scroll: usize,
-        /// Confirmed, and waiting for the owners of files other owners read (`Core::relink`);
+        /// Confirmed, and waiting for the owners of files other owners read (`Core::apply`);
         /// nothing is written yet.
         waiting: Option<Ticket>,
     },

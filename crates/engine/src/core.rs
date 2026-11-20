@@ -23,6 +23,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+mod whole;
+
+pub use whole::{Applying, NotApplied, Planned};
+
 /// Something changed in the workspace. Note paths are workspace-relative, without `.md`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -111,6 +115,8 @@ pub struct Core {
     pub index: Index,
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<RecommendedWatcher>,
+    /// `.obsidian`'s own folder, when it is a symlink to one.
+    linked_obsidian: Option<PathBuf>,
     changed: Vec<PathBuf>,
     boards: Vec<String>,
     files: Vec<String>,
@@ -138,13 +144,15 @@ pub struct Core {
 impl Core {
     pub fn open(root: &Path) -> Result<Core> {
         let index = Index::build(workspace::scan(root)?);
-        let (fs_events, watcher) = watch(&index.workspace.root);
+        let linked_obsidian = linked_obsidian(&index.workspace.root);
+        let (fs_events, watcher) = watch(&index.workspace.root, linked_obsidian.as_deref());
         let owned = index.workspace.owned.iter();
         let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
         Ok(Core {
             index,
             fs_events,
             _watcher: watcher,
+            linked_obsidian,
             changed: Vec::new(),
             boards: Vec::new(),
             files: Vec::new(),
@@ -320,7 +328,7 @@ impl Core {
             return;
         }
         let settings = self.index.workspace.item_settings();
-        let given = match self.edits.read_back(path, rev, given, settings) {
+        let given = match self.edits.read_back(owner, path, rev, given, settings) {
             Err(given) => given,
             Ok(Some(write)) => return self.write_edit(write),
             Ok(None) => return,
@@ -352,7 +360,8 @@ impl Core {
 
     /// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
     /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
-    /// items or links changed, and what went wrong. Links are not resolved again here.
+    /// items or links changed, and what went wrong. Links are not resolved again here. A file
+    /// at a symlink, or behind one, is gone, as the scan reads none (`workspace::first_link`).
     fn owned_read(&mut self, rels: &[String]) -> (Vec<String>, Vec<Event>) {
         let root = self.root().to_path_buf();
         let (mut changed, mut events) = (Vec::new(), Vec::new());
@@ -362,7 +371,9 @@ impl Core {
             };
             let owned = &mut self.index.workspace.owned;
             let at = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
-            let Ok(bytes) = std::fs::read(root.join(rel)) else {
+            let unlinked = matches!(workspace::first_link(&root, rel), Ok(None));
+            let read = unlinked.then(|| std::fs::read(root.join(rel)).ok());
+            let Some(bytes) = read.flatten() else {
                 if let Ok(i) = at {
                     let gone = owned.remove(i);
                     events.extend(owned_news(Some(&gone), None));
@@ -651,7 +662,7 @@ impl Core {
     /// An owned file's new text that read back as asked (the edit desk's): write it over the
     /// file as the edit was made on it, refused if it changed since; once it is written, take
     /// what its owner read in it as the file's items and links, and tell subscribers. Either
-    /// way the desk hears how the write went, and answers whoever asked.
+    /// way the desk gets `w` back with how the write went, and answers whoever asked.
     fn write_edit(&mut self, w: ToWrite) {
         let path = w.path.as_str();
         let written = w.before.replace(w.after.as_bytes());
@@ -661,68 +672,16 @@ impl Core {
             events = self.owned_changed(&[path.to_string()]);
             events.push(Event::ItemEdited {
                 note: path.to_string(),
-                item: w.item,
-                by: w.by,
-                what: w.what,
+                item: w.item.clone(),
+                by: w.by.clone(),
+                what: w.what.clone(),
             });
         }
         let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
         let items: &[Item] = file.map(|f| f.items.as_slice()).unwrap_or_default();
-        self.edits.wrote(path, written.map(|()| items));
+        self.edits.wrote(w, written.map(|()| items));
         self.broadcast(&events);
         self.unseen.extend(events);
-    }
-
-    /// Before a rename, merge or recipe writes anything: ask the owner of each file among `edits`
-    /// that another owner reads for its new text (`file/edit`), and have the owner read it back.
-    /// `None` when `edits` are ready: there was nothing to ask, or every owner answered inside
-    /// the call (the engine's own do) and `edits` have their new texts. Else the answer comes
-    /// from `take_relinked` under the ticket: every owned file's edit with its new text, or the
-    /// first owner's refusal, after which nothing else is kept. Refused at once when one of them
-    /// changed since it was planned, has an edit waiting, its change would leave out something
-    /// its owner gave (`given::check_change`: a link target past its bound), or an owner in the
-    /// engine refuses.
-    pub fn relink(
-        &mut self,
-        edits: &mut [crate::rename::FileEdit],
-    ) -> Result<Option<Ticket>, String> {
-        let settings = self.index.workspace.item_settings();
-        let planned = |e: &crate::rename::FileEdit| {
-            let seen = read::Seen::kept(&e.path, e.old_text.as_str());
-            seen.unchanged().is_ok()
-        };
-        self.edits.relink(edits, planned, settings)
-    }
-
-    /// Renames and merges whose owners have all answered (`relink`), or one refused.
-    pub fn take_relinked(&mut self) -> Vec<(Ticket, Result<Vec<crate::rename::FileEdit>, String>)> {
-        self.edits.take_relinked()
-    }
-
-    /// Stop waiting for the owners of the rename or merge `ticket`. Their answers are dropped.
-    pub fn cancel_relink(&mut self, ticket: Ticket) {
-        self.edits.cancel_relink(ticket);
-    }
-
-    /// After a rename or merge with `edits` was made, before reading the workspace again: what
-    /// the owners read in their files' new texts, at `moved` (where each file is now), is kept as
-    /// their answer for that version, so they aren't asked again.
-    pub fn relinked(
-        &mut self,
-        edits: &[crate::rename::FileEdit],
-        moved: impl Fn(&Path) -> PathBuf,
-    ) {
-        for e in edits {
-            let Some((o, after)) = e.owned.as_ref().and_then(|o| Some((o, o.after.as_ref()?)))
-            else {
-                continue;
-            };
-            let path = moved(&e.path);
-            let rel = path.strip_prefix(self.root()).unwrap_or(&path);
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            let rev = read::rev(e.new_text.as_bytes());
-            self.owners.answered(&o.owner, &rel, &rev, Some(after));
-        }
     }
 
     /// The answer of the extension named `by` to `ask` (`shape/region`, `shape/gesture`). Only
@@ -894,9 +853,9 @@ impl Core {
         }
     }
 
-    /// A recipe planned and applied at once, the files it wrote read again (their events come
-    /// from the next `poll`); its title. The files other owners read get their new texts from
-    /// their owners first (`relink`). Refused when one of them has to wait for its owner, an
+    /// A recipe planned and made at once (`apply`), the files it wrote read again (their events
+    /// come from the next `poll`); its title. The files other owners read get their new texts
+    /// from their owners first. Refused when one of them has to wait for its owner, an
     /// extension: such a recipe runs from its own screen.
     pub fn run_recipe(
         &mut self,
@@ -907,20 +866,27 @@ impl Core {
         let refused = |m: String| gateway::Error::new(Reason::Refused, m);
         let r = recipe::find(id).ok_or_else(|| refused(format!("no recipe called {id}")))?;
         let mut plan = recipe::plan(&self.index, r, options).map_err(|e| refused(e.to_string()))?;
-        let waiting = (self.relink(&mut plan.edits))
-            .map_err(|why| refused(format!("{}: {why}", plan.title())))?;
-        if let Some(ticket) = waiting {
-            let waits = (plan.edits.iter()).find(|e| self.edits.waiting(&e.file).is_some());
-            let message = format!(
-                "{} would change {}, which another owner reads: run it from the recipe screen",
-                plan.title(),
-                waits.map(|e| e.file.as_str()).unwrap_or_default()
-            );
-            self.cancel_relink(ticket);
-            return Err(refused(message));
-        }
-        let applied = recipe::apply(&plan)
-            .map_err(|e| gateway::Error::new(Reason::Changed, format!("{}: {e}", plan.title())))?;
+        let made = match self.apply(&mut plan) {
+            Applying::Now(made) => made,
+            Applying::Later(ticket) => {
+                let waits = (plan.edits.iter()).find(|e| self.edits.waiting(&e.file).is_some());
+                let message = format!(
+                    "{} would change {}, which another owner reads: run it from the recipe screen",
+                    plan.title(),
+                    waits.map(|e| e.file.as_str()).unwrap_or_default()
+                );
+                self.cancel_relink(ticket);
+                return Err(refused(message));
+            }
+        };
+        let applied = made.map_err(|not| match not {
+            NotApplied::Refused(why) => refused(format!("{}: {why}", plan.title())),
+            NotApplied::Failed(e) => {
+                let reason = (e.downcast_ref::<crate::write::WriteError>())
+                    .map_or(Reason::Changed, Reason::of);
+                gateway::Error::new(reason, format!("{}: {e:#}", plan.title()))
+            }
+        })?;
         let paths: Vec<PathBuf> = plan.edits.iter().map(|e| e.path.clone()).collect();
         let mut events = self.refresh(&paths);
         let owned = plan.edits.iter().filter(|e| e.owned.is_some());
@@ -1016,11 +982,12 @@ impl Core {
     fn collect_fs_events(&mut self) {
         let Some(rx) = &self.fs_events else { return };
         let root = self.index.workspace.root.clone();
+        let obsidian = self.linked_obsidian.as_deref();
         let mut any = false;
         for ev in rx.try_iter() {
-            for p in &ev.paths {
-                match classify(&root, p) {
-                    Kind::Note => self.changed.push(p.clone()),
+            for p in ev.paths.iter().flat_map(|p| names(&root, obsidian, p)) {
+                match classify(&root, &p) {
+                    Kind::Note => self.changed.push(p),
                     Kind::Board(rel) => {
                         if !self.boards.contains(&rel) {
                             self.boards.push(rel);
@@ -1109,18 +1076,56 @@ fn owned_at<'a>(owned: &'a [Owned], rel: &str) -> Option<&'a Owned> {
     i.ok().map(|i| &owned[i])
 }
 
-fn watch(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
+/// `.obsidian`'s own folder, when `.obsidian` is a symlink to a folder: outside the workspace,
+/// as people link one set of Obsidian settings into several workspaces, or in it. The watch of
+/// the workspace follows no link, so `watch` watches one outside on its own, and `names` names
+/// what is heard in it as under `.obsidian`. Read as the core opens: a link made or removed
+/// later is heard after the next open.
+fn linked_obsidian(root: &Path) -> Option<PathBuf> {
+    let at = root.join(".obsidian");
+    let link = std::fs::symlink_metadata(&at)
+        .ok()?
+        .file_type()
+        .is_symlink();
+    let real = std::fs::canonicalize(&at).ok()?;
+    (link && real.is_dir()).then_some(real)
+}
+
+/// The names in the workspace of `path`, as the watcher reported it: its own, and, when it is
+/// in `obsidian` (the folder a linked `.obsidian` leads to), the same under `.obsidian`, where
+/// only `classify`'s settings files come of it. A path outside the workspace comes to nothing
+/// under its own name; one in a folder of the workspace, as a note there, still does.
+fn names(root: &Path, obsidian: Option<&Path>, path: &Path) -> impl Iterator<Item = PathBuf> {
+    let settings = obsidian.and_then(|o| path.strip_prefix(o).ok());
+    let settings = settings.map(|rest| root.join(".obsidian").join(rest));
+    std::iter::once(path.to_path_buf()).chain(settings)
+}
+
+/// The watcher of the folder at `root` and everything in it, following no symlink, as the scan
+/// doesn't, and of `obsidian` (a linked `.obsidian`'s folder) without what is inside its
+/// folders, when it is outside the workspace: `.obsidian/graph.json` is heard there.
+fn watch(
+    root: &Path,
+    obsidian: Option<&Path>,
+) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
     let (tx, rx) = mpsc::channel();
-    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    let heard = move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res
             && !matches!(ev.kind, notify::EventKind::Access(_))
         {
             let _ = tx.send(ev);
         }
-    });
+    };
+    let unfollowed = notify::Config::default().with_follow_symlinks(false);
+    let watcher = RecommendedWatcher::new(heard, unfollowed);
     match watcher {
         Ok(mut w) => match w.watch(root, RecursiveMode::Recursive) {
-            Ok(()) => (Some(rx), Some(w)),
+            Ok(()) => {
+                if let Some(obsidian) = obsidian.filter(|o| !o.starts_with(root)) {
+                    let _ = w.watch(obsidian, RecursiveMode::NonRecursive);
+                }
+                (Some(rx), Some(w))
+            }
             Err(_) => (None, None),
         },
         Err(_) => (None, None),
@@ -1212,6 +1217,84 @@ mod tests {
         core.rescan();
         assert!(wait_for(&mut core, |e| e.contains(&Event::Rescanned)).contains(&Event::Rescanned));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The watcher follows no symlink, as the scan doesn't (#349): a folder linked into the
+    /// workspace is watched only where it is, so a note's change is heard under its own path.
+    /// inotify watches a folder once, under the path it was given last, and that path could be
+    /// the link's.
+    #[cfg(unix)]
+    #[test]
+    fn a_change_behind_a_folder_link_is_heard_as_the_note_s_own() {
+        let name = format!("cold-lava-core-folder-link-{}", std::process::id());
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(dir.join("Concepts")).unwrap();
+        std::fs::write(dir.join("Concepts/Lava.md"), "- [ ] Measure\n").unwrap();
+        for at in ["Con", "Linked"] {
+            std::os::unix::fs::symlink(dir.join("Concepts"), dir.join(at)).unwrap();
+        }
+        let mut core = Core::open(&dir).unwrap();
+        if core.is_live() {
+            let lava = Event::NoteChanged("Concepts/Lava".into());
+            std::fs::write(dir.join("Concepts/Lava.md"), "- [ ] Measure the lava\n").unwrap();
+            let ev = wait_for(&mut core, |e| e.contains(&lava));
+            assert!(
+                ev.contains(&lava) || ev.contains(&Event::Rescanned),
+                "{ev:?}"
+            );
+            for at in ["Con/Lava", "Linked/Lava"] {
+                assert!(core.index.by_rel(at).is_none(), "{at} is no note");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `.obsidian` linked to a folder is still heard, outside the workspace, as one set of
+    /// Obsidian settings shared by several workspaces is, or in it: its settings files' changes
+    /// come as they do from a `.obsidian` in the workspace, and the rest of its folder is what
+    /// it was without the link, nothing outside, a note inside.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_obsidian_folder_is_still_heard() {
+        for (layout, link, settings) in [
+            ("outside", "../shared", "shared"),
+            ("inside", "_settings", "w/_settings"),
+        ] {
+            let name = format!(
+                "cold-lava-core-linked-obsidian-{layout}-{}",
+                std::process::id()
+            );
+            let dir = std::env::temp_dir().join(name);
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join(settings)).unwrap();
+            std::fs::create_dir_all(dir.join("w")).unwrap();
+            std::fs::write(dir.join("w/A.md"), "hi\n").unwrap();
+            std::os::unix::fs::symlink(link, dir.join("w/.obsidian")).unwrap();
+            let mut core = Core::open(&dir.join("w")).unwrap();
+            if core.is_live() {
+                let settings = dir.join(settings);
+                std::fs::write(settings.join("Stray.md"), "a note only inside\n").unwrap();
+                if layout == "inside" {
+                    let stray = Event::NoteCreated("_settings/Stray".into());
+                    let ev = wait_for(&mut core, |e| e.contains(&stray));
+                    assert!(
+                        ev.contains(&stray) || ev.contains(&Event::Rescanned),
+                        "{layout}: {ev:?}"
+                    );
+                }
+                std::fs::write(settings.join("graph.json"), "{}").unwrap();
+                let ev = wait_for(&mut core, |e| e.contains(&Event::GraphSettingsChanged));
+                assert!(
+                    ev.contains(&Event::GraphSettingsChanged) || ev.contains(&Event::Rescanned),
+                    "{layout}: {ev:?}"
+                );
+                let notes = core.index.workspace.notes.len();
+                assert_eq!(notes, 1 + usize::from(layout == "inside"), "{layout}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
@@ -1610,10 +1693,9 @@ mod tests {
         let owned = p.edits.iter().find(|e| e.file == "Eruptions.csv").unwrap();
         assert_eq!(owned.links, 1, "listed in the plan");
         assert!(rename::apply(&p).is_err(), "not before the owner answered");
-        let ticket = core
-            .relink(&mut p.edits)
-            .unwrap()
-            .expect("waits for the owner");
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         assert!(
             core.relink(&mut p.edits).is_err(),
             "one edit of a file at a time"
@@ -1632,14 +1714,8 @@ mod tests {
         );
         assert!(dir.join("Krakatoa.md").is_file(), "nothing moved yet");
         assert_eq!(csv_now(), csv("Krakatoa", "Tambora"), "nothing written yet");
-        let relinked = core.take_relinked();
-        let [(t, Ok(answers))] = &relinked[..] else {
-            panic!("{relinked:?}");
-        };
-        assert_eq!(*t, ticket);
-        rename::answered(&mut p.edits, answers.clone());
-        rename::apply(&p).unwrap();
-        core.relinked(&p.edits, |path| p.moved(path));
+        assert_eq!(core.take_relinked(), [ticket]);
+        core.apply_answered(&mut p, ticket).unwrap();
         core.rescan_now();
         assert_eq!(csv_now(), csv("Krakatau", "Tambora"));
         assert!(core.take_reads().is_empty(), "what it read back is kept");
@@ -1653,7 +1729,9 @@ mod tests {
         // A link the owner reported, and an owner that doesn't write what was asked, or
         // refuses: the rename is cancelled and nothing changes.
         let mut p = plan(&core, "Tambora", "Tambora volcano");
-        let ticket = core.relink(&mut p.edits).unwrap().unwrap();
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         let ask = answer(
             &mut core,
             Ok(csv("Krakatau", "x")),
@@ -1661,22 +1739,28 @@ mod tests {
         );
         assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
             if link == "Tambora" && to == "Tambora volcano"));
-        let relinked = core.take_relinked();
+        assert_eq!(core.take_relinked(), [ticket]);
+        let made = core.apply_answered(&mut p, ticket);
         assert!(
-            matches!(&relinked[..], [(t, Err(m))] if *t == ticket && m.contains("links to x")),
-            "{relinked:?}"
+            matches!(&made, Err(NotApplied::Refused(m)) if m.contains("links to x")),
+            "{made:?}"
         );
-        core.relink(&mut p.edits).unwrap().unwrap();
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         answer(&mut core, Err("it is read-only"), None);
-        let relinked = core.take_relinked();
+        assert_eq!(core.take_relinked(), [ticket]);
+        let made = core.apply_answered(&mut p, ticket);
         assert!(
-            matches!(&relinked[..], [(_, Err(m))]
+            matches!(&made, Err(NotApplied::Refused(m))
                 if m == "csv-table didn't edit Eruptions.csv: it is read-only"),
-            "{relinked:?}"
+            "{made:?}"
         );
 
         // Cancelled while it waits: a late answer is dropped.
-        let ticket = core.relink(&mut p.edits).unwrap().unwrap();
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         core.cancel_relink(ticket);
         assert!(core.take_file_edits().is_empty(), "not asked after all");
         core.file_edited("csv-table", "Eruptions.csv", &ask.rev, Ok(csv("a", "b")));
@@ -1688,7 +1772,7 @@ mod tests {
 
     #[test]
     fn a_recipe_changes_owned_files_through_their_owner() {
-        use crate::{recipe, rename};
+        use crate::recipe;
         let dir =
             std::env::temp_dir().join(format!("cold-lava-owned-recipe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1720,10 +1804,9 @@ mod tests {
         let files: Vec<_> = p.edits.iter().map(|e| e.file.as_str()).collect();
         assert_eq!(files, ["Note.md", "Samples.csv"]);
         assert!(recipe::apply(&p).is_err(), "not before the owner answered");
-        let ticket = core
-            .relink(&mut p.edits)
-            .unwrap()
-            .expect("waits for the owner");
+        let Applying::Later(ticket) = core.apply(&mut p) else {
+            panic!("waits for the owner");
+        };
         let (_, ask) = core.take_file_edits().pop().unwrap();
         assert_eq!(
             ask.changes,
@@ -1735,18 +1818,12 @@ mod tests {
         core.file_edited("csv-table", "Samples.csv", &ask.rev, Ok(csv("magma")));
         let (_, back) = core.take_reads().pop().unwrap();
         core.file_given("csv-table", "Samples.csv", &back.rev, Ok(given("magma")));
-        let relinked = core.take_relinked();
-        let [(t, Ok(answers))] = &relinked[..] else {
-            panic!("{relinked:?}");
-        };
-        assert_eq!(*t, ticket);
+        assert_eq!(core.take_relinked(), [ticket]);
         assert_eq!(
             std::fs::read_to_string(dir.join("Note.md")).unwrap(),
             "#lava\n"
         );
-        rename::answered(&mut p.edits, answers.clone());
-        let done = recipe::apply(&p).unwrap();
-        core.relinked(&p.edits, Path::to_path_buf);
+        let done = core.apply_answered(&mut p, ticket).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("Note.md")).unwrap(),
             "#magma\n"
@@ -1769,7 +1846,7 @@ mod tests {
 
     #[test]
     fn a_merge_relinks_owned_files_through_their_owner() {
-        use crate::{merge, rename};
+        use crate::merge;
         let dir =
             std::env::temp_dir().join(format!("cold-lava-owned-merge-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1807,7 +1884,10 @@ mod tests {
             merge::apply(&m, Some(&bin)).is_err(),
             "not before csv-table answered"
         );
-        core.relink(&mut m.edits).unwrap().unwrap();
+        core.set_system_trash(Some(bin));
+        let Applying::Later(ticket) = core.apply(&mut m) else {
+            panic!("waits for csv-table");
+        };
         let (_, ask) = core.take_file_edits().pop().unwrap();
         assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
             if link == "Krakatoa" && to == "Krakatau"));
@@ -1824,10 +1904,8 @@ mod tests {
             &back.rev,
             Ok(given("Krakatau")),
         );
-        let (_, answers) = core.take_relinked().pop().unwrap();
-        rename::answered(&mut m.edits, answers.unwrap());
-        merge::apply(&m, Some(&bin)).unwrap();
-        core.relinked(&m.edits, Path::to_path_buf);
+        assert_eq!(core.take_relinked(), [ticket]);
+        core.apply_answered(&mut m, ticket).unwrap();
         core.rescan_now();
         let csv = std::fs::read_to_string(ws.join("Eruptions.csv")).unwrap();
         assert_eq!(csv, "Krakatau\n");
@@ -1948,14 +2026,17 @@ mod tests {
         );
 
         // Renamed: the card's path and the sticky's link, in place, through the owner, which
-        // answers inside `relink`.
+        // answers inside `Core::apply`.
         let rename = |core: &mut Core, from: &str, to: &str| {
             let note = core.index.by_rel(from).unwrap();
             let mut plan = crate::rename::plan(&core.index, note, to).unwrap();
             assert!(plan.edits.iter().all(|e| e.owned.is_some()), "its owner's");
-            assert_eq!(core.relink(&mut plan.edits), Ok(None), "answered at once");
+            let made = core.apply(&mut plan);
+            assert!(
+                matches!(&made, Applying::Now(Ok(()))),
+                "answered at once: {made:?}"
+            );
             assert!(core.take_file_edits().is_empty() && core.take_relinked().is_empty());
-            crate::rename::apply(&plan).unwrap();
             core.rescan_now();
         };
         rename(&mut core, "Lava", "Hot/Lava");

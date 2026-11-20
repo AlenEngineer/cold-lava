@@ -117,6 +117,17 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `core.rs`: `Core` = one live workspace. Owns the `Index`, is the only file watcher, re-reads only
   changed notes and emits `Event`s (`poll()`, `subscribe()`). The menu owns it, and the graph
   runs in the menu's loop on it. Don't add another watcher or full rescan loop.
+  `core/whole.rs` is `Core::apply`, the one call that makes a rename, a merge or a recipe once
+  it is planned and shown: the owners of the files other owners read give their new texts
+  (`relink`), then it is written, then what they read is kept (`relinked`); when an extension
+  has to answer, `take_relinked` says its ticket is ready and `apply_answered` makes the plan
+  with the answer the edit desk kept. A ticket is good until the next `take_relinked`, which
+  drops an answer not taken. The owners' answers never go out to a frontend, which holds only
+  the plan and the ticket, and a file other owners read that has no answer is refused.
+  `rename::apply`, `merge::apply` and `recipe::apply` are the engine's own, so no frontend
+  writes a plan around it. One hole is left: a frontend that sets an edit's `owned` to `None`
+  has the core write that file without asking its owner, until plans are kept by ticket
+  (#193). Reading the workspace again afterwards is still the caller's.
   `core/news.rs` (tests only) is the harness for what subscribers hear and in which order: it
   plays the watcher and an owner, applies steps (outside write, `items/edit`, rescan, rename,
   recipe, an owner's answers) and collects each delivery, with no waiting. Test a change to how
@@ -128,7 +139,17 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   (`Feed`, bound shapes).
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read; the engine's only, `Seen::replace` outside it), `create`,
-  `move_file`. Never call `std::fs::write` on workspace files.
+  `move_file`. `replace` never follows a symlink: a link at the path is refused (`Link`), and
+  one swapped in after that check is replaced by the rename; a folder swapped in on the way
+  is still followed (#366). It is every write over a file the engine found by its scan or
+  the gateway let through. `replace_through_link` (`Seen::replace_through_link`) is the
+  exception, by name: the user's own save of a file they opened by its path (the board's
+  canvas, the menu's tag edit of a note its tree lists, `shapes/file.rs`) lands in the file a
+  link leads to and the link stays (`landing`, found once per write), as `write_atomic` does.
+  A link to nothing or to a folder is `NotAFile`. The gateway never lets a link through
+  (`files::resolve`).
+  `taken` is the one test of whether something is at a path, a link to nothing included:
+  `create` and `files::free_name` ask it. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
@@ -146,7 +167,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `file` is; `Seen::entry` reads a file, a folder by its listing (`inside`) or a symlink by
   where it points, never following one. `unchanged` reads it again the way it was seen;
   `unchanged_entry` reads the entry itself, whatever the way, as a delete must (a file seen
-  through a link is not the link). `replace` writes through `write::replace`, only over a file
+  through a link is not the link). `replace` writes through `write::replace` (no link
+  followed) and `replace_through_link` through `write::replace_through_link`, only over a file
   seen as a file. `rev` is the gateway's version (a folder's is its listing's); `text` refuses
   bytes that aren't UTF-8 with `NotText`, whose `about` is the one wording of "isn't UTF-8
   text". The gateway's `Reason::of` names a `WriteError`'s reason. It is also the one home of
@@ -174,11 +196,12 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   (`gateway::Request::Style`, answered by `Host::style`).
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs`: rename/move with every link updated;
-  `plan()` then `apply()`. Its `FileEdit` (a file's planned new text, or what to ask its owner),
-  `check_unchanged` and `Written` (files written, to put back) are shared by merges and recipes.
+  `plan()`, then `Core::apply`. Its `FileEdit` (a file's planned new text, or what to ask its
+  owner), `check_unchanged` and `Written` (files written, to put back) are shared by merges and
+  recipes.
 - `recipe.rs`: recipes, named whole-workspace changes (`BUILT_IN`: `rename-tag`). `plan()`
   (a `Draft` of every file's new text, nothing written, a diff per file), `apply()` (refused if a
-  file changed; owned files get their text from their owners through `Core::relink` first) and
+  file changed; owned files get their text from their owners first, through `Core::apply`) and
   `undo()`. A recipe finds what it changes through owners (tags: `owner::markdown::tags_in`),
   never by matching files itself.
 - `json_canvas.rs`: JSON Canvas, Obsidian's `.canvas`: `Doc` (unknown fields kept), `parse`,
@@ -252,12 +275,12 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   fragment with #244, not before. No extension may claim a built-in owner's kind.
   **One path for owned files** (#183): a file that isn't a note is changed the same way
   whoever owns it. An item edit (`Core::edit_item`) and a rename, merge or recipe
-  (`FileEdit::owned`, then `Core::relink`) ask the owner `file/edit`, read its new text back
+  (`FileEdit::owned`, then `Core::apply`) ask the owner `file/edit`, read its new text back
   (`file/read`) and only then write. The canvas owner answers the same two requests through
   `owner::give`/`owner::edit`, inside the call, so a canvas's edit is done when `edit_item`
-  returns (still `Later`, the answer already in `take_edited`) and `relink` returns `None` with
-  the new texts in the plan when no extension has to answer. Don't give a built-in owner a
-  shortcut around that flow, and don't branch on who owns a file outside `owner/mod.rs`.
+  returns (still `Later`, the answer already in `take_edited`) and `apply` makes a rename at
+  once when no extension has to answer. Don't give a built-in owner a shortcut around that
+  flow, and don't branch on who owns a file outside `owner/mod.rs`.
   What stays direct: Markdown (the scan and a note's edits never ask anyone), the scan reading
   canvases into `owned` (it has no core to ask through), and planning a canvas's rename
   (`canvas::relink` plans its own changes, since a card holds a path, not a link).
@@ -413,14 +436,20 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`, which
   `read.rs` makes, `workspace/write` refused unless the file is still that version,
   `workspace/create` where Obsidian puts a new file, `workspace/files`) and their pinned JSON;
-  `resolve` keeps a path inside the workspace and out of hidden folders. `Core` answers them,
+  `resolve` keeps a path out of hidden folders and never follows a symlink, at the path or
+  on the way to it (#349): a permission is judged by the path's name, and a link leads to a
+  file of another name. With no link and no `..`, a path stays inside the workspace. The
+  scan and the watcher read no link either (`workspace::first_link`, the one rule, which
+  `resolve` asks), so no item is in one and `items/edit` never reaches one. The user's own
+  saves go through the engine's writes, which follow a link. `Core` answers them,
   and its watcher reports other files as `Event::FileChanged`. Also here (#193,
   docs/extensions.md "Deleting, restoring and making folders"): `workspace/stat` (the `rev` of
   any file, or of a folder's listing, which leaves out hidden entries and is bounded),
   `workspace/delete` (to the trash, refused unless still that `rev`; answers a random token that
   only the client it was given to can use, kept in the core's `Trash` and gone with the core),
   `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
-  `stat` and `delete` never follow a symlink: the link is what goes (`resolve_entry`). A
+  `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
+  folder on the way to it may be one (`resolve_entry`). A
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
   `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo)
@@ -577,7 +606,7 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   call: what a key does to a typed line, to a picked list's query and cursor, where a popup
   goes and its frame, and `plural` (the app's one "1 note" / "2 notes").
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
-  plans, applies and undoes through `recipe.rs`, asking owners as the merge dialog does.
+  plans and undoes through `recipe.rs`, and the core makes it (`Core::apply`), as a merge.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a
   private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (Neovim's come from `VIM_SCRIPT` in
   `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the

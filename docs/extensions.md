@@ -1384,12 +1384,36 @@ graph all see the new date. None of them knew what a canvas is.
   | `workspace/files {extension}` | `{files}`, every file with that extension (any case, with or without the dot) outside hidden folders, sorted |
 
   A `rev` is 16 hex digits of the FNV-1a hash of the file's bytes. A write checks it, then
-  writes through `write::replace`, which checks the bytes again just before the atomic rename,
-  so an edit made in Obsidian meanwhile is never overwritten. A create goes through
-  `write::create`. A note written or created this way is read again at once, like an item
-  edit, so the next query sees it. A path is refused unless it is relative, has no `..`, `.` or
-  hidden part (`.obsidian`, `.trash`, `.git`), and leads inside the workspace once symlinks are
-  followed (for a new file, its deepest folder that exists).
+  writes through `write::replace`, which checks the bytes again just before the atomic
+  rename over the path, so an edit made in Obsidian meanwhile is never overwritten. A create
+  goes through `write::create`, refused as `exists` where any entry is. A name picked for
+  `{name, extension}` passes over any entry, a link that leads nowhere included. A note
+  written or created this way is read again at once, like an item edit, so the next query
+  sees it. A path is refused unless it is relative, has no `..`, `.` or hidden part
+  (`.obsidian`, `.trash`, `.git`), and neither it nor a folder on the way to it is a symlink.
+
+  The gateway never follows a symlink, for reads and writes alike (#349). A file message on
+  a path that is a link, or has one on the way to it, is `refused` (`Notes/x.md is a symbolic
+  link, which the gateway never follows`, or `Notes/Dot/x.md: Notes/Dot is a symbolic link,
+  …` for a folder on the way), whatever the link leads to and whoever asks. A permission is
+  judged by the path's name, and a link leads to a file of another name: a note in a shared
+  repository can be a link to `.git/config`, to Obsidian's settings or to a canvas only its
+  owner writes, and a file of an owner's kind can be a link to a note. `items/edit` never
+  reaches a link either. The scan and the watcher read no symlinked note or owned file
+  (`workspace::first_link`), so no item is in one. Only the user's own saves of a file they
+  opened by its path (the whiteboard's canvas, the menu's tag edit of a note its tree lists,
+  the shapes file) go through a link, by a write named for it
+  (`write::replace_through_link`): the file it leads to is replaced, with the temporary file
+  beside that file, and the link stays a link (`write::landing`).
+
+  Every other write the engine makes over a file it read, an extension's or the menu's,
+  never follows a link: `write::replace` refuses one at the path, and a link swapped in after
+  that check is replaced by the rename, never written through. That covers
+  `workspace/write`, `workspace/create`, `items/edit` on a note or an owned file, and every
+  file a rename, a merge or a recipe (`recipe/run` included) writes or puts back. Those three
+  check every file for a link before they move or write any (`rename::check_unchanged`), so
+  a note swapped for one is refused whole, never half renamed. A folder on
+  the way swapped for a link is still followed, and so is a read at the path (#366).
 - **`file/changed {path, rev}`** (host → extension, a notification) comes from the core's one
   watcher: every file that isn't a note, outside hidden folders, is now reported as
   `Event::FileChanged` once things settle, and the menu tells the owner of its kind, with its
@@ -1497,8 +1521,8 @@ the same `{reason, message}`.
 - **Symlinks.** `stat` and `delete` take the entry itself. A symlink is never followed: its
   `rev` is of where it points, it has no `inside`, and a delete moves the link to the
   trash and leaves its target alone, a file or a folder, inside the workspace or outside,
-  there or gone. The folder the link is in still has to lead inside the workspace, so
-  nothing is reached *through* a link that leads out. A symlinked folder is treated the
+  there or gone. No folder on the way to the entry may be a link, so nothing is reached
+  *through* one, as for every file message (#349). A symlinked folder is treated the
   same way as a symlinked note, and not refused: the link is the workspace's own entry,
   and the message should not depend on what a link points to. The menu reaches only the
   note: its tree lists a symlinked note, opens it and deletes it as the link, but it does
@@ -1758,26 +1782,29 @@ bookmarks, a saved list, are removed instead, #373), so each doesn't invent one:
   (`FileEdit::owned`): each Markdown piece relinked by the Markdown owner's `relink` as a note
   is, and each link the owner reported on its own, through the same `Rewriter`. A file whose
   owner hasn't read it as it is now is left out with a warning. The owners are asked before
-  anything moves: once the rename is confirmed, `Core::relink` asks each owner `file/edit` with
-  the plan's changes and has it read the new text back, as for an item edit, but keeps the text
-  instead of writing it. `Core::take_relinked` hands back every owned file's edit with its new
-  text (`rename::answered` puts them into the plan), and only then does `rename::apply` check
-  that no file changed, make the moves and write every file, the owned ones as the notes are.
-  `apply` refuses a plan whose owners haven't answered. An owner that refuses, writes something
-  else or doesn't answer in 10 s cancels the whole rename with its reason ("rename cancelled,
-  nothing was changed: csv-table didn't edit Volcanoes/Eruptions.csv: …"), and every file is as
-  it was. The menu doesn't wait: the rename dialog stays open saying "waiting for csv-table to
+  anything moves: once the rename is confirmed, the menu hands the plan to the core in one call,
+  `Core::apply`. It asks each owner `file/edit` with the plan's changes and has it read the new
+  text back, as for an item edit, but keeps the text instead of writing it (`Core::relink`).
+  Only once every owner has given its file's new text does `rename::apply` check that no file
+  changed, make the moves and write every file, the owned ones as the notes are. `rename::apply`
+  is the engine's own, and refuses a plan whose owners haven't answered. An owner that refuses,
+  writes something else or doesn't answer in 10 s cancels the whole rename with its reason ("rename
+  cancelled, nothing was changed: csv-table didn't edit Volcanoes/Eruptions.csv: …"), and every file
+  is as it was. The menu doesn't wait: the rename dialog stays open saying "waiting for csv-table to
   update its files", and Esc stops waiting (`Core::cancel_relink`) and drops the late answer.
   What each owner read in its new text is kept for the file's new `rev` (`Core::relinked`), so
-  nothing is asked again after the move. `Core::relink` answers `None` when the plan is ready:
-  it has no owned file, or every owner answered inside the call, as the engine's canvas owner
-  does, and the plan has the new texts already. So a caller writes one thing, `None` → apply,
-  a ticket → wait, whoever owns the files.
+  nothing is asked again after the move. `Core::apply` makes the plan at once when it has no
+  owned file, or every owner answered inside the call, as the engine's canvas owner does. When
+  an extension has to answer, it waits under a ticket: `Core::take_relinked` says the ticket is
+  ready, and `Core::apply_answered` makes the plan the same way, with the answer the edit desk
+  kept, which never goes out to the caller. So a caller writes one thing, whoever owns the
+  files.
 - **Merges** relink owned files the same way: `merge::plan` lists them with the notes (the
   source is planned as moving onto the target, so each link to it gets `{place, link, to}` or a
-  piece's new text), the merge dialog waits for the owners after Enter, and `merge::apply`
-  writes the target, the notes and the owned files only once every owner has answered. Undo
-  puts every written file back, owned ones included, if it is still what the merge wrote.
+  piece's new text), the merge dialog waits for the owners after Enter, and the core
+  (`Core::apply`) writes the target, the notes and the owned files only once every owner has
+  answered. Undo puts every written file back, owned ones included, if it is still what the merge
+  wrote.
 - **The example** writes each change into the cell it names and leaves every other byte of
   the file: a cell's new runs as characters, a renamed link's new target into the link cells
   that held the old one, a Markdown cell's new text into that cell. It refuses a row without
@@ -1800,7 +1827,7 @@ bookmarks, a saved list, are removed instead, #373), so each doesn't invent one:
   `cold-lava rename` starts the owners the rename needs (`owned::Owners`, which hands them the
   core's `file/read` and `file/edit` requests and polls them, as the menu does each frame):
   first to read the owned files the cache lacks, so the plan sees their links, then through
-  `Core::relink` as in the menu. A refusal, or an owner that isn't installed or doesn't start,
+  `Core::apply` as in the menu. A refusal, or an owner that isn't installed or doesn't start,
   ends the command with the owner's reason and "nothing was changed"; `--dry-run` starts
   nothing. What the owners read is kept in the cache. `tests/owned.rs` runs it with csv-table
   in a home of its own. The CLI has no merge command.
@@ -2419,11 +2446,11 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
 - **Renames, merges and recipes.** The plan lists a canvas with the notes
   (`▤ Volcano Venn.canvas  2 links`) as an owned file (`FileEdit::owned`, owner `canvas`): each
   file node's `file` becomes the moved file's new workspace path, and each text node's text goes
-  through the Markdown owner's relink, so a link keeps its style. Its new text comes from
-  `Core::relink` like a CSV's, read back before anything moves; since the owner answers inside
-  the call, `relink` returns `None` with the text in the plan and the menu applies the rename
-  at once, as before. With an extension's file in the same plan the canvas's text is kept until
-  that owner answers too, and its refusal changes nothing anywhere.
+  through the Markdown owner's relink, so a link keeps its style. Its new text comes from its
+  owner like a CSV's (`Core::apply`), read back before anything moves; since the owner answers
+  inside the call, `Core::apply` makes the rename at once, as before. With an extension's file in
+  the same plan the canvas's text is kept until that owner answers too, and its refusal changes
+  nothing anywhere.
 - **Reading items and rewriting links ask different things of a file.** Reading (`canvas::read`)
   wants the whole drawing to parse, every node with an id and a type, since an item has to be
   on a card the whiteboard can show; a canvas that doesn't is in the index with nothing. A
@@ -2796,10 +2823,10 @@ types and the resolver's links, so a recipe finds what it changes by meaning, no
   function runs others' on its draft.
 - **Owned files.** A recipe changes the Markdown pieces of files other owners read as it changes
   a note; the plan lists such a file with the pieces to ask for (`Ask::Text`), and its new text
-  comes from its owner through `Core::relink`, exactly as for a rename's links: `file/edit`, then
+  comes from its owner through `Core::apply`, exactly as for a rename's links: `file/edit`, then
   `file/read` of the answer, which must read as asked. A file its owner hasn't read as it is now
   is left out with a warning. Typed items aren't changed by `rename-tag`. A canvas is such a
-  file, and its owner answers inside `Core::relink`. `Core::run_recipe` (a shape's step) asks
+  file, and its owner answers inside `Core::apply`. `Core::run_recipe` (a shape's step) asks
   the owners the same way and applies the plan when they all answered inside the call; when an
   extension has to answer, it stops waiting and refuses, naming the file ("run it from the
   recipe screen").
@@ -2834,7 +2861,7 @@ types and the resolver's links, so a recipe finds what it changes by meaning, no
   their cache lacks (`owned::Owners`). It prints a unified diff per file (`--- FILE`, or `---
   FILE (through OWNER)`, then the hunks) and a last line, "rename-tag from=a to=b: would change
   3 tags in 2 files (dry run, nothing written)", "changed …" or "nothing to change". Without
-  `--dry-run` it asks the owners first (`Owners::relink`), then `recipe::apply`; a refusal ends
+  `--dry-run` the core makes it (`Owners::apply`, over `Core::apply`); a refusal ends
   it with the reason and "nothing was changed". `--json` is `{recipe, options, applied,
   changes, files: [{file, changes, owner, diff}], warnings}`, with `diff` the unified text,
   pinned by `tests/recipe.rs`. `cold-lava recipe --list [--json]` names the recipes with their

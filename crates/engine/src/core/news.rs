@@ -34,7 +34,7 @@
 //! - A file another owner reads is changed one way, whoever owns it (#183): its owner gives the
 //!   new text, reads it back, and only then is it written, over the text the change began from.
 //!   The engine's canvas owner answers inside the call and an extension later, so a canvas's
-//!   edit is done when `edit_item` returns and a rename of canvases alone when `relink` does;
+//!   edit is done when `edit_item` returns and a rename of canvases alone when `apply` does;
 //!   one owner's refusal, or a file changed meanwhile, writes nothing anywhere.
 
 use super::*;
@@ -310,13 +310,12 @@ impl Harness {
         self.call(|core| core.set_owners(vec![lines_kind()], None));
     }
 
-    /// A rename as the menu makes it, when no extension has to answer: planned, the files other
-    /// owners read given their new texts (`relink`), applied, then everything read again.
+    /// A rename as the menu makes it, when no extension has to answer: planned, made by the
+    /// core (`Core::apply`), then everything read again.
     pub(crate) fn rename(&mut self, from: &str, to: &str) {
         let mut plan = self.plan_rename(from, to);
-        let waiting = self.relink(&mut plan.edits);
-        assert_eq!(waiting, None, "an extension has to answer: `relinked`");
-        self.renamed(&plan);
+        let waiting = self.apply_rename(&mut plan);
+        assert_eq!(waiting, None, "an extension has to answer: `renamed`");
     }
 
     pub(crate) fn plan_rename(&self, from: &str, to: &str) -> rename::Plan {
@@ -324,33 +323,45 @@ impl Harness {
         rename::plan(&self.core.index, note, to).unwrap()
     }
 
-    /// Before a rename, a merge or a recipe is made: its owned files' owners are asked for
-    /// their new texts (`Core::relink`). The ticket to wait under, when an extension has to
-    /// answer.
-    pub(crate) fn relink(&mut self, edits: &mut [rename::FileEdit]) -> Option<Ticket> {
-        self.call(|core| core.relink(edits)).unwrap()
+    /// The menu confirms a rename (`Core::apply`): made at once and everything read again, or
+    /// the ticket it waits under when an extension has to give a file's new text.
+    pub(crate) fn apply_rename(&mut self, plan: &mut rename::Plan) -> Option<Ticket> {
+        match self.call(|core| core.apply(plan)) {
+            Applying::Now(made) => {
+                made.unwrap();
+                self.rescan();
+                None
+            }
+            Applying::Later(ticket) => Some(ticket),
+        }
     }
 
     /// The renames whose owners have all answered, or one refused (`Core::take_relinked`).
-    pub(crate) fn relinked(&mut self) -> Vec<(Ticket, Result<Vec<rename::FileEdit>, String>)> {
+    pub(crate) fn relinked(&mut self) -> Vec<Ticket> {
         self.core.take_relinked()
     }
 
-    /// The rename is made, once its owners have answered, and everything is read again.
-    pub(crate) fn renamed(&mut self, plan: &rename::Plan) {
-        rename::apply(plan).unwrap();
-        self.call(|core| core.relinked(&plan.edits, |path| plan.moved(path)));
+    /// The rename that waited under `ticket` is made with its owners' answer
+    /// (`Core::apply_answered`), and everything is read again; or why it isn't.
+    pub(crate) fn renamed(
+        &mut self,
+        plan: &mut rename::Plan,
+        ticket: Ticket,
+    ) -> Result<(), NotApplied> {
+        self.call(|core| core.apply_answered(plan, ticket))?;
         self.rescan();
+        Ok(())
     }
 
-    /// A recipe as its screen runs it, when no extension has to answer: planned, the files
-    /// other owners read given their new texts, applied, then everything read again.
+    /// A recipe as its screen runs it, when no extension has to answer: planned, made by the
+    /// core (`Core::apply`), then everything read again.
     pub(crate) fn recipe(&mut self, id: &str, options: &[(&str, &str)]) -> recipe::Applied {
         let recipe = recipe::find(id).unwrap();
         let mut plan = recipe::plan(&self.core.index, recipe, named(options)).unwrap();
-        let waiting = self.relink(&mut plan.edits);
-        assert_eq!(waiting, None, "an extension has to answer");
-        let applied = recipe::apply(&plan).unwrap();
+        let Applying::Now(made) = self.call(|core| core.apply(&mut plan)) else {
+            panic!("an extension has to answer");
+        };
+        let applied = made.unwrap();
         self.rescan();
         applied
     }
@@ -969,7 +980,7 @@ fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
     );
 
     let ticket = h
-        .relink(&mut plan.edits)
+        .apply_rename(&mut plan)
         .expect("the extension answers later");
     let owned = plan.edits.iter().filter_map(|e| e.owned.as_ref());
     let waits: Vec<&str> = (owned.filter(|o| o.after.is_none()))
@@ -984,17 +995,12 @@ fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
     );
     assert!(h.relinked().is_empty(), "nor before it read its new text");
     h.owner_reads();
-    let relinked = h.relinked();
-    let [(t, Ok(answers))] = &relinked[..] else {
-        panic!("{relinked:?}");
-    };
-    assert_eq!(*t, ticket);
+    assert_eq!(h.relinked(), [ticket]);
     assert_eq!(h.read("Board.canvas"), LINKED_BOARD, "nothing written yet");
     assert_eq!(h.read("Reading.lines"), LINKED_READING);
     assert!(h.deliver().is_empty(), "nor is anything said");
 
-    rename::answered(&mut plan.edits, answers.clone());
-    h.renamed(&plan);
+    h.renamed(&mut plan, ticket).unwrap();
     assert_eq!(h.deliver().names("agenda"), ["items/reset"]);
     assert_eq!(h.read("Board.canvas"), relinked_board());
     let reading = "- [ ] Read the report on [[Tephra]]\n";
@@ -1012,14 +1018,13 @@ fn a_rename_one_owner_refuses_changes_nothing_anywhere() {
     h.follow("agenda", tasks());
     let mut plan = h.plan_rename("Ash", "Tephra");
     let ticket = h
-        .relink(&mut plan.edits)
+        .apply_rename(&mut plan)
         .expect("the extension answers later");
     h.owner_refuses("it is read-only");
-    let relinked = h.relinked();
-    let [(t, Err(why))] = &relinked[..] else {
-        panic!("{relinked:?}");
+    assert_eq!(h.relinked(), [ticket]);
+    let Err(NotApplied::Refused(why)) = h.renamed(&mut plan, ticket) else {
+        panic!("made though an owner refused");
     };
-    assert_eq!(*t, ticket);
     assert_eq!(why, "lines didn't edit Reading.lines: it is read-only");
     assert!(
         rename::apply(&plan).is_err(),
@@ -1544,4 +1549,100 @@ fn an_anchor_in_a_file_another_owner_reads_is_refused_before_it_is_asked() {
         assert_eq!(h.read(file), before, "{file}");
         assert!(h.deliver().is_empty(), "{file}: nothing to hear");
     }
+}
+
+/// A symlink is no note and no owned file, as the scan reads none (#349, #357). One the
+/// watcher reports, at a note's path or on the way to it, is never an item, so no `items/edit`
+/// writes through it: not into a git hook, the trash or a file outside the workspace, and not,
+/// by a file of an owner's kind, into a note. A file at that path that a link replaced is
+/// gone, its items with it. Every link leads into the test's own folders.
+#[cfg(unix)]
+#[test]
+fn a_link_the_watcher_reports_is_no_item_so_no_edit_writes_through_it() {
+    let outside = temp("links-outside");
+    std::fs::write(outside.join("Out.md"), "- [ ] Leave the workspace\n").unwrap();
+    let mut h = Harness::with(
+        "links",
+        &[
+            (".git/hooks/pre-commit", "- [ ] Run the hook\n"),
+            (".trash/Old.md", "- [ ] Bury the old note\n"),
+            ("Concepts/Lava.md", "- [ ] Measure the lava\n"),
+            ("Inbox/Ash.md", ASH),
+        ],
+    );
+    h.follow("agenda", tasks());
+    let root = h.core.root().to_path_buf();
+    let is_link = |at: &str| root.join(at).symlink_metadata().unwrap().is_symlink();
+    for (at, target) in [
+        ("Inbox/Hook.md", root.join(".git/hooks/pre-commit")),
+        ("Inbox/Old.md", root.join(".trash/Old.md")),
+        ("Inbox/Out.md", outside.join("Out.md")),
+        ("Inbox/Lava.lines", root.join("Concepts/Lava.md")),
+    ] {
+        let bytes = std::fs::read(&target).unwrap();
+        std::fs::write(root.join(at), &bytes).unwrap();
+        h.saw(at);
+        h.deliver();
+        h.owner_reads();
+        h.deliver();
+        let mine = |i: &Item| i.note == at;
+        let task = h.items("agenda").into_iter().find(mine).unwrap();
+
+        std::fs::remove_file(root.join(at)).unwrap();
+        std::os::unix::fs::symlink(&target, root.join(at)).unwrap();
+        h.saw(at);
+        h.deliver();
+        h.owner_reads();
+        h.deliver();
+        assert!(!h.items("agenda").iter().any(mine), "{at} holds no items");
+        let edit = h.edit("tidy", &tick(&task));
+        h.owner_edits();
+        h.owner_reads();
+        h.deliver();
+        let refused = edit.map(drop).unwrap_err();
+        assert_eq!(refused.reason, Reason::Changed, "{at}: {refused}");
+        assert_eq!(std::fs::read(&target).unwrap(), bytes, "{at} wrote nothing");
+        assert!(is_link(at), "{at} is still a link");
+    }
+
+    let hook = root.join(".git/hooks/pre-commit");
+    std::os::unix::fs::symlink(&hook, root.join("Hook.md")).unwrap();
+    std::os::unix::fs::symlink(root.join("Concepts"), root.join("Inbox/Con")).unwrap();
+    h.saw("Hook.md");
+    h.saw("Inbox/Con/Lava.md");
+    let batch = h.deliver();
+    assert!(batch.is_empty(), "a new link is no news: {batch:?}");
+    let notes: Vec<String> = h.items("agenda").into_iter().map(|i| i.note).collect();
+    assert_eq!(notes, ["Concepts/Lava.md", "Inbox/Ash.md"]);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// A recipe a shape's step runs over a note swapped for a symlink since the scan read it, to a
+/// file holding the same text, is refused whole, and says it is for the link, as the menu's
+/// refusal does: the reason a write gives (`Reason::of`) and its words, never a bare "changed".
+#[cfg(unix)]
+#[test]
+fn a_recipe_refused_for_a_link_says_so() {
+    let mut h = workspace("recipe-link");
+    let root = h.core.root().to_path_buf();
+    let outside = temp("recipe-link-outside");
+    let (plan, ash) = (h.read("Plan.md"), h.read("Ash.md"));
+    std::fs::write(outside.join("Ash.md"), &ash).unwrap();
+    std::os::unix::fs::symlink(outside.join("Ash.md"), root.join("Ash.link")).unwrap();
+    std::fs::rename(root.join("Ash.link"), root.join("Ash.md")).unwrap();
+
+    let refused = h
+        .try_recipe("rename-tag", &[("from", "ash"), ("to", "tephra")])
+        .unwrap_err();
+    assert_eq!(refused.reason, Reason::Refused, "{refused}");
+    let words = &refused.message;
+    assert!(words.contains("nothing was changed"), "{words}");
+    assert!(words.contains("Ash.md is a symbolic link"), "{words}");
+    assert_eq!(
+        std::fs::read_to_string(outside.join("Ash.md")).unwrap(),
+        ash
+    );
+    assert!(root.join("Ash.md").symlink_metadata().unwrap().is_symlink());
+    assert_eq!(h.read("Plan.md"), plan);
+    let _ = std::fs::remove_dir_all(&outside);
 }

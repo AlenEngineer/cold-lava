@@ -16,6 +16,7 @@ use crate::gateway::{Error, Reason};
 use crate::index::Index;
 use crate::read::{Seen, rev};
 use crate::trash::{self, Bin, Trashed, Went};
+use crate::workspace;
 use crate::write::{self, WriteError};
 
 /// What an extension asks of the workspace gateway about files (extension → host).
@@ -170,22 +171,22 @@ pub fn extension_of(path: &str) -> Option<String> {
 }
 
 /// The file at `rel` in the workspace at `root`: refused unless `rel` is relative, has no
-/// `..`, `.` or hidden part (`.obsidian`, `.trash`, `.git`), and leads inside the workspace once
-/// symlinks are followed.
+/// `..`, `.` or hidden part (`.obsidian`, `.trash`, `.git`), and neither it nor a folder on the
+/// way to it is a symlink (`unlinked`).
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let path = named(root, rel)?;
-    within(root, rel, &path)?;
-    Ok(path)
+    let path = normal(rel)?;
+    unlinked(root, &path, &path)?;
+    Ok(root.join(path))
 }
 
 /// The entry at `rel` itself, for `workspace/stat` and `workspace/delete`: as `resolve`, but
-/// the last part is not followed when it is a symlink. The folder it is in has to lead inside
-/// the workspace; the link is then an entry of the workspace like any other, whatever it
-/// points to.
+/// the last part may be a symlink, and is then the entry, whatever it points to. No folder on
+/// the way to it may be one.
 fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let path = named(root, rel)?;
-    within(root, rel, path.parent().unwrap_or(root))?;
-    Ok(path)
+    let path = normal(rel)?;
+    let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
+    unlinked(root, &path, folder)?;
+    Ok(root.join(path))
 }
 
 /// `rel` in its one spelling: its parts joined by single `/`, with no slash at either end.
@@ -211,22 +212,33 @@ pub fn normal(rel: &str) -> Result<String, Error> {
     Ok(parts.join("/"))
 }
 
-/// `rel` under `root`, in its one spelling (`normal`).
-fn named(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    Ok(root.join(normal(rel)?))
+/// Refused when `parts` under `root`, or a folder on the way to it, is a symlink: the gateway
+/// never follows one (#349). `parts` is the `normal` path `rel`, or the folders at its start. A
+/// permission is judged by a path's name, and a link leads to a file of another name, such as
+/// a note's link to `.git/config` or to a canvas only its owner writes. With no link and no
+/// `..`, a path stays inside the workspace. The scan and the watcher read no link either
+/// (`workspace::first_link`, the one rule), so no item is in one.
+///
+/// Checked, then acted on: a folder on the way swapped for a link between this check and the
+/// call after it is still followed (#366). A file swapped for a link at the path itself is
+/// not: the gateway's writes rename over the path (`Seen::replace`, `write::create`).
+fn unlinked(root: &Path, rel: &str, parts: &str) -> Result<(), Error> {
+    root.metadata().map_err(io(rel))?;
+    let Some(link) = workspace::first_link(root, parts).map_err(io(rel))? else {
+        return Ok(());
+    };
+    let why = never_followed(link);
+    let message = if link == rel {
+        why
+    } else {
+        format!("{rel}: {why}")
+    };
+    Err(Error::new(Reason::Refused, message))
 }
 
-/// Refused unless `path`, or its deepest folder that exists, leads inside the workspace once
-/// symlinks are followed.
-fn within(root: &Path, rel: &str, path: &Path) -> Result<(), Error> {
-    let real_root = root.canonicalize().map_err(io(rel))?;
-    let existing = path.ancestors().find(|a| a.exists()).unwrap_or(root);
-    let real = existing.canonicalize().map_err(io(rel))?;
-    if !real.starts_with(&real_root) {
-        let message = format!("{rel}: it leads outside the workspace");
-        return Err(Error::new(Reason::Refused, message));
-    }
-    Ok(())
+/// The refusal of a symlink at `link`, in its one wording.
+fn never_followed(link: &str) -> String {
+    format!("{link} is a symbolic link, which the gateway never follows")
 }
 
 fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
@@ -238,6 +250,8 @@ fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
             WriteError::Exists(_) => format!("{rel} already exists"),
+            WriteError::NotAFile(_) => write::not_a_file(rel),
+            WriteError::Link(_) => never_followed(rel),
             WriteError::Io(_, e) => format!("{rel}: {e}"),
         };
         Error::new(Reason::of(&e), message)
@@ -315,7 +329,7 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
             n => format!("{name} {n}"),
         };
         let path = crate::resolver::new_file_path(index, &candidate, extension, None);
-        if !path.exists() {
+        if !write::taken(&path) {
             return relative(path);
         }
         n += 1;
@@ -336,6 +350,8 @@ fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
             WriteError::Exists(_) => format!("{rel} already exists"),
+            WriteError::NotAFile(_) => write::not_a_file(rel),
+            WriteError::Link(_) => never_followed(rel),
             WriteError::Io(_, e) => format!("{rel}: {e}"),
         };
         Error::new(Reason::of(&e), message)
@@ -1104,6 +1120,120 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The gateway never follows a symlink (#349): a path names the entry at that path, and no
+    /// link at it or on the way to it picks another file, such as `.git/config` behind a
+    /// note's name. Reading, writing, creating, restoring and making a folder at or through a
+    /// link are refused, naming the link, and what it leads to is left alone. A link is still
+    /// stated as itself. The links lead inside the test's own folder.
+    #[cfg(unix)]
+    #[test]
+    fn the_gateway_never_follows_a_symlink() {
+        let dir = workspace("never-follows");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/config"), "[core]\n").unwrap();
+        let link = |to: &str, at: &str| std::os::unix::fs::symlink(to, dir.join(at)).unwrap();
+        link("Eruptions.csv", "Data/Linked.csv");
+        link("../.git/config", "Data/Git.md");
+        link("Gone.csv", "Data/Dangling.csv");
+        link("../.git", "Data/Dot");
+        let (mut core, bin) = core_with_bin(&dir);
+        let git = fingerprint(&dir.join(".git"));
+        let table = fingerprint(&dir.join("Data/Eruptions.csv"));
+        let said = |e: Error| (e.reason, e.message);
+        let refused = |path: &str, link: &str| {
+            let why = format!("{link} is a symbolic link, which the gateway never follows");
+            let message = if path == link {
+                why
+            } else {
+                format!("{path}: {why}")
+            };
+            (Reason::Refused, message)
+        };
+        let new = |path: &str| Create {
+            at: NewFile::At { path: path.into() },
+            text: "lost\n".into(),
+        };
+        for (path, link) in [
+            ("Data/Linked.csv", "Data/Linked.csv"),
+            ("Data/Git.md", "Data/Git.md"),
+            ("Data/Dangling.csv", "Data/Dangling.csv"),
+            ("Data/Dot/config", "Data/Dot"),
+            ("Data/Dot/hooks/post-checkout", "Data/Dot"),
+        ] {
+            let why = refused(path, link);
+            let leads_to = std::fs::read(dir.join(path)).map(|b| rev(&b));
+            let leads_to = leads_to.unwrap_or_default();
+            assert_eq!(said(core.read_file(path).unwrap_err()), why, "read {path}");
+            let written = core.write_file(path, "lost\n", &leads_to).unwrap_err();
+            assert_eq!(said(written), why, "write {path}");
+            let created = core.create_file(&new(path)).unwrap_err();
+            assert_eq!(said(created), why, "create {path}");
+        }
+        let through = refused("Data/Dot/config", "Data/Dot");
+        let stat = core.stat_file("Data/Dot/config").unwrap_err();
+        assert_eq!(said(stat), through, "stat");
+        let deleted = core.delete_file("tidy", "Data/Dot/config", "").unwrap_err();
+        assert_eq!(said(deleted), through, "delete");
+        let folder = core.create_folder("tidy", "Data/Dot/made").unwrap_err();
+        assert_eq!(said(folder), refused("Data/Dot/made", "Data/Dot"));
+        assert!(core.stat_file("Data/Git.md").is_ok(), "a link is itself");
+
+        let plan = core.stat_file("Plan.md").unwrap();
+        let gone = core.delete_file("tidy", "Plan.md", &plan.rev).unwrap();
+        for (to, link) in [
+            ("Data/Linked.csv", "Data/Linked.csv"),
+            ("Data/Dot/Plan.md", "Data/Dot"),
+        ] {
+            let there = back(&gone.trashed, Some(to));
+            let there = core.restore_file("tidy", &there).unwrap_err();
+            assert_eq!(said(there), refused(to, link), "restore to {to}");
+        }
+        core.restore_file("tidy", &back(&gone.trashed, None))
+            .unwrap();
+
+        assert_eq!(fingerprint(&dir.join(".git")), git, "nothing reached .git");
+        assert_eq!(fingerprint(&dir.join("Data/Eruptions.csv")), table);
+        for at in [
+            "Data/Linked.csv",
+            "Data/Git.md",
+            "Data/Dangling.csv",
+            "Data/Dot",
+        ] {
+            let meta = dir.join(at).symlink_metadata().unwrap();
+            assert!(meta.file_type().is_symlink(), "{at} is still a link");
+        }
+        assert!(
+            !dir.join("Data/Gone.csv").exists(),
+            "nothing made through it"
+        );
+        let _ = std::fs::remove_dir_all(&bin);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A new file's name is never one a link holds, a link to nothing included: `free_name`
+    /// asks `write::taken`, as `write::create` does, so a create by name takes the next number
+    /// instead of being refused, and nothing is made through the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_name_passes_over_a_link_to_nothing() {
+        let dir = workspace("free-name");
+        std::os::unix::fs::symlink("Gone.csv", dir.join("Untitled.csv")).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let untitled = Create {
+            at: NewFile::Named {
+                name: "Untitled".into(),
+                extension: "csv".into(),
+            },
+            text: "a,b\n".into(),
+        };
+        let made = core.create_file(&untitled).unwrap();
+        assert_eq!(made.path, "Untitled 1.csv");
+        let link = std::fs::read_link(dir.join("Untitled.csv")).unwrap();
+        assert_eq!(link, Path::new("Gone.csv"), "the link stays");
+        assert!(!dir.join("Gone.csv").exists(), "nothing made through it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The delete goes to the link, never through it.
     #[cfg(unix)]
     #[test]
@@ -1147,11 +1277,7 @@ mod tests {
         let through = core.delete_file("tidy", "Shared/Deep.md", "").unwrap_err();
         assert_eq!(through.reason, Reason::Refused, "not through a link");
         let text = core.read_file("Data/Linked.md").unwrap_err();
-        assert_eq!(
-            text.reason,
-            Reason::Refused,
-            "reading still follows, and refuses"
-        );
+        assert_eq!(text.reason, Reason::Refused, "never read through a link");
         let _ = std::fs::remove_dir_all(&bin);
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&dir);

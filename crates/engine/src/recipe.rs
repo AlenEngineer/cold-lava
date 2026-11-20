@@ -72,7 +72,7 @@ pub struct Plan {
     pub recipe: &'static Recipe,
     pub options: Options,
     /// Notes with their new text; files other owners read with the changes to ask them for,
-    /// their new text to come from the owner (`Core::relink`, then `rename::answered`).
+    /// their new text to come from the owner (`Core::apply`).
     pub edits: Vec<FileEdit>,
     pub warnings: Vec<String>,
 }
@@ -245,7 +245,7 @@ pub fn plan(ix: &Index, recipe: &'static Recipe, options: Options) -> Result<Pla
 /// Carry out a plan: refuse if a file changed since it was planned, or a file another owner
 /// reads has no new text from it yet, then write every file (putting back the ones written if one
 /// fails).
-pub fn apply(plan: &Plan) -> Result<Applied> {
+pub(crate) fn apply(plan: &Plan) -> Result<Applied> {
     rename::check_answered(&plan.edits)?;
     rename::check_unchanged(&plan.edits, "recipe")?;
     Ok(Applied {
@@ -685,6 +685,48 @@ mod tests {
         std::fs::write(dir.join("A.md"), "#magma edited\n").unwrap();
         assert!(undo(&done).is_err());
         assert_eq!(read(&dir, "A.md"), "#magma edited\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recipe an extension runs (`Host::run_recipe`) writes only over the files it read: a
+    /// note swapped for a link after the plan, to a file holding the same text, is refused, and
+    /// the file the link leads to keeps its bytes, whether the recipe applies or is undone.
+    #[cfg(unix)]
+    #[test]
+    fn a_note_swapped_for_a_link_is_never_written_through() {
+        let (dir, ix) = workspace_with("swapped", &[("A.md", "#lava\n"), ("B.md", "#lava too\n")]);
+        let outside = dir.join(".git/config");
+        let swap = |note: &str, text: &str| {
+            std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+            std::fs::write(&outside, text).unwrap();
+            let link = dir.join(format!("{note}.link"));
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            std::fs::rename(&link, dir.join(note)).unwrap();
+        };
+        let is_link = |note: &str| {
+            let meta = std::fs::symlink_metadata(dir.join(note)).unwrap();
+            meta.file_type().is_symlink()
+        };
+
+        let p = rename(&ix, "lava", "magma").unwrap();
+        swap("B.md", "#lava too\n");
+        let err = format!("{:#}", apply(&p).unwrap_err());
+        assert!(err.contains("B.md is a symbolic link"), "{err}");
+        assert_eq!(read(&dir, ".git/config"), "#lava too\n");
+        assert!(is_link("B.md"), "the link stays");
+        assert_eq!(
+            read(&dir, "A.md"),
+            "#lava\n",
+            "what was written is put back"
+        );
+
+        std::fs::remove_file(dir.join("B.md")).unwrap();
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let done = apply(&rename(&ix, "lava", "magma").unwrap()).unwrap();
+        swap("A.md", "#magma\n");
+        assert!(undo(&done).is_err());
+        assert_eq!(read(&dir, ".git/config"), "#magma\n");
+        assert!(is_link("A.md"), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

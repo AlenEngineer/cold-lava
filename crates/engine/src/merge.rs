@@ -314,8 +314,9 @@ fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
 /// Carry out a merge: refuse if any file changed since it was planned, or a file another owner
 /// reads has no new text from it yet (`Core::relink`), write the target and every file whose links
 /// change (putting back the ones written if one fails), then send the source to the trash.
-/// `system` is the system trash (`trash::system_bin()`; tests pass their own).
-pub fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
+/// `system` is the system trash: the core's (`Core::set_system_trash`), which `Core::apply`
+/// passes; tests pass their own.
+pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     rename::check_answered(&m.edits)?;
     let source = Seen::kept(&m.source_path, m.source_text.as_bytes());
     match source.unchanged() {
@@ -495,8 +496,9 @@ mod tests {
         assert_eq!(m.own_links, 1, "./Sib, relative to the source's folder");
         assert!(apply(&m, None).is_err(), "not before the canvas's owner");
         let mut core = crate::core::Core::open(&ix.workspace.root).unwrap();
-        assert_eq!(core.relink(&mut m.edits), Ok(None), "it answers at once");
-        apply(&m, None).unwrap();
+        let made = core.apply(&mut m);
+        let at_once = matches!(&made, crate::core::Applying::Now(Ok(_)));
+        assert!(at_once, "it answers at once: {made:?}");
         assert_eq!(
             read(&dir, "Top.md"),
             "---\nrelated: \"[[B/Lava]]\"\n---\n[[Lava#Flow|ropy]] ![[Lava]] \
@@ -555,6 +557,36 @@ mod tests {
         }
         assert!(!dir.join("workspace/.trash/Pāhoehoe.md").exists());
         assert!(plan(&ix, 0, 0).is_err(), "not into itself");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A backlink swapped after the plan for a symlink to a file that holds the same text is
+    /// refused before anything is written or trashed, and nothing is written through it.
+    #[cfg(unix)]
+    #[test]
+    fn a_backlink_swapped_for_a_symlink_stops_the_merge_before_it_writes() {
+        let files = [
+            ("Lava.md", "# Lava\n"),
+            ("Pāhoehoe.md", "Smooth.\n"),
+            ("Kīlauea.md", "[[Pāhoehoe]]\n"),
+        ];
+        let (dir, ix) = workspace_with("swapped", &files);
+        let m = merge(&ix, "Pāhoehoe", "Lava");
+        let copy = dir.join("Kīlauea.md");
+        std::fs::write(&copy, "[[Pāhoehoe]]\n").unwrap();
+        let at = dir.join("workspace/Kīlauea.md");
+        std::os::unix::fs::symlink(&copy, dir.join("workspace/Kīlauea.link")).unwrap();
+        std::fs::rename(dir.join("workspace/Kīlauea.link"), &at).unwrap();
+        let err = format!("{:#}", apply(&m, None).unwrap_err());
+        assert!(err.contains("Kīlauea.md is a symbolic link"), "{err}");
+        assert!(err.contains("nothing was changed"), "{err}");
+        assert_eq!(read(&dir, "Lava.md"), "# Lava\n");
+        assert_eq!(read(&dir, "Pāhoehoe.md"), "Smooth.\n");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "[[Pāhoehoe]]\n");
+        assert!(
+            at.symlink_metadata().unwrap().is_symlink(),
+            "the link stays"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

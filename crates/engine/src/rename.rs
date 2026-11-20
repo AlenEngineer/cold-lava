@@ -42,8 +42,8 @@ pub struct FileEdit {
     pub links: usize,
     pub changes: Vec<Change>,
     /// For a file another owner reads (an extension, or the engine's canvas owner), what to ask
-    /// it. `new_text` is the owner's answer, empty until `Core::relink` has it; nothing moves
-    /// before then.
+    /// it. `new_text` is the owner's answer, empty until the core has it (`Core::apply`);
+    /// nothing moves before then.
     #[serde(skip)]
     pub owned: Option<Through>,
 }
@@ -58,39 +58,6 @@ pub struct Through {
     pub changes: Vec<Ask>,
     pub given: Option<Given>,
     pub after: Option<Given>,
-}
-
-/// An owner's answer for `file` as `Core::take_relinked` hands it out, for `answered`: the
-/// file's new text, and what its owner read in it. Nothing else in it is set.
-pub(crate) fn answer(file: String, new_text: String, after: Given) -> FileEdit {
-    FileEdit {
-        file,
-        path: PathBuf::new(),
-        old_text: String::new(),
-        new_text,
-        links: 0,
-        changes: Vec::new(),
-        owned: Some(Through {
-            owner: String::new(),
-            changes: Vec::new(),
-            given: None,
-            after: Some(after),
-        }),
-    }
-}
-
-/// Put the owners' answers (`Core::take_relinked`) into `edits`, by file: each file's new text,
-/// and what its owner read in it.
-pub fn answered(edits: &mut [FileEdit], answers: Vec<FileEdit>) {
-    for a in answers {
-        let Some(e) = edits.iter_mut().find(|e| e.file == a.file) else {
-            continue;
-        };
-        e.new_text = a.new_text;
-        if let Some(o) = e.owned.as_mut() {
-            o.after = a.owned.and_then(|answer| answer.after);
-        }
-    }
 }
 
 /// Refuse a plan whose files other owners read have no new text from their owners yet.
@@ -622,12 +589,15 @@ pub(crate) fn owned_edit(
 }
 
 /// Refuse when a file among `edits` isn't what it was when `what` (a rename, a merge) was
-/// planned.
+/// planned, or is a symlink now, which its write would refuse (`write::refuse_link`) after
+/// others were written: a note swapped for a link to the same text is refused here, whole.
 pub(crate) fn check_unchanged<'a>(
     edits: impl IntoIterator<Item = &'a FileEdit>,
     what: &str,
 ) -> Result<()> {
     for e in edits {
+        crate::write::refuse_link(&e.path)
+            .with_context(|| format!("writing {}; nothing was changed", e.file))?;
         let now =
             std::fs::read_to_string(&e.path).with_context(|| format!("reading {}", e.file))?;
         if now != e.old_text {
@@ -695,7 +665,7 @@ impl Written {
 /// Carry out a plan: refuse if any file changed since it was made, or a file another owner reads
 /// has no new text from it yet (`Core::relink`), then make the moves (undoing the ones made if one
 /// fails) and write each changed file atomically.
-pub fn apply(plan: &Plan) -> Result<()> {
+pub(crate) fn apply(plan: &Plan) -> Result<()> {
     check_answered(&plan.edits)?;
     check_unchanged(&plan.edits, "rename")?;
     for m in &plan.moves {
@@ -756,13 +726,14 @@ mod tests {
         std::fs::read_to_string(dir.join(rel)).unwrap()
     }
 
-    /// Apply a plan that changes canvases, as every caller does: their owner gives their new
-    /// texts first (`Core::relink`), which the engine's own owner does inside the call.
-    fn apply_through_owners(ix: &Index, mut plan: Plan) -> Result<()> {
+    /// Apply a plan that changes canvases, as every caller does: through the core
+    /// (`Core::apply`), whose canvas owner gives their new texts inside the call.
+    fn apply_through_owners(ix: &Index, mut plan: Plan) -> Result<(), crate::core::NotApplied> {
         let mut core = crate::core::Core::open(&ix.workspace.root).unwrap();
-        let waiting = core.relink(&mut plan.edits).unwrap();
-        assert_eq!(waiting, None, "the canvas owner answers at once");
-        apply(&plan)
+        let crate::core::Applying::Now(made) = core.apply(&mut plan) else {
+            panic!("the canvas owner answers at once");
+        };
+        made
     }
 
     #[test]
@@ -1278,6 +1249,67 @@ mod tests {
         apply(&p).unwrap();
         assert!(dir.join("Earth/Stone/Lava.md").exists());
         assert_eq!(read(&dir, ".obsidian/bookmarks.json"), marks);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn is_link(path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    /// A note that links to what moves, swapped after the plan for a symlink to a file that
+    /// holds the same text, stops the rename before anything moves, as a changed note does:
+    /// nothing is half renamed, and nothing is written through the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_backlink_swapped_for_a_symlink_stops_the_whole_rename() {
+        let (dir, ix) = workspace_with(
+            "swapped-backlink",
+            &[
+                ("Rock/Lava.md", "x"),
+                ("Ash.md", "[[Lava]]\n"),
+                ("Kilauea.md", "[[Lava]]\n"),
+                (".git/Kilauea.md", "[[Lava]]\n"),
+            ],
+        );
+        let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
+        assert_eq!(p.links(), 2);
+        let link = dir.join("Kilauea.link");
+        std::os::unix::fs::symlink(dir.join(".git/Kilauea.md"), &link).unwrap();
+        std::fs::rename(&link, dir.join("Kilauea.md")).unwrap();
+        let err = format!("{:#}", apply(&p).unwrap_err());
+        assert!(err.contains("Kilauea.md is a symbolic link"), "{err}");
+        assert!(dir.join("Rock/Lava.md").exists(), "nothing moved");
+        assert!(!dir.join("Rock/Basalt.md").exists(), "nothing moved");
+        assert_eq!(read(&dir, "Ash.md"), "[[Lava]]\n", "no link updated");
+        assert_eq!(read(&dir, ".git/Kilauea.md"), "[[Lava]]\n");
+        assert!(is_link(&dir.join("Kilauea.md")), "the link stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `bookmarks.json` kept as a symlink is never touched by a rename: the rename goes
+    /// ahead, the link stays and what it leads to keeps the old path.
+    #[cfg(unix)]
+    #[test]
+    fn bookmarks_kept_as_a_symlink_are_never_touched() {
+        let marks = r#"{"items":[{"type":"file","ctime":1,"path":"Rock/Lava.md"}]}"#;
+        let (dir, ix) = workspace_with(
+            "bookmarks-linked",
+            &[
+                ("Rock/Lava.md", "# Textures\n"),
+                ("Rocky.md", "[[Lava]]\n"),
+                (".shared/bookmarks.json", marks),
+            ],
+        );
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        let at = dir.join(".obsidian/bookmarks.json");
+        std::os::unix::fs::symlink("../.shared/bookmarks.json", &at).unwrap();
+        let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
+        apply(&p).unwrap();
+        assert!(dir.join("Rock/Basalt.md").exists());
+        assert_eq!(read(&dir, "Rocky.md"), "[[Basalt]]\n");
+        assert_eq!(read(&dir, ".shared/bookmarks.json"), marks);
+        assert!(is_link(&at), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

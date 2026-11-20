@@ -63,7 +63,7 @@ desk (`core.rs`), and some aren't hired yet:
 | The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
 | The edit desk | carries an edit to a translator, waits for its answer and reads it back, hands the librarian the page to swap in, and tells whoever asked once the librarian says how the swap went | `owner/edits.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
-| The shelver | shelves, moves and trashes books, and keeps their shelf marks (symlinks; see References), reading no language | partly at its desk: `write.rs` (`create`, `move_file`) and `trash.rs`; the door's guard on shelf marks comes with #353, and the watcher's linked notes are #357 |
+| The shelver | shelves, moves and trashes books, and keeps their shelf marks (symlinks; see References), reading no language | partly at its desk: `write.rs` (`create`, `move_file`) and `trash.rs`; the door, the scan and the watcher pass every shelf mark by (`files::resolve`, `workspace::first_link`), and a book with two shelf marks is #357 |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
 | The logbook keeper | writes down every change, who asked and which translator wrote it | not hired yet (#306, after track C) |
 
@@ -137,18 +137,17 @@ never lends it to a reader (an extension).
   jump there, and `cold-lava tidy` never reports a reference whose heading is gone. A file
   card's place half is an attribute of its card, not part of its link (#359). References to
   items wait for #94.
-- Not every shelf mark is the shelver's yet. The scan skips a symlinked note, but the watcher
-  reads it as a note of its own, so its tasks show twice and the link's copy goes stale, and an
-  item edit on it never meets the door's path checks. #357 proposes one entry in the catalogue,
-  with the link as another name for the book.
-- The front desk's guard on shelf marks is half built. Today the door refuses a path named
-  hidden (`files::normal`) or one that leads outside the workspace (`within`). Until #353
-  merges, it follows a symlink that stays inside the workspace, so an extension can reach a
-  hidden folder through a folder link (`Inbox/Dot -> ../.git`), and a save replaces a linked
-  note with a copy (#349). Once #353 merges, the door never follows a symlink, as
-  `workspace/stat` and `workspace/delete` already don't, so nothing in the staff room is lent
-  even through a link, and the person's own saves (the whiteboard, the menu, an item edit)
-  write through one to the book it leads to.
+- Not every shelf mark is the shelver's yet. The scan and the watcher skip a symlinked note
+  (`note_paths`, `workspace::first_link`), so a note linked from another folder has no entry in the
+  catalogue under its link: its tasks, links and tags aren't counted there, and no item edit
+  reaches it. #357 proposes one entry in the catalogue, with the link as another name for the
+  book.
+- The front desk never follows a shelf mark (#349). It refuses a path named hidden
+  (`files::normal`), and a path that is a symlink or has one on the way to it
+  (`files::resolve`), so nothing in the staff room is lent even through a link. The person's
+  own saves (the whiteboard, the menu's edits of a note) write through one to the book it
+  leads to. The desk checks, then acts: a folder on the way swapped for a link in between is
+  still followed (#366).
 - Decided on 2026-11-20, not built: a link that leads outside the workspace or into a hidden
   folder is listed for the person only (the tree, backlinks, search, the person's own saves),
   never in an answer to an extension. It needs a person-only kind of entry in the catalogue
