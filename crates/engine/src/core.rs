@@ -145,7 +145,7 @@ impl Core {
         let index = Index::build(workspace::scan(root)?);
         let (fs_events, watcher) = watch(&index.workspace.root);
         let owned = index.workspace.owned.iter();
-        let unseen = owned.filter_map(|file| owned_news(None, file)).collect();
+        let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
         Ok(Core {
             bookmarks: read_bookmarks(&index.workspace.root),
             index,
@@ -237,7 +237,8 @@ impl Core {
     }
 
     /// After the workspace was read from scratch. What an owned file leaves out is said where
-    /// that is news since the file was read before (`owned_news`).
+    /// that is news since the file was read before (`owned_news`), for the files the scan no
+    /// longer finds too.
     fn rescanned(&mut self, index: Index) {
         let before = std::mem::replace(&mut self.index, index).workspace.owned;
         self.reload_bookmarks();
@@ -246,11 +247,11 @@ impl Core {
             let _ = self.owned_scan();
             self.index.relink();
         }
-        for file in &self.index.workspace.owned {
-            let was = before.binary_search_by(|b| b.rel.cmp(&file.rel)).ok();
-            let news = owned_news(was.map(|i| &before[i]), file);
-            self.unseen.extend(news);
-        }
+        let now = &self.index.workspace.owned;
+        let gone = (before.iter()).filter(|b| owned_at(now, &b.rel).is_none());
+        let gone = gone.map(|b| owned_news(Some(b), None));
+        let found = (now.iter()).map(|f| owned_news(owned_at(&before, &f.rel), Some(f)));
+        self.unseen.extend(gone.chain(found).flatten());
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
     }
@@ -379,8 +380,7 @@ impl Core {
             let Ok(bytes) = std::fs::read(root.join(rel)) else {
                 if let Ok(i) = at {
                     let gone = owned.remove(i);
-                    let now = Owned::new(rel.clone(), gone.path.clone(), &owner);
-                    events.extend(owned_news(Some(&gone), &now));
+                    events.extend(owned_news(Some(&gone), None));
                     self.owners.forget(rel);
                     changed.push(rel.clone());
                 }
@@ -427,9 +427,9 @@ impl Core {
                 }
             };
             let read = given::read(rel, &given, self.index.workspace.item_settings());
-            let file = &mut self.index.workspace.owned[i];
-            let before = file.take(rev, given, read);
-            events.extend(owned_news(Some(&before), file));
+            let before = self.index.workspace.owned[i].take(rev, given, read);
+            let now = &self.index.workspace.owned[i];
+            events.extend(owned_news(Some(&before), Some(now)));
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
             }
@@ -1341,25 +1341,32 @@ fn classify(root: &Path, path: &Path) -> Kind {
     }
 }
 
-/// What `file` leaves out (`Event::OwnedLeavesOut`), when that is news since `before`, the
-/// file as it was (`None`: it wasn't there). The one place the core decides it, whoever read
-/// the file: `owned_read`, `rescanned`, or the scan as the core opens (which reads a canvas
-/// and says nothing).
+/// What an owned file leaves out (`Event::OwnedLeavesOut`), when that is news between
+/// `before`, the file as it was, and `now`, as it is (`None`: it wasn't there, or it is
+/// gone). The one place the core decides it, whoever read the file: `owned_read`,
+/// `rescanned`, or the scan as the core opens (which reads a canvas and says nothing).
 ///
 /// It is news when what the file leaves out changed, `None` once all of it reads or the file
 /// is gone, and when an answer for another version leaves something out, from an owner that
 /// answers once per version (`owner::answers_once_per_version`, which says why).
-fn owned_news(before: Option<&Owned>, file: &Owned) -> Option<Event> {
+fn owned_news(before: Option<&Owned>, now: Option<&Owned>) -> Option<Event> {
+    let file = now.or(before)?;
     let was = before.map_or(&[][..], |b| b.problems.as_slice());
-    let changed = was != file.problems.as_slice();
-    let another = before.is_none_or(|b| b.rev != file.rev);
+    let is = now.map_or(&[][..], |f| f.problems.as_slice());
+    let another = now.is_some_and(|f| before.is_none_or(|b| b.rev != f.rev));
     let once = crate::owner::answers_once_per_version(&file.rel);
-    let answered = another && once && !file.problems.is_empty();
-    (changed || answered).then(|| Event::OwnedLeavesOut {
+    let answered = another && once && !is.is_empty();
+    (was != is || answered).then(|| Event::OwnedLeavesOut {
         owner: file.owner.clone(),
         path: file.rel.clone(),
-        message: file.trouble(),
+        message: now.and_then(Owned::trouble),
     })
+}
+
+/// The file at `rel` among `owned`, which is in the order of their paths.
+fn owned_at<'a>(owned: &'a [Owned], rel: &str) -> Option<&'a Owned> {
+    let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
+    i.ok().map(|i| &owned[i])
 }
 
 fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {

@@ -977,11 +977,21 @@ impl Home {
     fn show_report(&mut self) {
         let quiet = match self.status_line() {
             StatusLine::Board(board) => board.quiet(),
-            StatusLine::Scene(scene) => scene.quiet(),
+            StatusLine::Scene(scene) => scene.says().is_none(),
             StatusLine::Menu => self.msg.is_none() && self.refusals.shown(Instant::now()).is_none(),
         };
         if quiet && let Some(report) = self.reports.pop() {
             self.flash(report);
+        }
+    }
+
+    /// The message the status line in front says, or waits to (`flash`): what a report said
+    /// at once takes the place of (`Reports::heard`).
+    fn says(&mut self) -> Option<Notice> {
+        match self.status_line() {
+            StatusLine::Board(board) => board.says().cloned(),
+            StatusLine::Scene(scene) => scene.says().cloned(),
+            StatusLine::Menu => self.msg.as_ref().map(|(m, _)| m.clone()),
         }
     }
 
@@ -2119,7 +2129,8 @@ impl Home {
                     self.flash(format!("{by}: {what} on {name}"));
                 }
                 CoreEvent::OwnerTrouble { .. } | CoreEvent::OwnedLeavesOut { .. } => {
-                    if let Some(now) = self.reports.heard(e) {
+                    let front = self.says();
+                    if let Some(now) = self.reports.heard(e, front.as_ref()) {
                         self.flash(now);
                     }
                 }

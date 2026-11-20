@@ -451,9 +451,9 @@ impl Editor {
         self.msg = Some(s.into());
     }
 
-    /// Whether its status line has no message (`say`).
-    pub fn quiet(&self) -> bool {
-        self.msg.is_none()
+    /// The message its status line shows until the next key (`say`).
+    pub fn says(&self) -> Option<&Notice> {
+        self.msg.as_ref()
     }
 
     // ---------- where things are ----------

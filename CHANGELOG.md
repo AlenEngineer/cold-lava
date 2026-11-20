@@ -179,14 +179,17 @@ change commands, keys and file formats; patch versions only fix things.
   (#303): it never takes the place of the message of what you just did (a merge, a
   duplicate, a new note, the whiteboard's delete or undo) or of the shape editor's (its
   warning of unsaved changes included). Boards whose reports wait together are named in one
-  line, shown once for three seconds (`3 boards have cards left out: Mixed, Twins, Late
-  (cold-lava items shows each)`), as when the workspace opens; a board alone has its own
-  line. A board is reported again only when what it leaves out changes, never on a rescan
-  or after a change that leaves out the same cards, and a report still waiting is dropped
-  once its board leaves nothing out. An owner that can't read a file at all (a board that
-  isn't JSON Canvas included) and what an extension's file leaves out are said at once, as
-  before: an extension's file whenever an answer for a version of it leaves something out,
-  but not again when its owner leaves out what the cache did for a version already shown.
+  line, shown once for three seconds (`3 boards have cards left out (cold-lava items shows
+  each): Mixed, Twins, Late`, two boards of one name by their paths), as when the workspace
+  opens; a board alone has its own line. A board is reported again only when what it leaves
+  out changes, never on a rescan or after a change that leaves out the same cards, and a
+  report still waiting is dropped once its board leaves nothing out or is gone (deleted, or
+  moved with its folder, when it is reported at its new path). An owner that can't read a
+  file at all (a board that isn't JSON Canvas included) and what an extension's file leaves
+  out are said at once, as before: an extension's file whenever an answer for a version of
+  it leaves something out, but not again when its owner leaves out what the cache did for a
+  version already shown. When one of them takes the place of the boards' line, the line is
+  said again after it.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80

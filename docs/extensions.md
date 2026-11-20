@@ -2249,14 +2249,19 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   the nodes and its id, on the status line and on the command line's stderr, naming the
   board (the owner's decision of 2026-11-13, #303). The core says what a board leaves out
   as the workspace opens, and again only when that changes, `None` once it leaves nothing
-  out or is gone (`Event::OwnedLeavesOut`, `owned_news` in `core.rs`): a rescan, or a change
-  that leaves out the same cards, says nothing new. The menu holds a board's report until
-  the status line in front has nothing else to say (`reports::Reports`), so it never takes
-  the place of the message of what the user just did, nor of the shape editor's; the boards
-  whose reports wait together are named in one line, `3 boards have cards left out: Mixed,
-  Twins, Late (cold-lava items shows each)` (the owner's decision of 2026-11-20). A newer
-  report about a board takes the place of one still waiting, and one about a board that
-  leaves nothing out any more is dropped. The rest is not reported: the owner gives what the engine takes, and the rest stays in the file as it is. A rename changes the node its place names (`canvas::relink`); a later node
+  out or is gone, a board a rescan no longer finds included (`Event::OwnedLeavesOut`,
+  `owned_news` in `core.rs`): a rescan, or a change that leaves out the same cards, says
+  nothing new. The menu holds a board's report until the status line in front has nothing
+  else to say (`reports::Reports`), so it never takes the place of the message of what the
+  user just did, nor of the shape editor's; the boards whose reports wait together are
+  named in one line, `3 boards have cards left out (cold-lava items shows each): Mixed,
+  Twins, Late`, the count first so that a line cut at the terminal's width keeps it, and
+  two boards of one name by their paths (the owner's decision of 2026-11-20). An owner
+  that couldn't read a file and what an extension's file leaves out are said at once, as
+  before; when one takes the place of the boards' line, the line waits again and is said
+  after it, so that it shows once for its time. A newer report about a board takes the
+  place of one still waiting, and one about a board that leaves nothing out any more is
+  dropped. The rest is not reported: the owner gives what the engine takes, and the rest stays in the file as it is. A rename changes the node its place names (`canvas::relink`); a later node
   with a text or a file at that place stays as it is, never written over the named node's
   (`canvas::edit` refuses two changes to one field, which on main crashed the rename). A coordinate too large for a JSON number, or one that
   isn't a number, makes the file no JSON Canvas at all, as before.

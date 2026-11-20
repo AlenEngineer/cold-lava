@@ -1531,11 +1531,20 @@ impl Board {
     /// the menu has to say waits for this (`Home::show_report`).
     pub fn quiet(&self) -> bool {
         match &self.editor {
-            Some(editor) => editor.quiet(),
+            Some(editor) => editor.says().is_none(),
             None => {
                 let refused = self.refusals.shown(Instant::now());
                 self.msg.is_none() && self.alert.is_none() && refused.is_none()
             }
+        }
+    }
+
+    /// The message its status line says, or waits to (`flash`): the shape editor's while it
+    /// is in front, where the board's messages show.
+    pub fn says(&self) -> Option<&Notice> {
+        match &self.editor {
+            Some(editor) => editor.says(),
+            None => self.msg.as_ref().map(|(m, _)| m),
         }
     }
 
