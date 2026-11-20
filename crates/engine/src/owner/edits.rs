@@ -254,7 +254,10 @@ impl Edits {
     /// here, read back before this returns.
     fn send_read_back(&mut self, owner: &str, read: FileRead, s: &Settings) -> Option<ToWrite> {
         match crate::owner::give(owner, &read.path, &read.text) {
-            Some(given) => self.read_back(&read.path, given, s),
+            Some(given) => {
+                let read_back = self.read_back(&read.path, &read.rev, given, s);
+                read_back.ok().flatten()
+            }
             None => {
                 self.reads.push((owner.to_string(), read));
                 None
@@ -262,25 +265,24 @@ impl Edits {
         }
     }
 
-    /// Whether what the owner gives for the file at `path` at version `rev` is its reading of
-    /// an edit's new text (`read_back`), not of the file as it found it.
-    pub fn reads_back(&self, path: &str, rev: &str) -> bool {
-        let reading = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
-        self.pending.get(path).is_some_and(reading)
-    }
-
-    /// The owner read the new text of the file at `path` (`given`): when it reads as asked, an
-    /// item edit's new text is handed back to be written, and a relink's is kept. Else the edit
-    /// fails, and nothing is written.
+    /// The owner read the file at `path` at version `rev` (`given`). When that is the new text
+    /// an edit of the file waits to have read back, the desk takes it: an item edit's new text
+    /// is handed back to be written and a relink's is kept, when it reads as asked; else the
+    /// edit fails, and nothing is written. Any other version is the file as the owner found
+    /// it, not the desk's: `given` is handed back.
     pub fn read_back(
         &mut self,
         path: &str,
+        rev: &str,
         given: Result<Given, String>,
         s: &Settings,
-    ) -> Option<ToWrite> {
-        let p = self.pending.get(path)?;
+    ) -> Result<Option<ToWrite>, Result<Given, String>> {
+        let ours = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
+        let Some(p) = self.pending.get(path).filter(|p| ours(p)) else {
+            return Err(given);
+        };
         let Stage::Reading { text, .. } = &p.stage else {
-            return None;
+            return Err(given);
         };
         let error = Error::new;
         let owner = p.owner.clone();
@@ -291,7 +293,7 @@ impl Edits {
             Err(why) => {
                 let message = format!("{owner} couldn't read its new text for {path}: {why}");
                 self.failed(path, error(Reason::ReadBack, message));
-                return None;
+                return Ok(None);
             }
         };
         let nothing = Given::default();
@@ -303,17 +305,19 @@ impl Edits {
                  written"
             );
             self.failed(path, error(Reason::ReadBack, message));
-            return None;
+            return Ok(None);
         }
         if let Goal::Relink(ticket) = p.goal {
             self.relink_read_back(ticket, path, text.clone(), given);
-            return None;
+            return Ok(None);
         }
-        let p = self.pending.remove(path)?;
-        let (Stage::Reading { rev, text }, Goal::Item(ticket, edit)) = (p.stage, p.goal) else {
-            return None;
+        let Some(p) = self.pending.remove(path) else {
+            return Ok(None);
         };
-        Some(ToWrite {
+        let (Stage::Reading { rev, text }, Goal::Item(ticket, edit)) = (p.stage, p.goal) else {
+            return Ok(None);
+        };
+        Ok(Some(ToWrite {
             path: path.to_string(),
             before: p.text,
             after: text,
@@ -322,7 +326,7 @@ impl Edits {
             given,
             ticket,
             edit,
-        })
+        }))
     }
 
     /// The edit of the file at `path` waiting for its owner failed: tell whoever asked.
@@ -563,6 +567,8 @@ mod tests {
             changes,
         };
         assert_eq!((owner.as_str(), ask), (OWNER, &asked));
+        let early = desk.read_back(FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
+        assert!(early.is_err(), "not before file/edit is answered");
 
         assert!((desk.edited("other", FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
         assert!((desk.edited(OWNER, FILE, "older", Ok(DONE.into()), &s)).is_none());
@@ -579,13 +585,18 @@ mod tests {
             text: DONE.into(),
         };
         assert_eq!((owner.as_str(), back), (OWNER, &new));
-        assert!(desk.reads_back(FILE, &back.rev));
-        let old = &ask.rev;
-        assert!(!desk.reads_back(FILE, old), "the old text is no read-back");
+        let old = desk.read_back(FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
+        let Err(Ok(handed_back)) = old else {
+            panic!("the old text is no read-back: what the owner read in it is handed back");
+        };
+        assert_eq!(handed_back, gives("- [ ] sample"));
         assert!((desk.edited(OWNER, FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
         assert!(desk.take_reads().is_empty(), "file/edit is answered once");
 
-        let w = (desk.read_back(FILE, Ok(gives("- [x] sample")), &s)).expect("reads as asked");
+        let read = desk.read_back(FILE, &back.rev, Ok(gives("- [x] sample")), &s);
+        let Ok(Some(w)) = read else {
+            panic!("reads as asked");
+        };
         let written = (w.path.as_str(), w.before.as_str(), w.after.as_str());
         assert_eq!(written, (FILE, OPEN, DONE));
         let owner_read = (w.owner.as_str(), w.rev.as_str());
@@ -644,9 +655,8 @@ mod tests {
         assert!(desk.edited(OWNER, FILE, &ask.rev, text, s).is_none());
         if let Some(reading) = reads {
             let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-            assert!(desk.reads_back(FILE, &back.rev));
-            let write = desk.read_back(FILE, reading, s);
-            assert!(write.is_none(), "nothing to write");
+            let taken = desk.read_back(FILE, &back.rev, reading, s);
+            assert!(matches!(taken, Ok(None)), "taken, nothing to write");
         }
         assert_eq!(desk.waiting(FILE), None, "the file is free again");
         let done = desk.take_edited();
@@ -737,9 +747,8 @@ mod tests {
             let read_back = desk.edited(OWNER, rel, &ask.rev, Ok(new.into()), &s);
             assert!(read_back.is_none());
             let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-            assert!(desk.reads_back(rel, &back.rev));
-            let kept = desk.read_back(rel, Ok(gives(reads)), &s);
-            assert!(kept.is_none(), "a relink's new text is kept, not written");
+            let kept = desk.read_back(rel, &back.rev, Ok(gives(reads)), &s);
+            assert!(matches!(kept, Ok(None)), "kept, not written");
         };
         answer(&mut desk, "B.csv", "see [[Krakatau]]\n", "see [[Krakatau]]");
         let none = desk.take_relinked();

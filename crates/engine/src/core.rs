@@ -336,13 +336,12 @@ impl Core {
         if self.owners.owner_of(path) != Some(owner) {
             return;
         }
-        if self.edits.reads_back(path, rev) {
-            let settings = self.index.workspace.item_settings();
-            if let Some(write) = self.edits.read_back(path, given, settings) {
-                self.write_edit(write);
-            }
-            return;
-        }
+        let settings = self.index.workspace.item_settings();
+        let given = match self.edits.read_back(path, rev, given, settings) {
+            Err(given) => given,
+            Ok(Some(write)) => return self.write_edit(write),
+            Ok(None) => return,
+        };
         self.owners.answered(owner, path, rev, given.as_ref().ok());
         let events = match given {
             Ok(_) => self.owned_changed(&[path.to_string()]),
