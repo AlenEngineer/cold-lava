@@ -436,9 +436,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
     })
 }
 
-/// Obsidian's bookmarks of what moves, pointed at where it goes (Obsidian does the same). A
-/// `bookmarks.json` that is a symlink is edited where it leads, as `B` saves it
-/// (`write::replace_through_link`), and the link stays.
+/// Obsidian's bookmarks of what moves, pointed at where it goes (Obsidian does the same).
 pub(crate) fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileEdit>> {
     let mut b = Bookmarks::read(root)?;
     let Some(old_text) = b.read_text().map(str::to_string) else {
@@ -455,7 +453,7 @@ pub(crate) fn bookmarks_edit(root: &Path, moves: &[Move]) -> Result<Option<FileE
     }
     Ok(Some(FileEdit {
         file: bookmarks::FILE.to_string(),
-        path: crate::write::landing(&root.join(bookmarks::FILE))?,
+        path: root.join(bookmarks::FILE),
         old_text,
         new_text: b.text(),
         links: changed.len(),
@@ -1435,16 +1433,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A `bookmarks.json` kept as a symlink, as one set of bookmarks shared by several
-    /// workspaces is, follows a rename where it leads, as `B` saves it, and stays a link.
+    /// A `bookmarks.json` kept as a symlink stops a rename that would update it, whole: the
+    /// rename writes no file through a link, and only the bookmarks' own save follows one.
     #[cfg(unix)]
     #[test]
-    fn bookmarks_kept_as_a_symlink_follow_a_rename_where_it_leads() {
+    fn bookmarks_kept_as_a_symlink_stop_the_whole_rename() {
         let (dir, ix) = workspace_with(
             "bookmarks-linked",
             &[
                 ("Rock/Lava.md", "# Textures\n"),
-                ("Rocky.md", "x"),
+                ("Rocky.md", "[[Lava]]\n"),
                 (".shared/bookmarks.json", MARKS),
             ],
         );
@@ -1452,12 +1450,11 @@ mod tests {
         let at = dir.join(".obsidian/bookmarks.json");
         std::os::unix::fs::symlink("../.shared/bookmarks.json", &at).unwrap();
         let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
-        apply(&p).unwrap();
-        assert!(dir.join("Rock/Basalt.md").exists());
-        assert_eq!(
-            read(&dir, ".shared/bookmarks.json"),
-            MARKS.replacen("\"Rock/Lava.md\"", "\"Rock/Basalt.md\"", 1)
-        );
+        let err = format!("{:#}", apply(&p).unwrap_err());
+        assert!(err.contains("bookmarks.json is a symbolic link"), "{err}");
+        assert!(dir.join("Rock/Lava.md").exists(), "nothing moved");
+        assert_eq!(read(&dir, "Rocky.md"), "[[Lava]]\n", "no link updated");
+        assert_eq!(read(&dir, ".shared/bookmarks.json"), MARKS);
         assert!(is_link(&at), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -67,8 +67,7 @@ change commands, keys and file formats; patch versions only fix things.
   on it, from an extension or the agenda, replaced the link with a copy. A note swapped for
   a link after it was read is never written through: an item edit is refused there, and a
   rename, a merge or a recipe (an extension's included) is refused whole, before it moves or
-  writes anything, saying the note is a link. A `bookmarks.json` kept as a link is updated
-  where it leads by a rename or a merge, as bookmarking already did. A `.obsidian` folder
+  writes anything, saying the note is a link. A `.obsidian` folder
   that is a link, to settings shared between workspaces or to a folder in the workspace, is
   still watched where it leads, so changes to its graph colour groups and bookmarks are
   heard as before (#349).

@@ -60,12 +60,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
 /// Where a write to `path` lands: `path`, or the file a symlink there leads to, every link on
 /// the way followed, so the rename replaces that file, beside it, and the link stays a link. A
 /// link to nothing, or to something that isn't a file, is `NotAFile`. Where a link may lead is
-/// the caller's to bound: this follows it anywhere. Only `write_atomic`,
-/// `replace_through_link` and a rename's or a merge's edit of `bookmarks.json`
-/// (`rename::bookmarks_edit`) land here; `replace` and `create` rename over the path itself, so
-/// a link swapped in at the path after its check is replaced, not followed. A folder on the way
+/// the caller's to bound: this follows it anywhere. Only `write_atomic` and
+/// `replace_through_link` land here; `replace` and `create` rename over the path itself, so a
+/// link swapped in at the path after its check is replaced, not followed. A folder on the way
 /// swapped for a link is still followed (#366).
-pub(crate) fn landing(path: &Path) -> Result<PathBuf, WriteError> {
+fn landing(path: &Path) -> Result<PathBuf, WriteError> {
     let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !link {
         return Ok(path.to_path_buf());

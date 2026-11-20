@@ -1404,8 +1404,7 @@ graph all see the new date. None of them knew what a canvas is.
   opened by its path (the whiteboard's canvas, the menu's tag edit of a note its tree lists,
   the shapes file, the bookmarks) go through a link, by a write named for it
   (`write::replace_through_link`): the file it leads to is replaced, with the temporary file
-  beside that file, and the link stays a link (`write::landing`). A rename or a merge that
-  changes the bookmarks plans its edit where the link leads (`rename::bookmarks_edit`).
+  beside that file, and the link stays a link (`write::landing`).
 
   Every other write the engine makes over a file it read, an extension's or the menu's,
   never follows a link: `write::replace` refuses one at the path, and a link swapped in after
