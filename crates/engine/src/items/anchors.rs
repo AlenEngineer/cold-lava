@@ -1,10 +1,12 @@
 //! The anchor rule (docs/foundations.md, 5): an edit keeps every block id (`^rent`, the anchor
 //! links point at) on the item that had it. None is lost, none moves to another item, and none
-//! appears on an item that didn't have it, but one: the edited item may take back an id already
-//! written in its own text (an untick that takes a done date off `^rent ✅ 2026-11-07`, which
-//! cold-lava 0.6.0 wrote, gives the task its anchor again). Set-field and the tick both read
-//! their edit back through `change`. A leaf: it reads items and text, and says nothing to
-//! anyone.
+//! appears on an item that didn't have it, but in two cases, both on the edited item. It may
+//! take back an id already written in its own text (an untick that takes a done date off
+//! `^rent ✅ 2026-11-07`, which cold-lava 0.6.0 wrote, gives the task its anchor again). And
+//! it takes the anchor `items/edit`'s `anchor` writes for it (#190), which then counts as one
+//! it had: it must be its anchor after the edit, and no other item's. Set-field, the tick and
+//! the anchor all read their edit back through `change`. A leaf: it reads items and text, and
+//! says nothing to anyone.
 
 use super::Item;
 use std::collections::HashMap;
@@ -38,23 +40,29 @@ impl fmt::Display for Change {
 
 /// The first way `after` breaks the anchor rule, if any. `same[i]` is the item of `after` that
 /// `before[i]` became (none: it is gone), `edited` the index in `before` of the item the edit
-/// was for, and `text` the note before the edit.
+/// was for, `text` the note before the edit, and `asked` the anchor the edit writes for that
+/// item when it had none (`items/edit`'s `anchor`), which counts as its own.
 pub fn change(
     before: &[Item],
     after: &[Item],
     same: &[Option<usize>],
     edited: usize,
     text: &str,
+    asked: Option<&str>,
 ) -> Option<Change> {
+    let anchor = |i: usize| match before[i].block_id.as_deref() {
+        None if i == edited => asked,
+        id => id,
+    };
     let mut was = vec![None; after.len()];
     for (i, j) in same.iter().enumerate() {
         if let Some(j) = j {
             was[*j] = Some(i);
         }
     }
-    let had = |j: usize| was[j].and_then(|i: usize| before[i].block_id.as_deref());
+    let had = |j: usize| was[j].and_then(anchor);
     for (i, b) in before.iter().enumerate() {
-        let Some(id) = b.block_id.as_deref() else {
+        let Some(id) = anchor(i) else {
             continue;
         };
         if same[i].is_some_and(|j| after[j].block_id.as_deref() == Some(id)) {
@@ -137,7 +145,7 @@ mod tests {
 
     fn same_lines(before: &str, after: &str) -> Option<Change> {
         let (b, a) = (read(before), read(after));
-        change(&b, &a, &by_line(&b, &a, |i| i.line), 0, before)
+        change(&b, &a, &by_line(&b, &a, |i| i.line), 0, before, None)
     }
 
     #[test]
@@ -205,6 +213,45 @@ mod tests {
                 on: 1
             }),
             "never written"
+        );
+    }
+
+    /// The anchor `items/edit`'s `anchor` writes (#190) counts as the edited item's own: on it
+    /// after the edit, it is no change; anywhere else, or nowhere, it is one, and so is any
+    /// other anchor that appears beside it.
+    #[test]
+    fn the_asked_anchor_is_the_edited_items_and_no_others() {
+        let asked = |after: &str| {
+            let before = "- one\n- two\n";
+            let (b, a) = (read(before), read(after));
+            let same = by_line(&b, &a, |i| i.line);
+            change(&b, &a, &same, 0, before, Some("k3q9x2"))
+        };
+        assert_eq!(asked("- one ^k3q9x2\n- two\n"), None);
+        assert_eq!(
+            asked("- one\n- two ^k3q9x2\n"),
+            Some(Change::Moved {
+                id: "k3q9x2".into(),
+                from: 1,
+                to: 2
+            }),
+            "on another item"
+        );
+        assert_eq!(
+            asked("- one\n- two\n"),
+            Some(Change::Lost {
+                id: "k3q9x2".into(),
+                from: 1
+            }),
+            "on none"
+        );
+        assert_eq!(
+            asked("- one ^k3q9x2\n- two ^b\n"),
+            Some(Change::Made {
+                id: "b".into(),
+                on: 2
+            }),
+            "another one beside it"
         );
     }
 
@@ -309,6 +356,6 @@ mod tests {
         let (b, a) = (read("- one\n- two ^a\n"), read("- new\n- one\n- two ^a\n"));
         let same = by_line(&b, &a, |i| i.line + 1);
         assert_eq!(same, vec![Some(1), Some(2)]);
-        assert_eq!(change(&b, &a, &same, 0, ""), None);
+        assert_eq!(change(&b, &a, &same, 0, "", None), None);
     }
 }

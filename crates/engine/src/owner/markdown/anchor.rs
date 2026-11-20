@@ -117,11 +117,11 @@ pub(super) fn write(text: &str, at: usize, name: &str) -> String {
 }
 
 /// What a note's tree says, for the read-back: each node it enters and leaves, in order, and
-/// where each block id starts.
+/// where each `^name` it reads as a block id starts.
 #[derive(Default)]
 pub(super) struct Tree {
     nodes: Vec<(bool, Kind)>,
-    ids: Vec<usize>,
+    names: Vec<usize>,
 }
 
 impl Tree {
@@ -129,16 +129,19 @@ impl Tree {
         match step {
             Step::Enter(kind, _) => self.nodes.push((true, kind)),
             Step::Leave(kind, _) => self.nodes.push((false, kind)),
-            Step::Token(Kind::BlockId, _, at) => self.ids.push(at),
+            Step::Token(Kind::BlockId, _, at) => self.names.push(at),
             Step::Token(..) => {}
         }
     }
 }
 
-/// Whether the note's tree with ` ^name` written at `at`, on its line `line` (`is`), is the
-/// tree it had (`was`) with one block id more, that one: the same nodes, entered and left in
-/// the same order. Then the anchor ends a line of text, and nothing around it reads
-/// otherwise: a code block, a table row or a heading's underline would.
+/// Whether the note's tree with ` ^name` written at `at`, on its line `line` (`is`), enters
+/// and leaves the nodes it did (`was`), in the same order, and reads the name as a block id
+/// where it is written. Then the anchor ends a line of text, and nothing around it reads
+/// otherwise: a code block, a table row or a heading's underline would. Only the tree can
+/// tell: the walk reads an item's anchor off the end of its last own line, whatever that line
+/// is (`items.rs`), so it would read a `^name` written in an item's indented code as the
+/// item's. Which anchors the items have is the anchor rule's to compare (`items::anchors`).
 pub(super) fn same_tree(
     was: &Tree,
     is: &Tree,
@@ -146,8 +149,7 @@ pub(super) fn same_tree(
     line: usize,
     name: &str,
 ) -> Result<(), EditError> {
-    let one_more = is.ids.len() == was.ids.len() + 1 && is.ids.contains(&(at + 1));
-    if was.nodes == is.nodes && one_more {
+    if was.nodes == is.nodes && is.names.contains(&(at + 1)) {
         return Ok(());
     }
     Err(EditError::ReadBack(format!(
@@ -158,19 +160,18 @@ pub(super) fn same_tree(
 }
 
 /// Whether `after`, the note read again with ` ^name` written for `before[k]`, says what
-/// `before` said with nothing new but that anchor. `same[i]` is the item of `after` that
-/// `before[i]` is, the one of its kind that starts on its line (`items::anchors::by_line`).
-/// Each says what it said (its kind and its data as the wire carries them), on the same
-/// lines, under the same section and parent, and `name` is that one's anchor. Ids aren't
-/// compared: the item's own, its children's, a later twin's and a typed quote's or callout's
-/// whose first line of words it ends move by the key rules. The anchored item is `after`'s at
-/// the place it answers.
+/// `before` said. `same[i]` is the item of `after` that `before[i]` is, the one of its kind
+/// that starts on its line (`items::anchors::by_line`). Each says what it said (its kind and
+/// its data as the wire carries them), on the same lines, under the same section and parent.
+/// Anchors are the anchor rule's to compare (`items::anchors`), and ids aren't compared: the
+/// item's own, a later twin's under the same parent, the children of either, and a typed
+/// quote's or callout's whose first line of words it ends move by the key rules. The anchored
+/// item is `after`'s at the place it answers.
 pub(super) fn read_back(
     before: &[Item],
     after: &[Item],
     same: &[Option<usize>],
     k: usize,
-    name: &str,
 ) -> Result<usize, EditError> {
     if after.len() != before.len() {
         return Err(EditError::ReadBack(format!(
@@ -197,23 +198,7 @@ pub(super) fn read_back(
             )));
         }
     }
-    same[k]
-        .filter(|&j| after[j].block_id.as_deref() == Some(name))
-        .ok_or_else(|| {
-            EditError::ReadBack(format!(
-                "^{name} wouldn't read as the anchor of the {} on line {}",
-                before[k].data.kind(),
-                before[k].line
-            ))
-        })
-}
-
-/// `after` with the anchor just written taken off `after[j]`, so that the anchor rule
-/// (`items::anchors::change`) compares every other anchor.
-pub(super) fn unanchored(after: &[Item], j: usize) -> Vec<Item> {
-    let mut others = after.to_vec();
-    others[j].block_id = None;
-    others
+    Ok(same[k].expect("the anchored item reads back with the others"))
 }
 
 /// Each item's parent, by its place among `items`.

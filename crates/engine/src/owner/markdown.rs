@@ -201,9 +201,8 @@ pub fn anchor(
     anchor::same_tree(&tree(text, s), &tree(&new, s), at, line, &name)?;
     let after = items(note, &new, s);
     let same = items::anchors::by_line(&before, &after, |i| i.line);
-    let j = anchor::read_back(&before, &after, &same, k, &name)?;
-    let others = anchor::unanchored(&after, j);
-    if let Some(change) = items::anchors::change(&before, &others, &same, k, text) {
+    let j = anchor::read_back(&before, &after, &same, k)?;
+    if let Some(change) = items::anchors::change(&before, &after, &same, k, text, Some(&name)) {
         return Err(edit::EditError::Anchor(change.to_string()).into());
     }
     Ok(made(new, true, &after[j]))
