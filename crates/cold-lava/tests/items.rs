@@ -356,6 +356,39 @@ fn item_set_ticks_a_task_on_a_card_that_repeats_an_id() {
     let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
+/// A card whose id is empty gives no task. `items` lists the board's other tasks and says on
+/// stderr which card of which board is left out (the owner's decision of 2026-11-13).
+#[test]
+fn items_names_a_card_left_out_and_its_board() {
+    let workspace = sandbox("card-left-out");
+    let v = workspace.to_str().unwrap();
+    let board = "{\"nodes\":[\n\
+        {\"id\":\"\",\"type\":\"text\",\"text\":\"- [ ] Feed the nameless\",\"x\":0,\"y\":0,\"width\":260,\"height\":80},\n\
+        {\"id\":\"k\",\"type\":\"text\",\"text\":\"- [ ] Feed the named\",\"x\":0,\"y\":200,\"width\":260,\"height\":80}\n\
+        ],\"edges\":[]}\n";
+    std::fs::write(format!("{v}/Inbox/Ids.canvas"), board).unwrap();
+    let out = cold_lava(&workspace)
+        .args(["items", v, "task"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let (stdout, stderr) = (
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    );
+    assert!(stdout.contains("Feed the named"), "{stdout}");
+    assert!(!stdout.contains("Feed the nameless"), "{stdout}");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        [
+            "canvas couldn't read Inbox/Ids.canvas: card 1 (id \"\") is left out: its place is \
+             empty or longer than 1024 bytes"
+        ],
+        "only this board has a card left out"
+    );
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
 #[test]
 fn table_prints_a_types_rows_sorted() {
     let workspace = sandbox("table");

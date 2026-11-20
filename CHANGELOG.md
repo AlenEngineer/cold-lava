@@ -102,6 +102,22 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Changed
 
+- **Breaking for extensions:** `files.write` no longer reaches a kind of file another owner
+  reads (#323, the owner's decision on #308). An extension that isn't a file's owner can no
+  longer write a `.csv` that `csv-table` opens, or a `.canvas`, as a whole new text: an
+  owned file changes on one checked path, through `items/edit`, which asks its owner and
+  reads the answer back before anything is written (#183). `workspace/write`,
+  `workspace/create` and `workspace/restore` under a new name (`to`) of such a kind are
+  refused as `forbidden` whatever the extension's permissions, saying so: `open-tasks may
+  not write .csv files: their owner reads them, so they change only through it, with
+  items/edit`. Reading them with `files.read`, deleting them with `files.delete` and
+  restoring them where they were are unchanged, and so are notes, files nobody owns and an
+  owner's writes to its own kind. A path's kind is the kind of the file it names, however
+  it is spelled: `Eruptions.csv/` is a `.csv`, so it is refused to others and its owner
+  reads and writes it without `files.read` or `files.write`, as `Eruptions.csv`. A link written
+  with a trailing slash to a kind an extension owns (`[[Volcanoes/Eruptions.csv/]]`) now
+  opens that file in its owner, as the link without the slash does; it used to offer to
+  create a note and fail.
 - One bad item in an owner's answer no longer makes its file read-only (#257, step A4c).
   An edit to a good item (a tick, a date, new words, a row's cell, a typed item's field, a
   Markdown piece) goes ahead beside an item cold-lava leaves out, as a rename already did,
@@ -168,6 +184,28 @@ change commands, keys and file formats; patch versions only fix things.
   no `text`, or `"text": null`, names nothing). Renaming a note linked from a canvas with two text or file
   cards at one place used to crash the rename (a panic, nothing written). With such an id,
   one file link fewer is given than before, so a note's backlinks can count one fewer.
+  Such a card is now reported, naming the board, the card's number among its nodes and
+  its id (#303, step A4d): on the status line, and on stderr by `items`, `agenda`, `table`
+  and `types` (not `types --json`, which reads no file), a line per board (`canvas couldn't
+  read Board.canvas: card 3 (id "") is left out: its place is empty or longer than 1024
+  bytes`); stderr also says there what an extension's owned file left out. Of the cards
+  whose id is empty, only the first in the file is such a card: a later one has a place of
+  its own and gives its tasks and links.
+- What a board leaves out waits on the status line until nothing else is said there
+  (#303): it never takes the place of the message of what you just did (a merge, a
+  duplicate, a new note, the whiteboard's delete or undo) or of the shape editor's (its
+  warning of unsaved changes included). Boards whose reports wait together are named in one
+  line, shown once for three seconds (`3 boards have cards left out (cold-lava items shows
+  each): Mixed, Twins, Late`, two boards of one name by their paths), as when the workspace
+  opens; a board alone has its own line. A board is reported again only when what it leaves
+  out changes, never on a rescan or after a change that leaves out the same cards, and a
+  report still waiting is dropped once its board leaves nothing out or is gone (deleted, or
+  moved with its folder, when it is reported at its new path). An owner that can't read a
+  file at all (a board that isn't JSON Canvas included) and what an extension's file leaves
+  out are said at once, as before: an extension's file whenever an answer for a version of
+  it leaves something out, but not again when its owner leaves out what the cache did for a
+  version already shown. When one of them takes the place of the boards' line, the line is
+  said again after it.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80
@@ -214,10 +252,19 @@ change commands, keys and file formats; patch versions only fix things.
   owners, so on the command line alone every owned file stays "left out" until the menu is
   opened once, or a `rename`, `recipe` or `item set` runs; and an owner that crashes or is
   missing keeps all its files hidden for as long as it stays so, where the older binary
-  showed them from its cache. Open the workspace in the menu once after upgrading. A cached
-  answer whose items no longer all read (a bound applies now that didn't when it was saved)
-  is dropped as it loads and its owner asked again: until the owner answers, that file shows
-  nothing, its good items included; with the owner absent or broken, until it is back.
+  showed them from its cache. Open the workspace in the menu once after upgrading.
+- A cached answer whose items no longer all read (a bound applies now that didn't when it
+  was saved) keeps showing its other items, and the ones that don't read are reported,
+  each where it stood, on the status line and on the command line's stderr (#303, step
+  A4d). Its owner is asked again each time the menu opens, until it answers: the cache
+  keeps such an answer as it was read, however often it is saved meanwhile. An edit beside
+  the bad item is refused as `read-back` until the owner's new answer is kept, since the
+  cache keeps that item as it wrote it and not as the owner sent it (the refusal says the
+  owner's new text doesn't read back as asked, though what differs is the cache's copy). In
+  the menu the edit goes ahead once the owner has answered there. `item set` on the command
+  line doesn't keep the owner's new answer, so it refuses such an edit until one is kept:
+  by the menu, or by a `rename` or a `recipe` on the command line that changes files (not
+  `--dry-run`), which asks the owners first and keeps their answers.
 
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and

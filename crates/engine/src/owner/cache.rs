@@ -5,8 +5,10 @@
 //! from the cache, and an owner is asked again only for a file whose `rev` changed.
 
 use crate::identity::fnv;
+use crate::owner::answer::LeftOut;
 use crate::owner::given::Given;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -41,6 +43,10 @@ pub struct FileRead {
 /// before anything was written: a binary of the same format that refuses those edits reads
 /// the same answer it would have been given, and this binary trusts nothing from that binary
 /// that it wouldn't have kept itself.
+///
+/// Nor did keeping a cached answer whose items no longer all read (#303): until its owner
+/// answers again, it is saved as it was read (`Answer::as_read`), so the cache holds only
+/// what a binary of this format wrote.
 const FORMAT: u32 = 2;
 
 /// What one owner gave, by file, as kept on disk.
@@ -60,18 +66,21 @@ struct Cache {
 /// `given.left_out`, and the cache file holds them beside the answer (`Stored`): what is
 /// saved is what is read back, through any number of loads and saves.
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(from = "Stored", into = "Stored")]
+#[serde(try_from = "Box<RawValue>", into = "Saved")]
 struct Answer {
     rev: String,
     given: Given,
-    /// Whether the answer read back from the cache as it was saved. One whose items no longer
-    /// all read (a bound applies now that didn't when it was saved) is dropped as it loads,
-    /// and its owner asked again: the positions of what was left out then and what is left
-    /// out now can't be put in one order without the owner's answer. So the file shows
-    /// nothing, its good items included, until its owner answers; with its owner absent or
-    /// broken, until it is back. The owner decided otherwise on 2026-11-13 (the cached good
-    /// items keep showing and the bad one is reported); that changes in A4d, not here.
-    read_as_saved: bool,
+    /// The answer as the cache file held it, when some of its items no longer read (a bound
+    /// applies now that didn't when it was saved). Its other items are kept and the bad ones
+    /// left out where they stood (`merged`), so the file shows what still reads and reports
+    /// the rest (the owner's decision of 2026-11-13), and its owner is asked again when it is
+    /// shown (`Owners::kept`). What is kept of a bad item is the hash of its JSON as the cache
+    /// wrote it, not as its owner sent it, so the read-back of an edit beside it would refuse
+    /// a change its owner made faithfully: the owner's next answer, for the same version,
+    /// replaces it, and a file that shows this one takes that one (`Owned::shows`). Until
+    /// then it is saved as it was read, however often the cache is saved: every session reads
+    /// it as this one did and asks again, and a binary of this `FORMAT` finds what it wrote.
+    as_read: Option<Box<RawValue>>,
 }
 
 /// An answer as the cache file holds it: the answer as its owner gives it, and the items it
@@ -81,41 +90,80 @@ struct Stored {
     rev: String,
     given: Given,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    left_out: Vec<(usize, crate::owner::answer::LeftOut)>,
+    left_out: Vec<(usize, LeftOut)>,
 }
 
-impl From<Stored> for Answer {
-    fn from(stored: Stored) -> Answer {
+/// What the cache file is given of an answer: the answer as it was read (`Answer::as_read`),
+/// or as it is now.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Saved {
+    AsRead(Box<RawValue>),
+    Now(Stored),
+}
+
+impl TryFrom<Box<RawValue>> for Answer {
+    type Error = serde_json::Error;
+
+    fn try_from(raw: Box<RawValue>) -> Result<Answer, serde_json::Error> {
         // Every field named, so one added to `Stored` says here how it is read back.
         let Stored {
             rev,
             mut given,
             left_out,
-        } = stored;
-        let read_as_saved = given.left_out.is_empty();
-        given.left_out = left_out;
-        Answer {
+        } = serde_json::from_str(raw.get())?;
+        let now = std::mem::take(&mut given.left_out);
+        let as_read = (!now.is_empty()).then_some(raw);
+        given.left_out = merged(left_out, now);
+        Ok(Answer {
             rev,
             given,
-            read_as_saved,
-        }
+            as_read,
+        })
     }
 }
 
-impl From<Answer> for Stored {
-    fn from(answer: Answer) -> Stored {
+/// What a cached answer leaves out, in the answer's order: what was left out when it was
+/// saved (`saved`, each after the number of saved items before it) and the saved items that
+/// no longer read (`now`, each after the number of saved items before it that still read).
+/// The `k`th of `now` was saved item `at + k`, since every saved item read then. A record
+/// saved after `p` items stands before saved item `p`, so before an item of `now` that was
+/// item `p`, and after the items of `now` that were before it, which it is then no longer
+/// after the count of.
+fn merged(saved: Vec<(usize, LeftOut)>, now: Vec<(usize, LeftOut)>) -> Vec<(usize, LeftOut)> {
+    let mut now = (now.into_iter().enumerate())
+        .map(|(k, (at, l))| (at + k, at, l))
+        .peekable();
+    let mut out = Vec::new();
+    let mut before = 0;
+    for (p, l) in saved {
+        while let Some((_, at, item)) = now.next_if(|(was, _, _)| *was < p) {
+            out.push((at, item));
+            before += 1;
+        }
+        out.push((p - before, l));
+    }
+    out.extend(now.map(|(_, at, l)| (at, l)));
+    out
+}
+
+impl From<Answer> for Saved {
+    fn from(answer: Answer) -> Saved {
         // Every field named, so one added to `Answer` says here whether it is saved.
         let Answer {
             rev,
             given,
-            read_as_saved: _,
+            as_read,
         } = answer;
+        if let Some(raw) = as_read {
+            return Saved::AsRead(raw);
+        }
         let left_out = given.left_out.clone();
-        Stored {
+        Saved::Now(Stored {
             rev,
             given,
             left_out,
-        }
+        })
     }
 }
 
@@ -143,7 +191,6 @@ impl Owners {
             let cache = (path.as_deref())
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .and_then(|t| serde_json::from_str::<Cache>(&t).ok())
-                .map(Cache::read_as_saved)
                 .filter(|c| c.format == FORMAT && c.owner == k.owner && c.version == k.version)
                 .unwrap_or_else(|| Cache {
                     format: FORMAT,
@@ -181,10 +228,29 @@ impl Owners {
             .find(|c| c.owner == owner)
     }
 
+    /// What the owner gave for the file at `rel`, for whichever version it was.
+    fn answer(&self, owner: &str, rel: &str) -> Option<&Answer> {
+        let (cache, _) = self.caches.iter().find(|(c, _)| c.owner == owner)?;
+        cache.files.get(rel)
+    }
+
     /// What the owner gave for the file at `rel` at version `rev`.
-    pub fn given(&mut self, owner: &str, rel: &str, rev: &str) -> Option<&Given> {
-        let a = self.cache(owner)?.files.get(rel)?;
+    pub fn given(&self, owner: &str, rel: &str, rev: &str) -> Option<&Given> {
+        let a = self.answer(owner, rel)?;
         (a.rev == rev).then_some(&a.given)
+    }
+
+    /// What to show for the file at `rel` at version `rev`: what its owner gave for that
+    /// version. When some of that no longer reads (`Answer::as_read`), it is shown all the
+    /// same and the owner is asked again, with the file's text (`bytes`) when it is text.
+    pub fn kept(&mut self, owner: &str, rel: &str, rev: &str, bytes: &[u8]) -> Option<Given> {
+        let answer = self.answer(owner, rel).filter(|a| a.rev == rev)?;
+        let (given, again) = (answer.given.clone(), answer.as_read.is_some());
+        if again && let Ok(text) = std::str::from_utf8(bytes) {
+            let (path, rev, text) = (rel.to_string(), rev.to_string(), text.to_string());
+            self.ask(owner, FileRead { path, rev, text });
+        }
+        Some(given)
     }
 
     /// Ask the owner for the file at `read.path`, unless it was asked for that version already.
@@ -207,6 +273,19 @@ impl Owners {
         !self.wanted.is_empty()
     }
 
+    /// The files still to ask about (`take_wanted`) that show nothing meanwhile, each with its
+    /// owner, in the order they are to be asked: nothing is kept for them at the version
+    /// asked. A file shown from what its owner gave while it is asked again (`kept`) is not
+    /// one.
+    pub fn unread(&self) -> impl Iterator<Item = (&str, &str)> {
+        (self.wanted.iter())
+            .filter(move |(owner, read)| {
+                let answer = self.answer(owner, &read.path);
+                answer.is_none_or(|a| a.rev != read.rev)
+            })
+            .map(|(owner, read)| (owner.as_str(), read.path.as_str()))
+    }
+
     /// What to ask now, each with its owner.
     pub fn take_wanted(&mut self) -> Vec<(String, FileRead)> {
         std::mem::take(&mut self.wanted)
@@ -224,7 +303,7 @@ impl Owners {
         let answer = Answer {
             rev: rev.to_string(),
             given: given.clone(),
-            read_as_saved: true,
+            as_read: None,
         };
         cache.files.insert(path.to_string(), answer);
         cache.dirty = true;
@@ -249,16 +328,6 @@ impl Owners {
                 let _ = crate::write::write_atomic(path, &json);
             }
         }
-    }
-}
-
-impl Cache {
-    /// It without the answers that didn't read back as they were saved (`Answer`).
-    fn read_as_saved(mut self) -> Cache {
-        let before = self.files.len();
-        self.files.retain(|_, answer| answer.read_as_saved);
-        self.dirty = self.files.len() != before;
-        self
     }
 }
 
@@ -327,7 +396,7 @@ mod tests {
         o.answered("csv-table", "B.csv", "r1", Some(&given("- [ ] one")));
         o.save();
 
-        let mut again = Owners::new(root, vec![kind()], Some(&dir));
+        let again = Owners::new(root, vec![kind()], Some(&dir));
         assert_eq!(
             again.given("csv-table", "B.csv", "r1"),
             Some(&given("- [ ] one"))
@@ -341,13 +410,13 @@ mod tests {
             version: "0.2.0".into(),
             ..kind()
         };
-        let mut upgraded = Owners::new(root, vec![newer], Some(&dir));
+        let upgraded = Owners::new(root, vec![newer], Some(&dir));
         assert_eq!(
             upgraded.given("csv-table", "B.csv", "r1"),
             None,
             "another owner version"
         );
-        let mut elsewhere = Owners::new(Path::new("/other"), vec![kind()], Some(&dir));
+        let elsewhere = Owners::new(Path::new("/other"), vec![kind()], Some(&dir));
         assert_eq!(
             elsewhere.given("csv-table", "B.csv", "r1"),
             None,
@@ -403,7 +472,7 @@ mod tests {
         );
         for name in [older_name, file_name(root, &kind())] {
             std::fs::write(dir.join(&name), older.to_string()).unwrap();
-            let mut o = Owners::new(root, vec![kind()], Some(&dir));
+            let o = Owners::new(root, vec![kind()], Some(&dir));
             assert_eq!(o.given("csv-table", "A.csv", "r1"), None, "{name}");
             std::fs::remove_file(dir.join(&name)).unwrap();
         }

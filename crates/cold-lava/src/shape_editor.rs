@@ -451,6 +451,11 @@ impl Editor {
         self.msg = Some(s.into());
     }
 
+    /// The message its status line shows until the next key (`say`).
+    pub fn says(&self) -> Option<&Notice> {
+        self.msg.as_ref()
+    }
+
     // ---------- where things are ----------
 
     /// The canvas as the canvas engine's grid: a cell is 1×2 world units from its top-left.

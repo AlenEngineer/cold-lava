@@ -1,0 +1,12 @@
+# What an extension's file leaves out is said as soon as its owner answers, as before #303,
+# and never waits behind the boards' report (the owner's decision of 2026-11-20). tests/drive.rs
+# installs csv-table patched to give, in every file, an item whose role isn't one, and writes
+# Ashfall.canvas and Lahar.canvas, each with a card left out. Nothing is kept from csv-table
+# yet, so it answers in its own time, and its report comes then.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+wait-for 5s csv-table couldn't read Volcanoes/
+wait 1500ms
+keys q
+exits 0
