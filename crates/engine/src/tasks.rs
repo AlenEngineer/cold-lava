@@ -320,8 +320,9 @@ impl std::fmt::Display for Changed {
 }
 impl std::error::Error for Changed {}
 
-/// Toggle the task at `path:line` (1-based) like Obsidian Tasks does, and write the file with
-/// `write::replace`: `toggle_text` on the file's text, in the workspace the file is in.
+/// Toggle the task at `path:line` (1-based) like Obsidian Tasks does, and write the file over
+/// the text read (`Seen::replace`): `toggle_text` on the file's text, in the workspace the file
+/// is in.
 pub fn toggle(
     path: &Path,
     line: usize,
@@ -368,7 +369,7 @@ pub fn toggle_in(
         expect_id,
         today,
     )?;
-    match crate::write::replace(&path, text.as_bytes(), t.text.as_bytes()) {
+    match crate::read::Seen::kept(&path, text.as_bytes()).replace(t.text.as_bytes()) {
         Err(crate::write::WriteError::Changed(_)) => {
             return Err(Changed(format!(
                 "{} changed while the task was being toggled; refresh and try again",
