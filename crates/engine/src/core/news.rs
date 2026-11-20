@@ -34,7 +34,7 @@
 //! - A file another owner reads is changed one way, whoever owns it (#183): its owner gives the
 //!   new text, reads it back, and only then is it written, over the text the change began from.
 //!   The engine's canvas owner answers inside the call and an extension later, so a canvas's
-//!   edit is done when `edit_item` returns and a rename of canvases alone when `relink` does;
+//!   edit is done when `edit_item` returns and a rename of canvases alone when `apply` does;
 //!   one owner's refusal, or a file changed meanwhile, writes nothing anywhere.
 
 use super::*;
@@ -310,13 +310,12 @@ impl Harness {
         self.call(|core| core.set_owners(vec![lines_kind()], None));
     }
 
-    /// A rename as the menu makes it, when no extension has to answer: planned, the files other
-    /// owners read given their new texts (`relink`), applied, then everything read again.
+    /// A rename as the menu makes it, when no extension has to answer: planned, made by the
+    /// core (`Core::apply`), then everything read again.
     pub(crate) fn rename(&mut self, from: &str, to: &str) {
         let mut plan = self.plan_rename(from, to);
-        let waiting = self.relink(&mut plan.edits);
-        assert_eq!(waiting, None, "an extension has to answer: `relinked`");
-        self.renamed(&plan);
+        let waiting = self.apply_rename(&mut plan);
+        assert_eq!(waiting, None, "an extension has to answer: `renamed`");
     }
 
     pub(crate) fn plan_rename(&self, from: &str, to: &str) -> rename::Plan {
@@ -324,33 +323,45 @@ impl Harness {
         rename::plan(&self.core.index, note, to).unwrap()
     }
 
-    /// Before a rename, a merge or a recipe is made: its owned files' owners are asked for
-    /// their new texts (`Core::relink`). The ticket to wait under, when an extension has to
-    /// answer.
-    pub(crate) fn relink(&mut self, edits: &mut [rename::FileEdit]) -> Option<Ticket> {
-        self.call(|core| core.relink(edits)).unwrap()
+    /// The menu confirms a rename (`Core::apply`): made at once and everything read again, or
+    /// the ticket it waits under when an extension has to give a file's new text.
+    pub(crate) fn apply_rename(&mut self, plan: &mut rename::Plan) -> Option<Ticket> {
+        match self.call(|core| core.apply(plan)) {
+            Applying::Now(made) => {
+                made.unwrap();
+                self.rescan();
+                None
+            }
+            Applying::Later(ticket) => Some(ticket),
+        }
     }
 
     /// The renames whose owners have all answered, or one refused (`Core::take_relinked`).
-    pub(crate) fn relinked(&mut self) -> Vec<(Ticket, Result<Vec<rename::FileEdit>, String>)> {
+    pub(crate) fn relinked(&mut self) -> Vec<Ticket> {
         self.core.take_relinked()
     }
 
-    /// The rename is made, once its owners have answered, and everything is read again.
-    pub(crate) fn renamed(&mut self, plan: &rename::Plan) {
-        rename::apply(plan).unwrap();
-        self.call(|core| core.relinked(&plan.edits, |path| plan.moved(path)));
+    /// The rename that waited under `ticket` is made with its owners' answer
+    /// (`Core::apply_answered`), and everything is read again; or why it isn't.
+    pub(crate) fn renamed(
+        &mut self,
+        plan: &mut rename::Plan,
+        ticket: Ticket,
+    ) -> Result<(), NotApplied> {
+        self.call(|core| core.apply_answered(plan, ticket))?;
         self.rescan();
+        Ok(())
     }
 
-    /// A recipe as its screen runs it, when no extension has to answer: planned, the files
-    /// other owners read given their new texts, applied, then everything read again.
+    /// A recipe as its screen runs it, when no extension has to answer: planned, made by the
+    /// core (`Core::apply`), then everything read again.
     pub(crate) fn recipe(&mut self, id: &str, options: &[(&str, &str)]) -> recipe::Applied {
         let recipe = recipe::find(id).unwrap();
         let mut plan = recipe::plan(&self.core.index, recipe, named(options)).unwrap();
-        let waiting = self.relink(&mut plan.edits);
-        assert_eq!(waiting, None, "an extension has to answer");
-        let applied = recipe::apply(&plan).unwrap();
+        let Applying::Now(made) = self.call(|core| core.apply(&mut plan)) else {
+            panic!("an extension has to answer");
+        };
+        let applied = made.unwrap();
         self.rescan();
         applied
     }
@@ -969,7 +980,7 @@ fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
     );
 
     let ticket = h
-        .relink(&mut plan.edits)
+        .apply_rename(&mut plan)
         .expect("the extension answers later");
     let owned = plan.edits.iter().filter_map(|e| e.owned.as_ref());
     let waits: Vec<&str> = (owned.filter(|o| o.after.is_none()))
@@ -984,17 +995,12 @@ fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
     );
     assert!(h.relinked().is_empty(), "nor before it read its new text");
     h.owner_reads();
-    let relinked = h.relinked();
-    let [(t, Ok(answers))] = &relinked[..] else {
-        panic!("{relinked:?}");
-    };
-    assert_eq!(*t, ticket);
+    assert_eq!(h.relinked(), [ticket]);
     assert_eq!(h.read("Board.canvas"), LINKED_BOARD, "nothing written yet");
     assert_eq!(h.read("Reading.lines"), LINKED_READING);
     assert!(h.deliver().is_empty(), "nor is anything said");
 
-    rename::answered(&mut plan.edits, answers.clone());
-    h.renamed(&plan);
+    h.renamed(&mut plan, ticket).unwrap();
     assert_eq!(h.deliver().names("agenda"), ["items/reset"]);
     assert_eq!(h.read("Board.canvas"), relinked_board());
     let reading = "- [ ] Read the report on [[Tephra]]\n";
@@ -1012,14 +1018,13 @@ fn a_rename_one_owner_refuses_changes_nothing_anywhere() {
     h.follow("agenda", tasks());
     let mut plan = h.plan_rename("Ash", "Tephra");
     let ticket = h
-        .relink(&mut plan.edits)
+        .apply_rename(&mut plan)
         .expect("the extension answers later");
     h.owner_refuses("it is read-only");
-    let relinked = h.relinked();
-    let [(t, Err(why))] = &relinked[..] else {
-        panic!("{relinked:?}");
+    assert_eq!(h.relinked(), [ticket]);
+    let Err(NotApplied::Refused(why)) = h.renamed(&mut plan, ticket) else {
+        panic!("made though an owner refused");
     };
-    assert_eq!(*t, ticket);
     assert_eq!(why, "lines didn't edit Reading.lines: it is read-only");
     assert!(
         rename::apply(&plan).is_err(),

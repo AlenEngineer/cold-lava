@@ -507,10 +507,9 @@ fn a_rename_repoints_the_links_a_piece_says() {
     assert_eq!(field(&tasks(&core)[0], "links"), json!(["Krakatoa"]));
 
     let mut plan = rename::plan(&core.index, krakatoa, "Krakatau").unwrap();
-    let ticket = core
-        .relink(&mut plan.edits)
-        .unwrap()
-        .expect("waits for the owner");
+    let Applying::Later(ticket) = core.apply(&mut plan) else {
+        panic!("waits for the owner");
+    };
     let (_, ask) = core.take_file_edits().pop().unwrap();
     assert_eq!(
         serde_json::to_value(&ask.changes).unwrap(),
@@ -520,13 +519,8 @@ fn a_rename_repoints_the_links_a_piece_says() {
     core.file_edited(OWNER, &ask.path, &ask.rev, Ok(new.clone()));
     let (_, back) = core.take_reads().pop().unwrap();
     core.file_given(OWNER, &back.path, &back.rev, Ok(read(&new)));
-    let relinked = core.take_relinked();
-    let [(t, Ok(answers))] = &relinked[..] else {
-        panic!("{relinked:?}");
-    };
-    assert_eq!(*t, ticket);
-    rename::answered(&mut plan.edits, answers.clone());
-    rename::apply(&plan).unwrap();
+    assert_eq!(core.take_relinked(), [ticket]);
+    core.apply_answered(&mut plan, ticket).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.join("Home.chores")).unwrap(),
         "trip | todo | | Pack for >Krakatau and [[Krakatoa]]\n",
