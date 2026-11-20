@@ -18,9 +18,9 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::bounded::{Message, Pairs, StepName, StepValue, Text};
+use crate::origin::Origin;
 use crate::problem::Problem;
-pub use crate::types::Origin;
-use crate::types::is_name;
+use crate::sources::is_name;
 
 pub mod file;
 mod steps;

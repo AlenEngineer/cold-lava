@@ -7,6 +7,12 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [Unreleased]
 
+### Changed
+
+- Releases publish Linux binaries only (x86-64 and ARM), and CI checks only Linux, for now.
+  On macOS, build from source (`cargo install --path crates/cold-lava`); it isn't tested there
+  until macOS checks come back.
+
 ## [0.7.0] - 2026-11-20
 
 Owners speak the model's language, and nothing they send can harm a file. An extension that

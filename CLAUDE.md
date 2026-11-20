@@ -52,8 +52,10 @@ scripts/release-check.sh                                # is this commit a relea
 scripts/bench-items.py BINARY...                        # time and peak RSS of items/agenda/table, per binary, on a 3k-note workspace
 ```
 
-All three checks must pass before pushing: CI runs them on Ubuntu and macOS, and they are
-required checks on `main`.
+All three checks must pass before pushing: CI runs them on Ubuntu (Linux only, decided
+2026-11-20; macOS comes back when the owner says), and they are required checks on `main`.
+Until then the macOS branches (the `~/.Trash` trash, `open`, symlinked temp folders in the
+drive tests) run nowhere.
 
 ## Architecture
 
@@ -337,7 +339,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   alphabet, as built", whose table of roles a test checks against `Role::ALL`. Only the
   engine adds a letter, with a version bump: a new kind of thing is a type, never a role.
   `types.rs` reads and checks type definitions (`[types.NAME]`: a schema and `from` shapes)
-  from every origin; `matcher.rs` matches them. A shape's `on` (`types::On`) is a role or
+  from every origin; `matcher.rs` matches them. The words a definition and an attribute
+  reading are both written in (`On`, `Source`, `Sources`, `Provided`, `fill`, `compile`,
+  `is_name`) are `sources.rs`, a leaf but for `alphabet::Role`, and where a layer of definitions came from (`Origin`:
+  types, attribute readings and shapes are loaded in layers) is `origin.rs`, another.
+  `types.rs` and `owner/markdown/attributes.rs` both read them there, so neither depends on
+  the other for them (`types.rs` re-exports the ones `matcher.rs` and the table's
+  `Source` still name through it, #343). A shape's `on` (`sources::On`) is a role or
   `inline` (a reading of a piece's text, not a role). The names `on` had before (`note`,
   `heading`, `paragraph`, `list-item`, `table-row`, `quote`, `code`) are aliases
   (`On::alias`): they always read, a definition's JSON still says `on` in them with `role`
@@ -406,13 +414,14 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
   `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo,
   bookmarks) follow the pattern that section ends with.
-- `tasks.rs`, `daily.rs`: Obsidian Tasks settings (statuses, global filter); `agenda` and
-  `toggle` on items of the built-in `task` type (`types/task.toml`, read by `Task::of`); Daily
-  notes settings, moment.js date formats.
+- `tasks_settings.rs`: Obsidian Tasks settings (statuses, global filter), a leaf that `items`,
+  `tasks`, `style` and the owners read (`tasks.rs` re-exports it for `matcher.rs`, #343).
+- `tasks.rs`, `daily.rs`: `agenda` and `toggle` on items of the built-in `task` type
+  (`types/task.toml`, read by `Task::of`); Daily notes settings, moment.js date formats.
 - `shapes.rs`: shape definitions (docs/shapes.md): `[[shapes]]` and `[glyphs]` from the
   built-in file (`shapes/built-in.toml`: text, rect, circle, line, arrow, card, sticky, table,
   venn2, the glyphs), extensions' manifests, config.toml and `.cold-lava/shapes.toml`, in the
-  order types load (`Origin` is types'). Checked at load, a broken one dropped with its error;
+  order types load (`Origin`, `origin.rs`). Checked at load, a broken one dropped with its error;
   each is built into a `cold_lava_canvas::Shape` (nested shapes flattened, anchors resolved,
   glyphs looked up). Built-ins are TOML: add a shape by writing it there, never a match arm;
   extend the format when it can't say something. `cold-lava shapes` lists and `--render`s them.
@@ -647,8 +656,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
 
 ## Workflow
 
-- **No direct pushes to `main`**: a ruleset requires a PR with `ubuntu-latest`, `macos-latest`
-  and `release check` passing. Tags `v*` can't be deleted or moved.
+- **No direct pushes to `main`**: a ruleset requires a PR with `ubuntu-latest`, `release check`
+  and `changelog` passing. Tags `v*` can't be deleted or moved.
 - One branch per feature. Work spanning several features goes in a **GitHub native stacked PR**
   (https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests), using the
   `gh stack` extension: `gh stack init`, `gh stack add BRANCH`, `gh stack submit` (or
@@ -668,7 +677,7 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   instead. It doesn't check the README half of this rule.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
-  commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,
+  commit, build Linux binaries (x86-64 and ARM) and publish the release. Before 1.0, minor = may break,
   patch = fixes only.
 - Commit messages: a short summary line, then what changed and why.
 - **Two reviews before a merge, by two different agents.** One checks behaviour (CI's

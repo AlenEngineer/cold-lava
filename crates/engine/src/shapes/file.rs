@@ -465,7 +465,7 @@ lava = "♨"
                 assert_eq!(def(&block(&id, &d)), d, "{id}");
                 let same = splice(text, Some(&id), &id, &d).unwrap();
                 let read = |t: &str| {
-                    let o = crate::types::Origin::BuiltIn;
+                    let o = crate::origin::Origin::BuiltIn;
                     load([Layer::from_file(o, Ok(t.to_string()))]).shapes
                 };
                 let defs = |t: &str| read(t).into_iter().map(|l| (l.id, l.definition));
@@ -484,7 +484,7 @@ lava = "♨"
         assert_eq!(&after[..b.start], &FILE[..b.start]);
         assert_eq!(&after[b.start + new_block.len()..], &FILE[b.end..]);
         let loaded = load([Layer::from_file(
-            crate::types::Origin::BuiltIn,
+            crate::origin::Origin::BuiltIn,
             Ok(after.clone()),
         )]);
         assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);

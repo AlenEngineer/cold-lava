@@ -19,8 +19,9 @@ use serde_json::Value as Json;
 use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
+use crate::sources::{On, Source};
 use crate::style::{Lazy, Style, TaskFields};
-use crate::types::{On, Source, Value};
+use crate::types::Value;
 use crate::{daily, workspace, write};
 
 /// Why an edit wasn't made. Nothing was written.
