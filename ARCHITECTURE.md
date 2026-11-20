@@ -63,7 +63,7 @@ desk (`core.rs`), and some aren't hired yet:
 | The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
 | The edit desk | carries an edit to a translator, waits for its answer and reads it back | `owner/edits.rs` holds the edit; the waiting and checking still sit in `core.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
-| The shelver | shelves, moves and trashes books, and keeps their shelf marks (symlinks; see References), reading no language | `write.rs` (`create`, `move_file`), `trash.rs` |
+| The shelver | shelves, moves and trashes books, and keeps their shelf marks (symlinks; see References), reading no language | partly at its desk: `write.rs` (`create`, `move_file`) and `trash.rs`; the door's guard on shelf marks comes with #353, and the watcher's linked notes are #357 |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
 | The logbook keeper | writes down every change, who asked and which translator wrote it | not hired yet (#306, after track C) |
 
@@ -141,9 +141,11 @@ saves (the whiteboard, the menu, an item edit) write through one to the file it 
   item edit on it never meets the door's path checks (#357). Until #353 merges, the door follows
   a symlink that stays inside the workspace, and a save replaces a linked note with a copy
   (#349).
-- Characters decided but not hired yet: **the bookmark**, a name stuck on a passage (an item)
-  the first time something refers to it, so the reference survives a reword or a move (#190);
-  **the archivist**, who keeps every page the librarian replaces, outside the workspace
+- **The bookmark** is placed but not yet followed. An extension can stick a name on an item
+  once (`items/edit` with `{"op": "anchor"}` writes a `^name`, #335), and the name survives a
+  reword. Finding the item by its name after its note moves (#190, PR 2) and bindings that
+  bookmark what they name (PR 3) are still ahead.
+- Characters decided but not hired yet: **the archivist**, who keeps every page the librarian replaces, outside the workspace
   (#305); **the logbook**, where every change is written down with who asked and which
   translator wrote it, so any change can be undone, even after a restart (#306);
   **dictionaries**, a format described as data in a small format of cold-lava's own, so the
