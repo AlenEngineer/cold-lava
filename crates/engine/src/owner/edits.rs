@@ -4,12 +4,13 @@
 //! file's new text. Before it is written, the desk asks the owner to read that text
 //! (`file/read`) and checks it reads as asked: what the owner gave before, with the change made.
 //! Only then does it hand the text to the core (`ToWrite`), which writes it over the file as it
-//! was read (`Seen::replace`, refused if it changed since). An extension answers later, so each
-//! edit waits here, one per file, until its owner has answered both; the engine's canvas owner
-//! answers both inside the call, through the same steps. A rename, merge or recipe asks every
-//! owned file's owner this way before anything is written, and keeps each new text that read
-//! back until all are in (`Relink`). The desk reads and writes no file and tells no subscriber:
-//! the core does.
+//! was read (`Seen::replace`, refused if it changed since) and says how that went (`wrote`): the
+//! desk answers whoever asked, whatever happened. An extension answers later, so each edit
+//! waits here, one per file, until its owner has answered both and the core has written it; the
+//! engine's canvas owner answers both inside the call, through the same steps. A rename, merge
+//! or recipe asks every owned file's owner this way before anything is written, and keeps each
+//! new text that read back until all are in (`Relink`). The desk reads and writes no file and
+//! tells no subscriber: the core does.
 
 use crate::bounded::{Message, Text};
 use crate::gateway::{Edited, Error, Reason, Ticket};
@@ -19,6 +20,7 @@ use crate::owner::given::{self, Change, Given};
 use crate::read::{self, Seen};
 use crate::rename;
 use crate::workspace::Owned;
+use crate::write::WriteError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -45,18 +47,63 @@ pub struct NewText {
 /// should read once written and a recurring task's next occurrence, and what was done (for the
 /// status line) and a warning, for the answer.
 pub(crate) struct ItemEdit {
-    pub by: String,
-    pub item: Box<Item>,
-    pub next: Option<Box<Item>>,
-    pub what: String,
-    pub warning: Option<String>,
+    by: String,
+    item: Box<Item>,
+    next: Option<Box<Item>>,
+    what: String,
+    warning: Option<String>,
+}
+
+impl ItemEdit {
+    pub fn new(
+        by: &str,
+        item: Box<Item>,
+        next: Option<Box<Item>>,
+        what: String,
+        warning: Option<String>,
+    ) -> ItemEdit {
+        ItemEdit {
+            by: by.to_string(),
+            item,
+            next,
+            what,
+            warning,
+        }
+    }
+
+    /// The answer once its file at `path` is written and read again, holding `items`: the item
+    /// as it reads now, found by its id, else by what it holds, and the next occurrence the
+    /// same way.
+    fn answer(self, path: &str, items: &[Item]) -> Result<Edited, Error> {
+        let ItemEdit {
+            item,
+            next,
+            warning,
+            ..
+        } = self;
+        let find = |want: &Item| {
+            (items.iter().find(|i| i.id == want.id))
+                .or_else(|| items.iter().find(|i| given::same_data(i, want)))
+                .cloned()
+        };
+        let answer = find(&item).map(|found| Edited {
+            item: found,
+            changed: true,
+            next: next.as_deref().and_then(find),
+            warning,
+        });
+        answer.ok_or_else(|| {
+            let message = format!("{path} was written, but {} isn't in it now", item.id);
+            Error::new(Reason::ReadBack, message)
+        })
+    }
 }
 
 /// An item edit whose new text read back as asked, for the core to write: `after` over the file
 /// as the edit was made on it (`before`, which refuses the write if the file changed since), at
-/// the workspace-relative `path`. What `owner` read in it (`given`, at version `rev`) is then
-/// the file's, and `edit` is answered under `ticket` (`Edits::answer`), whether the write went
-/// ahead or not.
+/// the workspace-relative `path`. Once it is written, what `owner` read in it (`given`, at
+/// version `rev`) is the file's, and `by`'s edit of `item` did `what`. The core says how the
+/// write went (`Edits::wrote`), and the desk answers `by`.
 pub(crate) struct ToWrite {
     pub path: String,
     pub before: Seen,
@@ -64,11 +111,12 @@ pub(crate) struct ToWrite {
     pub rev: String,
     pub owner: String,
     pub given: Given,
-    pub ticket: Ticket,
-    pub edit: ItemEdit,
+    pub by: String,
+    pub item: String,
+    pub what: String,
 }
 
-/// An edit of one owned file, from asking its owner to handing back what it answered.
+/// An edit of one owned file, from asking its owner until it is written, or fails.
 struct Pending {
     owner: String,
     /// The file's version and text the change was made on.
@@ -86,6 +134,9 @@ enum Stage {
     Editing,
     /// The owner answered with the file's new text, at version `rev`, and was asked to read it.
     Reading { rev: String, text: String },
+    /// An item edit's new text read back as asked, and the core is writing it (`ToWrite`): it
+    /// says how that went (`Edits::wrote`).
+    Writing,
 }
 
 /// What the edit is for.
@@ -148,7 +199,7 @@ impl Edits {
     }
 
     /// The owner an edit of the file at `path` waits for, if one does: a file has one edit at
-    /// a time.
+    /// a time, until it is written.
     pub fn waiting(&self, path: &str) -> Option<&str> {
         self.pending.get(path).map(|p| p.owner.as_str())
     }
@@ -322,23 +373,55 @@ impl Edits {
             self.relink_read_back(ticket, path, text.clone(), given);
             return Ok(None);
         }
-        let Some(p) = self.pending.remove(path) else {
-            return Ok(None);
+        Ok(self.to_write(path, owner, given))
+    }
+
+    /// The item edit of the file at `path`, whose new text read back as asked (`given`, what
+    /// `owner` read in it), is handed to the core to write; it waits until the core says how
+    /// that went (`wrote`).
+    fn to_write(&mut self, path: &str, owner: String, given: Given) -> Option<ToWrite> {
+        let p = self.pending.get_mut(path)?;
+        let Goal::Item { edit, at, .. } = &p.goal else {
+            return None;
         };
-        let (Stage::Reading { rev, text }, Goal::Item { ticket, edit, at }) = (p.stage, p.goal)
-        else {
-            return Ok(None);
+        let Stage::Reading { rev, text } = &mut p.stage else {
+            return None;
         };
-        Ok(Some(ToWrite {
+        let (rev, text) = (std::mem::take(rev), std::mem::take(text));
+        p.stage = Stage::Writing;
+        Some(ToWrite {
             path: path.to_string(),
-            before: Seen::kept(&at, p.text),
+            before: Seen::kept(at, p.text.as_str()),
             after: text,
             rev,
             owner,
             given,
-            ticket,
-            edit,
-        }))
+            by: edit.by.clone(),
+            item: edit.item.id.clone(),
+            what: edit.what.clone(),
+        })
+    }
+
+    /// The core wrote what it was handed for the file at `path` (`ToWrite`) and read the file
+    /// again, which now holds `items`, or the write failed: whoever asked for the edit is
+    /// answered (`take_edited`), and the file is free for another edit.
+    pub fn wrote(&mut self, path: &str, written: Result<&[Item], WriteError>) {
+        let writing = |p: &Pending| matches!(p.stage, Stage::Writing);
+        if !self.pending.get(path).is_some_and(writing) {
+            return;
+        }
+        let Some(p) = self.pending.remove(path) else {
+            return;
+        };
+        let Goal::Item { ticket, edit, .. } = p.goal else {
+            return;
+        };
+        let by = edit.by.clone();
+        let answer = match written {
+            Ok(items) => edit.answer(path, items),
+            Err(e) => Err(Error::new(Reason::of(&e), format!("{path}: {e}"))),
+        };
+        self.done.push((by, ticket, answer));
     }
 
     /// The edit of the file at `path` waiting for its owner failed: tell whoever asked.
@@ -350,12 +433,6 @@ impl Edits {
             Goal::Item { ticket, edit, .. } => self.done.push((edit.by, ticket, Err(e))),
             Goal::Relink(ticket) => self.relink_failed(ticket, e.message),
         }
-    }
-
-    /// The answer to the item edit `by` asked for under `ticket`, once the core wrote what
-    /// `read_back` handed it, or couldn't: handed out with the rest (`take_edited`).
-    pub fn answer(&mut self, by: String, ticket: Ticket, answer: Result<Edited, Error>) {
-        self.done.push((by, ticket, answer));
     }
 
     /// Answers to `items/edit` that were answered `Later`: who asked, under which ticket, and
@@ -542,13 +619,8 @@ mod tests {
         }];
         let expect = given::check_change(FILE, &gives("- [ ] sample"), &changes, s).unwrap();
         let items = given::read(FILE, &expect, s).items;
-        let edit = ItemEdit {
-            by: "agenda".into(),
-            item: Box::new(items.into_iter().next().expect("a task")),
-            next: None,
-            what: "ticked".into(),
-            warning: None,
-        };
+        let item = Box::new(items.into_iter().next().expect("a task"));
+        let edit = ItemEdit::new("agenda", item, None, "ticked".into(), None);
         (changes, expect, edit)
     }
 
@@ -608,17 +680,58 @@ mod tests {
         assert_eq!((w.path.as_str(), w.after.as_str()), (FILE, DONE));
         let owner_read = (w.owner.as_str(), w.rev.as_str());
         assert_eq!(owner_read, (OWNER, back.rev.as_str()));
-        let answer = (w.ticket, w.edit.by.as_str(), w.edit.what.as_str());
-        assert_eq!(answer, (ticket, "agenda", "ticked"));
-        assert_eq!(desk.waiting(FILE), None);
+        assert_eq!((w.by.as_str(), w.what.as_str()), ("agenda", "ticked"));
+        assert_eq!(desk.waiting(FILE), Some(OWNER), "until it is written");
         assert!(desk.take_edited().is_empty(), "answered once written");
-        let refused = Error::new(Reason::Changed, "it changed");
-        desk.answer(w.edit.by, w.ticket, Err(refused.clone()));
+
+        let items = given::read(FILE, &gives("- [x] sample"), &s).items;
+        desk.wrote(FILE, Ok(items.as_slice()));
+        assert_eq!(desk.waiting(FILE), None);
         let done = desk.take_edited();
-        let [(by, t, Err(e))] = &done[..] else {
+        let [(by, t, Ok(edited))] = &done[..] else {
             panic!("{done:?}");
         };
-        assert_eq!((by.as_str(), *t, e), ("agenda", ticket, &refused));
+        let found = (by.as_str(), *t, edited.item.id.as_str(), edited.changed);
+        assert_eq!(found, ("agenda", ticket, w.item.as_str(), true));
+    }
+
+    /// Tick the task in `FILE`, and have its owner answer and read its new text back as asked:
+    /// what the core is handed to write.
+    fn ticked(desk: &mut Edits, s: &Settings) -> ToWrite {
+        let (changes, expect, edit) = tick(s);
+        let made = desk.edit_item(&owned(), &seen(OPEN), changes, expect, edit, s);
+        assert!(made.unwrap().1.is_none());
+        let (_, ask) = desk.take_file_edits().pop().expect("asked");
+        assert!((desk.edited(OWNER, FILE, &ask.rev, Ok(DONE.into()), s)).is_none());
+        let (_, back) = desk.take_reads().pop().expect("asked to read it back");
+        let read = desk.read_back(FILE, &back.rev, Ok(gives("- [x] sample")), s);
+        let Ok(Some(w)) = read else {
+            panic!("reads as asked");
+        };
+        w
+    }
+
+    #[test]
+    fn whoever_asked_hears_how_the_write_went() {
+        let s = settings();
+        let mut desk = Edits::default();
+        let answer = |desk: &mut Edits| desk.take_edited().pop().expect("answered").2;
+        ticked(&mut desk, &s);
+        let at = PathBuf::from("/w/Samples.csv");
+        desk.wrote(FILE, Err(WriteError::Changed(at)));
+        let e = answer(&mut desk).unwrap_err();
+        let changed = "Samples.csv: /w/Samples.csv changed since it was read";
+        assert_eq!((e.reason, e.message.as_str()), (Reason::Changed, changed));
+        assert_eq!(desk.waiting(FILE), None, "the file is free again");
+
+        let w = ticked(&mut desk, &s);
+        let nothing: &[Item] = &[];
+        desk.wrote(FILE, Ok(nothing));
+        let e = answer(&mut desk).unwrap_err();
+        let gone = format!("Samples.csv was written, but {} isn't in it now", w.item);
+        assert_eq!((e.reason, e.message), (Reason::ReadBack, gone));
+        desk.wrote(FILE, Ok(nothing));
+        assert!(desk.take_edited().is_empty(), "nothing is being written");
     }
 
     #[test]

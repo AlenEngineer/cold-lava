@@ -642,13 +642,7 @@ impl Core {
         if after.is_none() && given::same_data(&want, item) {
             return Ok(unchanged());
         }
-        let asked = ItemEdit {
-            by: by.to_string(),
-            item: want,
-            next,
-            what,
-            warning,
-        };
+        let asked = ItemEdit::new(by, want, next, what, warning);
         let before = read::Seen::file(&file.path)
             .map_err(|e| error(Reason::Io, format!("{}: {e}", file.rel)))?;
         let edits = &mut self.edits;
@@ -675,53 +669,26 @@ impl Core {
     }
 
     /// An owned file's new text that read back as asked (the edit desk's): write it over the
-    /// file as the edit was made on it, refused if it changed since, take what its owner read in
-    /// it as the file's items and links, and answer whoever asked.
+    /// file as the edit was made on it, refused if it changed since; once it is written, take
+    /// what its owner read in it as the file's items and links, and tell subscribers. Either
+    /// way the desk hears how the write went, and answers whoever asked.
     fn write_edit(&mut self, w: ToWrite) {
-        let error = gateway::Error::new;
         let path = w.path.as_str();
         let written = w.before.replace(w.after.as_bytes());
-        if let Err(e) = written {
-            let reason = match e {
-                crate::write::WriteError::Changed(_) => Reason::Changed,
-                _ => Reason::Io,
-            };
-            let failed = error(reason, format!("{path}: {e}"));
-            return self.edits.answer(w.edit.by, w.ticket, Err(failed));
+        let mut events = Vec::new();
+        if written.is_ok() {
+            self.owners.answered(&w.owner, path, &w.rev, Some(&w.given));
+            events = self.owned_changed(&[path.to_string()]);
+            events.push(Event::ItemEdited {
+                note: path.to_string(),
+                item: w.item,
+                by: w.by,
+                what: w.what,
+            });
         }
-        self.owners.answered(&w.owner, path, &w.rev, Some(&w.given));
-        let mut events = self.owned_changed(&[path.to_string()]);
-        let ItemEdit {
-            by,
-            item,
-            next,
-            what,
-            warning,
-        } = w.edit;
         let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
-        let find = |want: &Item| {
-            let items = file.map(|f| f.items.as_slice()).unwrap_or_default();
-            (items.iter().find(|i| i.id == want.id))
-                .or_else(|| items.iter().find(|i| given::same_data(i, want)))
-                .cloned()
-        };
-        let answer = find(&item).map(|found| Edited {
-            item: found,
-            changed: true,
-            next: next.as_deref().and_then(find),
-            warning,
-        });
-        let answer = answer.ok_or_else(|| {
-            let message = format!("{path} was written, but {} isn't in it now", item.id);
-            error(Reason::ReadBack, message)
-        });
-        events.push(Event::ItemEdited {
-            note: path.to_string(),
-            item: item.id.clone(),
-            by: by.clone(),
-            what,
-        });
-        self.edits.answer(by, w.ticket, answer);
+        let items: &[Item] = file.map(|f| f.items.as_slice()).unwrap_or_default();
+        self.edits.wrote(path, written.map(|()| items));
         self.broadcast(&events);
         self.unseen.extend(events);
     }
