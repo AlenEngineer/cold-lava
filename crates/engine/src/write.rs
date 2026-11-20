@@ -18,6 +18,9 @@ pub enum WriteError {
     /// A symlink that leads to no file, to nothing or to a folder: a write never puts a file
     /// where a link is, and never makes one through it (`landing`).
     NotAFile(PathBuf),
+    /// A symlink at the path of a write that never follows one (`replace`): refused, so a link
+    /// is never turned into a file without a word.
+    Link(PathBuf),
     Io(PathBuf, io::Error),
 }
 
@@ -27,6 +30,11 @@ impl fmt::Display for WriteError {
             WriteError::Changed(p) => write!(f, "{} changed since it was read", p.display()),
             WriteError::Exists(p) => write!(f, "{} already exists", p.display()),
             WriteError::NotAFile(p) => f.write_str(&not_a_file(p.display())),
+            WriteError::Link(p) => write!(
+                f,
+                "{} is a symbolic link, which this write never follows",
+                p.display()
+            ),
             WriteError::Io(p, e) => write!(f, "{}: {e}", p.display()),
         }
     }
@@ -52,10 +60,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
 /// Where a write to `path` lands: `path`, or the file a symlink there leads to, every link on
 /// the way followed, so the rename replaces that file, beside it, and the link stays a link. A
 /// link to nothing, or to something that isn't a file, is `NotAFile`. Where a link may lead is
-/// the caller's to bound: this follows it anywhere. The gateway never lets one through
-/// (`files::resolve`) and never lands its own writes here: they rename over the path itself
-/// (`replace_entry`, `create`), so a link swapped in at the path after its check is replaced,
-/// not followed. A folder on the way swapped for a link is still followed (#366).
+/// the caller's to bound: this follows it anywhere. Only `write_atomic` and
+/// `replace_through_link` land here; `replace` and `create` rename over the path itself, so a
+/// link swapped in at the path after its check is replaced, not followed. A folder on the way
+/// swapped for a link is still followed (#366).
 fn landing(path: &Path) -> Result<PathBuf, WriteError> {
     let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !link {
@@ -101,18 +109,29 @@ fn write_at(path: &Path, file: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     })
 }
 
-/// Replace `path` only if it still contains `expected` (what the caller read before). Outside
-/// the engine, `read::Seen::replace` is the way. Where it lands is found once, and the bytes
-/// compared are the ones the rename replaces.
+/// Replace the file at `path` only if it still contains `expected` (what the caller read
+/// before). Outside the engine, `read::Seen::replace` is the way. It never follows a symlink: a
+/// link at `path` is refused (`Link`), and one swapped in after that check is replaced by the
+/// rename, never written through. Every path the engine found by its scan, or the gateway let
+/// through, is a file (`workspace::first_link`), so this is the write for all of them.
 pub(crate) fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
-    replace_at(path, &landing(path)?, expected, bytes)
+    let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if link {
+        return Err(WriteError::Link(path.to_path_buf()));
+    }
+    replace_at(path, path, expected, bytes)
 }
 
-/// As `replace`, but the rename replaces `path` itself: a symlink found there is replaced, and
-/// what it leads to is only read, to compare. The gateway's write (`Seen::replace_entry`),
-/// which follows no link.
-pub(crate) fn replace_entry(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
-    replace_at(path, path, expected, bytes)
+/// As `replace`, but a symlink at `path` is followed (`landing`): the file it leads to is
+/// replaced, and the link stays. Only for the user's own save of a file the scan doesn't read
+/// and that the user opened by its path: a board's canvas, `bookmarks.json`, `shapes.toml`, a
+/// note the menu's tree lists. Never for a path the gateway or an extension gave.
+pub(crate) fn replace_through_link(
+    path: &Path,
+    expected: &[u8],
+    bytes: &[u8],
+) -> Result<(), WriteError> {
+    replace_at(path, &landing(path)?, expected, bytes)
 }
 
 fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
@@ -254,7 +273,7 @@ mod tests {
         std::os::unix::fs::symlink("Lava.md", &hop).unwrap();
 
         write_atomic(&link, b"v2").unwrap();
-        replace(&hop, b"v2", b"v3").unwrap();
+        replace_through_link(&hop, b"v2", b"v3").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"v3");
         let led = |p: &Path| std::fs::read_link(p).unwrap();
         assert_eq!(
@@ -264,7 +283,10 @@ mod tests {
         );
         assert_eq!(led(&hop), Path::new("Lava.md"), "still a link");
         assert!(
-            matches!(replace(&link, b"v2", b"lost"), Err(WriteError::Changed(_))),
+            matches!(
+                replace_through_link(&link, b"v2", b"lost"),
+                Err(WriteError::Changed(_))
+            ),
             "a stale read is refused through a link too"
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"v3");
@@ -283,19 +305,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The gateway's write renames over the path itself: a link swapped in at the path after
-    /// the gateway checked it is replaced, and the file it leads to keeps its bytes.
+    /// `replace` never follows a link: one at the path is refused, and the file it leads to
+    /// keeps its bytes.
     #[cfg(unix)]
     #[test]
-    fn a_write_to_the_entry_replaces_a_link_and_never_follows_it() {
+    fn a_replace_refuses_a_link_at_the_path() {
+        let d = dir("refuse-link");
+        let (target, at) = (d.join("config"), d.join("Note.md"));
+        std::fs::write(&target, "v1").unwrap();
+        std::os::unix::fs::symlink("config", &at).unwrap();
+        let refused = replace(&at, b"v1", b"lost");
+        assert!(
+            matches!(&refused, Err(WriteError::Link(p)) if *p == at),
+            "{refused:?}"
+        );
+        let words = format!(
+            "{} is a symbolic link, which this write never follows",
+            at.display()
+        );
+        assert_eq!(refused.unwrap_err().to_string(), words);
+        assert!(is_link(&at), "the link stays");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"v1",
+            "nothing written through"
+        );
+        assert_eq!(files(&d), ["Note.md", "config"], "no temp file left");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A link swapped in at the path after `replace` checked it: the rename replaces the link,
+    /// and the file it leads to keeps its bytes.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_in_after_the_check_is_replaced_and_never_followed() {
         let d = dir("entry");
         let (target, at) = (d.join("config"), d.join("Note.md"));
         std::fs::write(&target, "v1").unwrap();
         std::os::unix::fs::symlink("config", &at).unwrap();
-        let stale = replace_entry(&at, b"other", b"lost");
+        let stale = replace_at(&at, &at, b"other", b"lost");
         assert!(matches!(stale, Err(WriteError::Changed(_))), "{stale:?}");
         assert!(is_link(&at), "a stale read writes nothing");
-        replace_entry(&at, b"v1", b"v2").unwrap();
+        replace_at(&at, &at, b"v1", b"v2").unwrap();
         assert!(!is_link(&at), "the link is replaced");
         assert_eq!(std::fs::read(&at).unwrap(), b"v2");
         assert_eq!(
@@ -319,7 +370,14 @@ mod tests {
             let refused =
                 |e: Result<(), WriteError>| matches!(e, Err(WriteError::NotAFile(p)) if p == at);
             assert!(refused(write_atomic(&at, b"x")), "write {name}");
-            assert!(refused(replace(&at, b"", b"x")), "replace {name}");
+            assert!(
+                refused(replace_through_link(&at, b"", b"x")),
+                "replace {name}"
+            );
+            assert!(
+                matches!(replace(&at, b"", b"x"), Err(WriteError::Link(p)) if p == at),
+                "replace {name}"
+            );
             assert!(taken(&at), "{name} is taken");
             assert!(
                 matches!(create(&at, b"x"), Err(WriteError::Exists(_))),

@@ -1225,7 +1225,8 @@ impl Board {
         }
         // Only over the bytes we last read: a change made since (that the merge above didn't
         // see, or a file that doesn't parse, so it couldn't be merged) is never overwritten.
-        match crate::read::Seen::kept(&self.path, self.disk.as_slice()).replace(&buf) {
+        let seen = crate::read::Seen::kept(&self.path, self.disk.as_slice());
+        match seen.replace_through_link(&buf) {
             Ok(()) => {
                 self.base = self.doc.clone();
                 self.disk = buf;

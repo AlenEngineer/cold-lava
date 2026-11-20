@@ -771,7 +771,7 @@ fn item_edits(code: &str) -> Vec<String> {
 /// - `edit::set_field`: `cold-lava item set` on a note (#270, B3).
 /// - `tasks::toggle_in`: `cold-lava task toggle` (#270, B3).
 /// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it over the
-///   text read (`Seen::replace`) itself.
+///   text read (`Seen::replace_through_link`, as its tree lists a note that is a link) itself.
 ///
 /// An owner's functions that make a file's new text (`owner::edit`, `owner::markdown::edit`,
 /// `owner::canvas::edit` and `relink`, `owner::change`'s) would be listed; the app names

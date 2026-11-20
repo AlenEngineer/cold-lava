@@ -221,19 +221,24 @@ pub fn normal(rel: &str) -> Result<String, Error> {
 ///
 /// Checked, then acted on: a folder on the way swapped for a link between this check and the
 /// call after it is still followed (#366). A file swapped for a link at the path itself is
-/// not: the gateway's writes rename over the path (`Seen::replace_entry`, `write::create`).
+/// not: the gateway's writes rename over the path (`Seen::replace`, `write::create`).
 fn unlinked(root: &Path, rel: &str, parts: &str) -> Result<(), Error> {
     root.metadata().map_err(io(rel))?;
     let Some(link) = workspace::first_link(root, parts).map_err(io(rel))? else {
         return Ok(());
     };
-    let why = format!("{link} is a symbolic link, which the gateway never follows");
+    let why = never_followed(link);
     let message = if link == rel {
         why
     } else {
         format!("{rel}: {why}")
     };
     Err(Error::new(Reason::Refused, message))
+}
+
+/// The refusal of a symlink at `link`, in its one wording.
+fn never_followed(link: &str) -> String {
+    format!("{link} is a symbolic link, which the gateway never follows")
 }
 
 fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
@@ -246,6 +251,7 @@ fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
             WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
+            WriteError::Link(_) => never_followed(rel),
             WriteError::Io(_, e) => format!("{rel}: {e}"),
         };
         Error::new(Reason::of(&e), message)
@@ -265,7 +271,7 @@ pub fn read(root: &Path, rel: &str) -> Result<Text, Error> {
     })
 }
 
-/// `workspace/write`, through `Seen::replace_entry`.
+/// `workspace/write`, through `Seen::replace`.
 pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Written, Error> {
     let rel = &normal(rel)?;
     let path = resolve(root, rel)?;
@@ -280,7 +286,7 @@ pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Writt
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
-    now.replace_entry(text.as_bytes()).map_err(written(rel))?;
+    now.replace(text.as_bytes()).map_err(written(rel))?;
     Ok(Written {
         rev: rev(text.as_bytes()),
     })
@@ -345,6 +351,7 @@ fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
             WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
+            WriteError::Link(_) => never_followed(rel),
             WriteError::Io(_, e) => format!("{rel}: {e}"),
         };
         Error::new(Reason::of(&e), message)

@@ -370,7 +370,7 @@ pub fn save(
         Err(e) => return Saved::Refused(e),
     };
     let written = match &seen {
-        Some(before) => before.replace(new.as_bytes()),
+        Some(before) => before.replace_through_link(new.as_bytes()),
         None => write::create(&path, new.as_bytes()),
     };
     match written {

@@ -128,12 +128,15 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   (`Feed`, bound shapes).
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read; the engine's only, `Seen::replace` outside it), `create`,
-  `move_file`. A write to a symlink lands in the file it leads to and the link stays
-  (`landing`, found once per write). A link to nothing or to a folder is `NotAFile`. Where a
-  link may lead is the caller's to bound: `write.rs` follows it anywhere, and the gateway
-  never follows one (`files::resolve`). The gateway's own writes rename over the path itself
-  (`replace_entry`, through `Seen::replace_entry`; `create`), so a link swapped in there
-  after its check is replaced; a folder swapped in on the way is still followed (#366).
+  `move_file`. `replace` never follows a symlink: a link at the path is refused (`Link`), and
+  one swapped in after that check is replaced by the rename; a folder swapped in on the way
+  is still followed (#366). It is every write over a file the engine found by its scan or
+  the gateway let through. `replace_through_link` (`Seen::replace_through_link`) is the
+  exception, by name: the user's own save of a file they opened by its path (the board's
+  canvas, the menu's tag edit of a note its tree lists, `shapes/file.rs`, `bookmarks.rs`)
+  lands in the file a link leads to and the link stays (`landing`, found once per write), as
+  `write_atomic` does. A link to nothing or to a folder is `NotAFile`. The gateway never lets
+  a link through (`files::resolve`).
   `taken` is the one test of whether something is at a path, a link to nothing included:
   `create` and `files::free_name` ask it. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
@@ -153,7 +156,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `file` is; `Seen::entry` reads a file, a folder by its listing (`inside`) or a symlink by
   where it points, never following one. `unchanged` reads it again the way it was seen;
   `unchanged_entry` reads the entry itself, whatever the way, as a delete must (a file seen
-  through a link is not the link). `replace` writes through `write::replace`, only over a file
+  through a link is not the link). `replace` writes through `write::replace` (no link
+  followed) and `replace_through_link` through `write::replace_through_link`, only over a file
   seen as a file. `rev` is the gateway's version (a folder's is its listing's); `text` refuses
   bytes that aren't UTF-8 with `NotText`, whose `about` is the one wording of "isn't UTF-8
   text". The gateway's `Reason::of` names a `WriteError`'s reason. It is also the one home of

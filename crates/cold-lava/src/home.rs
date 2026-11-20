@@ -4158,7 +4158,7 @@ impl Home {
                 .and_then(
                     |text| match frontmatter::edit_tag(&text, tag, edit, &style)? {
                         Some(new) => read::Seen::kept(&path, text.as_bytes())
-                            .replace(new.as_bytes())
+                            .replace_through_link(new.as_bytes())
                             .map(|()| true)
                             .map_err(|e| e.to_string()),
                         None => Ok(false),

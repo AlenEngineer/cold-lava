@@ -47,7 +47,8 @@ change commands, keys and file formats; patch versions only fix things.
   everything else it was asked (its errors on stderr included) and exits as it would have, as
   `items | head` already did (#339).
 - A note or file kept in the workspace as a symlink is saved where the link leads. Before,
-  a save to the link (the whiteboard's, the menu's, any write the engine makes for you) put
+  a save to the link (the whiteboard's, the menu's tag edit, `cold-lava task toggle` and
+  `item set`) put
   a regular file where the link was, and the file the link led to kept its old text, so a
   note linked from another folder silently became a copy. The link now stays, the file it
   leads to is replaced atomically, and a save to a link that leads nowhere or to a folder is
@@ -63,7 +64,12 @@ change commands, keys and file formats; patch versions only fix things.
   make one) is skipped, as the scan at start already skipped it, and a folder linked into the
   workspace is no longer watched through the link. Before, the watcher read the link as a
   note or file of its own, so its tasks showed twice, its copy went stale, and an item edit
-  on it, from an extension or the agenda, replaced the link with a copy (#349).
+  on it, from an extension or the agenda, replaced the link with a copy. A note swapped for
+  a link after it was read is never written through: an item edit, a rename, a merge or a
+  recipe (an extension's included) is refused there, and a merge or recipe puts back what
+  it wrote. A `.obsidian` folder that is a link to settings shared between workspaces is
+  still watched where it leads, so changes to its graph colour groups and bookmarks are
+  heard as before (#349).
 
 ## [0.7.0] - 2026-11-20
 

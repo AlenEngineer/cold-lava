@@ -202,7 +202,7 @@ impl Reason {
         match e {
             write::WriteError::Changed(_) => Reason::Changed,
             write::WriteError::Exists(_) => Reason::Exists,
-            write::WriteError::NotAFile(_) => Reason::Refused,
+            write::WriteError::NotAFile(_) | write::WriteError::Link(_) => Reason::Refused,
             write::WriteError::Io(..) => Reason::Io,
         }
     }
@@ -721,7 +721,7 @@ pub(crate) struct Written {
 }
 
 /// Make the edit on disk: the note's owner makes its new text, which is written with
-/// `write::replace_entry`, refused if the note changed since it was read. No note is a
+/// `write::replace`, refused if the note changed since it was read. No note is a
 /// symlink (`workspace::first_link`), so the rename replaces the note's path itself, and a link
 /// swapped in there since is replaced, never written through. An anchor's name is
 /// checked against the names the whole workspace holds (`anchor_names`), which only the core
@@ -750,7 +750,7 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
         }
     }?;
     if made.changed {
-        write::replace_entry(&path, text.as_bytes(), made.text.as_bytes())
+        write::replace(&path, text.as_bytes(), made.text.as_bytes())
             .map_err(|e| Error::new(Reason::of(&e), e.to_string()))?;
     }
     Ok(Written {
@@ -1645,6 +1645,7 @@ fields.text = { rest = true }
         assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
         let link = write::WriteError::NotAFile(at());
         assert_eq!(Reason::of(&link), Reason::Refused);
+        assert_eq!(Reason::of(&write::WriteError::Link(at())), Reason::Refused);
         assert_eq!(Reason::of(&write::WriteError::Io(at(), io())), Reason::Io);
     }
 }

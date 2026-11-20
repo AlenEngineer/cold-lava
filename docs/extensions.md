@@ -1384,7 +1384,7 @@ graph all see the new date. None of them knew what a canvas is.
   | `workspace/files {extension}` | `{files}`, every file with that extension (any case, with or without the dot) outside hidden folders, sorted |
 
   A `rev` is 16 hex digits of the FNV-1a hash of the file's bytes. A write checks it, then
-  writes through `write::replace_entry`, which checks the bytes again just before the atomic
+  writes through `write::replace`, which checks the bytes again just before the atomic
   rename over the path, so an edit made in Obsidian meanwhile is never overwritten. A create
   goes through `write::create`, refused as `exists` where any entry is. A name picked for
   `{name, extension}` passes over any entry, a link that leads nowhere included. A note
@@ -1400,16 +1400,18 @@ graph all see the new date. None of them knew what a canvas is.
   repository can be a link to `.git/config`, to Obsidian's settings or to a canvas only its
   owner writes, and a file of an owner's kind can be a link to a note. `items/edit` never
   reaches a link either. The scan and the watcher read no symlinked note or owned file
-  (`workspace::first_link`), so no item is in one. The user's own saves (the whiteboard, the
-  menu's edits of a note) go through a link instead. The engine's writes replace the file it
-  leads to, with the temporary file beside that file, and the link stays a link
-  (`write::landing`).
+  (`workspace::first_link`), so no item is in one. Only the user's own saves of a file they
+  opened by its path (the whiteboard's canvas, the menu's tag edit of a note its tree lists,
+  the shapes file, the bookmarks) go through a link, by a write named for it
+  (`write::replace_through_link`): the file it leads to is replaced, with the temporary file
+  beside that file, and the link stays a link (`write::landing`).
 
-  The check comes before the system call, so a link swapped in between them is a race. At
-  the path itself it is closed for writes: `workspace/write`, `workspace/create` and
-  `items/edit` on a note rename over the path, so a link put there since is replaced and
-  nothing is written through it. A folder on the way swapped for a link is still followed,
-  and so are a read at the path and an owner's write after it answers (#366).
+  Every other write the engine makes over a file it read, an extension's or the menu's,
+  never follows a link: `write::replace` refuses one at the path, and a link swapped in after
+  that check is replaced by the rename, never written through. That covers
+  `workspace/write`, `workspace/create`, `items/edit` on a note or an owned file, and every
+  file a rename, a merge or a recipe (`recipe/run` included) writes or puts back. A folder on
+  the way swapped for a link is still followed, and so is a read at the path (#366).
 - **`file/changed {path, rev}`** (host → extension, a notification) comes from the core's one
   watcher: every file that isn't a note, outside hidden folders, is now reported as
   `Event::FileChanged` once things settle, and the menu tells the owner of its kind, with its
