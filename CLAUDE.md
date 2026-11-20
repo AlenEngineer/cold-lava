@@ -657,7 +657,10 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   PR. Keep stacks to two or three PRs, one track step per refactor PR. A pushed branch is
   never rebased or force-pushed: bring a lower PR's changes up with an ordinary merge commit.
 - Every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and the
-  README is updated with it.
+  README is updated with it. The `changelog` check (`scripts/changelog-check.sh`) fails a PR
+  that changes `crates/` or `examples/extensions/` without touching `CHANGELOG.md` (a release PR
+  changes it anyway); a refactor or a tests-only change there carries the `no-changelog` label
+  instead. It doesn't check the README half of this rule.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
   commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,

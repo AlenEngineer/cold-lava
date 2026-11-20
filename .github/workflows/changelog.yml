@@ -1,0 +1,33 @@
+name: Changelog
+
+# A PR that changes code adds a CHANGELOG.md entry, or carries the no-changelog label
+# (scripts/changelog-check.sh has the rules). Its own workflow, so adding or removing a label
+# re-runs only this check and not the builds in ci.yml. To block merges, `changelog` has to be
+# one of main's required checks.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+# A label added then removed quickly gives two runs; the later one is the answer.
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    name: changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Changelog entry
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: scripts/changelog-check.sh "$BASE" "$HEAD" "$LABELS"
