@@ -72,7 +72,7 @@ pub struct Plan {
     pub recipe: &'static Recipe,
     pub options: Options,
     /// Notes with their new text; files other owners read with the changes to ask them for,
-    /// their new text to come from the owner (`Core::relink`, then `rename::answered`).
+    /// their new text to come from the owner (`Core::apply`).
     pub edits: Vec<FileEdit>,
     pub warnings: Vec<String>,
 }
@@ -245,7 +245,7 @@ pub fn plan(ix: &Index, recipe: &'static Recipe, options: Options) -> Result<Pla
 /// Carry out a plan: refuse if a file changed since it was planned, or a file another owner
 /// reads has no new text from it yet, then write every file (putting back the ones written if one
 /// fails).
-pub fn apply(plan: &Plan) -> Result<Applied> {
+pub(crate) fn apply(plan: &Plan) -> Result<Applied> {
     rename::check_answered(&plan.edits)?;
     rename::check_unchanged(&plan.edits, "recipe")?;
     Ok(Applied {

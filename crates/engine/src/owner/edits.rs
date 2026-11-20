@@ -9,8 +9,9 @@
 //! waits here, one per file, until its owner has answered both and the core has written it; the
 //! engine's canvas owner answers both inside the call, through the same steps. A rename, merge
 //! or recipe asks every owned file's owner this way before anything is written, and keeps each
-//! new text that read back until all are in (`Relink`). The desk reads and writes no file and
-//! tells no subscriber: the core does.
+//! new text that read back until all are in (`Relink`), then until the core takes them under the
+//! ticket (`answered_into`): a frontend hears only that the ticket is ready. The desk reads and
+//! writes no file and tells no subscriber: the core does.
 
 use crate::bounded::{Message, Text};
 use crate::gateway::{Edited, Error, Reason, Ticket};
@@ -102,8 +103,10 @@ impl ItemEdit {
 /// An item edit whose new text read back as asked, for the core to write: `after` over the file
 /// as the edit was made on it (`before`, which refuses the write if the file changed since), at
 /// the workspace-relative `path`. Once it is written, what `owner` read in it (`given`, at
-/// version `rev`) is the file's, and `by`'s edit of `item` did `what`. The core says how the
-/// write went (`Edits::wrote`), and the desk answers `by`.
+/// version `rev`) is the file's, and `by`'s edit of `item` did `what`. The core hands it back
+/// with how the write went (`Edits::wrote`), and the desk answers `by`. Until then the file
+/// takes no other edit, so every one must reach `wrote`.
+#[must_use = "the file takes no other edit until this reaches `Edits::wrote`"]
 pub(crate) struct ToWrite {
     pub path: String,
     pub before: Seen,
@@ -161,18 +164,40 @@ struct Relink {
 }
 
 /// One owned file's answer to a rename, merge or recipe, once it read back as asked: its new
-/// text, and what its owner read in it.
-#[derive(Clone, Debug)]
+/// text, the version that is (`rev`, the one `owner` read back), and what `owner` read in it.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Relinked {
-    file: String,
-    text: String,
-    after: Given,
+    pub file: String,
+    pub owner: String,
+    pub rev: String,
+    pub text: String,
+    pub after: Given,
 }
 
-/// Relink answers as `rename::answered` takes them (`rename::answer`).
-fn as_answers(answers: Vec<Relinked>) -> Vec<rename::FileEdit> {
-    let answer = |a: Relinked| rename::answer(a.file, a.text, a.after);
-    answers.into_iter().map(answer).collect()
+/// How a rename, merge or recipe stands once its owners were asked (`Edits::relink`).
+#[derive(Debug, PartialEq)]
+pub(crate) enum Answers {
+    /// Every owner answered, inside the call as the engine's own do, or none had to be asked:
+    /// each owned file's answer, put into the edits too.
+    Now(Vec<Relinked>),
+    /// An extension is still to answer, under the ticket (`Edits::take_relinked`,
+    /// `Edits::answered_into`). The answers in so far are put into the edits, so they say
+    /// whose are still to come.
+    Later(Ticket),
+}
+
+/// Put the owners' `answers` into `edits`, by file: each file's new text, and what its owner
+/// read in it.
+fn put(edits: &mut [rename::FileEdit], answers: &[Relinked]) {
+    for a in answers {
+        let Some(e) = edits.iter_mut().find(|e| e.file == a.file) else {
+            continue;
+        };
+        e.new_text = a.text.clone();
+        if let Some(o) = e.owned.as_mut() {
+            o.after = Some(a.after.clone());
+        }
+    }
 }
 
 /// The edit desk: the edits waiting for owners, and what is to be sent and handed out.
@@ -190,8 +215,14 @@ pub(crate) struct Edits {
     /// Renames and merges waiting for owners.
     relinks: HashMap<Ticket, Relink>,
     /// Those whose owners have all answered, or one refused: the answers, or the refusal, until
-    /// they are taken (`relinked`, `take_relinked`).
+    /// the core takes them (`answered_into`) or the relink is cancelled (`cancel_relink`).
     ready: Vec<(Ticket, Result<Vec<Relinked>, String>)>,
+    /// Their tickets, each said once (`take_relinked`) unless the core took the answer first.
+    /// One cancelled once it was ready is said too, so whoever waited hears of it.
+    unsaid: Vec<Ticket>,
+    /// The tickets the last `take_relinked` said. Each is good until the next one: an answer
+    /// not taken by then is dropped, so a ticket a frontend drops leaves nothing behind.
+    said: Vec<Ticket>,
 }
 
 impl Edits {
@@ -285,6 +316,7 @@ impl Edits {
     /// `owner` answered `file/edit` for the file at `path` at version `rev`: the file's new
     /// text, or why not. The new text is read through the owner before it is written: what to
     /// write when an owner in the engine read it inside the call.
+    #[must_use]
     pub fn edited(
         &mut self,
         owner: &str,
@@ -329,7 +361,7 @@ impl Edits {
     fn send_read_back(&mut self, owner: &str, read: FileRead, s: &Settings) -> Option<ToWrite> {
         match crate::owner::give(owner, &read.path, &read.text) {
             Some(given) => {
-                let read_back = self.read_back(&read.path, &read.rev, given, s);
+                let read_back = self.read_back(owner, &read.path, &read.rev, given, s);
                 read_back.ok().flatten()
             }
             None => {
@@ -339,19 +371,21 @@ impl Edits {
         }
     }
 
-    /// The owner read the file at `path` at version `rev` (`given`). When that is the new text
-    /// an edit of the file waits to have read back, the desk takes it: an item edit's new text
-    /// is handed back to be written and a relink's is kept, when it reads as asked; else the
-    /// edit fails, and nothing is written. Any other version is the file as the owner found
-    /// it, not the desk's: `given` is handed back.
+    /// `owner` read the file at `path` at version `rev` (`given`). When that is the new text an
+    /// edit of the file waits for that owner to read back, the desk takes it: an item edit's new
+    /// text is handed back to be written and a relink's is kept, when it reads as asked; else
+    /// the edit fails, and nothing is written. Any other version, or another owner's reading,
+    /// is the file as that owner found it, not the desk's: `given` is handed back.
     pub fn read_back(
         &mut self,
+        owner: &str,
         path: &str,
         rev: &str,
         given: Result<Given, String>,
         s: &Settings,
     ) -> Result<Option<ToWrite>, Result<Given, String>> {
-        let ours = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
+        let reading = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
+        let ours = |p: &Pending| p.owner == owner && reading(p);
         let Some(p) = self.pending.get(path).filter(|p| ours(p)) else {
             return Err(given);
         };
@@ -359,7 +393,7 @@ impl Edits {
             return Err(given);
         };
         let error = Error::new;
-        let owner = p.owner.clone();
+        let owner = owner.to_string();
         let given = match given {
             Ok(g) => g,
             Err(_) if p.expect.is_none() => Given::default(),
@@ -381,7 +415,14 @@ impl Edits {
             return Ok(None);
         }
         if let Goal::Relink(ticket) = p.goal {
-            self.relink_read_back(ticket, path, text.clone(), given);
+            let answer = Relinked {
+                file: path.to_string(),
+                owner,
+                rev: rev.to_string(),
+                text: text.clone(),
+                after: given,
+            };
+            self.relink_read_back(ticket, answer);
             return Ok(None);
         }
         Ok(self.hand_over(path, owner, given))
@@ -413,10 +454,11 @@ impl Edits {
         })
     }
 
-    /// The core wrote what it was handed for the file at `path` (`ToWrite`) and read the file
-    /// again, which now holds `items`, or the write failed: whoever asked for the edit is
-    /// answered (`take_edited`), and the file is free for another edit.
-    pub fn wrote(&mut self, path: &str, written: Result<&[Item], WriteError>) {
+    /// The core wrote what it was handed (`w`) and read the file again, which now holds
+    /// `items`, or the write failed: whoever asked for the edit is answered (`take_edited`), and
+    /// the file is free for another edit.
+    pub fn wrote(&mut self, w: ToWrite, written: Result<&[Item], WriteError>) {
+        let path = w.path.as_str();
         let writing = |p: &Pending| matches!(p.stage, Stage::Writing);
         if !self.pending.get(path).is_some_and(writing) {
             return;
@@ -464,26 +506,29 @@ impl Edits {
 
     /// Before a rename, merge or recipe writes anything: ask the owner of each file among
     /// `edits` that another owner reads for its new text (`file/edit`), and have the owner read
-    /// it back. `None` when `edits` are ready: there was nothing to ask, or every owner answered
-    /// inside the call (the engine's own do) and `edits` have their new texts. Else the answer
-    /// comes under the ticket (`relinked`, `take_relinked`): every owned file's new text, or the
-    /// first owner's refusal, after which nothing else is kept. Refused at once when one of them
-    /// has an edit waiting, changed since it was planned (`planned` says whether a file still
-    /// holds the text it was planned on), its change would leave out something its owner gave
-    /// (`given::check_change`, such as a link to a target past its bound), or an owner in the
-    /// engine refuses.
+    /// it back. `Answers::Now` when there was nothing to ask, or every owner answered inside the
+    /// call (the engine's own do); else `Answers::Later`, and the answer, every owned file's
+    /// new text or the first owner's refusal, comes under the ticket (`answered_into`). The
+    /// answers in are put into `edits`. Refused at once when one of them has an edit waiting,
+    /// changed since it was planned (`planned` says whether a file still holds the text it was
+    /// planned on), its change would leave out something its owner gave (`given::check_change`,
+    /// such as a link to a target past its bound), or an owner in the engine refuses.
     pub fn relink(
         &mut self,
         edits: &mut [rename::FileEdit],
         planned: impl Fn(&rename::FileEdit) -> bool,
         s: &Settings,
-    ) -> Result<Option<Ticket>, String> {
+    ) -> Result<Answers, String> {
         let asks = self.check(edits, planned, s)?;
         if asks.is_empty() {
-            return Ok(None);
+            return Ok(Answers::Now(Vec::new()));
         }
         let ticket = self.start(asks, s);
-        self.collect(ticket, edits)
+        let Some(relink) = self.relinks.get(&ticket) else {
+            return self.answered_into(ticket, edits).map(Answers::Now);
+        };
+        put(edits, &relink.answered);
+        Ok(Answers::Later(ticket))
     }
 
     /// The files among `edits` that other owners read, in order, each with what its owner
@@ -500,7 +545,7 @@ impl Edits {
             let Some(o) = &e.owned else {
                 continue;
             };
-            if self.pending.contains_key(&e.file) {
+            if self.waiting(&e.file).is_some() {
                 return Err(format!("{} has an edit waiting for {}", e.file, o.owner));
             }
             if !planned(e) {
@@ -543,41 +588,43 @@ impl Edits {
         ticket
     }
 
-    /// How the relink `ticket` stands once its owners were asked: `None` when every one
-    /// answered inside the call, their new texts put into `edits`; the ticket while one is still
-    /// to answer, `edits` holding the answers in so far, so they say whose are still to come;
-    /// or an owner's refusal.
-    fn collect(
+    /// The answer to the rename, merge or recipe `ticket`, once every owner has answered or one
+    /// refused: each owned file's answer, put into `edits` and handed to the core to keep once
+    /// the plan is written, or the refusal. It is taken once, and is then no longer said
+    /// (`take_relinked`). Refused too while an owner is still to answer, once the relink is
+    /// cancelled, or when a file of `edits` another owner reads has no answer: one added to
+    /// the plan after its owners were asked, which no owner was asked about.
+    pub fn answered_into(
         &mut self,
         ticket: Ticket,
         edits: &mut [rename::FileEdit],
-    ) -> Result<Option<Ticket>, String> {
-        let Some(answer) = self.relinked(ticket) else {
-            let relink = self.relinks.get(&ticket);
-            let so_far = relink.map(|r| r.answered.clone()).unwrap_or_default();
-            rename::answered(edits, as_answers(so_far));
-            return Ok(Some(ticket));
+    ) -> Result<Vec<Relinked>, String> {
+        let not_in = || "the owners haven't all answered".to_string();
+        let Some(at) = self.ready.iter().position(|(t, _)| *t == ticket) else {
+            return Err(not_in());
         };
-        rename::answered(edits, as_answers(answer?));
-        Ok(None)
+        self.unsaid.retain(|t| *t != ticket);
+        let answers = self.ready.remove(at).1?;
+        let answered = |e: &rename::FileEdit| answers.iter().any(|a| a.file == e.file);
+        if !edits.iter().filter(|e| e.owned.is_some()).all(answered) {
+            return Err(not_in());
+        }
+        put(edits, &answers);
+        Ok(answers)
     }
 
-    /// The answer to the rename, merge or recipe `ticket`, once every owner has answered or one
-    /// refused: each owned file's new text and what its owner read in it, or the refusal. It is
-    /// taken once; `None` until then.
-    pub fn relinked(&mut self, ticket: Ticket) -> Option<Result<Vec<Relinked>, String>> {
-        let at = self.ready.iter().position(|(t, _)| *t == ticket)?;
-        Some(self.ready.remove(at).1)
+    /// Renames, merges and recipes whose owners have all answered (`relink`), or one refused,
+    /// each said once: its answer is for `answered_into` until the next call, which drops it,
+    /// as `cancel_relink` does.
+    pub fn take_relinked(&mut self) -> Vec<Ticket> {
+        let said = std::mem::take(&mut self.said);
+        self.ready.retain(|(t, _)| !said.contains(t));
+        self.said = std::mem::take(&mut self.unsaid);
+        self.said.clone()
     }
 
-    /// Renames and merges whose owners have all answered (`relink`), or one refused: each owned
-    /// file's answer as `rename::answered` takes it.
-    pub fn take_relinked(&mut self) -> Vec<(Ticket, Result<Vec<rename::FileEdit>, String>)> {
-        let ready = std::mem::take(&mut self.ready).into_iter();
-        ready.map(|(t, a)| (t, a.map(as_answers))).collect()
-    }
-
-    /// Stop waiting for the owners of the rename or merge `ticket`. Their answers are dropped.
+    /// Stop waiting for the owners of the rename, merge or recipe `ticket`. Their answers are
+    /// dropped, the ones in already too.
     pub fn cancel_relink(&mut self, ticket: Ticket) {
         self.relinks.remove(&ticket);
         let ours = |p: &Pending| matches!(p.goal, Goal::Relink(t) if t == ticket);
@@ -585,24 +632,23 @@ impl Edits {
         let pending = &self.pending;
         (self.asks).retain(|(_, a)| pending.contains_key(&a.path));
         (self.reads).retain(|(_, r)| pending.contains_key(&r.path));
+        self.ready.retain(|(t, _)| *t != ticket);
     }
 
-    /// One owned file of the rename or merge `ticket` read back as asked: keep its new text, and
-    /// what its owner read in it.
-    fn relink_read_back(&mut self, ticket: Ticket, path: &str, text: String, after: Given) {
-        self.pending.remove(path);
+    /// One owned file of the rename or merge `ticket` read back as asked (`answer`): keep it.
+    fn relink_read_back(&mut self, ticket: Ticket, answer: Relinked) {
+        self.pending.remove(&answer.file);
         let Some(relink) = self.relinks.get_mut(&ticket) else {
             return;
         };
-        if let Some(at) = relink.waiting.iter().position(|f| f.as_str() == path) {
+        if let Some(at) = relink.waiting.iter().position(|f| *f == answer.file) {
             relink.waiting.remove(at);
-            let file = path.to_string();
-            relink.answered.push(Relinked { file, text, after });
+            relink.answered.push(answer);
         }
         if relink.waiting.is_empty() {
             let answered = std::mem::take(&mut relink.answered);
             self.relinks.remove(&ticket);
-            self.ready.push((ticket, Ok(answered)));
+            self.finished(ticket, Ok(answered));
         }
     }
 
@@ -611,8 +657,15 @@ impl Edits {
     fn relink_failed(&mut self, ticket: Ticket, message: String) {
         if self.relinks.contains_key(&ticket) {
             self.cancel_relink(ticket);
-            self.ready.push((ticket, Err(message)));
+            self.finished(ticket, Err(message));
         }
+    }
+
+    /// The relink `ticket` is over, with `answer`: it waits to be taken (`answered_into`), and
+    /// its ticket to be said (`take_relinked`).
+    fn finished(&mut self, ticket: Ticket, answer: Result<Vec<Relinked>, String>) {
+        self.ready.push((ticket, answer));
+        self.unsaid.push(ticket);
     }
 
     /// Whether there is something to send or to hand out.
@@ -620,7 +673,7 @@ impl Edits {
         !(self.asks.is_empty()
             && self.reads.is_empty()
             && self.done.is_empty()
-            && self.ready.is_empty())
+            && self.unsaid.is_empty())
     }
 }
 
@@ -700,7 +753,7 @@ mod tests {
             changes,
         };
         assert_eq!((owner.as_str(), ask), (OWNER, &asked));
-        let early = desk.read_back(FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
+        let early = desk.read_back(OWNER, FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
         assert!(early.is_err(), "not before file/edit is answered");
 
         assert!((desk.edited("other", FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
@@ -718,7 +771,7 @@ mod tests {
             text: DONE.into(),
         };
         assert_eq!((owner.as_str(), back), (OWNER, &new));
-        let old = desk.read_back(FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
+        let old = desk.read_back(OWNER, FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
         let Err(Ok(handed_back)) = old else {
             panic!("the old text is no read-back: what the owner read in it is handed back");
         };
@@ -726,7 +779,13 @@ mod tests {
         assert!((desk.edited(OWNER, FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
         assert!(desk.take_reads().is_empty(), "file/edit is answered once");
 
-        let read = desk.read_back(FILE, &back.rev, Ok(gives("- [x] sample")), &s);
+        let theirs = desk.read_back("other", FILE, &back.rev, Ok(gives("- [x] sample")), &s);
+        let Err(Ok(handed_back)) = theirs else {
+            panic!("another owner's reading of the new text is no read-back");
+        };
+        assert_eq!(handed_back, gives("- [x] sample"));
+
+        let read = desk.read_back(OWNER, FILE, &back.rev, Ok(gives("- [x] sample")), &s);
         let Ok(Some(w)) = read else {
             panic!("reads as asked");
         };
@@ -739,14 +798,15 @@ mod tests {
         assert!(desk.take_edited().is_empty(), "answered once written");
 
         let items = given::read(FILE, &gives("- [x] sample"), &s).items;
-        desk.wrote(FILE, Ok(items.as_slice()));
+        let item = w.item.clone();
+        desk.wrote(w, Ok(items.as_slice()));
         assert_eq!(desk.waiting(FILE), None);
         let done = desk.take_edited();
         let [(by, t, Ok(edited))] = &done[..] else {
             panic!("{done:?}");
         };
         let found = (by.as_str(), *t, edited.item.id.as_str(), edited.changed);
-        assert_eq!(found, ("agenda", ticket, w.item.as_str(), true));
+        assert_eq!(found, ("agenda", ticket, item.as_str(), true));
     }
 
     /// Tick the task in `FILE`, and have its owner answer and read its new text back as asked:
@@ -758,7 +818,7 @@ mod tests {
         let (_, ask) = desk.take_file_edits().pop().expect("asked");
         assert!((desk.edited(OWNER, FILE, &ask.rev, Ok(DONE.into()), s)).is_none());
         let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-        let read = desk.read_back(FILE, &back.rev, Ok(gives("- [x] sample")), s);
+        let read = desk.read_back(OWNER, FILE, &back.rev, Ok(gives("- [x] sample")), s);
         let Ok(Some(w)) = read else {
             panic!("reads as asked");
         };
@@ -770,9 +830,9 @@ mod tests {
         let s = settings();
         let mut desk = Edits::default();
         let answer = |desk: &mut Edits| desk.take_edited().pop().expect("answered").2;
-        ticked(&mut desk, &s);
+        let w = ticked(&mut desk, &s);
         let at = PathBuf::from("/w/Samples.csv");
-        desk.wrote(FILE, Err(WriteError::Changed(at)));
+        desk.wrote(w, Err(WriteError::Changed(at)));
         let e = answer(&mut desk).unwrap_err();
         let changed = "Samples.csv: /w/Samples.csv changed since it was read";
         assert_eq!((e.reason, e.message.as_str()), (Reason::Changed, changed));
@@ -780,11 +840,23 @@ mod tests {
 
         let w = ticked(&mut desk, &s);
         let nothing: &[Item] = &[];
-        desk.wrote(FILE, Ok(nothing));
+        let item = w.item.clone();
+        desk.wrote(w, Ok(nothing));
         let e = answer(&mut desk).unwrap_err();
-        let gone = format!("Samples.csv was written, but {} isn't in it now", w.item);
+        let gone = format!("Samples.csv was written, but {item} isn't in it now");
         assert_eq!((e.reason, e.message), (Reason::ReadBack, gone));
-        desk.wrote(FILE, Ok(nothing));
+        let stale = ToWrite {
+            path: FILE.into(),
+            before: seen(DONE),
+            after: DONE.into(),
+            rev: read::rev(DONE.as_bytes()),
+            owner: OWNER.into(),
+            given: gives("- [x] sample"),
+            by: "agenda".into(),
+            item,
+            what: "ticked".into(),
+        };
+        desk.wrote(stale, Ok(nothing));
         assert!(desk.take_edited().is_empty(), "nothing is being written");
     }
 
@@ -831,7 +903,7 @@ mod tests {
         assert!(desk.edited(OWNER, FILE, &ask.rev, text, s).is_none());
         if let Some(reading) = reads {
             let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-            let taken = desk.read_back(FILE, &back.rev, reading, s);
+            let taken = desk.read_back(OWNER, FILE, &back.rev, reading, s);
             assert!(matches!(taken, Ok(None)), "taken, nothing to write");
         }
         assert_eq!(desk.waiting(FILE), None, "the file is free again");
@@ -908,34 +980,46 @@ mod tests {
         };
         let [a, b] = krakatau();
         let mut edits = [note, a, b];
-        let ticket = desk.relink(&mut edits, |_| true, &s).unwrap();
-        let ticket = ticket.expect("waits for the owners");
+        let Ok(Answers::Later(ticket)) = desk.relink(&mut edits, |_| true, &s) else {
+            panic!("waits for the owners");
+        };
         let asks = desk.take_file_edits();
         let asked: Vec<&str> = asks.iter().map(|(_, a)| a.path.as_str()).collect();
         assert_eq!(asked, ["A.csv", "B.csv"], "a note is no owner's to ask");
         let waiting = Err("A.csv has an edit waiting for csv-table".to_string());
         let again = desk.relink(&mut edits, |_| true, &s);
         assert_eq!(again, waiting, "one at a time");
-        assert!(desk.relinked(ticket).is_none(), "nothing to take yet");
+        let not_in = Err("the owners haven't all answered".to_string());
+        let early = desk.answered_into(ticket, &mut edits);
+        assert_eq!(early, not_in, "nothing to take yet");
 
         let answer = |desk: &mut Edits, rel: &str, new: &str, reads: &str| {
             let (_, ask) = asks.iter().find(|(_, a)| a.path == rel).unwrap();
             let read_back = desk.edited(OWNER, rel, &ask.rev, Ok(new.into()), &s);
             assert!(read_back.is_none());
             let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-            let kept = desk.read_back(rel, &back.rev, Ok(gives(reads)), &s);
+            let kept = desk.read_back(OWNER, rel, &back.rev, Ok(gives(reads)), &s);
             assert!(matches!(kept, Ok(None)), "kept, not written");
+            back.rev
         };
-        answer(&mut desk, "B.csv", "see [[Krakatau]]\n", "see [[Krakatau]]");
+        let b_rev = answer(&mut desk, "B.csv", "see [[Krakatau]]\n", "see [[Krakatau]]");
         let none = desk.take_relinked();
         assert!(none.is_empty(), "A.csv's owner is still to answer");
-        answer(&mut desk, "A.csv", "[[Krakatau]]\n", "[[Krakatau]]");
-        let relinked = desk.take_relinked();
-        let [(t, Ok(answers))] = &relinked[..] else {
-            panic!("{relinked:?}");
-        };
-        assert_eq!(*t, ticket);
-        rename::answered(&mut edits, answers.clone());
+        let a_rev = answer(&mut desk, "A.csv", "[[Krakatau]]\n", "[[Krakatau]]");
+        assert_eq!(desk.take_relinked(), [ticket]);
+        let answers = desk.answered_into(ticket, &mut edits).unwrap();
+        assert!(desk.take_relinked().is_empty(), "said once");
+        let versions: Vec<(&str, &str, &str)> = (answers.iter())
+            .map(|a| (a.file.as_str(), a.owner.as_str(), a.rev.as_str()))
+            .collect();
+        let read_back = [
+            ("B.csv", OWNER, b_rev.as_str()),
+            ("A.csv", OWNER, a_rev.as_str()),
+        ];
+        assert_eq!(
+            versions, read_back,
+            "each at the version its owner read back"
+        );
         let new: Vec<(&str, &str)> = (edits.iter())
             .map(|e| (e.file.as_str(), e.new_text.as_str()))
             .collect();
@@ -949,7 +1033,67 @@ mod tests {
         assert!(edits.iter().all(read), "with what each owner read in it");
         let planned = edits[1].old_text.as_str();
         assert_eq!(planned, "[[Krakatoa]]\n", "the rest of the plan stays");
+        let twice = desk.answered_into(ticket, &mut edits);
+        assert_eq!(twice, not_in, "taken once");
         assert!(desk.take_edited().is_empty() && !desk.has_news());
+    }
+
+    /// A relink of `edits` whose owner refuses the first file at once, so it is over.
+    fn refused_relink(desk: &mut Edits, edits: &mut [rename::FileEdit], s: &Settings) -> Ticket {
+        let Ok(Answers::Later(ticket)) = desk.relink(edits, |_| true, s) else {
+            panic!("waits for the owner");
+        };
+        let rev = read::rev(edits[0].old_text.as_bytes());
+        let no = Err("it is read-only".to_string());
+        assert!(desk.edited(OWNER, &edits[0].file, &rev, no, s).is_none());
+        ticket
+    }
+
+    #[test]
+    fn a_ticket_is_good_until_the_next_take_says_the_next_ones() {
+        let s = settings();
+        let mut desk = Edits::default();
+        let mut edits = krakatau();
+        let dropped = refused_relink(&mut desk, &mut edits, &s);
+        assert_eq!(desk.take_relinked(), [dropped]);
+        let kept = refused_relink(&mut desk, &mut edits, &s);
+        assert_eq!(desk.take_relinked(), [kept], "each said once");
+        let not_in = Err("the owners haven't all answered".to_string());
+        let late = desk.answered_into(dropped, &mut edits);
+        assert_eq!(late, not_in, "dropped by the take after it was said");
+        let refuses = Err("csv-table didn't edit A.csv: it is read-only".to_string());
+        let in_time = desk.answered_into(kept, &mut edits);
+        assert_eq!(in_time, refuses, "taken before the next take");
+        assert!(desk.take_relinked().is_empty() && !desk.has_news());
+    }
+
+    #[test]
+    fn a_file_another_owner_reads_that_its_owner_wasnt_asked_about_is_refused() {
+        let s = settings();
+        let mut desk = Edits::default();
+        let [a, b] = krakatau();
+        let mut asked = [a];
+        let Ok(Answers::Later(ticket)) = desk.relink(&mut asked, |_| true, &s) else {
+            panic!("waits for the owner");
+        };
+        let (_, ask) = desk.take_file_edits().pop().expect("asked for A.csv");
+        let new = Ok("[[Krakatau]]\n".into());
+        assert!(desk.edited(OWNER, "A.csv", &ask.rev, new, &s).is_none());
+        let (_, back) = desk.take_reads().pop().expect("asked to read it back");
+        let reads = Ok(gives("[[Krakatau]]"));
+        let kept = desk.read_back(OWNER, "A.csv", &back.rev, reads, &s);
+        assert!(matches!(kept, Ok(None)), "kept, not written");
+        assert_eq!(desk.take_relinked(), [ticket]);
+
+        let mut added = b;
+        added.new_text = "see [[Krakatau]]\n".into();
+        let through = added.owned.as_mut().unwrap();
+        through.after = Some(gives("see [[Krakatau]]"));
+        let mut edits = [asked[0].clone(), added];
+        let not_in = Err("the owners haven't all answered".to_string());
+        let made = desk.answered_into(ticket, &mut edits);
+        assert_eq!(made, not_in, "B.csv's owner was never asked");
+        assert_eq!(edits[0].new_text, "", "nothing is put into the plan");
     }
 
     #[test]
@@ -961,8 +1105,9 @@ mod tests {
         let changed = Err("B.csv changed since it was planned".to_string());
         assert_eq!(desk.relink(&mut edits, b_changed, &s), changed);
         assert!(!desk.has_news(), "no owner is asked");
-        let ticket = desk.relink(&mut edits, |_| true, &s).unwrap();
-        assert_eq!(ticket, Some(Ticket(1)), "a refusal takes no ticket");
+        let ticket = desk.relink(&mut edits, |_| true, &s);
+        let first = Ok(Answers::Later(Ticket(1)));
+        assert_eq!(ticket, first, "a refusal takes no ticket");
         let waiting = Err("A.csv has an edit waiting for csv-table".to_string());
         let refused = desk.relink(&mut edits, |_| false, &s);
         assert_eq!(refused, waiting, "said before that it changed");
@@ -973,16 +1118,16 @@ mod tests {
         let s = settings();
         let mut desk = Edits::default();
         let mut edits = krakatau();
-        let ticket = desk.relink(&mut edits, |_| true, &s).unwrap().unwrap();
+        let Ok(Answers::Later(ticket)) = desk.relink(&mut edits, |_| true, &s) else {
+            panic!("waits for the owner");
+        };
         let rev = |e: &rename::FileEdit| read::rev(e.old_text.as_bytes());
         let no = Err("it is read-only".to_string());
         let answered = desk.edited(OWNER, "A.csv", &rev(&edits[0]), no, &s);
         assert!(answered.is_none());
-        let refuses = "csv-table didn't edit A.csv: it is read-only";
-        let Some(Err(why)) = desk.relinked(ticket) else {
-            panic!("refused under its ticket");
-        };
-        assert_eq!(why, refuses);
+        let refuses = Err("csv-table didn't edit A.csv: it is read-only".to_string());
+        let refused = desk.answered_into(ticket, &mut edits);
+        assert_eq!(refused, refuses, "refused under its ticket");
         assert!(desk.take_relinked().is_empty(), "taken once");
         let asks = desk.take_file_edits();
         assert!(asks.is_empty(), "B.csv's owner isn't asked after all");
@@ -1007,13 +1152,28 @@ mod tests {
         let mut plan = rename::plan(&index, note, "Hot/Lava").unwrap();
         let mut desk = Edits::default();
         let s = index.workspace.item_settings();
-        let relinked = desk.relink(&mut plan.edits, |_| true, s);
-        assert_eq!(relinked, Ok(None), "answered at once");
+        let Ok(Answers::Now(answers)) = desk.relink(&mut plan.edits, |_| true, s) else {
+            panic!("answered at once");
+        };
         assert!(!desk.has_news(), "nothing to send or hand out");
         let board = (plan.edits.iter()).find(|e| e.file == "Board.canvas");
         let board = board.expect("the board links to the note");
         assert_eq!(board.new_text, canvas.replace("Lava.md", "Hot/Lava.md"));
         assert!(board.owned.as_ref().is_some_and(|o| o.after.is_some()));
+        let [answer] = &answers[..] else {
+            panic!("{answers:?}");
+        };
+        let read_back = (
+            answer.file.as_str(),
+            answer.owner.as_str(),
+            answer.rev.clone(),
+        );
+        let new = read::rev(board.new_text.as_bytes());
+        assert_eq!(
+            read_back,
+            ("Board.canvas", "canvas", new),
+            "the version it read back"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

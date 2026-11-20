@@ -3,10 +3,10 @@
 //! and waits for them.
 
 use crate::act::{Answered, Ask};
-use crate::core::Core;
+use crate::core::{Applying, Core, NotApplied, Planned};
 use crate::ext::{Effect, ExtId, Registry};
 use crate::gateway::{Answer, Edit, Edited, Error, Op, Reason};
-use crate::{paths, rename, workspace};
+use crate::{paths, workspace};
 use anyhow::{Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -196,29 +196,24 @@ impl<'a> Owners<'a> {
         }
     }
 
-    /// Ask the owners of the files other owners read among `edits` for their new texts, and
-    /// wait for them: the edits get them, or the first refusal is the error.
-    pub fn relink(&mut self, core: &mut Core, edits: &mut [rename::FileEdit]) -> Result<()> {
-        let ticket = core.relink(edits).map_err(|why| anyhow!("{why}"))?;
-        let Some(ticket) = ticket else {
-            return Ok(());
+    /// Have the core make `plan` (`Core::apply`), and when the owners of the files other owners
+    /// read in it have to answer, start them and wait: what it gives back, or why not.
+    pub fn apply<P: Planned>(&mut self, core: &mut Core, plan: &mut P) -> Result<P::Made> {
+        let ticket = match core.apply(plan) {
+            Applying::Now(made) => return made.map_err(said),
+            Applying::Later(ticket) => ticket,
         };
-        let mut answer = None;
+        let mut answered = false;
         self.serve(core, |c| {
-            answer = (c.take_relinked().into_iter()).find_map(|(t, a)| (t == ticket).then_some(a));
-            answer.is_some()
+            answered = c.take_relinked().contains(&ticket);
+            answered
         });
-        match answer {
-            Some(Ok(answers)) => {
-                rename::answered(edits, answers);
-                Ok(())
-            }
-            Some(Err(why)) => bail!("{why}"),
-            None => {
-                core.cancel_relink(ticket);
-                bail!("the owners didn't answer in {} s", PATIENCE.as_secs())
-            }
+        if !answered {
+            core.cancel_relink(ticket);
+            let secs = PATIENCE.as_secs();
+            bail!("the owners didn't answer in {secs} s; nothing was changed")
         }
+        core.apply_answered(plan, ticket).map_err(said)
     }
 
     /// Asks the extension `name` about a shape it ships (`shape/region`, `shape/gesture`),
@@ -267,5 +262,14 @@ impl<'a> Owners<'a> {
 impl Drop for Owners<'_> {
     fn drop(&mut self) {
         self.registry.shutdown();
+    }
+}
+
+/// What the command line says when the core didn't make a plan: a refusal ends with "nothing
+/// was changed", and a failed write is said as the plan's writer said it.
+fn said(not: NotApplied) -> anyhow::Error {
+    match not {
+        NotApplied::Refused(why) => anyhow!("{why}; nothing was changed"),
+        NotApplied::Failed(e) => e,
     }
 }
