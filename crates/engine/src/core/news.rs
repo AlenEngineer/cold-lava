@@ -16,8 +16,12 @@
 //!   taken, the core drops that subscription's later item news, which the subscriber's query on
 //!   the reset finds anyway. So no caller has to take the news between two calls to keep a
 //!   change from being counted twice. `rescan_now` still leaves its reset in the queue without
-//!   an event for `poll` and without `has_unseen`, so whoever calls it takes the news at once,
-//!   for its subscribers to be up to date.
+//!   an event for `poll` and without `has_unseen` (unless a board's report is news, below), so
+//!   whoever calls it takes the news at once, for its subscribers to be up to date.
+//! - What a rescan finds an owned file leaves out (`OwnedLeavesOut`) is said once, just before
+//!   its `Rescanned`, to `poll` and to a channel alike: in the poll that rescans when the
+//!   watcher reported a folder, and inside the call for a folder's delete or restore (#338).
+//!   `rescan_now` says it to a channel at the call and to `poll` at the next.
 //! - Not so yet: an item that moves without its own lines changing (a line added above it)
 //!   is no news, since its `rev` is the same. A subscriber that applies `items/changed` keeps
 //!   its old `line`; one that queries again hears nothing to query on. The tests here leave
@@ -1431,6 +1435,86 @@ fn a_folders_delete_and_restore_are_each_a_reset_then_the_event() {
     assert_eq!(late.events, [Event::Rescanned]);
     assert_eq!(late.names("agenda"), ["items/reset"]);
     assert_eq!(h.count("agenda", "Clear the gutters"), 1);
+}
+
+/// What the canvas owner says of the board at `path`: what it leaves out, or `None` when it
+/// leaves nothing out any more or is gone.
+fn leaves_out(path: &str, message: Option<&str>) -> Event {
+    Event::OwnedLeavesOut {
+        owner: crate::owner::canvas::OWNER.into(),
+        path: path.into(),
+        message: message.map(str::to_string),
+    }
+}
+
+/// What `board_without_an_id` leaves out.
+const NO_ID: &str = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
+
+/// `BOARD` with its card's id gone, so the card is left out.
+fn board_without_an_id() -> String {
+    BOARD.replace(r#""id":"s""#, r#""id":"""#)
+}
+
+/// #338. The watcher's report of a folder rescans, and what the rescan finds a board leaves
+/// out is said in that poll, before `Rescanned`, to `poll` and to a channel alike, once. The
+/// workspace's own folder is how macOS's watcher can report it.
+#[test]
+fn a_rescan_the_watcher_asks_for_says_what_a_board_leaves_out_in_that_poll() {
+    let mut h = Harness::with("rescan-leaves-out", &[("Board.canvas", BOARD)]);
+    h.write("Board.canvas", &board_without_an_id());
+    h.saw("");
+    let batch = h.deliver();
+    let said = [leaves_out("Board.canvas", Some(NO_ID)), Event::Rescanned];
+    assert_eq!(batch.events, said);
+    assert_eq!(batch.channel, said);
+    assert!(h.deliver().is_empty(), "said once");
+}
+
+/// #338. A folder's delete and restore rescan inside the call, and what a board in it leaves
+/// out is said with that rescan, to `poll` and to a channel alike: nothing any more as it
+/// goes, its card again as it comes back.
+#[test]
+fn a_folders_delete_and_restore_say_what_its_board_leaves_out_once_each() {
+    let board = board_without_an_id();
+    let mut h = Harness::with("trash-board", &[("Zone/Board.canvas", board.as_str())]);
+    let seen = h.stat("Zone");
+    let gone = h.delete("tidy", "Zone", &seen).unwrap();
+    let batch = h.deliver();
+    let said = [
+        leaves_out("Zone/Board.canvas", None),
+        Event::Rescanned,
+        deleted("Zone", "tidy"),
+    ];
+    assert_eq!(batch.events, said);
+    assert_eq!(batch.channel, said);
+
+    h.restore("tidy", &gone.trashed).unwrap();
+    let batch = h.deliver();
+    let said = [
+        leaves_out("Zone/Board.canvas", Some(NO_ID)),
+        Event::Rescanned,
+        restored("Zone", "tidy"),
+    ];
+    assert_eq!(batch.events, said);
+    assert_eq!(batch.channel, said);
+    assert!(h.deliver().is_empty(), "said once each");
+}
+
+/// #338. `rescan_now` says what a board leaves out to a channel at the call, before
+/// `Rescanned`, and to `poll` at the next poll, once.
+#[test]
+fn a_rescan_now_says_what_a_board_leaves_out_at_the_call_and_at_the_next_poll() {
+    let mut h = Harness::with("rescan-now-leaves-out", &[("Board.canvas", BOARD)]);
+    h.write("Board.canvas", &board_without_an_id());
+    h.rescan();
+    let report = leaves_out("Board.canvas", Some(NO_ID));
+    let heard: Vec<Event> = h.channel.try_iter().collect();
+    let said = [report.clone(), Event::Rescanned];
+    assert_eq!(heard, said, "a channel, at the call");
+    let batch = h.deliver();
+    assert_eq!(batch.events, [report], "poll, at the next");
+    assert_eq!(batch.channel, []);
+    assert!(h.deliver().is_empty(), "said once");
 }
 
 fn anchor(item: &Item) -> Edit {
