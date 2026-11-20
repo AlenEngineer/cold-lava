@@ -1386,6 +1386,8 @@ fn list_text(first: &str) -> String {
     text
 }
 
+pub mod anchors;
+
 #[cfg(test)]
 mod pulldown;
 
@@ -1394,7 +1396,7 @@ pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn settings(flavour: &str) -> Settings {
+    pub(crate) fn settings(flavour: &str) -> Settings {
         let nowhere = Path::new("/nonexistent-cold-lava-workspace");
         Settings::new(
             Flavour::built_in(flavour).unwrap(),

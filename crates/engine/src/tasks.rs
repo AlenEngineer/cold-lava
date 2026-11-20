@@ -664,8 +664,7 @@ pub fn toggle_text(
         out.push_str(nl);
     }
     let new_items = items::extract(rel, &out, item_settings);
-    let ticked = task_at(&new_items, toggled_line, &new_line, settings);
-    keeps_anchor(item, ticked.map(|(i, _)| i))?;
+    keeps_anchors(text, &note_items, &new_items, item, next_at)?;
     let rev_at = |at: usize| {
         task_at(&new_items, at, &lines[at - 1], settings)
             .map_or_else(|| line_id(&lines[at - 1]), |(i, _)| i.rev.clone())
@@ -709,23 +708,51 @@ fn cut_own_block_id<'a>(body: &'a str, item: &Item) -> (&'a str, &'a str) {
     }
 }
 
-/// Refused when the ticked task would not keep the block id it had (`was`): its anchor, which
-/// links point at, is never moved or dropped quietly. `now` is the ticked task read back.
-fn keeps_anchor(was: &Item, now: Option<&Item>) -> Result<()> {
-    let (was, now) = (
-        was.block_id.as_deref(),
-        now.and_then(|i| i.block_id.as_deref()),
-    );
-    if was == now {
-        return Ok(());
+/// Refused when the tick of `ticked` would lose, move or make a block id (`items::anchors`):
+/// `before` and `after` are the note's items, `text` the note before the tick, and `next` the
+/// line the next occurrence went on. The words say why and what to do.
+fn keeps_anchors(
+    text: &str,
+    before: &[Item],
+    after: &[Item],
+    ticked: &Item,
+    next: Option<usize>,
+) -> Result<()> {
+    use items::anchors::{self, Change};
+    // The next occurrence goes on a line of its own: what starts after the ticked task moves
+    // down one, and the task too when it goes above. A block the task opens (a list named by
+    // `^list`) starts where it did, now on the next occurrence.
+    let lands = |i: &Item| match next {
+        Some(next) if std::ptr::eq(i, ticked) => i.line + (next == i.line) as usize,
+        Some(_) if i.line > ticked.line => i.line + 1,
+        _ => i.line,
+    };
+    let mut same = anchors::by_line(before, after, &lands);
+    let k = before.iter().position(|i| std::ptr::eq(i, ticked));
+    let k = k.expect("the ticked task is one of the note's items");
+    // A tick may make the task another type's: it is still the item on its line.
+    if same[k].is_none() {
+        let free = |j: &usize| after[*j].line == lands(ticked) && !same.contains(&Some(*j));
+        let found = (0..after.len()).find(free);
+        same[k] = found;
     }
-    let named = |id: Option<&str>| id.map_or_else(|| "none".to_string(), |id| format!("^{id}"));
-    Err(crate::edit::EditError::ReadBack(format!(
-        "the task's block id would change from {} to {}",
-        named(was),
-        named(now)
-    ))
-    .into())
+    let Some(change) = anchors::change(before, after, &same, k, text) else {
+        return Ok(());
+    };
+    let words = match &change {
+        Change::Moved { id, to, .. } if Some(*to) == next => format!(
+            "^{id} is on a later line of this task, and the next occurrence, which goes right \
+             under the task's first line, would take it; put the task on one line ending in \
+             ^{id}, or turn off the Tasks plugin's \"next recurrence on the line below\""
+        ),
+        Change::Made { id, on } if Some(*on) == next => format!(
+            "the next occurrence would be a copy of the task's first line, which ends in ^{id}, \
+             and would take ^{id} as a new anchor; move ^{id} to the end of the task's last \
+             line, or take it off"
+        ),
+        _ => change.to_string(),
+    };
+    Err(crate::edit::EditError::Anchor(words).into())
 }
 
 fn strip_field(body: &str, emoji: &str, dv: &str) -> String {

@@ -182,10 +182,14 @@ then a query and a view, not a parser of its own.
   the note, so they are unique in the workspace), makes the edit through that op's safe path,
   reads the note again at once, and answers `{item, changed, next, warning}`: the item as it
   reads now (a new id when the edit changed its key), whether anything was written, a
-  recurring task's next occurrence, and a warning that didn't stop the edit. A toggle keeps
-  the task's block id (`^rent`, its anchor) on the task it ticked: for a recurring task that
-  is the done line, and `next` has no block id. A toggle that would move or drop the anchor
-  is refused as `read-back`.
+  recurring task's next occurrence, and a warning that didn't stop the edit. An edit keeps
+  every block id (`^rent`, an anchor) on the item that had it (`items::anchors`, for
+  `set-field` and `toggle` alike): a recurring task's stays on the done line, and `next` has
+  none. An edit that would lose an anchor, move it to another item or make a new one is
+  refused as `read-back`, in words that say why and what to do. The one id an edit may give
+  an item is one already written in its own text: unticking `- [x] Pay rent ^rent ✅
+  2026-11-07` (as 0.6.0 ticked it) gives `- [ ] Pay rent ^rent`, and the task its anchor
+  back.
 - **Refusals** are `{reason, message}`, the JSON-RPC error's `data` once a transport carries
   them: `changed` (the item is gone or not the version `rev` names, or the file changed while
   writing), `refused` (an unknown kind or field, a read-only source, a value that doesn't fit,

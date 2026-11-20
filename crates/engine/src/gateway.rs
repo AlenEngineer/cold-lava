@@ -221,7 +221,7 @@ impl From<EditError> for Error {
         let reason = match e {
             EditError::Changed(_) => Reason::Changed,
             EditError::Refused(_) => Reason::Refused,
-            EditError::ReadBack(_) => Reason::ReadBack,
+            EditError::ReadBack(_) | EditError::Anchor(_) => Reason::ReadBack,
             EditError::Io(_) => Reason::Io,
         };
         Error::new(reason, e.to_string())
@@ -1400,6 +1400,13 @@ fields.text = { rest = true }
             read_back.message,
             "refused, the note would not read back: due"
         );
+        let anchor = Error::from(EditError::Anchor("^rent would go".into()));
+        assert_eq!(
+            anchor.reason,
+            Reason::ReadBack,
+            "an anchor's refusal is a read-back"
+        );
+        assert_eq!(anchor.message, "^rent would go", "in its own words");
         wire(
             News::Changed {
                 subscription: SubId(1),

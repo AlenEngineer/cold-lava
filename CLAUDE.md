@@ -319,6 +319,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   that compares the two on every note of the corpus. pulldown-cmark is a dev-dependency of
   the engine: those two test modules (`items/pulldown.rs`, `markdown/pulldown.rs`) are all
   that use it, and nothing shipped may. Read tasks through items, not by scanning lines.
+  `items/anchors.rs` is the anchor rule: an edit loses no block id, moves none to another
+  item and makes none, but one already written in the edited item's own text (an untick of
+  a line 0.6.0 ticked after `^rent`). `set-field`'s and the tick's read-backs both ask it
+  (`anchors::change`); don't check block ids anywhere else.
 - `alphabet.rs`, `types.rs`, `matcher.rs`: the alphabet and the type language.
   `alphabet::Role` is the nine roles a piece of writing can have (`document`, `section`,
   `text`, `item`, `row`, `aside`, `verbatim`, `embed`, `opaque`), `alphabet::Mark` the six
