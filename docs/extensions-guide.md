@@ -14,7 +14,7 @@ This guide builds on the example in
 example carries its own copy of the helper, so it can be installed alone. The protocol itself is in
 [extensions.md](extensions.md#transport-as-built).
 
-**Which part you play.** [engine.md](engine.md#the-library-the-engine-as-a-story) tells the
+**Which part you play.** [ARCHITECTURE.md](../ARCHITECTURE.md#the-library) tells the
 engine as a library: your files are books in many languages, the engine's core is the librarian
 who keeps them safe, and everyone speaks one common language at the door. An extension can play
 any of these parts, alone or together:

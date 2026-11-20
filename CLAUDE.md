@@ -16,8 +16,9 @@ with ratatui). Three things define it:
   data, file formats, types and simple views (lists, tables, scenes). The surfaces you work in
   (the page with the reader and the editor, the whiteboard) are built into the frontend.
 
-The ideas the project is built on are `docs/foundations.md`: read it before designing anything,
-and where it and another document disagree about an idea, it is right. The order of work is
+The picture, told as a library with translators and a librarian, and a map of the crates, is
+`ARCHITECTURE.md`. The ideas the project is built on are `docs/foundations.md`: read it before
+designing anything, and where it and another document disagree about an idea, it is right. The order of work is
 the first section of roadmap issue #100: the engine-facing work first (one
 path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
 
@@ -683,7 +684,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
 
 ## Where things stand
 
-- The whole picture (engine layers, engine vs. frontends) is `docs/engine.md`; the crate split
+- The whole picture is `ARCHITECTURE.md`; the engine's layers and engine vs. frontends are
+  `docs/engine.md`; the crate split
   keeps the engine free of ratatui/crossterm. The extension API design is in `docs/extensions.md`. The connection to extensions must stay
   behind the `Transport`/`Connector` abstraction (stdio first; Unix sockets etc. later).
 - The direction and the order of work were decided on 2026-11-11 (`docs/engine.md`, "Direction

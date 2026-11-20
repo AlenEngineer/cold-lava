@@ -9,7 +9,8 @@ parts are still to be designed; each layer says which.
 cold-lava is two things: an **engine** that understands a workspace of plain files (Markdown notes, canvases, and
 any format an owner reads), and
 **frontends** that show it (today one, the terminal UI). Extensions reach them through two
-gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
+gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the engine's layers and frontends as built; the picture as a story and a map of
+the code is [ARCHITECTURE.md](../ARCHITECTURE.md), and [extensions.md](extensions.md) has the protocol and
 plans in detail.
 
 ```
@@ -48,71 +49,11 @@ Both gateways are JSON-RPC messages over a transport (stdio, a socket, or in-pro
 built-in extensions), but they are separate protocols: the engine never sees the view gateway,
 and the frontend never parses a note.
 
-## The library: the engine as a story
+## The library
 
-Someone keeps notes in many books, written in different languages, some in dialects. Looking
-something up means switching languages, and that wears them out. So they hire a translator for
-each language. The translators agree on one common language for their reports, and the reader
-uses that same language to ask, and to ask for changes. Only the translators ever speak a
-book's own language.
-
-That is cold-lava. The rest of the cast keeps the books safe.
-
-| In the story | In cold-lava | Where |
-| --- | --- | --- |
-| The library | The engine | `crates/engine` |
-| The books | Your files: notes, canvases, CSV, anything | the workspace |
-| A book's language | A file format, and its flavour | `markdown.rs`, `json_canvas.rs` |
-| The translators | Owners: each reads one format into items and links, and writes one change back | `owner/` |
-| Staff translators | The built-in owners, Markdown and canvas | `owner/markdown.rs`, `owner/canvas.rs` |
-| Outside translators | Owners that extensions bring, answering `file/read` and `file/edit` | `owner/given.rs` |
-| The common language | The alphabet (roles, marks, attributes, links) and the types written in it | `alphabet.rs`, `types.rs` |
-| The librarian | The core: asks the translators, checks their work, swaps pages in | `core.rs` |
-| The catalogue | The index: every item, link and backlink, kept from the translators' reports | `index.rs` |
-| The door, and its forms | The workspace gateway's messages | `gateway.rs`, `files.rs` |
-| The front desk | The extension host: checks every visitor's badge (its permissions) before the librarian hears a word | `crates/host` |
-| The readers | The terminal app, extensions that only ask, and a first GUI; a language server to come | `crates/cold-lava`, `crates/gui` |
-
-**The librarian needs no book's language to check a translator's work.** When the librarian
-asks for a change to a page (`file/edit`, for an item edit or a rename), the translator answers
-with the new page. The librarian hands it back to the same translator and asks for a fresh
-report on it. It compares that report with the one it expected: the old report with the asked
-change made, both in the common language. If anything else moved, the page is refused
-(`given::same`). Whether someone else wrote in the book meanwhile is a comparison of bytes, not a
-reading: the bytes it read against the bytes there now (`write::replace`; over the gateway, a
-fingerprint of them, `rev`). Swapping the page in is copying bytes, atomically (`write.rs`), and
-a page taken out goes to the trash, never deleted for good (`trash.rs`).
-
-**An outside translator is a stranger.** Every report it gives is measured against limits as it
-arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note saying
-why (`Given::left_out`). A code editor's language server returns edits instead of saving files
-for the same reason.
-
-**Where the story is ahead of the code.**
-
-- The librarian still reads one language itself: Markdown. The core walks notes into items and
-  the matcher reads their text. A note's `set-field` is checked by Markdown's own read-back
-  (`edit::read_back`), and a tick only by finding a task on its line; neither by `given::same`. Track D (#272) moves Markdown's reading out of the
-  core into its owner.
-- A translator can still write its own books without the librarian's check: an owner may save
-  its own kind of file with `workspace/write`, which is checked only for changes made elsewhere
-  (`rev`), and its new text is not read back. Whether to keep that door is the owner's decision
-  (#310).
-- Not every reader comes through the door yet: the terminal app still reads the index and writes
-  some files itself (`crates/cold-lava/tests/one_door.rs` lists each), and track B (#270)
-  closes those. The GUI scans the workspace itself, beside the core, and is outside that test's
-  lists (#277 deletes it until the GUI is real).
-- The librarian keeps some state machines that belong to clerks of their own: the owned-file edit
-  and rename, and the nine places it both sends events to subscribers and keeps them for `poll`.
-  Track C (#271) moves them out, so
-  the librarian only calls on its clerks in order.
-- Characters not hired yet. Decided: **the bookmark**, a name stuck on a passage (an item) the
-  first time something refers to it, so the reference survives a reword or a move (#190).
-  Proposed, with decisions still open: **the archivist**, who keeps every page the librarian
-  replaces (#305); **the logbook**, where every change is written down with who asked and which
-  translator wrote it (#306); **dictionaries**, a format described as data, so the librarian
-  could check a write by its bytes (#307); and a **ladder of trust** for how far an outside
-  translator may write (#308).
+The engine told as a story (a library, its translators, its librarian), with each character
+mapped to the code that plays it and where the code is still behind it, is
+[ARCHITECTURE.md](../ARCHITECTURE.md#the-library).
 
 ## The layers
 

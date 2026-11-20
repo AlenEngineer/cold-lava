@@ -995,8 +995,9 @@ links, or stops with its reason and changes nothing.
 
 ## Development
 
-How it fits together: [docs/engine.md](docs/engine.md) (the engine, its layers and the
-frontends) and [docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
+How it fits together: [ARCHITECTURE.md](ARCHITECTURE.md) (the picture, as a story, and a map
+of the code), [docs/engine.md](docs/engine.md) (the engine, its layers and the frontends) and
+[docs/extensions.md](docs/extensions.md) (the extension protocol and plans).
 
 The engine (`crates/engine`, no user interface), the terminal UI (`crates/cold-lava`), the
 extension host every frontend shares (`crates/host`, no user interface: manifests, permissions,
