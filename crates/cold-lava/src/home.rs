@@ -4407,18 +4407,27 @@ impl Home {
         }
     }
 
+    /// The core didn't make the `what` (a rename, a merge or a recipe), and the status line says
+    /// why: a refusal changed nothing, and after a failed write the tree is read again. A
+    /// rename's failure leaves out its causes, as it did before `Core::apply` (#270).
+    fn not_made(&mut self, what: &str, not: NotApplied) {
+        let failed = match not {
+            NotApplied::Refused(why) => {
+                return self.flash(format!("{what} cancelled, nothing was changed: {why}"));
+            }
+            NotApplied::Failed(e) if what == "rename" => format!("{e}"),
+            NotApplied::Failed(e) => format!("{e:#}"),
+        };
+        self.reload_tree();
+        self.flash(format!("{what} failed: {failed}"));
+    }
+
     /// The core made the rename (`Core::apply`): the editor, the note shown and every path the
     /// menu keeps follow the moves. Or it didn't, and the status line says why.
     fn renamed(&mut self, made: Result<crate::rename::Plan, NotApplied>, marked: bool) {
         let plan = match made {
             Ok(plan) => plan,
-            Err(NotApplied::Refused(why)) => {
-                return self.flash(format!("rename cancelled, nothing was changed: {why}"));
-            }
-            Err(NotApplied::Failed(e)) => {
-                self.reload_tree();
-                return self.flash(format!("rename failed: {e}"));
-            }
+            Err(not) => return self.not_made("rename", not),
         };
         if let Some(editor) = self.running_editor() {
             for (from, to) in plan.file_moves() {
@@ -4727,13 +4736,7 @@ impl Home {
     fn merged(&mut self, made: Result<(crate::merge::Merge, crate::merge::Merged), NotApplied>) {
         let (plan, done) = match made {
             Ok(made) => made,
-            Err(NotApplied::Refused(why)) => {
-                return self.flash(format!("merge cancelled, nothing was changed: {why}"));
-            }
-            Err(NotApplied::Failed(e)) => {
-                self.reload_tree();
-                return self.flash(format!("merge failed: {e:#}"));
-            }
+            Err(not) => return self.not_made("merge", not),
         };
         let (source, target) = (&plan.source_path, &plan.target_path);
         if let Some(editor) = self.running_editor() {
@@ -4879,13 +4882,7 @@ impl Home {
     ) {
         let (plan, done) = match made {
             Ok(made) => made,
-            Err(NotApplied::Refused(why)) => {
-                return self.flash(format!("recipe cancelled, nothing was changed: {why}"));
-            }
-            Err(NotApplied::Failed(e)) => {
-                self.reload_tree();
-                return self.flash(format!("recipe failed: {e:#}"));
-            }
+            Err(not) => return self.not_made("recipe", not),
         };
         self.reload_tree();
         if self.running_editor().is_none() {
