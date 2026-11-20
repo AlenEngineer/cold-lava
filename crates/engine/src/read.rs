@@ -242,6 +242,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[test]
+    fn bytes_read_earlier_or_just_written_are_checked_as_a_file_seen_now() {
+        let d = dir("kept");
+        let p = d.join("Lava.md");
+        std::fs::write(&p, "v1").unwrap();
+        let earlier = Seen::kept(&p, "v1");
+        assert_eq!(earlier, Seen::file(&p).unwrap());
+        earlier.replace(b"v2").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"v2");
+        assert!(matches!(earlier.unchanged(), Err(WriteError::Changed(at)) if at == p));
+        let written = Seen::kept(&p, b"v2".to_vec());
+        assert!(
+            written.unchanged().is_ok(),
+            "what was just written is there"
+        );
+        std::fs::write(&p, "v3").unwrap();
+        assert!(matches!(written.replace(b"v4"), Err(WriteError::Changed(at)) if at == p));
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"v3",
+            "another program's change is kept"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn what_was_seen_follows_a_move() {
+        let d = dir("moved");
+        let (from, to) = (d.join("Lava.md"), d.join("Volcanoes/Lava.md"));
+        std::fs::write(&from, "hot").unwrap();
+        let seen = Seen::file(&from).unwrap();
+        write::move_file(&from, &to).unwrap();
+        let Err(WriteError::Io(at, e)) = seen.unchanged() else {
+            panic!("nothing is where it was seen");
+        };
+        assert_eq!((at, e.kind()), (from, io::ErrorKind::NotFound));
+        let moved = seen.at(&to);
+        assert_eq!(moved.text(), Ok("hot"));
+        moved.replace(b"cold").unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"cold");
+        assert!(matches!(moved.unchanged(), Err(WriteError::Changed(at)) if at == to));
+        let (folder, renamed) = (d.join("Volcanoes"), d.join("Mountains"));
+        let listing = Seen::entry(&folder).unwrap();
+        write::move_file(&folder, &renamed).unwrap();
+        assert!(
+            listing.at(&renamed).unchanged().is_ok(),
+            "a folder is read again as its listing"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_delete_checks_the_entry_itself_whatever_way_it_was_seen() {
+        let d = dir("entry-check");
+        let (target, link) = (d.join("Lava.md"), d.join("Link.md"));
+        std::fs::write(&target, "hot").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let kept = Seen::kept(&target, "hot");
+        assert!(
+            kept.unchanged_entry().is_ok(),
+            "a file seen as one is that entry"
+        );
+        let through = Seen::file(&link).unwrap();
+        assert!(through.unchanged().is_ok());
+        assert!(
+            matches!(through.unchanged_entry(), Err(WriteError::Changed(at)) if at == link),
+            "a file seen through a link is not the link"
+        );
+        let entry = Seen::entry(&link).unwrap();
+        std::fs::write(&target, "cold").unwrap();
+        assert!(matches!(kept.unchanged_entry(), Err(WriteError::Changed(at)) if at == target));
+        assert!(
+            entry.unchanged_entry().is_ok(),
+            "the link still points where it did"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_file_is_read_through_a_link_and_an_entry_is_the_link() {
