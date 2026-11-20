@@ -3093,7 +3093,10 @@ fields.star = { flag = "⭐", type = "bool" }
         assert!(why.starts_with(&long()), "{why}");
     }
 
-    /// A bad item moved is named, not those it passed.
+    /// A bad item moved is named, not those it passed: one left out as it arrives, and one
+    /// left out as it is read, a piece among them, which the pieces' order would otherwise
+    /// name by what it says. A bad item and its neighbour swapped can't be told from the
+    /// neighbour moving: the bad one is named, since it didn't come back where it was.
     #[test]
     fn a_bad_item_moved_is_named_and_not_those_it_passed() {
         let to_front = |from: usize| {
@@ -3102,6 +3105,8 @@ fields.star = { flag = "⭐", type = "bool" }
                 items.insert(0, moved);
             })
         };
+        let why = to_front(4);
+        assert!(why.starts_with("orphan: it is in ghost"), "{why}");
         let why = to_front(5);
         assert!(why.starts_with(&long()), "{why}");
         let why = to_front(7);
@@ -3111,28 +3116,32 @@ fields.star = { flag = "⭐", type = "bool" }
             items.push(moved);
         });
         assert!(why.starts_with("bad: unknown field `colour`"), "{why}");
+        let why = refused(|items, _| items.swap(6, 7));
+        assert!(why.starts_with("ty2: no type called volcano"), "{why}");
+        let why = refused(|_, links| links.swap(2, 3));
+        assert!(why.starts_with("a link from chore to nowhere"), "{why}");
     }
 
     /// A good item added, moved or dropped before a bad one is named, and the bad ones, which
     /// only stand elsewhere because of it, are not.
     #[test]
     fn a_good_item_added_moved_or_dropped_is_named_and_not_a_bad_one() {
-        let new = json!({"place": "ng", "role": "item", "text": ["New good"]});
-        let why = refused(|items, _| items.insert(0, new));
-        assert!(
-            why.contains("New good") && !why.contains("left out"),
-            "{why}"
-        );
         let moved = |from: usize, to: usize| {
             refused(move |items, _| {
                 let moved = items.remove(from);
                 items.insert(to, moved);
             })
         };
+        let why = moved(6, 2);
+        assert!(why.starts_with("the item at md "), "{why}");
         let why = moved(3, 0);
         assert!(why.starts_with("the item at ty "), "{why}");
-        let why = moved(6, 7);
-        assert!(why.starts_with("the item at md "), "{why}");
+        let new = json!({"place": "ng", "role": "item", "text": ["New good"]});
+        let why = refused(|items, _| items.insert(0, new));
+        assert!(
+            why.contains("New good") && !why.contains("left out"),
+            "{why}"
+        );
         let why = refused(|items, _| drop(items.remove(6)));
         assert!(
             why.contains("Markdown task") && !why.contains("left out"),
