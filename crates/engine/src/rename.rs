@@ -61,7 +61,7 @@ pub struct Through {
 }
 
 /// Put the owners' answers (`Core::take_relinked`) into `edits`, by file.
-pub fn answered(edits: &mut [FileEdit], answers: Vec<FileEdit>) {
+pub(crate) fn answered(edits: &mut [FileEdit], answers: Vec<FileEdit>) {
     for a in answers {
         if let Some(e) = edits.iter_mut().find(|e| e.file == a.file) {
             *e = a;
@@ -714,7 +714,7 @@ impl Written {
 /// Carry out a plan: refuse if any file changed since it was made, or a file another owner reads
 /// has no new text from it yet (`Core::relink`), then make the moves (undoing the ones made if one
 /// fails) and write each changed file atomically.
-pub fn apply(plan: &Plan) -> Result<()> {
+pub(crate) fn apply(plan: &Plan) -> Result<()> {
     check_answered(&plan.edits)?;
     check_unchanged(plan.edits.iter().chain(&plan.bookmarks), "rename")?;
     for m in &plan.moves {

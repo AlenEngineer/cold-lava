@@ -115,6 +115,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `core.rs`: `Core` = one live workspace. Owns the `Index`, is the only file watcher, re-reads only
   changed notes and emits `Event`s (`poll()`, `subscribe()`). The menu owns it, and the graph
   runs in the menu's loop on it. Don't add another watcher or full rescan loop.
+  `core/whole.rs` is `Core::apply`, the one call that makes a rename, a merge or a recipe once
+  it is planned and shown: the owners of the files other owners read give their new texts
+  (`relink`), then it is written, then what they read is kept (`relinked`); an extension's
+  answer comes later, from `take_relinked`, for `apply_answered`. `rename::apply`,
+  `merge::apply` and `recipe::apply` are the engine's own, so no frontend writes a plan
+  around it. Reading the workspace again afterwards is still the caller's.
   `core/news.rs` (tests only) is the harness for what subscribers hear and in which order: it
   plays the watcher and an owner, applies steps (outside write, `items/edit`, rescan, rename,
   recipe, an owner's answers) and collects each delivery, with no waiting. Test a change to how
@@ -168,11 +174,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   (`gateway::Request::Style`, answered by `Host::style`).
 - `search.rs`: fuzzy matching (quick switcher) and full-text search with match positions.
 - `rename.rs`: rename/move with every link updated;
-  `plan()` then `apply()`. Its `FileEdit` (a file's planned new text, or what to ask its owner),
-  `check_unchanged` and `Written` (files written, to put back) are shared by merges and recipes.
+  `plan()`, then `Core::apply`. Its `FileEdit` (a file's planned new text, or what to ask its
+  owner), `check_unchanged` and `Written` (files written, to put back) are shared by merges and
+  recipes.
 - `recipe.rs`: recipes, named whole-workspace changes (`BUILT_IN`: `rename-tag`). `plan()`
   (a `Draft` of every file's new text, nothing written, a diff per file), `apply()` (refused if a
-  file changed; owned files get their text from their owners through `Core::relink` first) and
+  file changed; owned files get their text from their owners first, through `Core::apply`) and
   `undo()`. A recipe finds what it changes through owners (tags: `owner::markdown::tags_in`),
   never by matching files itself.
 - `json_canvas.rs`: JSON Canvas, Obsidian's `.canvas`: `Doc` (unknown fields kept), `parse`,
@@ -243,12 +250,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   fragment with #244, not before. No extension may claim a built-in owner's kind.
   **One path for owned files** (#183): a file that isn't a note is changed the same way
   whoever owns it. An item edit (`Core::edit_item`) and a rename, merge or recipe
-  (`FileEdit::owned`, then `Core::relink`) ask the owner `file/edit`, read its new text back
+  (`FileEdit::owned`, then `Core::apply`) ask the owner `file/edit`, read its new text back
   (`file/read`) and only then write. The canvas owner answers the same two requests through
   `owner::give`/`owner::edit`, inside the call, so a canvas's edit is done when `edit_item`
-  returns (still `Later`, the answer already in `take_edited`) and `relink` returns `None` with
-  the new texts in the plan when no extension has to answer. Don't give a built-in owner a
-  shortcut around that flow, and don't branch on who owns a file outside `owner/mod.rs`.
+  returns (still `Later`, the answer already in `take_edited`) and `apply` makes a rename at
+  once when no extension has to answer. Don't give a built-in owner a shortcut around that
+  flow, and don't branch on who owns a file outside `owner/mod.rs`.
   What stays direct: Markdown (the scan and a note's edits never ask anyone), the scan reading
   canvases into `owned` (it has no core to ask through), and planning a canvas's rename
   (`canvas::relink` plans its own changes, since a card holds a path, not a link).
@@ -543,7 +550,7 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   the gateway. The lists only shrink: a new use fails, and so does an entry that is gone
   and still listed.
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
-  plans, applies and undoes through `recipe.rs`, asking owners as the merge dialog does.
+  plans and undoes through `recipe.rs`, and the core makes it (`Core::apply`), as a merge.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a
   private OSC sequence `ESC ] 5379 ; kind ; payload BEL` (Neovim's come from `VIM_SCRIPT` in
   `ext/nvim.rs`); the payload encodes non-ASCII as `%u<hex>;`. The core passes them to the

@@ -738,7 +738,7 @@ impl Core {
     /// changed since it was planned, has an edit waiting, its change would leave out something
     /// its owner gave (`given::check_change`: a link target past its bound), or an owner in the
     /// engine refuses.
-    pub fn relink(
+    pub(crate) fn relink(
         &mut self,
         edits: &mut [crate::rename::FileEdit],
     ) -> Result<Option<Ticket>, String> {
@@ -760,11 +760,7 @@ impl Core {
     /// After a rename or merge with `edits` was made, before reading the workspace again: what
     /// the owners read in their files' new texts, at `moved` (where each file is now), is kept as
     /// their answer for that version, so they aren't asked again.
-    pub fn relinked(
-        &mut self,
-        edits: &[crate::rename::FileEdit],
-        moved: impl Fn(&Path) -> PathBuf,
-    ) {
+    fn relinked(&mut self, edits: &[crate::rename::FileEdit], moved: impl Fn(&Path) -> PathBuf) {
         for e in edits {
             let Some((o, after)) = e.owned.as_ref().and_then(|o| Some((o, o.after.as_ref()?)))
             else {

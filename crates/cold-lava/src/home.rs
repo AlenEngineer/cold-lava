@@ -8,7 +8,7 @@ use crate::commands::{
     self, Entry, HistoryAction, Key, KeyHint, Keymap, MenuAction, MenuCommand, PaneAction,
     ReaderAction,
 };
-use crate::core::{Core, Event as CoreEvent, Jump};
+use crate::core::{Applying, Core, Event as CoreEvent, Jump, NotApplied};
 use crate::embed::Embedded;
 use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
@@ -421,7 +421,7 @@ enum Mode {
         /// It moves the marked items, so the marks are done with afterwards.
         marked: bool,
         /// Confirmed, and waiting for the owners of files other owners read to give their new
-        /// texts (`Core::relink`); nothing has moved yet.
+        /// texts (`Core::apply`); nothing has moved yet.
         waiting: Option<Ticket>,
     },
     /// Showing what merging a note into another will change before doing it.
@@ -4324,8 +4324,9 @@ impl Home {
         self.flash(msg);
     }
 
-    /// The rename shown was confirmed: ask the owners of the files other owners read in it for
-    /// their new texts first (`deliver_relinked` makes it once they have), else make it now.
+    /// The rename shown was confirmed: the core makes it (`Core::apply`), or waits for the
+    /// owners of the files other owners read in it to give their new texts first
+    /// (`deliver_relinked` hands it their answer).
     fn confirm_rename(&mut self) {
         let Mode::ConfirmRename {
             plan,
@@ -4339,25 +4340,20 @@ impl Home {
         let Some(core) = self.core.as_mut() else {
             return;
         };
-        match core.relink(&mut plan.edits) {
-            Ok(Some(ticket)) => {
+        let made = match core.apply(&mut **plan) {
+            Applying::Later(ticket) => {
                 *waiting = Some(ticket);
-                self.ask_owners();
+                return self.ask_owners();
             }
-            Ok(None) => {
-                let (plan, marked) = ((**plan).clone(), *marked);
-                self.mode = Mode::Normal;
-                self.apply_rename(plan, marked);
-            }
-            Err(why) => {
-                self.mode = Mode::Normal;
-                self.flash(format!("rename cancelled, nothing was changed: {why}"));
-            }
-        }
+            Applying::Now(made) => made.map(|()| (**plan).clone()),
+        };
+        let marked = *marked;
+        self.mode = Mode::Normal;
+        self.renamed(made, marked);
     }
 
-    /// Make the rename or merge whose owners have given their files' new texts, or say why one
-    /// didn't.
+    /// Hand the owners' answer to the rename, merge or recipe that waited for it, for the core to
+    /// make it (`Core::apply_answered`), or say why one isn't made.
     fn deliver_relinked(&mut self) {
         let Some(core) = self.core.as_mut() else {
             return;
@@ -4380,53 +4376,45 @@ impl Home {
                 );
                 continue;
             }
-            match (std::mem::replace(&mut self.mode, Mode::Normal), answer) {
-                (
-                    Mode::ConfirmRename {
-                        mut plan, marked, ..
-                    },
-                    Ok(answers),
-                ) => {
-                    crate::rename::answered(&mut plan.edits, answers);
-                    self.apply_rename(*plan, marked);
+            let Some(core) = self.core.as_mut() else {
+                return;
+            };
+            match std::mem::replace(&mut self.mode, Mode::Normal) {
+                Mode::ConfirmRename {
+                    mut plan, marked, ..
+                } => {
+                    let made = core.apply_answered(&mut *plan, answer).map(|()| *plan);
+                    self.renamed(made, marked);
                 }
-                (Mode::ConfirmMerge { mut plan, .. }, Ok(answers)) => {
-                    crate::rename::answered(&mut plan.edits, answers);
-                    self.apply_merge(*plan);
+                Mode::ConfirmMerge { mut plan, .. } => {
+                    let made = core.apply_answered(&mut *plan, answer);
+                    self.merged(made.map(|done| (*plan, done)));
                 }
-                (Mode::ConfirmMerge { .. }, Err(why)) => {
-                    self.flash(format!("merge cancelled, nothing was changed: {why}"))
-                }
-                (Mode::Recipe(view), answer) => {
+                Mode::Recipe(view) => {
                     let recipe_view::Step::Plan { mut plan, .. } = view.step else {
                         continue;
                     };
-                    match answer {
-                        Ok(answers) => {
-                            crate::rename::answered(&mut plan.edits, answers);
-                            self.apply_recipe(*plan);
-                        }
-                        Err(why) => {
-                            self.flash(format!("recipe cancelled, nothing was changed: {why}"))
-                        }
-                    }
+                    let made = core.apply_answered(&mut *plan, answer);
+                    self.recipe_applied(made.map(|done| (*plan, done)));
                 }
-                (_, Err(why)) => {
-                    self.flash(format!("rename cancelled, nothing was changed: {why}"))
-                }
-                (_, Ok(_)) => {}
+                _ => {}
             }
         }
     }
 
-    fn apply_rename(&mut self, plan: crate::rename::Plan, marked: bool) {
-        if let Err(e) = crate::rename::apply(&plan) {
-            self.reload_tree();
-            return self.flash(format!("rename failed: {e}"));
-        }
-        if let Some(core) = self.core.as_mut() {
-            core.relinked(&plan.edits, |p| plan.moved(p));
-        }
+    /// The core made the rename (`Core::apply`): the editor, the note shown and every path the
+    /// menu keeps follow the moves. Or it didn't, and the status line says why.
+    fn renamed(&mut self, made: Result<crate::rename::Plan, NotApplied>, marked: bool) {
+        let plan = match made {
+            Ok(plan) => plan,
+            Err(NotApplied::Refused(why)) => {
+                return self.flash(format!("rename cancelled, nothing was changed: {why}"));
+            }
+            Err(NotApplied::Failed(e)) => {
+                self.reload_tree();
+                return self.flash(format!("rename failed: {e}"));
+            }
+        };
         if let Some(editor) = self.running_editor() {
             for (from, to) in plan.file_moves() {
                 if from.extension().is_some_and(|e| e == "md") {
@@ -4714,37 +4702,34 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                match core.relink(&mut plan.edits) {
-                    Ok(Some(ticket)) => {
+                let made = match core.apply(&mut **plan) {
+                    Applying::Later(ticket) => {
                         *waiting = Some(ticket);
-                        self.ask_owners();
+                        return self.ask_owners();
                     }
-                    Ok(None) => {
-                        let plan = (**plan).clone();
-                        self.mode = Mode::Normal;
-                        self.apply_merge(plan);
-                    }
-                    Err(why) => {
-                        self.mode = Mode::Normal;
-                        self.flash(format!("merge cancelled, nothing was changed: {why}"));
-                    }
-                }
+                    Applying::Now(made) => made.map(|done| ((**plan).clone(), done)),
+                };
+                self.mode = Mode::Normal;
+                self.merged(made);
             }
             _ => {}
         }
     }
 
-    fn apply_merge(&mut self, plan: crate::merge::Merge) {
-        let done = match crate::merge::apply(&plan, trash::system_bin().as_ref()) {
-            Ok(done) => done,
-            Err(e) => {
+    /// The core made the merge (`Core::apply`): the editor lets the source go, every path the
+    /// menu keeps leads to the target, and the merge can be undone. Or it didn't, and the status
+    /// line says why.
+    fn merged(&mut self, made: Result<(crate::merge::Merge, crate::merge::Merged), NotApplied>) {
+        let (plan, done) = match made {
+            Ok(made) => made,
+            Err(NotApplied::Refused(why)) => {
+                return self.flash(format!("merge cancelled, nothing was changed: {why}"));
+            }
+            Err(NotApplied::Failed(e)) => {
                 self.reload_tree();
                 return self.flash(format!("merge failed: {e:#}"));
             }
         };
-        if let Some(core) = self.core.as_mut() {
-            core.relinked(&plan.edits, Path::to_path_buf);
-        }
         let (source, target) = (&plan.source_path, &plan.target_path);
         if let Some(editor) = self.running_editor() {
             let request = EditorRequest::Deleted {
@@ -4868,35 +4853,35 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                match core.relink(&mut plan.edits) {
-                    Ok(Some(ticket)) => {
+                let made = match core.apply(&mut **plan) {
+                    Applying::Later(ticket) => {
                         *waiting = Some(ticket);
                         self.mode = Mode::Recipe(view);
-                        self.ask_owners();
+                        return self.ask_owners();
                     }
-                    Ok(None) => {
-                        let plan = (**plan).clone();
-                        self.apply_recipe(plan);
-                    }
-                    Err(why) => {
-                        self.flash(format!("recipe cancelled, nothing was changed: {why}"));
-                    }
-                }
+                    Applying::Now(made) => made.map(|done| ((**plan).clone(), done)),
+                };
+                self.recipe_applied(made);
             }
         }
     }
 
-    fn apply_recipe(&mut self, plan: crate::recipe::Plan) {
-        let done = match crate::recipe::apply(&plan) {
-            Ok(done) => done,
-            Err(e) => {
+    /// The core made the recipe (`Core::apply`): it can be undone. Or it didn't, and the status
+    /// line says why.
+    fn recipe_applied(
+        &mut self,
+        made: Result<(crate::recipe::Plan, crate::recipe::Applied), NotApplied>,
+    ) {
+        let (plan, done) = match made {
+            Ok(made) => made,
+            Err(NotApplied::Refused(why)) => {
+                return self.flash(format!("recipe cancelled, nothing was changed: {why}"));
+            }
+            Err(NotApplied::Failed(e)) => {
                 self.reload_tree();
                 return self.flash(format!("recipe failed: {e:#}"));
             }
         };
-        if let Some(core) = self.core.as_mut() {
-            core.relinked(&plan.edits, Path::to_path_buf);
-        }
         self.reload_tree();
         if self.running_editor().is_none() {
             self.reload_reader();

@@ -665,10 +665,7 @@ fn run() -> Result<()> {
             let mut plan = plan;
             let dry = args.has("dry-run");
             if !dry {
-                (owners.relink(&mut core, &mut plan.edits))
-                    .map_err(|e| anyhow::anyhow!("{e}; nothing was changed"))?;
-                rename::apply(&plan)?;
-                core.relinked(&plan.edits, |p| plan.moved(p));
+                owners.apply(&mut core, &mut plan)?;
                 core.poll();
             }
             if json {
@@ -716,10 +713,7 @@ fn run() -> Result<()> {
             let mut plan = recipe::plan(&core.index, r, options)?;
             let dry = args.has("dry-run");
             if !dry && !plan.edits.is_empty() {
-                (owners.relink(&mut core, &mut plan.edits))
-                    .map_err(|e| anyhow::anyhow!("{e}; nothing was changed"))?;
-                recipe::apply(&plan)?;
-                core.relinked(&plan.edits, Path::to_path_buf);
+                owners.apply(&mut core, &mut plan)?;
                 core.poll();
             }
             print_recipe_plan(&plan, !dry, json)

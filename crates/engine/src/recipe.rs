@@ -245,7 +245,7 @@ pub fn plan(ix: &Index, recipe: &'static Recipe, options: Options) -> Result<Pla
 /// Carry out a plan: refuse if a file changed since it was planned, or a file another owner
 /// reads has no new text from it yet, then write every file (putting back the ones written if one
 /// fails).
-pub fn apply(plan: &Plan) -> Result<Applied> {
+pub(crate) fn apply(plan: &Plan) -> Result<Applied> {
     rename::check_answered(&plan.edits)?;
     rename::check_unchanged(&plan.edits, "recipe")?;
     Ok(Applied {

@@ -273,7 +273,7 @@ const GATEWAY_FILES: &str = "files::";
 /// `trash::restore` or `write::create_dir`. What it still names of the engine's trash and
 /// write functions:
 ///
-/// - `trash::system_bin`: the delete prompt's "goes to" line, and `merge::apply`'s argument.
+/// - `trash::system_bin`: the delete prompt's "goes to" line.
 /// - `trash::free_path`: the name an undo offers when the old one is taken. It reads.
 /// - `write::create`, `create_if_missing`, `replace` in `home.rs`: new notes, and a note's
 ///   new text. Later groups of #193.
@@ -285,7 +285,6 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
         "board.rs: write::create_if_missing",
         "board.rs: write::replace",
         "home.rs: trash::free_path",
-        "home.rs: trash::system_bin",
         "home.rs: trash::system_bin",
         "home.rs: write::create",
         "home.rs: write::create_if_missing",
@@ -307,8 +306,10 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
 }
 
 /// The engine's whole-workspace operations the app still calls itself, each a later group of
-/// #193: rename and move, merge and duplicate, recipes and their undo, bookmarks, the daily
-/// note. `main.rs` is the command line (`cold-lava rename`, `recipe`, `daily`).
+/// #193: duplicate, the undo of a merge or a recipe, bookmarks, the daily note. `main.rs` is
+/// the command line (`cold-lava daily`). A rename, a merge and a recipe are made by the core
+/// (`Core::apply`, #270 B2), and their `apply` is the engine's own, so the compiler refuses
+/// the app a call to it; they stay listed here so that their modules stay guarded.
 const OPERATIONS: [&str; 8] = [
     "merge::apply(",
     "merge::duplicate(",
@@ -326,15 +327,10 @@ fn the_operations_still_called_directly_are_these() {
         "home.rs: bookmarks::edit(",
         "home.rs: bookmarks::edit(",
         "home.rs: daily::ensure(",
-        "home.rs: merge::apply(",
         "home.rs: merge::duplicate(",
         "home.rs: merge::undo(",
-        "home.rs: recipe::apply(",
         "home.rs: recipe::undo(",
-        "home.rs: rename::apply(",
         "main.rs: daily::ensure(",
-        "main.rs: recipe::apply(",
-        "main.rs: rename::apply(",
     ];
     assert_eq!(hits(&OPERATIONS), left);
 }

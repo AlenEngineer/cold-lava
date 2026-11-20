@@ -332,7 +332,7 @@ fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
 /// reads has no new text from it yet (`Core::relink`), write the target and every file whose links
 /// change (putting back the ones written if one fails), then send the source to the trash.
 /// `system` is the system trash (`trash::system_bin()`; tests pass their own).
-pub fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
+pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     rename::check_answered(&m.edits)?;
     let source_now =
         std::fs::read(&m.source_path).with_context(|| format!("reading {}", m.source))?;
