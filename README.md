@@ -23,7 +23,8 @@ Obsidian and the graph updates on its own.
 ## Install
 
 Download a binary for Linux from the
-[latest release](https://github.com/AlenEngineer/cold-lava/releases/latest), or build it:
+[latest release](https://github.com/AlenEngineer/cold-lava/releases/latest), or build it (on
+macOS, build it; it isn't tested there for now):
 
 ```bash
 cargo install --path crates/cold-lava

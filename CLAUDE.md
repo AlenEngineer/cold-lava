@@ -54,6 +54,8 @@ scripts/bench-items.py BINARY...                        # time and peak RSS of i
 
 All three checks must pass before pushing: CI runs them on Ubuntu (Linux only, decided
 2026-11-20; macOS comes back when the owner says), and they are required checks on `main`.
+Until then the macOS branches (the `~/.Trash` trash, `open`, symlinked temp folders in the
+drive tests) run nowhere.
 
 ## Architecture
 
