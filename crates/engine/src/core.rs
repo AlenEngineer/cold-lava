@@ -41,12 +41,19 @@ pub enum Event {
     /// The items and links of a file another owner reads changed: its owner answered, or it
     /// was found, or it is gone. Workspace-relative, with its extension.
     OwnedChanged(String),
-    /// An owner couldn't read one of its files, or what it gave didn't all read. Its items stay
-    /// as they were.
+    /// An owner couldn't read one of its files. Its items stay as they were.
     OwnerTrouble {
         owner: String,
         path: String,
         message: String,
+    },
+    /// What the owner of a file gave didn't all read (`message`, as `Owned::trouble` says
+    /// it), or all of it reads again, or the file is gone (`None`): said when that is news
+    /// (`owned_news`). What read shows.
+    LeftOut {
+        owner: String,
+        path: String,
+        message: Option<String>,
     },
     /// Obsidian's graph settings (colour groups) changed.
     GraphSettingsChanged,
@@ -138,7 +145,7 @@ impl Core {
         let index = Index::build(workspace::scan(root)?);
         let (fs_events, watcher) = watch(&index.workspace.root);
         let owned = index.workspace.owned.iter();
-        let unseen = owned.filter_map(owned_trouble).collect();
+        let unseen = owned.filter_map(|file| owned_news(None, file)).collect();
         Ok(Core {
             bookmarks: read_bookmarks(&index.workspace.root),
             index,
@@ -229,8 +236,8 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch. What an owned file leaves out is reported
-    /// where it isn't what the file left out before.
+    /// After the workspace was read from scratch. What an owned file leaves out is said where
+    /// that is news since the file was read before (`owned_news`).
     fn rescanned(&mut self, index: Index) {
         let before = std::mem::replace(&mut self.index, index).workspace.owned;
         self.reload_bookmarks();
@@ -239,12 +246,11 @@ impl Core {
             let _ = self.owned_scan();
             self.index.relink();
         }
-        let owned = self.index.workspace.owned.iter();
-        let news = owned.filter(|f| {
-            let at = before.binary_search_by(|b| b.rel.cmp(&f.rel));
-            !at.is_ok_and(|i| before[i].problems == f.problems)
-        });
-        self.unseen.extend(news.filter_map(owned_trouble));
+        for file in &self.index.workspace.owned {
+            let was = before.binary_search_by(|b| b.rel.cmp(&file.rel)).ok();
+            let news = owned_news(was.map(|i| &before[i]), file);
+            self.unseen.extend(news);
+        }
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
     }
@@ -372,7 +378,9 @@ impl Core {
             let at = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
             let Ok(bytes) = std::fs::read(root.join(rel)) else {
                 if let Ok(i) = at {
-                    owned.remove(i);
+                    let gone = owned.remove(i);
+                    let now = Owned::new(rel.clone(), gone.path.clone(), &owner);
+                    events.extend(owned_news(Some(&gone), &now));
                     self.owners.forget(rel);
                     changed.push(rel.clone());
                 }
@@ -393,18 +401,15 @@ impl Core {
                 path: rel.clone(),
                 message,
             };
-            // What an owner answered is reported whenever a file takes it, as before #303. The
-            // engine's own owner reads a file on every change: what it leaves out is reported
-            // when that changed.
-            let (given, answered) = match self.owners.kept(&owner, rel, &rev, &bytes) {
-                Some(given) => (given, true),
+            let given = match self.owners.kept(&owner, rel, &rev, &bytes) {
+                Some(given) => given,
                 None => {
                     let Ok(text) = String::from_utf8(bytes) else {
                         events.push(trouble("it isn't UTF-8 text".into()));
                         continue;
                     };
                     match crate::owner::give(&owner, rel, &text) {
-                        Some(Ok(given)) => (given, false),
+                        Some(Ok(given)) => given,
                         Some(Err(message)) => {
                             events.push(trouble(message));
                             continue;
@@ -423,11 +428,8 @@ impl Core {
             };
             let read = given::read(rel, &given, self.index.workspace.item_settings());
             let file = &mut self.index.workspace.owned[i];
-            let news = answered || read.problems != file.problems;
-            file.take(rev, given, read);
-            if news {
-                events.extend(owned_trouble(file));
-            }
+            let before = file.take(rev, given, read);
+            events.extend(owned_news(Some(&before), file));
             if changed.last() != Some(rel) {
                 changed.push(rel.clone());
             }
@@ -1339,15 +1341,27 @@ fn classify(root: &Path, path: &Path) -> Kind {
     }
 }
 
-/// What didn't read in what the owner of `file` gave (`Owned::trouble`), as the core reports
-/// it: the one way, whoever read the file (`owned_read`, or the scan, which reads a canvas and
+/// What `file` leaves out (`Event::LeftOut`), when that is news since `before`, the file as
+/// it was (`None`: it wasn't there). The one place the core decides it, whoever read the
+/// file: `owned_read`, `rescanned`, or the scan as the core opens (which reads a canvas and
 /// says nothing).
-fn owned_trouble(file: &Owned) -> Option<Event> {
-    let message = file.trouble()?;
-    Some(Event::OwnerTrouble {
+///
+/// It is news when what the file leaves out changed, `None` once all of it reads or the file
+/// is gone. An extension's answer for another version of its file that leaves something out
+/// is news too: an extension answers once for each version, and each such answer was
+/// reported before #303, so saying it only on a change would drop that repeat. The engine's
+/// own owner reads a board again on every change, the whiteboard's own saves included, so a
+/// board is news only when what it leaves out changed.
+fn owned_news(before: Option<&Owned>, file: &Owned) -> Option<Event> {
+    let was = before.map_or(&[][..], |b| b.problems.as_slice());
+    let changed = was != file.problems.as_slice();
+    let another = before.is_none_or(|b| b.rev != file.rev);
+    let extension = crate::owner::built_in(&file.rel).is_none();
+    let answered = another && extension && !file.problems.is_empty();
+    (changed || answered).then(|| Event::LeftOut {
         owner: file.owner.clone(),
         path: file.rel.clone(),
-        message,
+        message: file.trouble(),
     })
 }
 
@@ -1547,10 +1561,10 @@ mod tests {
             "{events:?}"
         );
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::OwnerTrouble { message, .. }
-                if message.contains("no type called nothing"))),
+            events.iter().any(
+                |e| matches!(e, Event::LeftOut { message: Some(message), .. }
+                if message.contains("no type called nothing"))
+            ),
             "{events:?}"
         );
         let query = |core: &Core, kind: &str| {

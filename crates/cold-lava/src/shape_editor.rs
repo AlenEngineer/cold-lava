@@ -451,6 +451,11 @@ impl Editor {
         self.msg = Some(s.into());
     }
 
+    /// Whether its status line has no message (`say`).
+    pub fn quiet(&self) -> bool {
+        self.msg.is_none()
+    }
+
     // ---------- where things are ----------
 
     /// The canvas as the canvas engine's grid: a cell is 1×2 world units from its top-left.

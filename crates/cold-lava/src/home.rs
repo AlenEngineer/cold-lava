@@ -625,6 +625,15 @@ enum SearchRow {
     Line(usize, usize),
 }
 
+/// The status line in front (`Home::status_line`): the whiteboard's, a scene's, or the
+/// menu's own. A message goes to it (`flash`, `refused`), and a report waits until it is
+/// quiet (`show_report`).
+enum StatusLine<'a> {
+    Board(&'a mut board::Board),
+    Scene(&'a mut crate::scene_view::SceneView),
+    Menu,
+}
+
 pub struct Home {
     workspaces: Vec<WorkspaceEntry>,
     vsel: usize,
@@ -712,7 +721,7 @@ pub struct Home {
     msg: Option<(Notice, Instant)>,
     /// What extensions asked for that was not done, to keep what is in front (`refused`).
     refusals: Refused,
-    /// What owned files leave out, waiting for the status line in front (`show_report`).
+    /// What boards leave out, waiting for the status line in front (`show_report`).
     reports: Reports,
     areas: [Rect; 4],
     quit: bool,
@@ -962,19 +971,30 @@ impl Home {
         Some(s.tick())
     }
 
-    /// The next report of what an owned file leaves out, when the status line in front (the
-    /// whiteboard's, a scene's or the menu's) has nothing else to say.
+    /// The next report of what boards leave out (`Reports`), when the status line in front has
+    /// nothing else to say: the whiteboard and a scene say so themselves, and the menu's has
+    /// neither a message nor a notice of refused requests.
     fn show_report(&mut self) {
-        let scene = self
-            .front_scene()
-            .and_then(|(o, v)| self.views.get(o, v)?.scene());
-        let quiet = match (&self.mode, &self.board, scene) {
-            (Mode::Board, Some(board), _) => board.quiet(),
-            (_, _, Some(scene)) => scene.quiet(),
-            _ => self.msg.is_none(),
+        let quiet = match self.status_line() {
+            StatusLine::Board(board) => board.quiet(),
+            StatusLine::Scene(scene) => scene.quiet(),
+            StatusLine::Menu => self.msg.is_none() && self.refusals.shown(Instant::now()).is_none(),
         };
         if quiet && let Some(report) = self.reports.pop() {
             self.flash(report);
+        }
+    }
+
+    /// The status line in front: the whiteboard's while it is in front, else a scene's in
+    /// front, else the menu's own.
+    fn status_line(&mut self) -> StatusLine<'_> {
+        let scene = self.front_scene();
+        match (&self.mode, self.board.as_mut(), scene) {
+            (Mode::Board, Some(board), _) => StatusLine::Board(board),
+            (_, _, Some((owner, view))) => (self.views.get_mut(owner, view))
+                .and_then(|v| v.scene_mut())
+                .map_or(StatusLine::Menu, StatusLine::Scene),
+            _ => StatusLine::Menu,
         }
     }
 
@@ -1194,10 +1214,12 @@ impl Home {
     /// (`Board::refused`), the menu on its own; both keep it in a `Refused`, which counts the
     /// requests and puts the notice first on the line, before any other message.
     fn refused(&mut self, notice: String) {
-        if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
-            return b.refused(notice);
+        match self.status_line() {
+            StatusLine::Board(board) => board.refused(notice),
+            StatusLine::Scene(_) | StatusLine::Menu => {
+                self.refusals.add(notice.into(), Instant::now())
+            }
         }
-        self.refusals.add(notice.into(), Instant::now());
     }
 
     /// `view/close`: the owner's view is closed, unless something is being typed in it (a
@@ -2038,6 +2060,7 @@ impl Home {
             CoreEvent::NoteChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
+            | CoreEvent::LeftOut { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -2076,6 +2099,7 @@ impl Home {
             | CoreEvent::FileChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
+            | CoreEvent::LeftOut { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. }
@@ -2098,9 +2122,15 @@ impl Home {
                     owner,
                     path,
                     message,
+                } => self.flash(crate::owned::couldnt_read(owner, path, message)),
+                CoreEvent::LeftOut {
+                    owner,
+                    path,
+                    message,
                 } => {
-                    let report = crate::owned::couldnt_read(owner, path, message);
-                    self.reports.add(path, report.into());
+                    if let Some(now) = self.reports.heard(owner, path, message.as_deref()) {
+                        self.flash(now);
+                    }
                 }
                 // The menu says its own; an extension's show under its name.
                 CoreEvent::Deleted { path, by } if by != MENU => {
@@ -2369,11 +2399,10 @@ impl Home {
 
     fn flash(&mut self, s: impl Into<Notice>) {
         let s: Notice = s.into();
-        if let Some(scene) = self.front_scene_mut() {
-            scene.flash(s.clone());
-        }
-        if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
-            b.flash(s.clone());
+        match self.status_line() {
+            StatusLine::Board(board) => board.flash(s.clone()),
+            StatusLine::Scene(scene) => scene.flash(s.clone()),
+            StatusLine::Menu => {}
         }
         self.msg = Some((s, Instant::now()));
     }

@@ -1525,10 +1525,18 @@ impl Board {
 
     // ---------- editing operations ----------
 
-    /// Whether its status line has nothing to say now, or waiting to: no message and no
-    /// alert. What else the menu has to say waits for this (`Home::show_report`).
+    /// Whether its status line has nothing to say now, or waiting to: no message, no alert
+    /// and no notice of refused requests. While the shape editor is in front, the board's
+    /// messages show on the editor's line, so it is the editor's line that answers. What else
+    /// the menu has to say waits for this (`Home::show_report`).
     pub fn quiet(&self) -> bool {
-        self.msg.is_none() && self.alert.is_none()
+        match &self.editor {
+            Some(editor) => editor.quiet(),
+            None => {
+                let refused = self.refusals.shown(Instant::now());
+                self.msg.is_none() && self.alert.is_none() && refused.is_none()
+            }
+        }
     }
 
     pub fn flash(&mut self, s: impl Into<Notice>) {

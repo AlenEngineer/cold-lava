@@ -774,7 +774,11 @@ fn a_cached_answer_keeps_its_items_when_one_no_longer_reads() {
     let events = core.poll();
     let trouble: Vec<&String> = (events.iter())
         .filter_map(|e| match e {
-            Event::OwnerTrouble { path, message, .. } if path == FILE => Some(message),
+            Event::LeftOut {
+                path,
+                message: Some(message),
+                ..
+            } if path == FILE => Some(message),
             _ => None,
         })
         .collect();
@@ -847,9 +851,15 @@ fn a_cached_answer_that_no_longer_reads_is_asked_for_again_after_a_save() {
 
 /// What `events` report of what owned files leave out.
 fn reported(events: &[Event]) -> Vec<String> {
+    said(events).into_iter().flatten().collect()
+}
+
+/// What `events` say of what owned files leave out, `None` where a file leaves nothing out
+/// any more.
+fn said(events: &[Event]) -> Vec<Option<String>> {
     (events.iter())
         .filter_map(|e| match e {
-            Event::OwnerTrouble { message, .. } => Some(message.clone()),
+            Event::LeftOut { message, .. } => Some(message.clone()),
             _ => None,
         })
         .collect()
@@ -941,10 +951,10 @@ fn a_board_with_a_card_left_out_is_reported_as_it_opens() {
     let events = core.poll();
     let trouble: Vec<(&str, &str, &str)> = (events.iter())
         .filter_map(|e| match e {
-            Event::OwnerTrouble {
+            Event::LeftOut {
                 owner,
                 path,
-                message,
+                message: Some(message),
             } => Some((owner.as_str(), path.as_str(), message.as_str())),
             _ => None,
         })
@@ -1045,5 +1055,50 @@ fn a_board_isnt_reported_again_after_a_rename() {
         Vec::<String>::new(),
         "and after a rescan"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A board that no longer leaves a card out says so, once the card reads and once the board
+/// is gone, so that a report still waiting about it can be dropped (#303's behaviour review,
+/// round 2, should-fix 1).
+#[test]
+fn a_board_says_when_it_leaves_nothing_out_any_more() {
+    let dir = std::env::temp_dir().join(format!("cold-lava-bad-mended-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let card = |id: &str, y: u32| {
+        json!({"id": id, "type": "text", "text": "- [ ] Sweep",
+               "x": 0, "y": y, "width": 1, "height": 1})
+    };
+    let board = |cards: &[Json]| json!({"nodes": cards, "edges": []}).to_string();
+    let left = board(&[card("", 0), card("g", 9)]);
+    std::fs::write(dir.join("Board.canvas"), &left).unwrap();
+    let mut core = Core::open(&dir).unwrap();
+    let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
+    assert_eq!(said(&core.poll()), [Some(empty.to_string())]);
+
+    let mended = board(&[card("h", 0), card("g", 9)]);
+    assert_eq!(
+        said(&board_written(&mut core, &mended)),
+        [None],
+        "its card reads"
+    );
+    assert_eq!(
+        said(&board_written(&mut core, &left)),
+        [Some(empty.to_string())],
+        "left out again"
+    );
+    std::fs::remove_file(dir.join("Board.canvas")).unwrap();
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        core.boards.push("Board.canvas".into());
+        core.schedule(Duration::ZERO);
+        events.extend(core.poll());
+        if core.index.workspace.owned.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(said(&events), [None], "gone");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -97,19 +97,23 @@ impl Owned {
     }
 
     /// Take what its owner gave for version `rev`, and its items and links read from it
-    /// (`given::read`), with what didn't read.
+    /// (`given::read`), with what didn't read. Returns the file as it was.
     pub fn take(
         &mut self,
         rev: String,
         given: crate::owner::given::Given,
         read: crate::owner::given::Read,
-    ) {
-        self.rev = Some(rev);
-        self.items = read.items;
-        self.places = read.places;
-        self.links = read.links;
-        self.given = given;
-        self.problems = read.problems;
+    ) -> Owned {
+        let now = Owned {
+            rev: Some(rev),
+            items: read.items,
+            places: read.places,
+            links: read.links,
+            given,
+            problems: read.problems,
+            ..Owned::new(self.rel.clone(), self.path.clone(), &self.owner)
+        };
+        std::mem::replace(self, now)
     }
 
     /// Whether it shows what its owner gave for version `rev`: it was read from that version,
@@ -120,7 +124,7 @@ impl Owned {
     }
 
     /// What didn't read in what its owner gave, on one line, as it is reported
-    /// (`core::Event::OwnerTrouble`): `None` when all of it read.
+    /// (`core::Event::LeftOut`): `None` when all of it read.
     pub fn trouble(&self) -> Option<String> {
         (!self.problems.is_empty()).then(|| crate::problem::joined(&self.problems))
     }
