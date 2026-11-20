@@ -11,7 +11,10 @@ wait-for csv-table couldn't read Volcanoes/
 expect-not boards have cards left out
 wait-gone csv-table couldn't read
 wait-for 2 boards have cards left out
-wait 2000ms
+# `expect` reads the screen once the program pauses, and with an extension running the menu
+# draws every 50 ms, so it reads up to a second after the wait: one second of waiting leaves
+# the line's 3 s room on a slow machine (#338).
+wait 1000ms
 expect 2 boards have cards left out (cold-lava items shows each): Ashfall, Lahar
 wait-gone 2 boards have cards left out
 wait 1000ms
