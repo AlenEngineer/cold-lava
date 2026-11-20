@@ -1242,6 +1242,9 @@ impl Core {
                 Ok(v) => self.rescanned(Index::build(v)),
                 Err(_) => return unseen, // the folder vanished; keep what we had
             }
+            if std::env::var_os("COLD_LAVA_TRACE_338").is_some() {
+                eprintln!("338 rescanned in poll; left for the next poll: {:?}", self.unseen);
+            }
             events.push(Event::Rescanned);
         } else {
             let paths = std::mem::take(&mut self.changed);
@@ -1272,8 +1275,21 @@ impl Core {
         let Some(rx) = &self.fs_events else { return };
         let root = self.index.workspace.root.clone();
         let mut any = false;
+        let trace = std::env::var_os("COLD_LAVA_TRACE_338").is_some();
         for ev in rx.try_iter() {
             for p in &ev.paths {
+                if trace {
+                    let k = match classify(&root, p) {
+                        Kind::Note => "note",
+                        Kind::Board(_) => "board",
+                        Kind::File(_) => "file",
+                        Kind::GraphSettings => "graph",
+                        Kind::Bookmarks => "bookmarks",
+                        Kind::Folder => "FOLDER (rescan)",
+                        Kind::Ignored => "ignored",
+                    };
+                    eprintln!("338 fs {:?} {} -> {k}", ev.kind, p.display());
+                }
                 match classify(&root, p) {
                     Kind::Note => self.changed.push(p.clone()),
                     Kind::Board(rel) => {
