@@ -3,8 +3,8 @@
 cold-lava has a code editor's architecture, for human notes: an engine that understands a
 workspace of plain files, owners that translate each file format the way language servers
 translate languages, and frontends that ask the engine and draw. This page is the picture and
-the map. The ideas it rests on are [docs/foundations.md](docs/foundations.md), which wins where
-any page disagrees; what is built, layer by layer, is [docs/engine.md](docs/engine.md).
+the map; [docs/engine.md](docs/engine.md) has the layers as built. The ideas it rests on are [docs/foundations.md](docs/foundations.md), which wins where
+any page disagrees.
 
 ## The library
 
@@ -80,26 +80,32 @@ for the same reason.
 ## The rules everything stands on
 
 Each is one line here; [foundations.md](docs/foundations.md) has the idea, and the code named is
-the one place it lives.
+where it lives. Where the code doesn't meet a rule yet, the line says so.
 
 - **Files are never harmed.** A write is refused when the file changed since it was read, is
-  atomic, and a delete goes to the trash (`write.rs`, `trash.rs`).
-- **One door.** Every program reaches the engine through the gateway's messages, behind the
-  host's permission check (`gateway.rs`, `files.rs`, `crates/host`). `tests/one_door.rs` lists
-  what still goes around it, and the lists only shrink.
+  atomic, and a delete goes to the trash (`write.rs`, `trash.rs`). What the engine doesn't
+  understand in a file, it keeps: a canvas's unknown fields (`json_canvas.rs`, and the board's
+  `as_written` in `crates/cold-lava`), and every byte of a note an edit doesn't touch.
+- **One door.** Every program reaches the engine through the gateway's messages, and every
+  extension behind the host's permission check (`gateway.rs`, `files.rs`, `crates/host`).
+  `crates/cold-lava/tests/one_door.rs` lists what still goes around it, and the lists only
+  shrink.
 - **The core knows data, not syntax.** Formats belong to owners (`owner/`); the core holds
-  items, links, types and the index.
+  items, links, types and the index. Not yet for Markdown, which the core still reads itself
+  (see above).
 - **Outside answers are bounded as they arrive** (`bounded.rs`), and text from outside is escaped
-  where it is shown (`cold_lava_views::shown::escape`, `say.rs`, `cells.rs`).
+  where it is shown, by one function, `cold_lava_views::shown::escape`, which `say.rs`,
+  `cells.rs` and `notice.rs` call.
 - **A caller or a leaf.** Every unit only calls its tools in order, or needs nothing the project
-  controls; a tool owns its state (foundations.md, "How the code is built").
+  controls; a tool owns its state (foundations.md, "How the code is built"). Not yet
+  everywhere: the refactor tracks (#265, #270 to #274) get the rest there.
 
 ## Code map
 
 Six crates in the Cargo workspace and the GUI beside it. The dependency direction is frontends →
-host → views → engine → canvas: the engine depends only on `canvas` (for its shapes and bindings, a feature still in its crate:
-see above), which depends on nothing,
-and `editor` stands alone.
+host → views → engine → canvas: the engine depends only on `canvas` (for its shapes and
+bindings, a feature still in its crate: see above), which depends on nothing, and `editor`
+stands alone.
 
 - **`crates/engine`**, the library: no user interface. Start with `core.rs` (the librarian),
   `owner/` (the translators: `markdown.rs`, `canvas.rs`, and `given.rs` for an extension's),
@@ -107,7 +113,8 @@ and `editor` stands alone.
   and `files.rs` (the door's messages), `write.rs` and `trash.rs` (how a page goes in or out).
 - **`crates/host`**, the front desk: the extension host every frontend shares, with manifests,
   the permission check and the process transport. Start with `lib.rs` and `process.rs`.
-- **`crates/views`**, what a notice board may show: lists, tables, images and scenes as data,
+- **`crates/views`**, what a notice board (an extension that shows a view cold-lava draws for
+  it) may show: lists, tables, images and scenes as data,
   and `shown.rs`, the one escape for text on its way to a screen.
 - **`crates/cold-lava`**, the terminal app, the first reader: the menu (`home.rs`), the reader,
   the whiteboard (`board.rs`), the built-in extensions (agenda, table, graph) and the CLI
@@ -115,8 +122,11 @@ and `editor` stands alone.
 - **`crates/canvas`**, geometry with no dependencies: shapes, regions, rasterizing, hit testing.
 - **`crates/editor`**, the headless text editor to come.
 - **`crates/gui`**, a first Tauri window, outside the Cargo workspace.
-- **`examples/extensions/`**: `open-tasks` (a reader), `csv-table` (a translator), and
-  `kanban-board` (a reader and a notice board: Obsidian Kanban boards shown as lanes, which stay
-  Markdown notes). [docs/extensions-guide.md](docs/extensions-guide.md) builds on them.
+- **`examples/extensions/`**: `open-tasks` (a reader and a notice board: open tasks as a list),
+  `csv-table` (a translator, a notice board and a coiner of words: CSV files as tables, with a
+  type of its own) and `kanban-board` (a reader and a notice board: Obsidian Kanban boards as
+  lanes, which stay Markdown notes). The parts are those of the guide's
+  [Which part you play](docs/extensions-guide.md#writing-an-extension);
+  [docs/extensions-guide.md](docs/extensions-guide.md) builds on them.
 
 [CLAUDE.md](CLAUDE.md) has the module-by-module notes, for whoever changes the code.

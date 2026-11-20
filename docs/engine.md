@@ -9,7 +9,8 @@ parts are still to be designed; each layer says which.
 cold-lava is two things: an **engine** that understands a workspace of plain files (Markdown notes, canvases, and
 any format an owner reads), and
 **frontends** that show it (today one, the terminal UI). Extensions reach them through two
-gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the whole picture; [extensions.md](extensions.md) has the protocol and
+gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the engine's layers and frontends as built; the picture as a story and a map of
+the code is [ARCHITECTURE.md](../ARCHITECTURE.md), and [extensions.md](extensions.md) has the protocol and
 plans in detail.
 
 ```
