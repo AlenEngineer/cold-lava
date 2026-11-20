@@ -37,9 +37,9 @@ with the new page. The librarian hands it back to the same translator and asks f
 report on it. It compares that report with the one it expected: the old report with the asked
 change made, both in the common language. If anything else moved, the page is refused
 (`given::same`). Whether someone else wrote in the book meanwhile is a comparison of bytes, not a
-reading: the bytes it read against the bytes there now (`write::replace`, and `read.rs`'s
-`Seen`, which every write moves onto; over the gateway, a fingerprint of them, `rev`, made in
-`read.rs`). Swapping the page in is copying bytes, atomically (`write.rs`), and
+reading: the bytes it read against the bytes there now (`write::replace`; over the gateway, a
+fingerprint of them, `rev`, made in `read.rs`). `read.rs`'s `Seen` is the one type the writes
+are to move onto; no write uses it yet (track A step A5, #265). Swapping the page in is copying bytes, atomically (`write.rs`), and
 a page taken out goes to the trash, never deleted for good (`trash.rs`).
 
 **An outside translator is a stranger.** Every report it gives is measured against limits as it
@@ -84,7 +84,7 @@ Each is one line here; [foundations.md](docs/foundations.md) has the idea, and t
 where it lives. Where the code doesn't meet a rule yet, the line says so.
 
 - **Files are never harmed.** A write is refused when the file changed since it was read, is
-  atomic, and a delete goes to the trash (`read.rs`'s `Seen`, `write.rs`, `trash.rs`). What the engine doesn't
+  atomic, and a delete goes to the trash (`write.rs`, `trash.rs`). What the engine doesn't
   understand in a file, it keeps: a canvas's unknown fields (`json_canvas.rs`, and the board's
   `as_written` in `crates/cold-lava`), and every byte of a note an edit doesn't touch.
 - **One door.** Every program reaches the engine through the gateway's messages, and every
