@@ -129,8 +129,11 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read; the engine's only, `Seen::replace` outside it), `create`,
   `move_file`. A write to a symlink lands in the file it leads to and the link stays
-  (`landing`); a link to nothing or to a folder is refused. Never call `std::fs::write` on
-  workspace files.
+  (`landing`, found once per write); a link to nothing or to a folder is `NotAFile`. Where a
+  link may lead is the caller's to bound: `write.rs` follows it anywhere, and the gateway
+  never follows one (`files::resolve`). `taken` is the one test of whether something is at a
+  path, a link to nothing included: `create` and `files::free_name` ask it. Never call
+  `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
@@ -406,14 +409,18 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`, which
   `read.rs` makes, `workspace/write` refused unless the file is still that version,
   `workspace/create` where Obsidian puts a new file, `workspace/files`) and their pinned JSON;
-  `resolve` keeps a path inside the workspace and out of hidden folders. `Core` answers them,
+  `resolve` keeps a path out of hidden folders and never follows a symlink, at the path or
+  on the way to it (#349): a permission is judged by the path's name, and a link leads to a
+  file of another name. With no link and no `..`, a path stays inside the workspace. The
+  user's own saves go through the engine's writes, which follow a link. `Core` answers them,
   and its watcher reports other files as `Event::FileChanged`. Also here (#193,
   docs/extensions.md "Deleting, restoring and making folders"): `workspace/stat` (the `rev` of
   any file, or of a folder's listing, which leaves out hidden entries and is bounded),
   `workspace/delete` (to the trash, refused unless still that `rev`; answers a random token that
   only the client it was given to can use, kept in the core's `Trash` and gone with the core),
   `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
-  `stat` and `delete` never follow a symlink: the link is what goes (`resolve_entry`). A
+  `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
+  folder on the way to it may be one (`resolve_entry`). A
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
   `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo,

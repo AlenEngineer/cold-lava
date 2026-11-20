@@ -13,8 +13,11 @@ use std::path::{Path, PathBuf};
 pub enum WriteError {
     /// The file's content isn't what the caller read earlier: someone else changed it.
     Changed(PathBuf),
-    /// Creating a file that already exists.
+    /// Creating a file where something already is (`taken`).
     Exists(PathBuf),
+    /// A symlink that leads to no file, to nothing or to a folder: a write never puts a file
+    /// where a link is, and never makes one through it (`landing`).
+    NotAFile(PathBuf),
     Io(PathBuf, io::Error),
 }
 
@@ -23,12 +26,18 @@ impl fmt::Display for WriteError {
         match self {
             WriteError::Changed(p) => write!(f, "{} changed since it was read", p.display()),
             WriteError::Exists(p) => write!(f, "{} already exists", p.display()),
+            WriteError::NotAFile(p) => f.write_str(&not_a_file(p.display())),
             WriteError::Io(p, e) => write!(f, "{}: {e}", p.display()),
         }
     }
 }
 
 impl std::error::Error for WriteError {}
+
+/// `NotAFile` in its one wording, naming the link as the caller does.
+pub(crate) fn not_a_file(name: impl fmt::Display) -> String {
+    format!("{name} is a symbolic link that doesn't lead to a file")
+}
 
 fn io_err(path: &Path) -> impl Fn(io::Error) -> WriteError + '_ {
     move |e| WriteError::Io(path.to_path_buf(), e)
@@ -37,7 +46,32 @@ fn io_err(path: &Path) -> impl Fn(io::Error) -> WriteError + '_ {
 /// Replace (or create) `path` with `bytes`, atomically. Creates missing folders. A symlink is
 /// written through: the file it leads to is replaced and the link stays (`landing`).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
-    let file = landing(path)?;
+    write_at(path, &landing(path)?, bytes)
+}
+
+/// Where a write to `path` lands: `path`, or the file a symlink there leads to, every link on
+/// the way followed, so the rename replaces that file, beside it, and the link stays a link. A
+/// link to nothing, or to something that isn't a file, is `NotAFile`. Where a link may lead is
+/// the caller's to bound: this follows it anywhere, and the gateway never lets one through
+/// (`files::resolve`).
+fn landing(path: &Path) -> Result<PathBuf, WriteError> {
+    let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if !link {
+        return Ok(path.to_path_buf());
+    }
+    match std::fs::canonicalize(path) {
+        Ok(file) if file.is_file() => Ok(file),
+        Ok(_) => Err(WriteError::NotAFile(path.to_path_buf())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            Err(WriteError::NotAFile(path.to_path_buf()))
+        }
+        Err(e) => Err(WriteError::Io(path.to_path_buf(), e)),
+    }
+}
+
+/// Replace `file`, where a write to `path` lands, with `bytes`: a temporary file beside it,
+/// then a rename. Errors name `path`, as the caller does.
+fn write_at(path: &Path, file: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     let dir = file
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
@@ -54,10 +88,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
         f.write_all(bytes)?;
         f.sync_all()?;
         // Keep the original file's permissions.
-        if let Ok(meta) = std::fs::metadata(&file) {
+        if let Ok(meta) = std::fs::metadata(file) {
             let _ = std::fs::set_permissions(&tmp, meta.permissions());
         }
-        std::fs::rename(&tmp, &file)
+        std::fs::rename(&tmp, file)
     };
     write().map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -65,44 +99,27 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     })
 }
 
-/// Where a write to `path` lands: `path`, or the file a symlink there leads to, so the rename
-/// replaces that file, beside it, and the link stays a link. A link to nothing, or to something
-/// that isn't a file, is refused: a write never puts a file where a link was.
-fn landing(path: &Path) -> Result<PathBuf, WriteError> {
-    let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
-    if !link {
-        return Ok(path.to_path_buf());
-    }
-    let refused = |kind: io::ErrorKind, why: &str| {
-        WriteError::Io(path.to_path_buf(), io::Error::new(kind, why))
-    };
-    match std::fs::canonicalize(path) {
-        Ok(file) if file.is_file() => Ok(file),
-        Ok(_) => Err(refused(
-            io::ErrorKind::InvalidInput,
-            "it is a symlink to something that isn't a file",
-        )),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(refused(
-            io::ErrorKind::NotFound,
-            "it is a symlink to nothing",
-        )),
-        Err(e) => Err(WriteError::Io(path.to_path_buf(), e)),
-    }
-}
-
 /// Replace `path` only if it still contains `expected` (what the caller read before). Outside
-/// the engine, `read::Seen::replace` is the way.
+/// the engine, `read::Seen::replace` is the way. Where it lands is found once, and the bytes
+/// compared are the ones the rename replaces.
 pub(crate) fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
-    let now = std::fs::read(path).map_err(io_err(path))?;
+    let file = landing(path)?;
+    let now = std::fs::read(&file).map_err(io_err(path))?;
     if now != expected {
         return Err(WriteError::Changed(path.to_path_buf()));
     }
-    write_atomic(path, bytes)
+    write_at(path, &file, bytes)
 }
 
-/// Create a new file; refused if something is already there, a symlink to nothing included.
+/// Whether something is at `path`: a file, a folder or a symlink, a link to nothing included.
+/// A new file never goes where something is.
+pub fn taken(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Create a new file; refused if something is already there (`taken`).
 pub fn create(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
-    if std::fs::symlink_metadata(path).is_ok() {
+    if taken(path) {
         return Err(WriteError::Exists(path.to_path_buf()));
     }
     write_atomic(path, bytes)
@@ -262,10 +279,11 @@ mod tests {
         std::os::unix::fs::symlink("Folder", d.join("Folder.md")).unwrap();
         for name in ["Dangling.md", "Folder.md"] {
             let at = d.join(name);
-            assert!(
-                matches!(write_atomic(&at, b"x"), Err(WriteError::Io(p, _)) if p == at),
-                "write {name}"
-            );
+            let refused =
+                |e: Result<(), WriteError>| matches!(e, Err(WriteError::NotAFile(p)) if p == at);
+            assert!(refused(write_atomic(&at, b"x")), "write {name}");
+            assert!(refused(replace(&at, b"", b"x")), "replace {name}");
+            assert!(taken(&at), "{name} is taken");
             assert!(
                 matches!(create(&at, b"x"), Err(WriteError::Exists(_))),
                 "create {name}"
@@ -273,6 +291,12 @@ mod tests {
             assert!(!create_if_missing(&at, b"x").unwrap(), "{name}");
             assert!(is_link(&at), "{name} is still a link");
         }
+        let said = write_atomic(&d.join("Dangling.md"), b"x").unwrap_err();
+        let words = format!(
+            "{} is a symbolic link that doesn't lead to a file",
+            d.join("Dangling.md").display()
+        );
+        assert_eq!(said.to_string(), words);
         assert_eq!(
             files(&d),
             ["Dangling.md", "Folder", "Folder.md"],

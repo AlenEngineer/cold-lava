@@ -170,22 +170,22 @@ pub fn extension_of(path: &str) -> Option<String> {
 }
 
 /// The file at `rel` in the workspace at `root`: refused unless `rel` is relative, has no
-/// `..`, `.` or hidden part (`.obsidian`, `.trash`, `.git`), and leads inside the workspace once
-/// symlinks are followed.
+/// `..`, `.` or hidden part (`.obsidian`, `.trash`, `.git`), and neither it nor a folder on the
+/// way to it is a symlink (`unlinked`).
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let path = named(root, rel)?;
-    within(root, rel, &path)?;
-    Ok(path)
+    let path = normal(rel)?;
+    unlinked(root, rel, &path)?;
+    Ok(root.join(path))
 }
 
 /// The entry at `rel` itself, for `workspace/stat` and `workspace/delete`: as `resolve`, but
-/// the last part is not followed when it is a symlink. The folder it is in has to lead inside
-/// the workspace; the link is then an entry of the workspace like any other, whatever it
-/// points to.
+/// the last part may be a symlink, and is then the entry, whatever it points to. No folder on
+/// the way to it may be one.
 fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let path = named(root, rel)?;
-    within(root, rel, path.parent().unwrap_or(root))?;
-    Ok(path)
+    let path = normal(rel)?;
+    let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
+    unlinked(root, rel, folder)?;
+    Ok(root.join(path))
 }
 
 /// `rel` in its one spelling: its parts joined by single `/`, with no slash at either end.
@@ -211,20 +211,26 @@ pub fn normal(rel: &str) -> Result<String, Error> {
     Ok(parts.join("/"))
 }
 
-/// `rel` under `root`, in its one spelling (`normal`).
-fn named(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    Ok(root.join(normal(rel)?))
-}
-
-/// Refused unless `path`, or its deepest folder that exists, leads inside the workspace once
-/// symlinks are followed.
-fn within(root: &Path, rel: &str, path: &Path) -> Result<(), Error> {
-    let real_root = root.canonicalize().map_err(io(rel))?;
-    let existing = path.ancestors().find(|a| a.exists()).unwrap_or(root);
-    let real = existing.canonicalize().map_err(io(rel))?;
-    if !real.starts_with(&real_root) {
-        let message = format!("{rel}: it leads outside the workspace");
-        return Err(Error::new(Reason::Refused, message));
+/// Refused when `parts` under `root`, or a folder on the way to it, is a symlink: the gateway
+/// never follows one (#349). `parts` is a `normal` path, or the folders at its start. A
+/// permission is judged by a path's name, and a link leads to a file of another name, such as
+/// a note's link to `.git/config` or to a canvas only its owner writes. With no link and no
+/// `..`, a path stays inside the workspace. Below a part that isn't there yet, nothing is a
+/// link.
+fn unlinked(root: &Path, rel: &str, parts: &str) -> Result<(), Error> {
+    root.metadata().map_err(io(rel))?;
+    let ends = parts.match_indices('/').map(|(end, _)| end);
+    for end in ends.chain([parts.len()]).filter(|&end| end > 0) {
+        let part = &parts[..end];
+        match std::fs::symlink_metadata(root.join(part)) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let message = format!("{rel}: {part} is a symbolic link");
+                return Err(Error::new(Reason::Refused, message));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(io(rel)(e)),
+        }
     }
     Ok(())
 }
@@ -238,6 +244,7 @@ fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
             WriteError::Exists(_) => format!("{rel} already exists"),
+            WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Io(_, e) => format!("{rel}: {e}"),
         };
         Error::new(Reason::of(&e), message)
@@ -315,7 +322,7 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
             n => format!("{name} {n}"),
         };
         let path = crate::resolver::new_file_path(index, &candidate, extension, None);
-        if !path.exists() {
+        if !write::taken(&path) {
             return relative(path);
         }
         n += 1;
@@ -336,6 +343,7 @@ fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
             WriteError::Exists(_) => format!("{rel} already exists"),
+            WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Io(_, e) => format!("{rel}: {e}"),
         };
         Error::new(Reason::of(&e), message)
@@ -1256,11 +1264,7 @@ mod tests {
         let through = core.delete_file("tidy", "Shared/Deep.md", "").unwrap_err();
         assert_eq!(through.reason, Reason::Refused, "not through a link");
         let text = core.read_file("Data/Linked.md").unwrap_err();
-        assert_eq!(
-            text.reason,
-            Reason::Refused,
-            "reading still follows, and refuses"
-        );
+        assert_eq!(text.reason, Reason::Refused, "never read through a link");
         let _ = std::fs::remove_dir_all(&bin);
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&dir);

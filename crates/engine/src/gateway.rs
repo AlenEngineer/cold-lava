@@ -196,6 +196,7 @@ impl Reason {
         match e {
             write::WriteError::Changed(_) => Reason::Changed,
             write::WriteError::Exists(_) => Reason::Exists,
+            write::WriteError::NotAFile(_) => Reason::Refused,
             write::WriteError::Io(..) => Reason::Io,
         }
     }
@@ -740,13 +741,8 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
         tasks::today(),
     )?;
     if made.changed {
-        write::replace(&path, text.as_bytes(), made.text.as_bytes()).map_err(|e| {
-            let reason = match e {
-                write::WriteError::Changed(_) => Reason::Changed,
-                _ => Reason::Io,
-            };
-            Error::new(reason, e.to_string())
-        })?;
+        write::replace(&path, text.as_bytes(), made.text.as_bytes())
+            .map_err(|e| Error::new(Reason::of(&e), e.to_string()))?;
     }
     Ok(Written {
         note,
@@ -1436,6 +1432,8 @@ fields.text = { rest = true }
             Reason::Changed
         );
         assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
+        let link = write::WriteError::NotAFile(at());
+        assert_eq!(Reason::of(&link), Reason::Refused);
         assert_eq!(Reason::of(&write::WriteError::Io(at(), io())), Reason::Io);
     }
 }

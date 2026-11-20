@@ -1311,14 +1311,22 @@ graph all see the new date. None of them knew what a canvas is.
 
   A `rev` is 16 hex digits of the FNV-1a hash of the file's bytes. A write checks it, then
   writes through `write::replace`, which checks the bytes again just before the atomic rename,
-  so an edit made in Obsidian meanwhile is never overwritten. A write to a symlink goes
-  through it: the file it leads to is replaced, with its temporary file beside that file, and
-  the link stays a link. A link that leads nowhere is `changed` (gone), and one to a folder is
-  `io`. A create goes through `write::create`, refused as `exists` where any entry is, a link
-  that leads nowhere included. A note written or created this way is read again at once, like an item
-  edit, so the next query sees it. A path is refused unless it is relative, has no `..`, `.` or
-  hidden part (`.obsidian`, `.trash`, `.git`), and leads inside the workspace once symlinks are
-  followed (for a new file, its deepest folder that exists).
+  so an edit made in Obsidian meanwhile is never overwritten. A create goes through
+  `write::create`, refused as `exists` where any entry is; a name picked for `{name,
+  extension}` passes over any entry, a link that leads nowhere included. A note written or
+  created this way is read again at once, like an item edit, so the next query sees it. A
+  path is refused unless it is relative, has no `..`, `.` or hidden part (`.obsidian`,
+  `.trash`, `.git`), and neither it nor a folder on the way to it is a symlink.
+
+  The gateway never follows a symlink, for reads and writes alike (#349): a path that is a
+  link, or has one on the way to it, is `refused` (`Notes/x.md: Notes/x.md is a symbolic
+  link`), whatever the link leads to and whoever asks. A permission is judged by the path's
+  name, and a link leads to a file of another name: a note in a shared repository can be a
+  link to `.git/config`, to Obsidian's settings or to a canvas only its owner writes, and a
+  file of an owner's kind can be a link to a note. The user's own saves (the whiteboard, the
+  menu, an item edit) go through a link instead: the engine's writes replace the file it
+  leads to, with the temporary file beside that file, and the link stays a link
+  (`write::landing`).
 - **`file/changed {path, rev}`** (host → extension, a notification) comes from the core's one
   watcher: every file that isn't a note, outside hidden folders, is now reported as
   `Event::FileChanged` once things settle, and the menu tells the owner of its kind, with its
@@ -1426,8 +1434,8 @@ the same `{reason, message}`.
 - **Symlinks.** `stat` and `delete` take the entry itself. A symlink is never followed: its
   `rev` is of where it points, it has no `inside`, and a delete moves the link to the
   trash and leaves its target alone, a file or a folder, inside the workspace or outside,
-  there or gone. The folder the link is in still has to lead inside the workspace, so
-  nothing is reached *through* a link that leads out. A symlinked folder is treated the
+  there or gone. No folder on the way to the entry may be a link, so nothing is reached
+  *through* one, as for every file message (#349). A symlinked folder is treated the
   same way as a symlinked note, and not refused: the link is the workspace's own entry,
   and the message should not depend on what a link points to. The menu reaches only the
   note: its tree lists a symlinked note, opens it and deletes it as the link, but it does
