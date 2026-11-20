@@ -711,7 +711,7 @@ impl Style {
             _ => None,
         };
         self.link_path.set(path, Origin::Obsidian("newLinkFormat"));
-        let tasks = crate::tasks::TasksSettings::load(root);
+        let tasks = crate::tasks_settings::TasksSettings::load(root);
         let format = tasks.format_set.then_some(match tasks.dataview {
             true => TaskFields::Dataview,
             false => TaskFields::Emoji,

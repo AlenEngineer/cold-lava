@@ -32,7 +32,8 @@ use super::{
     compile_source, note_passes, read_source, rest_of, slot,
 };
 use crate::markdown;
-use crate::types::{On, Source, Types, Value};
+use crate::sources::{On, Source};
+use crate::types::{Types, Value};
 
 /// A piece, as the matcher is asked about it: its words as plain text, and where its labels,
 /// links and cells are in them.

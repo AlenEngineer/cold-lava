@@ -1,7 +1,7 @@
 use super::*;
 use crate::items::extract;
 use crate::markdown::Flavour;
-use crate::tasks::TasksSettings;
+use crate::tasks_settings::TasksSettings;
 use crate::types::{Layer, load};
 use serde_json::json;
 
