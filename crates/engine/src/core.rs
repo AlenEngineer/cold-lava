@@ -24,6 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+mod whole;
+
+pub use whole::{Applying, NotApplied, Planned};
+
 /// Something changed in the workspace. Note paths are workspace-relative, without `.md`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -742,7 +746,8 @@ impl Core {
         self.edits.relink(edits, settings)
     }
 
-    /// Renames and merges whose owners have all answered (`relink`), or one refused.
+    /// Renames, merges and recipes whose owners have all answered (`apply`), or one refused:
+    /// each answer is for `apply_answered`.
     pub fn take_relinked(&mut self) -> Vec<(Ticket, Result<Vec<crate::rename::FileEdit>, String>)> {
         self.edits.take_relinked()
     }
@@ -941,9 +946,9 @@ impl Core {
         }
     }
 
-    /// A recipe planned and applied at once, the files it wrote read again (their events come
-    /// from the next `poll`); its title. The files other owners read get their new texts from
-    /// their owners first (`relink`). Refused when one of them has to wait for its owner, an
+    /// A recipe planned and made at once (`apply`), the files it wrote read again (their events
+    /// come from the next `poll`); its title. The files other owners read get their new texts
+    /// from their owners first. Refused when one of them has to wait for its owner, an
     /// extension: such a recipe runs from its own screen.
     pub fn run_recipe(
         &mut self,
@@ -954,20 +959,25 @@ impl Core {
         let refused = |m: String| gateway::Error::new(Reason::Refused, m);
         let r = recipe::find(id).ok_or_else(|| refused(format!("no recipe called {id}")))?;
         let mut plan = recipe::plan(&self.index, r, options).map_err(|e| refused(e.to_string()))?;
-        let waiting = (self.relink(&mut plan.edits))
-            .map_err(|why| refused(format!("{}: {why}", plan.title())))?;
-        if let Some(ticket) = waiting {
-            let waits = (plan.edits.iter()).find(|e| self.edits.waiting(&e.file).is_some());
-            let message = format!(
-                "{} would change {}, which another owner reads: run it from the recipe screen",
-                plan.title(),
-                waits.map(|e| e.file.as_str()).unwrap_or_default()
-            );
-            self.cancel_relink(ticket);
-            return Err(refused(message));
-        }
-        let applied = recipe::apply(&plan)
-            .map_err(|e| gateway::Error::new(Reason::Changed, format!("{}: {e}", plan.title())))?;
+        let made = match self.apply(&mut plan) {
+            Applying::Now(made) => made,
+            Applying::Later(ticket) => {
+                let waits = (plan.edits.iter()).find(|e| self.edits.waiting(&e.file).is_some());
+                let message = format!(
+                    "{} would change {}, which another owner reads: run it from the recipe screen",
+                    plan.title(),
+                    waits.map(|e| e.file.as_str()).unwrap_or_default()
+                );
+                self.cancel_relink(ticket);
+                return Err(refused(message));
+            }
+        };
+        let applied = made.map_err(|not| match not {
+            NotApplied::Refused(why) => refused(format!("{}: {why}", plan.title())),
+            NotApplied::Failed(e) => {
+                gateway::Error::new(Reason::Changed, format!("{}: {e}", plan.title()))
+            }
+        })?;
         let paths: Vec<PathBuf> = plan.edits.iter().map(|e| e.path.clone()).collect();
         let mut events = self.refresh(&paths);
         let owned = plan.edits.iter().filter(|e| e.owned.is_some());
