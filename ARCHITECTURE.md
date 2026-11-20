@@ -74,44 +74,28 @@ for the same reason.
 
 ## References
 
-The idea is foundation 14 in
+The rule is foundation 14 in
 [docs/foundations.md](docs/foundations.md#14-a-reference-has-two-halves). This is how it reads
-in the story, and how far the code has come.
+in the story; the list below says how far the code has come.
 
-A book that mentions another book writes a **reference** in its own language: `[[Lava]]` or
-`[text](Lava.md)` in a note, a file card on a canvas, a link column in a CSV file, a web
-address. Only the book's translator reads a reference or rewrites one (the Markdown owner's
-`links`, the canvas owner's file cards, the links in an outside translator's `file/read`; for a
-rename, `Core::relink`).
+A book that mentions another book writes a **reference** in its own language: a link in a
+note, a file card on a canvas, a link column in a CSV file, a web address. Only the book's
+translator reads a reference or rewrites one, also when the librarian renames the book it
+leads to.
 
-A reference has two halves, and different people own them. **Which book** is the catalogue's:
-the librarian finds the book by the workspace's link rules (Obsidian's, the only ones until a
-workspace can choose a profile, #235), whatever language either book is in (`resolver.rs`).
-This half holds for any book on the shelves, one no translator reads included:
-`cold-lava tidy` reports a reference whose book is missing. **Where in that book** (`#heading`,
-`#^anchor`, `#page=4`) is meant to be the target's translator's, because only that translator
-reads the target. Today nobody checks it (see the list below).
-
-A reference into what no translator reads is **foreign**: a web address (in a note, or a
-canvas card that shows a web page), and the place half of a reference to a book nobody
-translates. It is kept as written and never checked. A kind of file gets places that can be
-checked only by getting a translator: an extension that owns `.pdf` would make `#page=4`
-checkable. Nothing stands in for a missing translator.
-
-Translators are to declare the place forms they understand; none does yet. The design proposed
-for it: Markdown declares headings and block anchors, a canvas card ids, a CSV file row keys,
-so the librarian can tell a reference that points nowhere from one it can't check.
+A reference has two halves, with different owners. **Which book** is the librarian's to find
+in the catalogue, whatever language either book is in. **Where in that book** is the target's
+translator's to read, because only that translator reads the target. A reference into what no
+translator reads (a web address, or a place in a book nobody translates) is **foreign**: kept
+as written and never checked. A kind of book gets places that can be checked only by getting a
+translator; nothing stands in for a missing one.
 
 **A symlink is a shelf mark, not a reference.** It is written in no book. It says where a book
-stands, so it is the shelver's, never a translator's. A note linked from another folder is one
-book with two shelf marks. A link that leads off the shelves (outside the workspace) is a book
-the library doesn't hold: the person may open it, but the library never lends it to a reader
-behind the front desk (an extension). Nor does it lend anything from the staff room, the hidden
-folders such as `.git` and `.obsidian`. Both hold today: the door refuses a hidden path
-(`files::normal`) and one that leads outside (`within`). The rest holds once #353 (open)
-merges: the door never follows a symlink, as `workspace/stat` and `workspace/delete` already
-don't, and the person's own saves (the whiteboard, the menu, an item edit) write through one to
-the book it leads to. The list below says what holds until then.
+stands, so it is the shelver's, never a translator's. A note linked from another folder is
+meant to be one book with two shelf marks. A shelf mark that leads off the shelves (outside
+the workspace) or into the staff room (the hidden folders, such as `.git` and `.obsidian`) is
+meant to be the person's alone: the person finds it and writes through it, but the front desk
+never lends it to a reader (an extension).
 
 ## Where the story is ahead of the code
 
@@ -137,28 +121,43 @@ the book it leads to. The list below says what holds until then.
   through the door like any other: the rule and its test first, then the split into crates
   (both #226, decided in #185), after which the core depends on nothing of the project's.
 - No translator checks a reference's place half yet, and none declares its place forms. The
-  resolver splits `#heading` and `#^block` off every reference by Markdown's rule, whatever
-  language the target is in (`split_link`; the canvas owner reads a file card's `subpath`
-  through it too, in `canvas::anchors`). The reader uses the place only to jump there, and
-  `cold-lava tidy` reports a reference whose book is missing, never one whose heading is gone. A
-  file card's place half is an attribute of its card, not part of its link (#359). References
-  to items wait for #94.
+  design proposed for it: Markdown declares headings and block anchors, a canvas card ids, a CSV
+  file row keys, so the librarian can tell a reference that points nowhere from one it can't
+  check. The librarian finds the book by Obsidian's link rules, the only ones until a workspace
+  can choose a profile (#235; `resolver.rs`), and `cold-lava tidy` reports a reference whose
+  book is missing. The resolver splits `#heading` and `#^block` off every reference by
+  Markdown's rule, whatever language the target is in (`split_link`; the canvas owner reads a
+  file card's `subpath` through it too, in `canvas::anchors`). The reader uses the place only to
+  jump there, and `cold-lava tidy` never reports a reference whose heading is gone. A file
+  card's place half is an attribute of its card, not part of its link (#359). References to
+  items wait for #94.
 - Not every shelf mark is the shelver's yet. The scan skips a symlinked note, but the watcher
   reads it as a note of its own, so its tasks show twice and the link's copy goes stale, and an
   item edit on it never meets the door's path checks. #357 proposes one entry in the catalogue,
-  with the link as another name for the book. Until #353 merges, the door follows a symlink
-  that stays inside the workspace, and a save replaces a linked note with a copy (#349).
+  with the link as another name for the book.
+- The front desk's guard on shelf marks is half built. Today the door refuses a path named
+  hidden (`files::normal`) or one that leads outside the workspace (`within`). Until #353
+  merges, it follows a symlink that stays inside the workspace, so an extension can reach a
+  hidden folder through a folder link (`Inbox/Dot -> ../.git`), and a save replaces a linked
+  note with a copy (#349). Once #353 merges, the door never follows a symlink, as
+  `workspace/stat` and `workspace/delete` already don't, so nothing in the staff room is lent
+  even through a link, and the person's own saves (the whiteboard, the menu, an item edit)
+  write through one to the book it leads to.
+- Decided on 2026-11-20, not built: a link that leads outside the workspace or into a hidden
+  folder is listed for the person only (the tree, backlinks, search, the person's own saves),
+  never in an answer to an extension. It needs a person-only kind of entry in the catalogue
+  (#357).
 - **The bookmark** is placed but not yet followed. An extension can stick a name on an item
   once (`items/edit` with `{"op": "anchor"}` writes a `^name`, #335), and the name survives a
   reword. Finding the item by its name after its note moves (#190, PR 2) and bindings that
   bookmark what they name (PR 3) are still ahead.
 - Characters decided but not hired yet: **the archivist**, who keeps every page the librarian
-  replaces, outside the workspace (#305); **the logbook**, where every change is written down with who asked and which
-  translator wrote it, so any change can be undone, even after a restart (#306);
-  **dictionaries**, a format described as data in a small format of cold-lava's own, so the
-  librarian can check a write by its bytes (#307); and the **ladder of trust** for how far a
-  writer may write unchecked, now one of the foundations (#308; its unchecked rung waits for
-  an owner that needs it). The archivist and the logbook wait for track C (#271).
+  replaces, outside the workspace (#305); **the logbook**, where every change is written down
+  with who asked and which translator wrote it, so any change can be undone, even after a
+  restart (#306); **dictionaries**, a format described as data in a small format of cold-lava's
+  own, so the librarian can check a write by its bytes (#307); and the **ladder of trust** for
+  how far a writer may write unchecked, now one of the foundations (#308; its unchecked rung
+  waits for an owner that needs it). The archivist and the logbook wait for track C (#271).
 
 ## The rules everything stands on
 
