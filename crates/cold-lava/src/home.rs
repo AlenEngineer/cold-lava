@@ -23,17 +23,20 @@ use crate::index::Backlink;
 use crate::line_input::{self, CtrlU};
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
+use crate::new_note::{self, NewNote};
 use crate::notice::Notice;
 use crate::outline::{self, Outline};
 use crate::palette::{self, Palette};
 use crate::paths::{self, config_dir, home_dir};
 use crate::pick_list::{self, Picked};
 use crate::previews::{self, Previews};
+use crate::prompt::{self, Asks, Prompt};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
 use crate::refused::Refused;
 use crate::reports::Reports;
 use crate::resolver::dir_of;
+use crate::tag_prompt::{self, TagPrompt};
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
 use crate::type_table;
@@ -372,16 +375,12 @@ struct BackRow {
 enum Mode {
     Normal,
     Filter,
-    /// Typing a new note's name; `templates` are the workspace's (workspace-relative without `.md`, and
-    /// the name shown), and `template` is the chosen one's place in them, `None` for none.
-    NewNote {
-        name: String,
-        templates: Vec<(String, String)>,
-        template: Option<usize>,
-    },
-    AddWorkspace(String),
-    /// Typing a new folder's name.
-    NewFolder(String),
+    /// Typing a new note's name, and choosing its template; it goes in the folder selected
+    /// when the prompt opened.
+    NewNote(NewNote),
+    /// A one-line prompt: a new folder's name, a workspace's folder, a new name, a folder to
+    /// move to.
+    Prompt(Prompt),
     Help,
     /// Which key: the commands this screen has, by group, until a key is typed.
     Keys,
@@ -399,21 +398,9 @@ enum Mode {
         query: String,
         sel: usize,
     },
-    /// Typing a note's or folder's new name (or the folder to move it into).
-    Rename {
-        path: PathBuf,
-        input: String,
-        moving: bool,
-    },
-    /// Typing the folder to move the marked notes and folders into.
-    MoveMarked(String),
-    /// Typing a tag to add to the marked notes (or the selected one); `-tag` removes it. `all`
-    /// is the workspace's tags, and `sel` the one Tab completed to among those matching `typed`.
-    Tag {
-        typed: String,
-        all: Vec<String>,
-        sel: Option<usize>,
-    },
+    /// Typing a tag to add to the marked notes (or the note selected when it opened), or to
+    /// remove.
+    Tag(TagPrompt),
     /// Showing what a rename will change before doing it.
     ConfirmRename {
         plan: Box<crate::rename::Plan>,
@@ -480,14 +467,9 @@ impl Mode {
             Mode::Hints(hints) => hints.unsaved(),
             Mode::Tidy(view) => view.unsaved(),
             Mode::Filter => Some("the notes are being filtered"),
-            Mode::NewNote { .. } => Some("a new note's name is being typed"),
-            Mode::AddWorkspace(_) => Some("a workspace's folder is being typed"),
-            Mode::NewFolder(_) => Some("a new folder's name is being typed"),
-            Mode::Rename { moving: false, .. } => Some("a new name is being typed"),
-            Mode::Rename { moving: true, .. } | Mode::MoveMarked(_) => {
-                Some("a folder to move to is being typed")
-            }
-            Mode::Tag { .. } => Some("a tag is being typed"),
+            Mode::NewNote(prompt) => Some(prompt.unsaved()),
+            Mode::Prompt(prompt) => Some(prompt.unsaved()),
+            Mode::Tag(prompt) => Some(prompt.unsaved()),
             Mode::ConfirmRename { waiting: None, .. } => Some("a rename waits for your answer"),
             Mode::ConfirmRename {
                 waiting: Some(_), ..
@@ -2473,14 +2455,18 @@ impl Home {
             self.search_key(k);
             return Ok(());
         }
-        if matches!(
-            self.mode,
-            Mode::Rename { .. } | Mode::ConfirmRename { .. } | Mode::MoveMarked(_)
-        ) {
+        if matches!(self.mode, Mode::Prompt(_)) {
+            self.prompt_key(k);
+            return Ok(());
+        }
+        if matches!(self.mode, Mode::NewNote(_)) {
+            return self.new_note_key(k);
+        }
+        if matches!(self.mode, Mode::ConfirmRename { .. }) {
             self.rename_key(k);
             return Ok(());
         }
-        if matches!(self.mode, Mode::Tag { .. }) {
+        if matches!(self.mode, Mode::Tag(_)) {
             self.tag_key(k);
             return Ok(());
         }
@@ -2537,79 +2523,12 @@ impl Home {
                 }
                 return Ok(());
             }
-            Mode::NewNote {
-                name,
-                templates,
-                template,
-            } => {
-                match k.code {
-                    KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Tab | KeyCode::Down if !templates.is_empty() => {
-                        *template = match *template {
-                            None => Some(0),
-                            Some(i) if i + 1 < templates.len() => Some(i + 1),
-                            Some(_) => None,
-                        };
-                    }
-                    KeyCode::BackTab | KeyCode::Up if !templates.is_empty() => {
-                        *template = match *template {
-                            None => Some(templates.len() - 1),
-                            Some(0) => None,
-                            Some(i) => Some(i - 1),
-                        };
-                    }
-                    KeyCode::Enter => {
-                        let text = name.trim().to_string();
-                        let template = template.map(|i| templates[i].0.clone());
-                        self.mode = Mode::Normal;
-                        if !text.is_empty() {
-                            self.create_note(&text, template.as_deref())?;
-                        }
-                    }
-                    _ => {
-                        line_input::key(name, k, CtrlU::Clears);
-                    }
-                }
-                return Ok(());
-            }
-            Mode::NewFolder(name) => {
-                match k.code {
-                    KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Enter => {
-                        let text = name.trim().to_string();
-                        self.mode = Mode::Normal;
-                        if !text.is_empty() {
-                            self.create_folder(&text);
-                        }
-                    }
-                    _ => {
-                        line_input::key(name, k, CtrlU::Clears);
-                    }
-                }
-                return Ok(());
-            }
-            Mode::AddWorkspace(name) => {
-                match k.code {
-                    KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Enter => {
-                        let text = name.trim().to_string();
-                        self.mode = Mode::Normal;
-                        if !text.is_empty() {
-                            self.add_workspace(&text);
-                        }
-                    }
-                    _ => {
-                        line_input::key(name, k, CtrlU::Clears);
-                    }
-                }
-                return Ok(());
-            }
             Mode::Switcher { .. }
             | Mode::Palette(_)
             | Mode::Search { .. }
-            | Mode::Rename { .. }
-            | Mode::MoveMarked(_)
-            | Mode::Tag { .. }
+            | Mode::NewNote(_)
+            | Mode::Prompt(_)
+            | Mode::Tag(_)
             | Mode::ConfirmRename { .. }
             | Mode::ConfirmDelete(_)
             | Mode::ConfirmMerge { .. }
@@ -3060,7 +2979,7 @@ impl Home {
             MenuAction::BookmarkSearch => self.bookmark_search(),
             MenuAction::Rename => self.start_rename(false),
             MenuAction::Move if !self.marks.is_empty() => {
-                self.mode = Mode::MoveMarked(String::new())
+                self.mode = Mode::Prompt(Prompt::new(Asks::MoveMarked, String::new()))
             }
             MenuAction::Move => self.start_rename(true),
             MenuAction::Delete => self.start_delete(false),
@@ -3101,15 +3020,16 @@ impl Home {
             MenuAction::Boards => self.open_boards(None)?,
             MenuAction::History(a) => self.travel(a)?,
             MenuAction::NewNote => {
-                self.mode = Mode::NewNote {
-                    name: String::new(),
-                    templates: self.templates(),
-                    template: None,
-                }
+                self.mode = Mode::NewNote(NewNote::new(self.selected_dir(), self.templates()))
             }
             MenuAction::Today => self.open_today(),
-            MenuAction::AddWorkspace => self.mode = Mode::AddWorkspace(String::new()),
-            MenuAction::NewFolder => self.mode = Mode::NewFolder(String::new()),
+            MenuAction::AddWorkspace => {
+                self.mode = Mode::Prompt(Prompt::new(Asks::AddWorkspace, String::new()))
+            }
+            MenuAction::NewFolder => {
+                let dir = self.selected_dir();
+                self.mode = Mode::Prompt(Prompt::new(Asks::NewFolder { dir }, String::new()))
+            }
             MenuAction::RestartExtensions => {
                 self.tell_workspace(true);
                 self.set_owners();
@@ -3837,11 +3757,7 @@ impl Home {
         } else {
             name.to_string()
         };
-        self.mode = Mode::Rename {
-            path,
-            input,
-            moving,
-        };
+        self.mode = Mode::Prompt(Prompt::new(Asks::Rename { path, moving }, input));
     }
 
     /// Ask the editor to save, and give it a moment, so what's read from disk next is what's on
@@ -3866,34 +3782,47 @@ impl Home {
         pane.map(|_| editor)
     }
 
+    /// The one-line prompts, keyed as `palette_key` keys the palette.
+    fn prompt_key(&mut self, k: KeyEvent) {
+        let Mode::Prompt(p) = &mut self.mode else {
+            return;
+        };
+        match p.key(k) {
+            prompt::Action::Stay => {}
+            prompt::Action::Close => self.mode = Mode::Normal,
+            prompt::Action::Done(asks, answer) => {
+                self.mode = Mode::Normal;
+                match asks {
+                    Asks::NewFolder { dir } => self.create_folder(&dir, &answer),
+                    Asks::AddWorkspace => self.add_workspace(&answer),
+                    Asks::Rename { path, moving } => self.plan_rename(&path, &answer, moving),
+                    Asks::MoveMarked => self.plan_move_marked(&answer),
+                }
+            }
+        }
+    }
+
+    fn new_note_key(&mut self, k: KeyEvent) -> Result<()> {
+        let Mode::NewNote(n) = &mut self.mode else {
+            return Ok(());
+        };
+        match n.key(k) {
+            new_note::Action::Stay => {}
+            new_note::Action::Close => self.mode = Mode::Normal,
+            new_note::Action::Create {
+                dir,
+                name,
+                template,
+            } => {
+                self.mode = Mode::Normal;
+                self.create_note(&dir, &name, template.as_deref())?;
+            }
+        }
+        Ok(())
+    }
+
     fn rename_key(&mut self, k: KeyEvent) {
         match &mut self.mode {
-            Mode::Rename {
-                path,
-                input,
-                moving,
-            } => match k.code {
-                KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Enter => {
-                    let (path, input, moving) = (path.clone(), input.clone(), *moving);
-                    self.mode = Mode::Normal;
-                    self.plan_rename(&path, &input, moving);
-                }
-                _ => {
-                    line_input::key(input, k, CtrlU::Clears);
-                }
-            },
-            Mode::MoveMarked(input) => match k.code {
-                KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Enter => {
-                    let input = std::mem::take(input);
-                    self.mode = Mode::Normal;
-                    self.plan_move_marked(&input);
-                }
-                _ => {
-                    line_input::key(input, k, CtrlU::Clears);
-                }
-            },
             Mode::ConfirmRename {
                 scroll, waiting, ..
             } => match k.code {
@@ -4021,46 +3950,28 @@ impl Home {
         let all: BTreeSet<String> = (ix.workspace.notes.iter())
             .flat_map(|n| n.tags.iter().cloned())
             .collect();
-        self.mode = Mode::Tag {
-            typed: String::new(),
-            all: all.into_iter().collect(),
-            sel: None,
-        };
+        let note = self.rename_target();
+        self.mode = Mode::Tag(TagPrompt::new(all.into_iter().collect(), note));
     }
 
     fn tag_key(&mut self, k: KeyEvent) {
-        let Mode::Tag { typed, all, sel } = &mut self.mode else {
+        let Mode::Tag(t) = &mut self.mode else {
             return;
         };
-        let shown = tag_shown(typed, all, *sel);
-        let matches = tag_matches(typed, all).len();
-        match k.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Tab | KeyCode::Down if matches > 0 => {
-                *sel = Some(sel.map_or(0, |i| (i + 1) % matches));
-            }
-            KeyCode::BackTab | KeyCode::Up if matches > 0 => {
-                *sel = Some(sel.map_or(matches - 1, |i| (i + matches - 1) % matches));
-            }
-            KeyCode::Enter => {
+        match t.key(k) {
+            tag_prompt::Action::Stay => {}
+            tag_prompt::Action::Close => self.mode = Mode::Normal,
+            tag_prompt::Action::Apply { tag, note } => {
                 self.mode = Mode::Normal;
-                self.apply_tag(&shown);
-            }
-            // What is typed goes on the tag shown, the one picked if one is.
-            _ => {
-                let mut line = shown;
-                if line_input::key(&mut line, k, CtrlU::Clears).is_some() {
-                    *typed = line;
-                    *sel = None;
-                }
+                self.apply_tag(&tag, note);
             }
         }
     }
 
-    /// Add `input`'s tag to the marked notes' frontmatter (or the selected note's), or remove it
-    /// for `-tag`. A note that changed since it was read, or whose tags can't be edited safely,
-    /// is left alone and named.
-    fn apply_tag(&mut self, input: &str) {
+    /// Add `input`'s tag to the marked notes' frontmatter (or to `note`, the one selected when
+    /// the prompt opened, when none is marked), or remove it for `-tag`. A note that changed
+    /// since it was read, or whose tags can't be edited safely, is left alone and named.
+    fn apply_tag(&mut self, input: &str, note: Option<PathBuf>) {
         let input = input.trim();
         let (edit, tag) = match input.strip_prefix('-') {
             Some(t) => (TagEdit::Remove, t.trim().trim_start_matches('#')),
@@ -4076,7 +3987,7 @@ impl Home {
         };
         let (notes, skipped): (Vec<String>, Vec<String>) = match self.marks.is_empty() {
             false => self.marks.iter().cloned().partition(|r| r.ends_with(".md")),
-            true => match self.rename_target() {
+            true => match note {
                 Some(p) => (vec![rel_path::or_whole(&root, &p)], Vec::new()),
                 None => return self.flash("select a note to tag"),
             },
@@ -5849,13 +5760,13 @@ impl Home {
         found
     }
 
-    /// Create the note `name` in the selected folder, from `template` (workspace-relative, without
-    /// `.md`) if one is given, and open it.
-    fn create_note(&mut self, name: &str, template: Option<&str>) -> Result<()> {
+    /// Create the note `name` in `folder` (workspace-relative, empty for the root), from
+    /// `template` (workspace-relative, without `.md`) if one is given, and open it.
+    fn create_note(&mut self, folder: &str, name: &str, template: Option<&str>) -> Result<()> {
         let Some(root) = self.root.clone() else {
             return Ok(());
         };
-        let folder = self.selected_dir();
+        let folder = folder.to_string();
         let file = if name.ends_with(".md") {
             name.to_string()
         } else {
@@ -5911,11 +5822,11 @@ impl Home {
         }
     }
 
-    fn create_folder(&mut self, name: &str) {
+    /// Make the folder `name` in `parent` (workspace-relative, empty for the root).
+    fn create_folder(&mut self, parent: &str, name: &str) {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let parent = self.selected_dir();
         let name = name.trim_matches('/');
         let rel = if parent.is_empty() {
             name.to_string()
@@ -6095,23 +6006,11 @@ impl Home {
         if matches!(self.mode, Mode::ConfirmMerge { .. }) {
             self.draw_confirm_merge(f, main);
         }
-        if let Mode::Rename { input, moving, .. } = &self.mode {
-            let (title, label) = if *moving {
-                (" move to folder · ⏎ preview · Esc cancel ", "folder: ")
-            } else {
-                (" rename · ⏎ preview · Esc cancel ", "new name: ")
-            };
-            popup::prompt(f, main, title, label, input);
+        if let Mode::Prompt(prompt) = &self.mode {
+            prompt.draw(f, main, self.marks.len());
         }
-        if let Mode::MoveMarked(input) = &self.mode {
-            let title = format!(
-                " move {} marked into folder · ⏎ preview · Esc cancel ",
-                self.marks.len()
-            );
-            popup::prompt(f, main, &title, "folder: ", input);
-        }
-        if let Mode::Tag { typed, all, sel } = &self.mode {
-            draw_tag(f, main, typed, all, *sel, self.marks.len());
+        if let Mode::Tag(prompt) = &self.mode {
+            prompt.draw(f, main, self.marks.len());
         }
         match &self.mode {
             Mode::Help => {
@@ -6120,29 +6019,7 @@ impl Home {
                 draw_help(f, main, menu, &self.reader_keys, &self.pane_keys, editor)
             }
             Mode::Keys => whichkey::draw(f, main, &self.key_hints()),
-            Mode::NewNote {
-                name,
-                templates,
-                template,
-            } => draw_new_note(f, main, name, templates, *template),
-            Mode::NewFolder(name) => {
-                popup::prompt(
-                    f,
-                    main,
-                    " new folder · ⏎ create · Esc cancel ",
-                    "folder name: ",
-                    name,
-                );
-            }
-            Mode::AddWorkspace(name) => {
-                popup::prompt(
-                    f,
-                    main,
-                    " add a workspace · ⏎ add · Esc cancel ",
-                    "folder: ",
-                    name,
-                );
-            }
+            Mode::NewNote(prompt) => prompt.draw(f, main),
             _ => {}
         }
     }
@@ -7157,74 +7034,6 @@ fn link_changes(e: &crate::rename::FileEdit, width: u16) -> Vec<Line<'static>> {
     out
 }
 
-/// The workspace's tags that start with what was typed (after a `-` and a `#`).
-fn tag_matches<'a>(typed: &str, all: &'a [String]) -> Vec<&'a String> {
-    let q = typed
-        .trim_start_matches('-')
-        .trim_start_matches('#')
-        .to_lowercase();
-    all.iter().filter(|t| t.starts_with(&q)).collect()
-}
-
-/// What the tag prompt holds: what was typed, or the tag Tab completed it to (keeping a `-`).
-fn tag_shown(typed: &str, all: &[String], sel: Option<usize>) -> String {
-    match sel.and_then(|i| tag_matches(typed, all).get(i).copied()) {
-        Some(t) if typed.starts_with('-') => format!("-{t}"),
-        Some(t) => t.clone(),
-        None => typed.to_string(),
-    }
-}
-
-/// The tag prompt, with the workspace's tags that match under it.
-fn draw_tag(
-    f: &mut Frame,
-    area: Rect,
-    typed: &str,
-    all: &[String],
-    sel: Option<usize>,
-    marked: usize,
-) {
-    let whom = match marked {
-        0 => "the note".to_string(),
-        n => plural(n, "marked note"),
-    };
-    let title = format!(" tag {whom} · -tag removes · Tab · ⏎ ");
-    let r = popup::prompt(f, area, &title, "tag: #", &tag_shown(typed, all, sel));
-    let hits = tag_matches(typed, all);
-    let room = area.bottom().saturating_sub(r.bottom()) as usize;
-    let rows = hits.len().min(8).min(room.saturating_sub(2));
-    if rows == 0 {
-        return;
-    }
-    let start = sel.map_or(0, |i| (i + 1).saturating_sub(rows));
-    let list = Rect::new(r.x, r.bottom(), r.width, rows as u16 + 2);
-    let width = list.width.saturating_sub(2) as usize;
-    let lines: Vec<Line> = (hits.iter().enumerate().skip(start).take(rows))
-        .map(|(i, t)| {
-            let on = Some(i) == sel;
-            let style = match on {
-                true => Style::new().fg(Color::Black).bg(ACCENT),
-                false => Style::new().fg(NOTE),
-            };
-            let mark = if on { "▸" } else { " " };
-            Line::styled(
-                format!("{mark} #{t:<w$}", w = width.saturating_sub(3)),
-                style,
-            )
-        })
-        .collect();
-    f.render_widget(Clear, list);
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(ACCENT_SOFT))
-                .title(format!(" {} ", plural(hits.len(), "tag"))),
-        ),
-        list,
-    );
-}
-
 /// The folder several moves go into, as the user typed it: `Archive`, or the workspace's root.
 fn destination(moves: &[crate::rename::Move]) -> String {
     match moves.first().map(|m| dir_of_rel(&m.to)) {
@@ -7281,65 +7090,6 @@ fn highlight(
         spans.push(Span::styled(cur, if cur_hl { hl } else { base }));
     }
     spans
-}
-
-/// The new-note prompt, with the workspace's templates under it when it has some.
-fn draw_new_note(
-    f: &mut Frame,
-    area: Rect,
-    name: &str,
-    templates: &[(String, String)],
-    template: Option<usize>,
-) {
-    if templates.is_empty() {
-        popup::prompt(
-            f,
-            area,
-            " new note · ⏎ create · Esc cancel ",
-            "name: ",
-            name,
-        );
-        return;
-    }
-    let title = " new note · Tab template · ⏎ create · Esc cancel ";
-    let r = popup::prompt(f, area, title, "name: ", name);
-    let room = area.bottom().saturating_sub(r.bottom()) as usize;
-    let rows = (templates.len() + 1).min(room.saturating_sub(2));
-    let list = Rect::new(r.x, r.bottom(), r.width, rows as u16 + 2);
-    let shown = template.map_or(0, |i| i + 1);
-    let start = shown.saturating_sub(rows.saturating_sub(1));
-    let choices =
-        std::iter::once("No template").chain(templates.iter().map(|(_, name)| name.as_str()));
-    let lines: Vec<Line> = choices
-        .enumerate()
-        .skip(start)
-        .take(rows)
-        .map(|(i, t)| {
-            let style = if i == shown {
-                Style::new().fg(Color::Black).bg(ACCENT)
-            } else if i == 0 {
-                Style::new().fg(MUTED)
-            } else {
-                Style::new().fg(NOTE)
-            };
-            let width = list.width.saturating_sub(2) as usize;
-            let mark = if i == shown { "▸" } else { " " };
-            Line::styled(
-                format!("{mark} {t:<w$}", w = width.saturating_sub(2)),
-                style,
-            )
-        })
-        .collect();
-    f.render_widget(Clear, list);
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(ACCENT_SOFT))
-                .title(" template "),
-        ),
-        list,
-    );
 }
 
 /// An extension's view over the whole main area, its filter on the bottom line.
@@ -7574,42 +7324,37 @@ mod tests {
             scroll: 0,
             waiting,
         };
-        let renaming = |moving| Mode::Rename {
-            path: PathBuf::new(),
-            input: String::new(),
-            moving,
+        let renaming = |moving| {
+            let asks = Asks::Rename {
+                path: PathBuf::new(),
+                moving,
+            };
+            Mode::Prompt(Prompt::new(asks, String::new()))
         };
+        let prompt = |asks| Mode::Prompt(Prompt::new(asks, String::new()));
         // A prompt counts with nothing typed yet, and a dialog as long as it is open.
         let always = [
             (Mode::Filter, "the notes are being filtered"),
             (
-                Mode::NewNote {
-                    name: String::new(),
-                    templates: Vec::new(),
-                    template: None,
-                },
+                Mode::NewNote(NewNote::new(String::new(), Vec::new())),
                 "a new note's name is being typed",
             ),
             (
-                Mode::AddWorkspace(String::new()),
+                prompt(Asks::AddWorkspace),
                 "a workspace's folder is being typed",
             ),
             (
-                Mode::NewFolder(String::new()),
+                prompt(Asks::NewFolder { dir: String::new() }),
                 "a new folder's name is being typed",
             ),
             (renaming(false), "a new name is being typed"),
             (renaming(true), "a folder to move to is being typed"),
             (
-                Mode::MoveMarked(String::new()),
+                prompt(Asks::MoveMarked),
                 "a folder to move to is being typed",
             ),
             (
-                Mode::Tag {
-                    typed: String::new(),
-                    all: Vec::new(),
-                    sel: None,
-                },
+                Mode::Tag(TagPrompt::new(Vec::new(), None)),
                 "a tag is being typed",
             ),
             (rename(None), "a rename waits for your answer"),

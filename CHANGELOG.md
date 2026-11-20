@@ -46,6 +46,11 @@ change commands, keys and file formats; patch versions only fix things.
   about half the runs). The rest of the output is skipped quietly, and the command still does
   everything else it was asked (its errors on stderr included) and exits as it would have, as
   `items | head` already did (#339).
+- The new note, new folder and tag prompts act on what was selected when they opened. An
+  extension that moved the tree's selection while one was open (an editor reporting the note
+  it shows, `editor/opened`) made Enter create the note or folder in another folder, or tag
+  another note (#269, #286). If the folder or the note is gone by then, the note or folder is
+  made there anyway (the folder made again), and the tag is refused naming the note.
 
 ## [0.7.0] - 2026-11-20
 
