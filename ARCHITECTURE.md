@@ -31,16 +31,16 @@ That is cold-lava. The rest of the cast keeps the books safe.
 | The front desk | The extension host: checks every extension's badge (its permissions) before the librarian hears a word | `crates/host` |
 | The readers | The terminal app, extensions that only ask, and a first GUI; a language server to come | `crates/cold-lava`, `crates/gui` |
 
-**The librarian needs no book's language to check a translator's work.** When the librarian
-asks for a change to a page (`file/edit`, for an item edit or a rename), the translator answers
-with the new page. The librarian hands it back to the same translator and asks for a fresh
-report on it. It compares that report with the one it expected: the old report with the asked
-change made, both in the common language. If anything else moved, the page is refused
-(`given::same`). Whether someone else wrote in the book meanwhile is a comparison of bytes, not a
-reading: the bytes it read against the bytes there now (`write::replace`; over the gateway, a
-fingerprint of them, `rev`, made in `read.rs`). `read.rs`'s `Seen` is the one type the writes
-are to move onto; no write uses it yet (track A step A5, #265). Swapping the page in is copying bytes, atomically (`write.rs`), and
-a page taken out goes to the trash, never deleted for good (`trash.rs`).
+**The librarian needs no book's language to check a translator's work.** When the librarian asks
+for a change to a page (`file/edit`, for an item edit or a rename), the translator answers with
+the new page. The librarian hands it back to the same translator and asks for a fresh report on
+it. It compares that report with the one it expected: the old report with the asked change made,
+both in the common language. If anything else moved, the page is refused (`given::same`).
+Whether someone else wrote in the book meanwhile is a comparison of bytes, not a reading: the
+bytes it read against the bytes there now (`write::replace`; over the gateway, a fingerprint of
+them, `rev`, made in `read.rs`). `read.rs`'s `Seen` is the one type the writes are to move onto;
+no write uses it yet (track A step A5, #265). Swapping the page in is copying bytes, atomically
+(`write.rs`), and a page taken out goes to the trash, never deleted for good (`trash.rs`).
 
 **An outside translator is a stranger.** Every report it gives is measured against limits as it
 arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note saying
