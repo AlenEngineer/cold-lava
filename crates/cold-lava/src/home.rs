@@ -4178,7 +4178,7 @@ impl Home {
             Some(t) => (TagEdit::Remove, t.trim().trim_start_matches('#')),
             None => (TagEdit::Add, input.trim_start_matches('#')),
         };
-        if !frontmatter::is_tag(tag) {
+        if !markdown::tag_name::is_name(tag) {
             return self.flash(format!(
                 "\"{tag}\" isn't a tag: letters, digits, _ - and /, not only digits"
             ));

@@ -186,7 +186,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   the reason (`DIFFERENT`: the tree reads what the index counts, or pulldown-cmark wasn't
   Obsidian; `LESS`: the reader shows less than Obsidian, which is the tree's to change). Don't
   parse Markdown for the reader anywhere else. `markdown/entities.rs` is HTML5's named
-  character references. The tag pattern is shared with `workspace.rs`.
+  character references. `markdown/tag_name.rs` is what a tag's name is (the patterns that
+  find `#tag`, `is_number`, and `is_name` for a name given on its own), the one rule the
+  tree, the reader, the frontmatter's `tags`, the tag dialog and rename-tag ask (#272, D-4):
+  don't spell a tag's characters anywhere else.
 - `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
   (every byte a token; printing it gives the note back), blocks found line by line as
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
@@ -204,7 +207,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   read the same links, tags and blocks either way (a test checks it on the corpus). Its kinds
   come last in `Kind`, so the others keep their numbers. A tag may follow the markers that
   open emphasis, a strikethrough or a highlight
-  (`**#tag**`, `markdown::MARKED_TAG`).
+  (`**#tag**`, `markdown::tag_name::marked_pattern`).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:

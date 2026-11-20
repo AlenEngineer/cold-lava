@@ -290,7 +290,7 @@ fn rename_tag(ix: &Index, o: &Options, d: &mut Draft) -> Result<()> {
 fn tag_option(o: &Options, name: &str) -> Result<String> {
     let given = o.get(name).map(String::as_str).unwrap_or_default();
     let tag = given.trim().trim_start_matches('#').trim_matches('/');
-    if !frontmatter::is_tag(tag) || tag.split('/').any(str::is_empty) {
+    if !crate::markdown::tag_name::is_name(tag) || tag.split('/').any(str::is_empty) {
         bail!("{name}: {given:?} isn't a tag (letters, digits, _, - and /, not only digits)");
     }
     Ok(tag.to_string())

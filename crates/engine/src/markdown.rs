@@ -18,6 +18,7 @@ use crate::cst::{self, Kind, Step};
 mod entities;
 #[cfg(test)]
 pub(crate) mod pulldown;
+pub mod tag_name;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Syntax {
@@ -1519,16 +1520,6 @@ fn is_blank(inline: &Inline) -> bool {
 
 // Text: what the tree leaves to the reader.
 
-/// `#tag`: after the start of the text, a space, `(` or `,`; at least one non-digit. The workspace
-/// index finds tags with the same pattern.
-pub const TAG: &str = r"(?:^|[\s(,])#([\p{L}\p{N}_/\-]+)";
-
-/// `TAG` in a note's own text, where the markers that open emphasis, a strikethrough or a
-/// highlight may stand between what a tag follows and its `#` (`**#tag**`). The syntax tree
-/// finds tags with it, and checks the markers, which it reads back from the `#`, against the
-/// flavour.
-pub const MARKED_TAG: &str = r"(?:^|[\s(,])[*_~=]*#([\p{L}\p{N}_/\-]+)";
-
 /// Text next to text is one text.
 fn merge_text(inlines: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::with_capacity(inlines.len());
@@ -1563,12 +1554,10 @@ fn safe_cut(text: &str, at: usize, tags: bool) -> bool {
 }
 
 fn tag(text: &str, from: usize) -> Option<(Range<usize>, Inline)> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(TAG).unwrap());
     let mut from = from;
-    while let Some(c) = re.captures_at(text, from) {
+    while let Some(c) = tag_name::pattern().captures_at(text, from) {
         let name = c.get(1).unwrap();
-        if !name.as_str().chars().all(|c| c.is_ascii_digit()) {
+        if !tag_name::is_number(name.as_str()) {
             return Some((
                 name.start() - 1..name.end(),
                 Inline::Tag(name.as_str().to_string()),
@@ -1984,9 +1973,9 @@ mod tests {
         for (name, listed, given) in names {
             let note = format!("---\ntags:\n  - {name}\n---\n");
             assert_eq!(index(&note), Vec::from_iter(listed), "listed, {name:?}");
-            assert_eq!(crate::frontmatter::is_tag(name), given, "given, {name:?}");
+            assert_eq!(tag_name::is_name(name), given, "given, {name:?}");
         }
-        assert!(!crate::frontmatter::is_tag(""));
+        assert!(!tag_name::is_name(""));
     }
 
     #[test]
