@@ -24,6 +24,7 @@ use crate::line_input::{self, CtrlU};
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::notice::Notice;
+use crate::palette::{self, Palette};
 use crate::paths::{self, config_dir, home_dir};
 use crate::pick_list::{self, Picked};
 use crate::previews::{self, Previews};
@@ -390,10 +391,7 @@ enum Mode {
         merging: Option<PathBuf>,
     },
     /// Command palette: run a command by (fuzzy) name.
-    Palette {
-        query: String,
-        sel: usize,
-    },
+    Palette(Palette),
     /// Full-text search.
     Search {
         query: String,
@@ -504,9 +502,7 @@ impl Mode {
             Mode::Switcher { query, .. } => {
                 (!query.is_empty()).then_some("a note's name is being typed")
             }
-            Mode::Palette { query, .. } => {
-                (!query.is_empty()).then_some("a command is being typed")
-            }
+            Mode::Palette(palette) => palette.unsaved(),
             Mode::Search { query, .. } => (!query.is_empty()).then_some("a search is being typed"),
             Mode::Outline { query, .. } => {
                 (!query.is_empty()).then_some("a heading is being typed")
@@ -2473,7 +2469,7 @@ impl Home {
         if matches!(self.mode, Mode::View { .. }) {
             return self.view_key(k, terminal);
         }
-        if matches!(self.mode, Mode::Palette { .. }) {
+        if matches!(self.mode, Mode::Palette(_)) {
             return self.palette_key(k, terminal);
         }
         if matches!(self.mode, Mode::Search { .. }) {
@@ -2612,7 +2608,7 @@ impl Home {
                 return Ok(());
             }
             Mode::Switcher { .. }
-            | Mode::Palette { .. }
+            | Mode::Palette(_)
             | Mode::Search { .. }
             | Mode::Rename { .. }
             | Mode::MoveMarked(_)
@@ -3054,12 +3050,7 @@ impl Home {
                     _ => Focus::Workspaces,
                 }
             }
-            MenuAction::Palette => {
-                self.mode = Mode::Palette {
-                    query: String::new(),
-                    sel: 0,
-                }
-            }
+            MenuAction::Palette => self.mode = Mode::Palette(Palette::new()),
             MenuAction::Switcher => self.open_switcher(),
             MenuAction::Bookmarks => self.open_bookmarks(),
             MenuAction::Tidy => self.open_tidy(),
@@ -3764,31 +3755,19 @@ impl Home {
     }
 
     fn palette_key(&mut self, k: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Mode::Palette { query, sel } = &mut self.mode else {
+        let Mode::Palette(p) = &self.mode else {
             return Ok(());
         };
-        let (mut q, mut s) = (query.clone(), *sel);
-        let total = self.palette_hits(&q).len();
-        match k.code {
-            KeyCode::Esc => {
+        let mut p = p.clone();
+        let hits = self.palette_hits(p.query());
+        match p.key(k, &hits) {
+            palette::Action::Stay => self.mode = Mode::Palette(p),
+            palette::Action::Close => self.mode = Mode::Normal,
+            palette::Action::Run(c) => {
                 self.mode = Mode::Normal;
-                return Ok(());
-            }
-            KeyCode::Enter => {
-                let action = self.palette_hits(&q).get(s).map(|m| m.command.action);
-                self.mode = Mode::Normal;
-                return match action {
-                    Some(c) => self.run_menu_command(c, Value::Null, terminal),
-                    None => Ok(()),
-                };
-            }
-            _ => {
-                if pick_list::key(&mut q, &mut s, total, k, CtrlU::Clears) == Some(Picked::Typed) {
-                    s = 0;
-                }
+                return self.run_menu_command(c, Value::Null, terminal);
             }
         }
-        self.mode = Mode::Palette { query: q, sel: s };
         Ok(())
     }
 
@@ -6102,8 +6081,8 @@ impl Home {
         if matches!(self.mode, Mode::Switcher { .. }) {
             self.draw_switcher(f, main);
         }
-        if matches!(self.mode, Mode::Palette { .. }) {
-            self.draw_palette(f, main);
+        if let Mode::Palette(palette) = &self.mode {
+            palette.draw(f, main, &self.palette_hits(palette.query()), &self.keys);
         }
         if matches!(self.mode, Mode::Outline { .. }) {
             self.draw_outline(f, main);
@@ -6569,76 +6548,6 @@ impl Home {
         }
         if rows.is_empty() && !query.is_empty() {
             lines.push(Line::styled(" no bookmarks match", Style::new().fg(MUTED)));
-        }
-        f.render_widget(Paragraph::new(lines), inner);
-    }
-
-    fn draw_palette(&self, f: &mut Frame, area: Rect) {
-        let Mode::Palette { query, sel } = &self.mode else {
-            return;
-        };
-        let inner = popup::picker(f, area, " Commands ", " ↑↓ choose · ⏎ run · Esc close ");
-        let hits = self.palette_hits(query);
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(
-                    if query.is_empty() {
-                        "  type a command's name or id".to_string()
-                    } else {
-                        format!("  {}", plural(hits.len(), "command"))
-                    },
-                    Style::new().fg(MUTED),
-                ),
-            ]),
-            Line::raw(""),
-        ];
-        let rows = inner.height.saturating_sub(2) as usize;
-        let start = sel.saturating_sub(rows.saturating_sub(1));
-        let width = inner.width as usize;
-        for (i, m) in hits.iter().enumerate().skip(start).take(rows) {
-            let selected = i == *sel;
-            let base = if selected {
-                Style::new().fg(Color::Black).bg(ACCENT)
-            } else {
-                Style::new().fg(NOTE)
-            };
-            let dim = if selected {
-                base
-            } else {
-                Style::new().fg(MUTED)
-            };
-            let hl = if selected {
-                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
-            };
-            let c = m.command;
-            let mut spans = vec![Span::styled(" ", base)];
-            let mut push = |text: &str, hits: &[usize], style: Style| {
-                for (ci, ch) in text.chars().enumerate() {
-                    let st = if hits.contains(&ci) { hl } else { style };
-                    spans.push(Span::styled(ch.to_string(), st));
-                }
-            };
-            push(&c.title, &m.title_hits, base);
-            push("  ", &[], base);
-            push(&c.id, &m.id_hits, dim);
-            let right = format!("{} ", self.keys.label(&c.id));
-            let used = 3 + c.title.chars().count() + c.id.chars().count();
-            let pad = width.saturating_sub(used + right.chars().count());
-            spans.push(Span::styled(" ".repeat(pad), base));
-            let keys = if selected {
-                base
-            } else {
-                Style::new().fg(ACCENT)
-            };
-            spans.push(Span::styled(right, keys));
-            lines.push(Line::from(spans));
-        }
-        if hits.is_empty() {
-            lines.push(Line::styled(" no commands match", Style::new().fg(MUTED)));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -7844,7 +7753,14 @@ mod tests {
                 "a note's name is being typed",
             ),
             (
-                |query: String| Mode::Palette { query, sel: 0 },
+                |query: String| {
+                    let mut palette = Palette::new();
+                    for c in query.chars() {
+                        let k = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+                        palette.key(k, &[]);
+                    }
+                    Mode::Palette(palette)
+                },
                 "a command is being typed",
             ),
             (

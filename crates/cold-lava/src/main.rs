@@ -20,6 +20,7 @@ mod list;
 mod looks;
 mod notice;
 mod owned;
+mod palette;
 mod pick_list;
 mod popup;
 mod previews;
