@@ -86,12 +86,13 @@ impl Seen {
         Ok(())
     }
 
-    /// Write `bytes` over the file read, through `write::replace`: refused with
-    /// `WriteError::Changed` if it changed since, or if what was read wasn't a file.
+    /// Write `bytes` over the file seen, through `write::replace`. Refused with
+    /// `WriteError::Changed` if it changed since, or if it wasn't seen as a file (`file`), since
+    /// a write reads through a symlink and an entry never follows one.
     pub fn replace(&self, bytes: &[u8]) -> Result<(), WriteError> {
-        match self.bytes() {
-            Some(was) => write::replace(&self.path, was, bytes),
-            None => Err(WriteError::Changed(self.path.clone())),
+        match (self.way, &self.was) {
+            (Way::File, Contents::File(was)) => write::replace(&self.path, was, bytes),
+            _ => Err(WriteError::Changed(self.path.clone())),
         }
     }
 }
