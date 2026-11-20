@@ -1,3 +1,238 @@
+//! The bookmark in a note (#190, docs/extensions.md "Anchors, as built"): where an item takes
+//! an anchor, what it is named, and whether the note reads back with nothing new but it. An
+//! anchor is a `^name` that ends the item's last own line, where the walk reads one
+//! (`items.rs`): a list item's (a task's) line before its first child, or a paragraph's last
+//! line. Every other item has no place for one in Markdown, and is refused with what to keep
+//! instead. A leaf: it reads items, types and text, and writes nothing.
+
+use crate::cst::{Kind, Step};
+use crate::edit::{EditError, same_data};
+use crate::identity;
+use crate::items::{self, Data, Item, Settings};
+use crate::markdown::Syntax;
+use crate::types::On;
+use std::collections::HashMap;
+
+/// What an item gives an anchor.
+pub(super) enum Room {
+    /// The one it has already, its `block_id`.
+    Kept,
+    /// A place at the end of this line of the note, the item's last own line.
+    At(usize),
+    /// None: why, and what to keep instead.
+    Refused(String),
+}
+
+/// What `item` of the note written `text`, read with `s`, gives an anchor.
+pub(super) fn room(item: &Item, text: &str, s: &Settings) -> Room {
+    let id = &item.id;
+    let stem = item.note.strip_suffix(".md").unwrap_or(&item.note);
+    if !s.flavour.has(Syntax::BlockIds) {
+        return Room::Refused(format!(
+            "{} is read as {} Markdown, which has no block ids, so a ^name there would be \
+             words: give the workspace a flavour with block-ids ([markdown] in config.toml), \
+             or keep a link to the note, [[{stem}]]",
+            item.note, s.flavour.name
+        ));
+    }
+    if item.block_id.is_some() {
+        return Room::Kept;
+    }
+    let heading = |words: &str| {
+        format!(
+            "{id} is a heading, which Markdown has no place for a ^name on: keep a link to \
+             the heading instead, [[{stem}#{words}]]"
+        )
+    };
+    let on = match &item.data {
+        Data::List { .. } | Data::Block => return Room::At(item.end_line),
+        Data::Heading { text, .. } => return Room::Refused(heading(text)),
+        Data::Typed(t) => match s.types.types.iter().find(|ty| ty.name == t.kind) {
+            Some(ty) => ty.definition.from[t.place.shape].on,
+            None => return Room::Refused(format!("no type called {}", t.kind)),
+        },
+    };
+    let above = match item.section.last() {
+        Some(section) => format!("[[{stem}#{section}]]"),
+        None => format!("[[{stem}]]"),
+    };
+    let why = match on {
+        On::Item | On::Text => return Room::At(item.end_line),
+        On::Section => {
+            let words = match &item.data {
+                Data::Typed(t) => text.get(t.place.text.clone()),
+                _ => None,
+            };
+            heading(words.unwrap_or("…").trim())
+        }
+        On::Document => {
+            format!("{id} is the whole note: keep a link to the note instead, [[{stem}]]")
+        }
+        On::Row => format!(
+            "{id} is a table row, which Markdown has no place for a ^name on: keep a link to \
+             the heading above it instead, {above}"
+        ),
+        On::Aside => format!(
+            "{id} is a quote or a callout, which takes a ^name only on a line of its own \
+             after it, and cold-lava doesn't write one there yet: keep a link to the heading \
+             above it instead, {above}"
+        ),
+        On::Verbatim => format!(
+            "{id} is a code block, where a ^name would be code: keep a link to the heading \
+             above it instead, {above}"
+        ),
+        On::Inline => match &item.parent {
+            Some(parent) => format!(
+                "{id} is read in the words of another item and has no lines of its own: \
+                 anchor that item instead, {parent}"
+            ),
+            None => format!(
+                "{id} is read in the words of a paragraph and has no lines of its own: keep a \
+                 link to the heading above it instead, {above}"
+            ),
+        },
+    };
+    Room::Refused(why)
+}
+
+/// The names tried for one item before it is refused: all of them would have to be written
+/// in the workspace already.
+const ATTEMPTS: u32 = 100;
+
+/// The first name derived from the item's address (`identity::anchor`) that isn't `written`.
+pub(super) fn name(address: &str, written: impl Fn(&str) -> bool) -> Option<String> {
+    (0..ATTEMPTS)
+        .map(|attempt| identity::anchor(address, attempt))
+        .find(|name| !written(name))
+}
+
+/// Where an anchor goes to end the line `line` (1-based) of `text`: after its words, before
+/// the blanks and the line ending that close it.
+pub(super) fn end_of(text: &str, line: usize) -> usize {
+    let start: usize = text
+        .split_inclusive('\n')
+        .take(line - 1)
+        .map(str::len)
+        .sum();
+    let own = text[start..].split('\n').next().unwrap_or_default();
+    start + own.trim_end_matches(['\r', ' ', '\t']).len()
+}
+
+/// `text` with ` ^name` written at `at`: one space, then the anchor.
+pub(super) fn write(text: &str, at: usize, name: &str) -> String {
+    let mut out = String::with_capacity(text.len() + name.len() + 2);
+    out.push_str(&text[..at]);
+    out.push_str(" ^");
+    out.push_str(name);
+    out.push_str(&text[at..]);
+    out
+}
+
+/// What a note's tree says, for the read-back: each node it enters and leaves, in order, and
+/// where each block id starts.
+#[derive(Default)]
+pub(super) struct Tree {
+    nodes: Vec<(bool, Kind)>,
+    ids: Vec<usize>,
+}
+
+impl Tree {
+    pub(super) fn step(&mut self, step: Step<'_>) {
+        match step {
+            Step::Enter(kind, _) => self.nodes.push((true, kind)),
+            Step::Leave(kind, _) => self.nodes.push((false, kind)),
+            Step::Token(Kind::BlockId, _, at) => self.ids.push(at),
+            Step::Token(..) => {}
+        }
+    }
+}
+
+/// Whether the note's tree with ` ^name` written at `at`, on its line `line` (`is`), is the
+/// tree it had (`was`) with one block id more, that one: the same nodes, entered and left in
+/// the same order. Then the anchor ends a line of text, and nothing around it reads
+/// otherwise: a code block, a table row or a heading's underline would.
+pub(super) fn same_tree(
+    was: &Tree,
+    is: &Tree,
+    at: usize,
+    line: usize,
+    name: &str,
+) -> Result<(), EditError> {
+    let one_more = is.ids.len() == was.ids.len() + 1 && is.ids.contains(&(at + 1));
+    if was.nodes == is.nodes && one_more {
+        return Ok(());
+    }
+    Err(EditError::ReadBack(format!(
+        "line {line} ends no text a ^name can end (a code block, a table row or the like \
+         would take ^{name} in): keep a link to the heading above the item instead"
+    )))
+}
+
+/// Whether `after`, the note read again with ` ^name` written for `before[k]`, says what
+/// `before` said with nothing new but that anchor: the same items, each the item of its kind
+/// that starts on its line (`items::anchors::by_line`), with the same data, lines, section and
+/// parent, `name` that one's anchor, and every other anchor where it was (`items::anchors`).
+/// Ids aren't compared: the item's own, its children's and a later twin's move by the key
+/// rules. Neither is the order of items that start on one line: a paragraph with a block id
+/// is read before the note's own item on line 1, without one after it. `text` is the note
+/// before. The anchored item is `after`'s at the place it answers.
+pub(super) fn read_back(
+    before: &[Item],
+    after: &[Item],
+    k: usize,
+    name: &str,
+    text: &str,
+) -> Result<usize, EditError> {
+    if after.len() != before.len() {
+        return Err(EditError::ReadBack(format!(
+            "it would have {} items instead of {}",
+            after.len(),
+            before.len()
+        )));
+    }
+    let same = items::anchors::by_line(before, after, |i| i.line);
+    let (was, is) = (parents(before), parents(after));
+    for (i, b) in before.iter().enumerate() {
+        let a = same[i].map(|j| &after[j]);
+        let kept = a.is_some_and(|a| {
+            same_data(&b.data, &a.data)
+                && (b.line, b.end_line) == (a.line, a.end_line)
+                && b.section == a.section
+                && was[i].and_then(|p| same[p]) == same[i].and_then(|j| is[j])
+        });
+        if !kept {
+            return Err(EditError::ReadBack(format!(
+                "the {} on line {} would read otherwise",
+                b.data.kind(),
+                b.line
+            )));
+        }
+    }
+    let Some(j) = same[k].filter(|&j| after[j].block_id.as_deref() == Some(name)) else {
+        return Err(EditError::ReadBack(format!(
+            "^{name} wouldn't read as the anchor of the {} on line {}",
+            before[k].data.kind(),
+            before[k].line
+        )));
+    };
+    let mut others = after.to_vec();
+    others[j].block_id = None;
+    match items::anchors::change(before, &others, &same, k, text) {
+        Some(change) => Err(EditError::Anchor(change.to_string())),
+        None => Ok(j),
+    }
+}
+
+/// Each item's parent, by its place among `items`.
+fn parents(items: &[Item]) -> Vec<Option<usize>> {
+    let place: HashMap<&str, usize> = (items.iter().enumerate())
+        .map(|(i, item)| (item.id.as_str(), i))
+        .collect();
+    (items.iter())
+        .map(|i| i.parent.as_deref().and_then(|p| place.get(p).copied()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::gateway::{Edit, Error, Op, Reason};
@@ -251,22 +486,30 @@ fields.w = { capture = "w" }
         assert_eq!(made.text, want, "taken in this note");
     }
 
-    /// What each item says, in order: everything but its id, its rev and its parent's id,
-    /// which an anchor may move by the key rules (its own, its children's, a later twin's);
-    /// its parent by place instead.
+    /// What each item says: everything but its id, its rev and its parent's id, which an
+    /// anchor may move by the key rules (its own, its children's, a later twin's); its parent
+    /// by the line and the kind it starts on instead.
     fn said(items: &[Item]) -> Vec<Json> {
-        let place = |id: &String| items.iter().position(|i| i.id == *id);
+        let find = |id: &String| items.iter().find(|i| i.id == *id);
         (items.iter())
             .map(|i| {
                 let mut json = serde_json::to_value(i).unwrap();
                 let fields = json.as_object_mut().unwrap();
                 fields.remove("id");
                 fields.remove("rev");
-                let parent = i.parent.as_ref().and_then(place);
-                fields.insert("parent".into(), Json::from(parent));
+                let parent = i.parent.as_ref().and_then(find);
+                let parent = parent.map(|p| serde_json::json!([p.line, p.data.kind()]));
+                fields.insert("parent".into(), parent.unwrap_or(Json::Null));
                 json
             })
             .collect()
+    }
+
+    /// `said` in no order: items that start on one line may be read in another.
+    fn sorted(said: Vec<Json>) -> Vec<String> {
+        let mut said: Vec<String> = said.iter().map(Json::to_string).collect();
+        said.sort();
+        said
     }
 
     #[derive(Default)]
@@ -278,8 +521,8 @@ fields.w = { capture = "w" }
     }
 
     /// Anchor each item of the note alone, and check what came of it apart from the
-    /// read-back: the text is the old one with ` ^name` in one place, and every item says
-    /// what it said, in the same order, but that one's `block_id`.
+    /// read-back: the text is the old one with ` ^name` in one place, and the items say what
+    /// they said, but that one's `block_id`.
     fn each_item(note: &str, text: &str, s: &Settings, tally: &mut Tally) {
         let before = markdown::items(note, text, s);
         for (k, item) in before.iter().enumerate() {
@@ -319,7 +562,8 @@ fields.w = { capture = "w" }
             let mut want = said(&before);
             want[k]["block_id"] = Json::from(name.as_str());
             let after = markdown::items(note, &made.text, s);
-            assert_eq!(said(&after), want, "{at}: the note reads otherwise");
+            let is = sorted(said(&after));
+            assert_eq!(is, sorted(want), "{at}: the note reads otherwise");
             tally.anchored += 1;
         }
     }

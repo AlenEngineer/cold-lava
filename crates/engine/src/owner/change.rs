@@ -133,8 +133,18 @@ pub fn piece(p: &Piece, item: &Item, op: &Op, s: &Settings) -> Result<Made, Erro
             let what = what(field, value);
             Ok(Made { changes, what })
         }
-        Op::Anchor => Err(refused("anchor: not built yet".into())),
+        Op::Anchor => Err(no_anchor(item)),
     }
+}
+
+/// `items/edit`'s `anchor` on an item an owner gave (#190), refused: a `^name` is Markdown's,
+/// and the owner names the item by its place in the file, which an edit doesn't move.
+pub fn no_anchor(item: &Item) -> Error {
+    refused(format!(
+        "{} is in {}, a file its owner writes, where a ^name has no place: keep its id \
+         instead, which its owner gives it by its place in the file",
+        item.id, item.note
+    ))
 }
 
 /// The change that sets `field` of the item `typed`, read from the piece `p`, to `value`.
@@ -329,6 +339,6 @@ pub fn typed(place: &str, item: &Item, op: &Op, s: &Settings) -> Result<Made, Er
             let what = "ticked".to_string();
             Ok(Made { changes, what })
         }
-        Op::Anchor => Err(refused("anchor: not built yet".into())),
+        Op::Anchor => Err(no_anchor(item)),
     }
 }

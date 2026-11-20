@@ -116,7 +116,8 @@ then a query and a view, not a parser of its own.
   nth identical one). It survives ticking, re-dating, re-indenting and lines added above, and it
   is the same after a restart and in every process. Editing a task's words reads as one removed
   and one added. Separately, `rev` hashes only the item's own lines: it says *which version*, and
-  edits refuse a stale one. The core never adds `^ids` by itself.
+  edits refuse a stale one. The core adds a `^id` only when asked to keep a reference to an
+  item ("Anchors, as built").
 - **Reading.** `items/query` takes a `kind` and a fixed filter (notes under a folder or with a
   tag, status, a date range on `due`, `scheduled`, `start`, `done` or `agenda`, text, a property
   key), returns items in one order (notes by path and line, then other owners' files), and
@@ -176,8 +177,9 @@ then a query and a view, not a parser of its own.
   subscription (`Extension::items`), or to its own screen; news for a subscription nobody holds
   any more stops it.
 - **`items/edit`** takes `id`, `rev` and an `op` with its fields:
-  `{"op": "set-field", "field", "value"}` through `edit::set_field`, or `{"op": "toggle"}`
-  through `tasks::toggle` (only on an item that answers to `task`). An unknown op is refused
+  `{"op": "set-field", "field", "value"}` through `edit::set_field`, `{"op": "toggle"}`
+  through `tasks::toggle` (only on an item that answers to `task`), or `{"op": "anchor"}`,
+  which writes an anchor on the item to keep a reference to it ("Anchors, as built"). An unknown op is refused
   when the message is read, naming the ops there are. The core finds the item by id (ids hash
   the note, so they are unique in the workspace), makes the edit through that op's safe path,
   reads the note again at once, and answers `{item, changed, next, warning}`: the item as it
@@ -193,7 +195,7 @@ then a query and a view, not a parser of its own.
 - **Refusals** are `{reason, message}`, the JSON-RPC error's `data` once a transport carries
   them: `changed` (the item is gone or not the version `rev` names, or the file changed while
   writing), `refused` (an unknown kind or field, a read-only source, a value that doesn't fit,
-  a toggle on no task), `read-back` (the note wouldn't read back as asked; nothing was
+  a toggle on no task, an anchor on an item with no place for one), `read-back` (the note wouldn't read back as asked; nothing was
   written), `io`, `forbidden` (the manifest doesn't ask for the permission), `no-workspace` and
   `exists` (`workspace/create`, `workspace/create-folder` or `workspace/restore` at a path
   where something is).
@@ -207,7 +209,7 @@ then a query and a view, not a parser of its own.
   are queued still holds for everything that changes the menu.
 - **Attribution.** Every edit through the gateway makes the core emit `ItemEdited {note, item,
   by, what}` after the note's `NoteChanged`, with `by` the extension's name and `what` "set
-  due", "removed due" or "ticked". The status line says `<extension>: set due on <note>`. A
+  due", "removed due", "ticked" or "anchored". The status line says `<extension>: set due on <note>`. A
   screen of the menu says more right after, and so does an extension: after a call in which it
   edited, the menu reads the edits back (`Core::has_unseen`, then `poll`) before it applies what
   the extension asked, so the extension's own message comes last. Calls made while reading back
@@ -249,6 +251,65 @@ then a query and a view, not a parser of its own.
 - **Not yet:** the ops `set-status`, `set-date`, `set-property`,
   `set-cell`, `replace` and `insert-after`. `set-field` already sets a status, a date, a
   property or a cell of a typed item; the others wait until an extension needs one.
+
+### Anchors, as built
+
+*(the bookmark, #190: the op is built; finding an item by its anchor after its note moves,
+and bindings that anchor what they name, are its next two steps)*
+
+An item has an **address**, its `id`: where it is now. It moves when a list item or a task is
+reworded (its id hashes its words), when its kind changes, when an earlier item with the same
+words comes or goes, and when its note is renamed or moved, so nothing that outlives a session
+keeps one. An **anchor** is a name written into the note, a `^name` that ends the item's line:
+the block id Obsidian writes when you link to a block (foundations, 5). A reference keeps the
+anchor, never the address (decided on 2026-11-20): in the workspace as a link to it
+(`[[Plans#^k3q9x2]]`, or a canvas file card's `subpath`, `#^k3q9x2`), outside it as the name
+alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is an item's
+`^name`, which items carry as `block_id`.
+
+- **The op.** `items/edit` with `{"id", "rev", "op": "anchor"}`, permission `items.edit`, on
+  the path every edit takes (`owner::markdown::anchor`; the placement and the read-back are the
+  leaf `owner/markdown/anchor.rs`). The answer is `{item, changed, next, warning}`:
+  `item.block_id` is the name to keep and `item.id` the item's new address, `changed` is false
+  when the item had an anchor already and nothing was written, so asking twice writes nothing,
+  and `next` is null. `ItemEdited` says "anchored" and names who asked. `cold_lava.py` has
+  `anchor(item)`.
+- **Where it goes.** Where the walk reads an item's anchor (`items.rs`): at the end of its last
+  own line, which for a list item or a task is the line before its first child, and for a
+  paragraph a type reads is its last line. After every field, so a Tasks or Dataview date stays
+  where it was, with one space before it; the blanks and the line ending that close the line
+  stay at its end. In a quote or a callout it ends the task's or the paragraph's line and names
+  that item, not the callout.
+- **The name.** Six characters of `a-z0-9`, the form Obsidian gives the names it writes.
+  `identity::anchor` hashes the item's address and an attempt number, so two processes
+  anchoring one item derive one name: the second write is refused as `changed`, and its retry
+  finds the anchor there. The first name written nowhere yet is taken: in no note's text (an
+  anchor, a link to one, words), not in what an owner gave for its file (a card's text, a file
+  card's `subpath`), and not in the note as it is on disk. A copy made later (a duplicated note)
+  is not rewritten: in one note the first copy keeps the id, as for any `^id`.
+- **The read-back.** Nothing is written unless the note reads back with nothing new but the
+  anchor. Its tree enters and leaves the same nodes, with one block id more, the one written, so
+  the line ends in text and not in a code block, a table row or a heading's underline. Its items
+  are the same, in the same order, each with the same kind, data, lines, section and parent, the
+  anchored one's `block_id` is the name, and every other anchor is where it was
+  (`items::anchors`). Ids are not compared: the anchored item's, its children's and a later
+  twin's move by the key rules. Otherwise it is refused as `read-back`.
+- **Refused, saying what to keep instead.** A heading (a link to it by its words,
+  `[[Note#Heading]]`); a whole note a type reads (a link to the note); a table row, a code
+  block, and a quote or a callout a type reads (a link to the heading above it: a quote's
+  `^name` goes on a line of its own after it, which isn't written yet); an item read in another
+  item's words (anchor that item); an item of a file another owner reads, before any owner is
+  asked (its id, which its owner gives it by its place); and every item of a workspace read as
+  `github`, which reads no block ids, until profiles decide (#235, #236). A stale `rev`, or an
+  item that is gone, is `changed`.
+- **What it keeps.** An anchored item's id hashes its note, its kind and its `^name`, so it
+  stays through new words, a tick, a field, a reorder, lines added above it and a renamed
+  heading above it. A new kind or a move of its note moves the id. The anchor goes with the
+  text, so the item is found by its anchor wherever its note goes, by cold-lava or another
+  program (#190's next step: an `anchor` filter for `items/query`).
+- **Nothing else writes one.** Queries, subscriptions, views, the agenda, the table, a tick,
+  `set-field`, renames and recipes never write an anchor: `items::anchors` refuses an edit that
+  would make one.
 
 ### The alphabet, as built
 

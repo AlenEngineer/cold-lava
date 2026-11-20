@@ -52,8 +52,14 @@ fn of_parts(parts: &[&str]) -> u64 {
 /// `a-z0-9`, the form Obsidian gives the names it writes. Derived, not random, so two
 /// processes anchoring one item write the same name.
 pub fn anchor(address: &str, attempt: u32) -> String {
-    let _ = (address, attempt);
-    String::new()
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut h = of_parts(&[address, &attempt.to_string()]) % 36u64.pow(6);
+    let mut name = [b'0'; 6];
+    for digit in name.iter_mut().rev() {
+        *digit = DIGITS[(h % 36) as usize];
+        h /= 36;
+    }
+    name.iter().map(|&b| b as char).collect()
 }
 
 /// Fingerprint of some text, as 12 hex digits: a note item's lines or a toggled line, or JSON

@@ -65,7 +65,7 @@ pub struct Made {
     pub text: String,
     /// False when the note already said this.
     pub changed: bool,
-    /// What it did, for the status line: "set due", "ticked".
+    /// What it did, for the status line: "set due", "ticked", "anchored".
     pub what: String,
     pub after: After,
     pub warning: Option<String>,
@@ -138,13 +138,17 @@ pub fn edit(
                 warning: t.warning,
             })
         }
-        Op::Anchor => Err(Error::new(Reason::Refused, "anchor: not built yet")),
+        // A note's anchor is `anchor`'s, below, which the core asks with the names the
+        // workspace has. One asked here is for a Markdown piece of another owner's file.
+        Op::Anchor => Err(crate::owner::change::no_anchor(item)),
     }
 }
 
 /// `items/edit`'s `anchor` on the item `req` names in the note at workspace-relative `note`
-/// whose text is `text`. `taken` says whether a name is written anywhere else in the
-/// workspace. Nothing is written.
+/// whose text is `text` (#190): a `^name` written at the end of the item's last own line
+/// (`anchor::room`), the first name derived from its address that is written nowhere, in this
+/// note or where `taken` looks, then the note read back as it was but for that anchor. An
+/// item that has one is answered as it is. Nothing is written.
 pub fn anchor(
     note: &str,
     text: &str,
@@ -152,8 +156,53 @@ pub fn anchor(
     req: &Edit,
     taken: &dyn Fn(&str) -> bool,
 ) -> Result<Made, Error> {
-    let _ = (note, text, s, req, taken);
-    Err(Error::new(Reason::Refused, "anchor: not built yet"))
+    let before = items(note, text, s);
+    let k = (before.iter().position(|i| i.id == req.id)).ok_or_else(|| {
+        let message = format!("{note} has no item {}: read it again", req.id);
+        Error::new(Reason::Changed, message)
+    })?;
+    let item = &before[k];
+    if item.rev != req.rev {
+        let message = format!(
+            "{note}:{} changed since it was read: read it again",
+            item.line
+        );
+        return Err(Error::new(Reason::Changed, message));
+    }
+    let made = |text: String, changed: bool, item: &Item| Made {
+        text,
+        changed,
+        what: "anchored".into(),
+        after: After::Set(item.clone()),
+        warning: None,
+    };
+    let line = match anchor::room(item, text, s) {
+        anchor::Room::Kept => return Ok(made(text.to_string(), false, item)),
+        anchor::Room::Refused(why) => return Err(Error::new(Reason::Refused, why)),
+        anchor::Room::At(line) => line,
+    };
+    let written = |name: &str| taken(name) || text.contains(&format!("^{name}"));
+    let name = anchor::name(&item.id, written).ok_or_else(|| {
+        let message = format!(
+            "every name tried for {} is written somewhere already",
+            item.id
+        );
+        Error::new(Reason::Refused, message)
+    })?;
+    let at = anchor::end_of(text, line);
+    let new = anchor::write(text, at, &name);
+    anchor::same_tree(&tree(text, s), &tree(&new, s), at, line, &name)?;
+    let after = items(note, &new, s);
+    let j = anchor::read_back(&before, &after, k, &name, text)?;
+    Ok(made(new, true, &after[j]))
+}
+
+/// A note's tree as the anchor's read-back compares it, in the workspace's flavour.
+fn tree(text: &str, s: &Settings) -> anchor::Tree {
+    let mut tree = anchor::Tree::default();
+    let gates = cst::Gates::of(&s.flavour).plain();
+    cst::read(text, gates, &mut |step| tree.step(step));
+    tree
 }
 
 /// How a link's target is written in a note.

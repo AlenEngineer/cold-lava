@@ -147,6 +147,16 @@ ext.run()
 A refusal comes back as a JSON-RPC error whose `data` is `{reason, message}`. `Refused.reason`
 is one of `changed`, `refused`, `read-back`, `io`, `forbidden`, `no-workspace` or `exists`.
 
+An item's `id` says where it is now: it changes when a task is reworded or its note is
+renamed, so don't keep it once the session is over. To keep a reference to an item, anchor it:
+`ext.anchor(task)` (`items/edit` with `"op": "anchor"`, which needs `items.edit`) writes a
+`^name` at the end of the task's line the first time, the way Obsidian does when you link to a
+block, and the answer's `item["block_id"]` is the name to keep. Asked again, it writes nothing.
+To find the item again, query its note's items (the `note` filter) and take the one whose
+`block_id` is that name; finding it after its note moves is the next step of #190. A heading,
+a table row, an item read in another item's words, an item in a file another extension owns,
+and every item of a workspace without block ids are refused, saying what to keep instead.
+
 ## Views
 
 An extension shows something bigger than a status line by sending a **view**: a list (groups of

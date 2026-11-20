@@ -619,6 +619,12 @@ blocks, `%%comments%%` and the frontmatter don't (a frontmatter whose first line
 Kanban plugin writes it, too), a date in a code span (`` `📅 2026-11-12` ``) is words, and
 custom statuses follow the Tasks plugin's settings.
 
+An item without a `^block-id` gets a new `id` when its words change or its note moves, so
+something that keeps a reference to an item (an extension, for now) asks cold-lava to anchor
+it: the first time, cold-lava writes a `^name` at the end of the item's line, as Obsidian does
+when you link to a block (`- [ ] Pay rent 📅 2026-11-12 ^k3q9x2`), and the reference keeps
+that name. Only that request writes one; ticking, editing, renaming and the rest never do.
+
 `task toggle` works like Obsidian Tasks: it moves the status to its next one (the Tasks plugin's
 custom statuses say which; else done, and back to todo), adds the done date (`✅`, or
 `[completion:: …]`) before a block id that ends the line (`^rent`), removes it when unticking,

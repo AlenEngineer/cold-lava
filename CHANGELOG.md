@@ -9,6 +9,18 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Added
 
+- An extension can keep a reference to an item (#190, the bookmark). `items/edit` with
+  `{"op": "anchor"}` (permission `items.edit`; `anchor(item)` in `cold_lava.py`) writes an
+  anchor on the item the first time, a `^name` at the end of its line where Obsidian and
+  cold-lava read a block id, and answers the item with that name as its `block_id`. Asked
+  again, it writes nothing. The name is six letters and digits, derived from the item's
+  address and written nowhere else in the workspace. A reference keeps the name, never the
+  id: the anchored item keeps its id through new words, a tick, a field, a reorder and a
+  renamed heading above it. An item Markdown has no place for a `^name` on (a heading, a
+  table row, a code block, a quote or a whole note a type reads, an item read in another
+  item's words), an item of a file another owner reads, and every item of a workspace read
+  as `github`, which has no block ids, are refused, saying what to keep instead. Nothing but
+  this op writes an anchor. `docs/extensions.md`, "Anchors, as built".
 - An extension that owns a kind of file can say what the file holds as **pieces**, with no
   Markdown anywhere (#243, step 3 of the neutral model). A piece in `file/read` is
   `{place, role, attributes, text, …}`: a role of the alphabet, the attributes it carries

@@ -712,14 +712,15 @@ pub(crate) struct Written {
     /// Workspace-relative, with `.md`.
     pub note: String,
     pub changed: bool,
-    /// What it did, for the status line: "set due", "ticked".
+    /// What it did, for the status line: "set due", "ticked", "anchored".
     pub what: String,
     after: After,
     warning: Option<String>,
 }
 
 /// Make the edit on disk: the note's owner makes its new text, which is written with
-/// `write::replace`, refused if the note changed since it was read.
+/// `write::replace`, refused if the note changed since it was read. An anchor's name is
+/// checked against the whole workspace (`written_anywhere`), which only the core holds.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
     let item = (workspace.notes.iter())
         .flat_map(|n| workspace.items(n))
@@ -735,15 +736,17 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
     let path = root.join(&note);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| Error::new(Reason::Io, format!("{}: {e}", path.display())))?;
-    let made = markdown::edit(
-        &note,
-        &text,
-        &Settings::load(root),
-        &crate::style::Lazy::new(|| workspace.style()),
-        item,
-        req,
-        tasks::today(),
-    )?;
+    let settings = Settings::load(root);
+    let made = match req.op {
+        Op::Anchor => {
+            let taken = |name: &str| written_anywhere(workspace, name);
+            markdown::anchor(&note, &text, &settings, req, &taken)
+        }
+        _ => {
+            let style = crate::style::Lazy::new(|| workspace.style());
+            markdown::edit(&note, &text, &settings, &style, item, req, tasks::today())
+        }
+    }?;
     if made.changed {
         write::replace(&path, text.as_bytes(), made.text.as_bytes()).map_err(|e| {
             let reason = match e {
@@ -760,6 +763,15 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
         after: made.after,
         warning: made.warning,
     })
+}
+
+/// Whether `^name` is written anywhere the workspace holds text: in a note (an anchor, a link
+/// to one, words), or in what an owner gave for its file (a card's text, a file card's
+/// `subpath`). The engine names an anchor only with a name written nowhere yet (#190).
+fn written_anywhere(workspace: &Workspace, name: &str) -> bool {
+    let tag = format!("^{name}");
+    let given = |file: &Owned| serde_json::to_string(&file.given).is_ok_and(|g| g.contains(&tag));
+    (workspace.notes.iter()).any(|n| n.text.contains(&tag)) || workspace.owned.iter().any(given)
 }
 
 /// The answer to an edit, from the note as the core has read it since.
