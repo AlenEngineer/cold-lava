@@ -695,55 +695,6 @@ impl Core {
         self.unseen.extend(events);
     }
 
-    /// Before a rename, merge or recipe writes anything: ask the owner of each file among `edits`
-    /// that another owner reads for its new text (`file/edit`), and have the owner read it back.
-    /// `None` when `edits` are ready: there was nothing to ask, or every owner answered inside
-    /// the call (the engine's own do) and `edits` have their new texts. Else the answer comes
-    /// from `take_relinked` under the ticket: every owned file's edit with its new text, or the
-    /// first owner's refusal, after which nothing else is kept. Refused at once when one of them
-    /// changed since it was planned, has an edit waiting, its change would leave out something
-    /// its owner gave (`given::check_change`: a link target past its bound), or an owner in the
-    /// engine refuses.
-    pub(crate) fn relink(
-        &mut self,
-        edits: &mut [crate::rename::FileEdit],
-    ) -> Result<Option<Ticket>, String> {
-        let settings = self.index.workspace.item_settings();
-        let planned = |e: &crate::rename::FileEdit| {
-            let seen = read::Seen::kept(&e.path, e.old_text.as_str());
-            seen.unchanged().is_ok()
-        };
-        self.edits.relink(edits, planned, settings)
-    }
-
-    /// Renames, merges and recipes whose owners have all answered (`apply`), or one refused:
-    /// each answer is for `apply_answered`.
-    pub fn take_relinked(&mut self) -> Vec<(Ticket, Result<Vec<crate::rename::FileEdit>, String>)> {
-        self.edits.take_relinked()
-    }
-
-    /// Stop waiting for the owners of the rename or merge `ticket`. Their answers are dropped.
-    pub fn cancel_relink(&mut self, ticket: Ticket) {
-        self.edits.cancel_relink(ticket);
-    }
-
-    /// After a rename or merge with `edits` was made, before reading the workspace again: what
-    /// the owners read in their files' new texts, at `moved` (where each file is now), is kept as
-    /// their answer for that version, so they aren't asked again.
-    fn relinked(&mut self, edits: &[crate::rename::FileEdit], moved: impl Fn(&Path) -> PathBuf) {
-        for e in edits {
-            let Some((o, after)) = e.owned.as_ref().and_then(|o| Some((o, o.after.as_ref()?)))
-            else {
-                continue;
-            };
-            let path = moved(&e.path);
-            let rel = path.strip_prefix(self.root()).unwrap_or(&path);
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            let rev = read::rev(e.new_text.as_bytes());
-            self.owners.answered(&o.owner, &rel, &rev, Some(after));
-        }
-    }
-
     /// The answer of the extension named `by` to `ask` (`shape/region`, `shape/gesture`). Only
     /// the extension that ships the shape may answer. It waits for a frontend's shapes
     /// (`take_shape_answers`) already checked for what needs none (`Reply::arrived`), so no
