@@ -320,8 +320,9 @@ impl std::fmt::Display for Changed {
 }
 impl std::error::Error for Changed {}
 
-/// Toggle the task at `path:line` (1-based) like Obsidian Tasks does, and write the file with
-/// `write::replace`: `toggle_text` on the file's text, in the workspace the file is in.
+/// Toggle the task at `path:line` (1-based) like Obsidian Tasks does, and write the file over
+/// the text read (`Seen::replace`): `toggle_text` on the file's text, in the workspace the file
+/// is in.
 pub fn toggle(
     path: &Path,
     line: usize,

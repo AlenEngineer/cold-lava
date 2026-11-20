@@ -263,7 +263,10 @@ fn only_listed(what: &str, remedy: &str, found: &[String], listed: &[&str]) {
 }
 
 /// The engine's modules whose functions change files, and `read::Seen`, which is made to write
-/// over what was read (`Seen::replace`).
+/// over what was read (`Seen::replace`). `"Seen::"` matches where a `Seen` is made, not where
+/// it is written over, so a `Seen` the app got some other way and wrote over would not be
+/// counted. That is enough while no public engine function returns a `Seen`: the first that
+/// does must make this guard find the `.replace` as well.
 const WRITES: [&str; 3] = ["trash::", "write::", "Seen::"];
 
 /// The gateway's file messages, which are the core's to call.
@@ -769,8 +772,8 @@ fn item_edits(code: &str) -> Vec<String> {
 ///
 /// - `edit::set_field`: `cold-lava item set` on a note (#270, B3).
 /// - `tasks::toggle_in`: `cold-lava task toggle` (#270, B3).
-/// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it with
-///   `write::replace` itself.
+/// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it over the
+///   text read (`Seen::replace`) itself.
 ///
 /// An owner's functions that make a file's new text (`owner::edit`, `owner::markdown::edit`,
 /// `owner::canvas::edit` and `relink`, `owner::change`'s) would be listed; the app names
