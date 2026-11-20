@@ -32,7 +32,7 @@ change commands, keys and file formats; patch versions only fix things.
   anything is written the owner reads its new text back, and now every piece must say what
   was asked and stand where it stood, so an owner that quietly changes another piece,
   changes the other of two identical chores (where it keeps their places) or moves one
-  is refused. New words are
+  is refused; the comparison grows with the size of the answer, not its square (#319). New words are
   refused when some of the piece's words don't show in the field being set (a type's
   `marker`, `pattern` or `without` took them out), since they would be dropped unseen. With custom Tasks statuses a tick goes on
   to the next status that is another of the four words. Ticking a recurring task in a piece
@@ -317,12 +317,6 @@ change commands, keys and file formats; patch versions only fix things.
 
 ### Fixed
 
-- An edit of a file whose owner gives many pieces no longer slows down with the square of
-  their number (#319). Before writing, cold-lava compares the owner's new answer with the
-  one it asked for, and it looked up each piece's place by searching the whole answer: a
-  tick on a file of 40,000 pieces took 6 s, four times as long as on 20,000. Each place is
-  now looked up in a table made once, so the check grows with the size of the answer. What
-  is refused, and the words it is refused in, are as before.
 - Ticking a task whose line ends in a block id (`^rent`) writes the done or cancelled date
   before the id, as Obsidian Tasks does (#315). The date went after it
   (`… ^rent ✅ 2026-11-07`), so the id no longer read as one: links to `#^rent` stopped

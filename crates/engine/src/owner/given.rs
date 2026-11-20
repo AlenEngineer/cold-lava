@@ -1387,7 +1387,8 @@ fn left_out_moved(shifted: &[Shifted]) -> Result<(), String> {
 
 /// When what the engine leaves out stands elsewhere only because an entry that reads moved
 /// past it, is new before it or is gone from before it: that entry, named. Asked last, so
-/// that the other steps name it in their own words when they can.
+/// that the other steps name it in their own words when they can. Any list that shifted is
+/// refused, and the first is named.
 fn moved_past_left_out(shifted: &[Shifted]) -> Result<(), String> {
     let Some(Shifted { want, got, diff: d }) = shifted.first() else {
         return Ok(());
