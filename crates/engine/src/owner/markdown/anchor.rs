@@ -1,14 +1,13 @@
 //! The bookmark in a note (#190, docs/extensions.md "Anchors, as built"): where an item takes
-//! an anchor, what it is named, and whether the note reads back with nothing new but it. An
-//! anchor is a `^name` that ends the item's last own line, where the walk reads one
-//! (`items.rs`): a list item's (a task's) line before its first child, or a paragraph's last
-//! line. Every other item has no place for one in Markdown, and is refused with what to keep
-//! instead. A leaf: it reads items, types and text, and writes nothing.
+//! an anchor, and whether the note reads back with nothing new but it. An anchor is a `^name`
+//! that ends the item's last own line, where the walk reads one (`items.rs`): a list item's
+//! (a task's) line before its first child, or a paragraph's last line. Every other item has
+//! no place for one in Markdown, and is refused with what to keep instead. A leaf: it reads
+//! items, types, trees and text, and needs serde_json to compare what items say.
 
 use crate::cst::{Kind, Step};
-use crate::edit::{EditError, same_data};
-use crate::identity;
-use crate::items::{self, Data, Item, Settings};
+use crate::edit::EditError;
+use crate::items::{Data, Item, Settings};
 use crate::markdown::Syntax;
 use crate::types::On;
 use std::collections::HashMap;
@@ -95,17 +94,6 @@ pub(super) fn room(item: &Item, text: &str, s: &Settings) -> Room {
     Room::Refused(why)
 }
 
-/// The names tried for one item before it is refused: all of them would have to be written
-/// in the workspace already.
-const ATTEMPTS: u32 = 100;
-
-/// The first name derived from the item's address (`identity::anchor`) that isn't `written`.
-pub(super) fn name(address: &str, written: impl Fn(&str) -> bool) -> Option<String> {
-    (0..ATTEMPTS)
-        .map(|attempt| identity::anchor(address, attempt))
-        .find(|name| !written(name))
-}
-
 /// Where an anchor goes to end the line `line` (1-based) of `text`: after its words, before
 /// the blanks and the line ending that close it.
 pub(super) fn end_of(text: &str, line: usize) -> usize {
@@ -170,19 +158,18 @@ pub(super) fn same_tree(
 }
 
 /// Whether `after`, the note read again with ` ^name` written for `before[k]`, says what
-/// `before` said with nothing new but that anchor: the same items, each the item of its kind
-/// that starts on its line (`items::anchors::by_line`), with the same data, lines, section and
-/// parent, `name` that one's anchor, and every other anchor where it was (`items::anchors`).
-/// Ids aren't compared: the item's own, its children's and a later twin's move by the key
-/// rules. Neither is the order of items that start on one line: a paragraph with a block id
-/// is read before the note's own item on line 1, without one after it. `text` is the note
-/// before. The anchored item is `after`'s at the place it answers.
+/// `before` said with nothing new but that anchor. `same[i]` is the item of `after` that
+/// `before[i]` is, the one of its kind that starts on its line (`items::anchors::by_line`).
+/// Each says what it said (its kind and its data as the wire carries them), on the same
+/// lines, under the same section and parent, and `name` is that one's anchor. Ids aren't
+/// compared: the item's own, its children's and a later twin's move by the key rules. The
+/// anchored item is `after`'s at the place it answers.
 pub(super) fn read_back(
     before: &[Item],
     after: &[Item],
+    same: &[Option<usize>],
     k: usize,
     name: &str,
-    text: &str,
 ) -> Result<usize, EditError> {
     if after.len() != before.len() {
         return Err(EditError::ReadBack(format!(
@@ -191,12 +178,12 @@ pub(super) fn read_back(
             before.len()
         )));
     }
-    let same = items::anchors::by_line(before, after, |i| i.line);
+    let says = |i: &Item| serde_json::to_value(&i.data).ok();
     let (was, is) = (parents(before), parents(after));
     for (i, b) in before.iter().enumerate() {
         let a = same[i].map(|j| &after[j]);
         let kept = a.is_some_and(|a| {
-            same_data(&b.data, &a.data)
+            says(b) == says(a)
                 && (b.line, b.end_line) == (a.line, a.end_line)
                 && b.section == a.section
                 && was[i].and_then(|p| same[p]) == same[i].and_then(|j| is[j])
@@ -209,19 +196,23 @@ pub(super) fn read_back(
             )));
         }
     }
-    let Some(j) = same[k].filter(|&j| after[j].block_id.as_deref() == Some(name)) else {
-        return Err(EditError::ReadBack(format!(
-            "^{name} wouldn't read as the anchor of the {} on line {}",
-            before[k].data.kind(),
-            before[k].line
-        )));
-    };
+    same[k]
+        .filter(|&j| after[j].block_id.as_deref() == Some(name))
+        .ok_or_else(|| {
+            EditError::ReadBack(format!(
+                "^{name} wouldn't read as the anchor of the {} on line {}",
+                before[k].data.kind(),
+                before[k].line
+            ))
+        })
+}
+
+/// `after` with the anchor just written taken off `after[j]`, so that the anchor rule
+/// (`items::anchors::change`) compares every other anchor.
+pub(super) fn unanchored(after: &[Item], j: usize) -> Vec<Item> {
     let mut others = after.to_vec();
     others[j].block_id = None;
-    match items::anchors::change(before, &others, &same, k, text) {
-        Some(change) => Err(EditError::Anchor(change.to_string())),
-        None => Ok(j),
-    }
+    others
 }
 
 /// Each item's parent, by its place among `items`.

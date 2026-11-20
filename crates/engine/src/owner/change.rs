@@ -138,12 +138,12 @@ pub fn piece(p: &Piece, item: &Item, op: &Op, s: &Settings) -> Result<Made, Erro
 }
 
 /// `items/edit`'s `anchor` on an item an owner gave (#190), refused: a `^name` is Markdown's,
-/// and the owner names the item by its place in the file, which an edit doesn't move.
+/// and the file is its owner's to write.
 pub fn no_anchor(item: &Item) -> Error {
     refused(format!(
-        "{} is in {}, a file its owner writes, where a ^name has no place: keep its id \
-         instead, which its owner gives it by its place in the file",
-        item.id, item.note
+        "{} is in {}, a file its owner writes, where a ^name has no place: keep a link to \
+         the file instead, [[{}]]",
+        item.id, item.note, item.note
     ))
 }
 

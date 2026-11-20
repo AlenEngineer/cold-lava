@@ -926,7 +926,7 @@ fn read_back(
 }
 
 /// The same item content: a typed item's kind and fields, not where they are.
-pub(crate) fn same_data(a: &Data, b: &Data) -> bool {
+fn same_data(a: &Data, b: &Data) -> bool {
     match (a, b) {
         (Data::Typed(a), Data::Typed(b)) => {
             a.kind == b.kind && a.is == b.is && a.fields == b.fields

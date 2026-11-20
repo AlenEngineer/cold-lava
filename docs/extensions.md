@@ -290,16 +290,16 @@ alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is 
 - **The read-back.** Nothing is written unless the note reads back with nothing new but the
   anchor. Its tree enters and leaves the same nodes, with one block id more, the one written, so
   the line ends in text and not in a code block, a table row or a heading's underline. Its items
-  are the same, in the same order, each with the same kind, data, lines, section and parent, the
-  anchored one's `block_id` is the name, and every other anchor is where it was
-  (`items::anchors`). Ids are not compared: the anchored item's, its children's and a later
-  twin's move by the key rules. Otherwise it is refused as `read-back`.
+  are the same, each paired with the one of its kind that starts on its line, with the same
+  data, lines, section and parent, the anchored one's `block_id` is the name, and every other
+  anchor is where it was (`items::anchors`). Ids are not compared: the anchored item's, its
+  children's and a later twin's move by the key rules. Otherwise it is refused as `read-back`.
 - **Refused, saying what to keep instead.** A heading (a link to it by its words,
   `[[Note#Heading]]`); a whole note a type reads (a link to the note); a table row, and a
   quote or a callout a type reads (a link to the heading above it: a quote's `^name` goes on
   a line of its own after it, which isn't written yet); an item read in another
   item's words (anchor that item); an item of a file another owner reads, before any owner is
-  asked (its id, which its owner gives it by its place); and every item of a workspace read as
+  asked (a link to the file); and every item of a workspace read as
   `github`, which reads no block ids, until profiles decide (#235, #236). A stale `rev`, or an
   item that is gone, is `changed`.
 - **What it keeps.** An anchored item's id hashes its note, its kind and its `^name`, so it

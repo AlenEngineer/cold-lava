@@ -138,8 +138,9 @@ pub enum Op {
     Toggle,
     /// Keep a reference to the item (#190): the first time, the engine writes an anchor on
     /// it, a `^name` it chooses; an item that has one is answered unchanged. The answer's
-    /// `item.block_id` is the name to keep. Refused for an item Markdown gives no place for
-    /// one, in words that say what to keep instead.
+    /// `item.block_id` is the name to keep. `refused` for an item Markdown gives no place for
+    /// one, in words that say what to keep instead; `read-back` when its last line ends no
+    /// text a `^name` can end (an empty task, a closing code fence).
     Anchor,
 }
 

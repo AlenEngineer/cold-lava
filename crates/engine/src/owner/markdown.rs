@@ -9,6 +9,7 @@ use crate::cst::{self, Kind, Step};
 use crate::edit::{self, SetField};
 use crate::frontmatter::{self, Value};
 use crate::gateway::{Edit, Error, Op, Reason};
+use crate::identity;
 use crate::items::{self, Item, Settings};
 use crate::rename::Change;
 use crate::style::{self, Lazy};
@@ -81,7 +82,9 @@ pub enum After {
 
 /// Make `edit` on `item` of the note at workspace-relative `note` whose text is `text`: through
 /// `edit::plan` for `set-field`, `tasks::toggle_text` for `toggle`, adding text in `style`.
-/// Nothing is written.
+/// A note's `anchor` is `anchor`'s, which takes the names the whole workspace holds; one
+/// asked here is for a Markdown piece of a file another owner writes (`Core::edit_owned`),
+/// and is refused. Nothing is written.
 pub fn edit(
     note: &str,
     text: &str,
@@ -138,17 +141,20 @@ pub fn edit(
                 warning: t.warning,
             })
         }
-        // A note's anchor is `anchor`'s, below, which the core asks with the names the
-        // workspace has. One asked here is for a Markdown piece of another owner's file.
         Op::Anchor => Err(crate::owner::change::no_anchor(item)),
     }
 }
 
+/// The names `anchor` tries for one item before it is refused: all of them would have to be
+/// written in the workspace already.
+const ATTEMPTS: u32 = 100;
+
 /// `items/edit`'s `anchor` on the item `req` names in the note at workspace-relative `note`
 /// whose text is `text` (#190): a `^name` written at the end of the item's last own line
-/// (`anchor::room`), the first name derived from its address that is written nowhere, in this
-/// note or where `taken` looks, then the note read back as it was but for that anchor. An
-/// item that has one is answered as it is. Nothing is written.
+/// (`anchor::room`), the first name derived from its address (`identity::anchor`) that is
+/// written nowhere, in this note or where `taken` looks, then the note read back as it was
+/// but for that anchor, every other anchor where it was (`items::anchors`). An item that has
+/// one is answered as it is. Nothing is written.
 pub fn anchor(
     note: &str,
     text: &str,
@@ -182,7 +188,8 @@ pub fn anchor(
         anchor::Room::At(line) => line,
     };
     let written = |name: &str| taken(name) || text.contains(&format!("^{name}"));
-    let name = anchor::name(&item.id, written).ok_or_else(|| {
+    let mut names = (0..ATTEMPTS).map(|attempt| identity::anchor(&item.id, attempt));
+    let name = names.find(|name| !written(name)).ok_or_else(|| {
         let message = format!(
             "every name tried for {} is written somewhere already",
             item.id
@@ -193,7 +200,12 @@ pub fn anchor(
     let new = anchor::write(text, at, &name);
     anchor::same_tree(&tree(text, s), &tree(&new, s), at, line, &name)?;
     let after = items(note, &new, s);
-    let j = anchor::read_back(&before, &after, k, &name, text)?;
+    let same = items::anchors::by_line(&before, &after, |i| i.line);
+    let j = anchor::read_back(&before, &after, &same, k, &name)?;
+    let others = anchor::unanchored(&after, j);
+    if let Some(change) = items::anchors::change(&before, &others, &same, k, text) {
+        return Err(edit::EditError::Anchor(change.to_string()).into());
+    }
     Ok(made(new, true, &after[j]))
 }
 
