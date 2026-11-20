@@ -63,7 +63,7 @@ pub fn diff<K: Eq + Hash>(want: &[K], got: &[K], keep: impl Fn(&K) -> bool) -> D
         let mut x = j + 1;
         while x < tree.len() {
             tree[x] = tree[x].max(run);
-            x += x & x.wrapping_neg();
+            x += x.isolate_lowest_one();
         }
         heaviest = heaviest.max(run);
     }
