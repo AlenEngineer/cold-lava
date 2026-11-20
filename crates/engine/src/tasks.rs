@@ -1040,6 +1040,88 @@ mod tests {
     }
 
     #[test]
+    fn a_tick_writes_before_a_block_id_so_the_item_keeps_its_id() {
+        let cancels = serde_json::json!({"statusSettings": {"coreStatuses": [
+            {"symbol": " ", "type": "TODO", "nextStatusSymbol": "-"},
+            {"symbol": "-", "type": "CANCELLED", "nextStatusSymbol": " "}
+        ]}});
+        let (s, c) = (settings(serde_json::json!({}), ""), settings(cancels, ""));
+        let style: crate::style::Lazy = crate::style::Style::default().into();
+        let tick = |s: &items::Settings, text: &str, line: usize| {
+            toggle_text("N.md", "N.md", text, s, &style, line, None, d("2026-11-09"))
+                .unwrap()
+                .text
+        };
+        let anchor = |text: &str, line: usize| {
+            let item = items::extract("N.md", text, &s)
+                .into_iter()
+                .find(|i| i.line == line)
+                .unwrap();
+            (item.id, item.block_id)
+        };
+
+        let open = "- [ ] Pay rent 📅 2026-11-12 ^rent\n";
+        let done = tick(&s, open, 1);
+        assert_eq!(done, "- [x] Pay rent 📅 2026-11-12 ✅ 2026-11-09 ^rent\n");
+        assert_eq!(anchor(open, 1).1.as_deref(), Some("rent"));
+        assert_eq!(anchor(&done, 1), anchor(open, 1), "ticked");
+        assert_eq!(tick(&s, &done, 1), open, "unticked, the done date goes");
+
+        let open = "- [ ] Sweep\r\n- [ ] Pay rent 📅 2026-11-12 ^crlf\r\n";
+        let done = tick(&s, open, 2);
+        assert_eq!(
+            done,
+            "- [ ] Sweep\r\n- [x] Pay rent 📅 2026-11-12 ✅ 2026-11-09 ^crlf\r\n"
+        );
+        assert_eq!(anchor(&done, 2), anchor(open, 2), "ticked on a CRLF line");
+        assert_eq!(tick(&s, &done, 2), open, "unticked on a CRLF line");
+
+        let open = "- [ ] Dentist [due:: 2026-11-12] ^tooth\n";
+        let done = tick(&s, open, 1);
+        assert_eq!(
+            done,
+            "- [x] Dentist [due:: 2026-11-12] [completion:: 2026-11-09] ^tooth\n"
+        );
+        assert_eq!(anchor(&done, 1), anchor(open, 1), "a Dataview date");
+
+        let open = "- [ ] Pay rent ^rent\n";
+        let cancelled = tick(&c, open, 1);
+        assert_eq!(cancelled, "- [-] Pay rent ❌ 2026-11-09 ^rent\n");
+        assert_eq!(anchor(&cancelled, 1), anchor(open, 1), "cancelled");
+
+        let open = "- [ ] Rent\n  paid by card ^rent\n";
+        let done = tick(&s, open, 1);
+        assert_eq!(
+            done, "- [x] Rent ✅ 2026-11-09\n  paid by card ^rent\n",
+            "an id on a later line of the item stays where it is"
+        );
+        assert_eq!(anchor(&done, 1), anchor(open, 1));
+    }
+
+    #[test]
+    fn a_recurring_tick_keeps_the_block_id_on_the_done_task_and_not_on_the_next() {
+        let s = settings(serde_json::json!({}), "");
+        let open = "- [ ] Rent 🔁 every month 📅 2026-11-01 ^rent\n";
+        let style: crate::style::Lazy = crate::style::Style::default().into();
+        let t = toggle_text("N.md", "N.md", open, &s, &style, 1, None, d("2026-11-02")).unwrap();
+        // Obsidian Tasks gives a new occurrence no block link: two lines can't share one.
+        assert_eq!(
+            t.text,
+            "- [ ] Rent 🔁 every month 📅 2026-12-01\n- [x] Rent 🔁 every month 📅 2026-11-01 ✅ 2026-11-02 ^rent\n"
+        );
+        let before = items::extract("N.md", open, &s);
+        let after = items::extract("N.md", &t.text, &s);
+        let at = |all: &[Item], line: usize| all.iter().find(|i| i.line == line).unwrap().clone();
+        assert_eq!(
+            at(&after, 2).id,
+            at(&before, 1).id,
+            "the done task keeps the id"
+        );
+        assert_eq!(at(&after, 2).block_id.as_deref(), Some("rent"));
+        assert_eq!(at(&after, 1).block_id, None, "the next one has none");
+    }
+
+    #[test]
     fn toggle_recurring_inserts_next_occurrence() {
         let v = temp_workspace("recur");
         let f = v.join("Bills.md");
