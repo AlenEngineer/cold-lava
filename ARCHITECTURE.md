@@ -29,7 +29,7 @@ That is cold-lava. The rest of the cast keeps the books safe.
 | The catalogue | The index: every item, link and backlink, kept from the translators' reports | `index.rs` |
 | The door, and its forms | The workspace gateway's messages | `gateway.rs`, `files.rs` |
 | The front desk | The extension host: checks every extension's badge (its permissions) before the librarian hears a word | `crates/host` |
-| The readers | The terminal app, extensions that only ask, and a first GUI; a language server to come | `crates/cold-lava`, `crates/gui` |
+| The readers | The terminal app, extensions that only ask, and a first GUI; anyone may build another, a language server included | `crates/cold-lava`, `crates/gui` |
 
 **The librarian needs no book's language to check a translator's work.** When the librarian asks
 for a change to a page (`file/edit`, for an item edit or a rename), the translator answers with

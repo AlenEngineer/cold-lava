@@ -20,7 +20,9 @@ The picture, told as a library with translators and a librarian, and a map of th
 `ARCHITECTURE.md`. The ideas the project is built on are `docs/foundations.md`: read it before
 designing anything, and where it and another document disagree about an idea, it is right. The order of work is
 the first section of roadmap issue #100: the engine-facing work first (one
-path for each thing, one door, `cold-lava lsp`, types and identity), the notebook's UX last.
+path for each thing, one door, types and identity), the notebook's UX last. cold-lava's own
+editor comes before any language server: `cold-lava lsp` was dropped from the order on
+2026-11-20, and stays a reader anyone may build later through the same door.
 
 **How code is built** is the last section of `docs/foundations.md` ("Tools, called by a
 simple loop, all the way down"): every unit is a caller (it only calls its tools in order) or
@@ -527,7 +529,7 @@ another host or check in a frontend:
   file permissions in-process, with no terminal. `examples/headless.rs` is the least a
   frontend writes to host extensions (open a `Core`, `Registry::load`, tell them the
   workspace, each frame hand them the core's news and apply or ignore their `Effect`s): the
-  GUI and the language server start from it.
+  GUI starts from it, and so would any other frontend.
 
 **Extensions in the terminal UI** (`crates/cold-lava/src/ext.rs`, `ext/`): what only this
 frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `ext::view`).
@@ -724,7 +726,9 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
 - The direction and the order of work were decided on 2026-11-11 (`docs/engine.md`, "Direction
   and order"): finish the half-done migrations, one door into the engine, `cold-lava lsp`,
   types and identity, the terminal views, drawings, then the notebook. On 2026-11-12 the
-  refactor tracks were put in front of the features they underlie. **Roadmap issue #100 is the
+  refactor tracks were put in front of the features they underlie. On 2026-11-20 `cold-lava
+  lsp` was dropped from the order (#195): the notebook, cold-lava's own editor, comes first,
+  and a language server is not planned. **Roadmap issue #100 is the
   one list of open work**: every open issue is on it exactly once, in order. When you open
   an issue, add it there; an order written anywhere else is history.
 - The `Extension` interface exists and Neovim runs on it, and so do the agenda, the table and
