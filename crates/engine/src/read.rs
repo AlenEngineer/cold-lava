@@ -1,9 +1,9 @@
 //! A file, folder or link as it was read, so what is done to it later is refused if it changed
-//! since: `Read` says whether it is `unchanged`, and `replace` writes over a file only then.
+//! since: `Seen` says whether it is `unchanged`, and `replace` writes over a file only then.
 //!
-//! A file is read through a symlink, as every write reads it (`Read::file`); whatever is at a
+//! A file is read through a symlink, as every write reads it (`Seen::file`); whatever is at a
 //! path, a folder or the link itself, is read without following one, as a delete checks it
-//! (`Read::entry`). Either is read again the same way it was read first.
+//! (`Seen::entry`). Either is read again the same way it was read first.
 
 use crate::files::rev;
 use crate::trash::Contents;
@@ -11,9 +11,9 @@ use crate::write::{self, WriteError};
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// What was at `path` when it was read.
+/// What was at `path` when it was seen.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Read {
+pub struct Seen {
     path: PathBuf,
     was: Contents,
     way: Way,
@@ -39,19 +39,19 @@ impl NotText {
     }
 }
 
-impl Read {
+impl Seen {
     /// The file at `path`, through a symlink.
-    pub fn file(path: &Path) -> io::Result<Read> {
-        Read::by(Way::File, path)
+    pub fn file(path: &Path) -> io::Result<Seen> {
+        Seen::by(Way::File, path)
     }
 
     /// Whatever is at `path`: a file, a folder by its listing, or a symlink by where it points.
-    pub fn entry(path: &Path) -> io::Result<Read> {
-        Read::by(Way::Entry, path)
+    pub fn entry(path: &Path) -> io::Result<Seen> {
+        Seen::by(Way::Entry, path)
     }
 
-    fn by(way: Way, path: &Path) -> io::Result<Read> {
-        Ok(Read {
+    fn by(way: Way, path: &Path) -> io::Result<Seen> {
+        Ok(Seen {
             path: path.to_path_buf(),
             was: way.read(path)?,
             way,
@@ -77,7 +77,7 @@ impl Read {
         rev_of(&self.was)
     }
 
-    /// Refused with `WriteError::Changed` unless the path still holds what was read.
+    /// Refused with `WriteError::Changed` unless the path still holds what was seen.
     pub fn unchanged(&self) -> Result<(), WriteError> {
         let now = self.way.read(&self.path);
         if now.map_err(|e| WriteError::Io(self.path.clone(), e))? != self.was {
@@ -144,10 +144,10 @@ mod tests {
         let d = dir("file");
         let p = d.join("Lava.md");
         std::fs::write(&p, "hot").unwrap();
-        let read = Read::file(&p).unwrap();
-        assert_eq!(read.bytes(), Some(&b"hot"[..]));
-        assert_eq!(read.text(), Ok("hot"));
-        assert_eq!(read.rev(), rev(b"hot"));
+        let seen = Seen::file(&p).unwrap();
+        assert_eq!(seen.bytes(), Some(&b"hot"[..]));
+        assert_eq!(seen.text(), Ok("hot"));
+        assert_eq!(seen.rev(), rev(b"hot"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -156,9 +156,9 @@ mod tests {
         let d = dir("not-text");
         let p = d.join("Lava.md");
         std::fs::write(&p, [b'h', 0xff]).unwrap();
-        let read = Read::file(&p).unwrap();
-        assert_eq!(read.bytes(), Some(&[b'h', 0xff][..]));
-        assert_eq!(read.text(), Err(NotText));
+        let seen = Seen::file(&p).unwrap();
+        assert_eq!(seen.bytes(), Some(&[b'h', 0xff][..]));
+        assert_eq!(seen.text(), Err(NotText));
         assert_eq!(NotText.about("Lava.md"), "Lava.md isn't UTF-8 text");
         assert_eq!(NotText.about("it"), "it isn't UTF-8 text");
         let _ = std::fs::remove_dir_all(&d);
@@ -169,17 +169,17 @@ mod tests {
         let d = dir("replace");
         let p = d.join("Lava.md");
         std::fs::write(&p, "v1").unwrap();
-        let read = Read::file(&p).unwrap();
-        assert!(read.unchanged().is_ok());
+        let seen = Seen::file(&p).unwrap();
+        assert!(seen.unchanged().is_ok());
         std::fs::write(&p, "v2").unwrap();
-        assert!(matches!(read.unchanged(), Err(WriteError::Changed(at)) if at == p));
-        assert!(matches!(read.replace(b"v3"), Err(WriteError::Changed(at)) if at == p));
+        assert!(matches!(seen.unchanged(), Err(WriteError::Changed(at)) if at == p));
+        assert!(matches!(seen.replace(b"v3"), Err(WriteError::Changed(at)) if at == p));
         assert_eq!(
             std::fs::read(&p).unwrap(),
             b"v2",
             "another program's change is kept"
         );
-        let again = Read::file(&p).unwrap();
+        let again = Seen::file(&p).unwrap();
         again.replace(b"v3").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"v3");
         std::fs::remove_file(&p).unwrap();
@@ -194,8 +194,8 @@ mod tests {
     fn nothing_there_is_an_io_error() {
         let d = dir("missing");
         let p = d.join("Nothing.md");
-        assert_eq!(Read::file(&p).unwrap_err().kind(), io::ErrorKind::NotFound);
-        assert_eq!(Read::entry(&p).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(Seen::file(&p).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(Seen::entry(&p).unwrap_err().kind(), io::ErrorKind::NotFound);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -205,20 +205,20 @@ mod tests {
         let f = d.join("Volcanoes");
         std::fs::create_dir_all(&f).unwrap();
         std::fs::write(f.join("Etna.md"), "hot").unwrap();
-        let read = Read::entry(&f).unwrap();
-        assert_eq!(read.bytes(), None);
-        assert_eq!(read.text(), Err(NotText));
+        let seen = Seen::entry(&f).unwrap();
+        assert_eq!(seen.bytes(), None);
+        assert_eq!(seen.text(), Err(NotText));
         assert_eq!(
-            read.rev(),
-            Read::entry(&f).unwrap().rev(),
+            seen.rev(),
+            Seen::entry(&f).unwrap().rev(),
             "the same listing"
         );
-        assert!(read.unchanged().is_ok());
-        assert!(matches!(read.replace(b"x"), Err(WriteError::Changed(at)) if at == f));
+        assert!(seen.unchanged().is_ok());
+        assert!(matches!(seen.replace(b"x"), Err(WriteError::Changed(at)) if at == f));
         assert!(f.is_dir(), "a folder is never written over");
         std::fs::write(f.join("Hekla.md"), "hot").unwrap();
-        assert_ne!(read.rev(), Read::entry(&f).unwrap().rev());
-        assert!(matches!(read.unchanged(), Err(WriteError::Changed(at)) if at == f));
+        assert_ne!(seen.rev(), Seen::entry(&f).unwrap().rev());
+        assert!(matches!(seen.unchanged(), Err(WriteError::Changed(at)) if at == f));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -229,10 +229,10 @@ mod tests {
         let (target, link) = (d.join("Lava.md"), d.join("Link.md"));
         std::fs::write(&target, "hot").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        let file = Read::file(&link).unwrap();
+        let file = Seen::file(&link).unwrap();
         assert_eq!(file.text(), Ok("hot"));
         assert_eq!(file.rev(), rev(b"hot"));
-        let entry = Read::entry(&link).unwrap();
+        let entry = Seen::entry(&link).unwrap();
         assert_eq!(entry.bytes(), None);
         assert_ne!(entry.rev(), rev(b"hot"));
         assert!(entry.unchanged().is_ok());

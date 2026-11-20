@@ -131,9 +131,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   these: they ask the core (`Core::delete_file`, `restore_file`: `workspace/delete`,
   `workspace/restore`). `Core::set_system_trash` names the system trash; a test that
   deletes sets one under its own folder.
-- `read.rs`: `Read`, what was at a path when it was read, so a later write or delete can be
-  refused if it changed since: `Read::file` (a file's bytes, through a symlink, as a write
-  reads them) or `Read::entry` (a file, a folder by its listing or a symlink by where it
+- `read.rs`: `Seen`, what was at a path when it was read, so a later write or delete can be
+  refused if it changed since: `Seen::file` (a file's bytes, through a symlink, as a write
+  reads them) or `Seen::entry` (a file, a folder by its listing or a symlink by where it
   points, as a delete checks them), each read again its own way by `unchanged`; `rev` (a
   folder's is its listing's), `text` (`NotText`, whose `about` is the one wording of "isn't
   UTF-8 text") and `replace` (through `write::replace`). The gateway's `Reason::of` names a
