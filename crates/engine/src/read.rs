@@ -1,8 +1,136 @@
+//! A file, folder or link as it was read, so what is done to it later is refused if it changed
+//! since: `Read` says whether it is `unchanged`, and `replace` writes over a file only then.
+//!
+//! A file is read through a symlink, as every write reads it (`Read::file`); whatever is at a
+//! path, a folder or the link itself, is read without following one, as a delete checks it
+//! (`Read::entry`). Either is read again the same way it was read first.
+
+use crate::files::rev;
+use crate::trash::Contents;
+use crate::write::{self, WriteError};
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// What was at `path` when it was read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Read {
+    path: PathBuf,
+    was: Contents,
+    way: Way,
+}
+
+/// How a path is read, the first time and every time after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Way {
+    /// A file's bytes, through a symlink.
+    File,
+    /// What is at the path, never following a symlink.
+    Entry,
+}
+
+/// What was read isn't UTF-8 text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotText;
+
+impl NotText {
+    /// The refusal, in its one wording, naming what isn't text.
+    pub fn about(self, name: &str) -> String {
+        format!("{name} isn't UTF-8 text")
+    }
+}
+
+impl Read {
+    /// The file at `path`, through a symlink.
+    pub fn file(path: &Path) -> io::Result<Read> {
+        Read::by(Way::File, path)
+    }
+
+    /// Whatever is at `path`: a file, a folder by its listing, or a symlink by where it points.
+    pub fn entry(path: &Path) -> io::Result<Read> {
+        Read::by(Way::Entry, path)
+    }
+
+    fn by(way: Way, path: &Path) -> io::Result<Read> {
+        Ok(Read {
+            path: path.to_path_buf(),
+            was: way.read(path)?,
+            way,
+        })
+    }
+
+    /// The bytes read, when it was a file.
+    pub fn bytes(&self) -> Option<&[u8]> {
+        match &self.was {
+            Contents::File(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// The text read, when it was a file of UTF-8 text.
+    pub fn text(&self) -> Result<&str, NotText> {
+        let bytes = self.bytes().ok_or(NotText)?;
+        std::str::from_utf8(bytes).map_err(|_| NotText)
+    }
+
+    /// The version read, as the gateway names it (`workspace/read`, `workspace/stat`).
+    pub fn rev(&self) -> String {
+        rev_of(&self.was)
+    }
+
+    /// Refused with `WriteError::Changed` unless the path still holds what was read.
+    pub fn unchanged(&self) -> Result<(), WriteError> {
+        let now = self.way.read(&self.path);
+        if now.map_err(|e| WriteError::Io(self.path.clone(), e))? != self.was {
+            return Err(WriteError::Changed(self.path.clone()));
+        }
+        Ok(())
+    }
+
+    /// Write `bytes` over the file read, through `write::replace`: refused with
+    /// `WriteError::Changed` if it changed since, or if what was read wasn't a file.
+    pub fn replace(&self, bytes: &[u8]) -> Result<(), WriteError> {
+        match self.bytes() {
+            Some(was) => write::replace(&self.path, was, bytes),
+            None => Err(WriteError::Changed(self.path.clone())),
+        }
+    }
+}
+
+impl Way {
+    fn read(self, path: &Path) -> io::Result<Contents> {
+        match self {
+            Way::File => std::fs::read(path).map(Contents::File),
+            Way::Entry => Contents::at(path),
+        }
+    }
+}
+
+/// The version of what is at a path, as a delete checks it. A folder's is a hash of its
+/// listing: every path in it with its size and modified time.
+pub(crate) fn rev_of(contents: &Contents) -> String {
+    match contents {
+        Contents::File(bytes) => rev(bytes),
+        Contents::Folder(entries) => {
+            let mut listing = b"folder\n".to_vec();
+            for (path, size, modified) in entries {
+                let since = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                let nanos = since.map_or(0, |d| d.as_nanos());
+                listing.extend(path.to_string_lossy().as_bytes());
+                listing.extend(format!("\0{size}\0{nanos}\n").as_bytes());
+            }
+            rev(&listing)
+        }
+        Contents::Link(target) => {
+            let mut link = b"link\n".to_vec();
+            link.extend(target.to_string_lossy().as_bytes());
+            rev(&link)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::files::rev;
-    use std::io;
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("cold-lava-read-{}-{name}", std::process::id()));

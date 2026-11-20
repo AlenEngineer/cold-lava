@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::{Error, Reason};
 use crate::index::Index;
+use crate::read::rev_of;
 use crate::tasks::fnv;
 use crate::trash::{self, Bin, Contents, Trashed, Went};
 use crate::write::{self, WriteError};
@@ -325,29 +326,6 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
             return relative(path);
         }
         n += 1;
-    }
-}
-
-/// The version of what is at a path, as a delete checks it. A folder's is a hash of its
-/// listing: every path in it with its size and modified time.
-fn rev_of(contents: &Contents) -> String {
-    match contents {
-        Contents::File(bytes) => rev(bytes),
-        Contents::Folder(entries) => {
-            let mut listing = b"folder\n".to_vec();
-            for (path, size, modified) in entries {
-                let since = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-                let nanos = since.map_or(0, |d| d.as_nanos());
-                listing.extend(path.to_string_lossy().as_bytes());
-                listing.extend(format!("\0{size}\0{nanos}\n").as_bytes());
-            }
-            rev(&listing)
-        }
-        Contents::Link(target) => {
-            let mut link = b"link\n".to_vec();
-            link.extend(target.to_string_lossy().as_bytes());
-            rev(&link)
-        }
     }
 }
 

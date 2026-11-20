@@ -92,18 +92,22 @@ pub enum Contents {
 
 impl Contents {
     pub fn read(path: &Path) -> Result<Contents, WriteError> {
-        let err = |e: io::Error| WriteError::Io(path.to_path_buf(), e);
-        let meta = std::fs::symlink_metadata(path).map_err(err)?;
+        Contents::at(path).map_err(|e| WriteError::Io(path.to_path_buf(), e))
+    }
+
+    /// What is at `path` now, never following a symlink.
+    pub(crate) fn at(path: &Path) -> io::Result<Contents> {
+        let meta = std::fs::symlink_metadata(path)?;
         if meta.file_type().is_symlink() {
-            return std::fs::read_link(path).map(Contents::Link).map_err(err);
+            return std::fs::read_link(path).map(Contents::Link);
         }
         if !meta.is_dir() {
-            return std::fs::read(path).map(Contents::File).map_err(err);
+            return std::fs::read(path).map(Contents::File);
         }
         let mut entries = Vec::new();
         for e in walkdir::WalkDir::new(path).min_depth(1).sort_by_file_name() {
-            let e = e.map_err(|e| err(e.into()))?;
-            let meta = e.metadata().map_err(|e| err(e.into()))?;
+            let e = e.map_err(io::Error::from)?;
+            let meta = e.metadata().map_err(io::Error::from)?;
             let rel = e
                 .path()
                 .strip_prefix(path)

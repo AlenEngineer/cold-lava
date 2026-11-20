@@ -190,6 +190,17 @@ pub enum Reason {
     Exists,
 }
 
+impl Reason {
+    /// The reason a write refused or failed with, as its kind says.
+    pub fn of(e: &write::WriteError) -> Reason {
+        match e {
+            write::WriteError::Changed(_) => Reason::Changed,
+            write::WriteError::Exists(_) => Reason::Exists,
+            write::WriteError::Io(..) => Reason::Io,
+        }
+    }
+}
+
 impl Error {
     pub fn new(reason: Reason, message: impl Into<String>) -> Error {
         let message = message.into();
