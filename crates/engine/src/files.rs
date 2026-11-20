@@ -735,6 +735,37 @@ mod tests {
     }
 
     #[test]
+    fn each_refusal_says_what_it_said() {
+        let dir = workspace("words");
+        let was = read(&dir, "Data/Eruptions.csv").unwrap();
+        let shown = stat(&dir, "Data/Eruptions.csv").unwrap();
+        std::fs::write(dir.join("Data/Eruptions.csv"), "edited\n").unwrap();
+        let said = |e: Error| (e.reason, e.to_string());
+        let stale = replace(&dir, "Data/Eruptions.csv", "lost", &was.rev).unwrap_err();
+        let changed = "Data/Eruptions.csv changed since it was read: read it again";
+        assert_eq!(said(stale), (Reason::Changed, changed.into()));
+        let stale = delete(&dir, "Data/Eruptions.csv", &shown.rev, None).unwrap_err();
+        assert_eq!(said(stale), (Reason::Changed, changed.into()));
+        let gone = replace(&dir, "Data/Gone.csv", "x", &was.rev).unwrap_err();
+        let words = "Data/Gone.csv is gone: create it with workspace/create";
+        assert_eq!(said(gone), (Reason::Changed, words.into()));
+        let is_gone = (Reason::Changed, "Data/Gone.csv is gone".to_string());
+        assert_eq!(said(stat(&dir, "Data/Gone.csv").unwrap_err()), is_gone);
+        let gone = delete(&dir, "Data/Gone.csv", &shown.rev, None).unwrap_err();
+        assert_eq!(said(gone), is_gone);
+        std::fs::write(dir.join("Data/bytes.csv"), [0xff, 0xfe]).unwrap();
+        let binary = read(&dir, "Data/bytes.csv").unwrap_err();
+        let words = "Data/bytes.csv isn't UTF-8 text";
+        assert_eq!(said(binary), (Reason::Refused, words.into()));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Data/Eruptions.csv")).unwrap(),
+            "edited\n",
+            "nothing written, nothing trashed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn created_files_go_where_obsidian_puts_new_files_and_never_overwrite() {
         let dir = workspace("create");
         let app = r#"{"newFileLocation": "folder", "newFileFolderPath": "Data"}"#;
