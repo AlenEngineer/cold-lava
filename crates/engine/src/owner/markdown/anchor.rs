@@ -163,8 +163,9 @@ pub(super) fn same_tree(
         return Ok(());
     }
     Err(EditError::ReadBack(format!(
-        "line {line} ends no text a ^name can end (a code block, a table row or the like \
-         would take ^{name} in): keep a link to the heading above the item instead"
+        "line {line} ends no text a ^name can end, so ^{name} would change how the note \
+         reads there (as after a closing code fence, a table row or an empty item): end the \
+         item with a line of words, or keep a link to the heading above it instead"
     )))
 }
 
@@ -359,17 +360,15 @@ fields.w = { capture = "w" }
             let (new, name) = written(text, &s, 1, kind);
             assert_eq!(new, want.replace("NAME", &name), "{text:?}");
         }
-        // In a callout, on the task's own line.
         let callout = "> [!todo] Bills\n> - [ ] Pay rent\n> - [ ] Water\n";
         let (new, name) = written(callout, &s, 2, "task");
         let want = format!("> [!todo] Bills\n> - [ ] Pay rent ^{name}\n> - [ ] Water\n");
-        assert_eq!(new, want);
-        // A paragraph a type reads, of three lines.
+        assert_eq!(new, want, "a task in a callout, on its own line");
         let typed = with_types("obsidian", EVERY_ROLE);
         let para = "Line one\nline two\nline three\n\nAfter.\n";
         let (new, name) = written(para, &typed, 1, "para");
         let want = format!("Line one\nline two\nline three ^{name}\n\nAfter.\n");
-        assert_eq!(new, want);
+        assert_eq!(new, want, "a paragraph a type reads, on its last line");
     }
 
     /// Asked twice, the second time writes nothing: an item that has an anchor keeps it.
@@ -409,7 +408,6 @@ fields.w = { capture = "w" }
             (3, "word", para.id.as_str()),
             (7, "row", "table row"),
             (9, "said", "quote"),
-            (11, "snippet", "code block"),
         ] {
             let item = at(text, &typed, line, kind);
             let Err(e) = anchor(text, &typed, &item) else {
@@ -534,7 +532,9 @@ fields.w = { capture = "w" }
                     continue;
                 }
                 Err(e) if e.reason == Reason::ReadBack => {
-                    tally.unread.push(format!("{at}: {e}"));
+                    let tree = e.message.contains("ends no text a ^name can end");
+                    assert!(tree, "{at}: refused by the items' read-back: {e}");
+                    tally.unread.push(at);
                     continue;
                 }
                 Err(e) => panic!("{at}: {e}"),
@@ -564,14 +564,45 @@ fields.w = { capture = "w" }
             let after = markdown::items(note, &made.text, s);
             let is = sorted(said(&after));
             assert_eq!(is, sorted(want), "{at}: the note reads otherwise");
+            ids_move_by_the_key_rules(&before, &after, k, &at);
             tally.anchored += 1;
+        }
+    }
+
+    /// Only the ids the key rules move have moved (`items::identify`): the anchored item's,
+    /// a later twin's (an item that says the same under the same parent, after it), and the
+    /// ids of the items under either. Each item is paired with the one of its kind that is
+    /// the same nth on its line after.
+    fn ids_move_by_the_key_rules(before: &[Item], after: &[Item], k: usize, at: &str) {
+        let data = |i: &Item| serde_json::to_value(&i.data).unwrap();
+        let parent = |i: &Item| before.iter().position(|p| Some(&p.id) == i.parent.as_ref());
+        let twin = |i: usize| {
+            let (b, a) = (&before[i], &before[k]);
+            i > k && data(b) == data(a) && b.parent == a.parent
+        };
+        let mut may = vec![false; before.len()];
+        for (i, b) in before.iter().enumerate() {
+            may[i] = i == k || twin(i) || parent(b).is_some_and(|p| may[p]);
+            let on_line = |x: &&Item| x.line == b.line && x.data.kind() == b.data.kind();
+            let nth = before[..i].iter().filter(on_line).count();
+            let paired = after.iter().filter(on_line).nth(nth).expect("paired");
+            assert!(
+                may[i] || paired.id == b.id,
+                "{at}: the {} on line {} moved its id",
+                b.data.kind(),
+                b.line
+            );
         }
     }
 
     /// The design's oracle (#190), in the style of the pulldown-cmark ones: every item of
     /// every tricky note, with types on every role, and of every note of the example
     /// workspace, anchored one at a time, is refused with a reason, or the note reads back
-    /// with nothing new but that item's anchor.
+    /// with nothing new but that item's anchor. The tree's read-back refuses the items whose
+    /// last own line ends no text, and no others: an item that ends in indented code, one
+    /// that ends in a setext heading's underline, one that ends in a closing fence, a
+    /// callout's title line with no words, three empty list items, two empty tasks, and a
+    /// list item that is a link definition.
     #[test]
     fn every_item_of_the_corpus_takes_an_anchor_alone_or_is_refused_with_a_reason() {
         let mut tally = Tally::default();
@@ -593,15 +624,26 @@ fields.w = { capture = "w" }
             anchored,
             kept,
             refused,
-            unread,
+            mut unread,
         } = tally;
         let counts = format!("{anchored} anchored, {kept} kept, {refused} refused");
-        assert!(anchored > 100 && kept > 10 && refused > 50, "{counts}");
-        assert!(
-            unread.is_empty(),
-            "{counts}; {} refused as read-backs:\n{}",
-            unread.len(),
-            unread.join("\n")
+        assert!(anchored > 100 && kept > 40 && refused > 150, "{counts}");
+        unread.sort();
+        assert_eq!(
+            unread,
+            [
+                "Tricky 16.md:3 line",
+                "Tricky 16.md:4 line",
+                "Tricky 16.md:6 line",
+                "Tricky 2.md:6 line",
+                "Tricky 21.md:1 line",
+                "Tricky 21.md:2 line",
+                "Tricky 24.md:4 line",
+                "Tricky 6.md:11 line",
+                "Tricky 8.md:9 line",
+                "Tricky 9.md:12 para",
+            ],
+            "{counts}"
         );
     }
 }

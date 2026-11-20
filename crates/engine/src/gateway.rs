@@ -1357,13 +1357,16 @@ fields.text = { rest = true }
         };
         let e = now(core.edit_item("binder", &stale)).unwrap_err();
         assert_eq!(e.reason, Reason::Changed, "{e}");
-        // Another program rewords it after the core read the note.
         let text = std::fs::read_to_string(&plan).unwrap();
-        let text = text.replace("- plain item\n", "- plain item, reworded\n");
-        std::fs::write(&plan, &text).unwrap();
+        let reworded = text.replace("- plain item\n", "- plain item, reworded\n");
+        std::fs::write(&plan, &reworded).unwrap();
         let e = now(core.edit_item("binder", &anchor(&plain))).unwrap_err();
-        assert_eq!(e.reason, Reason::Changed, "{e}");
-        assert_eq!(std::fs::read_to_string(&plan).unwrap(), text, "untouched");
+        assert_eq!(
+            e.reason,
+            Reason::Changed,
+            "reworded since the core read it: {e}"
+        );
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), reworded);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1410,13 +1413,12 @@ fields.text = { rest = true }
             let found = items.find(|i| i.block_id.as_deref() == Some(name.as_str()));
             found.expect("the anchored item").clone()
         };
-        // Another program changes the note, and the core reads it again.
-        let change = |core: &mut Core, f: &dyn Fn(String) -> String| {
+        let written_elsewhere = |core: &mut Core, f: &dyn Fn(String) -> String| {
             let text = std::fs::read_to_string(&plan).unwrap();
             std::fs::write(&plan, f(text)).unwrap();
             core.note_changed_now(&plan);
         };
-        change(&mut core, &|t| t.replace("Pay rent", "Pay the rent"));
+        written_elsewhere(&mut core, &|t| t.replace("Pay rent", "Pay the rent"));
         assert_eq!(by_name(&core).id, anchored.id, "reworded");
         let item = by_name(&core);
         now(core.edit_item("agenda", &tick(&item))).unwrap();
@@ -1425,13 +1427,13 @@ fields.text = { rest = true }
         now(core.edit_item("table", &set(&item, "due", json!("2026-12-01")))).unwrap();
         assert_eq!(by_name(&core).id, anchored.id, "re-dated");
         let tag = format!("^{name}");
-        change(&mut core, &|t| {
+        written_elsewhere(&mut core, &|t| {
             let line = t.lines().find(|l| l.contains(&tag)).unwrap().to_string();
             t.replace(&format!("{line}\n"), "") + &line + "\n"
         });
         assert_eq!(by_name(&core).line, 8, "below the others now");
         assert_eq!(by_name(&core).id, anchored.id, "moved");
-        change(&mut core, &|t| t.replace("# Plan\n", "# Budget\n"));
+        written_elsewhere(&mut core, &|t| t.replace("# Plan\n", "# Budget\n"));
         assert_eq!(by_name(&core).section, ["Budget"]);
         assert_eq!(by_name(&core).id, anchored.id, "under a renamed heading");
         let _ = std::fs::remove_dir_all(&dir);

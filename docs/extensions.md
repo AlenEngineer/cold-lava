@@ -295,9 +295,9 @@ alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is 
   (`items::anchors`). Ids are not compared: the anchored item's, its children's and a later
   twin's move by the key rules. Otherwise it is refused as `read-back`.
 - **Refused, saying what to keep instead.** A heading (a link to it by its words,
-  `[[Note#Heading]]`); a whole note a type reads (a link to the note); a table row, a code
-  block, and a quote or a callout a type reads (a link to the heading above it: a quote's
-  `^name` goes on a line of its own after it, which isn't written yet); an item read in another
+  `[[Note#Heading]]`); a whole note a type reads (a link to the note); a table row, and a
+  quote or a callout a type reads (a link to the heading above it: a quote's `^name` goes on
+  a line of its own after it, which isn't written yet); an item read in another
   item's words (anchor that item); an item of a file another owner reads, before any owner is
   asked (its id, which its owner gives it by its place); and every item of a workspace read as
   `github`, which reads no block ids, until profiles decide (#235, #236). A stale `rev`, or an
