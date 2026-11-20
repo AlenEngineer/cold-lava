@@ -1952,11 +1952,11 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)
   keeps its other items, and each that doesn't read is left out where it stood among what
-  the cache already left out (`cache::merged`) and reported; its owner is asked again
-  (#303). What is kept of such an item is the hash of its JSON as the cache wrote it, not as
-  the owner sent it, so until the owner answers, an edit beside it is refused by the
-  read-back; the owner's answer for the same version replaces the cached one
-  (`Core::file_given`). The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
+  the cache already left out (`cache::merged`) and reported; its owner is asked again as it
+  is shown (`Owners::kept`, #303). What is kept of such an item is the hash of its JSON as
+  the cache wrote it, not as the owner sent it, so until the owner answers, an edit beside
+  it is refused by the read-back; the owner's answer for the same version replaces the cached
+  one, and the file takes it, since it no longer shows what is kept (`Owned::shows`). The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
   the file: a cache of another format is neither read nor rewritten, so an upgrade or a
   downgrade asks each owner again once.
   Every field of the types an answer is read into names its bound

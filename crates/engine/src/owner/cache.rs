@@ -65,13 +65,14 @@ struct Cache {
 struct Answer {
     rev: String,
     given: Given,
-    /// Whether its owner is to be asked again: some of its items no longer read (a bound
-    /// applies now that didn't when it was saved). Its other items are kept and the bad ones
-    /// left out where they stood (`merged`), so the file shows what still reads and reports
-    /// the rest (the owner's decision of 2026-11-13). What is kept of a bad item is the hash of
-    /// its JSON as the cache wrote it, not as its owner sent it, so the read-back of an edit
-    /// beside it would refuse a change its owner made faithfully: the owner's next answer,
-    /// for the same version, replaces it (`Core::file_given`).
+    /// Whether its owner is to be asked again when it is shown (`Owners::kept`): some of its
+    /// items no longer read (a bound applies now that didn't when it was saved). Its other
+    /// items are kept and the bad ones left out where they stood (`merged`), so the file shows
+    /// what still reads and reports the rest (the owner's decision of 2026-11-13). What is kept
+    /// of a bad item is the hash of its JSON as the cache wrote it, not as its owner sent it,
+    /// so the read-back of an edit beside it would refuse a change its owner made faithfully:
+    /// the owner's next answer, for the same version, replaces it, and a file that shows this
+    /// one takes that one (`Owned::shows`).
     ask_again: bool,
 }
 
@@ -206,17 +207,29 @@ impl Owners {
             .find(|c| c.owner == owner)
     }
 
+    /// What the owner gave for the file at `rel`, for whichever version it was.
+    fn answer(&self, owner: &str, rel: &str) -> Option<&Answer> {
+        let (cache, _) = self.caches.iter().find(|(c, _)| c.owner == owner)?;
+        cache.files.get(rel)
+    }
+
     /// What the owner gave for the file at `rel` at version `rev`.
-    pub fn given(&mut self, owner: &str, rel: &str, rev: &str) -> Option<&Given> {
-        let a = self.cache(owner)?.files.get(rel)?;
+    pub fn given(&self, owner: &str, rel: &str, rev: &str) -> Option<&Given> {
+        let a = self.answer(owner, rel)?;
         (a.rev == rev).then_some(&a.given)
     }
 
-    /// Whether the owner is to be asked again for the file at `rel`, though what it gave is
-    /// kept: some of it no longer reads (`Answer::ask_again`).
-    pub fn ask_again(&mut self, owner: &str, rel: &str) -> bool {
-        let answer = self.cache(owner).and_then(|c| c.files.get(rel));
-        answer.is_some_and(|a| a.ask_again)
+    /// What to show for the file at `rel` at version `rev`: what its owner gave for that
+    /// version. When some of that no longer reads (`Answer::ask_again`), it is shown all the
+    /// same and the owner is asked again, with the file's text (`bytes`) when it is text.
+    pub fn kept(&mut self, owner: &str, rel: &str, rev: &str, bytes: &[u8]) -> Option<Given> {
+        let answer = self.answer(owner, rel).filter(|a| a.rev == rev)?;
+        let (given, again) = (answer.given.clone(), answer.ask_again);
+        if again && let Ok(text) = std::str::from_utf8(bytes) {
+            let (path, rev, text) = (rel.to_string(), rev.to_string(), text.to_string());
+            self.ask(owner, FileRead { path, rev, text });
+        }
+        Some(given)
     }
 
     /// Ask the owner for the file at `read.path`, unless it was asked for that version already.
@@ -237,6 +250,19 @@ impl Owners {
     /// Whether there is something to ask.
     pub fn has_wanted(&self) -> bool {
         !self.wanted.is_empty()
+    }
+
+    /// The files still to ask about (`take_wanted`) that show nothing meanwhile, each with its
+    /// owner, in the order they are to be asked: nothing is kept for them at the version
+    /// asked. A file shown from what its owner gave while it is asked again (`kept`) is not
+    /// one.
+    pub fn unread(&self) -> impl Iterator<Item = (&str, &str)> {
+        (self.wanted.iter())
+            .filter(move |(owner, read)| {
+                let answer = self.answer(owner, &read.path);
+                answer.is_none_or(|a| a.rev != read.rev)
+            })
+            .map(|(owner, read)| (owner.as_str(), read.path.as_str()))
     }
 
     /// What to ask now, each with its owner.
@@ -349,7 +375,7 @@ mod tests {
         o.answered("csv-table", "B.csv", "r1", Some(&given("- [ ] one")));
         o.save();
 
-        let mut again = Owners::new(root, vec![kind()], Some(&dir));
+        let again = Owners::new(root, vec![kind()], Some(&dir));
         assert_eq!(
             again.given("csv-table", "B.csv", "r1"),
             Some(&given("- [ ] one"))
@@ -363,13 +389,13 @@ mod tests {
             version: "0.2.0".into(),
             ..kind()
         };
-        let mut upgraded = Owners::new(root, vec![newer], Some(&dir));
+        let upgraded = Owners::new(root, vec![newer], Some(&dir));
         assert_eq!(
             upgraded.given("csv-table", "B.csv", "r1"),
             None,
             "another owner version"
         );
-        let mut elsewhere = Owners::new(Path::new("/other"), vec![kind()], Some(&dir));
+        let elsewhere = Owners::new(Path::new("/other"), vec![kind()], Some(&dir));
         assert_eq!(
             elsewhere.given("csv-table", "B.csv", "r1"),
             None,
@@ -425,7 +451,7 @@ mod tests {
         );
         for name in [older_name, file_name(root, &kind())] {
             std::fs::write(dir.join(&name), older.to_string()).unwrap();
-            let mut o = Owners::new(root, vec![kind()], Some(&dir));
+            let o = Owners::new(root, vec![kind()], Some(&dir));
             assert_eq!(o.given("csv-table", "A.csv", "r1"), None, "{name}");
             std::fs::remove_file(dir.join(&name)).unwrap();
         }

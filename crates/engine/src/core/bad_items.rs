@@ -780,6 +780,7 @@ fn a_cached_answer_keeps_its_items_when_one_no_longer_reads() {
     let left: Vec<usize> = given.left_out.iter().map(|(at, _)| *at).collect();
     assert_eq!(left, [0, 0, 1], "each after the items before it that read");
 
+    assert_eq!(core.unread().count(), 0, "what still reads shows meanwhile");
     let mut asked = core.take_reads();
     assert_eq!(asked.len(), 1, "its owner is asked again");
     let (_, again) = asked.pop().unwrap();

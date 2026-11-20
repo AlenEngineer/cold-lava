@@ -295,6 +295,14 @@ impl Core {
         self.owners.is_reading()
     }
 
+    /// The owned files that show nothing until their owner reads them, each with its owner, in
+    /// the order `take_reads` will ask for them: their owner gave nothing for them as they are
+    /// now. A file shown from what its owner gave before, while it is asked again because some
+    /// of that no longer reads, is not one.
+    pub fn unread(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.owners.unread()
+    }
+
     /// `file/edit` requests for the owners, each with its owner's name. Their answers come back
     /// through `file_edited`.
     pub fn take_file_edits(&mut self) -> Vec<(String, FileEdit)> {
@@ -319,20 +327,6 @@ impl Core {
             return self.edit_read_back(path, given);
         }
         self.owners.answered(owner, path, rev, given.as_ref().ok());
-        // An answer for the version already read replaces what was kept for it when the two
-        // differ: what the cache kept of an item that no longer reads (`cache::Answer`).
-        let owned = self
-            .index
-            .workspace
-            .owned
-            .iter_mut()
-            .find(|f| f.rel == path);
-        if let (Some(file), Ok(new)) = (owned, &given)
-            && file.rev.as_deref() == Some(rev)
-            && file.given != *new
-        {
-            file.rev = None;
-        }
         let events = match given {
             Ok(_) => self.owned_changed(&[path.to_string()]),
             Err(message) => vec![Event::OwnerTrouble {
@@ -379,7 +373,7 @@ impl Core {
             };
             let rev = files::rev(&bytes);
             let i = match at {
-                Ok(i) if owned[i].rev.as_deref() == Some(rev.as_str()) => continue,
+                Ok(i) if owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) => continue,
                 Ok(i) => i,
                 Err(i) => {
                     owned.insert(i, Owned::new(rel.clone(), root.join(rel), &owner));
@@ -392,18 +386,8 @@ impl Core {
                 path: rel.clone(),
                 message,
             };
-            let given = match self.owners.given(&owner, rel, &rev) {
-                Some(given) => {
-                    let given = given.clone();
-                    if self.owners.ask_again(&owner, rel)
-                        && let Ok(text) = String::from_utf8(bytes)
-                    {
-                        let path = rel.clone();
-                        let rev = rev.clone();
-                        self.owners.ask(&owner, FileRead { path, rev, text });
-                    }
-                    given
-                }
+            let given = match self.owners.kept(&owner, rel, &rev, &bytes) {
+                Some(given) => given,
                 None => {
                     let Ok(text) = String::from_utf8(bytes) else {
                         events.push(trouble("it isn't UTF-8 text".into()));
@@ -1504,6 +1488,8 @@ mod tests {
         let cache = dir.join("cache");
         let mut core = Core::open(&dir.join("w")).unwrap();
         core.set_owners(kinds(), Some(&cache));
+        let unread: Vec<(&str, &str)> = core.unread().collect();
+        assert_eq!(unread, [("csv-table", "Eruptions.csv")]);
         let reads = core.take_reads();
         assert_eq!(reads.len(), 1);
         let (owner, read) = &reads[0];

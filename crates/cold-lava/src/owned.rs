@@ -30,20 +30,14 @@ pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspac
     let workspace = match registry.owned_kinds().is_empty() {
         true => workspace::scan(root)?,
         false => {
-            let mut core = open(root, registry)?;
-            let reads = core.take_reads();
-            let workspace = core.index.workspace;
-            // A file read from the cache whose owner is asked again isn't left out.
-            let read =
-                |rel: &str| (workspace.owned.iter()).any(|f| f.rel == rel && f.rev.is_some());
-            for (owner, asked) in reads.iter().filter(|(_, r)| !read(&r.path)) {
+            let core = open(root, registry)?;
+            for (owner, path) in core.unread() {
                 crate::say::problem!(
-                    "{} is left out: {owner} hasn't read it as it is now (open the workspace \
-                     in cold-lava, and {owner} reads it)",
-                    asked.path
+                    "{path} is left out: {owner} hasn't read it as it is now (open the workspace \
+                     in cold-lava, and {owner} reads it)"
                 );
             }
-            workspace
+            core.index.workspace
         }
     };
     for f in workspace.owned.iter().filter(|f| !f.problems.is_empty()) {
