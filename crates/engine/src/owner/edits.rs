@@ -102,8 +102,10 @@ impl ItemEdit {
 /// An item edit whose new text read back as asked, for the core to write: `after` over the file
 /// as the edit was made on it (`before`, which refuses the write if the file changed since), at
 /// the workspace-relative `path`. Once it is written, what `owner` read in it (`given`, at
-/// version `rev`) is the file's, and `by`'s edit of `item` did `what`. The core says how the
-/// write went (`Edits::wrote`), and the desk answers `by`.
+/// version `rev`) is the file's, and `by`'s edit of `item` did `what`. The core hands it back
+/// with how the write went (`Edits::wrote`), and the desk answers `by`. Until then the file
+/// takes no other edit, so every one must reach `wrote`.
+#[must_use = "the file takes no other edit until this reaches `Edits::wrote`"]
 pub(crate) struct ToWrite {
     pub path: String,
     pub before: Seen,
@@ -285,6 +287,7 @@ impl Edits {
     /// `owner` answered `file/edit` for the file at `path` at version `rev`: the file's new
     /// text, or why not. The new text is read through the owner before it is written: what to
     /// write when an owner in the engine read it inside the call.
+    #[must_use]
     pub fn edited(
         &mut self,
         owner: &str,
@@ -329,7 +332,7 @@ impl Edits {
     fn send_read_back(&mut self, owner: &str, read: FileRead, s: &Settings) -> Option<ToWrite> {
         match crate::owner::give(owner, &read.path, &read.text) {
             Some(given) => {
-                let read_back = self.read_back(&read.path, &read.rev, given, s);
+                let read_back = self.read_back(owner, &read.path, &read.rev, given, s);
                 read_back.ok().flatten()
             }
             None => {
@@ -339,19 +342,21 @@ impl Edits {
         }
     }
 
-    /// The owner read the file at `path` at version `rev` (`given`). When that is the new text
-    /// an edit of the file waits to have read back, the desk takes it: an item edit's new text
-    /// is handed back to be written and a relink's is kept, when it reads as asked; else the
-    /// edit fails, and nothing is written. Any other version is the file as the owner found
-    /// it, not the desk's: `given` is handed back.
+    /// `owner` read the file at `path` at version `rev` (`given`). When that is the new text an
+    /// edit of the file waits for that owner to read back, the desk takes it: an item edit's new
+    /// text is handed back to be written and a relink's is kept, when it reads as asked; else
+    /// the edit fails, and nothing is written. Any other version, or another owner's reading,
+    /// is the file as that owner found it, not the desk's: `given` is handed back.
     pub fn read_back(
         &mut self,
+        owner: &str,
         path: &str,
         rev: &str,
         given: Result<Given, String>,
         s: &Settings,
     ) -> Result<Option<ToWrite>, Result<Given, String>> {
-        let ours = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
+        let reading = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
+        let ours = |p: &Pending| p.owner == owner && reading(p);
         let Some(p) = self.pending.get(path).filter(|p| ours(p)) else {
             return Err(given);
         };
@@ -359,7 +364,7 @@ impl Edits {
             return Err(given);
         };
         let error = Error::new;
-        let owner = p.owner.clone();
+        let owner = owner.to_string();
         let given = match given {
             Ok(g) => g,
             Err(_) if p.expect.is_none() => Given::default(),
@@ -413,10 +418,11 @@ impl Edits {
         })
     }
 
-    /// The core wrote what it was handed for the file at `path` (`ToWrite`) and read the file
-    /// again, which now holds `items`, or the write failed: whoever asked for the edit is
-    /// answered (`take_edited`), and the file is free for another edit.
-    pub fn wrote(&mut self, path: &str, written: Result<&[Item], WriteError>) {
+    /// The core wrote what it was handed (`w`) and read the file again, which now holds
+    /// `items`, or the write failed: whoever asked for the edit is answered (`take_edited`), and
+    /// the file is free for another edit.
+    pub fn wrote(&mut self, w: ToWrite, written: Result<&[Item], WriteError>) {
+        let path = w.path.as_str();
         let writing = |p: &Pending| matches!(p.stage, Stage::Writing);
         if !self.pending.get(path).is_some_and(writing) {
             return;
@@ -500,7 +506,7 @@ impl Edits {
             let Some(o) = &e.owned else {
                 continue;
             };
-            if self.pending.contains_key(&e.file) {
+            if self.waiting(&e.file).is_some() {
                 return Err(format!("{} has an edit waiting for {}", e.file, o.owner));
             }
             if !planned(e) {
@@ -700,7 +706,7 @@ mod tests {
             changes,
         };
         assert_eq!((owner.as_str(), ask), (OWNER, &asked));
-        let early = desk.read_back(FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
+        let early = desk.read_back(OWNER, FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
         assert!(early.is_err(), "not before file/edit is answered");
 
         assert!((desk.edited("other", FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
@@ -718,7 +724,7 @@ mod tests {
             text: DONE.into(),
         };
         assert_eq!((owner.as_str(), back), (OWNER, &new));
-        let old = desk.read_back(FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
+        let old = desk.read_back(OWNER, FILE, &ask.rev, Ok(gives("- [ ] sample")), &s);
         let Err(Ok(handed_back)) = old else {
             panic!("the old text is no read-back: what the owner read in it is handed back");
         };
@@ -726,7 +732,13 @@ mod tests {
         assert!((desk.edited(OWNER, FILE, &ask.rev, Ok(DONE.into()), &s)).is_none());
         assert!(desk.take_reads().is_empty(), "file/edit is answered once");
 
-        let read = desk.read_back(FILE, &back.rev, Ok(gives("- [x] sample")), &s);
+        let theirs = desk.read_back("other", FILE, &back.rev, Ok(gives("- [x] sample")), &s);
+        let Err(Ok(handed_back)) = theirs else {
+            panic!("another owner's reading of the new text is no read-back");
+        };
+        assert_eq!(handed_back, gives("- [x] sample"));
+
+        let read = desk.read_back(OWNER, FILE, &back.rev, Ok(gives("- [x] sample")), &s);
         let Ok(Some(w)) = read else {
             panic!("reads as asked");
         };
@@ -739,14 +751,15 @@ mod tests {
         assert!(desk.take_edited().is_empty(), "answered once written");
 
         let items = given::read(FILE, &gives("- [x] sample"), &s).items;
-        desk.wrote(FILE, Ok(items.as_slice()));
+        let item = w.item.clone();
+        desk.wrote(w, Ok(items.as_slice()));
         assert_eq!(desk.waiting(FILE), None);
         let done = desk.take_edited();
         let [(by, t, Ok(edited))] = &done[..] else {
             panic!("{done:?}");
         };
         let found = (by.as_str(), *t, edited.item.id.as_str(), edited.changed);
-        assert_eq!(found, ("agenda", ticket, w.item.as_str(), true));
+        assert_eq!(found, ("agenda", ticket, item.as_str(), true));
     }
 
     /// Tick the task in `FILE`, and have its owner answer and read its new text back as asked:
@@ -758,7 +771,7 @@ mod tests {
         let (_, ask) = desk.take_file_edits().pop().expect("asked");
         assert!((desk.edited(OWNER, FILE, &ask.rev, Ok(DONE.into()), s)).is_none());
         let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-        let read = desk.read_back(FILE, &back.rev, Ok(gives("- [x] sample")), s);
+        let read = desk.read_back(OWNER, FILE, &back.rev, Ok(gives("- [x] sample")), s);
         let Ok(Some(w)) = read else {
             panic!("reads as asked");
         };
@@ -770,9 +783,9 @@ mod tests {
         let s = settings();
         let mut desk = Edits::default();
         let answer = |desk: &mut Edits| desk.take_edited().pop().expect("answered").2;
-        ticked(&mut desk, &s);
+        let w = ticked(&mut desk, &s);
         let at = PathBuf::from("/w/Samples.csv");
-        desk.wrote(FILE, Err(WriteError::Changed(at)));
+        desk.wrote(w, Err(WriteError::Changed(at)));
         let e = answer(&mut desk).unwrap_err();
         let changed = "Samples.csv: /w/Samples.csv changed since it was read";
         assert_eq!((e.reason, e.message.as_str()), (Reason::Changed, changed));
@@ -780,11 +793,23 @@ mod tests {
 
         let w = ticked(&mut desk, &s);
         let nothing: &[Item] = &[];
-        desk.wrote(FILE, Ok(nothing));
+        let item = w.item.clone();
+        desk.wrote(w, Ok(nothing));
         let e = answer(&mut desk).unwrap_err();
-        let gone = format!("Samples.csv was written, but {} isn't in it now", w.item);
+        let gone = format!("Samples.csv was written, but {item} isn't in it now");
         assert_eq!((e.reason, e.message), (Reason::ReadBack, gone));
-        desk.wrote(FILE, Ok(nothing));
+        let stale = ToWrite {
+            path: FILE.into(),
+            before: seen(DONE),
+            after: DONE.into(),
+            rev: read::rev(DONE.as_bytes()),
+            owner: OWNER.into(),
+            given: gives("- [x] sample"),
+            by: "agenda".into(),
+            item,
+            what: "ticked".into(),
+        };
+        desk.wrote(stale, Ok(nothing));
         assert!(desk.take_edited().is_empty(), "nothing is being written");
     }
 
@@ -831,7 +856,7 @@ mod tests {
         assert!(desk.edited(OWNER, FILE, &ask.rev, text, s).is_none());
         if let Some(reading) = reads {
             let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-            let taken = desk.read_back(FILE, &back.rev, reading, s);
+            let taken = desk.read_back(OWNER, FILE, &back.rev, reading, s);
             assert!(matches!(taken, Ok(None)), "taken, nothing to write");
         }
         assert_eq!(desk.waiting(FILE), None, "the file is free again");
@@ -923,7 +948,7 @@ mod tests {
             let read_back = desk.edited(OWNER, rel, &ask.rev, Ok(new.into()), &s);
             assert!(read_back.is_none());
             let (_, back) = desk.take_reads().pop().expect("asked to read it back");
-            let kept = desk.read_back(rel, &back.rev, Ok(gives(reads)), &s);
+            let kept = desk.read_back(OWNER, rel, &back.rev, Ok(gives(reads)), &s);
             assert!(matches!(kept, Ok(None)), "kept, not written");
         };
         answer(&mut desk, "B.csv", "see [[Krakatau]]\n", "see [[Krakatau]]");

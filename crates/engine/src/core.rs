@@ -342,7 +342,7 @@ impl Core {
             return;
         }
         let settings = self.index.workspace.item_settings();
-        let given = match self.edits.read_back(path, rev, given, settings) {
+        let given = match self.edits.read_back(owner, path, rev, given, settings) {
             Err(given) => given,
             Ok(Some(write)) => return self.write_edit(write),
             Ok(None) => return,
@@ -673,7 +673,7 @@ impl Core {
     /// An owned file's new text that read back as asked (the edit desk's): write it over the
     /// file as the edit was made on it, refused if it changed since; once it is written, take
     /// what its owner read in it as the file's items and links, and tell subscribers. Either
-    /// way the desk hears how the write went, and answers whoever asked.
+    /// way the desk gets `w` back with how the write went, and answers whoever asked.
     fn write_edit(&mut self, w: ToWrite) {
         let path = w.path.as_str();
         let written = w.before.replace(w.after.as_bytes());
@@ -683,14 +683,14 @@ impl Core {
             events = self.owned_changed(&[path.to_string()]);
             events.push(Event::ItemEdited {
                 note: path.to_string(),
-                item: w.item,
-                by: w.by,
-                what: w.what,
+                item: w.item.clone(),
+                by: w.by.clone(),
+                what: w.what.clone(),
             });
         }
         let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
         let items: &[Item] = file.map(|f| f.items.as_slice()).unwrap_or_default();
-        self.edits.wrote(path, written.map(|()| items));
+        self.edits.wrote(w, written.map(|()| items));
         self.broadcast(&events);
         self.unseen.extend(events);
     }
