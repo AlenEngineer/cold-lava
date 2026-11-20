@@ -9,6 +9,15 @@ change commands, keys and file formats; patch versions only fix things.
 
 ## [0.7.0] - 2026-11-20
 
+Owners speak the model's language, and nothing they send can harm a file. An extension that
+owns a kind of file can say what it holds as pieces with attributes, and its edits are made in
+those terms; every answer is bounded and read item by item, so one bad item costs only itself
+and an edit beside it goes ahead when what was left out is untouched. Ticks never lose a block
+id, and large owned files edit in linear time. **Breaking for extensions:** `files.write` no
+longer reaches a kind another owner reads (see Changed), and **breaking for csv-table users:**
+its rows are pieces now, so their ids change and a cell is plain characters unless its column
+says otherwise (see Changed).
+
 ### Added
 
 - An extension that owns a kind of file can say what the file holds as **pieces**, with no
@@ -310,7 +319,8 @@ change commands, keys and file formats; patch versions only fix things.
   read as one". The same for `file/read`, `file/edit`, `file/preview`, `shape/region` and
   `shape/gesture`, wherever it is said: the status line, an owner's trouble notice, and the
   refusal `cold-lava item set` prints, `--json`'s `{"error": …}` included.
-- The csv-table example gives its rows as pieces, and a cell is plain characters (#243). A
+- **Breaking for csv-table users:** the csv-table example gives its rows as pieces, and a cell
+  is plain characters (#243). A
   row is a `row` with its cells by column, so `#42`, `$5`, `[[x]]`, `**x**` and `- [ ] y` in
   a cell make no tag, no math, no link, no bold and no task. What else a column holds, its
   header says: `Volcano (link)` makes each cell a link to the file it names (in backlinks
