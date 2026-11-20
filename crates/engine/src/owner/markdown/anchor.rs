@@ -121,7 +121,6 @@ pub(super) fn write(text: &str, at: usize, name: &str) -> String {
 #[derive(Default)]
 pub(super) struct Tree {
     nodes: Vec<(bool, Kind)>,
-    names: Vec<usize>,
 }
 
 impl Tree {
@@ -129,7 +128,6 @@ impl Tree {
         match step {
             Step::Enter(kind, _) => self.nodes.push((true, kind)),
             Step::Leave(kind, _) => self.nodes.push((false, kind)),
-            Step::Token(Kind::BlockId, _, at) => self.names.push(at),
             Step::Token(..) => {}
         }
     }
@@ -145,11 +143,11 @@ impl Tree {
 pub(super) fn same_tree(
     was: &Tree,
     is: &Tree,
-    at: usize,
+    _at: usize,
     line: usize,
     name: &str,
 ) -> Result<(), EditError> {
-    if was.nodes == is.nodes && is.names.contains(&(at + 1)) {
+    if was.nodes == is.nodes {
         return Ok(());
     }
     Err(EditError::ReadBack(format!(
