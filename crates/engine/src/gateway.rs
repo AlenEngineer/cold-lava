@@ -1237,6 +1237,31 @@ fields.text = { rest = true }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn a_tick_that_would_move_a_block_id_is_refused_as_a_read_back() {
+        let dir = workspace("anchor");
+        let plugin = dir.join(".obsidian/plugins/obsidian-tasks-plugin");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("data.json"),
+            r#"{"recurrenceOnNextLine": true}"#,
+        )
+        .unwrap();
+        let bills = "- [ ] Rent 🔁 every month 📅 2026-11-01\n  paid by card ^rent\n";
+        std::fs::write(dir.join("Bills.md"), bills).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let rent = task(&core, "Rent");
+        assert_eq!(rent.block_id.as_deref(), Some("rent"));
+        let refused = now(core.edit_item("agenda", &tick(&rent))).unwrap_err();
+        assert_eq!(refused.reason, Reason::ReadBack, "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Bills.md")).unwrap(),
+            bills,
+            "nothing written"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn item() -> Item {
         serde_json::from_value(json!({
             "id": "81e7d3e0c9328c61", "note": "Plan.md", "line": 5, "end_line": 5,

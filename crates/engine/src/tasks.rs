@@ -1130,6 +1130,46 @@ mod tests {
     }
 
     #[test]
+    fn a_tick_that_would_take_the_block_id_from_the_task_is_refused() {
+        let v = temp_workspace("anchor");
+        let plugin = v.join(".obsidian/plugins/obsidian-tasks-plugin");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("data.json"),
+            r#"{"recurrenceOnNextLine": true}"#,
+        )
+        .unwrap();
+        let f = v.join("Bills.md");
+        // The new occurrence would go under the first line, and the line with the id would be
+        // its continuation: the done task would lose `^rent` to it.
+        let open = "- [ ] Rent 🔁 every month 📅 2026-11-01\n  paid by card ^rent\n";
+        std::fs::write(&f, open).unwrap();
+        let err = toggle(&f, 1, None, d("2026-11-02")).unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::edit::EditError>(),
+                Some(crate::edit::EditError::ReadBack(m)) if m.contains("^rent")
+            ),
+            "{err:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            open,
+            "nothing written"
+        );
+
+        std::fs::write(&f, "- [ ] Rent 🔁 every month 📅 2026-11-01 ^rent\n").unwrap();
+        toggle(&f, 1, None, d("2026-11-02")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "- [x] Rent 🔁 every month 📅 2026-11-01 ✅ 2026-11-02 ^rent\n\
+             - [ ] Rent 🔁 every month 📅 2026-12-01\n",
+            "on one line, the id stays on the done line, the new occurrence below it"
+        );
+        let _ = std::fs::remove_dir_all(&v);
+    }
+
+    #[test]
     fn toggle_recurring_inserts_next_occurrence() {
         let v = temp_workspace("recur");
         let f = v.join("Bills.md");
