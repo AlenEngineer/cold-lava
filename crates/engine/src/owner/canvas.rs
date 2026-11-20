@@ -29,6 +29,7 @@
 
 use crate::alphabet::Role;
 use crate::json_canvas::{self, CNode, Field};
+use crate::owner::answer::{LeftOut, NAME};
 use crate::owner::given::{Between, Change, Given, GivenItem, GivenLink, Piece, Places};
 use serde_json::{Map, Value as Json};
 use std::collections::{HashMap, HashSet};
@@ -70,7 +71,8 @@ pub fn places<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
 /// This differs from the engine's rule for every owner (`given::Places::admit`: the first
 /// item within its bounds claims a place), which is safe there because the read-back compares
 /// what an owner's answer left out by position and hash. This owner gives only what is
-/// taken, so nothing left out would be in its answer to compare: its place names the first
+/// taken, so what a node left out holds is not in its answer to compare (a card it doesn't
+/// take is reported by its number and id alone, `left_out`): its place names the first
 /// node, whatever it holds. A node "has" a field when the file gives it as a string, `""`
 /// included; one with no `text`, or `"text": null`, doesn't, and names nothing.
 #[derive(Default)]
@@ -131,7 +133,8 @@ fn attributes(n: &CNode) -> Map<String, Json> {
 /// place another node already has gets no piece there; a text or a file is given only for
 /// the node its place names (`Named`), and only within its bounds; a link whose file is
 /// empty or too long is not given; an arrow past the bounds or with an end that is no piece
-/// (a group, a node that isn't there) is not given. All of it stays in the file.
+/// (a group, a node that isn't there) is not given. All of it stays in the file. A card it
+/// doesn't take is reported, as an item left out of the answer (`Given::left_out`).
 pub fn read(text: &str) -> Result<Given, String> {
     let doc =
         json_canvas::parse(text.as_bytes()).map_err(|e| format!("it isn't a JSON Canvas: {e}"))?;
@@ -168,24 +171,29 @@ pub fn read(text: &str) -> Result<Given, String> {
             _ => None,
         };
         nodes.push(Node {
+            id: n.id,
             items: [card, markdown],
             link,
+            keep: [false; 3],
+            refused: None,
         });
     }
-    // What the engine takes, asked in the answer's order.
+    // What the engine takes, asked in the answer's order, and why a card isn't taken.
     let mut taken = Places::default();
-    let mut kept: Vec<[bool; 3]> = Vec::with_capacity(nodes.len());
-    for node in &nodes {
-        let mut keep = [false; 3];
+    for node in &mut nodes {
         for (k, item) in node.items.iter().enumerate() {
             let Some(item) = item.as_ref() else { continue };
-            keep[k] = taken.admit(item).is_ok();
-            if let (true, GivenItem::Piece(card)) = (keep[k], item) {
-                taken.take(card);
+            let admitted = taken.admit(item);
+            node.keep[k] = admitted.is_ok();
+            match (admitted, item) {
+                (Ok(()), GivenItem::Piece(card)) => {
+                    taken.take(card);
+                }
+                (Err(e), GivenItem::Piece(_)) => node.refused = Some(e),
+                _ => {}
             }
         }
-        keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
-        kept.push(keep);
+        node.keep[2] = (node.link.as_ref()).is_some_and(|l| taken.link(l).is_ok());
     }
     // An arrow names two ids, and the first node of an id has the id as its place.
     let mut between: Vec<Between> = Vec::new();
@@ -203,20 +211,40 @@ pub fn read(text: &str) -> Result<Given, String> {
         between: between.into(),
         ..Given::default()
     };
-    for (node, [card, markdown, link]) in nodes.into_iter().zip(kept) {
-        let [card_item, markdown_item] = node.items;
-        given.items.extend(card_item.filter(|_| card));
-        given.items.extend(markdown_item.filter(|_| markdown));
-        given.links.extend(node.link.filter(|_| link));
+    for (n, node) in nodes.into_iter().enumerate() {
+        if let Some(why) = &node.refused {
+            let left = left_out(n, &places[n], &node.id, why);
+            given.left_out.push((given.items.len(), left));
+        }
+        let [card, markdown] = node.items;
+        given.items.extend(card.filter(|_| node.keep[0]));
+        given.items.extend(markdown.filter(|_| node.keep[1]));
+        given.links.extend(node.link.filter(|_| node.keep[2]));
     }
     Ok(given)
 }
 
 /// What one node gives, before the engine is asked which of it it takes: its card and the
-/// Markdown written on it, and its link to a file.
+/// Markdown written on it, and its link to a file. Then which of the three the engine takes
+/// (`keep`), and why it doesn't take the card, when it doesn't (`refused`).
 struct Node {
+    id: String,
     items: [Option<GivenItem>; 2],
     link: Option<GivenLink>,
+    keep: [bool; 3],
+    refused: Option<String>,
+}
+
+/// The record of the `n`th node (from 0), at `place`, with id `id`, whose card the engine
+/// doesn't take for `why`. It gives no tasks and no links, so it is reported (the owner's
+/// decision of 2026-11-13) by its number among the nodes, from 1, and its id, since an empty
+/// id names nothing and its place is the engine's own address (`places`), which the file
+/// doesn't say. Its place is kept as any item's is, and what identifies it is its id
+/// (`LeftOut`).
+fn left_out(n: usize, place: &str, id: &str, why: &str) -> LeftOut {
+    let shown = Json::String(crate::problem::cut(id, NAME));
+    let said = format!("card {} (id {shown}) is left out: {why}", n + 1);
+    LeftOut::new(place, id, said)
 }
 
 /// The canvas's new text with `changes` made: a Markdown piece's new text is its node's `text`,
@@ -485,7 +513,8 @@ mod tests {
     }
 
     /// Every card, text, link and arrow the owner gives is one the engine takes: read as the
-    /// engine reads an answer, a board of hostile nodes and arrows has nothing to report.
+    /// engine reads an answer, nothing it gives of a board of hostile nodes and arrows is
+    /// refused (the cards it doesn't take are reported apart, `left_out`).
     #[test]
     fn the_engine_reports_nothing_of_what_the_owner_gives() {
         let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
@@ -520,6 +549,68 @@ mod tests {
         for (nth, arrow) in given.between.iter().enumerate() {
             assert_eq!(taken.joins(arrow, nth), Ok(()));
         }
+    }
+
+    /// A card the engine doesn't take gives no tasks and no links, so it is reported (the
+    /// owner's decision of 2026-11-13): by its number among the board's nodes and its id, cut
+    /// to 80 characters, after the items given before it. An empty id, an id over 1024 bytes
+    /// and an id another card's place already has are each one record, whatever the card
+    /// holds; a group, which is never given, is not one.
+    #[test]
+    fn a_card_left_out_is_reported_by_its_number_and_id() {
+        let long = "i".repeat(<crate::bounded::Place as crate::bounded::Limit>::MOST + 1);
+        let board = format!(
+            r##"{{"nodes":[
+                {{"id":"","type":"text","text":"- [ ] No id"}},
+                {{"id":"{long}","type":"file","file":"A.md"}},
+                {{"id":"t","type":"text","text":"- [ ] one"}},
+                {{"id":"t","type":"text","text":"- [ ] two"}},
+                {{"id":"t\u001f1","type":"text","text":"- [ ] three"}},
+                {{"id":"","type":"group","label":"Trip"}}
+            ]}}"##
+        );
+        let given = read(&board).unwrap();
+        let said: Vec<(usize, &str)> = (given.left_out.iter())
+            .map(|(at, l)| (*at, l.said.as_str()))
+            .collect();
+        let cut = crate::problem::cut(&long, 80);
+        assert_eq!(
+            said,
+            [
+                (
+                    0,
+                    "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes"
+                ),
+                (
+                    0,
+                    format!(
+                        "card 2 (id \"{cut}\") is left out: its place is empty or longer than \
+                         1024 bytes"
+                    )
+                    .as_str()
+                ),
+                (
+                    4,
+                    "card 5 (id \"t\\u001f1\") is left out: another piece is at this place"
+                ),
+            ]
+        );
+        // What the owner gives reads back as it was, and so does what it left out.
+        assert_eq!(read(&board).unwrap(), given);
+
+        // The second `t` has the place `t\u{1f}1`, which the card with that id took first: it
+        // is named by its id, and its record keeps its place, as any item's does.
+        let twins = r#"{"nodes":[
+            {"id":"t","type":"text","text":"- [ ] one"},
+            {"id":"t\u001f1","type":"text","text":"- [ ] two"},
+            {"id":"t","type":"text","text":"- [ ] three"}
+        ]}"#;
+        let given = read(twins).unwrap();
+        let kept: Vec<(&str, &str)> = (given.left_out.iter())
+            .map(|(_, l)| (l.place.as_str(), l.said.as_str()))
+            .collect();
+        let said = "card 3 (id \"t\") is left out: another piece is at this place";
+        assert_eq!(kept, [("t\u{1f}1", said)]);
     }
 
     /// A canvas is another program's file. Whatever its nodes say, everything the owner

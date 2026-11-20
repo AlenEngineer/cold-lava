@@ -910,7 +910,7 @@ style.minutes = { badge = true, icon = "⏱" }
   (`tests/golden/items-task.json`). `agenda --json`, `agenda` and `task toggle` give the same
   bytes as before on the example workspace.
 - **The known differences,** settled (`known_differences_follow_the_tasks_plugin`):
-  - Tags are read as the workspace reads them (`markdown::TAG`): `#2026` is no tag, `(#paren)` is.
+  - Tags are read as the workspace reads them (`markdown::tag_name`): `#2026` is no tag, `(#paren)` is.
   - A marker in a code span is words: no source reads in code.
   - The same field twice (`📅 a 📅 b`): the first, both out of the words, as the Tasks plugin,
     which reads fields from the end of the line, so the earlier one is read last and wins.
@@ -1325,10 +1325,28 @@ graph all see the new date. None of them knew what a canvas is.
 - **Permissions.** An owner may read, write, create and list files of its own kinds with no
   permission at all: opening them is what it is for. Anything else needs `files.read`
   (`workspace/read`, `workspace/files`) or `files.write` (`workspace/write`,
-  `workspace/create`), which together cover notes too, as text. The check is `Host::files_core`,
-  beside the items' permissions, so it holds for built-in extensions and over the wire alike. The
-  menu's screens (`reader`, `table`) get neither. Refusals are `forbidden`, naming the
-  permission.
+  `workspace/create`), which together cover notes too, as text. The check is in the host,
+  beside the items' permissions, so it holds for built-in extensions and over the wire alike:
+  `Host::files_core` for reads, writes and creates, and `Host::restore_file` for a restore
+  under a new name. The menu's screens (`reader`, `table`) get neither. Refusals are
+  `forbidden`, naming the permission. A path's kind is that of the file it names:
+  `files::extension_of` reads the last part as `files::normal` spells the path, so
+  `Eruptions.csv/` is a `.csv` as the file the engine writes is.
+- **`files.write` doesn't reach another owner's kind** (#323, the owner's decision on #308).
+  An owned file changes on one checked path (#183): an item edit asks its owner and reads
+  the answer back before anything is written. A whole text from someone else would go
+  around that check, so `workspace/write` and `workspace/create` of a kind another
+  extension owns, or a built-in owner's (`.canvas`), are refused as `forbidden` whatever
+  the caller's permissions, in words that name the way that is open: `open-tasks may not
+  write .csv files: their owner reads them, so they change only through it, with
+  items/edit`.
+  Reading them still needs only `files.read`. A restore under a new name (`to`) is a write
+  of that name's kind, so it is refused the same way: without that, a note written with
+  `files.write`, deleted and put back as `x.csv`, would be a new table its owner never
+  wrote. A delete, and a restore where the file was, stay `files.delete`'s: they bring no
+  text the owner didn't write, the trash keeps what went, and "may delete files" is a line
+  of its own in the manifest. The owner's own writes are unchanged; #310 puts them on
+  declared and checked saves.
 - **The example** is `examples/extensions/csv-table` (Python, no dependencies): `file/open` reads
   the file and sends a table view (a text column per header cell, a row per line); `view/event
   edit` sets the cell and sends `workspace/write` with the `rev` it showed, and on `changed`
@@ -1479,13 +1497,14 @@ the same `{reason, message}`.
   for while another workspace is open says which workspace to open, and stays on the stack.
 - **Permissions.** `workspace/delete` and `workspace/restore` need **`files.delete`**, a
   permission of its own that `files.write` does not include; a restore with `to` needs
-  `files.write` too; `workspace/create-folder` needs
+  `files.write` too, and is refused where another owner reads `to`'s kind, as a create is
+  ("File types, as built"); `workspace/create-folder` needs
   `files.write` (creating is a write); `workspace/stat` is a read (`files.read`, or the owner
   of a file's kind; `files.read` for any folder). A manifest is where the user sees what an extension may do, and the trust
   prompt (#89) will list the same words: "may delete files" is a line worth its own, and an
   extension that writes tables should not get it by asking to write. It guards against an
   extension that deletes by mistake, not against a hostile one: `files.write` can already
-  empty any file, with no copy in a trash. Owning a kind of file does not allow deleting it:
+  empty any note or file nobody owns, with no copy in a trash. Owning a kind of file does not allow deleting it:
   opening and saving are what an owner is for, a folder has no kind, and the rule stays one
   line.
 - **Who made it.** Each change is made inside the call, the files it touched are read again
@@ -1593,8 +1612,8 @@ each doesn't invent one:
   path>-<owner>-<version>.cache<FORMAT>.json` (`{format, owner, version, files: {path: {rev,
   given, left_out}}}`, `left_out` only when the answer left something out; written after the
   frame an answer came in). A cache of another `FORMAT` is neither read nor rewritten
-  (`owner::cache::FORMAT`), and a cached answer whose items no longer all read is dropped
-  ("Pieces, as built", Bounds). A file it has nothing for is still in the index, with no
+  (`owner::cache::FORMAT`), and a cached answer whose items no longer all read keeps the
+  rest and asks its owner again ("Pieces, as built", Bounds). A file it has nothing for is still in the index, with no
   items, and its owner is asked. The cache keeps the owner's answer, not items, so a change to the
   workspace's types applies at once. The watcher's `FileChanged` for an owned kind reads the
   `rev` again and asks again when it changed; a file removed leaves the index and the cache.
@@ -1603,8 +1622,11 @@ each doesn't invent one:
   is still that `rev` (else asks again), resolves links again and queues `items/changed` and
   `Event::OwnedChanged`, which the menu reads before it draws (backlinks, counts, news). An
   error, an answer that doesn't parse, no answer in 10 s or an owner that stopped is
-  `Event::OwnerTrouble` on the status line, and the file keeps what it had. Nothing waits for an
-  owner: the scan and the menu go on.
+  `Event::OwnerTrouble`, said on the status line at once, and the file keeps what it had.
+  What an answer leaves out is `Event::OwnedLeavesOut`, decided in one place, `owned_news`
+  in `core.rs`: for an extension's file it is said at once, whenever an answer for a version
+  of the file leaves something out, as before #303 (`owner::answers_once_per_version`).
+  Nothing waits for an owner: the scan and the menu go on.
 - **The example** `examples/extensions/csv-table` answers `file/read` with each row as a
   `row` piece (place: its first cell) whose cells are plain characters, by column name. The
   header says what else a column holds: `Name (link)` makes each cell a link run to the file
@@ -1979,8 +2001,14 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached
   answer whose items no longer all read (a bound applies now that didn't when it was saved)
-  is dropped as it loads, and its owner asked again; until it answers, that file shows
-  nothing. The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
+  keeps its other items, and each that doesn't read is left out where it stood among what
+  the cache already left out (`cache::merged`) and reported; its owner is asked again as it
+  is shown (`Owners::kept`, #303). What is kept of such an item is the hash of its JSON as
+  the cache wrote it, not as the owner sent it, so until the owner answers, an edit beside
+  it is refused by the read-back; the owner's answer for the same version replaces the cached
+  one, and the file takes it, since it no longer shows what is kept (`Owned::shows`). Until
+  then the cache saves that answer as it was read (`Answer::as_read`), so every session asks
+  the owner again, however often the cache is saved meanwhile. The owners' cache has a format (`owner::cache::FORMAT`), in its file's name and in
   the file: a cache of another format is neither read nor rewritten, so an upgrade or a
   downgrade asks each owner again once.
   Every field of the types an answer is read into names its bound
@@ -2241,9 +2269,26 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   file by its place, so a place names the first node in the file with that field
   (`canvas::Named`), and only that node's is given, when it is within its bounds, and never
   a later node's instead. A file card whose file is empty or longer than 4096 bytes gives no link.
-  An arrow with a label over 4096 bytes or past the 65,536th is not given. Nothing is
-  reported for any of it: the owner gives what the engine takes, and the rest stays in the
-  file as it is. A rename changes the node its place names (`canvas::relink`); a later node
+  An arrow with a label over 4096 bytes or past the 65,536th is not given. A card the engine
+  doesn't take (its piece refused: its place is over 1024 bytes, or empty, as the first card
+  with an empty id has it and a later one doesn't, or another card's) is reported, as an
+  item left out of the answer (`Given::left_out`, `canvas::left_out`): by its number among
+  the nodes and its id, on the status line and on the command line's stderr, naming the
+  board (the owner's decision of 2026-11-13, #303). The core says what a board leaves out
+  as the workspace opens, and again only when that changes, `None` once it leaves nothing
+  out or is gone, a board a rescan no longer finds included (`Event::OwnedLeavesOut`,
+  `owned_news` in `core.rs`): a rescan, or a change that leaves out the same cards, says
+  nothing new. The menu holds a board's report until the status line in front has nothing
+  else to say (`reports::Reports`), so it never takes the place of the message of what the
+  user just did, nor of the shape editor's; the boards whose reports wait together are
+  named in one line, `3 boards have cards left out (cold-lava items shows each): Mixed,
+  Twins, Late`, the count first so that a line cut at the terminal's width keeps it, and
+  two boards of one name by their paths (the owner's decision of 2026-11-20). An owner
+  that couldn't read a file and what an extension's file leaves out are said at once, as
+  before; when one takes the place of the boards' line, the line waits again and is said
+  after it, so that it shows once for its time. A newer report about a board takes the
+  place of one still waiting, and one about a board that leaves nothing out any more is
+  dropped. The rest is not reported: the owner gives what the engine takes, and the rest stays in the file as it is. A rename changes the node its place names (`canvas::relink`); a later node
   with a text or a file at that place stays as it is, never written over the named node's
   (`canvas::edit` refuses two changes to one field, which on main crashed the rename). A coordinate too large for a JSON number, or one that
   isn't a number, makes the file no JSON Canvas at all, as before.
@@ -3008,11 +3053,14 @@ runs the `open-tasks` example with and without `items.edit`.)*
 | `items.read` | `items/query`, `items/subscribe`, `items/unsubscribe`, `types/list`, `workspace/style` |
 | `items.edit` | `items/edit` |
 | `files.read` | `workspace/read`, `workspace/files` and `workspace/stat` for kinds of file it doesn't own, and `workspace/stat` of any folder |
-| `files.write` | `workspace/write` and `workspace/create` for kinds of file it doesn't own, and `workspace/create-folder` |
-| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too; a restore to another path needs `files.write` as well |
+| `files.write` | `workspace/write` and `workspace/create` of notes and of kinds of file nobody owns, and `workspace/create-folder`; never a kind another owner reads (an extension's, or `.canvas`) |
+| `files.delete` | `workspace/delete` and `workspace/restore`, of any file or folder, its own kinds too; a restore to another path needs `files.write` as well, and is refused where another owner reads that path's kind |
 
 A request without its permission is refused as `forbidden`, with the permission it needs in
 the message. An owner needs no permission for files of its own kinds ("File types, as built").
+A kind another owner reads is written only by that owner: anyone else changes such a file
+through `items/edit`, and its `workspace/write` or `workspace/create` is refused as
+`forbidden` whatever its permissions (#323).
 Creating is a write, so there is no `files.create`, and a manifest that names it doesn't load.
 Deleting is not: `files.write` doesn't include `files.delete`, and owning a kind doesn't
 either ("Deleting, restoring and making folders").

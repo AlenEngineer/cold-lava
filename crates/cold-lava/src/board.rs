@@ -1525,6 +1525,29 @@ impl Board {
 
     // ---------- editing operations ----------
 
+    /// Whether its status line has nothing to say now, or waiting to: no message, no alert
+    /// and no notice of refused requests. While the shape editor is in front, the board's
+    /// messages show on the editor's line, so it is the editor's line that answers. What else
+    /// the menu has to say waits for this (`Home::show_report`).
+    pub fn quiet(&self) -> bool {
+        match &self.editor {
+            Some(editor) => editor.says().is_none(),
+            None => {
+                let refused = self.refusals.shown(Instant::now());
+                self.msg.is_none() && self.alert.is_none() && refused.is_none()
+            }
+        }
+    }
+
+    /// The message its status line says, or waits to (`flash`): the shape editor's while it
+    /// is in front, where the board's messages show.
+    pub fn says(&self) -> Option<&Notice> {
+        match &self.editor {
+            Some(editor) => editor.says(),
+            None => self.msg.as_ref().map(|(m, _)| m),
+        }
+    }
+
     pub fn flash(&mut self, s: impl Into<Notice>) {
         let s: Notice = s.into();
         let now = Instant::now();
@@ -2562,11 +2585,7 @@ impl Board {
                 self.ensure_visible(&id);
             }
         }
-        let name = self
-            .path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = name(&self.path);
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(DIM))
@@ -3142,6 +3161,12 @@ impl Board {
 }
 
 // ---------- helpers ----------
+
+/// A board's name, as its title says it: its file's name without `.canvas`.
+pub fn name(path: &Path) -> String {
+    let stem = path.file_stem().unwrap_or_default();
+    stem.to_string_lossy().into_owned()
+}
 
 /// The canvas in a file's bytes. Here every node goes by the canvas owner's place for it, so
 /// that the selection, an edit and a placed shape's binding each mean one node. That is its

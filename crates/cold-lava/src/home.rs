@@ -28,6 +28,7 @@ use crate::previews::{self, Previews};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
 use crate::refused::Refused;
+use crate::reports::Reports;
 use crate::resolver::dir_of;
 use crate::tidy_view::{self, TidyView};
 use crate::trash::{self, TrashOption, Went};
@@ -624,6 +625,15 @@ enum SearchRow {
     Line(usize, usize),
 }
 
+/// The status line in front (`Home::status_line`): the whiteboard's, a scene's, or the
+/// menu's own. A message goes to it (`flash`, `refused`), and a report waits until it is
+/// quiet (`show_report`).
+enum StatusLine<'a> {
+    Board(&'a mut board::Board),
+    Scene(&'a mut crate::scene_view::SceneView),
+    Menu,
+}
+
 pub struct Home {
     workspaces: Vec<WorkspaceEntry>,
     vsel: usize,
@@ -711,6 +721,8 @@ pub struct Home {
     msg: Option<(Notice, Instant)>,
     /// What extensions asked for that was not done, to keep what is in front (`refused`).
     refusals: Refused,
+    /// What boards leave out, waiting for the status line in front (`show_report`).
+    reports: Reports,
     areas: [Rect; 4],
     quit: bool,
 }
@@ -793,6 +805,7 @@ impl Home {
             mode: Mode::Normal,
             msg: None,
             refusals: Refused::default(),
+            reports: Reports::default(),
             areas: [Rect::default(); 4],
             quit: false,
         };
@@ -901,6 +914,7 @@ impl Home {
                 self.refresh_backlinks();
             }
             let scene_wait = self.tick_scene();
+            self.show_report();
             self.picture_wanted = None;
             terminal.draw(|f| self.draw(f))?;
             self.place_picture()?;
@@ -955,6 +969,43 @@ impl Home {
         let s = self.front_scene_mut()?;
         s.navigate(nav);
         Some(s.tick())
+    }
+
+    /// The next report of what boards leave out (`Reports`), when the status line in front has
+    /// nothing else to say: the whiteboard and a scene say so themselves, and the menu's has
+    /// neither a message nor a notice of refused requests.
+    fn show_report(&mut self) {
+        let quiet = match self.status_line() {
+            StatusLine::Board(board) => board.quiet(),
+            StatusLine::Scene(scene) => scene.says().is_none(),
+            StatusLine::Menu => self.msg.is_none() && self.refusals.shown(Instant::now()).is_none(),
+        };
+        if quiet && let Some(report) = self.reports.pop() {
+            self.flash(report);
+        }
+    }
+
+    /// The message the status line in front says, or waits to (`flash`): what a report said
+    /// at once takes the place of (`Reports::heard`).
+    fn says(&mut self) -> Option<Notice> {
+        match self.status_line() {
+            StatusLine::Board(board) => board.says().cloned(),
+            StatusLine::Scene(scene) => scene.says().cloned(),
+            StatusLine::Menu => self.msg.as_ref().map(|(m, _)| m.clone()),
+        }
+    }
+
+    /// The status line in front: the whiteboard's while it is in front, else a scene's in
+    /// front, else the menu's own.
+    fn status_line(&mut self) -> StatusLine<'_> {
+        let scene = self.front_scene();
+        match (&self.mode, self.board.as_mut(), scene) {
+            (Mode::Board, Some(board), _) => StatusLine::Board(board),
+            (_, _, Some((owner, view))) => (self.views.get_mut(owner, view))
+                .and_then(|v| v.scene_mut())
+                .map_or(StatusLine::Menu, StatusLine::Scene),
+            _ => StatusLine::Menu,
+        }
     }
 
     /// The view in front, when it is a scene: drawn over the whole screen.
@@ -1173,10 +1224,12 @@ impl Home {
     /// (`Board::refused`), the menu on its own; both keep it in a `Refused`, which counts the
     /// requests and puts the notice first on the line, before any other message.
     fn refused(&mut self, notice: String) {
-        if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
-            return b.refused(notice);
+        match self.status_line() {
+            StatusLine::Board(board) => board.refused(notice),
+            StatusLine::Scene(_) | StatusLine::Menu => {
+                self.refusals.add(notice.into(), Instant::now())
+            }
         }
-        self.refusals.add(notice.into(), Instant::now());
     }
 
     /// `view/close`: the owner's view is closed, unless something is being typed in it (a
@@ -1454,6 +1507,7 @@ impl Home {
         self.nsel = 0;
         self.nscroll = 0;
         self.core = None; // a different workspace: start a fresh core
+        self.reports = Reports::default();
         self.history.clear();
         self.reload_tree();
         if let (Some(core), Some(kept)) = (self.core.as_mut(), self.kept.remove(&v.path)) {
@@ -2016,6 +2070,7 @@ impl Home {
             CoreEvent::NoteChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
+            | CoreEvent::OwnedLeavesOut { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -2054,6 +2109,7 @@ impl Home {
             | CoreEvent::FileChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
+            | CoreEvent::OwnedLeavesOut { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. }
@@ -2072,11 +2128,12 @@ impl Home {
                     let name = note.rsplit('/').next().unwrap_or(note);
                     self.flash(format!("{by}: {what} on {name}"));
                 }
-                CoreEvent::OwnerTrouble {
-                    owner,
-                    path,
-                    message,
-                } => self.flash(format!("{owner} couldn't read {path}: {message}")),
+                CoreEvent::OwnerTrouble { .. } | CoreEvent::OwnedLeavesOut { .. } => {
+                    let front = self.says();
+                    if let Some(now) = self.reports.heard(e, front.as_ref()) {
+                        self.flash(now);
+                    }
+                }
                 // The menu says its own; an extension's show under its name.
                 CoreEvent::Deleted { path, by } if by != MENU => {
                     self.flash(format!("{by}: deleted {path}"));
@@ -2344,11 +2401,10 @@ impl Home {
 
     fn flash(&mut self, s: impl Into<Notice>) {
         let s: Notice = s.into();
-        if let Some(scene) = self.front_scene_mut() {
-            scene.flash(s.clone());
-        }
-        if let (Mode::Board, Some(b)) = (&self.mode, &mut self.board) {
-            b.flash(s.clone());
+        match self.status_line() {
+            StatusLine::Board(board) => board.flash(s.clone()),
+            StatusLine::Scene(scene) => scene.flash(s.clone()),
+            StatusLine::Menu => {}
         }
         self.msg = Some((s, Instant::now()));
     }
@@ -4178,7 +4234,7 @@ impl Home {
             Some(t) => (TagEdit::Remove, t.trim().trim_start_matches('#')),
             None => (TagEdit::Add, input.trim_start_matches('#')),
         };
-        if !frontmatter::is_tag(tag) {
+        if !markdown::tag_name::is_name(tag) {
             return self.flash(format!(
                 "\"{tag}\" isn't a tag: letters, digits, _ - and /, not only digits"
             ));

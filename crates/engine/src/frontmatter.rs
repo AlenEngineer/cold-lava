@@ -7,6 +7,7 @@
 
 use std::ops::Range;
 
+use crate::markdown::tag_name;
 use crate::style::{Lists, Style};
 
 /// A value as written, and where it is in the note.
@@ -182,7 +183,7 @@ pub fn edit_tag(
     style: &Style,
 ) -> Result<Option<String>, String> {
     let tag = tag.trim().trim_start_matches('#');
-    if !is_tag(tag) {
+    if !tag_name::is_name(tag) {
         return Err(format!("{tag:?} isn't a tag"));
     }
     edit_list(text, &["tags", "tag"], tag, edit, style)
@@ -238,7 +239,7 @@ pub fn edit_list(
         false => item,
     };
     let fits = |s: &str| match tags {
-        true => is_tag(s.trim_start_matches('#')),
+        true => tag_name::is_name(s.trim_start_matches('#')),
         false => !needs_quotes(s),
     };
     let written = match needs_quotes(item) {
@@ -349,15 +350,6 @@ pub fn edit_list(
         ));
     }
     Ok(Some(edited))
-}
-
-/// A tag as Obsidian takes one: letters, digits, `_`, `-` and `/`, and not only digits.
-pub fn is_tag(tag: &str) -> bool {
-    !tag.is_empty()
-        && tag
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'))
-        && !tag.chars().all(|c| c.is_ascii_digit())
 }
 
 /// The bytes of `text` that hold top-level property `key`: its line and the indented or `- `

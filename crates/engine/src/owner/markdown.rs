@@ -510,7 +510,7 @@ fn frontmatter_tag(
 ) -> Option<TagSpan> {
     let hash = w.text.len() - w.text.trim_start_matches('#').len();
     let name = w.span.start + hash..w.span.end;
-    if name.is_empty() || is_number(&text[name.clone()]) {
+    if name.is_empty() || crate::markdown::tag_name::is_number(&text[name.clone()]) {
         return None;
     }
     let quoted = w.span.start > 0 && matches!(text.as_bytes()[w.span.start - 1], b'"' | b'\'');
@@ -541,11 +541,6 @@ fn line_around(text: &str, at: usize) -> (usize, usize) {
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i + 1);
     (start, end)
-}
-
-/// `#123` is not a tag: a tag needs at least one character that isn't a digit.
-fn is_number(name: &str) -> bool {
-    name.chars().all(|c| c.is_ascii_digit())
 }
 
 /// The notes linked in a piece of text read on its own, as a field's value or a frontmatter

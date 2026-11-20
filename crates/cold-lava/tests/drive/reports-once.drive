@@ -1,0 +1,29 @@
+# What a board leaves out is reported once, and again only when it changes (#303's review,
+# M2): a duplicate reads the workspace again, its message stays its time, and nothing is
+# reported after it. tests/drive.rs writes Ashfall.canvas, with a card whose id is empty,
+# which the engine doesn't take.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out
+wait-gone canvas couldn't read Ashfall.canvas
+wait-for ? help  q quit
+wait 1000ms
+expect-not couldn't read
+keys p
+type kilauea
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Kīlauea  reading
+keys D
+wait-for duplicated as Kīlauea 1 · R rename
+wait-for example-workspace 36 notes
+wait 1500ms
+expect duplicated as Kīlauea 1 · R rename
+wait-gone duplicated as
+wait 1000ms
+expect-not couldn't read
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

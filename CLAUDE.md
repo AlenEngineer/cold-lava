@@ -186,7 +186,11 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   the reason (`DIFFERENT`: the tree reads what the index counts, or pulldown-cmark wasn't
   Obsidian; `LESS`: the reader shows less than Obsidian, which is the tree's to change). Don't
   parse Markdown for the reader anywhere else. `markdown/entities.rs` is HTML5's named
-  character references. The tag pattern is shared with `workspace.rs`.
+  character references. `markdown/tag_name.rs` is what a tag's name is (the patterns that
+  find `#tag`, `is_number`, and `is_name` for a name given on its own), the one rule the
+  tree, the reader, the frontmatter's `tags`, the tag dialog and rename-tag ask (#272, D-4).
+  Two places don't ask it yet, recorded on #272: the matcher's frontmatter gate and its
+  `Value::Tag` (which a `set-field` on a tag field uses). Don't add a third.
 - `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
   (every byte a token; printing it gives the note back), blocks found line by line as
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
@@ -204,7 +208,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   read the same links, tags and blocks either way (a test checks it on the corpus). Its kinds
   come last in `Kind`, so the others keep their numbers. A tag may follow the markers that
   open emphasis, a strikethrough or a highlight
-  (`**#tag**`, `markdown::MARKED_TAG`).
+  (`**#tag**`, `markdown::tag_name::marked_pattern`).
 - `owner/`: owners translate a kind of file to items and links and back: read (text → links,
   items), write (an item edit → the file's new text, which the engine writes safely) and
   relink (links to moved files → new text). `owner/markdown.rs` is Markdown's, the first owner:
@@ -486,7 +490,8 @@ another host or check in a frontend:
   - Side effects are queued: `Host` collects `Effect`s that `Home` applies after the call
     returns, so extensions never hold `&mut Home`. The gateway's `items/*` and `types/list` are
     answered during the call by the core, after `Host` checks the manifest's `permissions`
-    (`items.read` by default, `items.edit`; `files.read` and `files.write` for whole files;
+    (`items.read` by default, `items.edit`; `files.read` and `files.write` for whole files,
+    though `files.write` never reaches a kind another owner reads, `.canvas` included (#323);
     `files.delete` for `workspace/delete` and `workspace/restore`, which `files.write` and
     owning a kind don't include). The reader's `x` uses the same `Host`, as
     `Registry::screen`; the agenda and the table are built-in `Extension`s.
@@ -661,7 +666,10 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   PR. Keep stacks to two or three PRs, one track step per refactor PR. A pushed branch is
   never rebased or force-pushed: bring a lower PR's changes up with an ordinary merge commit.
 - Every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and the
-  README is updated with it.
+  README is updated with it. The `changelog` check (`scripts/changelog-check.sh`) fails a PR
+  that changes `crates/` or `examples/extensions/` without touching `CHANGELOG.md` (a release PR
+  changes it anyway); a refactor or a tests-only change there carries the `no-changelog` label
+  instead. It doesn't check the README half of this rule.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
   commit, build Linux/macOS binaries and publish the release. Before 1.0, minor = may break,

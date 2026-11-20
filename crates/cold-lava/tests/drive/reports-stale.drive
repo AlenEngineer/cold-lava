@@ -1,0 +1,26 @@
+# A report waiting for its turn is dropped once the board no longer leaves the card out
+# (#303's behaviour review, round 2, should-fix 1). Another program writes a board with a
+# card left out while a bookmark's message shows, then gives the card an id before the
+# message's time is up: nothing is reported. Written again with the card left out, it is.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+keys p
+type krakatoa
+wait-for 1 notes
+keys enter
+wait-for Volcanoes/Krakatoa  reading
+keys B
+wait-for bookmarked Krakatoa · ' bookmarks
+write Inbox/Tephra.canvas {"nodes":[{"id":"","type":"text","text":"- [ ] Sweep the roof","x":0,"y":0,"width":200,"height":80}],"edges":[]}\n
+wait 1500ms
+write Inbox/Tephra.canvas {"nodes":[{"id":"t","type":"text","text":"- [ ] Sweep the roof","x":0,"y":0,"width":200,"height":80}],"edges":[]}\n
+wait-gone bookmarked Krakatoa
+wait 1500ms
+expect-not couldn't read
+write Inbox/Tephra.canvas {"nodes":[{"id":"","type":"text","text":"- [ ] Sweep the roof","x":0,"y":0,"width":200,"height":80}],"edges":[]}\n
+wait-for canvas couldn't read Inbox/Tephra.canvas: card 1 (id "") is left out
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

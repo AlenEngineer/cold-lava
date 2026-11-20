@@ -24,20 +24,35 @@ pub fn open(root: &Path, registry: &Registry) -> Result<Core> {
 }
 
 /// The workspace at `root` with the owned files whose owners gave something for them as they
-/// are now. Each one left out is named on stderr.
+/// are now. Each one left out is named on stderr, and so is what didn't read in what an
+/// owner gave (a board's card left out), as the menu's status line says it.
 pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspace> {
-    if registry.owned_kinds().is_empty() {
-        return workspace::scan(root);
+    let workspace = match registry.owned_kinds().is_empty() {
+        true => workspace::scan(root)?,
+        false => {
+            let core = open(root, registry)?;
+            for (owner, path) in core.unread() {
+                crate::say::problem!(
+                    "{path} is left out: {owner} hasn't read it as it is now (open the workspace \
+                     in cold-lava, and {owner} reads it)"
+                );
+            }
+            core.index.workspace
+        }
+    };
+    for f in &workspace.owned {
+        if let Some(message) = f.trouble() {
+            crate::say::problem!("{}", couldnt_read(&f.owner, &f.rel, &message));
+        }
     }
-    let mut core = open(root, registry)?;
-    for (owner, read) in core.take_reads() {
-        crate::say::problem!(
-            "{} is left out: {owner} hasn't read it as it is now (open the workspace in \
-             cold-lava, and {owner} reads it)",
-            read.path
-        );
-    }
-    Ok(core.index.workspace)
+    Ok(workspace)
+}
+
+/// What the status line and stderr say when `owner` couldn't read its file at `path`
+/// (`core::Event::OwnerTrouble`), or what it gave didn't all read
+/// (`core::Event::OwnedLeavesOut`): one sentence for both, so they say it alike.
+pub fn couldnt_read(owner: &str, path: &str, message: &str) -> String {
+    format!("{owner} couldn't read {path}: {message}")
 }
 
 /// The owner of the file at workspace-relative `rel`, when it isn't a note: the engine's
