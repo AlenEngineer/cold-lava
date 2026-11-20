@@ -131,23 +131,21 @@ impl Seen {
     /// `WriteError::Changed` if it changed since, or if it wasn't seen as a file (`file`,
     /// `kept`).
     pub fn replace(&self, bytes: &[u8]) -> Result<(), WriteError> {
-        self.write_with(write::replace, bytes)
+        write::replace(&self.path, self.written_over()?, bytes)
     }
 
     /// As `replace`, but a symlink at the path is followed, through
     /// `write::replace_through_link`: the file it leads to is replaced, and the link stays. Only
     /// for the user's own save of a file the scan doesn't read; that function names them.
     pub fn replace_through_link(&self, bytes: &[u8]) -> Result<(), WriteError> {
-        self.write_with(write::replace_through_link, bytes)
+        write::replace_through_link(&self.path, self.written_over()?, bytes)
     }
 
-    fn write_with(
-        &self,
-        write: fn(&Path, &[u8], &[u8]) -> Result<(), WriteError>,
-        bytes: &[u8],
-    ) -> Result<(), WriteError> {
+    /// The bytes a write compares before it goes over the file: only a file seen as a file
+    /// (`file`, `kept`) is written over, anything else is `Changed`.
+    fn written_over(&self) -> Result<&[u8], WriteError> {
         match (self.way, &self.was) {
-            (Way::File, Contents::File(was)) => write(&self.path, was, bytes),
+            (Way::File, Contents::File(was)) => Ok(was.as_slice()),
             _ => Err(WriteError::Changed(self.path.clone())),
         }
     }
