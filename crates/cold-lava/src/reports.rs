@@ -1,7 +1,7 @@
-//! What owned files leave out, as the menu says it (`core::Event::LeftOut`). A board's report
-//! waits until the status line in front has nothing else to say, so it never takes the place
-//! of what the user just did (#303), and the boards' reports that wait together are said in
-//! one line that names the boards (the owner's decision of 2026-11-20). What an extension's
+//! What owned files leave out, as the menu says it (`core::Event::OwnedLeavesOut`). A board's
+//! report waits until the status line in front has nothing else to say, so it never takes the
+//! place of what the user just did (#303), and the boards' reports that wait together are said
+//! in one line that names the boards (the owner's decision of 2026-11-20). What an extension's
 //! file leaves out, and an owner that couldn't read a file, are said at once, as before #303.
 
 use crate::core::Event;
@@ -16,9 +16,10 @@ pub struct Reports(VecDeque<(String, Notice)>);
 
 impl Reports {
     /// What to say now of what the core said: that an owner couldn't read a file
-    /// (`Event::OwnerTrouble`), or what an extension's file leaves out (`Event::LeftOut`). A
-    /// board's report waits instead (`pop`), in the place of one about that board still
-    /// waiting, which is dropped once the board leaves nothing out (`None`).
+    /// (`Event::OwnerTrouble`), or what an extension's file leaves out
+    /// (`Event::OwnedLeavesOut`). A board's report waits instead (`pop`), in the place of one
+    /// about that board still waiting, which is dropped once the board leaves nothing out
+    /// (`None`).
     pub fn heard(&mut self, event: &Event) -> Option<Notice> {
         let (owner, path, message) = match event {
             Event::OwnerTrouble {
@@ -26,7 +27,7 @@ impl Reports {
                 path,
                 message,
             } => return Some(couldnt_read(owner, path, message).into()),
-            Event::LeftOut {
+            Event::OwnedLeavesOut {
                 owner,
                 path,
                 message,
@@ -36,7 +37,7 @@ impl Reports {
         let report = message
             .as_ref()
             .map(|m| couldnt_read(owner, path, m).into());
-        if crate::owner::built_in(path).is_none() {
+        if !crate::owner::is_board(path) {
             return report;
         }
         self.0.retain(|(board, _)| board != path);
@@ -50,17 +51,15 @@ impl Reports {
         if self.0.len() < 2 {
             return self.0.pop_front().map(|(_, report)| report);
         }
-        let names: Vec<String> = self.0.drain(..).map(|(board, _)| name(&board)).collect();
+        let names = self
+            .0
+            .drain(..)
+            .map(|(board, _)| crate::board::name(Path::new(&board)));
+        let names: Vec<String> = names.collect();
         let n = names.len();
         let names = names.join(", ");
         Some(format!("{n} boards have cards left out: {names} (cold-lava items shows each)").into())
     }
-}
-
-/// A board's name, as the whiteboard's title says it: its file's name without `.canvas`.
-fn name(path: &str) -> String {
-    let stem = Path::new(path).file_stem().unwrap_or_default();
-    stem.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -69,7 +68,7 @@ mod tests {
 
     /// What the core says a file leaves out (`None`: nothing).
     fn left(owner: &str, path: &str, message: Option<&str>) -> Event {
-        Event::LeftOut {
+        Event::OwnedLeavesOut {
             owner: owner.into(),
             path: path.into(),
             message: message.map(String::from),

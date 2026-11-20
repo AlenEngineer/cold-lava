@@ -2060,7 +2060,7 @@ impl Home {
             CoreEvent::NoteChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
-            | CoreEvent::LeftOut { .. }
+            | CoreEvent::OwnedLeavesOut { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. } => false,
@@ -2099,7 +2099,7 @@ impl Home {
             | CoreEvent::FileChanged(_)
             | CoreEvent::OwnedChanged(_)
             | CoreEvent::OwnerTrouble { .. }
-            | CoreEvent::LeftOut { .. }
+            | CoreEvent::OwnedLeavesOut { .. }
             | CoreEvent::GraphSettingsChanged
             | CoreEvent::BookmarksChanged
             | CoreEvent::ItemEdited { .. }
@@ -2118,7 +2118,7 @@ impl Home {
                     let name = note.rsplit('/').next().unwrap_or(note);
                     self.flash(format!("{by}: {what} on {name}"));
                 }
-                CoreEvent::OwnerTrouble { .. } | CoreEvent::LeftOut { .. } => {
+                CoreEvent::OwnerTrouble { .. } | CoreEvent::OwnedLeavesOut { .. } => {
                     if let Some(now) = self.reports.heard(e) {
                         self.flash(now);
                     }

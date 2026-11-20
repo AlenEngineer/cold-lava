@@ -774,7 +774,7 @@ fn a_cached_answer_keeps_its_items_when_one_no_longer_reads() {
     let events = core.poll();
     let trouble: Vec<&String> = (events.iter())
         .filter_map(|e| match e {
-            Event::LeftOut {
+            Event::OwnedLeavesOut {
                 path,
                 message: Some(message),
                 ..
@@ -859,7 +859,7 @@ fn reported(events: &[Event]) -> Vec<String> {
 fn said(events: &[Event]) -> Vec<Option<String>> {
     (events.iter())
         .filter_map(|e| match e {
-            Event::LeftOut { message, .. } => Some(message.clone()),
+            Event::OwnedLeavesOut { message, .. } => Some(message.clone()),
             _ => None,
         })
         .collect()
@@ -951,7 +951,7 @@ fn a_board_with_a_card_left_out_is_reported_as_it_opens() {
     let events = core.poll();
     let trouble: Vec<(&str, &str, &str)> = (events.iter())
         .filter_map(|e| match e {
-            Event::LeftOut {
+            Event::OwnedLeavesOut {
                 owner,
                 path,
                 message: Some(message),

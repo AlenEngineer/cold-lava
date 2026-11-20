@@ -41,6 +41,21 @@ pub fn built_in(rel: &str) -> Option<&'static str> {
     BUILT_IN.iter().find(|(e, _)| *e == x).map(|(_, o)| *o)
 }
 
+/// Whether the file at `rel` is a board: a JSON Canvas, read by the engine's own owner.
+pub fn is_board(rel: &str) -> bool {
+    built_in(rel) == Some(canvas::OWNER)
+}
+
+/// Whether the owner of the file at `rel` answers once for each version of it: an extension,
+/// whose answer comes from its own process and is kept by version (`cache`). Each such answer
+/// that left something out was reported before #303, so it still is (`core::owned_news`).
+/// The engine's own owners give an answer whenever the engine reads the file, on every scan
+/// and after the whiteboard's own saves, so what such a file leaves out is news only when it
+/// changes.
+pub fn answers_once_per_version(rel: &str) -> bool {
+    built_in(rel).is_none()
+}
+
 /// `file/read`, answered by the built-in owner of the file at `rel`: `None` when `owner` isn't
 /// it, and the request goes out to the extension.
 pub fn give(owner: &str, rel: &str, text: &str) -> Option<Result<Given, String>> {

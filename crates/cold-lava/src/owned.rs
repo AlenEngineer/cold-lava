@@ -49,8 +49,8 @@ pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspac
 }
 
 /// What the status line and stderr say when `owner` couldn't read its file at `path`
-/// (`core::Event::OwnerTrouble`), or what it gave didn't all read (`core::Event::LeftOut`):
-/// one sentence for both, so they say it alike.
+/// (`core::Event::OwnerTrouble`), or what it gave didn't all read
+/// (`core::Event::OwnedLeavesOut`): one sentence for both, so they say it alike.
 pub fn couldnt_read(owner: &str, path: &str, message: &str) -> String {
     format!("{owner} couldn't read {path}: {message}")
 }

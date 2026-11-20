@@ -402,9 +402,10 @@ const ITEM_EDITS: [&str; 4] = ["edit", "tasks", "frontmatter", "owner"];
 /// The functions under `ITEM_EDITS` that make no file's new text and write nothing, each
 /// read in the engine's source. A function those modules gain is listed until it is named
 /// here: `tasks`' are dates, the agenda and `FILE:LINE` taken apart; `is_tag` tests a name;
-/// `built_in` names a kind's owner; `places` names a canvas's nodes; the `attributes` two
-/// keep the configured readings in memory and load a workspace's.
-const READERS: [&str; 10] = [
+/// `built_in` names a kind's owner and `is_board` says a file is a board; `places` names a
+/// canvas's nodes; the `attributes` two keep the configured readings in memory and load a
+/// workspace's.
+const READERS: [&str; 11] = [
     "tasks::agenda",
     "tasks::first_of_month",
     "tasks::last_of_month",
@@ -412,6 +413,7 @@ const READERS: [&str; 10] = [
     "tasks::today",
     "frontmatter::is_tag",
     "owner::built_in",
+    "owner::is_board",
     "owner::canvas::places",
     "owner::markdown::attributes::for_workspace",
     "owner::markdown::attributes::set_configured",

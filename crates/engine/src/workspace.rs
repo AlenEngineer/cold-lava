@@ -124,7 +124,7 @@ impl Owned {
     }
 
     /// What didn't read in what its owner gave, on one line, as it is reported
-    /// (`core::Event::LeftOut`): `None` when all of it read.
+    /// (`core::Event::OwnedLeavesOut`): `None` when all of it read.
     pub fn trouble(&self) -> Option<String> {
         (!self.problems.is_empty()).then(|| crate::problem::joined(&self.problems))
     }

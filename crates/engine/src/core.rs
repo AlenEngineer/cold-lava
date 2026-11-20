@@ -50,7 +50,7 @@ pub enum Event {
     /// What the owner of a file gave didn't all read (`message`, as `Owned::trouble` says
     /// it), or all of it reads again, or the file is gone (`None`): said when that is news
     /// (`owned_news`). What read shows.
-    LeftOut {
+    OwnedLeavesOut {
         owner: String,
         path: String,
         message: Option<String>,
@@ -1341,24 +1341,21 @@ fn classify(root: &Path, path: &Path) -> Kind {
     }
 }
 
-/// What `file` leaves out (`Event::LeftOut`), when that is news since `before`, the file as
-/// it was (`None`: it wasn't there). The one place the core decides it, whoever read the
-/// file: `owned_read`, `rescanned`, or the scan as the core opens (which reads a canvas and
-/// says nothing).
+/// What `file` leaves out (`Event::OwnedLeavesOut`), when that is news since `before`, the
+/// file as it was (`None`: it wasn't there). The one place the core decides it, whoever read
+/// the file: `owned_read`, `rescanned`, or the scan as the core opens (which reads a canvas
+/// and says nothing).
 ///
 /// It is news when what the file leaves out changed, `None` once all of it reads or the file
-/// is gone. An extension's answer for another version of its file that leaves something out
-/// is news too: an extension answers once for each version, and each such answer was
-/// reported before #303, so saying it only on a change would drop that repeat. The engine's
-/// own owner reads a board again on every change, the whiteboard's own saves included, so a
-/// board is news only when what it leaves out changed.
+/// is gone, and when an answer for another version leaves something out, from an owner that
+/// answers once per version (`owner::answers_once_per_version`, which says why).
 fn owned_news(before: Option<&Owned>, file: &Owned) -> Option<Event> {
     let was = before.map_or(&[][..], |b| b.problems.as_slice());
     let changed = was != file.problems.as_slice();
     let another = before.is_none_or(|b| b.rev != file.rev);
-    let extension = crate::owner::built_in(&file.rel).is_none();
-    let answered = another && extension && !file.problems.is_empty();
-    (changed || answered).then(|| Event::LeftOut {
+    let once = crate::owner::answers_once_per_version(&file.rel);
+    let answered = another && once && !file.problems.is_empty();
+    (changed || answered).then(|| Event::OwnedLeavesOut {
         owner: file.owner.clone(),
         path: file.rel.clone(),
         message: file.trouble(),
@@ -1562,7 +1559,7 @@ mod tests {
         );
         assert!(
             events.iter().any(
-                |e| matches!(e, Event::LeftOut { message: Some(message), .. }
+                |e| matches!(e, Event::OwnedLeavesOut { message: Some(message), .. }
                 if message.contains("no type called nothing"))
             ),
             "{events:?}"

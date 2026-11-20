@@ -2576,11 +2576,7 @@ impl Board {
                 self.ensure_visible(&id);
             }
         }
-        let name = self
-            .path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = name(&self.path);
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(DIM))
@@ -3156,6 +3152,12 @@ impl Board {
 }
 
 // ---------- helpers ----------
+
+/// A board's name, as its title says it: its file's name without `.canvas`.
+pub fn name(path: &Path) -> String {
+    let stem = path.file_stem().unwrap_or_default();
+    stem.to_string_lossy().into_owned()
+}
 
 /// The canvas in a file's bytes. Here every node goes by the canvas owner's place for it, so
 /// that the selection, an edit and a placed shape's binding each mean one node. That is its
