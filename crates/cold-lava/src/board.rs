@@ -93,7 +93,8 @@ enum Mode {
     Edit {
         id: String,
         buf: String,
-        is_new: bool,
+        /// A new card's: its undo step, taken when it was put on the board.
+        open: Option<Open>,
     },
     Connect {
         from: String,
@@ -141,17 +142,20 @@ enum Drag {
         offsets: Vec<(String, f64, f64)>,
         grab: (f64, f64),
         moved: bool,
+        open: Open,
     },
     /// Stretching a card from its corner, or a shape from one of its corners.
     Resize {
         id: String,
         handle: Handle,
         moved: bool,
+        open: Open,
     },
     /// Turning a shape by its grip.
     Turn {
         id: String,
         moved: bool,
+        open: Open,
     },
     /// A member dragged out of a region of a shape that takes drops from it.
     Member {
@@ -159,8 +163,16 @@ enum Drag {
         from: String,
         item: String,
         moved: bool,
+        open: Open,
     },
 }
+
+/// An edit begun with `Board::begin` and not yet ended; only `begin` makes one. `Board::end`
+/// takes it, so no `end` runs without a `begin` before it, and none runs twice for one. It
+/// isn't `Clone`, and a `begin` whose `Open` goes unused is a warning, which CI refuses. One
+/// dropped without an `end` leaves its undo step taken (a new group's is: #345).
+#[must_use = "the edit's undo step stays open until `Board::end` takes this"]
+struct Open;
 
 /// How an edit begun with `Board::begin` ends.
 enum End {
@@ -742,7 +754,7 @@ impl Board {
                 shape.definition.title.clone(),
             );
             self.change(|doc| {
-                if let Some(n) = node_mut(doc, id)
+                if let Some(n) = doc.node_mut(id)
                     && let Some(Ok(stored)) = placed::Stored::of(n)
                 {
                     let at = stored.placement(n);
@@ -771,9 +783,10 @@ impl Board {
         let world = self.to_world(col, row);
         let tolerance = PX_COL / self.zoom / placed::UNIT;
         let hit = self
+            .doc
             .node(id)
             .and_then(|n| self.live.hit(n, world, tolerance, false));
-        let placed = self.node(id).and_then(|n| self.live.placed(n));
+        let placed = self.doc.node(id).and_then(|n| self.live.placed(n));
         let d = &binding.shape().definition;
         let mut on: Vec<(String, Option<String>)> = Vec::new();
         if let Some(m) = &member {
@@ -811,7 +824,9 @@ impl Board {
     /// Enter or a double-click on a shaped node: a sticky's text is edited in place, a card
     /// opens its note, any other shape's inputs are bound again.
     fn open_shape(&mut self, id: &str) -> bool {
-        let Some(n) = self.node(id) else { return false };
+        let Some(n) = self.doc.node(id) else {
+            return false;
+        };
         let Some(Ok(stored)) = placed::Stored::of(n) else {
             return false;
         };
@@ -822,7 +837,7 @@ impl Board {
                 self.mode = Mode::Edit {
                     id,
                     buf,
-                    is_new: false,
+                    open: None,
                 };
             }
             ("file", Some(_)) if self.nav.is_some() => {
@@ -844,7 +859,7 @@ impl Board {
             return self.flash(format!("no shape is called {shape}"));
         };
         let sources = (node.as_ref())
-            .and_then(|id| self.node(id))
+            .and_then(|id| self.doc.node(id))
             .and_then(|n| Some(placed::Stored::of(n)?.ok()?.sources(n)))
             .unwrap_or_default();
         let fields = (loaded.definition.inputs.iter())
@@ -930,7 +945,7 @@ impl Board {
         };
         self.change(|doc| {
             doc.nodes.extend(made);
-            if let Some(n) = node_mut(doc, &id) {
+            if let Some(n) = doc.node_mut(&id) {
                 let at = match placed::Stored::of(n) {
                     Some(Ok(stored)) => stored.placement(n),
                     _ => cold_lava_canvas::Placement::new(
@@ -1011,7 +1026,7 @@ impl Board {
                 return;
             }
             [one] if *one == sel => {
-                let Some(shape) = (self.node(one))
+                let Some(shape) = (self.doc.node(one))
                     .and_then(|n| Some(placed::Stored::of(n)?.ok()?.shape))
                     .and_then(|s| self.live.shapes.get(&s))
                 else {
@@ -1035,7 +1050,7 @@ impl Board {
             ids => {
                 let mut built = Vec::new();
                 for id in ids {
-                    let Some(n) = self.node(id) else { continue };
+                    let Some(n) = self.doc.node(id) else { continue };
                     let Some(Ok(stored)) = placed::Stored::of(n) else {
                         continue;
                     };
@@ -1167,7 +1182,7 @@ impl Board {
         }
         self.previews.clear();
         if let Some(s) = &self.sel
-            && self.node(s).is_none()
+            && self.doc.node(s).is_none()
         {
             self.sel = None;
         }
@@ -1257,12 +1272,14 @@ impl Board {
     }
 
     /// Starts an edit that ends on a later event (a drag, a new card being typed): its undo
-    /// step is taken now, and `end` ends it.
-    fn begin(&mut self) {
+    /// step is taken now, and `end` ends it with the `Open` this returns.
+    fn begin(&mut self) -> Open {
         self.checkpoint();
+        Open
     }
 
-    fn end(&mut self, how: End) {
+    /// Ends the edit `Open` stands for.
+    fn end(&mut self, _: Open, how: End) {
         match how {
             End::Save => self.save(),
             End::Unchanged => {
@@ -1300,10 +1317,6 @@ impl Board {
     }
 
     // ---------- geometry ----------
-
-    fn node(&self, id: &str) -> Option<&CNode> {
-        self.doc.nodes.iter().find(|n| n.id == id)
-    }
 
     fn to_screen(&self, x: f64, y: f64) -> (f64, f64) {
         let a = self.area;
@@ -1368,7 +1381,7 @@ impl Board {
     }
 
     fn ensure_visible(&mut self, id: &str) {
-        let Some(n) = self.node(id) else { return };
+        let Some(n) = self.doc.node(id) else { return };
         let (c0, r0, c1, r1) = self.cell_rect(n);
         let a = self.area;
         let (cx, cy) = (n.x + n.width / 2.0, n.y + n.height / 2.0);
@@ -1457,11 +1470,11 @@ impl Board {
     /// Turns the selected shape `by` degrees clockwise.
     fn turn_selected(&mut self, by: f64) {
         let Some(id) = self.sel.clone() else { return };
-        let Some(Some(Ok(stored))) = self.node(&id).map(placed::Stored::of) else {
+        let Some(Some(Ok(stored))) = self.doc.node(&id).map(placed::Stored::of) else {
             return self.flash("only a placed shape turns");
         };
         self.change(|doc| {
-            if let Some(n) = node_mut(doc, &id) {
+            if let Some(n) = doc.node_mut(&id) {
                 let p = stored.placement(n);
                 placed::replace(n, p.rotated(p.rotation + by));
             }
@@ -1482,7 +1495,7 @@ impl Board {
                 .iter()
                 .filter(|n| n.kind != "group" && Some(&n.id) != self.sel.as_ref()),
         );
-        if let Some(s) = self.sel.as_ref().and_then(|s| self.node(s))
+        if let Some(s) = self.sel.as_ref().and_then(|s| self.doc.node(s))
             && s.kind != "group"
         {
             v.push(s);
@@ -1494,7 +1507,7 @@ impl Board {
         let Some(sid) = self.sel.clone() else {
             return self.select_first();
         };
-        let Some(s) = self.node(&sid) else { return };
+        let Some(s) = self.doc.node(&sid) else { return };
         let (sx, sy) = (s.x + s.width / 2.0, s.y + s.height / 2.0);
         let best = self
             .doc
@@ -1606,7 +1619,7 @@ impl Board {
 
     /// Place a new card: right of the selection, else in the middle of the view.
     fn spot_for_new(&self, w: f64, h: f64) -> (f64, f64) {
-        match self.sel.as_ref().and_then(|s| self.node(s)) {
+        match self.sel.as_ref().and_then(|s| self.doc.node(s)) {
             Some(s) if s.kind != "group" => {
                 let mut x = s.x + s.width + 80.0;
                 let mut y = s.y;
@@ -1635,7 +1648,7 @@ impl Board {
         let (x, y) = at.unwrap_or_else(|| self.spot_for_new(w, h));
         // Not an id the file may still hold: a twin's, whose first node was deleted here.
         let mut id = new_id();
-        while self.node(&id).is_some() || self.twins.values().any(|theirs| *theirs == id) {
+        while self.doc.node(&id).is_some() || self.twins.values().any(|theirs| *theirs == id) {
             id = new_id();
         }
         CNode {
@@ -1657,7 +1670,7 @@ impl Board {
     fn new_text_card(&mut self, at: Option<(f64, f64)>, connect_from: Option<String>) {
         let card = self.new_node("text", at, 260.0, 100.0);
         let id = card.id.clone();
-        self.begin();
+        let open = self.begin();
         self.doc.nodes.push(card);
         if let Some(from) = connect_from {
             add_edge(&mut self.doc, &from, &id);
@@ -1667,7 +1680,7 @@ impl Board {
         self.mode = Mode::Edit {
             id,
             buf: String::new(),
-            is_new: true,
+            open: Some(open),
         };
     }
 
@@ -1704,7 +1717,7 @@ impl Board {
     fn set_color(&mut self, c: Option<&str>) {
         let Some(id) = self.sel.clone() else { return };
         self.change(|doc| {
-            if let Some(n) = node_mut(doc, &id) {
+            if let Some(n) = doc.node_mut(&id) {
                 n.color = c.map(String::from);
             }
         });
@@ -1725,7 +1738,7 @@ impl Board {
     fn resize_selected(&mut self, dw: f64, dh: f64) {
         let Some(id) = self.sel.clone() else { return };
         self.change(|doc| {
-            if let Some(n) = node_mut(doc, &id) {
+            if let Some(n) = doc.node_mut(&id) {
                 n.width = (n.width + dw).max(60.0);
                 n.height = (n.height + dh).max(40.0);
             }
@@ -1735,7 +1748,7 @@ impl Board {
     /// A card id plus, for groups, every card fully inside it (they move together).
     fn group_members(&self, id: &str) -> Vec<String> {
         let mut ids = vec![id.to_string()];
-        if let Some(g) = self.node(id).filter(|g| g.kind == "group") {
+        if let Some(g) = self.doc.node(id).filter(|g| g.kind == "group") {
             for n in &self.doc.nodes {
                 if n.id != g.id
                     && n.x >= g.x
@@ -1751,20 +1764,21 @@ impl Board {
     }
 
     fn new_group(&mut self) {
-        let (x, y, w, h) = match self.sel.as_ref().and_then(|s| self.node(s)) {
+        let (x, y, w, h) = match self.sel.as_ref().and_then(|s| self.doc.node(s)) {
             Some(n) => (n.x - 40.0, n.y - 60.0, n.width + 80.0, n.height + 100.0),
             None => (self.cam.0 - 250.0, self.cam.1 - 150.0, 500.0, 300.0),
         };
         let group = self.new_node("group", Some((x, y)), snap(w), snap(h));
         let id = group.id.clone();
-        self.begin();
+        // Never ended: a new group takes two undo steps (#345).
+        let _ = self.begin();
         // First, so it renders beneath its contents in Obsidian too.
         self.doc.nodes.insert(0, group);
         self.sel = Some(id.clone());
         self.mode = Mode::Edit {
             id,
             buf: "Group".into(),
-            is_new: false,
+            open: None,
         };
     }
 
@@ -1775,7 +1789,7 @@ impl Board {
         if self.open_shape(&id) {
             return Ok(());
         }
-        let Some(n) = self.node(&id) else {
+        let Some(n) = self.doc.node(&id) else {
             return Ok(());
         };
         match n.kind.as_str() {
@@ -1784,7 +1798,7 @@ impl Board {
                 self.mode = Mode::Edit {
                     id,
                     buf,
-                    is_new: false,
+                    open: None,
                 };
             }
             "group" => {
@@ -1792,7 +1806,7 @@ impl Board {
                 self.mode = Mode::Edit {
                     id,
                     buf,
-                    is_new: false,
+                    open: None,
                 };
             }
             "link" => {
@@ -1800,7 +1814,7 @@ impl Board {
                 self.mode = Mode::Edit {
                     id,
                     buf,
-                    is_new: false,
+                    open: None,
                 };
             }
             "file" => {
@@ -1821,7 +1835,7 @@ impl Board {
         let Some(id) = self.sel.clone() else {
             return Ok(());
         };
-        let Some(n) = self.node(&id) else {
+        let Some(n) = self.doc.node(&id) else {
             return Ok(());
         };
         if n.kind != "text" {
@@ -1834,7 +1848,7 @@ impl Board {
         } else if let Ok(text) = std::fs::read_to_string(&tmp) {
             let text = text.trim_end_matches('\n').to_string();
             self.change(|doc| {
-                if let Some(n) = node_mut(doc, &id) {
+                if let Some(n) = doc.node_mut(&id) {
                     n.text = Some(text);
                 }
             });
@@ -1844,16 +1858,12 @@ impl Board {
     }
 
     fn finish_edit(&mut self) {
-        let Mode::Edit { id, buf, is_new } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+        let Mode::Edit { id, buf, open } = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return;
         };
-        if is_new && buf.trim().is_empty() {
-            // An empty new card is discarded.
-            self.sel = None;
-            return self.end(End::Revert);
-        }
+        let empty = buf.trim().is_empty();
         let typed = |doc: &mut Doc| {
-            if let Some(n) = node_mut(doc, &id) {
+            if let Some(n) = doc.node_mut(&id) {
                 match n.kind.as_str() {
                     "group" => n.label = Some(buf),
                     "link" => n.url = Some(buf),
@@ -1866,11 +1876,17 @@ impl Board {
                 }
             }
         };
-        if is_new {
-            typed(&mut self.doc);
-            self.end(End::Save);
-        } else {
-            self.change(typed);
+        match open {
+            // An empty new card is discarded.
+            Some(open) if empty => {
+                self.sel = None;
+                self.end(open, End::Revert);
+            }
+            Some(open) => {
+                typed(&mut self.doc);
+                self.end(open, End::Save);
+            }
+            None => self.change(typed),
         }
     }
 
@@ -2275,7 +2291,7 @@ impl Board {
                 let file = self
                     .sel
                     .as_ref()
-                    .and_then(|s| self.node(s))
+                    .and_then(|s| self.doc.node(s))
                     .and_then(|n| n.file.clone());
                 match file {
                     Some(rel) => {
@@ -2312,7 +2328,7 @@ impl Board {
             BoardAction::Bind => match self.sel.clone() {
                 Some(id) if self.live.is_shape(&id) => {
                     let shape =
-                        (self.node(&id)).and_then(|n| Some(placed::Stored::of(n)?.ok()?.shape));
+                        (self.doc.node(&id)).and_then(|n| Some(placed::Stored::of(n)?.ok()?.shape));
                     if let Some(shape) = shape {
                         self.bind_form(Some(id), shape);
                     }
@@ -2414,9 +2430,14 @@ impl Board {
                             return;
                         }
                         if double {
-                            let kind = self.node(&id).map(|n| n.kind.clone()).unwrap_or_default();
+                            let kind = self
+                                .doc
+                                .node(&id)
+                                .map(|n| n.kind.clone())
+                                .unwrap_or_default();
                             if kind != "file" {
                                 let buf = self
+                                    .doc
                                     .node(&id)
                                     .and_then(|n| match kind.as_str() {
                                         "group" => n.label.clone(),
@@ -2427,26 +2448,32 @@ impl Board {
                                 self.mode = Mode::Edit {
                                     id,
                                     buf,
-                                    is_new: false,
+                                    open: None,
                                 };
                             }
                             return;
                         }
-                        self.begin();
+                        let open = self.begin();
                         if let Grab::Corner(handle) = grab {
                             self.drag = Some(Drag::Resize {
                                 id,
                                 handle,
                                 moved: false,
+                                open,
                             });
                         } else if grab == Grab::Turn {
-                            self.drag = Some(Drag::Turn { id, moved: false });
+                            self.drag = Some(Drag::Turn {
+                                id,
+                                moved: false,
+                                open,
+                            });
                         } else if let Some(m) = self.draggable(&id, m.column, m.row) {
                             self.drag = Some(Drag::Member {
                                 id,
                                 from: m.region,
                                 item: m.item,
                                 moved: false,
+                                open,
                             });
                         } else {
                             if self.live.is_shape(&id) {
@@ -2455,12 +2482,13 @@ impl Board {
                             let offsets = self
                                 .group_members(&id)
                                 .into_iter()
-                                .filter_map(|mid| self.node(&mid).map(|n| (mid, n.x, n.y)))
+                                .filter_map(|mid| self.doc.node(&mid).map(|n| (mid, n.x, n.y)))
                                 .collect();
                             self.drag = Some(Drag::Move {
                                 offsets,
                                 grab: world,
                                 moved: false,
+                                open,
                             });
                         }
                     }
@@ -2488,22 +2516,25 @@ impl Board {
                     offsets,
                     grab,
                     moved,
+                    ..
                 }) => {
                     let (dx, dy) = (snap(world.0 - grab.0), snap(world.1 - grab.1));
                     *moved = true;
                     let offsets = offsets.clone();
                     for (id, ox, oy) in offsets {
-                        if let Some(n) = node_mut(&mut self.doc, &id) {
+                        if let Some(n) = self.doc.node_mut(&id) {
                             n.x = ox + dx;
                             n.y = oy + dy;
                         }
                     }
                 }
-                Some(Drag::Resize { id, handle, moved }) => {
+                Some(Drag::Resize {
+                    id, handle, moved, ..
+                }) => {
                     *moved = true;
                     let (id, handle) = (id.clone(), *handle);
                     let to = Point::new(world.0, world.1) * (1.0 / placed::UNIT);
-                    if let Some(n) = node_mut(&mut self.doc, &id) {
+                    if let Some(n) = self.doc.node_mut(&id) {
                         match placed::Stored::of(n) {
                             Some(Ok(stored)) => {
                                 let min = Point::new(4.0, 2.0);
@@ -2518,11 +2549,11 @@ impl Board {
                     }
                 }
                 Some(Drag::Member { moved, .. }) => *moved = true,
-                Some(Drag::Turn { id, moved }) => {
+                Some(Drag::Turn { id, moved, .. }) => {
                     *moved = true;
                     let id = id.clone();
                     let to = Point::new(world.0, world.1) * (1.0 / placed::UNIT);
-                    if let Some(n) = node_mut(&mut self.doc, &id)
+                    if let Some(n) = self.doc.node_mut(&id)
                         && let Some(Ok(stored)) = placed::Stored::of(n)
                     {
                         let p = stored.placement(n);
@@ -2533,49 +2564,44 @@ impl Board {
             },
             MouseEventKind::Up(_) => {
                 let press = self.press.take();
-                if let Some(Drag::Member {
-                    id,
-                    from,
-                    item,
-                    moved,
-                }) = &self.drag
-                {
-                    let (id, from, item, moved) = (id.clone(), from.clone(), item.clone(), *moved);
-                    self.drag = None;
-                    self.end(End::Unchanged);
-                    if !moved {
-                        return self.click(&id, m.column, m.row, core, registry);
-                    }
-                    let tolerance = PX_COL / self.zoom / placed::UNIT;
-                    let hit = self
-                        .node(&id)
-                        .and_then(|n| self.live.hit(n, world, tolerance, false));
-                    let to = (self.live.binding(&id))
-                        .zip(hit.and_then(|h| h.region))
-                        .and_then(|(b, r)| b.shape().definition.regions.get(r))
-                        .map(|r| r.id.clone());
-                    match to {
-                        Some(to) if to != from => {
-                            self.gesture(&id, Gesture::Drop { from, to, item }, core, registry)
+                match self.drag.take() {
+                    Some(Drag::Member {
+                        id,
+                        from,
+                        item,
+                        moved,
+                        open,
+                    }) => {
+                        self.end(open, End::Unchanged);
+                        if !moved {
+                            return self.click(&id, m.column, m.row, core, registry);
                         }
-                        _ => self.flash("dropped outside another region: nothing to do"),
+                        let tolerance = PX_COL / self.zoom / placed::UNIT;
+                        let hit = self
+                            .doc
+                            .node(&id)
+                            .and_then(|n| self.live.hit(n, world, tolerance, false));
+                        let to = (self.live.binding(&id))
+                            .zip(hit.and_then(|h| h.region))
+                            .and_then(|(b, r)| b.shape().definition.regions.get(r))
+                            .map(|r| r.id.clone());
+                        match to {
+                            Some(to) if to != from => {
+                                self.gesture(&id, Gesture::Drop { from, to, item }, core, registry)
+                            }
+                            _ => self.flash("dropped outside another region: nothing to do"),
+                        }
                     }
-                    return;
-                }
-                if let Some(Drag::Move { moved: false, .. }) = &self.drag
-                    && let Some((id, col, row)) = press
-                {
-                    self.drag = None;
-                    self.end(End::Unchanged);
-                    return self.click(&id, col, row, core, registry);
-                }
-                if let Some(
-                    Drag::Move { moved, .. }
-                    | Drag::Resize { moved, .. }
-                    | Drag::Turn { moved, .. },
-                ) = self.drag.take()
-                {
-                    self.end(if moved { End::Save } else { End::Unchanged });
+                    Some(Drag::Move { moved, open, .. }) => {
+                        self.end(open, if moved { End::Save } else { End::Unchanged });
+                        if !moved && let Some((id, col, row)) = press {
+                            self.click(&id, col, row, core, registry);
+                        }
+                    }
+                    Some(Drag::Resize { moved, open, .. } | Drag::Turn { moved, open, .. }) => {
+                        self.end(open, if moved { End::Save } else { End::Unchanged });
+                    }
+                    Some(Drag::Pan { .. }) | None => {}
                 }
             }
             _ => {}
@@ -2748,7 +2774,8 @@ impl Board {
         let mut lines: Vec<(f64, f64, f64, f64, Color, bool, bool)> = Vec::new();
         let mut labels: Vec<(f64, f64, String)> = Vec::new();
         for e in &self.doc.edges {
-            let (Some(from), Some(to)) = (self.node(&e.from_node), self.node(&e.to_node)) else {
+            let (Some(from), Some(to)) = (self.doc.node(&e.from_node), self.doc.node(&e.to_node))
+            else {
                 continue;
             };
             let (fs, ts) = sides(from, to, e.from_side.as_deref(), e.to_side.as_deref());
@@ -2772,8 +2799,8 @@ impl Board {
         }
         // Preview arrow while connecting.
         if let (Some(from), Some(to)) = (
-            connect_from.as_deref().and_then(|i| self.node(i)),
-            sel.as_deref().and_then(|i| self.node(i)),
+            connect_from.as_deref().and_then(|i| self.doc.node(i)),
+            sel.as_deref().and_then(|i| self.doc.node(i)),
         ) && from.id != to.id
         {
             let (fs, ts) = sides(from, to, None, None);
@@ -3053,7 +3080,7 @@ impl Board {
     }
 
     fn draw_status(&mut self, f: &mut Frame, area: Rect, statuses: &[Notice]) {
-        let mut info = match self.sel.as_ref().and_then(|s| self.node(s)) {
+        let mut info = match self.sel.as_ref().and_then(|s| self.doc.node(s)) {
             Some(n) => {
                 let links = self
                     .doc
@@ -3372,10 +3399,6 @@ pub(crate) fn tint(t: Token) -> Color {
 
 fn snap(v: f64) -> f64 {
     (v / GRID_SNAP).round() * GRID_SNAP
-}
-
-fn node_mut<'a>(doc: &'a mut Doc, id: &str) -> Option<&'a mut CNode> {
-    doc.nodes.iter_mut().find(|n| n.id == id)
 }
 
 fn add_edge(doc: &mut Doc, from: &str, to: &str) {
@@ -3844,7 +3867,7 @@ mod tests {
         b.mode = Mode::Edit {
             id: "b".into(),
             buf: "Bravo, checked".into(),
-            is_new: false,
+            open: None,
         };
         let theirs = [cards, vec![card("c", 600, "Charlie")]].concat();
         std::fs::write(&path, canvas(theirs)).unwrap();
@@ -4049,7 +4072,7 @@ mod tests {
         b.mode = Mode::Edit {
             id: "a".into(),
             buf: "Alpha, typed".into(),
-            is_new: false,
+            open: None,
         };
         b.refused("pushy wanted to open Lava.md: not while a card is being edited");
         b.refused("pushy wanted to run search.open: not while a card is being edited");
@@ -4126,12 +4149,12 @@ mod tests {
     #[test]
     fn a_card_that_repeats_an_id_is_selected_and_edited_by_its_place() {
         let (dir, path, mut b) = twins_board("board-twins", SECOND);
-        let selected = b.selected().and_then(|id| b.node(id));
+        let selected = b.selected().and_then(|id| b.doc.node(id));
         assert_eq!(selected.and_then(|n| n.text.as_deref()), Some("Second"));
         b.mode = Mode::Edit {
             id: SECOND.into(),
             buf: "Second, edited".into(),
-            is_new: false,
+            open: None,
         };
         b.finish_edit();
         let saved = saved_twins(&path);
@@ -4216,7 +4239,7 @@ mod tests {
                 b.mode = Mode::Edit {
                     id: "a".into(),
                     buf: "Alpha, retyped".into(),
-                    is_new: false,
+                    open: None,
                 };
                 b.finish_edit();
             },
@@ -4284,7 +4307,7 @@ mod tests {
     #[test]
     fn an_arrow_to_a_repeated_id_is_the_first_cards() {
         let (dir, path, mut b) = twins_board("board-twins-arrow", SECOND);
-        let from = b.node(&b.doc.edges[0].from_node);
+        let from = b.doc.node(&b.doc.edges[0].from_node);
         assert_eq!(from.and_then(|n| n.text.as_deref()), Some("First"));
 
         b.toggle_edge(SECOND, "t");
@@ -4322,7 +4345,7 @@ mod tests {
         b.mode = Mode::Edit {
             id: SECOND.into(),
             buf: "Second, edited".into(),
-            is_new: false,
+            open: None,
         };
         let mut theirs: Value = serde_json::from_str(&twins_canvas()).unwrap();
         let nodes = theirs["nodes"].as_array_mut().unwrap();
