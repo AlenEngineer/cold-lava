@@ -677,10 +677,12 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   that changes `crates/` or `examples/extensions/` without touching `CHANGELOG.md` (a release PR
   changes it anyway); a refactor or a tests-only change there carries the `no-changelog` label
   instead. It also fails a PR that adds a `CHANGELOG.md` line outside `## [Unreleased]`, naming
-  the line and its section, unless the PR is a release (it adds a `## [x.y.z]` heading for a
-  new version): after a release, a merge of main into an open PR can slide its entry into the
-  released section. `scripts/changelog-check-test.sh` runs the cases on scratch repos. The
-  check doesn't look at the README half of this rule.
+  the line and its section: after a release, a merge of main into an open PR can slide its entry
+  into the released section, where it is never seen. A release PR (`scripts/release-check.sh`
+  says whether a commit is one) may add lines under its own new `## [x.y.z]` heading, and under
+  no older one. A PR that edits a released section on purpose (a typo, a correction) carries the
+  `changelog-edit` label; `no-changelog` never lifts this rule. `scripts/changelog-check-test.sh`
+  runs the cases on scratch repos. The check doesn't look at the README half of this rule.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
   commit, build Linux binaries (x86-64 and ARM) and publish the release. Before 1.0, minor = may break,
