@@ -12,6 +12,7 @@ use std::path::Path;
 
 use super::{Definition, VERSION, WORKSPACE_FILE};
 use crate::problem::Problem;
+use crate::read::Seen;
 use crate::write::{self, WriteError};
 
 /// `d` as a `[[shapes]]` block with id `id`, ending in a line break.
@@ -358,17 +359,18 @@ pub fn save(
     d: &Definition,
 ) -> Saved {
     let path = root.join(WORKSPACE_FILE);
-    let text = match read.map(std::str::from_utf8) {
+    let seen = read.map(|before| Seen::kept(&path, before));
+    let text = match seen.as_ref().map(Seen::text) {
         None => "",
         Some(Ok(t)) => t,
-        Some(Err(_)) => return Saved::Refused(format!("{WORKSPACE_FILE} isn't UTF-8 text")),
+        Some(Err(not)) => return Saved::Refused(not.about(WORKSPACE_FILE)),
     };
     let new = match splice(text, replacing, id, d) {
         Ok(n) => n,
         Err(e) => return Saved::Refused(e),
     };
-    let written = match read {
-        Some(before) => write::replace(&path, before, new.as_bytes()),
+    let written = match &seen {
+        Some(before) => before.replace(new.as_bytes()),
         None => write::create(&path, new.as_bytes()),
     };
     match written {
@@ -548,6 +550,39 @@ lava = "♨"
                 .unwrap()
                 .ends_with("# edited elsewhere\n")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_refused_save_says_why_in_its_words() {
+        let root =
+            std::env::temp_dir().join(format!("cold-lava-shape-words-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join(WORKSPACE_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, FILE).unwrap();
+        let d = def(&FILE[blocks(FILE)[1].span.clone()]);
+        let why = |saved: Saved| match saved {
+            Saved::Refused(why) => why,
+            Saved::Written(_) => panic!("written"),
+        };
+        let not_text = save(&root, Some(&[b'v', 0xff][..]), None, "tock", &d);
+        assert_eq!(why(not_text), format!("{WORKSPACE_FILE} isn't UTF-8 text"));
+        let changed = format!(
+            "{WORKSPACE_FILE} changed since it was read: not saved; your shape is still here, \
+             and reopening the editor reads the file again"
+        );
+        let stale = format!("{FILE}\n# edited elsewhere\n");
+        let edited = save(&root, Some(stale.as_bytes()), Some("tick"), "tick", &d);
+        assert_eq!(why(edited), changed);
+        let appeared = save(&root, None, None, "tock", &d);
+        assert_eq!(why(appeared), changed, "a file made since it was missed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), FILE);
+        std::fs::remove_file(&path).unwrap();
+        let gone = why(save(&root, Some(FILE.as_bytes()), Some("tick"), "tick", &d));
+        let at = format!("{}: ", path.display());
+        assert!(gone.starts_with(&at), "{gone}");
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

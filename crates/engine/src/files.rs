@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::{Error, Reason};
 use crate::index::Index;
-use crate::read::{Contents, rev};
+use crate::read::{Seen, rev};
 use crate::trash::{self, Bin, Trashed, Went};
 use crate::write::{self, WriteError};
 
@@ -234,42 +234,45 @@ fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
 }
 
 fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
-    move |e| match e {
-        WriteError::Changed(_) => Error::new(
-            Reason::Changed,
-            format!("{rel} changed while writing: read it again"),
-        ),
-        WriteError::Exists(_) => Error::new(Reason::Exists, format!("{rel} already exists")),
-        WriteError::Io(_, e) => Error::new(Reason::Io, format!("{rel}: {e}")),
+    move |e| {
+        let message = match &e {
+            WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
+            WriteError::Exists(_) => format!("{rel} already exists"),
+            WriteError::Io(_, e) => format!("{rel}: {e}"),
+        };
+        Error::new(Reason::of(&e), message)
     }
 }
 
 /// `workspace/read`
 pub fn read(root: &Path, rel: &str) -> Result<Text, Error> {
     let rel = &normal(rel)?;
-    let bytes = std::fs::read(resolve(root, rel)?).map_err(io(rel))?;
-    let rev = rev(&bytes);
-    let text = String::from_utf8(bytes)
-        .map_err(|_| Error::new(Reason::Refused, format!("{rel} isn't UTF-8 text")))?;
-    Ok(Text { text, rev })
+    let seen = Seen::file(&resolve(root, rel)?).map_err(io(rel))?;
+    let text = seen
+        .text()
+        .map_err(|not| Error::new(Reason::Refused, not.about(rel)))?;
+    Ok(Text {
+        text: text.to_string(),
+        rev: seen.rev(),
+    })
 }
 
-/// `workspace/write`, through `write::replace`.
+/// `workspace/write`, through `Seen::replace`.
 pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Written, Error> {
     let rel = &normal(rel)?;
     let path = resolve(root, rel)?;
-    let now = std::fs::read(&path).map_err(|e| match e.kind() {
+    let now = Seen::file(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => Error::new(
             Reason::Changed,
             format!("{rel} is gone: create it with workspace/create"),
         ),
         _ => io(rel)(e),
     })?;
-    if rev(&now) != expect {
+    if now.rev() != expect {
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
-    write::replace(&path, &now, text.as_bytes()).map_err(written(rel))?;
+    now.replace(text.as_bytes()).map_err(written(rel))?;
     Ok(Written {
         rev: rev(text.as_bytes()),
     })
@@ -320,45 +323,42 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
 }
 
 /// What is at `rel` now. Nothing there is `changed`.
-fn contents(root: &Path, rel: &str) -> Result<(PathBuf, Contents), Error> {
+fn contents(root: &Path, rel: &str) -> Result<Seen, Error> {
     let path = resolve_entry(root, rel)?;
-    let read = Contents::read(&path).map_err(|e| match e {
-        WriteError::Io(_, e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Error::new(Reason::Changed, format!("{rel} is gone"))
-        }
-        e => moved(rel)(e),
-    })?;
-    Ok((path, read))
+    Seen::entry(&path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Error::new(Reason::Changed, format!("{rel} is gone")),
+        _ => io(rel)(e),
+    })
 }
 
 fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
-    move |e| match e {
-        WriteError::Changed(_) => Error::new(
-            Reason::Changed,
-            format!("{rel} changed since it was read: read it again"),
-        ),
-        WriteError::Exists(_) => Error::new(Reason::Exists, format!("{rel} already exists")),
-        WriteError::Io(_, e) => Error::new(Reason::Io, format!("{rel}: {e}")),
+    move |e| {
+        let message = match &e {
+            WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
+            WriteError::Exists(_) => format!("{rel} already exists"),
+            WriteError::Io(_, e) => format!("{rel}: {e}"),
+        };
+        Error::new(Reason::of(&e), message)
     }
 }
 
 /// `workspace/stat`
 pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
     let rel = &normal(rel)?;
-    let (path, read) = contents(root, rel)?;
+    let read = contents(root, rel)?;
     let mut stat = Stat {
-        rev: crate::read::rev_of(&read),
+        rev: read.rev(),
         inside: None,
         more: 0,
         hidden: 0,
     };
-    if let Contents::Folder(entries) = &read {
+    let path = read.path();
+    if let Some(entries) = read.inside() {
         let is_hidden = |entry: &Path| {
             let mut parts = entry.components();
             parts.any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
         };
-        let (hidden, seen): (Vec<_>, Vec<_>) =
-            (entries.iter().map(|(entry, _, _)| entry)).partition(|entry| is_hidden(entry));
+        let (hidden, seen): (Vec<_>, Vec<_>) = entries.partition(|entry| is_hidden(entry));
         let listed = seen.iter().take(LISTED).map(|entry| {
             let slash = if path.join(entry).is_dir() { "/" } else { "" };
             let entry = entry.to_string_lossy().replace('\\', "/");
@@ -380,12 +380,12 @@ pub fn delete(
     system: Option<&Bin>,
 ) -> Result<Trashed, Error> {
     let rel = &normal(rel)?;
-    let (path, now) = contents(root, rel)?;
-    if crate::read::rev_of(&now) != expect {
+    let now = contents(root, rel)?;
+    if now.rev() != expect {
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
-    trash::delete(root, &path, &now, system).map_err(moved(rel))
+    trash::delete(root, &now, system).map_err(moved(rel))
 }
 
 /// `workspace/restore`, through `trash::restore`: back where it was, or at `to`. The answer
@@ -731,6 +731,37 @@ mod tests {
         std::fs::write(dir.join("Data/bytes.csv"), [0xff, 0xfe]).unwrap();
         let binary = super::read(&dir, "Data/bytes.csv").unwrap_err();
         assert_eq!(binary.reason, Reason::Refused);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_refusal_says_what_it_said() {
+        let dir = workspace("words");
+        let was = read(&dir, "Data/Eruptions.csv").unwrap();
+        let shown = stat(&dir, "Data/Eruptions.csv").unwrap();
+        std::fs::write(dir.join("Data/Eruptions.csv"), "edited\n").unwrap();
+        let said = |e: Error| (e.reason, e.to_string());
+        let stale = replace(&dir, "Data/Eruptions.csv", "lost", &was.rev).unwrap_err();
+        let changed = "Data/Eruptions.csv changed since it was read: read it again";
+        assert_eq!(said(stale), (Reason::Changed, changed.into()));
+        let stale = delete(&dir, "Data/Eruptions.csv", &shown.rev, None).unwrap_err();
+        assert_eq!(said(stale), (Reason::Changed, changed.into()));
+        let gone = replace(&dir, "Data/Gone.csv", "x", &was.rev).unwrap_err();
+        let words = "Data/Gone.csv is gone: create it with workspace/create";
+        assert_eq!(said(gone), (Reason::Changed, words.into()));
+        let is_gone = (Reason::Changed, "Data/Gone.csv is gone".to_string());
+        assert_eq!(said(stat(&dir, "Data/Gone.csv").unwrap_err()), is_gone);
+        let gone = delete(&dir, "Data/Gone.csv", &shown.rev, None).unwrap_err();
+        assert_eq!(said(gone), is_gone);
+        std::fs::write(dir.join("Data/bytes.csv"), [0xff, 0xfe]).unwrap();
+        let binary = read(&dir, "Data/bytes.csv").unwrap_err();
+        let words = "Data/bytes.csv isn't UTF-8 text";
+        assert_eq!(said(binary), (Reason::Refused, words.into()));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Data/Eruptions.csv")).unwrap(),
+            "edited\n",
+            "nothing written, nothing trashed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

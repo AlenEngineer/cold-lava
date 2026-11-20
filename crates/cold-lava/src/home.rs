@@ -4277,7 +4277,8 @@ impl Home {
                 .map_err(|e| e.to_string())
                 .and_then(
                     |text| match frontmatter::edit_tag(&text, tag, edit, &style)? {
-                        Some(new) => crate::write::replace(&path, text.as_bytes(), new.as_bytes())
+                        Some(new) => read::Seen::kept(&path, text.as_bytes())
+                            .replace(new.as_bytes())
                             .map(|()| true)
                             .map_err(|e| e.to_string()),
                         None => Ok(false),
