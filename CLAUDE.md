@@ -138,9 +138,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
 - `read.rs` holds `Seen`, what was at a path when it was read, so a later write or delete can
   be refused if it changed since. Every write or delete that checks for a change goes through
   it (`files.rs`, `trash.rs`, `merge.rs`, `rename.rs`'s `Written` and `apply`, set-field, the
-  tick, bookmarks, the shapes file, the board's save and the menu's tag edit), except the ones
-  in `core.rs`, `gateway.rs`'s item edit, `rename::check_unchanged` and `rename::owned_edit`,
-  which move next (track A step A5, #265). `Seen::file` reads a file's bytes through a
+  tick, bookmarks, the shapes file, the board's save, the menu's tag edit, and the owned
+  file's edit and the relink check the core makes for the edit desk), except `gateway.rs`'s
+  item edit, `rename::check_unchanged` and `rename::owned_edit`, which move next (track A step
+  A5, #265). `Seen::file` reads a file's bytes through a
   symlink, as a write does; `Seen::kept` holds bytes read earlier or just written, checked as
   `file` is; `Seen::entry` reads a file, a folder by its listing (`inside`) or a symlink by
   where it points, never following one. `unchanged` reads it again the way it was seen;
@@ -225,9 +226,14 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   and change notes through the owner. An extension
   can own another kind: `owner/given.rs` reads its `file/read` answer (pieces, Markdown
   pieces, typed items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
-  `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` holds an edit while
-  its owner answers `file/edit` and reads the new text back. `Core::set_owners`, `take_reads`,
-  `take_file_edits` and `file_given` run it and never wait; an `items/edit` of an owned file
+  `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` (the edit desk, a tool
+  with private state) holds an edit while its owner answers `file/edit` and reads the new text
+  back, then hands the core what to write over what (`ToWrite`: the file as the core read it,
+  a `read::Seen`), and answers whoever asked once the core says how the write went
+  (`Edits::wrote`). The owners' answers for a rename, merge or recipe wait there under its
+  ticket (`Edits::relinked`). The desk reads and writes no file and tells no subscriber: the
+  core does. `Core::set_owners`, `take_reads`, `take_file_edits` and `file_given` run it and
+  never wait; an `items/edit` of an owned file
   is answered `Later` (`take_edited`). Owned files are `Workspace::owned`, beside the notes,
   and the index, the gateway, the graph and tidy read them too. `owner/canvas.rs` is the
   engine's `.canvas` owner (`owner::BUILT_IN`). It speaks the alphabet: each card is a piece
