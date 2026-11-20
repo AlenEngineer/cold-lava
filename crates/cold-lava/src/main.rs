@@ -21,6 +21,7 @@ mod looks;
 mod notice;
 mod owned;
 mod pick_list;
+mod popup;
 mod previews;
 mod reader;
 mod recipe_view;

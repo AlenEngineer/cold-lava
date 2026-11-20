@@ -37,7 +37,8 @@ use crate::trash::{self, TrashOption, Went};
 use crate::type_table;
 use crate::views::{self, Views};
 use crate::{
-    agenda, board, files, graph_ext, items, read, rel_path, templates, term, whichkey, workspace,
+    agenda, board, files, graph_ext, items, popup, read, rel_path, templates, term, whichkey,
+    workspace,
 };
 use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{
@@ -4398,15 +4399,6 @@ impl Home {
         else {
             return;
         };
-        let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
-        let h = (area.height * 2 / 3).clamp(10.min(area.height), 34);
-        let r = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + area.height / 6,
-            w,
-            h,
-        );
-        f.render_widget(Clear, r);
         let (title, hint) = match plan.moves.len() {
             1 => (" Rename ", " ⏎ rename · Esc cancel · ↑↓ scroll "),
             _ => (" Move ", " ⏎ move · Esc cancel · ↑↓ scroll "),
@@ -4419,16 +4411,7 @@ impl Home {
             }
             None => hint,
         };
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(ACCENT))
-            .title(Line::styled(
-                title,
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
-        let inner = block.inner(r);
-        f.render_widget(block, r);
+        let inner = popup::frame(f, popup::confirm(area), title, hint, ACCENT);
         let arrow = |m: &crate::rename::Move| {
             let slash = if m.folder { "/" } else { "" };
             Line::from(vec![
@@ -4820,25 +4803,7 @@ impl Home {
             Some(_) => waiting_for(&plan.edits),
             None => " ⏎ merge · Esc cancel · ↑↓ scroll ".to_string(),
         };
-        let w = (area.width * 3 / 4).clamp(50.min(area.width), 120);
-        let h = (area.height * 2 / 3).clamp(10.min(area.height), 34);
-        let r = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + area.height / 6,
-            w,
-            h,
-        );
-        f.render_widget(Clear, r);
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(ACCENT))
-            .title(Line::styled(
-                " Merge ",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
-        let inner = block.inner(r);
-        f.render_widget(block, r);
+        let inner = popup::frame(f, popup::confirm(area), " Merge ", &hint, ACCENT);
         let name = |rel: &str| {
             let rel = rel.trim_end_matches(".md");
             rel.rsplit('/').next().unwrap_or(rel).to_string()
@@ -5026,7 +4991,7 @@ impl Home {
             0 => " Tidy ".to_string(),
             n => format!(" Tidy · {n} marked "),
         };
-        let inner = picker_frame(f, area, &title, &hint);
+        let inner = popup::picker(f, area, &title, &hint);
         let lines = view.lines(inner.width as usize, inner.height as usize);
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -5555,7 +5520,7 @@ impl Home {
                     Style::new().fg(MUTED),
                 ));
                 lines.push(Line::raw(""));
-                let inner_w = popup_width(area).saturating_sub(2) as usize;
+                let inner_w = popup::width(area).saturating_sub(2) as usize;
                 let mut detail: Vec<Line> = Vec::new();
                 if several {
                     detail.extend(p.doomed.iter().map(|d| {
@@ -5638,7 +5603,7 @@ impl Home {
             }
             _ => return,
         };
-        let w = popup_width(area);
+        let w = popup::width(area);
         // Word wrapping can take a row more than the width alone says.
         let rows = |l: &Line| {
             l.width()
@@ -5647,23 +5612,8 @@ impl Home {
         };
         let tall: usize = lines.iter().map(rows).sum::<usize>() + 1 + detail.len();
         let h = (tall as u16 + 2).clamp(6.min(area.height), 24);
-        let r = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + area.height / 6,
-            w,
-            h.min(area.height),
-        );
-        f.render_widget(Clear, r);
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(HIT))
-            .title(Line::styled(
-                title,
-                Style::new().fg(HIT).add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
-        let inner = block.inner(r);
-        f.render_widget(block, r);
+        let r = popup::centred(area, w, h.min(area.height), area.height / 6);
+        let inner = popup::frame(f, r, title, hint, HIT);
         let mut lines = lines;
         let room = (inner.height as usize).saturating_sub(lines.len());
         let start = scroll.min(detail.len().saturating_sub(room));
@@ -6166,7 +6116,7 @@ impl Home {
         }
         if let Mode::Recipe(view) = &self.mode {
             let undo = self.keys.first_label("note.undo-delete");
-            let inner = picker_frame(f, main, &view.title(), &view.hint(&undo));
+            let inner = popup::picker(f, main, &view.title(), &view.hint(&undo));
             let lines = view.lines(inner.width as usize, inner.height as usize);
             f.render_widget(Paragraph::new(lines), inner);
         }
@@ -6207,14 +6157,14 @@ impl Home {
             } else {
                 (" rename · ⏎ preview · Esc cancel ", "new name: ")
             };
-            prompt(f, main, title, label, input);
+            popup::prompt(f, main, title, label, input);
         }
         if let Mode::MoveMarked(input) = &self.mode {
             let title = format!(
                 " move {} marked into folder · ⏎ preview · Esc cancel ",
                 self.marks.len()
             );
-            prompt(f, main, &title, "folder: ", input);
+            popup::prompt(f, main, &title, "folder: ", input);
         }
         if let Mode::Tag { typed, all, sel } = &self.mode {
             draw_tag(f, main, typed, all, *sel, self.marks.len());
@@ -6232,7 +6182,7 @@ impl Home {
                 template,
             } => draw_new_note(f, main, name, templates, *template),
             Mode::NewFolder(name) => {
-                prompt(
+                popup::prompt(
                     f,
                     main,
                     " new folder · ⏎ create · Esc cancel ",
@@ -6241,7 +6191,7 @@ impl Home {
                 );
             }
             Mode::AddWorkspace(name) => {
-                prompt(
+                popup::prompt(
                     f,
                     main,
                     " add a workspace · ⏎ add · Esc cancel ",
@@ -6333,7 +6283,7 @@ impl Home {
         };
         let most = (screen.height * 2 / 5).clamp(6, 20);
         let h = (rows as u16 + 2).min(most);
-        let area = popup_near(anchor, w, h, screen);
+        let area = popup::near(anchor, w, h, screen);
         f.render_widget(Clear, area);
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -6366,13 +6316,13 @@ impl Home {
             return;
         };
         let inner = match merging.as_deref().and_then(|p| ix.by_path(p)) {
-            Some(i) => picker_frame(
+            Some(i) => popup::picker(
                 f,
                 area,
                 &format!(" Merge {} into… ", ix.workspace.notes[i].name),
                 " ↑↓ choose · ⏎ preview the merge · Esc cancel ",
             ),
-            None => picker_frame(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close "),
+            None => popup::picker(f, area, " Go to note ", " ↑↓ choose · ⏎ open · Esc close "),
         };
         let hits = self.switcher_targets(query, merging.as_deref());
         let files = match merging {
@@ -6472,7 +6422,7 @@ impl Home {
         let (Mode::Outline { query, sel }, Some(r)) = (&self.mode, &self.reader) else {
             return;
         };
-        let inner = picker_frame(f, area, " Outline ", " ↑↓ choose · ⏎ jump · Esc close ");
+        let inner = popup::picker(f, area, " Outline ", " ↑↓ choose · ⏎ jump · Esc close ");
         let headings = r.headings();
         let hits = self.outline_hits(query);
         let reading = r.section().last().copied();
@@ -6529,7 +6479,7 @@ impl Home {
             return;
         };
         let hint = " ↑↓ choose · ⏎ open · ←→ fold · Del remove · Esc close ";
-        let inner = picker_frame(f, area, " Bookmarks ", hint);
+        let inner = popup::picker(f, area, " Bookmarks ", hint);
         let rows = self.bookmark_rows(query);
         let count = match query.is_empty() {
             true => (self.core.as_ref().and_then(|c| c.bookmarks().ok())).map_or(0, |b| {
@@ -6627,7 +6577,7 @@ impl Home {
         let Mode::Palette { query, sel } = &self.mode else {
             return;
         };
-        let inner = picker_frame(f, area, " Commands ", " ↑↓ choose · ⏎ run · Esc close ");
+        let inner = popup::picker(f, area, " Commands ", " ↑↓ choose · ⏎ run · Esc close ");
         let hits = self.palette_hits(query);
         let mut lines = vec![
             Line::from(vec![
@@ -6702,29 +6652,12 @@ impl Home {
         };
         let w = (area.width * 4 / 5).clamp(50.min(area.width), 140);
         let h = area.height.saturating_sub(4).max(8.min(area.height));
-        let r = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + 2.min(area.height / 8),
-            w,
-            h,
+        let r = popup::centred(area, w, h, 2.min(area.height / 8));
+        let hint = format!(
+            " ↑↓ choose · ⏎ open at the match · {} bookmark · Esc close ",
+            self.keys.label("search.bookmark")
         );
-        f.render_widget(Clear, r);
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(ACCENT))
-            .title(Line::styled(
-                " Search ",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Line::styled(
-                format!(
-                    " ↑↓ choose · ⏎ open at the match · {} bookmark · Esc close ",
-                    self.keys.label("search.bookmark")
-                ),
-                Style::new().fg(MUTED),
-            ));
-        let inner = block.inner(r);
-        f.render_widget(block, r);
+        let inner = popup::frame(f, r, " Search ", &hint, ACCENT);
         let matches: usize = self.results.iter().map(|r| r.count).sum();
         let summary = if query.trim().is_empty() {
             "  words must all appear in a note · \"quotes\" for a phrase".to_string()
@@ -7312,27 +7245,6 @@ fn attachment_label(name: &str) -> Option<String> {
     Some(format!("{ext} {kind}"))
 }
 
-/// A `w`×`h` popup under the point `at`, or above it when there is more room there, kept on
-/// `screen` and shrunk to fit.
-/// The delete prompt's width in `area`.
-fn popup_width(area: Rect) -> u16 {
-    (area.width * 3 / 4).clamp(50.min(area.width), 120)
-}
-
-fn popup_near(at: (u16, u16), w: u16, h: u16, screen: Rect) -> Rect {
-    let (x, y) = at;
-    let below = screen.bottom().saturating_sub(y + 1);
-    let above = y.saturating_sub(screen.y);
-    let (top, h) = if below >= h || below >= above {
-        (y + 1, h.min(below))
-    } else {
-        (y - h.min(above), h.min(above))
-    };
-    let w = w.min(screen.width);
-    let left = x.saturating_sub(2).clamp(screen.x, screen.right() - w);
-    Rect::new(left, top, w, h)
-}
-
 /// ` › Section › Subsection`: the headings the reader is under, without a first heading that
 /// only repeats the note's name.
 fn breadcrumb(r: &Reader, path: &Path) -> String {
@@ -7467,7 +7379,7 @@ fn draw_tag(
         n => plural(n, "marked note"),
     };
     let title = format!(" tag {whom} · -tag removes · Tab · ⏎ ");
-    let r = prompt(f, area, &title, "tag: #", &tag_shown(typed, all, sel));
+    let r = popup::prompt(f, area, &title, "tag: #", &tag_shown(typed, all, sel));
     let hits = tag_matches(typed, all);
     let room = area.bottom().saturating_sub(r.bottom()) as usize;
     let rows = hits.len().min(8).min(room.saturating_sub(2));
@@ -7570,7 +7482,7 @@ fn draw_new_note(
     template: Option<usize>,
 ) {
     if templates.is_empty() {
-        prompt(
+        popup::prompt(
             f,
             area,
             " new note · ⏎ create · Esc cancel ",
@@ -7580,7 +7492,7 @@ fn draw_new_note(
         return;
     }
     let title = " new note · Tab template · ⏎ create · Esc cancel ";
-    let r = prompt(f, area, title, "name: ", name);
+    let r = popup::prompt(f, area, title, "name: ", name);
     let room = area.bottom().saturating_sub(r.bottom()) as usize;
     let rows = (templates.len() + 1).min(room.saturating_sub(2));
     let list = Rect::new(r.x, r.bottom(), r.width, rows as u16 + 2);
@@ -7620,75 +7532,15 @@ fn draw_new_note(
     );
 }
 
-/// Draw a one-line prompt in the upper middle of `area`; returns where it went.
-fn prompt(f: &mut Frame, area: Rect, title: &str, label: &str, value: &str) -> Rect {
-    let w = 60.min(area.width.saturating_sub(4));
-    let r = Rect::new(
-        area.x + (area.width - w) / 2,
-        area.y + area.height / 3,
-        w,
-        3,
-    );
-    f.render_widget(Clear, r);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(label.to_string(), Style::new().fg(MUTED)),
-            Span::styled(format!("{value}▏"), Style::new().fg(NOTE)),
-        ]))
-        .block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(ACCENT))
-                .title(title.to_string()),
-        ),
-        r,
-    );
-    r
-}
-
 /// An extension's view over the whole main area, its filter on the bottom line.
 /// Draws the view in `area` and returns where its rows went.
 fn draw_view(f: &mut Frame, area: Rect, v: &mut views::Open) -> Rect {
-    f.render_widget(Clear, area);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(ACCENT))
-        .title(Line::styled(
-            format!(" {} ", v.title()),
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::styled(v.hint(), Style::new().fg(MUTED)));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = popup::frame(f, area, &format!(" {} ", v.title()), &v.hint(), ACCENT);
     let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
     let lines = v.lines(body.width as usize, body.height as usize);
     f.render_widget(Paragraph::new(lines), body);
     f.render_widget(Paragraph::new(v.status()), status);
     body
-}
-
-/// The centred popup shared by the quick switcher and the command palette; returns its inside.
-fn picker_frame(f: &mut Frame, area: Rect, title: &str, hint: &str) -> Rect {
-    let w = (area.width * 2 / 3).clamp(40.min(area.width), 100);
-    let h = (area.height * 2 / 3).clamp(8.min(area.height), 30);
-    let r = Rect::new(
-        area.x + (area.width - w) / 2,
-        area.y + area.height / 6,
-        w,
-        h,
-    );
-    f.render_widget(Clear, r);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(ACCENT))
-        .title(Line::styled(
-            title,
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::styled(hint, Style::new().fg(MUTED)));
-    let inner = block.inner(r);
-    f.render_widget(block, r);
-    inner
 }
 
 fn draw_help(
@@ -7758,12 +7610,7 @@ fn draw_help(
         (lines, column.min(area.width.saturating_sub(4)))
     };
     let h = (lines.len() as u16 + 2).min(area.height);
-    let r = Rect::new(
-        area.x + (area.width - w) / 2,
-        area.y + (area.height - h) / 2,
-        w,
-        h,
-    );
+    let r = popup::centred(area, w, h, (area.height - h) / 2);
     f.render_widget(Clear, r);
     f.render_widget(
         Paragraph::new(lines).block(
@@ -7855,22 +7702,6 @@ mod tests {
 
         let found = visible(&items, &HashSet::new(), "kil");
         assert_eq!(items[found[0]].rel, "Volcanoes/Kīlauea.md");
-    }
-
-    #[test]
-    fn peek_opens_under_the_link_or_above_it_near_the_bottom() {
-        let screen = Rect::new(0, 0, 100, 40);
-        assert_eq!(
-            popup_near((30, 5), 60, 16, screen),
-            Rect::new(28, 6, 60, 16)
-        );
-        assert_eq!(
-            popup_near((90, 35), 60, 16, screen),
-            Rect::new(40, 19, 60, 16)
-        );
-        let small = Rect::new(0, 0, 30, 10);
-        let r = popup_near((0, 4), 60, 16, small);
-        assert_eq!(r, Rect::new(0, 5, 30, 5), "shrunk to the room below");
     }
 
     #[test]
