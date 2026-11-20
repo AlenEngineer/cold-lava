@@ -10,9 +10,19 @@
 #
 # Prints version=… and release=true|false (also to $GITHUB_OUTPUT on GitHub Actions).
 # Needs the repository's tags (fetch-depth: 0). Run it locally before opening a release PR.
+#
+#   scripts/release-check.sh [COMMIT]
+#
+# With a COMMIT it reads Cargo.toml and CHANGELOG.md as that commit has them, not the working
+# tree: scripts/changelog-check.sh asks it whether a PR's head is a release, so there is one
+# definition of one.
 set -euo pipefail
 
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+ref=${1:-}
+source_of() { if [ -n "$ref" ]; then git show "$ref:$1"; else cat "$1"; fi; }
+
+version=$(source_of Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
+changelog=$(source_of CHANGELOG.md)
 if [ -z "$version" ]; then
   echo "::error file=Cargo.toml::No version found in Cargo.toml"
   exit 1
@@ -30,7 +40,7 @@ fi
 release=false
 if $on_tag || ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   release=true
-  if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+  if ! grep -q "^## \[$version\]" <<<"$changelog"; then
     echo "::error file=CHANGELOG.md::Version $version is new but CHANGELOG.md has no '## [$version] - date' section for it"
     exit 1
   fi
