@@ -42,6 +42,27 @@ them, `rev`, made in `read.rs`). `read.rs`'s `Seen` is the one type the writes a
 no write uses it yet (track A step A5, #265). Swapping the page in is copying bytes, atomically
 (`write.rs`), and a page taken out goes to the trash, never deleted for good (`trash.rs`).
 
+**A translator changes what a book says, never its name or its place.** Renaming, moving and
+removing a book are the librarian's, done at a reader's request: the librarian plans a rename
+and asks each translator only how its own pages should read once a name they mention has
+changed (`Core::relink`). Owning a kind of file grants no rename, move or delete, and a
+translator can't write a book another translator reads (#323). When renaming and moving come to
+the door (#193), they come as a reader's requests under the same rule.
+
+**The librarian has clerks.** If the librarian did everything alone, it would never keep up, so
+each job that holds its own state belongs to a clerk: a tool the librarian calls in order and
+never reaches inside. Some are already at their desks, some still work from the librarian's own
+desk (`core.rs`), and some aren't hired yet:
+
+| Clerk | Job | Where |
+| --- | --- | --- |
+| The front desk | checks an extension's badge before the librarian hears a word | `crates/host` (its own clerk since C1, #312) |
+| The report keeper | keeps each translator's last report between visits, and asks again when one no longer reads | `owner/cache.rs` |
+| The edit desk | carries an edit to a translator, waits for its answer and reads it back | `owner/edits.rs` holds the edit; the waiting and checking still sit in `core.rs` (track C step C2) |
+| The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
+| The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
+| The logbook keeper | writes down every change, who asked and which translator wrote it | not hired yet (#306, after track C) |
+
 **An outside translator is a stranger.** Every report it gives is measured against limits as it
 arrives (`bounded.rs`), and an item that doesn't read is set aside on its own, with a note saying
 why (`Given::left_out`). A code editor's language server returns edits instead of saving files
