@@ -1,25 +1,27 @@
 //! The edit desk: edits of files other owners read (`file/edit`). The core makes the change the
 //! way it edits a note (a Markdown piece's new text through the Markdown owner, or a typed
-//! item's field), and the desk asks the file's owner for the file's new text. Before it is
-//! written, the desk asks the owner to read that text (`file/read`) and checks it reads as
-//! asked: what the owner gave before, with the change made. Only then does it hand the text to
-//! the core (`ToWrite`), which writes it with `write::replace`, refused if the file changed
-//! since. An extension answers later, so each edit waits here, one per file, until its owner
-//! has answered both; the engine's canvas owner answers both inside the call, through the same
-//! steps. A rename, merge or recipe asks every owned file's owner this way before anything is
-//! written, and keeps each new text that read back until all are in (`Relink`). The desk
-//! writes nothing and tells no subscriber: the core does both.
+//! item's field) and reads the file (`read::Seen`), and the desk asks the file's owner for the
+//! file's new text. Before it is written, the desk asks the owner to read that text
+//! (`file/read`) and checks it reads as asked: what the owner gave before, with the change made.
+//! Only then does it hand the text to the core (`ToWrite`), which writes it over the file as it
+//! was read (`Seen::replace`, refused if it changed since). An extension answers later, so each
+//! edit waits here, one per file, until its owner has answered both; the engine's canvas owner
+//! answers both inside the call, through the same steps. A rename, merge or recipe asks every
+//! owned file's owner this way before anything is written, and keeps each new text that read
+//! back until all are in (`Relink`). The desk reads and writes no file and tells no subscriber:
+//! the core does.
 
 use crate::bounded::{Message, Text};
 use crate::gateway::{Edited, Error, Reason, Ticket};
 use crate::items::{Item, Settings};
 use crate::owner::cache::FileRead;
 use crate::owner::given::{self, Change, Given};
-use crate::read;
+use crate::read::{self, Seen};
 use crate::rename;
 use crate::workspace::Owned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// `file/edit` (host → owner): the new text of the file at `path`, whose text is `text` at
 /// version `rev`, with `changes` made. The owner answers `{text}`.
@@ -50,13 +52,14 @@ pub(crate) struct ItemEdit {
     pub warning: Option<String>,
 }
 
-/// An item edit whose new text read back as asked, for the core to write: `after` over
-/// `before`, the text the edit was made on, at the workspace-relative `path`. What `owner` read
-/// in it (`given`, at version `rev`) is then the file's, and `edit` is answered under `ticket`
-/// (`Edits::answer`), whether the write went ahead or not.
+/// An item edit whose new text read back as asked, for the core to write: `after` over the file
+/// as the edit was made on it (`before`, which refuses the write if the file changed since), at
+/// the workspace-relative `path`. What `owner` read in it (`given`, at version `rev`) is then
+/// the file's, and `edit` is answered under `ticket` (`Edits::answer`), whether the write went
+/// ahead or not.
 pub(crate) struct ToWrite {
     pub path: String,
-    pub before: String,
+    pub before: Seen,
     pub after: String,
     pub rev: String,
     pub owner: String,
@@ -87,8 +90,12 @@ enum Stage {
 
 /// What the edit is for.
 enum Goal {
-    /// An `items/edit`, answered under the ticket.
-    Item(Ticket, ItemEdit),
+    /// An `items/edit` of the file at `at` on disk, answered under the ticket.
+    Item {
+        ticket: Ticket,
+        edit: ItemEdit,
+        at: PathBuf,
+    },
     /// Links in one of the files of the rename or merge `Ticket`, whose new text is kept, not
     /// written.
     Relink(Ticket),
@@ -146,35 +153,39 @@ impl Edits {
         self.pending.get(path).map(|p| p.owner.as_str())
     }
 
-    /// `edit` of an item in the owned `file`, made into `changes`, after which its owner should
-    /// give `expect`: refused when the file changed since its owner read it, or isn't UTF-8
-    /// text. Else its owner is asked for the file's new text (`file/edit`). The ticket the
-    /// answer comes under (`take_edited`), and what to write when an owner in the engine
-    /// answered inside the call. No other edit of the file may be waiting (`waiting`).
+    /// `edit` of an item in the owned `file`, made into `changes` on the file as the core read
+    /// it (`before`), after which its owner should give `expect`: refused when the file changed
+    /// since its owner read it, or isn't UTF-8 text. Else its owner is asked for the file's new
+    /// text (`file/edit`). The ticket the answer comes under (`take_edited`), and what to write
+    /// when an owner in the engine answered inside the call. No other edit of the file may be
+    /// waiting (`waiting`).
     pub fn edit_item(
         &mut self,
         file: &Owned,
+        before: &Seen,
         changes: Vec<Change>,
         expect: Given,
         edit: ItemEdit,
         s: &Settings,
     ) -> Result<(Ticket, Option<ToWrite>), Error> {
         let error = Error::new;
-        let text = std::fs::read(&file.path)
-            .map_err(|e| error(Reason::Io, format!("{}: {e}", file.rel)))?;
-        if file.rev.as_deref() != Some(read::rev(&text).as_str()) {
+        let rev = before.rev();
+        if file.rev.as_deref() != Some(rev.as_str()) {
             let message = format!("{} changed since it was read: read it again", file.rel);
             return Err(error(Reason::Changed, message));
         }
-        let text = String::from_utf8(text)
-            .map_err(|_| error(Reason::Refused, format!("{} isn't UTF-8 text", file.rel)))?;
+        let text = match before.text() {
+            Ok(text) => text.to_string(),
+            Err(not) => return Err(error(Reason::Refused, not.about(&file.rel))),
+        };
         let ticket = self.ticket();
+        let at = before.path().to_path_buf();
         let pending = Pending {
             owner: file.owner.clone(),
-            rev: read::rev(text.as_bytes()),
+            rev,
             text,
             expect: Some(expect),
-            goal: Goal::Item(ticket, edit),
+            goal: Goal::Item { ticket, edit, at },
             stage: Stage::Editing,
         };
         Ok((ticket, self.ask(file.rel.clone(), changes, pending, s)))
@@ -314,12 +325,13 @@ impl Edits {
         let Some(p) = self.pending.remove(path) else {
             return Ok(None);
         };
-        let (Stage::Reading { rev, text }, Goal::Item(ticket, edit)) = (p.stage, p.goal) else {
+        let (Stage::Reading { rev, text }, Goal::Item { ticket, edit, at }) = (p.stage, p.goal)
+        else {
             return Ok(None);
         };
         Ok(Some(ToWrite {
             path: path.to_string(),
-            before: p.text,
+            before: Seen::kept(&at, p.text),
             after: text,
             rev,
             owner,
@@ -335,7 +347,7 @@ impl Edits {
             return;
         };
         match p.goal {
-            Goal::Item(ticket, edit) => self.done.push((edit.by, ticket, Err(e))),
+            Goal::Item { ticket, edit, .. } => self.done.push((edit.by, ticket, Err(e))),
             Goal::Relink(ticket) => self.relink_failed(ticket, e.message),
         }
     }
@@ -368,12 +380,14 @@ impl Edits {
     /// inside the call (the engine's own do) and `edits` have their new texts. Else the answer
     /// comes from `take_relinked` under the ticket: every owned file's edit with its new text,
     /// or the first owner's refusal, after which nothing else is kept. Refused at once when one
-    /// of them changed since it was planned, has an edit waiting, its change would leave out
-    /// something its owner gave (`given::check_change`: a link target past its bound), or an
-    /// owner in the engine refuses.
+    /// of them has an edit waiting, changed since it was planned (`planned` says whether a file
+    /// still holds the text it was planned on), its change would leave out something its owner
+    /// gave (`given::check_change`: a link target past its bound), or an owner in the engine
+    /// refuses.
     pub fn relink(
         &mut self,
         edits: &mut [rename::FileEdit],
+        planned: impl Fn(&rename::FileEdit) -> bool,
         s: &Settings,
     ) -> Result<Option<Ticket>, String> {
         let owned: Vec<_> = edits
@@ -391,7 +405,7 @@ impl Edits {
             if self.pending.contains_key(&e.file) {
                 return Err(format!("{} has an edit waiting for {}", e.file, o.owner));
             }
-            if std::fs::read_to_string(&e.path).ok().as_ref() != Some(&e.old_text) {
+            if !planned(e) {
                 return Err(format!("{} changed since it was planned", e.file));
             }
             expected.push(match &o.given {
@@ -489,27 +503,16 @@ impl Edits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     const OWNER: &str = "csv-table";
     const FILE: &str = "Samples.csv";
     const OPEN: &str = "- [ ] sample\n";
     const DONE: &str = "- [x] sample\n";
 
-    /// A workspace of the test's own in the temporary folder, holding `files`.
-    fn workspace(name: &str, files: &[(&str, &str)]) -> PathBuf {
-        let name = format!("cold-lava-edit-desk-{name}-{}", std::process::id());
-        let dir = std::env::temp_dir().join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        for (rel, text) in files {
-            std::fs::write(dir.join(rel), text).unwrap();
-        }
-        dir
-    }
-
-    fn on_disk(dir: &Path, rel: &str) -> String {
-        std::fs::read_to_string(dir.join(rel)).unwrap()
+    /// The settings of a workspace with nothing of its own.
+    fn settings() -> Settings {
+        Settings::load(Path::new("/nonexistent-cold-lava-workspace"))
     }
 
     /// What the owner gives for a file of one Markdown piece, at the place `1`.
@@ -518,11 +521,16 @@ mod tests {
             .unwrap()
     }
 
-    /// `FILE` in `dir`, as its owner read it.
-    fn owned(dir: &Path) -> Owned {
-        let mut file = Owned::new(FILE.into(), dir.join(FILE), OWNER);
-        file.rev = Some(read::rev(&std::fs::read(dir.join(FILE)).unwrap()));
+    /// `FILE` as its owner read it, holding `OPEN`.
+    fn owned() -> Owned {
+        let mut file = Owned::new(FILE.into(), PathBuf::from(FILE), OWNER);
+        file.rev = Some(read::rev(OPEN.as_bytes()));
         file
+    }
+
+    /// `FILE` as the core reads it now, holding `bytes`.
+    fn seen(bytes: impl Into<Vec<u8>>) -> Seen {
+        Seen::kept(Path::new(FILE), bytes)
     }
 
     /// Ticking the task in `FILE` as the core makes it: the change to its one Markdown piece,
@@ -546,12 +554,11 @@ mod tests {
 
     #[test]
     fn an_item_edit_waits_for_its_owner_then_is_handed_back_to_be_written() {
-        let dir = workspace("waits", &[(FILE, OPEN)]);
-        let s = Settings::load(&dir);
+        let s = settings();
         let mut desk = Edits::default();
         let (changes, expect, edit) = tick(&s);
-        let file = owned(&dir);
-        let (ticket, write) = (desk.edit_item(&file, changes.clone(), expect, edit, &s)).unwrap();
+        let made = desk.edit_item(&owned(), &seen(OPEN), changes.clone(), expect, edit, &s);
+        let (ticket, write) = made.unwrap();
         assert!(write.is_none(), "an extension answers later");
         assert_eq!(ticket, Ticket(1));
         assert_eq!(desk.waiting(FILE), Some(OWNER), "one at a time");
@@ -597,14 +604,13 @@ mod tests {
         let Ok(Some(w)) = read else {
             panic!("reads as asked");
         };
-        let written = (w.path.as_str(), w.before.as_str(), w.after.as_str());
-        assert_eq!(written, (FILE, OPEN, DONE));
+        assert_eq!(w.before, seen(OPEN), "over the file as it was read");
+        assert_eq!((w.path.as_str(), w.after.as_str()), (FILE, DONE));
         let owner_read = (w.owner.as_str(), w.rev.as_str());
         assert_eq!(owner_read, (OWNER, back.rev.as_str()));
         let answer = (w.ticket, w.edit.by.as_str(), w.edit.what.as_str());
         assert_eq!(answer, (ticket, "agenda", "ticked"));
         assert_eq!(desk.waiting(FILE), None);
-        assert_eq!(on_disk(&dir, FILE), OPEN, "the core writes it");
         assert!(desk.take_edited().is_empty(), "answered once written");
         let refused = Error::new(Reason::Changed, "it changed");
         desk.answer(w.edit.by, w.ticket, Err(refused.clone()));
@@ -613,43 +619,46 @@ mod tests {
             panic!("{done:?}");
         };
         assert_eq!((by.as_str(), *t, e), ("agenda", ticket, &refused));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn an_item_edit_is_refused_when_its_file_changed_since_its_owner_read_it() {
-        let dir = workspace("changed", &[(FILE, OPEN)]);
-        let s = Settings::load(&dir);
+    fn an_item_edit_is_refused_when_its_file_changed_or_isnt_text() {
+        let s = settings();
         let mut desk = Edits::default();
-        let file = owned(&dir);
-        std::fs::write(dir.join(FILE), "- [ ] sample, theirs\n").unwrap();
         let (changes, expect, edit) = tick(&s);
-        let Err(e) = desk.edit_item(&file, changes, expect, edit, &s) else {
-            panic!("an edit of a file that changed");
+        let theirs = seen("- [ ] sample, theirs\n");
+        let Err(e) = desk.edit_item(&owned(), &theirs, changes, expect, edit, &s) else {
+            panic!("an edit of a file that changed since its owner read it");
         };
         let changed = "Samples.csv changed since it was read: read it again";
         assert_eq!((e.reason, e.message.as_str()), (Reason::Changed, changed));
+        let bytes = [b'-', 0xff];
+        let mut file = owned();
+        file.rev = Some(read::rev(&bytes));
+        let (changes, expect, edit) = tick(&s);
+        let Err(e) = desk.edit_item(&file, &seen(bytes), changes, expect, edit, &s) else {
+            panic!("an edit of a file that isn't text");
+        };
+        let not_text = "Samples.csv isn't UTF-8 text";
+        assert_eq!((e.reason, e.message.as_str()), (Reason::Refused, not_text));
         assert!(!desk.has_news(), "nothing asked");
         assert_eq!(desk.waiting(FILE), None);
         let (changes, expect, edit) = tick(&s);
-        let (ticket, _) = (desk.edit_item(&owned(&dir), changes, expect, edit, &s)).unwrap();
-        assert_eq!(ticket, Ticket(1), "a refusal takes no ticket");
-        let _ = std::fs::remove_dir_all(&dir);
+        let made = desk.edit_item(&owned(), &seen(OPEN), changes, expect, edit, &s);
+        assert_eq!(made.unwrap().0, Ticket(1), "a refusal takes no ticket");
     }
 
     /// Tick the task in `FILE` and have its owner answer `file/edit` with `text`, then read
     /// `reads` in its new text when it made one: the desk's answer, which is a refusal.
     fn refused(
         desk: &mut Edits,
-        dir: &Path,
         s: &Settings,
         text: Result<&str, &str>,
         reads: Option<Result<Given, String>>,
     ) -> Error {
         let (changes, expect, edit) = tick(s);
-        let file = owned(dir);
-        let (_, write) = (desk.edit_item(&file, changes, expect, edit, s)).unwrap();
-        assert!(write.is_none());
+        let made = desk.edit_item(&owned(), &seen(OPEN), changes, expect, edit, s);
+        assert!(made.unwrap().1.is_none());
         let (_, ask) = desk.take_file_edits().pop().expect("asked");
         let text = text.map(String::from).map_err(String::from);
         assert!(desk.edited(OWNER, FILE, &ask.rev, text, s).is_none());
@@ -669,37 +678,34 @@ mod tests {
 
     #[test]
     fn an_owner_that_refuses_or_gives_back_something_else_fails_the_edit() {
-        let dir = workspace("refused", &[(FILE, OPEN)]);
-        let s = Settings::load(&dir);
+        let s = settings();
         let mut desk = Edits::default();
         let said = |e: &Error| (e.reason, e.message.clone());
-        let no = refused(&mut desk, &dir, &s, Err("it is read-only"), None);
+        let no = refused(&mut desk, &s, Err("it is read-only"), None);
         let refuses = "csv-table didn't edit Samples.csv: it is read-only";
         assert_eq!(said(&no), (Reason::Refused, refuses.to_string()));
-        let same = refused(&mut desk, &dir, &s, Ok(OPEN), None);
+        let same = refused(&mut desk, &s, Ok(OPEN), None);
         let unchanged = "csv-table's new text for Samples.csv is the same as before";
         assert_eq!(said(&same), (Reason::ReadBack, unchanged.to_string()));
         let stray = Some(Err("a stray quote".to_string()));
-        let unread = refused(&mut desk, &dir, &s, Ok(DONE), stray);
+        let unread = refused(&mut desk, &s, Ok(DONE), stray);
         let cant = "csv-table couldn't read its new text for Samples.csv: a stray quote";
         assert_eq!(said(&unread), (Reason::ReadBack, cant.to_string()));
         let untouched = Some(Ok(gives("- [ ] sample")));
-        let wrong = refused(&mut desk, &dir, &s, Ok(DONE), untouched);
+        let wrong = refused(&mut desk, &s, Ok(DONE), untouched);
         assert_eq!(wrong.reason, Reason::ReadBack, "{wrong}");
         let start = "csv-table's new text for Samples.csv doesn't read back as asked (";
         assert!(wrong.message.starts_with(start), "{wrong}");
         assert!(wrong.message.ends_with("); nothing was written"), "{wrong}");
-        assert_eq!(on_disk(&dir, FILE), OPEN, "nothing was written");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A relink's edit of the owned file `rel` in `dir`, whose one Markdown piece reads `from`,
-    /// to make it read `to`.
-    fn relinking(dir: &Path, rel: &str, from: &str, to: &str) -> rename::FileEdit {
+    /// A relink's edit of the owned file `rel`, planned on `text`, whose one Markdown piece
+    /// reads `from`, to make it read `to`.
+    fn relinking(rel: &str, text: &str, from: &str, to: &str) -> rename::FileEdit {
         rename::FileEdit {
             file: rel.into(),
-            path: dir.join(rel),
-            old_text: on_disk(dir, rel),
+            path: PathBuf::from(rel),
+            old_text: text.into(),
             new_text: String::new(),
             links: 1,
             changes: Vec::new(),
@@ -715,32 +721,34 @@ mod tests {
         }
     }
 
+    /// The edits of a rename of Krakatoa to Krakatau in two owned files, `A.csv` and `B.csv`.
+    fn krakatau() -> [rename::FileEdit; 2] {
+        let (from, to) = ("see [[Krakatoa]]", "see [[Krakatau]]");
+        [
+            relinking("A.csv", "[[Krakatoa]]\n", "[[Krakatoa]]", "[[Krakatau]]"),
+            relinking("B.csv", "see [[Krakatoa]]\n", from, to),
+        ]
+    }
+
     #[test]
     fn a_relink_waits_for_every_owner_then_hands_back_every_new_text() {
-        let files = [
-            ("A.csv", "[[Krakatoa]]\n"),
-            ("B.csv", "see [[Krakatoa]]\n"),
-            ("Note.md", "[[Krakatoa]]\n"),
-        ];
-        let dir = workspace("relink", &files);
-        let s = Settings::load(&dir);
+        let s = settings();
         let mut desk = Edits::default();
+        let to = "[[Krakatau]]";
         let note = rename::FileEdit {
             owned: None,
-            ..relinking(&dir, "Note.md", "[[Krakatoa]]", "[[Krakatau]]")
+            ..relinking("Note.md", "[[Krakatoa]]\n", "[[Krakatoa]]", to)
         };
-        let mut edits = [
-            note,
-            relinking(&dir, "A.csv", "[[Krakatoa]]", "[[Krakatau]]"),
-            relinking(&dir, "B.csv", "see [[Krakatoa]]", "see [[Krakatau]]"),
-        ];
-        let ticket = desk.relink(&mut edits, &s).unwrap();
+        let [a, b] = krakatau();
+        let mut edits = [note, a, b];
+        let ticket = desk.relink(&mut edits, |_| true, &s).unwrap();
         let ticket = ticket.expect("waits for the owners");
         let asks = desk.take_file_edits();
         let asked: Vec<&str> = asks.iter().map(|(_, a)| a.path.as_str()).collect();
         assert_eq!(asked, ["A.csv", "B.csv"], "a note is no owner's to ask");
         let waiting = Err("A.csv has an edit waiting for csv-table".to_string());
-        assert_eq!(desk.relink(&mut edits, &s), waiting, "one at a time");
+        let again = desk.relink(&mut edits, |_| true, &s);
+        assert_eq!(again, waiting, "one at a time");
 
         let answer = |desk: &mut Edits, rel: &str, new: &str, reads: &str| {
             let (_, ask) = asks.iter().find(|(_, a)| a.path == rel).unwrap();
@@ -759,33 +767,49 @@ mod tests {
             panic!("{relinked:?}");
         };
         assert_eq!(*t, ticket);
-        let new: Vec<(&str, &str)> = (answers.iter())
+        rename::answered(&mut edits, answers.clone());
+        let new: Vec<(&str, &str)> = (edits.iter())
             .map(|e| (e.file.as_str(), e.new_text.as_str()))
             .collect();
-        assert_eq!(new.len(), 2);
-        assert_eq!(new[0], ("A.csv", "[[Krakatau]]\n"));
-        assert_eq!(new[1], ("B.csv", "see [[Krakatau]]\n"));
-        let read = |e: &rename::FileEdit| e.owned.as_ref().is_some_and(|o| o.after.is_some());
-        assert!(answers.iter().all(read), "with what each owner read in it");
-        assert_eq!(on_disk(&dir, "A.csv"), "[[Krakatoa]]\n", "nothing written");
+        let expected = [
+            ("Note.md", ""),
+            ("A.csv", "[[Krakatau]]\n"),
+            ("B.csv", "see [[Krakatau]]\n"),
+        ];
+        assert_eq!(new, expected, "each file's new text in the plan");
+        let read = |e: &rename::FileEdit| e.owned.as_ref().is_none_or(|o| o.after.is_some());
+        assert!(edits.iter().all(read), "with what each owner read in it");
+        let planned = edits[1].old_text.as_str();
+        assert_eq!(planned, "[[Krakatoa]]\n", "the rest of the plan stays");
         assert!(desk.take_edited().is_empty() && !desk.has_news());
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_relink_is_refused_at_its_first_file_that_waits_or_changed() {
+        let s = settings();
+        let mut desk = Edits::default();
+        let mut edits = krakatau();
+        let b_changed = |e: &rename::FileEdit| e.file != "B.csv";
+        let changed = Err("B.csv changed since it was planned".to_string());
+        assert_eq!(desk.relink(&mut edits, b_changed, &s), changed);
+        assert!(!desk.has_news(), "no owner is asked");
+        let ticket = desk.relink(&mut edits, |_| true, &s).unwrap();
+        assert_eq!(ticket, Some(Ticket(1)), "a refusal takes no ticket");
+        let waiting = Err("A.csv has an edit waiting for csv-table".to_string());
+        let refused = desk.relink(&mut edits, |_| false, &s);
+        assert_eq!(refused, waiting, "said before that it changed");
     }
 
     #[test]
     fn an_owner_refusing_one_file_cancels_the_whole_relink() {
-        let files = [("A.csv", "[[Krakatoa]]\n"), ("B.csv", "see [[Krakatoa]]\n")];
-        let dir = workspace("cancelled", &files);
-        let s = Settings::load(&dir);
+        let s = settings();
         let mut desk = Edits::default();
-        let mut edits = [
-            relinking(&dir, "A.csv", "[[Krakatoa]]", "[[Krakatau]]"),
-            relinking(&dir, "B.csv", "see [[Krakatoa]]", "see [[Krakatau]]"),
-        ];
-        let ticket = desk.relink(&mut edits, &s).unwrap().unwrap();
-        let rev = |rel: &str| read::rev(on_disk(&dir, rel).as_bytes());
+        let mut edits = krakatau();
+        let ticket = desk.relink(&mut edits, |_| true, &s).unwrap().unwrap();
+        let rev = |e: &rename::FileEdit| read::rev(e.old_text.as_bytes());
         let no = Err("it is read-only".to_string());
-        assert!(desk.edited(OWNER, "A.csv", &rev("A.csv"), no, &s).is_none());
+        let answered = desk.edited(OWNER, "A.csv", &rev(&edits[0]), no, &s);
+        assert!(answered.is_none());
         let relinked = desk.take_relinked();
         let refuses = "csv-table didn't edit A.csv: it is read-only";
         assert!(
@@ -795,10 +819,9 @@ mod tests {
         let asks = desk.take_file_edits();
         assert!(asks.is_empty(), "B.csv's owner isn't asked after all");
         assert_eq!(desk.waiting("B.csv"), None);
-        let late = desk.edited(OWNER, "B.csv", &rev("B.csv"), Ok("x\n".into()), &s);
+        let late = desk.edited(OWNER, "B.csv", &rev(&edits[1]), Ok("x\n".into()), &s);
         assert!(late.is_none(), "a late answer is dropped");
         assert!(!desk.has_news());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The engine's canvas owner answers `file/edit` and reads its new text back inside the
@@ -807,21 +830,24 @@ mod tests {
     fn an_owner_in_the_engine_answers_inside_the_call() {
         let canvas = "{\"nodes\":[{\"id\":\"c\",\"type\":\"file\",\"file\":\"Lava.md\",\
                       \"x\":0,\"y\":0,\"width\":1,\"height\":1}],\"edges\":[]}\n";
-        let files = [("Lava.md", "# Lava\n"), ("Board.canvas", canvas)];
-        let dir = workspace("canvas", &files);
+        let name = format!("cold-lava-edit-desk-canvas-{}", std::process::id());
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
+        std::fs::write(dir.join("Board.canvas"), canvas).unwrap();
         let index = crate::index::Index::build(crate::workspace::scan(&dir).unwrap());
         let note = index.by_rel("Lava").unwrap();
         let mut plan = rename::plan(&index, note, "Hot/Lava").unwrap();
         let mut desk = Edits::default();
         let s = index.workspace.item_settings();
-        let relinked = desk.relink(&mut plan.edits, s);
+        let relinked = desk.relink(&mut plan.edits, |_| true, s);
         assert_eq!(relinked, Ok(None), "answered at once");
         assert!(!desk.has_news(), "nothing to send or hand out");
         let board = (plan.edits.iter()).find(|e| e.file == "Board.canvas");
         let board = board.expect("the board links to the note");
         assert_eq!(board.new_text, canvas.replace("Lava.md", "Hot/Lava.md"));
         assert!(board.owned.as_ref().is_some_and(|o| o.after.is_some()));
-        assert_eq!(on_disk(&dir, "Board.canvas"), canvas, "nothing written");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

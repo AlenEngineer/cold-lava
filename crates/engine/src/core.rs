@@ -649,7 +649,10 @@ impl Core {
             what,
             warning,
         };
-        let (ticket, write) = (self.edits).edit_item(file, changes, expect, asked, settings)?;
+        let before = read::Seen::file(&file.path)
+            .map_err(|e| error(Reason::Io, format!("{}: {e}", file.rel)))?;
+        let edits = &mut self.edits;
+        let (ticket, write) = edits.edit_item(file, &before, changes, expect, asked, settings)?;
         if let Some(write) = write {
             self.write_edit(write);
         }
@@ -672,13 +675,12 @@ impl Core {
     }
 
     /// An owned file's new text that read back as asked (the edit desk's): write it over the
-    /// text the edit was made on, refused if the file changed since the edit began, take what
-    /// its owner read in it as the file's items and links, and answer whoever asked.
+    /// file as the edit was made on it, refused if it changed since, take what its owner read in
+    /// it as the file's items and links, and answer whoever asked.
     fn write_edit(&mut self, w: ToWrite) {
         let error = gateway::Error::new;
         let path = w.path.as_str();
-        let at = self.root().join(path);
-        let written = crate::write::replace(&at, w.before.as_bytes(), w.after.as_bytes());
+        let written = w.before.replace(w.after.as_bytes());
         if let Err(e) = written {
             let reason = match e {
                 crate::write::WriteError::Changed(_) => Reason::Changed,
@@ -738,7 +740,11 @@ impl Core {
         edits: &mut [crate::rename::FileEdit],
     ) -> Result<Option<Ticket>, String> {
         let settings = self.index.workspace.item_settings();
-        self.edits.relink(edits, settings)
+        let planned = |e: &crate::rename::FileEdit| {
+            let seen = read::Seen::kept(&e.path, e.old_text.as_str());
+            seen.unchanged().is_ok()
+        };
+        self.edits.relink(edits, planned, settings)
     }
 
     /// Renames and merges whose owners have all answered (`relink`), or one refused.
