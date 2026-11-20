@@ -20,6 +20,12 @@ change commands, keys and file formats; patch versions only fix things.
   about half the runs). The rest of the output is skipped quietly, and the command still does
   everything else it was asked (its errors on stderr included) and exits as it would have, as
   `items | head` already did (#339).
+- A note or file kept in the workspace as a symlink is written where the link leads. Before,
+  a save to the link (an extension's `workspace/write`, the whiteboard, any write the engine
+  makes) put a regular file where the link was, and the file the link led to kept its old text, so a note linked from
+  another folder silently became a copy. The link now stays, the file it leads to is replaced
+  atomically, and a write to a link that leads nowhere or to a folder is refused, as is
+  creating a file where such a link is (#349).
 
 ## [0.7.0] - 2026-11-20
 

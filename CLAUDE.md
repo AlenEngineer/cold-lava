@@ -128,7 +128,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   (`Feed`, bound shapes).
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read; the engine's only, `Seen::replace` outside it), `create`,
-  `move_file`. Never call `std::fs::write` on workspace files.
+  `move_file`. A write to a symlink lands in the file it leads to and the link stays
+  (`landing`); a link to nothing or to a folder is refused. Never call `std::fs::write` on
+  workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call

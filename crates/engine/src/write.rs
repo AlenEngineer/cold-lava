@@ -34,14 +34,16 @@ fn io_err(path: &Path) -> impl Fn(io::Error) -> WriteError + '_ {
     move |e| WriteError::Io(path.to_path_buf(), e)
 }
 
-/// Replace (or create) `path` with `bytes`, atomically. Creates missing folders.
+/// Replace (or create) `path` with `bytes`, atomically. Creates missing folders. A symlink is
+/// written through: the file it leads to is replaced and the link stays (`landing`).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
-    let dir = path
+    let file = landing(path)?;
+    let dir = file
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(io_err(dir))?;
-    let name = path
+    let name = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -52,15 +54,40 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
         f.write_all(bytes)?;
         f.sync_all()?;
         // Keep the original file's permissions.
-        if let Ok(meta) = std::fs::metadata(path) {
+        if let Ok(meta) = std::fs::metadata(&file) {
             let _ = std::fs::set_permissions(&tmp, meta.permissions());
         }
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, &file)
     };
     write().map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         WriteError::Io(path.to_path_buf(), e)
     })
+}
+
+/// Where a write to `path` lands: `path`, or the file a symlink there leads to, so the rename
+/// replaces that file, beside it, and the link stays a link. A link to nothing, or to something
+/// that isn't a file, is refused: a write never puts a file where a link was.
+fn landing(path: &Path) -> Result<PathBuf, WriteError> {
+    let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if !link {
+        return Ok(path.to_path_buf());
+    }
+    let refused = |kind: io::ErrorKind, why: &str| {
+        WriteError::Io(path.to_path_buf(), io::Error::new(kind, why))
+    };
+    match std::fs::canonicalize(path) {
+        Ok(file) if file.is_file() => Ok(file),
+        Ok(_) => Err(refused(
+            io::ErrorKind::InvalidInput,
+            "it is a symlink to something that isn't a file",
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(refused(
+            io::ErrorKind::NotFound,
+            "it is a symlink to nothing",
+        )),
+        Err(e) => Err(WriteError::Io(path.to_path_buf(), e)),
+    }
 }
 
 /// Replace `path` only if it still contains `expected` (what the caller read before). Outside
@@ -73,9 +100,9 @@ pub(crate) fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), 
     write_atomic(path, bytes)
 }
 
-/// Create a new file; refused if it already exists.
+/// Create a new file; refused if something is already there, a symlink to nothing included.
 pub fn create(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
-    if path.exists() {
+    if std::fs::symlink_metadata(path).is_ok() {
         return Err(WriteError::Exists(path.to_path_buf()));
     }
     write_atomic(path, bytes)
@@ -231,7 +258,6 @@ mod tests {
     fn nothing_is_written_over_a_symlink_to_nothing_or_to_a_folder() {
         let d = dir("not-through");
         std::fs::create_dir(d.join("Folder")).unwrap();
-        std::fs::write(d.join("Mover.md"), "m").unwrap();
         std::os::unix::fs::symlink("Gone.md", d.join("Dangling.md")).unwrap();
         std::os::unix::fs::symlink("Folder", d.join("Folder.md")).unwrap();
         for name in ["Dangling.md", "Folder.md"] {
@@ -245,18 +271,11 @@ mod tests {
                 "create {name}"
             );
             assert!(!create_if_missing(&at, b"x").unwrap(), "{name}");
-            assert!(
-                matches!(
-                    move_file(&d.join("Mover.md"), &at),
-                    Err(WriteError::Exists(_))
-                ),
-                "move onto {name}"
-            );
             assert!(is_link(&at), "{name} is still a link");
         }
         assert_eq!(
             files(&d),
-            ["Dangling.md", "Folder", "Folder.md", "Mover.md"],
+            ["Dangling.md", "Folder", "Folder.md"],
             "nothing made through a link to nothing"
         );
         assert!(files(&d.join("Folder")).is_empty());

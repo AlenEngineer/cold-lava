@@ -1311,8 +1311,11 @@ graph all see the new date. None of them knew what a canvas is.
 
   A `rev` is 16 hex digits of the FNV-1a hash of the file's bytes. A write checks it, then
   writes through `write::replace`, which checks the bytes again just before the atomic rename,
-  so an edit made in Obsidian meanwhile is never overwritten. A create goes through
-  `write::create`. A note written or created this way is read again at once, like an item
+  so an edit made in Obsidian meanwhile is never overwritten. A write to a symlink goes
+  through it: the file it leads to is replaced, with its temporary file beside that file, and
+  the link stays a link. A link that leads nowhere is `changed` (gone), and one to a folder is
+  `io`. A create goes through `write::create`, refused as `exists` where any entry is, a link
+  that leads nowhere included. A note written or created this way is read again at once, like an item
   edit, so the next query sees it. A path is refused unless it is relative, has no `..`, `.` or
   hidden part (`.obsidian`, `.trash`, `.git`), and leads inside the workspace once symlinks are
   followed (for a new file, its deepest folder that exists).
