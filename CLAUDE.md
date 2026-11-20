@@ -404,6 +404,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
 - `paths.rs`: the user's home and config folders.
+- `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
+  digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
+  each two, hashed) and a rev of text (`line_id`). A leaf. Each owner makes its own key: a
+  note's items in `items::identify` (a typed item's in `matcher.rs`), an owner's pieces and
+  typed items from the place it gave. Changing a key moves ids as surely as changing
+  `identity.rs`, and either is the owner's decision; its tests pin ids given before. A note's
+  key moves with the Markdown walk into its owner in step D-3 (#272).
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
   bound, and the table of bounds, one type each (the trait `Limit`; the owner's limits of
@@ -436,12 +443,15 @@ what it needs (`markdown::set_configured` for the chosen flavour).
 Every frontend runs extensions through it, so the permission check exists once. Don't write
 another host or check in a frontend:
 
-- `lib.rs`: `Extension` (one method per host→extension JSON-RPC method), `Host` (one method
-  per extension→host method; it queues `Effect`s and checks `Permission`s), the manifest types
-  (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`), `Effect`s as data, and `Registry`
-  (loaded extensions and their manifests, who owns which kind of file, who shows which notes,
-  what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's built-in
-  extensions and the folder of installed ones). Three rules:
+- `lib.rs` names the five modules' items at the crate's root (`cold_lava_host::Host`, …).
+  `extension.rs`: `Extension` (one method per host→extension JSON-RPC method). `registry.rs`:
+  `Registry` (loaded extensions and their manifests, who owns which kind of file, who shows
+  which notes, what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's
+  built-in extensions and the folder of installed ones). `host.rs`: `Host` (one method per
+  extension→host method; it queues `Effect`s and checks `Permission`s). `manifest.rs`: the
+  manifest types (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`, `Permission`) and
+  their rules (`namespaced`, `claimable`, `leave_out_definitions`). `protocol.rs`: `Effect`s
+  and the other messages as data. Three rules:
   - An extension can only do what a message can say: every type that crosses derives serde.
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
     into panes, and draws the lists and tables they send (`view/open`), telling them what the
