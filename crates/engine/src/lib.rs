@@ -33,6 +33,7 @@ pub mod search;
 pub mod serde_words;
 pub mod shapes;
 pub mod shows;
+pub mod sources;
 pub mod style;
 pub mod tasks;
 pub mod tasks_settings;

@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use serde::Serialize;
 
 use crate::problem::Problem;
-use crate::types::{self, On, Origin, Provided, Source, Sources};
+use crate::sources::{self, On, Origin, Provided, Source, Sources};
 
 /// The only `version` an attributes file can have today.
 pub const VERSION: i64 = 1;
@@ -223,7 +223,7 @@ pub fn load(layers: impl IntoIterator<Item = Layer>) -> Readings {
 /// One attribute's readings as written: sources like a type's field has, and `with` beside a
 /// checkbox.
 fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>, String), Problem> {
-    if name != ANY && !types::is_name(name, false) {
+    if name != ANY && !sources::is_name(name, false) {
         return Err(
             "not an attribute's name: a letter, then letters, digits, - or _, or \"*\" for \
              every attribute with no entry of its own"
@@ -280,7 +280,7 @@ fn reading(on: On, name: &str, mut written: toml::Value) -> Result<(Vec<Source>,
             Source::Flags(glyphs) if glyphs.is_empty() => {
                 return Err("flags needs at least one glyph".into());
             }
-            Source::Pattern(re) => match types::compile(re) {
+            Source::Pattern(re) => match sources::compile(re) {
                 Err(e) => return Err(Problem::line(format!("pattern '{re}': {e}"))),
                 Ok(r) if r.captures_len() < 2 => {
                     return Err(Problem::line(format!(
@@ -326,10 +326,10 @@ impl Readings {
     /// pattern as literal text, in `with` as itself.
     pub fn fill(&mut self, p: &Provided) {
         for r in &mut self.readings {
-            r.with = types::fill(&r.with, false, |n| p.in_text(n));
+            r.with = sources::fill(&r.with, false, |n| p.in_text(n));
             for s in &mut r.read {
                 if let Source::Pattern(re) = s {
-                    *re = types::fill(re, true, |n| p.in_pattern(n));
+                    *re = sources::fill(re, true, |n| p.in_pattern(n));
                 }
             }
         }
@@ -386,6 +386,7 @@ impl Readings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types;
 
     fn config(text: &str) -> Layer {
         Layer::config(Path::new("config.toml"), toml::from_str(text).unwrap())

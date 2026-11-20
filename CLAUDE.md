@@ -332,7 +332,11 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   alphabet, as built", whose table of roles a test checks against `Role::ALL`. Only the
   engine adds a letter, with a version bump: a new kind of thing is a type, never a role.
   `types.rs` reads and checks type definitions (`[types.NAME]`: a schema and `from` shapes)
-  from every origin; `matcher.rs` matches them. A shape's `on` (`types::On`) is a role or
+  from every origin; `matcher.rs` matches them. The words a definition and an attribute
+  reading are both written in (`On`, `Source`, `Sources`, `Origin`, `Provided`, `fill`,
+  `compile`, `is_name`) are `sources.rs`, a leaf: `types.rs` re-exports them and
+  `owner/markdown/attributes.rs` reads them there, so it doesn't depend on `types`. A
+  shape's `on` (`types::On`) is a role or
   `inline` (a reading of a piece's text, not a role). The names `on` had before (`note`,
   `heading`, `paragraph`, `list-item`, `table-row`, `quote`, `code`) are aliases
   (`On::alias`): they always read, a definition's JSON still says `on` in them with `role`
