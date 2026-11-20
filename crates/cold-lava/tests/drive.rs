@@ -1804,7 +1804,9 @@ fn a_prompt_does_what_it_was_opened_for_whatever_an_extension_selects() {
 }
 
 /// A prompt acts only in the workspace it was opened in: once a click on the workspace list
-/// opens another under it, Enter is refused, and nothing is written in either workspace.
+/// opens another under it, Enter is refused, and nothing is written in either workspace. The
+/// other is an unrelated folder, or the folder the first is in, where a rename or a move of
+/// one of its folders would still read as a path.
 #[test]
 fn a_prompt_refuses_once_another_workspace_is_open() {
     let dir = sandbox("prompt-workspace-changed");
@@ -1815,7 +1817,10 @@ fn a_prompt_refuses_once_another_workspace_is_open() {
     std::fs::write(other.join("Two.md"), "# Two\n").unwrap();
     let config = home.join(".config/cold-lava");
     std::fs::create_dir_all(&config).unwrap();
-    let recent = serde_json::json!({"workspaces": [{"path": other, "opened": 1}]});
+    let recent = serde_json::json!({"workspaces": [
+        {"path": other, "opened": 2},
+        {"path": dir, "opened": 1},
+    ]});
     std::fs::write(config.join("workspaces.json"), recent.to_string()).unwrap();
     let krakatoa = std::fs::read(workspace.join("Volcanoes/Krakatoa.md")).unwrap();
     let out = drive_with(
@@ -1831,8 +1836,16 @@ fn a_prompt_refuses_once_another_workspace_is_open() {
     assert_eq!(shown, ["Two.md"], "nothing made in the workspace opened");
     let after = std::fs::read(workspace.join("Volcanoes/Krakatoa.md")).unwrap();
     assert_eq!(after, krakatoa, "Krakatoa neither tagged nor moved");
-    for made in ["Volcanoes/Elsewhere.md", "Volcanoes/Ashes", "Archive"] {
+    for made in [
+        "Volcanoes/Elsewhere.md",
+        "Volcanoes/Ashes",
+        "Archive",
+        "Calderas",
+    ] {
         assert!(!workspace.join(made).exists(), "{made}");
+    }
+    for made in ["Archive", "Calderas"] {
+        assert!(!dir.join(made).exists(), "{made} beside the workspace");
     }
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1877,6 +1890,7 @@ fn a_prompt_doesnt_make_again_what_was_deleted_under_it() {
         "People",
         "Volcanoes",
         "Concepts/Lava.md",
+        "Concepts/Hotspot.md",
         "Inbox/zz-gone.md",
     ] {
         assert!(!workspace.join(gone).exists(), "{gone} stays gone");

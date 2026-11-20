@@ -30,7 +30,7 @@ use crate::palette::{self, Palette};
 use crate::paths::{self, config_dir, home_dir};
 use crate::pick_list::{self, Picked};
 use crate::previews::{self, Previews};
-use crate::prompt::{self, Asks, Folder, Prompt};
+use crate::prompt::{self, Asks, At, Folder, Prompt};
 use crate::reader::{Reader, Spot};
 use crate::recipe_view::{self, RecipeView};
 use crate::refused::Refused;
@@ -3773,7 +3773,8 @@ impl Home {
         } else {
             name.to_string()
         };
-        self.mode = Mode::Prompt(Prompt::new(Asks::Rename { path, moving }, input));
+        let asks = Asks::Rename { root, path, moving };
+        self.mode = Mode::Prompt(Prompt::new(asks, input));
     }
 
     /// Ask the editor to save, and give it a moment, so what's read from disk next is what's on
@@ -3808,13 +3809,14 @@ impl Home {
             prompt::Action::Close => self.mode = Mode::Normal,
             prompt::Action::Done(asks, answer) => {
                 self.mode = Mode::Normal;
+                if asks.at(&answer).is_some_and(|at| !self.still_here(&at)) {
+                    return;
+                }
                 match asks {
                     Asks::NewFolder { in_folder } => self.create_folder(&in_folder, &answer),
                     Asks::AddWorkspace => self.add_workspace(&answer),
-                    Asks::Rename { path, moving } => self.plan_rename(&path, &answer, moving),
-                    Asks::MoveMarked { root, marked } => {
-                        self.plan_move_marked(&root, &marked, &answer)
-                    }
+                    Asks::Rename { path, moving, .. } => self.plan_rename(&path, &answer, moving),
+                    Asks::MoveMarked { marked, .. } => self.plan_move_marked(&marked, &answer),
                 }
             }
         }
@@ -3833,7 +3835,10 @@ impl Home {
                 template,
             } => {
                 self.mode = Mode::Normal;
-                self.create_note(&in_folder, &name, template.as_deref())?;
+                let rel = in_folder.new_note(&name);
+                if self.still_here(&in_folder.at(format!("create {rel}"))) {
+                    self.create_note(&in_folder, &name, template.as_deref())?;
+                }
             }
         }
         Ok(())
@@ -3911,15 +3916,12 @@ impl Home {
         }
     }
 
-    /// Plan moving `marked`, the notes and folders marked in the workspace at `root` when the
-    /// prompt opened, into the folder typed (`/` is the workspace's root).
-    fn plan_move_marked(&mut self, root: &Path, marked: &[String], input: &str) {
+    /// Plan moving `marked`, the notes and folders marked in the workspace open when the prompt
+    /// opened, into the folder typed (`/` is the workspace's root).
+    fn plan_move_marked(&mut self, marked: &[String], input: &str) {
         let folder = input.trim();
         if folder.is_empty() {
             return self.flash("type a folder, e.g. Archive/ (or / for the workspace root)");
-        }
-        if !self.is_open(root) {
-            return self.flash("can't move: the workspace changed");
         }
         self.save_editor();
         self.reload_tree();
@@ -3989,14 +3991,25 @@ impl Home {
             tag_prompt::Action::Close => self.mode = Mode::Normal,
             tag_prompt::Action::Apply { tag, whom, root } => {
                 self.mode = Mode::Normal;
-                self.apply_tag(&tag, whom, &root);
+                let needs = match &whom {
+                    Whom::Note(path) => Some(rel_path::or_whole(&root, path)),
+                    Whom::Marked(_) | Whom::Nobody => None,
+                };
+                let at = At {
+                    root: root.clone(),
+                    doing: "tag".into(),
+                    needs,
+                };
+                if self.still_here(&at) {
+                    self.apply_tag(&tag, whom, &root);
+                }
             }
         }
     }
 
     /// Add `input`'s tag to the frontmatter of `whom`, in the workspace at `root`, or remove it
     /// for `-tag`. A note that is gone, that changed since it was read, or whose tags can't be
-    /// edited safely, is left alone and named.
+    /// edited safely, is left alone and named (`tag_note`).
     fn apply_tag(&mut self, input: &str, whom: Whom, root: &Path) {
         let (edit, tag) = match input.strip_prefix('-') {
             Some(t) => (TagEdit::Remove, t.trim().trim_start_matches('#')),
@@ -4007,15 +4020,8 @@ impl Home {
                 "\"{tag}\" isn't a tag: letters, digits, _ - and /, not only digits"
             ));
         }
-        if !self.is_open(root) {
-            return self.flash("can't tag: the workspace changed");
-        }
         let (notes, skipped): (Vec<String>, Vec<String>) = match whom {
             Whom::Marked(marked) => marked.into_iter().partition(|r| r.ends_with(".md")),
-            Whom::Note(p) if !p.is_file() => {
-                let name = p.file_stem().unwrap_or_default().to_string_lossy();
-                return self.flash(format!("{name} is no longer there"));
-            }
             Whom::Note(p) => (vec![rel_path::or_whole(root, &p)], Vec::new()),
             Whom::Nobody => return self.flash("select a note to tag"),
         };
@@ -4029,31 +4035,8 @@ impl Home {
         };
         let (mut changed, mut unchanged, mut refused) = (Vec::new(), 0, Vec::new());
         for rel in &notes {
-            let path = root.join(rel);
-            let name = rel
-                .rsplit('/')
-                .next()
-                .unwrap_or(rel)
-                .trim_end_matches(".md");
-            let result = match std::fs::read_to_string(&path) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    Err(format!("{name} is no longer there"))
-                }
-                read => read
-                    .map_err(|e| e.to_string())
-                    .and_then(
-                        |text| match frontmatter::edit_tag(&text, tag, edit, &style)? {
-                            Some(new) => read::Seen::kept(&path, text.as_bytes())
-                                .replace(new.as_bytes())
-                                .map(|()| true)
-                                .map_err(|e| e.to_string()),
-                            None => Ok(false),
-                        },
-                    )
-                    .map_err(|why| format!("{name}: {why}")),
-            };
-            match result {
-                Ok(true) => changed.push(path),
+            match tag_note(root, rel, tag, edit, &style) {
+                Ok(true) => changed.push(root.join(rel)),
                 Ok(false) => unchanged += 1,
                 Err(refusal) => refused.push(refusal),
             }
@@ -5787,15 +5770,7 @@ impl Home {
         name: &str,
         template: Option<&str>,
     ) -> Result<()> {
-        let file = if name.ends_with(".md") {
-            name.to_string()
-        } else {
-            format!("{name}.md")
-        };
-        let rel = in_folder.join(&file);
-        if !self.can_create_in(in_folder, &rel) {
-            return Ok(());
-        }
+        let rel = in_folder.new_note(name);
         let root = in_folder.root.clone();
         let path = root.join(&rel);
         if path.exists() {
@@ -5845,32 +5820,25 @@ impl Home {
         Some(Folder { root, rel })
     }
 
-    /// Whether the workspace at `root`, where a prompt was opened, is still the one open.
-    fn is_open(&self, root: &Path) -> bool {
-        self.root.as_deref() == Some(root)
-    }
-
-    /// Whether `rel` can be made in `in_folder`, where a prompt was opened: the workspace is
-    /// still open and the folder still there. If not, the status line says why. A folder gone
-    /// is not made again: another program deleted it.
-    fn can_create_in(&mut self, in_folder: &Folder, rel: &str) -> bool {
-        let why = if !self.is_open(&in_folder.root) {
+    /// Whether a prompt's Enter can act `at` where the prompt was opened: that workspace is
+    /// still the one open, and what Enter needs in it still there. If not, the status line
+    /// says why. Every prompt's Enter asks it before it acts; what another program deleted is
+    /// not made again.
+    fn still_here(&mut self, at: &At) -> bool {
+        let why = if self.root.as_deref() != Some(at.root.as_path()) {
             "the workspace changed".to_string()
-        } else if !in_folder.root.join(&in_folder.rel).is_dir() {
-            format!("{}/ is no longer there", in_folder.rel)
+        } else if let Some(rel) = at.missing() {
+            prompt::no_longer_there(rel)
         } else {
             return true;
         };
-        self.flash(format!("can't create {rel}: {why}"));
+        self.flash(format!("can't {}: {why}", at.doing));
         false
     }
 
     /// Make the folder `name` in `in_folder`.
     fn create_folder(&mut self, in_folder: &Folder, name: &str) {
-        let rel = in_folder.join(name.trim_matches('/'));
-        if !self.can_create_in(in_folder, &format!("{rel}/")) {
-            return;
-        }
+        let rel = in_folder.new_folder(name);
         let root = in_folder.root.clone();
         let Some(core) = self.core.as_mut() else {
             return;
@@ -7081,6 +7049,35 @@ fn destination(moves: &[crate::rename::Move]) -> String {
     }
 }
 
+/// Add `tag` to the frontmatter of the note at `rel` in the workspace at `root`, or remove it:
+/// whether the note changed, or in words why it was left alone. A change goes in only over the
+/// text it was made from.
+fn tag_note(
+    root: &Path,
+    rel: &str,
+    tag: &str,
+    edit: TagEdit,
+    style: &crate::style::Style,
+) -> Result<bool, String> {
+    let path = root.join(rel);
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let name = name.trim_end_matches(".md");
+    let text = match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(prompt::no_longer_there(rel));
+        }
+        read => read.map_err(|e| format!("{name}: {e}"))?,
+    };
+    let new = match frontmatter::edit_tag(&text, tag, edit, style) {
+        Ok(Some(new)) => new,
+        Ok(None) => return Ok(false),
+        Err(why) => return Err(format!("{name}: {why}")),
+    };
+    (read::Seen::kept(&path, text.as_bytes()).replace(new.as_bytes()))
+        .map(|()| true)
+        .map_err(|e| format!("{name}: {e}"))
+}
+
 fn dir_of_rel(rel: &str) -> &str {
     rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
@@ -7365,6 +7362,7 @@ mod tests {
         };
         let renaming = |moving| {
             let asks = Asks::Rename {
+                root: PathBuf::new(),
                 path: PathBuf::new(),
                 moving,
             };

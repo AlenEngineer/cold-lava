@@ -419,6 +419,7 @@ In the main menu, press `R` to rename the selected note or folder, or `m` to mov
 folder (`/` is the workspace's top): you see every link that will change before confirming. A
 folder takes everything in it along, attachments and empty folders included. It can't move into
 itself or onto a folder that exists, and hidden folders (`.obsidian`, `.trash`) are left alone.
+If another workspace is opened while the prompt is open, `Enter` is refused and nothing moves.
 `N` makes a new, empty folder in the selected one (Obsidian shows empty folders too).
 
 Every link to what moves is updated, the way Obsidian does it: `[[wikilinks]]` with their
@@ -492,8 +493,8 @@ everything in it goes along. With marks, the status line says how many and what 
   changed on disk since it was read.
 
 Marks follow the tree: a marked note that is renamed or deleted elsewhere drops out. A move or a
-tag acts on the marks as they were when its prompt opened (its title counts them): a marked
-note gone by `Enter` is named, and a move with one gone is refused.
+tag acts on the marks as they were when its prompt opened (its title counts them, and those
+gone since): a marked note gone by `Enter` is named, and a move with one gone is refused.
 
 ### Recipes: changes to the whole workspace
 

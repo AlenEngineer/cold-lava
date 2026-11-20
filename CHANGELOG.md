@@ -56,8 +56,15 @@ change commands, keys and file formats; patch versions only fix things.
   was opened under the prompt, Enter is refused ("the workspace changed") and nothing is
   written. If the folder is gone by Enter (another program deleted it), the note or folder is
   refused naming it ("People/ is no longer there") instead of made in whatever was selected
-  next, and a tag on a note gone by then says so ("Krakatoa is no longer there") instead of an
-  error from the system.
+  next, and a tag on a note gone by then says so ("can't tag: Volcanoes/Krakatoa.md is no
+  longer there") instead of an error from the system. While marked notes are gone, the tag and
+  move prompts' titles count them ("tag 2 marked notes (1 gone)").
+- A note's or a folder's rename or move prompt acts in the workspace it opened in. If another
+  workspace was opened under it, Enter is refused ("can't rename: the workspace changed") and
+  nothing is written. Before, with the folder of the first workspace open as a workspace, a
+  folder renamed or moved went where the typed name pointed in that one, and could leave its
+  workspace (a move to `Archive` made `Archive/` beside it); with an unrelated workspace it was
+  refused with words that didn't say why ("that's the workspace itself").
 
 ## [0.7.0] - 2026-11-20
 

@@ -121,7 +121,11 @@ impl TagPrompt {
     /// Draw it over `area`, its title naming whom it tags, with the matching tags under it.
     pub fn draw(&self, f: &mut Frame, area: Rect) {
         let whom = match &self.whom {
-            Whom::Marked(marked) => plural(marked.len(), "marked note"),
+            Whom::Marked(marked) => format!(
+                "{}{}",
+                plural(marked.len(), "marked note"),
+                crate::prompt::gone_of(&self.root, marked)
+            ),
             Whom::Note(path) => path
                 .file_stem()
                 .unwrap_or_default()
@@ -302,7 +306,12 @@ mod tests {
             let text = drawn(&typed_on(whom, ""));
             assert!(text.iter().any(|r| r.contains(title)), "{title}: {text:#?}");
         };
-        shown(marked, " tag 3 marked notes · -tag removes");
+        shown(marked, " tag 3 marked notes (3 gone) · -tag removes");
+        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let marked = Whom::Marked(vec!["Cargo.toml".into(), "src/main.rs".into()]);
+        let text = drawn(&TagPrompt::new(Vec::new(), here, marked));
+        let title = " tag 2 marked notes · -tag removes";
+        assert!(text.iter().any(|r| r.contains(title)), "{text:#?}");
         shown(Whom::Nobody, " tag the note · -tag removes");
         let none = drawn(&typed("zz"));
         assert!(!none.iter().any(|r| r.contains(" tags ")), "{none:#?}");

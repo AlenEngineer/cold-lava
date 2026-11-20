@@ -9,7 +9,56 @@ use crate::popup;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Where a prompt's Enter acts, as the prompt holds it: the workspace it was opened in, what
+/// Enter does there in a refusal's words (`can't {doing}: …`), and what in it must still be
+/// there, relative to `root` (a folder's ends in `/`). The menu checks it before Enter acts
+/// (`Home::still_here`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct At {
+    pub root: PathBuf,
+    pub doing: String,
+    pub needs: Option<String>,
+}
+
+impl At {
+    /// In the workspace at `root`, needing nothing in particular in it.
+    pub fn workspace(root: &Path, doing: &str) -> At {
+        At {
+            root: root.to_path_buf(),
+            doing: doing.to_string(),
+            needs: None,
+        }
+    }
+
+    /// What it needs that is no longer there: a folder that isn't a folder now, a note that
+    /// isn't a file.
+    pub fn missing(&self) -> Option<&str> {
+        let rel = self.needs.as_deref()?;
+        let path = self.root.join(rel.trim_end_matches('/'));
+        let there = match rel.ends_with('/') {
+            true => path.is_dir(),
+            false => path.is_file(),
+        };
+        (!there).then_some(rel)
+    }
+}
+
+/// The one way a refusal says that `rel`, a note or a folder another program deleted, is gone:
+/// by its path in the workspace, as a move's plan names it.
+pub fn no_longer_there(rel: &str) -> String {
+    format!("{rel} is no longer there")
+}
+
+/// How many of `marked`, relative to `root`, are gone since they were marked, as a title says
+/// it after their count (` (1 gone)`), or nothing. Enter names them and leaves them alone.
+pub fn gone_of(root: &Path, marked: &[String]) -> String {
+    match marked.iter().filter(|rel| !root.join(rel).exists()).count() {
+        0 => String::new(),
+        n => format!(" ({n} gone)"),
+    }
+}
 
 /// The folder a new note or a new folder goes in, as it was when its prompt opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +78,28 @@ impl Folder {
         }
     }
 
+    /// A new folder named `name` in it, workspace-relative.
+    pub fn new_folder(&self, name: &str) -> String {
+        self.join(name.trim_matches('/'))
+    }
+
+    /// A new note named `name` in it, workspace-relative.
+    pub fn new_note(&self, name: &str) -> String {
+        match name.ends_with(".md") {
+            true => self.join(name),
+            false => self.join(&format!("{name}.md")),
+        }
+    }
+
+    /// Where a prompt opened on it acts, `doing` what: in its workspace, the folder still there.
+    pub fn at(&self, doing: String) -> At {
+        At {
+            root: self.root.clone(),
+            doing,
+            needs: Some(format!("{}/", self.rel)),
+        }
+    }
+
     /// How a prompt's title names it.
     pub fn shown(&self) -> String {
         match self.rel.as_str() {
@@ -45,11 +116,30 @@ pub enum Asks {
     NewFolder { in_folder: Folder },
     /// A folder to add as a workspace.
     AddWorkspace,
-    /// `path`'s new name, or with `moving` the folder to move it into.
-    Rename { path: PathBuf, moving: bool },
+    /// `path`'s new name, or with `moving` the folder to move it into, in the workspace at
+    /// `root`.
+    Rename {
+        root: PathBuf,
+        path: PathBuf,
+        moving: bool,
+    },
     /// The folder to move `marked` into: the notes and folders marked when it opened, relative
     /// to `root`.
     MoveMarked { root: PathBuf, marked: Vec<String> },
+}
+
+impl Asks {
+    /// Where Enter acts with `answer`; adding a workspace acts in none.
+    pub fn at(&self, answer: &str) -> Option<At> {
+        match self {
+            Asks::NewFolder { in_folder } => {
+                Some(in_folder.at(format!("create {}/", in_folder.new_folder(answer))))
+            }
+            Asks::AddWorkspace => None,
+            Asks::Rename { root, .. } => Some(At::workspace(root, "rename")),
+            Asks::MoveMarked { root, .. } => Some(At::workspace(root, "move")),
+        }
+    }
 }
 
 /// What the menu should do after a key.
@@ -127,10 +217,11 @@ impl Prompt {
                 " move to folder · ⏎ preview · Esc cancel ".to_string(),
                 "folder: ",
             ),
-            Asks::MoveMarked { marked, .. } => (
+            Asks::MoveMarked { root, marked } => (
                 format!(
-                    " move {} marked into folder · ⏎ preview · Esc cancel ",
-                    marked.len()
+                    " move {} marked{} into folder · ⏎ preview · Esc cancel ",
+                    marked.len(),
+                    gone_of(root, marked)
                 ),
                 "folder: ",
             ),
@@ -180,9 +271,64 @@ mod tests {
 
     fn rename(moving: bool) -> Asks {
         Asks::Rename {
+            root: PathBuf::from("/w"),
             path: PathBuf::from("/w/Volcanoes/Krakatoa.md"),
             moving,
         }
+    }
+
+    #[test]
+    fn enter_acts_where_it_was_opened() {
+        assert_eq!(
+            folder().at("/Ash/"),
+            Some(At {
+                root: PathBuf::from("/w"),
+                doing: "create Volcanoes/Ash/".into(),
+                needs: Some("Volcanoes/".into()),
+            })
+        );
+        let at_root = Asks::NewFolder {
+            in_folder: in_folder(""),
+        };
+        assert_eq!(at_root.at("Ash").unwrap().needs.as_deref(), Some("/"));
+        assert_eq!(Asks::AddWorkspace.at("~/notes"), None);
+        assert_eq!(
+            rename(true).at("Archive"),
+            Some(At::workspace(Path::new("/w"), "rename"))
+        );
+        assert_eq!(
+            move_marked().at("Archive"),
+            Some(At::workspace(Path::new("/w"), "move"))
+        );
+    }
+
+    #[test]
+    fn what_it_needs_is_missing_once_it_is_not_what_it_was() {
+        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let needs = |rel: &str| At {
+            root: here.to_path_buf(),
+            doing: "create".into(),
+            needs: Some(rel.into()),
+        };
+        assert_eq!(needs("src/").missing(), None);
+        assert_eq!(needs("/").missing(), None, "the workspace's root");
+        assert_eq!(needs("Cargo.toml").missing(), None);
+        assert_eq!(
+            needs("Cargo.toml/").missing(),
+            Some("Cargo.toml/"),
+            "not a folder"
+        );
+        assert_eq!(needs("src").missing(), Some("src"), "not a note");
+        assert_eq!(needs("gone/").missing(), Some("gone/"));
+        assert_eq!(At::workspace(here, "move").missing(), None);
+    }
+
+    #[test]
+    fn a_title_counts_the_marks_gone_since() {
+        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let marked = ["Cargo.toml", "src", "gone.md"].map(String::from);
+        assert_eq!(gone_of(here, &marked[..2]), "");
+        assert_eq!(gone_of(here, &marked), " (1 gone)");
     }
 
     #[test]
@@ -296,6 +442,10 @@ mod tests {
         let p = typed(rename(true), "Archive/");
         shown(&p, " move to folder · ⏎ preview", "folder: Archive/▏");
         let p = typed(move_marked(), "Archive");
-        shown(&p, " move 2 marked into folder", "folder: Archive▏");
+        shown(
+            &p,
+            " move 2 marked (2 gone) into folder",
+            "folder: Archive▏",
+        );
     }
 }
