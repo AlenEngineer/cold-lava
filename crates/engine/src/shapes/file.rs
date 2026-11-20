@@ -12,6 +12,7 @@ use std::path::Path;
 
 use super::{Definition, VERSION, WORKSPACE_FILE};
 use crate::problem::Problem;
+use crate::read::Seen;
 use crate::write::{self, WriteError};
 
 /// `d` as a `[[shapes]]` block with id `id`, ending in a line break.
@@ -358,17 +359,18 @@ pub fn save(
     d: &Definition,
 ) -> Saved {
     let path = root.join(WORKSPACE_FILE);
-    let text = match read.map(std::str::from_utf8) {
+    let seen = read.map(|before| Seen::kept(&path, before));
+    let text = match seen.as_ref().map(Seen::text) {
         None => "",
         Some(Ok(t)) => t,
-        Some(Err(_)) => return Saved::Refused(format!("{WORKSPACE_FILE} isn't UTF-8 text")),
+        Some(Err(not)) => return Saved::Refused(not.about(WORKSPACE_FILE)),
     };
     let new = match splice(text, replacing, id, d) {
         Ok(n) => n,
         Err(e) => return Saved::Refused(e),
     };
-    let written = match read {
-        Some(before) => write::replace(&path, before, new.as_bytes()),
+    let written = match &seen {
+        Some(before) => before.replace(new.as_bytes()),
         None => write::create(&path, new.as_bytes()),
     };
     match written {

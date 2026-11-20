@@ -131,23 +131,24 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
   these: they ask the core (`Core::delete_file`, `restore_file`: `workspace/delete`,
   `workspace/restore`). `Core::set_system_trash` names the system trash; a test that
-  deletes sets one under its own folder. What a delete compares (`Contents`) is `read.rs`'s.
+  deletes sets one under its own folder. `delete` takes the `Seen` the user was shown.
 - `read.rs` holds `Seen`, what was at a path when it was read, so a later write or delete can
-  be refused if it changed since. No path uses it yet: the rest of track A step A5 (#265)
-  moves the writes and deletes that check for a change onto it. `Seen::file` reads a file's
-  bytes through a symlink, as a write does; `Seen::kept` holds bytes read earlier or just
-  written, checked as `file` is; `Seen::entry` reads a file, a folder by its listing or a
-  symlink by where it points, never following one. `at` is the same at the path a move took
-  it to. `unchanged` reads it again the way it was seen; `unchanged_entry` reads the entry
-  itself, whatever the way, as a delete must (a file seen through a link is not the link).
+  be refused if it changed since. Every write or delete that checks for a change goes through
+  it (`files.rs`, `trash.rs`, `merge.rs`, `rename.rs`'s `Written` and `apply`, set-field, the
+  tick, bookmarks, the shapes file, the board's save and the menu's tag edit), except the ones
+  in `core.rs`, `gateway.rs`'s item edit and `rename::check_unchanged`, which move next (track
+  A step A5, #265). `Seen::file` reads a file's bytes through a symlink, as a write does;
+  `Seen::kept` holds bytes read earlier or just written, checked as `file` is; `Seen::entry`
+  reads a file, a folder by its listing (`inside`) or a symlink by where it points, never
+  following one. `unchanged` reads it again the way it was seen; `unchanged_entry` reads the
+  entry itself, whatever the way, as a delete must (a file seen through a link is not the link).
   `replace` writes through `write::replace`, only over a file seen as a file. `rev` is the
   gateway's version (a folder's is its listing's); `text` refuses bytes that aren't UTF-8
   with `NotText`, whose `about` is the one wording of "isn't UTF-8 text". The gateway's
   `Reason::of` names a `WriteError`'s reason. It is also the one home of a version: `read::rev`
-  (a file's bytes), `rev_at` (the file at a path now), `rev_of` and `Contents` (what is at a
-  path, a link never followed, as `workspace/stat` and a delete read it). It needs only
-  `write`, `identity`, std and walkdir; `files.rs` and `trash.rs` depend on it, never the
-  other way.
+  (a file's bytes), `rev_at` (the file at a path now) and `Seen::rev` (what is at a path, a
+  link never followed, as `workspace/stat` and a delete read it). It needs only `write`,
+  `identity`, std and walkdir; `files.rs` and `trash.rs` depend on it, never the other way.
 - `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text, each read by its owner. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.

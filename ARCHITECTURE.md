@@ -38,9 +38,9 @@ it. It compares that report with the one it expected: the old report with the as
 both in the common language. If anything else moved, the page is refused (`given::same`).
 Whether someone else wrote in the book meanwhile is a comparison of bytes, not a reading: the
 bytes it read against the bytes there now (`write::replace`; over the gateway, a fingerprint of
-them, `rev`, made in `read.rs`). `read.rs`'s `Seen` is the one type the writes are to move onto;
-no write uses it yet (track A step A5, #265). Swapping the page in is copying bytes, atomically
-(`write.rs`), and a page taken out goes to the trash, never deleted for good (`trash.rs`).
+them, `rev`, made in `read.rs`). `read.rs`'s `Seen` is the one type for it: most writes and
+deletes go through it, and the rest move onto it in track A step A5 (#265). Swapping the page
+in is copying bytes, atomically (`write.rs`), and a page taken out goes to the trash, never deleted for good (`trash.rs`).
 
 **A translator changes what a book says, never its name or its place.** Renaming, moving and
 removing a book are the librarian's: the librarian plans a rename and asks each translator only

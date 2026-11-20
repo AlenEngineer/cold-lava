@@ -262,8 +262,9 @@ fn only_listed(what: &str, remedy: &str, found: &[String], listed: &[&str]) {
     assert_eq!(found, listed, "{what}");
 }
 
-/// The engine's modules whose functions change files.
-const WRITES: [&str; 2] = ["trash::", "write::"];
+/// The engine's modules whose functions change files, and `read::Seen`, which is made to write
+/// over what was read (`Seen::replace`).
+const WRITES: [&str; 3] = ["trash::", "write::", "Seen::"];
 
 /// The gateway's file messages, which are the core's to call.
 const GATEWAY_FILES: &str = "files::";
@@ -275,15 +276,17 @@ const GATEWAY_FILES: &str = "files::";
 ///
 /// - `trash::system_bin`: the delete prompt's "goes to" line, and `merge::apply`'s argument.
 /// - `trash::free_path`: the name an undo offers when the old one is taken. It reads.
-/// - `write::create`, `create_if_missing`, `replace` in `home.rs`: new notes, and a note's
-///   new text. Later groups of #193.
-/// - `write::create_if_missing`, `replace` in `board.rs`: the whiteboard saves its canvas.
+/// - `write::create`, `create_if_missing` and `Seen::kept` (to write over it) in `home.rs`:
+///   new notes, and a note's new text. Later groups of #193.
+/// - `write::create_if_missing` and `Seen::kept` in `board.rs`: the whiteboard saves its
+///   canvas.
 #[test]
 fn the_app_deletes_restores_and_makes_folders_through_the_core() {
     let named = per_file(&sources(), |code| functions_of(code, &WRITES));
     let left = [
+        "board.rs: Seen::kept",
         "board.rs: write::create_if_missing",
-        "board.rs: write::replace",
+        "home.rs: Seen::kept",
         "home.rs: trash::free_path",
         "home.rs: trash::system_bin",
         "home.rs: trash::system_bin",
@@ -292,7 +295,6 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
         "home.rs: write::create_if_missing",
         "home.rs: write::create_if_missing",
         "home.rs: write::create_if_missing",
-        "home.rs: write::replace",
     ];
     assert_eq!(named, left);
     let home = sources().into_iter().find(|(file, _)| file == "home.rs");
@@ -1038,6 +1040,7 @@ fn every_lists_module_is_guarded() {
     let names = [
         "trash",
         "write",
+        "Seen",
         "files",
         "merge",
         "rename",

@@ -9,7 +9,7 @@
 
 use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
-use crate::read::Contents;
+use crate::read::Seen;
 use crate::rename::{self, FileEdit, Move, Written};
 use crate::resolver::{Files, Rewriter};
 use crate::style::Style;
@@ -334,18 +334,20 @@ fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
 /// `system` is the system trash (`trash::system_bin()`; tests pass their own).
 pub fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     rename::check_answered(&m.edits)?;
-    let source_now =
-        std::fs::read(&m.source_path).with_context(|| format!("reading {}", m.source))?;
-    if source_now != m.source_text.as_bytes() {
-        bail!(
+    let source = Seen::kept(&m.source_path, m.source_text.as_bytes());
+    match source.unchanged() {
+        Ok(()) => {}
+        Err(write::WriteError::Io(_, e)) => {
+            return Err(e).with_context(|| format!("reading {}", m.source));
+        }
+        Err(_) => bail!(
             "{} changed since the merge was planned; nothing was changed. Try again.",
             m.source
-        );
+        ),
     }
     rename::check_unchanged(m.writes(), "merge")?;
     let written = Written::all(m.writes())?;
-    let contents = Contents::File(m.source_text.clone().into_bytes());
-    match trash::delete(&m.root, &m.source_path, &contents, system) {
+    match trash::delete(&m.root, &source, system) {
         Ok(trashed) => Ok(Merged {
             source_path: m.source_path.clone(),
             target_path: m.target_path.clone(),

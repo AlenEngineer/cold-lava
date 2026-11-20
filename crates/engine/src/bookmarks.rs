@@ -7,6 +7,7 @@
 //! it was. `entries` is the typed view the menu draws from; every change goes through `edit`.
 
 use crate::core::Jump;
+use crate::read::Seen;
 use crate::write::{self, WriteError};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -285,7 +286,7 @@ impl Bookmarks {
         let text = self.text();
         match &self.read {
             Some(read) if *read == text => Ok(()),
-            Some(read) => write::replace(path, read.as_bytes(), text.as_bytes()),
+            Some(read) => Seen::kept(path, read.as_bytes()).replace(text.as_bytes()),
             None => write::create(path, text.as_bytes()),
         }
     }
