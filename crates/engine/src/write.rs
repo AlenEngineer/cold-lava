@@ -63,8 +63,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     })
 }
 
-/// Replace `path` only if it still contains `expected` (what the caller read before).
-pub fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
+/// Replace `path` only if it still contains `expected` (what the caller read before). Outside
+/// the engine, `read::Seen::replace` is the way.
+pub(crate) fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
     let now = std::fs::read(path).map_err(io_err(path))?;
     if now != expected {
         return Err(WriteError::Changed(path.to_path_buf()));

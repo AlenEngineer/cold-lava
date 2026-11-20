@@ -20,6 +20,18 @@ pub struct Doc {
     pub extra: Map<String, Value>,
 }
 
+impl Doc {
+    /// The first node with this id: a file may repeat one.
+    pub fn node(&self, id: &str) -> Option<&CNode> {
+        self.nodes.iter().find(|n| n.id == id)
+    }
+
+    /// The first node with this id, to change.
+    pub fn node_mut(&mut self, id: &str) -> Option<&mut CNode> {
+        self.nodes.iter_mut().find(|n| n.id == id)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CNode {
     pub id: String,

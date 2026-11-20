@@ -15,6 +15,7 @@ use crate::index::Index;
 use crate::owner::canvas;
 use crate::owner::given::{Change as Ask, Given, GivenItem};
 use crate::owner::markdown;
+use crate::read::Seen;
 use crate::resolver::{Files, Rewriter, dir_of, join, link_key};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -658,37 +659,36 @@ pub(crate) fn check_unchanged<'a>(
     Ok(())
 }
 
-/// Files a merge or a recipe wrote, with what each held before and holds now, to put back.
+/// Files a merge or a recipe wrote, each as just written, with what it held before, to put back.
 #[derive(Clone, Debug, Default)]
-pub struct Written(Vec<(PathBuf, String, String)>);
+pub struct Written(Vec<(Seen, String)>);
 
 impl Written {
-    /// Write each of `edits` with `write::replace`; if one fails, put back the ones written.
+    /// Write each of `edits` over its old text; if one fails, put back the ones written.
     pub(crate) fn all<'a>(edits: impl IntoIterator<Item = &'a FileEdit>) -> Result<Written> {
         let mut written = Written::default();
         for e in edits {
             let (old, new) = (e.old_text.as_bytes(), e.new_text.as_bytes());
-            if let Err(err) = crate::write::replace(&e.path, old, new) {
+            if let Err(err) = Seen::kept(&e.path, old).replace(new) {
                 let undone = written.put_back();
                 return Err(err).with_context(|| match undone {
                     Ok(()) => format!("writing {}; nothing was changed", e.file),
                     Err(_) => format!("writing {}; some files couldn't be put back", e.file),
                 });
             }
-            written
-                .0
-                .push((e.path.clone(), e.old_text.clone(), e.new_text.clone()));
+            let after = Seen::kept(&e.path, new);
+            written.0.push((after, e.old_text.clone()));
         }
         Ok(written)
     }
 
     /// Refuse, naming `what` (a merge), if a written file was changed since.
     pub(crate) fn check(&self, what: &str) -> Result<()> {
-        for (path, _, after) in &self.0 {
-            if std::fs::read(path).ok().as_deref() != Some(after.as_bytes()) {
+        for (after, _) in &self.0 {
+            if after.unchanged().is_err() {
                 bail!(
                     "{} changed since the {what}; the {what} can't be undone",
-                    path.display()
+                    after.path().display()
                 );
             }
         }
@@ -698,8 +698,8 @@ impl Written {
     /// Write back what each file held, if it still holds what was written.
     pub(crate) fn put_back(&self) -> Result<(), crate::write::WriteError> {
         let mut result = Ok(());
-        for (path, before, after) in self.0.iter().rev() {
-            if let Err(e) = crate::write::replace(path, after.as_bytes(), before.as_bytes()) {
+        for (after, before) in self.0.iter().rev() {
+            if let Err(e) = after.replace(before.as_bytes()) {
                 result = Err(e);
             }
         }
@@ -707,7 +707,7 @@ impl Written {
     }
 
     pub fn paths(&self) -> impl Iterator<Item = &Path> {
-        self.0.iter().map(|(p, _, _)| p.as_path())
+        self.0.iter().map(|(after, _)| after.path())
     }
 }
 
@@ -737,8 +737,8 @@ pub fn apply(plan: &Plan) -> Result<()> {
     for e in plan.edits.iter().chain(&plan.bookmarks) {
         // Still guarded: a file edited between the check above and now is left alone.
         let path = plan.moved(&e.path);
-        if let Err(err) = crate::write::replace(&path, e.old_text.as_bytes(), e.new_text.as_bytes())
-        {
+        let seen = Seen::kept(&path, e.old_text.as_bytes());
+        if let Err(err) = seen.replace(e.new_text.as_bytes()) {
             failed.push(format!("{} ({err})", e.file));
         }
     }

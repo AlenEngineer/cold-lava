@@ -19,8 +19,9 @@ use serde_json::Value as Json;
 use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
+use crate::sources::{On, Source};
 use crate::style::{Lazy, Style, TaskFields};
-use crate::types::{On, Source, Value};
+use crate::types::Value;
 use crate::{daily, workspace, write};
 
 /// Why an edit wasn't made. Nothing was written.
@@ -77,7 +78,7 @@ pub struct Set {
     pub changed: bool,
 }
 
-/// `set_field` on the note at workspace-relative `note` in `root`, written with `write::replace`
+/// `set_field` on the note at workspace-relative `note` in `root`, written over the text it read
 /// unless `dry_run`. New text follows the workspace's style, counted from its notes when the
 /// edit adds text that needs it.
 pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Result<Set, EditError> {
@@ -87,7 +88,8 @@ pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Resu
     let style = Lazy::new(|| Style::of_root(root));
     let set = plan(note, &text, &Settings::load(root), &style, req)?;
     if set.changed && !dry_run {
-        write::replace(&path, text.as_bytes(), set.text.as_bytes()).map_err(|e| match e {
+        let seen = crate::read::Seen::kept(&path, text.as_bytes());
+        seen.replace(set.text.as_bytes()).map_err(|e| match e {
             write::WriteError::Changed(_) => Changed(e.to_string()),
             e => EditError::Io(e.to_string()),
         })?;

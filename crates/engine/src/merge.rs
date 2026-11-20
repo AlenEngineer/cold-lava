@@ -9,7 +9,7 @@
 
 use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
-use crate::read::Contents;
+use crate::read::Seen;
 use crate::rename::{self, FileEdit, Move, Written};
 use crate::resolver::{Files, Rewriter};
 use crate::style::Style;
@@ -334,18 +334,20 @@ fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
 /// `system` is the system trash (`trash::system_bin()`; tests pass their own).
 pub fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     rename::check_answered(&m.edits)?;
-    let source_now =
-        std::fs::read(&m.source_path).with_context(|| format!("reading {}", m.source))?;
-    if source_now != m.source_text.as_bytes() {
-        bail!(
+    let source = Seen::kept(&m.source_path, m.source_text.as_bytes());
+    match source.unchanged() {
+        Ok(()) => {}
+        Err(write::WriteError::Io(_, e)) => {
+            return Err(e).with_context(|| format!("reading {}", m.source));
+        }
+        Err(_) => bail!(
             "{} changed since the merge was planned; nothing was changed. Try again.",
             m.source
-        );
+        ),
     }
     rename::check_unchanged(m.writes(), "merge")?;
     let written = Written::all(m.writes())?;
-    let contents = Contents::File(m.source_text.clone().into_bytes());
-    match trash::delete(&m.root, &m.source_path, &contents, system) {
+    match trash::delete(&m.root, &source, system) {
         Ok(trashed) => Ok(Merged {
             source_path: m.source_path.clone(),
             target_path: m.target_path.clone(),
@@ -569,6 +571,44 @@ mod tests {
         }
         assert!(!dir.join("workspace/.trash/Pāhoehoe.md").exists());
         assert!(plan(&ix, 0, 0).is_err(), "not into itself");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_refused_merge_or_undo_says_why_in_its_words() {
+        let files = [
+            ("Lava.md", "# Lava\n"),
+            ("Pāhoehoe.md", "Smooth.\n"),
+            ("Kīlauea.md", "[[Pāhoehoe]]\n"),
+        ];
+        let (dir, ix) = workspace_with("words", &files);
+        let m = merge(&ix, "Pāhoehoe", "Lava");
+        std::fs::write(dir.join("workspace/Pāhoehoe.md"), "Smooth, edited.\n").unwrap();
+        let changed = apply(&m, None).unwrap_err();
+        let words = "changed since the merge was planned; nothing was changed. Try again.";
+        assert_eq!(format!("{changed:#}"), format!("{} {words}", m.source));
+        std::fs::remove_file(dir.join("workspace/Pāhoehoe.md")).unwrap();
+        let unread = apply(&m, None).unwrap_err();
+        assert_eq!(unread.to_string(), format!("reading {}", m.source));
+        let cause = unread.root_cause().downcast_ref::<std::io::Error>();
+        assert_eq!(
+            cause.map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound),
+            "worded from the io error itself, without its path: {unread:#}"
+        );
+        assert_eq!(unread.chain().count(), 2, "{unread:#}");
+        assert_eq!(read(&dir, "Kīlauea.md"), "[[Pāhoehoe]]\n");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, ix) = workspace_with("undo-words", &files);
+        let done = apply(&merge(&ix, "Pāhoehoe", "Lava"), None).unwrap();
+        let words = "Kīlauea.md changed since the merge; the merge can't be undone";
+        std::fs::write(dir.join("workspace/Kīlauea.md"), "edited\n").unwrap();
+        let edited = undo(&done).unwrap_err().to_string();
+        assert!(edited.ends_with(words), "{edited}");
+        std::fs::remove_file(dir.join("workspace/Kīlauea.md")).unwrap();
+        let gone = undo(&done).unwrap_err().to_string();
+        assert_eq!(gone, edited, "a file that can't be read has changed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

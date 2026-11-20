@@ -5,7 +5,7 @@
 //! `"none"` deletes permanently; cold-lava still uses `.trash`. When the system trash can't take
 //! the file (none on this platform, or it is on another disk), it goes to `.trash` too.
 
-use crate::read::Contents;
+use crate::read::Seen;
 use crate::write::{WriteError, move_file};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -80,18 +80,12 @@ pub struct Trashed {
     info: Option<PathBuf>,
 }
 
-/// Move `path` (a file or a folder) to the trash `trashOption` names, if it still has the
-/// `expected` contents (what the user was shown). `system` is the system trash (`system_bin()`;
-/// tests pass their own).
-pub fn delete(
-    root: &Path,
-    path: &Path,
-    expected: &Contents,
-    system: Option<&Bin>,
-) -> Result<Trashed, WriteError> {
-    if Contents::read(path)? != *expected {
-        return Err(WriteError::Changed(path.to_path_buf()));
-    }
+/// Move what was `seen` (a file or a folder) to the trash `trashOption` names, if the entry at
+/// its path still holds it (what the user was shown). `system` is the system trash
+/// (`system_bin()`; tests pass their own).
+pub fn delete(root: &Path, seen: &Seen, system: Option<&Bin>) -> Result<Trashed, WriteError> {
+    seen.unchanged_entry()?;
+    let path = seen.path();
     let local = Bin::Folder(root.join(".trash"));
     if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system)
         && let Ok(t) = put(path, bin, Went::System)
@@ -233,13 +227,7 @@ mod tests {
         let (d, workspace) = sandbox("system", None);
         let bin = Bin::Freedesktop(d.join("data/Trash"));
         let lava = workspace.join("Concepts/Lava.md");
-        let t = delete(
-            &workspace,
-            &lava,
-            &Contents::File(b"hot".to_vec()),
-            Some(&bin),
-        )
-        .unwrap();
+        let t = delete(&workspace, &Seen::kept(&lava, "hot"), Some(&bin)).unwrap();
         assert_eq!(t.went, Went::System);
         assert!(!lava.exists());
         assert_eq!(t.at, d.join("data/Trash/files/Lava.md"));
@@ -254,13 +242,7 @@ mod tests {
 
         // A second Lava.md doesn't replace the first.
         std::fs::write(&lava, "again").unwrap();
-        let t2 = delete(
-            &workspace,
-            &lava,
-            &Contents::File(b"again".to_vec()),
-            Some(&bin),
-        )
-        .unwrap();
+        let t2 = delete(&workspace, &Seen::kept(&lava, "again"), Some(&bin)).unwrap();
         assert_eq!(t2.at, d.join("data/Trash/files/Lava 1.md"));
         assert!(d.join("data/Trash/info/Lava 1.md.trashinfo").exists());
         assert_eq!(std::fs::read(&t.at).unwrap(), b"hot");
@@ -279,13 +261,7 @@ mod tests {
             let lava = workspace.join("Concepts/Lava.md");
             std::fs::create_dir_all(workspace.join(".trash")).unwrap();
             std::fs::write(workspace.join(".trash/Lava.md"), "older").unwrap();
-            let t = delete(
-                &workspace,
-                &lava,
-                &Contents::File(b"hot".to_vec()),
-                Some(&bin),
-            )
-            .unwrap();
+            let t = delete(&workspace, &Seen::kept(&lava, "hot"), Some(&bin)).unwrap();
             assert_eq!(t.went, Went::WorkspaceTrash);
             assert_eq!(t.at, workspace.join(".trash/Lava 1.md"), "{option}");
             assert_eq!(std::fs::read(&t.at).unwrap(), b"hot");
@@ -303,13 +279,8 @@ mod tests {
     #[test]
     fn no_system_trash_falls_back_to_the_workspaces() {
         let (d, workspace) = sandbox("fallback", Some("system"));
-        let t = delete(
-            &workspace,
-            &workspace.join("Concepts/Lava.md"),
-            &Contents::File(b"hot".to_vec()),
-            None,
-        )
-        .unwrap();
+        let lava = workspace.join("Concepts/Lava.md");
+        let t = delete(&workspace, &Seen::kept(&lava, "hot"), None).unwrap();
         assert_eq!(
             (t.went, t.at),
             (Went::WorkspaceTrash, workspace.join(".trash/Lava.md"))
@@ -325,8 +296,7 @@ mod tests {
         assert!(matches!(
             delete(
                 &workspace,
-                &lava,
-                &Contents::File(b"what the user saw".to_vec()),
+                &Seen::kept(&lava, "what the user saw"),
                 Some(&bin)
             ),
             Err(WriteError::Changed(_))
@@ -339,7 +309,7 @@ mod tests {
     fn restore_refuses_to_overwrite_and_a_free_name_works() {
         let (d, workspace) = sandbox("restore", Some("local"));
         let lava = workspace.join("Concepts/Lava.md");
-        let t = delete(&workspace, &lava, &Contents::File(b"hot".to_vec()), None).unwrap();
+        let t = delete(&workspace, &Seen::kept(&lava, "hot"), None).unwrap();
         std::fs::write(&lava, "a new Lava").unwrap();
         assert!(matches!(restore(&t, &lava), Err(WriteError::Exists(_))));
         let free = free_path(&lava);
@@ -356,14 +326,14 @@ mod tests {
         let bin = Bin::Freedesktop(d.join("data/Trash"));
         let concepts = workspace.join("Concepts");
         std::fs::create_dir_all(concepts.join("Empty")).unwrap();
-        let seen = Contents::read(&concepts).unwrap();
+        let seen = Seen::entry(&concepts).unwrap();
         std::fs::write(concepts.join("New.md"), "added since").unwrap();
         assert!(matches!(
-            delete(&workspace, &concepts, &seen, Some(&bin)),
+            delete(&workspace, &seen, Some(&bin)),
             Err(WriteError::Changed(_))
         ));
         std::fs::remove_file(concepts.join("New.md")).unwrap();
-        let t = delete(&workspace, &concepts, &seen, Some(&bin)).unwrap();
+        let t = delete(&workspace, &seen, Some(&bin)).unwrap();
         assert!(!concepts.exists());
         assert_eq!(t.at, d.join("data/Trash/files/Concepts"));
         assert!(t.at.join("Empty").is_dir() && t.at.join("Lava.md").is_file());
