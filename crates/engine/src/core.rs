@@ -11,7 +11,7 @@ use crate::gateway::{
 use crate::index::Index;
 use crate::items::Item;
 use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
-use crate::owner::edits::{Edits, FileEdit, Goal, Pending, Relink, Stage};
+use crate::owner::edits::{Edits, FileEdit, ItemEdit, ToWrite};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
 use crate::read;
@@ -130,7 +130,7 @@ pub struct Core {
     news: Vec<(String, News)>,
     /// The extensions that own kinds of file, and what they gave.
     owners: Owners,
-    /// Edits of their files waiting for them.
+    /// The edit desk: edits of their files waiting for them.
     edits: Edits,
     /// Extensions' answers to `shape/region` and `shape/gesture`, for the frontend's bindings.
     shape_answers: Vec<Replied>,
@@ -301,7 +301,7 @@ impl Core {
     /// they gave nothing for. Their answers come back through `file_given`.
     pub fn take_reads(&mut self) -> Vec<(String, FileRead)> {
         let mut reads = self.owners.take_wanted();
-        reads.append(&mut self.edits.reads);
+        reads.extend(self.edits.take_reads());
         reads
     }
 
@@ -321,13 +321,13 @@ impl Core {
     /// `file/edit` requests for the owners, each with its owner's name. Their answers come back
     /// through `file_edited`.
     pub fn take_file_edits(&mut self) -> Vec<(String, FileEdit)> {
-        std::mem::take(&mut self.edits.asks)
+        self.edits.take_file_edits()
     }
 
     /// Answers to `items/edit` that `edit_item` answered `Later`: who asked, under which ticket,
     /// and the answer.
     pub fn take_edited(&mut self) -> Vec<(String, Ticket, Result<Edited, gateway::Error>)> {
-        std::mem::take(&mut self.edits.done)
+        self.edits.take_edited()
     }
 
     /// `owner` answered `file/read` for `path` at `rev`: its items and links join the workspace
@@ -337,10 +337,12 @@ impl Core {
         if self.owners.owner_of(path) != Some(owner) {
             return;
         }
-        let reading = |p: &Pending| matches!(&p.stage, Stage::Reading { rev: r, .. } if r == rev);
-        if self.edits.pending.get(path).is_some_and(reading) {
-            return self.edit_read_back(path, given);
-        }
+        let settings = self.index.workspace.item_settings();
+        let given = match self.edits.read_back(path, rev, given, settings) {
+            Err(given) => given,
+            Ok(Some(write)) => return self.write_edit(write),
+            Ok(None) => return,
+        };
         self.owners.answered(owner, path, rev, given.as_ref().ok());
         let events = match given {
             Ok(_) => self.owned_changed(&[path.to_string()]),
@@ -562,13 +564,7 @@ impl Core {
         };
         let item = (file.items.iter()).find(|it| it.id == edit.id);
         let item = item.filter(|it| it.rev == edit.rev).ok_or_else(gone)?;
-        if let Some(p) = self.edits.pending.get(&file.rel) {
-            let message = format!(
-                "{} has an edit waiting for {}: try again",
-                file.rel, p.owner
-            );
-            return Err(error(Reason::Changed, message));
-        }
+        self.edits.free(&file.rel)?;
         let place = file.places[&edit.id].clone();
         // How the owner gave the item: as a piece, as a typed item, or in a Markdown piece;
         // among the items that hold their places (`Places`), so the one the change is for.
@@ -644,67 +640,15 @@ impl Core {
         if after.is_none() && given::same_data(&want, item) {
             return Ok(unchanged());
         }
-        let text = std::fs::read(&file.path)
+        let asked = ItemEdit::new(by, want, next, what, warning);
+        let before = read::Seen::file(&file.path)
             .map_err(|e| error(Reason::Io, format!("{}: {e}", file.rel)))?;
-        if file.rev.as_deref() != Some(read::rev(&text).as_str()) {
-            let message = format!("{} changed since it was read: read it again", file.rel);
-            return Err(error(Reason::Changed, message));
+        let edits = &mut self.edits;
+        let (ticket, write) = edits.edit_item(file, &before, changes, expect, asked, settings)?;
+        if let Some(write) = write {
+            self.write_edit(write);
         }
-        let text = String::from_utf8(text)
-            .map_err(|_| error(Reason::Refused, format!("{} isn't UTF-8 text", file.rel)))?;
-        let (rel, owner) = (file.rel.clone(), file.owner.clone());
-        let ticket = self.edits.ticket();
-        let goal = Goal::Item {
-            by: by.to_string(),
-            ticket,
-            item: want,
-            next,
-            what,
-            warning,
-        };
-        let pending = Pending {
-            owner,
-            rev: read::rev(text.as_bytes()),
-            text,
-            expect: Some(expect),
-            goal,
-            stage: Stage::Editing,
-        };
-        self.ask_edit(rel, changes, pending);
         Ok(Answer::Later(ticket))
-    }
-
-    /// Ask the owner of the file at `rel` for its new text with `changes` made (`file/edit`),
-    /// and keep `edit` until it has answered.
-    fn ask_edit(&mut self, rel: String, changes: Vec<Change>, edit: Pending) {
-        let owner = edit.owner.clone();
-        let ask = FileEdit {
-            path: rel.clone(),
-            rev: edit.rev.clone(),
-            text: edit.text.clone(),
-            changes,
-        };
-        self.edits.pending.insert(rel, edit);
-        self.send_edit(&owner, ask);
-    }
-
-    /// `file/edit` goes to `owner`, and its answer comes in through `file_edited`: from an
-    /// extension later, once the frontend has handed it the request (`take_file_edits`); from an
-    /// owner in the engine here, before this returns.
-    fn send_edit(&mut self, owner: &str, ask: FileEdit) {
-        match crate::owner::edit(owner, &ask.path, &ask.text, &ask.changes) {
-            Some(text) => self.file_edited(owner, &ask.path, &ask.rev, text),
-            None => self.edits.asks.push((owner.to_string(), ask)),
-        }
-    }
-
-    /// `file/read` of a new text `owner` made goes to it, and its answer comes in through
-    /// `file_given`: from an extension later (`take_reads`), from an owner in the engine here.
-    fn send_read_back(&mut self, owner: &str, read: FileRead) {
-        match crate::owner::give(owner, &read.path, &read.text) {
-            Some(given) => self.file_given(owner, &read.path, &read.rev, given),
-            None => self.edits.reads.push((owner.to_string(), read)),
-        }
     }
 
     /// `owner` answered `file/edit` for the file at `path` at version `rev`: the file's new
@@ -716,133 +660,35 @@ impl Core {
         rev: &str,
         text: Result<String, String>,
     ) {
-        let asked = |p: &Pending| p.owner == owner && p.rev == rev;
-        let Some(p) = self.edits.pending.get_mut(path).filter(|p| asked(p)) else {
-            return;
-        };
-        if !matches!(p.stage, Stage::Editing) {
-            return;
-        }
-        let error = gateway::Error::new;
-        match text {
-            Err(why) => {
-                let message = format!("{owner} didn't edit {path}: {why}");
-                self.edit_failed(path, error(Reason::Refused, message));
-            }
-            Ok(text) if text == p.text => {
-                let message = format!("{owner}'s new text for {path} is the same as before");
-                self.edit_failed(path, error(Reason::ReadBack, message));
-            }
-            Ok(text) => {
-                let rev = read::rev(text.as_bytes());
-                let read = FileRead {
-                    path: path.to_string(),
-                    rev: rev.clone(),
-                    text: text.clone(),
-                };
-                p.stage = Stage::Reading { rev, text };
-                self.send_read_back(owner, read);
-            }
+        let settings = self.index.workspace.item_settings();
+        if let Some(write) = self.edits.edited(owner, path, rev, text, settings) {
+            self.write_edit(write);
         }
     }
 
-    /// The owner read the new text of the file at `path` (`given`): when it reads as asked,
-    /// write it, refused if the file changed since the edit began, and take what it gave as the
-    /// file's items and links. Else nothing is written.
-    fn edit_read_back(&mut self, path: &str, given: Result<Given, String>) {
-        let Some(p) = self.edits.pending.get(path) else {
-            return;
-        };
-        let Stage::Reading { rev, text } = &p.stage else {
-            return;
-        };
-        let error = gateway::Error::new;
-        let owner = p.owner.clone();
-        let given = match given {
-            Ok(g) => g,
-            // It couldn't read the file before the change either, and gave nothing for it.
-            Err(_) if p.expect.is_none() => Given::default(),
-            Err(why) => {
-                let message = format!("{owner} couldn't read its new text for {path}: {why}");
-                return self.edit_failed(path, error(Reason::ReadBack, message));
-            }
-        };
-        let settings = self.index.workspace.item_settings();
-        let nothing = Given::default();
-        let asked = given::read_back(path, p.expect.as_ref().unwrap_or(&nothing), settings);
-        let gave = given::read_back(path, &given, settings);
-        if let Err(diff) = given::same(&asked, &gave) {
-            let message = format!(
-                "{owner}'s new text for {path} doesn't read back as asked ({diff}); nothing was \
-                 written"
-            );
-            return self.edit_failed(path, error(Reason::ReadBack, message));
-        }
-        if let Goal::Relink(ticket) = p.goal {
-            return self.relink_read_back(ticket, path, text.clone(), given);
-        }
-        let written =
-            crate::write::replace(&self.root().join(path), p.text.as_bytes(), text.as_bytes());
-        if let Err(e) = written {
-            let reason = match e {
-                crate::write::WriteError::Changed(_) => Reason::Changed,
-                _ => Reason::Io,
-            };
-            return self.edit_failed(path, error(reason, format!("{path}: {e}")));
-        }
-        let rev = rev.clone();
-        let Some(p) = self.edits.pending.remove(path) else {
-            return;
-        };
-        self.owners.answered(&owner, path, &rev, Some(&given));
-        let mut events = self.owned_changed(&[path.to_string()]);
-        if let Goal::Item {
-            by,
-            ticket,
-            item,
-            next,
-            what,
-            warning,
-        } = p.goal
-        {
-            let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
-            let find = |want: &Item| {
-                let items = file.map(|f| f.items.as_slice()).unwrap_or_default();
-                (items.iter().find(|i| i.id == want.id))
-                    .or_else(|| items.iter().find(|i| given::same_data(i, want)))
-                    .cloned()
-            };
-            let answer = find(&item).map(|found| Edited {
-                item: found,
-                changed: true,
-                next: next.as_deref().and_then(find),
-                warning,
-            });
-            let answer = answer.ok_or_else(|| {
-                let message = format!("{path} was written, but {} isn't in it now", item.id);
-                error(Reason::ReadBack, message)
-            });
+    /// An owned file's new text that read back as asked (the edit desk's): write it over the
+    /// file as the edit was made on it, refused if it changed since; once it is written, take
+    /// what its owner read in it as the file's items and links, and tell subscribers. Either
+    /// way the desk hears how the write went, and answers whoever asked.
+    fn write_edit(&mut self, w: ToWrite) {
+        let path = w.path.as_str();
+        let written = w.before.replace(w.after.as_bytes());
+        let mut events = Vec::new();
+        if written.is_ok() {
+            self.owners.answered(&w.owner, path, &w.rev, Some(&w.given));
+            events = self.owned_changed(&[path.to_string()]);
             events.push(Event::ItemEdited {
                 note: path.to_string(),
-                item: item.id.clone(),
-                by: by.clone(),
-                what,
+                item: w.item,
+                by: w.by,
+                what: w.what,
             });
-            self.edits.done.push((by, ticket, answer));
         }
+        let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
+        let items: &[Item] = file.map(|f| f.items.as_slice()).unwrap_or_default();
+        self.edits.wrote(path, written.map(|()| items));
         self.broadcast(&events);
         self.unseen.extend(events);
-    }
-
-    /// The edit of the file at `path` waiting for its owner failed: tell whoever asked.
-    fn edit_failed(&mut self, path: &str, e: gateway::Error) {
-        let Some(p) = self.edits.pending.remove(path) else {
-            return;
-        };
-        match p.goal {
-            Goal::Item { by, ticket, .. } => self.edits.done.push((by, ticket, Err(e))),
-            Goal::Relink(ticket) => self.relink_failed(ticket, e.message),
-        }
     }
 
     /// Before a rename, merge or recipe writes anything: ask the owner of each file among `edits`
@@ -858,105 +704,22 @@ impl Core {
         &mut self,
         edits: &mut [crate::rename::FileEdit],
     ) -> Result<Option<Ticket>, String> {
-        let owned: Vec<_> = edits
-            .iter()
-            .filter(|e| e.owned.is_some())
-            .cloned()
-            .collect();
-        if owned.is_empty() {
-            return Ok(None);
-        }
-        // What each owner should give once its file is changed, asked of the one rule.
-        let mut expected: Vec<Option<Given>> = Vec::with_capacity(owned.len());
-        for e in &owned {
-            let o = e.owned.as_ref().expect("owned");
-            if self.edits.pending.contains_key(&e.file) {
-                return Err(format!("{} has an edit waiting for {}", e.file, o.owner));
-            }
-            if std::fs::read_to_string(&e.path).ok().as_ref() != Some(&e.old_text) {
-                return Err(format!("{} changed since it was planned", e.file));
-            }
-            let settings = self.index.workspace.item_settings();
-            expected.push(match &o.given {
-                Some(g) => Some(given::check_change(&e.file, g, &o.changes, settings)?),
-                None => None,
-            });
-        }
-        let ticket = self.edits.ticket();
-        let asks: Vec<_> = (owned.iter().zip(expected))
-            .map(|(e, expect)| {
-                let o = e.owned.as_ref().expect("owned");
-                let pending = Pending {
-                    owner: o.owner.clone(),
-                    rev: read::rev(e.old_text.as_bytes()),
-                    text: e.old_text.clone(),
-                    expect,
-                    goal: Goal::Relink(ticket),
-                    stage: Stage::Editing,
-                };
-                (e.file.clone(), o.changes.clone(), pending)
-            })
-            .collect();
-        self.edits.relinks.insert(ticket, Relink { edits: owned });
-        for (file, changes, pending) in asks {
-            // An owner in the engine answers inside `ask_edit`, and its refusal ends the wait.
-            if self.edits.relinks.contains_key(&ticket) {
-                self.ask_edit(file, changes, pending);
-            }
-        }
-        let answered = |(t, _): &(Ticket, _)| *t == ticket;
-        let Some(at) = self.edits.relinked.iter().position(answered) else {
-            // The answers that are in go into `edits`, so they say whose are still to come.
-            let relink = self.edits.relinks.get(&ticket);
-            let so_far = relink.map(|r| r.answered()).unwrap_or_default();
-            crate::rename::answered(edits, so_far);
-            return Ok(Some(ticket));
+        let settings = self.index.workspace.item_settings();
+        let planned = |e: &crate::rename::FileEdit| {
+            let seen = read::Seen::kept(&e.path, e.old_text.as_str());
+            seen.unchanged().is_ok()
         };
-        let (_, answers) = self.edits.relinked.remove(at);
-        crate::rename::answered(edits, answers?);
-        Ok(None)
+        self.edits.relink(edits, planned, settings)
     }
 
     /// Renames and merges whose owners have all answered (`relink`), or one refused.
     pub fn take_relinked(&mut self) -> Vec<(Ticket, Result<Vec<crate::rename::FileEdit>, String>)> {
-        std::mem::take(&mut self.edits.relinked)
+        self.edits.take_relinked()
     }
 
     /// Stop waiting for the owners of the rename or merge `ticket`. Their answers are dropped.
     pub fn cancel_relink(&mut self, ticket: Ticket) {
-        self.edits.relinks.remove(&ticket);
-        let ours = |p: &Pending| matches!(p.goal, Goal::Relink(t) if t == ticket);
-        self.edits.pending.retain(|_, p| !ours(p));
-        let pending = &self.edits.pending;
-        (self.edits.asks).retain(|(_, a)| pending.contains_key(&a.path));
-        (self.edits.reads).retain(|(_, r)| pending.contains_key(&r.path));
-    }
-
-    /// One owned file of the rename or merge `ticket` read back as asked: keep its new text.
-    fn relink_read_back(&mut self, ticket: Ticket, path: &str, text: String, given: Given) {
-        self.edits.pending.remove(path);
-        let Some(relink) = self.edits.relinks.get_mut(&ticket) else {
-            return;
-        };
-        if let Some(e) = relink.edits.iter_mut().find(|e| e.file == path) {
-            e.new_text = text;
-            if let Some(o) = e.owned.as_mut() {
-                o.after = Some(given);
-            }
-        }
-        if relink.done() {
-            let relink = self.edits.relinks.remove(&ticket).expect("waiting");
-            self.edits.relinked.push((ticket, Ok(relink.edits)));
-        }
-    }
-
-    /// An owner refused, or didn't answer, one file of the rename or merge `ticket`: it is
-    /// cancelled, with `message`.
-    fn relink_failed(&mut self, ticket: Ticket, message: String) {
-        if self.edits.relinks.contains_key(&ticket) {
-            self.cancel_relink(ticket);
-            self.edits.relinked.push((ticket, Err(message)));
-        }
+        self.edits.cancel_relink(ticket);
     }
 
     /// After a rename or merge with `edits` was made, before reading the workspace again: what
@@ -1165,8 +928,7 @@ impl Core {
         let waiting = (self.relink(&mut plan.edits))
             .map_err(|why| refused(format!("{}: {why}", plan.title())))?;
         if let Some(ticket) = waiting {
-            let pending = &self.edits.pending;
-            let waits = plan.edits.iter().find(|e| pending.contains_key(&e.file));
+            let waits = (plan.edits.iter()).find(|e| self.edits.waiting(&e.file).is_some());
             let message = format!(
                 "{} would change {}, which another owner reads: run it from the recipe screen",
                 plan.title(),
