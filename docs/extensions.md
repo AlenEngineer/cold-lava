@@ -1133,8 +1133,8 @@ style.minutes = { badge = true, icon = "⏱" }
   core's cache (`Workspace::items`) when the core's text is the text on disk, else are read once,
   and the marks are placed in the same walk through the tree that builds the `Doc`. The reader
   lays the marks out with the page, again only when the width or the note changes.
-- **Not yet:** a light terminal's table, and looks in the GUI. The table view and the agenda
-  draw the same looks (below).
+- **Not yet:** a light terminal's table, and looks in a graphical frontend (there is none
+  today). The table view and the agenda draw the same looks (below).
 
 ### The table view, as built
 
@@ -1605,8 +1605,8 @@ the same `{reason, message}`.
   it lists every engine write, every whole-workspace operation and every `std::fs` change
   the app still makes itself, and why.
 
-**The pattern for the next groups** (rename, move and merge; recipes; undo; bookmarks), so
-each doesn't invent one:
+**The pattern for the next groups** (rename, move and merge; recipes; undo; Obsidian's
+bookmarks, a saved list, are removed instead, #373), so each doesn't invent one:
 
 - One message per engine operation, named `area/verb`, its types in the engine with pinned
   JSON, answered by `Core`, reached through a `Host` method that checks one permission, and

@@ -114,10 +114,18 @@ never lends it to a reader (an extension).
   both sends events to subscribers and keeps them for `poll`. Track C (#271) moves it out, so
   the librarian only calls on its clerks in order.
 - Features live inside the library: tasks, daily notes, recipes, and the shapes and bindings
-  that draw data (`shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`) share the engine's crate with
-  the core, which is why the engine depends on `canvas`. They are meant to be readers that come
-  through the door like any other: the rule and its test first, then the split into crates
-  (both #226, decided in #185), after which the core depends on nothing of the project's.
+  (`shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`) share the engine's crate with the core, which
+  is why the engine depends on `canvas`. They are meant to be readers that come through the
+  door like any other: the rule and its test first, then the split into crates (both #226,
+  decided in #185), after which the core depends on nothing of the project's.
+- **Shapes, bindings and the shape editor are paused** (decided 2026-11-20, #375). Drawings
+  bound to data are still the design (foundations 11 and 12, Frontends 5 and 6). What is
+  missing is a translator: a placed shape with its bindings is a new kind of book, and every
+  book needs a translator that reads its language. Nobody has been hired for this one, so the
+  library's story doesn't hold for it yet. Until one is, nothing new is built on them
+  (`crates/canvas`, `shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`, the shape editor), and the
+  code stays as it is. #375 says what must be decided to unpause. The whiteboard's own
+  refactors (track F, #273) and its undo fix (#348) go ahead.
 - No translator checks a reference's place half yet, and none declares its place forms. The
   design proposed for it: Markdown declares headings and block anchors, a canvas card ids, a CSV
   file row keys, so the librarian can tell a reference that points nowhere from one it can't
@@ -147,8 +155,8 @@ never lends it to a reader (an extension).
   (#357).
 - **The bookmark** is placed but not yet followed. An extension can stick a name on an item
   once (`items/edit` with `{"op": "anchor"}` writes a `^name`, #335), and the name survives a
-  reword. Finding the item by its name after its note moves (#190, PR 2) and bindings that
-  bookmark what they name (PR 3) are still ahead.
+  reword. Finding the item by its name after its note moves (#190, PR 2) is still ahead;
+  bindings that bookmark what they name (PR 3) wait with the shapes, which are paused (above).
 - Characters decided but not hired yet: **the archivist**, who keeps every page the librarian
   replaces, outside the workspace (#305); **the logbook**, where every change is written down
   with who asked and which translator wrote it, so any change can be undone, even after a
@@ -185,8 +193,8 @@ where it lives. Where the code doesn't meet a rule yet, the line says so.
 
 Six crates in the Cargo workspace. The dependency direction is frontends →
 host → views → engine → canvas: the engine depends only on `canvas` (for its shapes and
-bindings, a feature still in its crate: see above), which depends on nothing, and `editor`
-stands alone.
+bindings, a paused feature still in its crate: see above), which depends on nothing, and
+`editor` stands alone.
 
 - **`crates/engine`**, the library: no user interface. Start with `core.rs` (the librarian),
   `owner/` (the translators: `markdown.rs`, `canvas.rs`, and `given.rs` for an extension's),
