@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::{Error, Reason};
-use crate::identity::fnv;
+use crate::identity;
 use crate::index::Index;
 use crate::trash::{self, Bin, Contents, Trashed, Went};
 use crate::write::{self, WriteError};
@@ -163,7 +163,7 @@ pub struct Folder {
 
 /// A file's version: a hash of its bytes, as 16 hex digits.
 pub fn rev(bytes: &[u8]) -> String {
-    format!("{:016x}", fnv(bytes))
+    identity::hash(bytes)
 }
 
 /// The version of the file at `rel` now, `None` when it is gone or can't be read.

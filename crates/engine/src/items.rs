@@ -11,7 +11,7 @@
 
 use crate::cst::{self, Kind, Step};
 use crate::daily;
-use crate::identity::{self, fnv};
+use crate::identity;
 use crate::markdown::{self, Flavour, Source, Syntax};
 use crate::matcher::{self, Matcher, Typed};
 use crate::owner::markdown::attributes::{self, Readings};
@@ -1224,9 +1224,13 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
                 path.push_str(text);
                 path
             }
-            (None, Data::List { text }) => format!("{parent_key}/{:016x}", fnv(text.as_bytes())),
+            (None, Data::List { text }) => {
+                format!("{parent_key}/{}", identity::hash(text.as_bytes()))
+            }
             (None, Data::Typed(_)) if raw.key.is_empty() => parent_key.to_string(),
-            (None, Data::Typed(_)) => format!("{parent_key}/{:016x}", fnv(raw.key.as_bytes())),
+            (None, Data::Typed(_)) => {
+                format!("{parent_key}/{}", identity::hash(raw.key.as_bytes()))
+            }
             (None, Data::Block) => String::new(),
         };
         let n = seen.entry((kind.to_string(), anchor.clone())).or_default();

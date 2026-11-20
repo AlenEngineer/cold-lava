@@ -1,6 +1,10 @@
-//! Identity (docs/foundations.md, 5): the one hash every id and rev is made with, and the one
-//! formula for an id. A leaf: it needs nothing but `std`. Whatever changes here moves ids,
-//! which is the owner's decision; the tests pin ids the engine gave before this module.
+//! Identity (docs/foundations.md, 5): the one hash every id and rev is made with, and the last
+//! step of every id (`id`: the file, the kind and the owner's key, hashed). Each owner makes its
+//! own key: a note's items in `items::identify` (and a typed item's key in the matcher), an
+//! owner's pieces and typed items from the place the owner gave. Changing a key moves ids as
+//! surely as changing this module does, and either is the owner's decision. Composing a
+//! note's key moves with the Markdown walk into its owner in track D's step D-3 (#272). A
+//! leaf: it needs nothing but `std`. The tests pin ids the engine gave before this module.
 
 /// FNV-1a of some bytes: stable across runs and machines, unlike `std`'s hasher.
 pub fn fnv(bytes: &[u8]) -> u64 {
@@ -16,7 +20,16 @@ fn fnv_from(h: u64, bytes: &[u8]) -> u64 {
         .fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// An id: `fnv` of its parts with a NUL between each two, as 16 hex digits.
+/// `fnv` of some bytes, as 16 hex digits.
+pub fn hash(bytes: &[u8]) -> String {
+    hex(fnv(bytes))
+}
+
+fn hex(h: u64) -> String {
+    format!("{h:016x}")
+}
+
+/// An id: `hash` of its parts with a NUL between each two.
 pub fn id(parts: &[&str]) -> String {
     let mut h = START;
     for (i, part) in parts.iter().enumerate() {
@@ -25,10 +38,12 @@ pub fn id(parts: &[&str]) -> String {
         }
         h = fnv_from(h, part.as_bytes());
     }
-    format!("{h:016x}")
+    hex(h)
 }
 
-/// Fingerprint of a line, as 12 hex digits.
+/// Fingerprint of some text, as 12 hex digits: a note item's lines or a toggled line, or JSON
+/// text (a piece or a typed item an owner gave, an item as its answer wrote it). Line breaks
+/// and carriage returns at its end are not hashed.
 pub fn line_id(line: &str) -> String {
     let h = fnv(line.trim_end_matches(['\r', '\n']).as_bytes());
     format!("{:012x}", h & 0xffff_ffff_ffff)
