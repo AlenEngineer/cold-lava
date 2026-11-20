@@ -24,6 +24,7 @@ use crate::line_input::{self, CtrlU};
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
 use crate::notice::Notice;
+use crate::outline::{self, Outline};
 use crate::palette::{self, Palette};
 use crate::paths::{self, config_dir, home_dir};
 use crate::pick_list::{self, Picked};
@@ -435,11 +436,8 @@ enum Mode {
     /// item with where it goes back to.
     ConfirmRestore(Vec<(Gone, PathBuf)>),
     Hints(Hints<HintTarget>),
-    /// The reader's headings, to jump to one; `sel` is a row of `outline_hits`.
-    Outline {
-        query: String,
-        sel: usize,
-    },
+    /// The reader's headings, to jump to one.
+    Outline(Outline),
     /// Where the reader's selected link or the selected backlink leads, shown over the reader.
     Peek {
         from: PeekFrom,
@@ -504,9 +502,7 @@ impl Mode {
             }
             Mode::Palette(palette) => palette.unsaved(),
             Mode::Search { query, .. } => (!query.is_empty()).then_some("a search is being typed"),
-            Mode::Outline { query, .. } => {
-                (!query.is_empty()).then_some("a heading is being typed")
-            }
+            Mode::Outline(outline) => outline.unsaved(),
             Mode::Bookmarks { query, .. } => {
                 (!query.is_empty()).then_some("a bookmark is being typed")
             }
@@ -2454,7 +2450,7 @@ impl Home {
             self.switcher_key(k);
             return Ok(());
         }
-        if matches!(self.mode, Mode::Outline { .. }) {
+        if matches!(self.mode, Mode::Outline(_)) {
             self.outline_key(k);
             return Ok(());
         }
@@ -2618,7 +2614,7 @@ impl Home {
             | Mode::ConfirmMerge { .. }
             | Mode::ConfirmRestore(_)
             | Mode::Hints(_)
-            | Mode::Outline { .. }
+            | Mode::Outline(_)
             | Mode::Bookmarks { .. }
             | Mode::Tidy(_)
             | Mode::Recipe(_)
@@ -3438,64 +3434,25 @@ impl Home {
         };
     }
 
-    /// The outline's rows, in the note's order: (heading, match).
-    fn outline_hits(&self, query: &str) -> Vec<(usize, crate::search::Fuzzy)> {
-        let headings = self.reader.as_ref().map_or(&[][..], Reader::headings);
-        let hits = headings.iter().enumerate();
-        hits.filter_map(|(i, h)| Some((i, crate::search::fuzzy(query, &h.text)?)))
-            .collect()
-    }
-
-    /// The row the outline selects for `query`: the heading being read, or the best match.
-    fn outline_start(&self, query: &str) -> usize {
-        if query.trim().is_empty() {
-            let section = self.reader.as_ref().map(Reader::section);
-            return section.and_then(|s| s.last().copied()).unwrap_or(0);
-        }
-        let hits = self.outline_hits(query);
-        let best = hits.iter().map(|(_, m)| m.score).max();
-        hits.iter()
-            .position(|(_, m)| Some(m.score) == best)
-            .unwrap_or(0)
-    }
-
     fn open_outline(&mut self) {
         if self.reader.as_ref().is_none_or(|r| r.headings().is_empty()) {
             return self.flash("no headings in this note");
         }
-        self.mode = Mode::Outline {
-            query: String::new(),
-            sel: self.outline_start(""),
-        };
+        self.mode = Mode::Outline(Outline::open(self.reader.as_ref()));
     }
 
     fn outline_key(&mut self, k: KeyEvent) {
-        let Mode::Outline { query, sel } = &self.mode else {
+        let Mode::Outline(o) = &mut self.mode else {
             return;
         };
-        let (mut q, mut s) = (query.clone(), *sel);
-        let hits = self.outline_hits(&q);
-        match k.code {
-            KeyCode::Esc => {
+        match o.key(k, self.reader.as_ref()) {
+            outline::Action::Stay => {}
+            outline::Action::Close => self.mode = Mode::Normal,
+            outline::Action::Jump(i) => {
                 self.mode = Mode::Normal;
-                return;
-            }
-            KeyCode::Enter => {
-                self.mode = Mode::Normal;
-                if let Some(&(i, _)) = hits.get(s) {
-                    self.jump_to_heading(i);
-                }
-                return;
-            }
-            _ => {
-                if pick_list::key(&mut q, &mut s, hits.len(), k, CtrlU::Clears)
-                    == Some(Picked::Typed)
-                {
-                    s = self.outline_start(&q);
-                }
+                self.jump_to_heading(i);
             }
         }
-        self.mode = Mode::Outline { query: q, sel: s };
     }
 
     /// Scrolls the reader to heading `i`; Back returns to where it was.
@@ -6084,8 +6041,8 @@ impl Home {
         if let Mode::Palette(palette) = &self.mode {
             palette.draw(f, main, &self.palette_hits(palette.query()), &self.keys);
         }
-        if matches!(self.mode, Mode::Outline { .. }) {
-            self.draw_outline(f, main);
+        if let (Mode::Outline(o), Some(r)) = (&self.mode, &self.reader) {
+            o.draw(f, main, r);
         }
         if matches!(self.mode, Mode::Bookmarks { .. }) {
             self.draw_bookmarks(f, main);
@@ -6393,62 +6350,6 @@ impl Home {
         }
         if total == 0 {
             lines.push(Line::styled(" no notes match", Style::new().fg(MUTED)));
-        }
-        f.render_widget(Paragraph::new(lines), inner);
-    }
-
-    fn draw_outline(&self, f: &mut Frame, area: Rect) {
-        let (Mode::Outline { query, sel }, Some(r)) = (&self.mode, &self.reader) else {
-            return;
-        };
-        let inner = popup::picker(f, area, " Outline ", " ↑↓ choose · ⏎ jump · Esc close ");
-        let headings = r.headings();
-        let hits = self.outline_hits(query);
-        let reading = r.section().last().copied();
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(
-                    format!("  {} of {} headings", hits.len(), headings.len()),
-                    Style::new().fg(MUTED),
-                ),
-            ]),
-            Line::raw(""),
-        ];
-        let top = headings.iter().map(|h| h.level).min().unwrap_or(1);
-        let rows = inner.height.saturating_sub(2) as usize;
-        let start = sel.saturating_sub(rows.saturating_sub(1));
-        for (row, (i, m)) in hits.iter().enumerate().skip(start).take(rows) {
-            let h = &headings[*i];
-            let selected = row == *sel;
-            let here = Some(*i) == reading;
-            let base = match (selected, here) {
-                (true, _) => Style::new().fg(Color::Black).bg(ACCENT),
-                (false, true) => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                (false, false) => Style::new().fg(NOTE),
-            };
-            let hl = if selected {
-                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
-            };
-            let indent = "  ".repeat((h.level - top) as usize);
-            let mark = if here { "▸ " } else { "  " };
-            let mut spans = vec![Span::styled(format!(" {indent}{mark}"), base)];
-            for (ci, ch) in h.text.chars().enumerate() {
-                let style = if m.positions.contains(&ci) { hl } else { base };
-                spans.push(Span::styled(ch.to_string(), style));
-            }
-            if selected {
-                let used: usize = spans.iter().map(Span::width).sum();
-                let pad = (inner.width as usize).saturating_sub(used);
-                spans.push(Span::styled(" ".repeat(pad), base));
-            }
-            lines.push(Line::from(spans));
-        }
-        if hits.is_empty() {
-            lines.push(Line::styled(" no headings match", Style::new().fg(MUTED)));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -7768,7 +7669,14 @@ mod tests {
                 "a search is being typed",
             ),
             (
-                |query: String| Mode::Outline { query, sel: 0 },
+                |query: String| {
+                    let mut outline = Outline::open(None);
+                    for c in query.chars() {
+                        let k = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+                        outline.key(k, None);
+                    }
+                    Mode::Outline(outline)
+                },
                 "a heading is being typed",
             ),
             (

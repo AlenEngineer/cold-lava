@@ -19,6 +19,7 @@ mod line_input;
 mod list;
 mod looks;
 mod notice;
+mod outline;
 mod owned;
 mod palette;
 mod pick_list;
