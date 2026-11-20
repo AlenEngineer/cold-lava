@@ -1377,4 +1377,16 @@ fields.text = { rest = true }
             json!({"method": "items/reset", "params": {"subscription": 1}}),
         );
     }
+
+    #[test]
+    fn a_write_error_has_the_reason_its_kind_says() {
+        let at = || PathBuf::from("Lava.md");
+        let io = || std::io::Error::other("disk full");
+        assert_eq!(
+            Reason::of(&write::WriteError::Changed(at())),
+            Reason::Changed
+        );
+        assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
+        assert_eq!(Reason::of(&write::WriteError::Io(at(), io())), Reason::Io);
+    }
 }
