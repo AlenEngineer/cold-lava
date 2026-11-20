@@ -1791,7 +1791,13 @@ fields.w = { capture = "w" }
 "#;
 
     fn every_type(flavour: &str) -> Settings {
-        let table: toml::Table = toml::from_str(EVERY_TYPE).unwrap();
+        with_types(flavour, EVERY_TYPE)
+    }
+
+    /// Settings in `flavour` with the built-in types and those of `toml`, as `[types]` in
+    /// config.toml gives them.
+    pub(crate) fn with_types(flavour: &str, toml: &str) -> Settings {
+        let table: toml::Table = toml::from_str(toml).unwrap();
         let found = types::load([
             types::Layer::built_in(),
             types::Layer::config(Path::new("config.toml"), table),

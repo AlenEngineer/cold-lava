@@ -93,9 +93,12 @@ one can't break anything.
 `gateway.rs`, extensions.md, "The workspace gateway, as built")*. What the types find: typed
 values with an `id` that survives ticking, re-dating and lines added above,
 and a `rev` for the item's own lines. That id is an *address*: it says where the item is now,
-and it changes when the item is reworded or its note moves. An *anchor*, a `^id` the engine
-writes into the note the first time something keeps a reference to the item, makes it the same
-item for good *(decided, to build: #190)*. Extensions query them, subscribe to changes, and edit one
+and it changes when the item is reworded or its note moves, so nothing that outlives a session
+keeps it. An *anchor* is a `^name` the engine writes into the note the first time something
+keeps a reference to the item (`items/edit`'s `anchor`; extensions.md, "Anchors, as built").
+A reference keeps the anchor: the anchored item keeps its id through new words, a reorder and a
+renamed heading above it, and is found by its anchor after its note moves *(found by anchor,
+and bindings that anchor: #190's next steps)*. Extensions query them, subscribe to changes, and edit one
 item; the engine changes only that item's lines, through the safe write path, and refuses if
 that item changed meanwhile.
 
