@@ -169,20 +169,24 @@ change commands, keys and file formats; patch versions only fix things.
   cards at one place used to crash the rename (a panic, nothing written). With such an id,
   one file link fewer is given than before, so a note's backlinks can count one fewer.
   Such a card is now reported, naming the board, the card's number among its nodes and
-  its id (#303, step A4d): on the status line as the workspace opens, and again when what
-  the board leaves out changes (`canvas couldn't read Board.canvas: card 3 (id "") is left
-  out: its place is empty or longer than 1024 bytes`), and on stderr by `items`, `agenda`,
-  `table` and `types` (not `types --json`, which reads no file), which also print there
-  what an extension's owned file left out. Of the cards whose id is empty, only the first
-  in the file is such a card: a later one has a place of its own and gives its tasks and
-  links.
-- What an owned file leaves out waits on the status line until nothing else is said there
-  (#303): a report never takes the place of the message of what you just did (a merge, a
-  duplicate, a new note, the whiteboard's delete or undo), and several show one after
-  another, three seconds each, where only the last showed as the workspace opened. A board
-  is reported again only when what it leaves out changes, never on a rescan or after a
-  change that leaves out the same cards; an extension's file is reported whenever its
-  owner's answer is taken, as before.
+  its id (#303, step A4d): on the status line, and on stderr by `items`, `agenda`, `table`
+  and `types` (not `types --json`, which reads no file), a line per board (`canvas couldn't
+  read Board.canvas: card 3 (id "") is left out: its place is empty or longer than 1024
+  bytes`); stderr also says there what an extension's owned file left out. Of the cards
+  whose id is empty, only the first in the file is such a card: a later one has a place of
+  its own and gives its tasks and links.
+- What a board leaves out waits on the status line until nothing else is said there
+  (#303): it never takes the place of the message of what you just did (a merge, a
+  duplicate, a new note, the whiteboard's delete or undo) or of the shape editor's (its
+  warning of unsaved changes included). Boards whose reports wait together are named in one
+  line, shown once for three seconds (`3 boards have cards left out: Mixed, Twins, Late
+  (cold-lava items shows each)`), as when the workspace opens; a board alone has its own
+  line. A board is reported again only when what it leaves out changes, never on a rescan
+  or after a change that leaves out the same cards, and a report still waiting is dropped
+  once its board leaves nothing out. An owner that can't read a file at all (a board that
+  isn't JSON Canvas included) and what an extension's file leaves out are said at once, as
+  before: an extension's file whenever an answer for a version of it leaves something out,
+  but not again when its owner leaves out what the cache did for a version already shown.
 - A rename, merge or recipe whose change would put what an owner gave past a limit (a
   link's target over 4096 bytes) is refused before the owner is asked, naming it.
 - An owner's typed item of a type that isn't loaded is named by its place cut to 80
@@ -239,8 +243,9 @@ change commands, keys and file formats; patch versions only fix things.
   cache keeps that item as it wrote it and not as the owner sent it (the refusal says the
   owner's new text doesn't read back as asked, though what differs is the cache's copy). In
   the menu the edit goes ahead once the owner has answered there. `item set` on the command
-  line doesn't keep the owner's new answer, so it refuses such an edit until the menu has
-  kept one.
+  line doesn't keep the owner's new answer, so it refuses such an edit until one is kept:
+  by the menu, or by a `rename` or a `recipe` on the command line that changes files (not
+  `--dry-run`), which asks the owners first and keeps their answers.
 
 - A TOML file that doesn't read is shown as the parser shows it, a line each, wherever it
   is listed (#265, track A step A3): `.cold-lava/types.toml`, `shapes.toml` and

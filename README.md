@@ -248,9 +248,10 @@ updates the card and the links in the text, changing those strings in the file a
 else. Extensions keep running while a board is open, and their status shows in its status line.
 A card whose id is longer than 1024 bytes, or the first card in the file whose id is empty
 (another program wrote it), gives no tasks and no links; a later card with an empty id has a
-place of its own and gives them as any card does. cold-lava says so, naming the board and the
-card: on the status line as the workspace opens and again when what a board leaves out
-changes, after the message of whatever you just did, and in `cold-lava items` on stderr.
+place of its own and gives them as any card does. cold-lava says so on the status line, after
+the message of whatever you just did: naming the board and the card, or naming the boards in
+one line when several wait (as the workspace opens); and in `cold-lava items` on stderr, a
+line per board.
 
 **Safe to use alongside Obsidian.** If the same board is open in both and changes on disk,
 cold-lava merges instead of overwriting: cards and arrows are matched by id and merged field

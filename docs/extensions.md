@@ -1595,11 +1595,10 @@ each doesn't invent one:
   is still that `rev` (else asks again), resolves links again and queues `items/changed` and
   `Event::OwnedChanged`, which the menu reads before it draws (backlinks, counts, news). An
   error, an answer that doesn't parse, no answer in 10 s or an owner that stopped is
-  `Event::OwnerTrouble` on the status line, and the file keeps what it had. The menu holds
-  each such report until the status line in front has nothing else to say
-  (`reports::Reports`): it never takes the place of the message of what the user just did,
-  several show one after another, and a newer one about a file takes the place of one still
-  waiting (#303). Nothing waits for an owner: the scan and the menu go on.
+  `Event::OwnerTrouble`, said on the status line at once, and the file keeps what it had.
+  What an answer leaves out is `Event::LeftOut` (`Core::owned_news`): for an extension's
+  file it is said at once, whenever an answer for a version of the file leaves something
+  out, as before #303. Nothing waits for an owner: the scan and the menu go on.
 - **The example** `examples/extensions/csv-table` answers `file/read` with each row as a
   `row` piece (place: its first cell) whose cells are plain characters, by column name. The
   header says what else a column holds: `Name (link)` makes each cell a link run to the file
@@ -2247,10 +2246,16 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   with an empty id has it and a later one doesn't, or another card's) is reported, as an
   item left out of the answer (`Given::left_out`, `canvas::left_out`): by its number among
   the nodes and its id, on the status line and on the command line's stderr, naming the
-  board (the owner's decision of 2026-11-13, #303). The core reports a board as the
-  workspace opens, and again only when what it leaves out changes (`Core::owned_read`,
-  `rescanned`): a rescan, or a change that leaves out the same cards, says nothing new. The rest is not
-  reported: the owner gives what the engine takes, and the rest stays in the file as it is. A rename changes the node its place names (`canvas::relink`); a later node
+  board (the owner's decision of 2026-11-13, #303). The core says what a board leaves out
+  as the workspace opens, and again only when that changes, `None` once it leaves nothing
+  out (`Event::LeftOut`, `Core::owned_news`): a rescan, or a change that leaves out the same
+  cards, says nothing new. The menu holds a board's report until the status line in front
+  has nothing else to say (`reports::Reports`), so it never takes the place of the message
+  of what the user just did, nor of the shape editor's; the boards whose reports wait
+  together are named in one line, `3 boards have cards left out: Mixed, Twins, Late
+  (cold-lava items shows each)` (the owner's decision of 2026-11-20). A newer report about a
+  board takes the place of one still waiting, and one about a board that leaves nothing out
+  any more is dropped. The rest is not reported: the owner gives what the engine takes, and the rest stays in the file as it is. A rename changes the node its place names (`canvas::relink`); a later node
   with a text or a file at that place stays as it is, never written over the named node's
   (`canvas::edit` refuses two changes to one field, which on main crashed the rename). A coordinate too large for a JSON number, or one that
   isn't a number, makes the file no JSON Canvas at all, as before.
