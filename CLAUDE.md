@@ -338,7 +338,7 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   `types.rs` reads and checks type definitions (`[types.NAME]`: a schema and `from` shapes)
   from every origin; `matcher.rs` matches them. The words a definition and an attribute
   reading are both written in (`On`, `Source`, `Sources`, `Provided`, `fill`, `compile`,
-  `is_name`) are `sources.rs`, a leaf, and where a layer of definitions came from (`Origin`:
+  `is_name`) are `sources.rs`, a leaf but for `alphabet::Role`, and where a layer of definitions came from (`Origin`:
   types, attribute readings and shapes are loaded in layers) is `origin.rs`, another.
   `types.rs` and `owner/markdown/attributes.rs` both read them there, so neither depends on
   the other for them (`types.rs` re-exports the ones `matcher.rs` and the table's
