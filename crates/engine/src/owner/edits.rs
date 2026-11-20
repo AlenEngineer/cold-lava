@@ -373,13 +373,13 @@ impl Edits {
             self.relink_read_back(ticket, path, text.clone(), given);
             return Ok(None);
         }
-        Ok(self.to_write(path, owner, given))
+        Ok(self.hand_over(path, owner, given))
     }
 
     /// The item edit of the file at `path`, whose new text read back as asked (`given`, what
     /// `owner` read in it), is handed to the core to write; it waits until the core says how
     /// that went (`wrote`).
-    fn to_write(&mut self, path: &str, owner: String, given: Given) -> Option<ToWrite> {
+    fn hand_over(&mut self, path: &str, owner: String, given: Given) -> Option<ToWrite> {
         let p = self.pending.get_mut(path)?;
         let Goal::Item { edit, at, .. } = &p.goal else {
             return None;
