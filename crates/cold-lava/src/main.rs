@@ -19,7 +19,9 @@ mod line_input;
 mod list;
 mod looks;
 mod notice;
+mod outline;
 mod owned;
+mod palette;
 mod pick_list;
 mod popup;
 mod previews;
@@ -37,6 +39,7 @@ mod tidy_view;
 mod type_table;
 mod views;
 mod whichkey;
+mod words;
 
 use cold_lava_engine::{
     act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
