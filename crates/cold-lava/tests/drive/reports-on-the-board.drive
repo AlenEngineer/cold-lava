@@ -9,7 +9,7 @@ wait-for example-workspace 35 notes
 wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out
 wait-gone canvas couldn't read Ashfall.canvas
 wait-for ? help  q quit
-wait 500ms
+wait 1000ms
 expect-not couldn't read
 keys w
 wait-for whiteboards · type to filter · ⏎ open · Esc back
@@ -24,6 +24,7 @@ expect deleted
 wait 1500ms
 expect deleted
 wait-gone deleted
+wait 1000ms
 expect-not couldn't read
 keys u
 wait-for whiteboard Ashfall · 3 cards · 0 arrows
@@ -31,6 +32,7 @@ expect undone
 wait 1500ms
 expect undone
 wait-gone undone
+wait 1000ms
 expect-not couldn't read
 keys q
 wait-for cold-lava workspaces

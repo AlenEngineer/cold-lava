@@ -8,7 +8,7 @@ wait-for example-workspace 35 notes
 wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out
 wait-gone canvas couldn't read Ashfall.canvas
 wait-for ? help  q quit
-wait 500ms
+wait 1000ms
 expect-not couldn't read
 keys p
 type krakatoa

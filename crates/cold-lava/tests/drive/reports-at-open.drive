@@ -1,15 +1,18 @@
 # Boards that leave cards out are named in one line as the workspace opens, said once for the
 # time a message shows (the owner's decision of 2026-11-20), where each board's report showed
-# in turn before. A board that isn't JSON Canvas at all is said at once, as before #303, and
-# isn't among them. tests/drive.rs writes Ashfall.canvas and Lahar.canvas, each with a card
-# whose id is empty, which the engine doesn't take, and Broken.canvas, which doesn't read.
+# in turn before. The count and where each is shown come first, so a line cut at the
+# terminal's width keeps them, and two boards of the same name go by their paths. A board
+# that isn't JSON Canvas at all is said at once, as before #303, and isn't among them.
+# tests/drive.rs writes Ashfall.canvas, Inbox/Ashfall.canvas and Lahar.canvas, each with a
+# card whose id is empty, which the engine doesn't take, and Broken.canvas, which doesn't
+# read.
 size 160x44
 env COLD_LAVA_EDITOR=none
 wait-for example-workspace 35 notes
 wait-for canvas couldn't read Broken.canvas: it isn't a JSON Canvas
-wait-for 2 boards have cards left out: Ashfall, Lahar (cold-lava items shows each)
+wait-for 3 boards have cards left out (cold-lava items shows each): Ashfall.canvas, Inbox/Ashfall.canvas, Lahar
 expect-not couldn't read
-wait-gone 2 boards have cards left out
+wait-gone 3 boards have cards left out
 wait-for ? help  q quit
 wait 1000ms
 expect ? help  q quit

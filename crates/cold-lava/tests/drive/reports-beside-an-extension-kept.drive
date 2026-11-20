@@ -6,6 +6,6 @@ env COLD_LAVA_EDITOR=none
 wait-for example-workspace 35 notes
 wait-for csv-table couldn't read Volcanoes/
 expect-not boards have cards left out
-wait-for 8s 2 boards have cards left out: Ashfall, Lahar (cold-lava items shows each)
+wait-for 8s 2 boards have cards left out (cold-lava items shows each): Ashfall, Lahar
 keys q
 exits 0

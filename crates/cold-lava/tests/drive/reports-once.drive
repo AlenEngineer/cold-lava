@@ -8,7 +8,7 @@ wait-for example-workspace 35 notes
 wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out
 wait-gone canvas couldn't read Ashfall.canvas
 wait-for ? help  q quit
-wait 500ms
+wait 1000ms
 expect-not couldn't read
 keys p
 type kilauea
@@ -21,6 +21,7 @@ wait-for example-workspace 36 notes
 wait 1500ms
 expect duplicated as Kīlauea 1 · R rename
 wait-gone duplicated as
+wait 1000ms
 expect-not couldn't read
 keys esc
 wait-for ? help  q quit

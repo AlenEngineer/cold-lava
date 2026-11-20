@@ -1069,13 +1069,14 @@ fn board_with_a_card_left_out(dir: &Path, rel: &str) {
     std::fs::write(dir.join("example-workspace").join(rel), board).unwrap();
 }
 
-/// Boards that leave cards out are named in one line as the workspace opens, and a board
-/// that doesn't read is said at once, on its own, as before #303 (the owner's decision of
-/// 2026-11-20).
+/// Boards that leave cards out are named in one line as the workspace opens, two of the
+/// same name by their paths, and a board that doesn't read is said at once, on its own, as
+/// before #303 (the owner's decision of 2026-11-20).
 #[test]
 fn boards_that_leave_cards_out_are_named_in_one_line_as_the_workspace_opens() {
     let dir = sandbox("reports-at-open");
     board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Inbox/Ashfall.canvas");
     board_with_a_card_left_out(&dir, "Lahar.canvas");
     std::fs::write(dir.join("example-workspace/Broken.canvas"), "{\"nodes\": [").unwrap();
     assert_passed(&drive("reports-at-open.drive", &dir));
@@ -1108,6 +1109,34 @@ fn an_extensions_report_is_said_at_once_beside_the_boards() {
         let out = drive_with(script, &dir, &["--home".as_ref(), home.as_os_str()]);
         assert_passed(&out);
     }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An owner that can't read its files is said at once as the workspace opens, as before #303,
+/// and the boards' line it takes the place of is said again after it, for its time (the
+/// owner's decision of 2026-11-20: shown once for 3 s).
+#[test]
+fn the_boards_line_is_said_again_after_an_owner_that_cant_read() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("reports-after-trouble");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        main.replace(
+            "return given(params[\"text\"], pieces=ext.alphabet >= 2)",
+            "raise ValueError(\"it can't read today\")",
+        )
+    });
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Lahar.canvas");
+    let out = drive_with(
+        "reports-after-trouble.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
     let _ = std::fs::remove_dir_all(dir);
 }
 
