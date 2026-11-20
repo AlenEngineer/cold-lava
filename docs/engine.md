@@ -8,7 +8,7 @@ parts are still to be designed; each layer says which.
 
 cold-lava is two things: an **engine** that understands a workspace of plain files (Markdown notes, canvases, and
 any format an owner reads), and
-**frontends** that show it (today one, the terminal UI). Extensions reach them through two
+**frontends** that show it (today the terminal UI and a first GUI). Extensions reach them through two
 gateways: the **workspace gateway** to the engine, and the **view gateway** to the frontend. This page is the engine's layers and frontends as built; the picture as a story and a map of
 the code is [ARCHITECTURE.md](../ARCHITECTURE.md), and [extensions.md](extensions.md) has the protocol and
 plans in detail.
@@ -17,7 +17,7 @@ plans in detail.
  you ─ keys, mouse ─────────────────────────────────────────┐
                                                             ▼
 ┌───────────────────────────────────────────────────────────▼────────────────────┐
-│ FRONTEND · the terminal UI today; a GUI or a language server could be others   │
+│ FRONTEND · the terminal UI and a first GUI; a language server could be another │
 │ draws views its own way: braille or pixels, a real canvas in a GUI             │
 │ owns keys, mouse and frame rate                                                │
 └─────────────▲─────────────────────────────────────────────┬────────────────────┘
@@ -42,7 +42,7 @@ plans in detail.
 │              safe writes (refused if the file changed since it was read)       │
 └────────────────────────────────────────────────────────────────────────────────┘
                                        ▲ ▼
-               your .md files, also edited by Obsidian, Neovim, git
+        your files (notes, canvases, any owned format), also edited by others
 ```
 
 Both gateways are JSON-RPC messages over a transport (stdio, a socket, or in-process for
