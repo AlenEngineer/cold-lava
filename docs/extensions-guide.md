@@ -354,7 +354,7 @@ title = "Kanban board"
 where.property = { kanban-plugin = "basic" }     # as a type's note shape writes it
 ```
 
-Opening a note the claim matches (Enter in the tree, the quick switcher, a link, a bookmark)
+Opening a note the claim matches (Enter in the tree, the quick switcher, a link)
 sends `file/open` with the note's path, `.md` included, instead of showing the reader. You don't
 read or parse the note: cold-lava already reads it, so ask for its items and change them through
 the gateway, and every edit is checked and written the way the reader's are.

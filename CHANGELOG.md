@@ -38,6 +38,18 @@ change commands, keys and file formats; patch versions only fix things.
   a binary in any release; it read the workspace around the gateway and carried its own
   `Cargo.lock` that every engine dependency had to be written into. The terminal UI is the one
   frontend. A graphical one, when it comes, starts from `crates/host/examples/headless.rs`.
+- **Breaking:** Obsidian's bookmarks (#373). cold-lava no longer reads or writes
+  `.obsidian/bookmarks.json`, Obsidian's saved list of notes, headings, folders and searches.
+  Gone with it: `'` (`bookmarks.open`, the bookmarks list), `B` (`note.bookmark`), `Ctrl-b` in
+  the search (`search.bookmark`), the `★` on bookmarked notes and folders in the tree, and
+  bookmarks following a rename, move or merge (the preview's "N bookmarks will follow it", the
+  `bookmark` lines of `cold-lava rename` and the `bookmarks` field of its `--json` plan).
+  Obsidian's file is left on disk untouched and keeps working in Obsidian; a rename made in
+  cold-lava no longer updates it, so a bookmark there of a note renamed in cold-lava shows as
+  missing in Obsidian. A key bound to one of the three commands under `[keys]` in
+  `config.toml` is skipped and reported as not a command (`cold-lava keys` says which).
+  A bookmark in cold-lava is the anchor on a passage (see Added); a
+  saved list is something an extension may offer.
 
 ### Fixed
 

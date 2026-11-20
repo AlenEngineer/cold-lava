@@ -514,7 +514,7 @@ What was decided:
   and its permission check are shared by all frontends *(built: `cold-lava-host`, #179)*, settings belong to each open workspace,
   and what the menu does to files goes through gateway messages *(built for delete, restore
   and new folders, the first group of #193; rename, merge, recipes and undo follow)*.
-  Obsidian's bookmarks, a saved list, are to be removed instead (#373): a bookmark here is the
+  Obsidian's bookmarks, a saved list, were removed instead (#373): a bookmark here is the
   anchor on a passage (#190).
 - **Built-in surfaces, extension data.** Extensions bring data, file formats, types and simple
   views. The page and the whiteboard are built in ("The frontend", above). The earlier goal

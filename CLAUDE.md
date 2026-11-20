@@ -138,7 +138,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `read.rs` holds `Seen`, what was at a path when it was read, so a later write or delete can
   be refused if it changed since. Every write or delete that checks for a change goes through
   it (`files.rs`, `trash.rs`, `merge.rs`, `rename.rs`'s `Written` and `apply`, set-field, the
-  tick, bookmarks, the shapes file, the board's save, the menu's tag edit, and the owned
+  tick, the shapes file, the board's save, the menu's tag edit, and the owned
   file's edit and the relink check the core makes for the edit desk), except `gateway.rs`'s
   item edit, `rename::check_unchanged` and `rename::owned_edit`, which move next (track A step
   A5, #265). `Seen::file` reads a file's bytes through a
@@ -424,9 +424,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
   `FolderCreated` naming the client. The next groups of #193 (rename, merge, recipes, undo)
-  follow the pattern that section ends with. Obsidian's saved list (`bookmarks.rs`) is not one
-  of them: it is to be removed (#373), since a bookmark in cold-lava's story is the anchor on a
-  passage (#190).
+  follow the pattern that section ends with. cold-lava doesn't read or write Obsidian's saved
+  list (`.obsidian/bookmarks.json`, removed in #373): a bookmark in cold-lava's story is the
+  anchor on a passage (#190), and a saved list is for an extension to offer.
 - `tasks_settings.rs`: Obsidian Tasks settings (statuses, global filter), a leaf that `items`,
   `tasks`, `style` and the owners read (`tasks.rs` re-exports it for `matcher.rs`, #343).
 - `tasks.rs`, `daily.rs`: `agenda` and `toggle` on items of the built-in `task` type
@@ -525,8 +525,8 @@ another host or check in a frontend:
   LSP-framed JSON-RPC (`frame`). The examples are `examples/extensions/open-tasks` and
   `csv-table` (Python), each with its own copy of `cold_lava.py` (a test keeps them alike).
 - File types: a manifest's `[[file-types]]` (`FileType`) claims a kind of file; `Registry` gives
-  each kind to the first claimant (`owner_of`; never `md` or `canvas`). The tree, the switcher,
-  links and bookmarks hand an owned file to its owner as `file/open`, and the core's
+  each kind to the first claimant (`owner_of`; never `md` or `canvas`). The tree, the switcher
+  and links hand an owned file to its owner as `file/open`, and the core's
   `FileChanged` reaches it as `file/changed`. `Host` lets an owner read and write its own kinds;
   other files need `files.read`/`files.write`. The example is `examples/extensions/csv-table`:
   it gives each row as a `row` piece with plain cells, a `Name (link)` column as link runs

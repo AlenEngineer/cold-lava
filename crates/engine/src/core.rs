@@ -3,7 +3,6 @@
 //! (cold-lava, Obsidian, Neovim, git…).
 
 use crate::act::{Ask, Replied, Reply, ShapeAnswer};
-use crate::bookmarks::Bookmarks;
 use crate::files;
 use crate::gateway::{
     self, Answer, Edit, Edited, Found, News, Query, Reason, Select, SubId, Subscriptions, Ticket,
@@ -57,8 +56,6 @@ pub enum Event {
     },
     /// Obsidian's graph settings (colour groups) changed.
     GraphSettingsChanged,
-    /// `.obsidian/bookmarks.json` changed; `Core::bookmarks` has been read again.
-    BookmarksChanged,
     /// An item was changed through the workspace gateway by the extension named `by`, after the
     /// note's own `NoteChanged` (or the owned file's `OwnedChanged`; `note` is then its path with
     /// its extension). `what` says what, for the status line: "set due", "ticked".
@@ -112,7 +109,6 @@ const SETTLE: Duration = Duration::from_millis(250);
 
 pub struct Core {
     pub index: Index,
-    bookmarks: Result<Bookmarks, String>,
     fs_events: Option<Receiver<notify::Event>>,
     _watcher: Option<RecommendedWatcher>,
     changed: Vec<PathBuf>,
@@ -120,7 +116,6 @@ pub struct Core {
     files: Vec<String>,
     rescan: bool,
     graph_settings: bool,
-    bookmarks_changed: bool,
     due: Option<Instant>,
     subscribers: Vec<Sender<Event>>,
     /// Events of the core's own edits, which the next `poll` returns.
@@ -147,7 +142,6 @@ impl Core {
         let owned = index.workspace.owned.iter();
         let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
         Ok(Core {
-            bookmarks: read_bookmarks(&index.workspace.root),
             index,
             fs_events,
             _watcher: watcher,
@@ -156,7 +150,6 @@ impl Core {
             files: Vec::new(),
             rescan: false,
             graph_settings: false,
-            bookmarks_changed: false,
             due: None,
             subscribers: Vec::new(),
             unseen,
@@ -179,16 +172,6 @@ impl Core {
 
     pub fn root(&self) -> &Path {
         &self.index.workspace.root
-    }
-
-    /// The workspace's bookmarks (Obsidian's), or why they can't be read.
-    pub fn bookmarks(&self) -> Result<&Bookmarks, &str> {
-        self.bookmarks.as_ref().map_err(String::as_str)
-    }
-
-    /// Read the bookmarks again now (after cold-lava itself changed them).
-    pub fn reload_bookmarks(&mut self) {
-        self.bookmarks = read_bookmarks(self.root());
     }
 
     /// Whether the workspace folder is being watched (if not, call `note_changed` / `rescan`).
@@ -241,7 +224,6 @@ impl Core {
     /// longer finds too, for the caller to say with its `Rescanned`.
     fn rescanned(&mut self, index: Index) -> Vec<Event> {
         let before = std::mem::replace(&mut self.index, index).workspace.owned;
-        self.reload_bookmarks();
         self.changed.clear();
         if !self.owners.kinds().is_empty() {
             let _ = self.owned_scan();
@@ -908,7 +890,7 @@ impl Core {
                 }
                 Err(_) => Vec::new(),
             },
-            Kind::GraphSettings | Kind::Bookmarks | Kind::Ignored => Vec::new(),
+            Kind::GraphSettings | Kind::Ignored => Vec::new(),
         }
     }
 
@@ -1027,10 +1009,6 @@ impl Core {
         if std::mem::take(&mut self.graph_settings) {
             events.push(Event::GraphSettingsChanged);
         }
-        if std::mem::take(&mut self.bookmarks_changed) {
-            self.reload_bookmarks();
-            events.push(Event::BookmarksChanged);
-        }
         self.broadcast(&events);
         unseen.into_iter().chain(events).collect()
     }
@@ -1054,7 +1032,6 @@ impl Core {
                         }
                     }
                     Kind::GraphSettings => self.graph_settings = true,
-                    Kind::Bookmarks => self.bookmarks_changed = true,
                     Kind::Folder => self.rescan = true,
                     Kind::Ignored => continue,
                 }
@@ -1072,7 +1049,6 @@ enum Kind {
     Board(String),
     File(String),
     GraphSettings,
-    Bookmarks,
     /// Something without an extension: most likely a folder that was moved or deleted, which
     /// only a full rescan catches reliably.
     Folder,
@@ -1086,9 +1062,6 @@ fn classify(root: &Path, path: &Path) -> Kind {
     let rel_s = rel.to_string_lossy().replace('\\', "/");
     if rel_s == ".obsidian/graph.json" {
         return Kind::GraphSettings;
-    }
-    if rel_s == crate::bookmarks::FILE {
-        return Kind::Bookmarks;
     }
     if rel
         .components()
@@ -1134,10 +1107,6 @@ fn owned_news(before: Option<&Owned>, now: Option<&Owned>) -> Option<Event> {
 fn owned_at<'a>(owned: &'a [Owned], rel: &str) -> Option<&'a Owned> {
     let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
     i.ok().map(|i| &owned[i])
-}
-
-fn read_bookmarks(root: &Path) -> Result<Bookmarks, String> {
-    Bookmarks::read(root).map_err(|e| e.to_string())
 }
 
 fn watch(root: &Path) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
@@ -1238,17 +1207,6 @@ mod tests {
                     || ev.contains(&Event::Rescanned),
                 "{ev:?}"
             );
-            std::fs::write(
-                root.join(crate::bookmarks::FILE),
-                r#"{"items":[{"type":"search","ctime":1,"query":"lava"}]}"#,
-            )
-            .unwrap();
-            let ev = wait_for(&mut core, |e| e.contains(&Event::BookmarksChanged));
-            assert!(
-                ev.contains(&Event::BookmarksChanged) || ev.contains(&Event::Rescanned),
-                "{ev:?}"
-            );
-            assert_eq!(core.bookmarks().unwrap().entries().len(), 1);
         }
 
         core.rescan();

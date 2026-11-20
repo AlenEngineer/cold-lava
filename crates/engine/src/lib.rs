@@ -4,7 +4,6 @@
 pub mod act;
 pub mod alphabet;
 pub mod bind;
-pub mod bookmarks;
 pub mod bounded;
 pub mod core;
 pub mod cst;

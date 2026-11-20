@@ -10,7 +10,7 @@
 use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
 use crate::read::Seen;
-use crate::rename::{self, FileEdit, Move, Written};
+use crate::rename::{self, FileEdit, Written};
 use crate::resolver::{Files, Rewriter};
 use crate::style::Style;
 use crate::trash::{self, Bin, Trashed};
@@ -61,8 +61,6 @@ pub struct Merge {
     /// The other notes, canvases and files other owners read whose links change. An owned
     /// file's new text comes from its owner (`Core::relink`) before the merge is made.
     pub edits: Vec<FileEdit>,
-    /// Obsidian's bookmarks of the source, pointed at the target.
-    pub bookmarks: Option<FileEdit>,
     pub warnings: Vec<String>,
 }
 
@@ -73,9 +71,7 @@ impl Merge {
     }
 
     fn writes(&self) -> impl Iterator<Item = &FileEdit> {
-        std::iter::once(&self.target_edit)
-            .chain(&self.edits)
-            .chain(&self.bookmarks)
+        std::iter::once(&self.target_edit).chain(&self.edits)
     }
 }
 
@@ -127,18 +123,6 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
     let body = body(&source_text);
     let appended = body.lines().count();
     let new_text = append(&merged, body);
-
-    let moves = [Move {
-        from: source_rel.clone(),
-        to: target_rel.clone(),
-        folder: false,
-        from_path: s.path.clone(),
-        to_path: t.path.clone(),
-    }];
-    let bookmarks = rename::bookmarks_edit(&ix.workspace.root, &moves).unwrap_or_else(|e| {
-        warnings.push(format!("bookmarks aren't updated: {e}"));
-        None
-    });
     Ok(Merge {
         root: ix.workspace.root.clone(),
         source: source_rel,
@@ -159,7 +143,6 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
         own_links,
         properties,
         edits,
-        bookmarks,
         warnings,
     })
 }
@@ -533,7 +516,8 @@ mod tests {
         );
         assert_eq!(
             read(&dir, ".obsidian/bookmarks.json"),
-            marks.replace("A/Pāhoehoe.md", "B/Lava.md")
+            marks,
+            "Obsidian's bookmarks are its own"
         );
         assert!(dir.join("workspace/.trash/Pāhoehoe.md").exists());
         let _ = std::fs::remove_dir_all(&dir);

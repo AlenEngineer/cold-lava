@@ -310,24 +310,21 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
 }
 
 /// The engine's whole-workspace operations the app still calls itself, each a later group of
-/// #193: rename and move, merge and duplicate, recipes and their undo, bookmarks, the daily
-/// note. `main.rs` is the command line (`cold-lava rename`, `recipe`, `daily`).
-const OPERATIONS: [&str; 8] = [
+/// #193: rename and move, merge and duplicate, recipes and their undo, the daily note.
+/// `main.rs` is the command line (`cold-lava rename`, `recipe`, `daily`).
+const OPERATIONS: [&str; 7] = [
     "merge::apply(",
     "merge::duplicate(",
     "merge::undo(",
     "rename::apply(",
     "recipe::apply(",
     "recipe::undo(",
-    "bookmarks::edit(",
     "daily::ensure(",
 ];
 
 #[test]
 fn the_operations_still_called_directly_are_these() {
     let left = [
-        "home.rs: bookmarks::edit(",
-        "home.rs: bookmarks::edit(",
         "home.rs: daily::ensure(",
         "home.rs: merge::apply(",
         "home.rs: merge::duplicate(",
@@ -485,7 +482,7 @@ fn segments(path: &str) -> (Vec<&str>, bool) {
 /// `module as`, when the path gives a guarded name another name, and `module::{… as …}`,
 /// when it renames something under one: the module as `self`, a module inside it or a
 /// function, at any depth, reported under the outermost guarded name. A type under another
-/// name (`Entry as Bookmark`) is not a call.
+/// name (`Merge as Planned`) is not a call.
 fn renamed(path: &str) -> Option<String> {
     let (names, alias) = segments(path);
     let guarded = guarded();
@@ -1046,7 +1043,6 @@ fn every_lists_module_is_guarded() {
         "merge",
         "rename",
         "recipe",
-        "bookmarks",
         "daily",
         "workspace",
         "Index",
@@ -1079,8 +1075,8 @@ fn the_scan_refuses_the_ways_around_the_operations_the_edits_and_the_scan() {
     assert_eq!(sneaked(index), ["Index as"]);
     let bare = "use crate::merge::{self, undo};\nfn f() {\n    undo(m);\n}\n";
     assert_eq!(sneaked(bare), ["use merge::undo"]);
-    let fine = "use crate::bookmarks::{self, Entry as Bookmark, Target};\n\
-                use crate::merge::{self, Merged};\nuse crate::{rename, tasks, workspace};\n";
+    let fine = "use crate::merge::{self, Merge as Planned, Merged};\n\
+                use crate::{rename, tasks, workspace};\n";
     assert_eq!(sneaked(fine), Vec::<String>::new());
     let no_use = "fn f() {\n    g(a, files as u64);\n    let w = std::fs::write as fn(&str);\n    \
                   let s = \"a, rename as before\";\n}\n";

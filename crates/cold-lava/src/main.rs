@@ -42,10 +42,9 @@ mod whichkey;
 mod words;
 
 use cold_lava_engine::{
-    act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
-    json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rel_path,
-    rename, resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types,
-    workspace, write,
+    act, bind, core, daily, edit, files, frontmatter, gateway, index, items, json_canvas, links,
+    markdown, merge, origin, owner, paths, problem, read, recipe, rel_path, rename, resolver,
+    search, shapes, sources, style, tasks, templates, tidy, trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -690,9 +689,6 @@ fn run() -> Result<()> {
                     for c in &e.changes {
                         told!("  {}:{}  {}", e.file, c.line, c.after.trim());
                     }
-                }
-                for c in plan.bookmarks.iter().flat_map(|b| &b.changes) {
-                    told!("  bookmark  {} → {}", c.before, c.after);
                 }
                 told!("{} links in {} files", plan.links(), plan.files());
                 for w in &plan.warnings {
