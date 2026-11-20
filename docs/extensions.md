@@ -1950,14 +1950,15 @@ Markdown, and the owner never writes or escapes any. This is step 3 of the neutr
   into it (the other of two items at one place), is refused as `read-back`, naming it in
   the words it is reported in: `{owner}'s new text for {file} doesn't read back as asked
   (bad: unknown field `colour`, … was left out, and came back changed, moved or not at
-  all); nothing was written`. One that is gone or new is named first, then one that moved:
-  what moved is what the fewest changes to its list explain, and of a left-out item and its
-  neighbour swapped, the left-out one, which didn't come back where it was. One that only
-  stands elsewhere because an item or a link that reads moved past it, was added before it
-  or was dropped from before it is not named: that item or link is, by the comparison of
-  the items, the links and the pieces when it sees the change (`{"kind":"list","text":"New
-  good"} wasn't asked for`), else as `the item at ty moved`, `… wasn't asked for` or `… is
-  missing` (`the link to Lava …`, `the link from a to b …` for links). An item with both
+  all); nothing was written`. One that is gone or new is named first, then one that moved.
+  What moved is what the fewest changes to its list explain. Of a left-out item and its
+  neighbour swapped, the left-out one is named, since it didn't come back where it was. One
+  that only stands elsewhere because an item or a link that reads moved past it, was added
+  before it or was dropped from before it is not named. That item or link is named instead,
+  by the comparison of the items, the links and the pieces when it sees the change
+  (`{"kind":"list","text":"New good"} wasn't asked for`), and else as `the item at ty
+  moved`, `… wasn't asked for` or `… is missing` (`the link to Lava …`, `the link from a to
+  b …` for links). An item with both
   `role` and `type` is read as a piece and left
   out for its `type`; one whose place isn't text is "an item with no place". A piece or a
   run written as a JSON list, which serde reads as it reads a map, reads as it did. A cached

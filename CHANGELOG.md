@@ -127,9 +127,9 @@ change commands, keys and file formats; patch versions only fix things.
   `-0` and `-0.0`; digits past 64 bits) and a key written twice (its first place, its last
   value). Of an item left out as it arrived only a 48-bit hash is kept, so an owner that
   crafts a collision is not told apart (`docs/extensions.md`, "Pieces, as built"). The
-  refusal names what changed: an item that reads, moved, added or dropped past a left-out
-  one, is named, not the left-out one (`the item at ty moved`); of a left-out item and its
-  neighbour swapped, the left-out one.
+  refusal names what changed. An item that reads and was moved, added or dropped before a
+  left-out one is named, not the left-out one (`the item at ty moved`). Of a left-out item
+  and its neighbour swapped, the left-out one is named.
 - The limits the owner decided apply to what an extension answers (#265, step A4b). An
   item past one is left out alone, with the limit named, and the rest of the file shows: a
   piece's text over 1 MiB (one run's, or all its runs and cells together, a field run's

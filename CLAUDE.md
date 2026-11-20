@@ -268,9 +268,9 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   come back where it was, holding what it held, or the edit is refused naming it and
   nothing is written. The refusal names what changed, by the fewest changes that explain
   each list's new order (`owner/order.rs`): an item that reads and moved past a left-out
-  one is named, not the left-out one. A place names the item that holds it (`Places`, `Given::placed`):
-  find an edit's item among those, never by order. Don't add a second rule for edits, and
-  don't compare what is left out by its words.
+  one is named, not the left-out one. A place names the item that holds it (`Places`,
+  `Given::placed`): find an edit's item among those, never by order. Don't add a second
+  rule for edits, and don't compare what is left out by its words.
   Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
