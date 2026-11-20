@@ -126,6 +126,13 @@ class Extension:
         params = {"id": item["id"], "rev": item["rev"], "op": op, **fields}
         return self.request("items/edit", params)
 
+    def anchor(self, item):
+        """Keep a reference to an item: the first time, cold-lava writes an anchor on it, a
+        `^name` in its note, and the answer's item["block_id"] is the name to keep. Asked
+        again, it writes nothing. An item with no place for one (a heading, a table row, an
+        item in a file another owner reads) is refused, saying what to keep instead."""
+        return self.edit(item, "anchor")
+
     def read(self, path):
         """A file's text and its version, {"text", "rev"}. Paths are relative to the workspace."""
         return self.request("workspace/read", {"path": path})

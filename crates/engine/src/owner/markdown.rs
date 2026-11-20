@@ -9,14 +9,17 @@ use crate::cst::{self, Kind, Step};
 use crate::edit::{self, SetField};
 use crate::frontmatter::{self, Value};
 use crate::gateway::{Edit, Error, Op, Reason};
+use crate::identity;
 use crate::items::{self, Item, Settings};
 use crate::rename::Change;
 use crate::style::{self, Lazy};
 use crate::tasks;
 use crate::workspace::{Ref, attachment_kind, clean_target};
 use chrono::NaiveDate;
+use std::collections::HashSet;
 use std::ops::Range;
 
+mod anchor;
 pub mod attributes;
 
 /// What reading a note gives besides its items, which are read on first use (`items`).
@@ -64,7 +67,7 @@ pub struct Made {
     pub text: String,
     /// False when the note already said this.
     pub changed: bool,
-    /// What it did, for the status line: "set due", "ticked".
+    /// What it did, for the status line: "set due", "ticked", "anchored".
     pub what: String,
     pub after: After,
     pub warning: Option<String>,
@@ -80,7 +83,9 @@ pub enum After {
 
 /// Make `edit` on `item` of the note at workspace-relative `note` whose text is `text`: through
 /// `edit::plan` for `set-field`, `tasks::toggle_text` for `toggle`, adding text in `style`.
-/// Nothing is written.
+/// A note's `anchor` is `anchor`'s, which takes the names the whole workspace holds; one
+/// asked here is for a Markdown piece of a file another owner writes (`Core::edit_owned`),
+/// and is refused. Nothing is written.
 pub fn edit(
     note: &str,
     text: &str,
@@ -137,7 +142,93 @@ pub fn edit(
                 warning: t.warning,
             })
         }
+        Op::Anchor => Err(crate::owner::change::no_anchor(item)),
     }
+}
+
+/// The names `anchor` tries for one item before it is refused: all of them would have to be
+/// written in the workspace already.
+const ATTEMPTS: u32 = 100;
+
+/// `items/edit`'s `anchor` on the item `req` names in the note at workspace-relative `note`
+/// whose text is `text` (#190): a `^name` written at the end of the item's last own line
+/// (`anchor::room`), the first name derived from its address (`identity::anchor`) that is
+/// written nowhere, neither among `taken` (the names the workspace holds, read once for the
+/// op) nor in this note as it is now, then the note read back as it was but for that anchor,
+/// which is the item's and no other's, every other anchor where it was (`items::anchors`). An
+/// item that has one is answered as it is. Nothing is written.
+pub fn anchor(
+    note: &str,
+    text: &str,
+    s: &Settings,
+    req: &Edit,
+    taken: &HashSet<String>,
+) -> Result<Made, Error> {
+    let before = items(note, text, s);
+    let k = (before.iter().position(|i| i.id == req.id)).ok_or_else(|| {
+        let message = format!("{note} has no item {}: read it again", req.id);
+        Error::new(Reason::Changed, message)
+    })?;
+    let item = &before[k];
+    if item.rev != req.rev {
+        let message = format!(
+            "{note}:{} changed since it was read: read it again",
+            item.line
+        );
+        return Err(Error::new(Reason::Changed, message));
+    }
+    let made = |text: String, changed: bool, item: &Item| Made {
+        text,
+        changed,
+        what: "anchored".into(),
+        after: After::Set(item.clone()),
+        warning: None,
+    };
+    let line = match anchor::room(item, text, s) {
+        anchor::Room::Kept => return Ok(made(text.to_string(), false, item)),
+        anchor::Room::Refused(why) => return Err(Error::new(Reason::Refused, why)),
+        anchor::Room::At(line) => line,
+    };
+    let here: HashSet<&str> = anchor_names(text).collect();
+    let written = |name: &String| taken.contains(name) || here.contains(name.as_str());
+    let mut names = (0..ATTEMPTS).map(|attempt| identity::anchor(&item.id, attempt));
+    let name = names.find(|name| !written(name)).ok_or_else(|| {
+        let message = format!(
+            "every name tried for {} is written somewhere already",
+            item.id
+        );
+        Error::new(Reason::Refused, message)
+    })?;
+    let at = anchor::end_of(text, line);
+    let new = anchor::write(text, at, &name);
+    anchor::same_tree(&tree(text, s), &tree(&new, s), at, line, &name)?;
+    let after = items(note, &new, s);
+    let same = items::anchors::by_line(&before, &after, |i| i.line);
+    let j = anchor::read_back(&before, &after, &same, k)?;
+    if let Some(change) = items::anchors::change(&before, &after, &same, k, text, Some(&name)) {
+        return Err(edit::EditError::Anchor(change.to_string()).into());
+    }
+    Ok(made(new, true, &after[j]))
+}
+
+/// Every name written after a `^` in `text`: an anchor (`^name`), a link to one
+/// (`[[Note#^name]]`) or words, each a run of letters, digits and dashes, as Obsidian writes
+/// a block id. The engine names a new anchor with none of them (#190).
+pub fn anchor_names(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices('^').filter_map(move |(at, _)| {
+        let rest = &text[at + 1..];
+        let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+        let name = &rest[..end.unwrap_or(rest.len())];
+        (!name.is_empty()).then_some(name)
+    })
+}
+
+/// A note's tree as the anchor's read-back compares it, in the workspace's flavour.
+fn tree(text: &str, s: &Settings) -> anchor::Tree {
+    let mut tree = anchor::Tree::default();
+    let gates = cst::Gates::of(&s.flavour).plain();
+    cst::read(text, gates, &mut |step| tree.step(step));
+    tree
 }
 
 /// How a link's target is written in a note.
@@ -663,6 +754,15 @@ mod tests {
     fn a_link_to_a_heading_is_not_a_tag() {
         let (_, tags) = links_and_tags("See [the agenda](#agenda), (#real) and #also.");
         assert_eq!(tags, ["real", "also"]);
+    }
+
+    /// A name is the whole run after a `^`, wherever it is written: `^k3q9x2-old` names
+    /// `k3q9x2-old`, not `k3q9x2`.
+    #[test]
+    fn anchor_names_are_whole_runs_after_a_caret() {
+        let text = "- a ^k3q9x2\nSee [[N#^k3q9x2-old|it]], ^ and ^^z, `^code` and 2^10.\n";
+        let names: Vec<&str> = anchor_names(text).collect();
+        assert_eq!(names, ["k3q9x2", "k3q9x2-old", "z", "code", "10"]);
     }
 
     #[test]
