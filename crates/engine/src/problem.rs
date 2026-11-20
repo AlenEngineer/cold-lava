@@ -23,10 +23,11 @@ pub struct Problem {
     before: Option<String>,
     /// Its words, a line each, as they were made. Never empty.
     lines: Vec<String>,
-    /// What it is about (a shape's id, a section of config.toml), for whoever picks problems
-    /// out of a list. It is never said: the words already say it as they were written. It is
-    /// a string while two vocabularies use it, shapes and config.toml's sections; a third
-    /// makes it an enum.
+    /// What it is about (a shape's id, a section of config.toml, what of an owner's answer:
+    /// `owner::given`'s `Subject`), for whoever picks problems out of a list. It is never
+    /// said: the words already say it as they were written. It is a string, which three
+    /// vocabularies now spell their own way; an answer's read is to carry its subjects
+    /// apart from its words (A5's `Read`).
     about: Option<String>,
     /// Which of its lines says what is wrong: the first, but a TOML error's message, which
     /// comes after where it is (`headline`).

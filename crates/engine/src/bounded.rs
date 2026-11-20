@@ -15,9 +15,9 @@
 //! `given::Places` before any of it counts as items (`given::read`), which asks every bound
 //! of an item again (`GivenItem::check`): so one rule holds for every form and every owner,
 //! the canvas owner's included, which asks `Places` itself and gives nothing it would leave
-//! out. An item edit is refused when its expected answer doesn't read (`Core::edit_item`),
-//! and a relink (a rename, a merge, a recipe) when its change would leave out what the owner
-//! gave (`Core::relink`), in the bound's words, before the owner is asked.
+//! out. An item edit and a relink (a rename, a merge, a recipe) are refused when the change
+//! would leave out what the owner gave (`given::check_change`, asked by `Core::edit_item` and
+//! `Core::relink`), in the bound's words, before the owner is asked.
 //!
 //! The bounds are the table below, one type each, so a number is written once and every
 //! field that has it names it. Two kinds: a bound of its own, decided by the owner
