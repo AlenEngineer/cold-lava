@@ -1243,7 +1243,8 @@ impl Core {
                 Err(_) => return unseen, // the folder vanished; keep what we had
             }
             if std::env::var_os("COLD_LAVA_TRACE_338").is_some() {
-                eprintln!("338 rescanned in poll; left for the next poll: {:?}", self.unseen);
+                let unseen = &self.unseen;
+                eprintln!("338 rescanned in poll; left for the next poll: {unseen:?}");
             }
             events.push(Event::Rescanned);
         } else {

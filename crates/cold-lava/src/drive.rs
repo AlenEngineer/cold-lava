@@ -676,7 +676,11 @@ pub fn run(
     }
     let began = Instant::now();
     for step in &script.steps {
-        told!("338 line {} starts at {:.3}s", step.line, began.elapsed().as_secs_f64());
+        let line = step.line;
+        told!(
+            "338 line {line} starts at {:.3}s",
+            began.elapsed().as_secs_f64()
+        );
         let failure = match &step.action {
             Action::Send(inputs) => {
                 if s.status.is_some() {
@@ -767,6 +771,11 @@ pub fn run(
                 })
             }
         };
+        told!(
+            "338 line {} ends at {:.3}s",
+            step.line,
+            began.elapsed().as_secs_f64()
+        );
         if let Some(message) = failure {
             told!("{name}:{}: {message}", step.line);
             s.print_screen(&format!("screen at {name}:{}", step.line));

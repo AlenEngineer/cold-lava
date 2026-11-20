@@ -20,6 +20,15 @@ jobs:
         run: |
           cargo test -p cold-lava-engine --lib --no-run
           cargo test -p cold-lava --test drive --no-run
+      - name: The rescan test, 20 runs
+        run: |
+          fails=0
+          for i in $(seq 20); do
+            if ! cargo test -q -p cold-lava-engine --lib core::bad_items::a_rescan_says_what_a_board_leaves_out_in_the_poll_that_reads_it -- --exact > out.txt 2>&1; then
+              fails=$((fails+1)); echo "=== run $i failed"; cat out.txt
+            fi
+          done
+          echo "RESCAN TEST: $fails of 20 failed" | tee -a summary.txt
       - name: Engine test alone, 50 runs
         env:
           COLD_LAVA_TRACE_338: "1"
