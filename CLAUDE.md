@@ -266,11 +266,13 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   (left out as it arrived, by the JSON value it was sent as, once parsed; an item, a link
   to a file or a link between pieces left out as it is read, by what it reads as) must
   come back where it was, holding what it held, or the edit is refused naming it and
-  nothing is written. The refusal names what changed, by the fewest changes that explain
-  each list's new order (`owner/order.rs`): an item that reads and moved past a left-out
-  one is named, not the left-out one. A place names the item that holds it (`Places`,
-  `Given::placed`): find an edit's item among those, never by order. Don't add a second
-  rule for edits, and don't compare what is left out by its words.
+  nothing is written. The refusal names what changed, by the fewest moves that explain
+  each list's new order (`owner/order.rs`, whose bound on repeats is `MORE_PAIRS`); when as
+  few moves explain either, the left-out one is named. An item that reads is told apart by
+  its form and place (two forms may share a place), a link given twice is two of one key,
+  and one that moved past a left-out one is named, not the left-out one. A place names the
+  item that holds it (`Places`, `Given::placed`): find an edit's item among those, never by
+  order. Don't add a second rule for edits, and don't compare what is left out by its words.
   Markdown pieces and typed items read as before.
   **Changes in the model's terms** (`owner/change.rs`, docs/extensions.md "Changes in the
   model's terms, as built"): `items/edit` on a piece becomes `given::Change::Attribute`
