@@ -559,6 +559,14 @@ enum Undo {
 /// Deletes, merges and recipes that `note.undo-delete` can still put back.
 const UNDO_DELETES: usize = 20;
 
+/// Whether the status line says a failed write's error with the causes chained to it (`Said`)
+/// or in its own words only (`LeftOut`, a rename's, as before `Core::apply`; #270).
+#[derive(Clone, Copy)]
+enum Causes {
+    Said,
+    LeftOut,
+}
+
 /// What a peek looks at: Tab sweeps through these and Enter goes where the selected one leads.
 #[derive(Clone, Copy, PartialEq)]
 enum PeekFrom {
@@ -4232,15 +4240,15 @@ impl Home {
     }
 
     /// The core didn't make the `what` (a rename, a merge or a recipe), and the status line says
-    /// why: a refusal changed nothing, and after a failed write the tree is read again. A
-    /// rename's failure leaves out its causes, as it did before `Core::apply` (#270).
-    fn not_made(&mut self, what: &str, not: NotApplied) {
-        let failed = match not {
-            NotApplied::Refused(why) => {
+    /// why: a refusal changed nothing, and after a failed write the tree is read again, its
+    /// error said with or without its `causes`.
+    fn not_made(&mut self, what: &str, causes: Causes, not: NotApplied) {
+        let failed = match (not, causes) {
+            (NotApplied::Refused(why), _) => {
                 return self.flash(format!("{what} cancelled, nothing was changed: {why}"));
             }
-            NotApplied::Failed(e) if what == "rename" => format!("{e}"),
-            NotApplied::Failed(e) => format!("{e:#}"),
+            (NotApplied::Failed(e), Causes::LeftOut) => format!("{e}"),
+            (NotApplied::Failed(e), Causes::Said) => format!("{e:#}"),
         };
         self.reload_tree();
         self.flash(format!("{what} failed: {failed}"));
@@ -4251,7 +4259,7 @@ impl Home {
     fn renamed(&mut self, made: Result<crate::rename::Plan, NotApplied>, marked: bool) {
         let plan = match made {
             Ok(plan) => plan,
-            Err(not) => return self.not_made("rename", not),
+            Err(not) => return self.not_made("rename", Causes::LeftOut, not),
         };
         if let Some(editor) = self.running_editor() {
             for (from, to) in plan.file_moves() {
@@ -4542,7 +4550,7 @@ impl Home {
     fn merged(&mut self, made: Result<(crate::merge::Merge, crate::merge::Merged), NotApplied>) {
         let (plan, done) = match made {
             Ok(made) => made,
-            Err(not) => return self.not_made("merge", not),
+            Err(not) => return self.not_made("merge", Causes::Said, not),
         };
         let (source, target) = (&plan.source_path, &plan.target_path);
         if let Some(editor) = self.running_editor() {
@@ -4688,7 +4696,7 @@ impl Home {
     ) {
         let (plan, done) = match made {
             Ok(made) => made,
-            Err(not) => return self.not_made("recipe", not),
+            Err(not) => return self.not_made("recipe", Causes::Said, not),
         };
         self.reload_tree();
         if self.running_editor().is_none() {
