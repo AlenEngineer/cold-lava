@@ -516,6 +516,7 @@ fields.w = { capture = "w" }
         kept: usize,
         refused: usize,
         unread: Vec<String>,
+        moved: Vec<String>,
     }
 
     /// Anchor each item of the note alone, and check what came of it apart from the
@@ -564,16 +565,17 @@ fields.w = { capture = "w" }
             let after = markdown::items(note, &made.text, s);
             let is = sorted(said(&after));
             assert_eq!(is, sorted(want), "{at}: the note reads otherwise");
-            ids_move_by_the_key_rules(&before, &after, k, &at);
+            let moved = ids_moved_beyond_the_key_rules(&before, &after, k).into_iter();
+            tally.moved.extend(moved.map(|by| format!("{at}: {by}")));
             tally.anchored += 1;
         }
     }
 
-    /// Only the ids the key rules move have moved (`items::identify`): the anchored item's,
-    /// a later twin's (an item that says the same under the same parent, after it), and the
-    /// ids of the items under either. Each item is paired with the one of its kind that is
-    /// the same nth on its line after.
-    fn ids_move_by_the_key_rules(before: &[Item], after: &[Item], k: usize, at: &str) {
+    /// The items whose ids moved beyond what the design note says the key rules move
+    /// (`items::identify`): the anchored item's, a later twin's (an item that says the same
+    /// under the same parent, after it), and the ids of the items under either. Each item is
+    /// paired with the one of its kind that is the same nth on its line after.
+    fn ids_moved_beyond_the_key_rules(before: &[Item], after: &[Item], k: usize) -> Vec<String> {
         let data = |i: &Item| serde_json::to_value(&i.data).unwrap();
         let parent = |i: &Item| before.iter().position(|p| Some(&p.id) == i.parent.as_ref());
         let twin = |i: usize| {
@@ -581,18 +583,17 @@ fields.w = { capture = "w" }
             i > k && data(b) == data(a) && b.parent == a.parent
         };
         let mut may = vec![false; before.len()];
+        let mut moved = Vec::new();
         for (i, b) in before.iter().enumerate() {
             may[i] = i == k || twin(i) || parent(b).is_some_and(|p| may[p]);
             let on_line = |x: &&Item| x.line == b.line && x.data.kind() == b.data.kind();
             let nth = before[..i].iter().filter(on_line).count();
             let paired = after.iter().filter(on_line).nth(nth).expect("paired");
-            assert!(
-                may[i] || paired.id == b.id,
-                "{at}: the {} on line {} moved its id",
-                b.data.kind(),
-                b.line
-            );
+            if !may[i] && paired.id != b.id {
+                moved.push(format!("the {} on line {}", b.data.kind(), b.line));
+            }
         }
+        moved
     }
 
     /// The design's oracle (#190), in the style of the pulldown-cmark ones: every item of
@@ -625,6 +626,7 @@ fields.w = { capture = "w" }
             kept,
             refused,
             mut unread,
+            moved,
         } = tally;
         let counts = format!("{anchored} anchored, {kept} kept, {refused} refused");
         assert!(anchored > 100 && kept > 40 && refused > 150, "{counts}");
@@ -644,6 +646,12 @@ fields.w = { capture = "w" }
                 "Tricky 9.md:12 para",
             ],
             "{counts}"
+        );
+        assert!(
+            moved.is_empty(),
+            "{counts}; {} anchors moved an id beyond the key rules:\n{}",
+            moved.len(),
+            moved.join("\n")
         );
     }
 }
