@@ -331,9 +331,12 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   the engine: those two test modules (`items/pulldown.rs`, `markdown/pulldown.rs`) are all
   that use it, and nothing shipped may. Read tasks through items, not by scanning lines.
   `items/anchors.rs` is the anchor rule: an edit loses no block id, moves none to another
-  item and makes none, but one already written in the edited item's own text (an untick of
-  a line 0.6.0 ticked after `^rent`). `set-field`'s and the tick's read-backs both ask it
-  (`anchors::change`); don't check block ids anywhere else.
+  item and makes none, but on the edited item: one already written in its own text (an
+  untick of a line 0.6.0 ticked after `^rent`), and the one `items/edit`'s `anchor` writes
+  for it (#190), which then counts as its own. `set-field`'s, the tick's and the anchor's
+  read-backs all ask it (`anchors::change`); don't check block ids anywhere else. (The
+  anchor's tree check, `owner/markdown/anchor.rs`, asks Markdown's syntax only whether it
+  reads the name it wrote as a block id where it wrote it.)
 - `alphabet.rs`, `types.rs`, `matcher.rs`: the alphabet and the type language.
   `alphabet::Role` is the nine roles a piece of writing can have (`document`, `section`,
   `text`, `item`, `row`, `aside`, `verbatim`, `embed`, `opaque`), `alphabet::Mark` the six
@@ -678,7 +681,13 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   README is updated with it. The `changelog` check (`scripts/changelog-check.sh`) fails a PR
   that changes `crates/` or `examples/extensions/` without touching `CHANGELOG.md` (a release PR
   changes it anyway); a refactor or a tests-only change there carries the `no-changelog` label
-  instead. It doesn't check the README half of this rule.
+  instead. It also fails a PR that adds a `CHANGELOG.md` line outside `## [Unreleased]`, naming
+  the line and its section: after a release, a merge of main into an open PR can slide its entry
+  into the released section, where it is never seen. A release PR (`scripts/release-check.sh`
+  says whether a commit is one) may add lines under its own new `## [x.y.z]` heading, and under
+  no older one. A PR that edits a released section on purpose (a typo, a correction) carries the
+  `changelog-edit` label; `no-changelog` never lifts this rule. `scripts/changelog-check-test.sh`
+  runs the cases on scratch repos. The check doesn't look at the README half of this rule.
 - **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
   Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
   commit, build Linux binaries (x86-64 and ARM) and publish the release. Before 1.0, minor = may break,

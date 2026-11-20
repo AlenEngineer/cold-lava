@@ -134,13 +134,24 @@ pub fn piece(p: &Piece, item: &Item, op: &Op, s: &Settings) -> Result<Made, Erro
             let what = what(field, value);
             Ok(Made { changes, what })
         }
+        Op::Anchor => Err(no_anchor(item)),
     }
+}
+
+/// `items/edit`'s `anchor` on an item an owner gave (#190), refused: a `^name` is Markdown's,
+/// and the file is its owner's to write.
+pub fn no_anchor(item: &Item) -> Error {
+    refused(format!(
+        "{} is in {}, a file its owner writes, where a ^name has no place: keep a link to \
+         the file instead, [[{}]]",
+        item.id, item.note, item.note
+    ))
 }
 
 /// The change that sets `field` of the item `typed`, read from the piece `p`, to `value`.
 fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Result<Change, Error> {
     let kind = &typed.kind;
-    let definition = (s.types.types.iter()).find(|t| t.name == *kind);
+    let definition = s.types.named(kind);
     let definition = definition.map(|t| &t.definition);
     let shape = definition.and_then(|d| d.from.get(typed.place.shape));
     let value_type = definition.and_then(|d| d.fields.get(field));
@@ -329,5 +340,6 @@ pub fn typed(place: &str, item: &Item, op: &Op, s: &Settings) -> Result<Made, Er
             let what = "ticked".to_string();
             Ok(Made { changes, what })
         }
+        Op::Anchor => Err(no_anchor(item)),
     }
 }

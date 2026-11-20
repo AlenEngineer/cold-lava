@@ -1,7 +1,8 @@
 name: Changelog
 
 # A PR that changes code adds a CHANGELOG.md entry, or carries the no-changelog label
-# (scripts/changelog-check.sh has the rules). Its own workflow, so adding or removing a label
+# (scripts/changelog-check.sh has the rules), and adds its lines under ## [Unreleased], never into a
+# released version's section. Its own workflow, so adding or removing a label
 # re-runs only this check and not the builds in ci.yml. To block merges, `changelog` has to be
 # one of main's required checks.
 on:
@@ -25,6 +26,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+      - name: Changelog check cases
+        run: scripts/changelog-check-test.sh
       - name: Changelog entry
         env:
           BASE: ${{ github.event.pull_request.base.sha }}

@@ -570,7 +570,7 @@ fn keeps_anchors(
         let found = (0..after.len()).find(free);
         same[k] = found;
     }
-    let Some(change) = anchors::change(before, after, &same, k, text) else {
+    let Some(change) = anchors::change(before, after, &same, k, text, None) else {
         return Ok(());
     };
     let words = match &change {

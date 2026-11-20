@@ -193,7 +193,7 @@ fn is_list(s: &Source) -> bool {
 fn with_inside(w: &crate::types::Where, types: &Types) -> crate::types::Where {
     let mut w = w.clone();
     for name in &mut w.inside {
-        if types.types.iter().all(|t| t.name != *name)
+        if types.named(name).is_none()
             && let Some(on) = On::from_name(name)
         {
             *name = on.alias().to_string();
@@ -714,12 +714,7 @@ fn priority(t: &Type, types: &Types) -> i32 {
         if let Some(p) = t.definition.priority {
             return p;
         }
-        match t
-            .definition
-            .extends
-            .as_ref()
-            .and_then(|b| types.types.iter().find(|x| x.name == *b))
-        {
+        match t.definition.extends.as_ref().and_then(|b| types.named(b)) {
             Some(base) => t = base,
             None => break,
         }

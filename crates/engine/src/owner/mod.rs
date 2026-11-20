@@ -29,7 +29,8 @@ pub mod given;
 pub mod markdown;
 mod order;
 
-use given::{Change, Given};
+use crate::workspace::Owned;
+use given::{Change, Given, GivenItem};
 
 /// The owners in the engine besides Markdown, by the kind of file each reads (lowercase, without
 /// the dot). They answer in-process, at once, and no extension can claim their kinds.
@@ -75,4 +76,25 @@ pub fn edit(
     changes: &[Change],
 ) -> Option<Result<String, String>> {
     (built_in(rel) == Some(owner)).then(|| canvas::edit(text, changes))
+}
+
+/// The anchor names in what the owner of `file` gave for it (#190): each `^name` in one of its
+/// Markdown pieces, as the Markdown owner reads them; each its links point at (`Note#^name`),
+/// as the resolver splits them; and on a board, each a file card's `subpath` names, as the
+/// canvas owner reads them. A piece's own words are characters, never Markdown, so a `^name`
+/// in them names nothing. The engine names a new anchor with none of these.
+pub fn anchors(file: &Owned) -> Vec<String> {
+    let pieces = file.given.placed().filter_map(|item| match item {
+        GivenItem::Markdown { text, .. } => Some(text),
+        _ => None,
+    });
+    let mut names: Vec<String> = pieces
+        .flat_map(|text| markdown::anchor_names(text).map(String::from))
+        .collect();
+    let links = file.links.iter();
+    names.extend(links.filter_map(|(r, _)| crate::resolver::split_link(&r.target).block));
+    if is_board(&file.rel) {
+        names.extend(canvas::anchors(&file.given));
+    }
+    names
 }

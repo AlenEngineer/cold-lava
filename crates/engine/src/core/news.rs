@@ -1432,3 +1432,32 @@ fn a_folders_delete_and_restore_are_each_a_reset_then_the_event() {
     assert_eq!(late.names("agenda"), ["items/reset"]);
     assert_eq!(h.count("agenda", "Clear the gutters"), 1);
 }
+
+fn anchor(item: &Item) -> Edit {
+    Edit {
+        id: item.id.clone(),
+        rev: item.rev.clone(),
+        op: Op::Anchor,
+    }
+}
+
+/// A `^name` is Markdown's (#190). A task written on a whiteboard card or in an extension's
+/// file is read as Markdown there, but the file is its owner's: an anchor on it is refused
+/// before the owner is asked, and nothing changes.
+#[test]
+fn an_anchor_in_a_file_another_owner_reads_is_refused_before_it_is_asked() {
+    let mut h = workspace("anchor-owned");
+    for (words, file) in [
+        ("Check the seismograph", "Board.canvas"),
+        ("Read the report", "Reading.lines"),
+    ] {
+        let task = h.task(words);
+        let before = h.read(file);
+        let refused = h.edit("binder", &anchor(&task)).unwrap_err();
+        assert_eq!(refused.reason, Reason::Refused, "{file}: {refused}");
+        assert!(refused.message.contains(file), "{file}: {refused}");
+        assert_eq!(h.owner_edits(), 0, "{file}: its owner isn't asked");
+        assert_eq!(h.read(file), before, "{file}");
+        assert!(h.deliver().is_empty(), "{file}: nothing to hear");
+    }
+}
