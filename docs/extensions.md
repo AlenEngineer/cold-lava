@@ -1446,7 +1446,7 @@ after an independent check of the first build: whose a token is, what `to` may d
 what `stat` lists, and the menu's undo across workspaces.)*
 
 The menu deleted, restored and made folders by calling the engine's functions itself, so an
-extension, `cold-lava lsp` (#195) or the GUI could do none of it. These are now file messages,
+extension, the GUI or any other frontend could do none of it. These are now file messages,
 beside the four above and shaped like them: a path is workspace-relative and goes through
 `files::resolve`, a change names the version it was decided on as `expect`, and a refusal is
 the same `{reason, message}`.

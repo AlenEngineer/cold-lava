@@ -187,8 +187,8 @@ chosen Markdown flavour). Frontends sit above the engine, and reach extensions t
 host:
 
 ```
- cold-lava (the terminal UI, the main frontend)      cold-lava-gui      cold-lava lsp
-     │                                                (crates/gui)       (planned, #195)
+ cold-lava (the terminal UI, the main frontend)      cold-lava-gui
+     │                                                (crates/gui)
      │   each frontend: its built-in extensions, applying Effects, keys, drawing
      ▼
  cold-lava-host    manifests · permissions · Host (the gateway's guard) · Extension
@@ -492,7 +492,8 @@ change what it shows, never how it works.
 
 ## Direction and order
 
-*(decided 2026-11-11; the work, in this order, is the first section of roadmap issue #100)*
+*(decided 2026-11-11, the language server dropped from it on 2026-11-20; the work, in this
+order, is the first section of roadmap issue #100)*
 
 cold-lava has a code editor's architecture, for human notes: owners are to file formats what
 language servers are to languages, types are the type system, and extensions are the plugins.
@@ -509,7 +510,7 @@ What was decided:
 - **Identity** (#190). An item gets an anchor the first time a shape, a link or an extension
   keeps a reference to it; items nobody refers to are never written to.
 - **One door** (#179, #180, #193, #194). Every program is a client of one versioned protocol:
-  the terminal app, a GUI, `cold-lava lsp`, the command line and extensions. The extension host
+  the terminal app, a GUI, the command line and extensions. The extension host
   and its permission check are shared by all frontends *(built: `cold-lava-host`, #179)*, settings belong to each open workspace,
   and what the menu does to files goes through gateway messages *(built for delete, restore
   and new folders, the first group of #193; rename, merge, recipes, undo and bookmarks
@@ -524,7 +525,13 @@ What was decided:
   "Who decides what").
 - **The language server comes before the editor** (#195). It is the smallest frontend, it puts
   types, links and renames into the editor you already use, and cold-lava's own editor later
-  builds on the same pieces.
+  builds on the same pieces. *Reversed on 2026-11-20:* the notebook, cold-lava's own editor,
+  comes first, and `cold-lava lsp` is not planned. A language server stays possible later, as
+  an ordinary reader through the same door. The reasons: here the owners are the language
+  servers (cold-lava asks them; a language server points the other way); LSP fits only text
+  formats; an LSP rename has the editor write cold-lava's changes, around the safe write path
+  (and the archive and the logbook to come, #305, #306); and it takes effort from the one
+  opinionated frontend.
 
 The order, engine-facing work first and the UX last. Since 2026-11-12, a refactor goes before
 the feature that lands on its code (`docs/foundations.md`, "How the code is built"); roadmap
@@ -533,11 +540,10 @@ issue #100 is the one list of open work and says which step each feature waits f
 1. Finish the half-done migrations, so there is one path for each thing: one Markdown reading
    (the tree), one path for owned files, the whiteboard's screens in the menu's loop.
 2. One door into the engine.
-3. `cold-lava lsp`, used daily on real notes.
-4. Types and identity.
-5. The terminal views (lists, tables, the graph).
-6. Drawings.
-7. The notebook: cold-lava's own editor and the page. Whether the page is built for the
+3. Types and identity.
+4. The terminal views (lists, tables, the graph).
+5. Drawings.
+6. The notebook: cold-lava's own editor and the page. Whether the page is built for the
    terminal or the GUI first is open (#196), to decide after real use.
 
 ## What stays fixed
