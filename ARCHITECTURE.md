@@ -43,11 +43,13 @@ no write uses it yet (track A step A5, #265). Swapping the page in is copying by
 (`write.rs`), and a page taken out goes to the trash, never deleted for good (`trash.rs`).
 
 **A translator changes what a book says, never its name or its place.** Renaming, moving and
-removing a book are the librarian's, done at a reader's request: the librarian plans a rename
-and asks each translator only how its own pages should read once a name they mention has
-changed (`Core::relink`). Owning a kind of file grants no rename, move or delete, and a
-translator can't write a book another translator reads (#323). When renaming and moving come to
-the door (#193), they come as a reader's requests under the same rule.
+removing a book are the librarian's: the librarian plans a rename and asks each translator only
+how its own pages should read once a name they mention has changed (`Core::relink`). Owning a
+kind of file grants no rename, move or delete, and a translator can't write whole a book another
+translator reads (#323). Removing is a reader's request under its own badge: any extension the
+person gave `files.delete` may send a file to the trash, whoever reads it, and the trash keeps
+it. Renaming and moving have no message at the door yet; when they come (#193), they come as a
+reader's requests under the same rule.
 
 **The librarian has clerks.** If the librarian did everything alone, it would never keep up, so
 each job that holds its own state belongs to a clerk: a tool the librarian calls in order and
@@ -56,8 +58,8 @@ desk (`core.rs`), and some aren't hired yet:
 
 | Clerk | Job | Where |
 | --- | --- | --- |
-| The front desk | checks an extension's badge before the librarian hears a word | `crates/host` (its own clerk since C1, #312) |
-| The report keeper | keeps each translator's last report between visits, and asks again when one no longer reads | `owner/cache.rs` |
+| The front desk | checks an extension's badge before the librarian hears a word | `crates/host/src/host.rs` (split out of one file in C1, #312) |
+| The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
 | The edit desk | carries an edit to a translator, waits for its answer and reads it back | `owner/edits.rs` holds the edit; the waiting and checking still sit in `core.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
