@@ -10,7 +10,8 @@ use serde_json::Value as Json;
 use crate::app::{ACCENT, MUTED, NOTE};
 use crate::items::{Data, Item};
 use crate::markdown::{self, Doc, Flavour, Inline};
-use crate::types::{Colour, Definition, Look, On, Types};
+use crate::sources::On;
+use crate::types::{Colour, Definition, Look, Types};
 
 /// One value (or one whole item) a look covers. Its index is the id of its `Inline::Mark`s.
 #[derive(Clone, Debug, PartialEq)]

@@ -37,8 +37,9 @@ mod whichkey;
 
 use cold_lava_engine::{
     act, bind, bookmarks, core, daily, edit, files, frontmatter, gateway, index, items,
-    json_canvas, links, markdown, merge, owner, paths, problem, read, recipe, rename, resolver,
-    search, shapes, style, tasks, templates, tidy, trash, types, workspace, write,
+    json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rename,
+    resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types, workspace,
+    write,
 };
 
 use anyhow::Result;
@@ -1427,7 +1428,7 @@ fn print_types(found: &types::Types, counts: Option<&HashMap<String, (usize, usi
                     None => ("-".to_string(), "not read here"),
                     Some(sources) => {
                         let labels: Vec<String> = sources.0.iter().map(source_label).collect();
-                        let rw = if sources.0.iter().any(types::Source::writable) {
+                        let rw = if sources.0.iter().any(sources::Source::writable) {
                             "writable"
                         } else {
                             "read-only"
@@ -1491,7 +1492,7 @@ fn print_attributes(found: &attributes::Readings) {
             told!("  only with {}", r.with);
         }
         let ticked = attributes::TICKED.contains(&r.name.as_str()) && r.on.name() == "item";
-        if ticked && r.origin != types::Origin::BuiltIn {
+        if ticked && r.origin != origin::Origin::BuiltIn {
             told!("  but {}", attributes::TICKING);
         }
     }
@@ -1540,8 +1541,8 @@ fn where_label(w: &types::Where) -> String {
     parts.join("; ")
 }
 
-fn source_label(s: &types::Source) -> String {
-    use types::Source as S;
+fn source_label(s: &sources::Source) -> String {
+    use sources::Source as S;
     let detail = match s {
         S::Capture(t)
         | S::Pattern(t)
