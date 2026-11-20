@@ -20,9 +20,8 @@ use crate::gateway::{
 };
 use crate::items::{Data, Item};
 use crate::list::Filter;
-use crate::sources::Source;
 use crate::table::{Column, Kind, Row, Table};
-use crate::types::{Definition, Type, Value};
+use crate::types::{Definition, Source, Type, Value};
 
 /// The column after the schema's: the note an item is in.
 pub const NOTE: &str = "note";
