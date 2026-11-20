@@ -1,0 +1,37 @@
+# A board's report never takes the place of the shape editor's own message (#303's behaviour
+# review, round 2, M3). With a triangle drawn and not saved, q warns that the changes aren't
+# saved; another program then writes a board with a card left out, and its report waits
+# until the next key has cleared the warning.
+size 140x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type Sketches
+keys enter
+wait-for whiteboard Sketches · 0 cards
+keys S
+wait-for shape editor · type to filter
+keys enter
+wait-for shape editor · shape1 (new) · vertices
+click 10 34
+click 10 64
+click 23 79
+click 10 34
+wait-for closed path of 3 vertices
+keys q
+wait-for unsaved changes: q again leaves without saving them, ctrl+s saves
+write Inbox/Tephra.canvas {"nodes":[{"id":"","type":"text","text":"- [ ] Sweep the roof","x":0,"y":0,"width":200,"height":80}],"edges":[]}\n
+wait 2500ms
+expect unsaved changes: q again leaves without saving them, ctrl+s saves
+expect-not couldn't read
+keys v
+wait-for canvas couldn't read Inbox/Tephra.canvas: card 1 (id "") is left out
+keys q
+wait-for unsaved changes: q again leaves without saving them, ctrl+s saves
+keys q
+wait-for whiteboard Sketches · 0 cards
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

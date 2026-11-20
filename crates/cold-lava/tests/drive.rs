@@ -1069,13 +1069,63 @@ fn board_with_a_card_left_out(dir: &Path, rel: &str) {
     std::fs::write(dir.join("example-workspace").join(rel), board).unwrap();
 }
 
-/// Several boards' reports as the workspace opens: each shows, in turn (#303's review, S1).
+/// Boards that leave cards out are named in one line as the workspace opens, and a board
+/// that doesn't read is said at once, on its own, as before #303 (the owner's decision of
+/// 2026-11-20).
 #[test]
-fn what_files_leave_out_is_reported_each_in_turn_as_the_workspace_opens() {
-    let dir = sandbox("reports-in-turn");
+fn boards_that_leave_cards_out_are_named_in_one_line_as_the_workspace_opens() {
+    let dir = sandbox("reports-at-open");
     board_with_a_card_left_out(&dir, "Ashfall.canvas");
     board_with_a_card_left_out(&dir, "Lahar.canvas");
-    assert_passed(&drive("reports-in-turn.drive", &dir));
+    std::fs::write(dir.join("example-workspace/Broken.canvas"), "{\"nodes\": [").unwrap();
+    assert_passed(&drive("reports-at-open.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// What an extension's file leaves out is said as soon as its owner answers, as before #303,
+/// never after the boards' report (the owner's decision of 2026-11-20): on the first open,
+/// when csv-table answers in its own time, and on the next, from what it gave before.
+#[test]
+fn an_extensions_report_is_said_at_once_beside_the_boards() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("reports-beside-an-extension");
+    let home = dir.join("home");
+    install_csv_table(&home, |main| {
+        main.replace(
+            "return {\"items\": items}",
+            "return {\"items\": items + [{\"place\": \"bad\", \"role\": \"nope\"}]}",
+        )
+    });
+    board_with_a_card_left_out(&dir, "Ashfall.canvas");
+    board_with_a_card_left_out(&dir, "Lahar.canvas");
+    for script in [
+        "reports-beside-an-extension.drive",
+        "reports-beside-an-extension-kept.drive",
+    ] {
+        let out = drive_with(script, &dir, &["--home".as_ref(), home.as_os_str()]);
+        assert_passed(&out);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A board's report never takes the place of the shape editor's own message, its warning
+/// that the drawing isn't saved included (#303's behaviour review, round 2, M3).
+#[test]
+fn a_report_waits_for_the_shape_editors_message() {
+    let dir = sandbox("reports-under-the-shape-editor");
+    assert_passed(&drive("reports-under-the-shape-editor.drive", &dir));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A report waiting for its turn is dropped once the board no longer leaves the card out
+/// (#303's behaviour review, round 2, should-fix 1).
+#[test]
+fn a_waiting_report_is_dropped_when_the_board_no_longer_leaves_its_card_out() {
+    let dir = sandbox("reports-stale");
+    assert_passed(&drive("reports-stale.drive", &dir));
     let _ = std::fs::remove_dir_all(dir);
 }
 

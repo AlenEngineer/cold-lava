@@ -1,0 +1,11 @@
+# The next open of reports-beside-an-extension.drive's workspace: what csv-table gave is kept,
+# so its files' reports come with the boards' as the workspace opens. csv-table's are said at
+# once, and the boards' one line waits until they have had their time.
+size 160x44
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 35 notes
+wait-for csv-table couldn't read Volcanoes/
+expect-not boards have cards left out
+wait-for 8s 2 boards have cards left out: Ashfall, Lahar (cold-lava items shows each)
+keys q
+exits 0

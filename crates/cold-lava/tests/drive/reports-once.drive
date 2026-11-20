@@ -6,7 +6,10 @@ size 160x44
 env COLD_LAVA_EDITOR=none
 wait-for example-workspace 35 notes
 wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out
-wait-gone couldn't read
+wait-gone canvas couldn't read Ashfall.canvas
+wait-for ? help  q quit
+wait 500ms
+expect-not couldn't read
 keys p
 type kilauea
 wait-for 1 notes

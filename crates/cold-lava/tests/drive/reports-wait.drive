@@ -6,7 +6,10 @@ size 160x44
 env COLD_LAVA_EDITOR=none
 wait-for example-workspace 35 notes
 wait-for canvas couldn't read Ashfall.canvas: card 1 (id "") is left out
-wait-gone couldn't read
+wait-gone canvas couldn't read Ashfall.canvas
+wait-for ? help  q quit
+wait 500ms
+expect-not couldn't read
 keys p
 type krakatoa
 wait-for 1 notes
@@ -18,7 +21,7 @@ write Inbox/Tephra.canvas {"nodes":[{"id":"","type":"text","text":"- [ ] Sweep t
 wait 1500ms
 expect bookmarked Krakatoa · ' bookmarks
 wait-for 10s canvas couldn't read Inbox/Tephra.canvas: card 1 (id "") is left out
-wait-gone couldn't read
+wait-gone canvas couldn't read Inbox/Tephra.canvas
 keys esc
 wait-for ? help  q quit
 keys q
