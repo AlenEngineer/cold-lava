@@ -131,13 +131,18 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   these: they ask the core (`Core::delete_file`, `restore_file`: `workspace/delete`,
   `workspace/restore`). `Core::set_system_trash` names the system trash; a test that
   deletes sets one under its own folder.
-- `read.rs`: `Seen`, what was at a path when it was read, so a later write or delete can be
-  refused if it changed since: `Seen::file` (a file's bytes, through a symlink, as a write
-  reads them) or `Seen::entry` (a file, a folder by its listing or a symlink by where it
-  points, as a delete checks them), each read again its own way by `unchanged`; `rev` (a
-  folder's is its listing's), `text` (`NotText`, whose `about` is the one wording of "isn't
-  UTF-8 text") and `replace` (through `write::replace`). The gateway's `Reason::of` names a
-  `WriteError`'s reason.
+- `read.rs` holds `Seen`, what was at a path when it was read, so a later write or delete can
+  be refused if it changed since. No path uses it yet: the rest of track A step A5 (#265)
+  moves the writes and deletes that check for a change onto it. `Seen::file` reads a file's
+  bytes through a symlink, as a write does; `Seen::kept` holds bytes read earlier or just
+  written, checked as `file` is; `Seen::entry` reads a file, a folder by its listing or a
+  symlink by where it points, never following one. `at` is the same at the path a move took
+  it to. `unchanged` reads it again the way it was seen; `unchanged_entry` reads the entry
+  itself, whatever the way, as a delete must (a file seen through a link is not the link).
+  `replace` writes through `write::replace`, only over a file seen as a file. `rev` is the
+  gateway's version (a folder's is its listing's); `text` refuses bytes that aren't UTF-8
+  with `NotText`, whose `about` is the one wording of "isn't UTF-8 text". The gateway's
+  `Reason::of` names a `WriteError`'s reason.
 - `workspace.rs`: scans a workspace: notes with links (`refs` keep line and context), tags,
   frontmatter aliases, full text, each read by its owner. `search_key()` folds text for matching (lowercase, no
   accents, no ʻokina): use it for every user-facing search.
