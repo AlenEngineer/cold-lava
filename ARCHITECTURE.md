@@ -60,7 +60,7 @@ desk (`core.rs`), and some aren't hired yet:
 | --- | --- | --- |
 | The front desk | checks an extension's badge before the librarian hears a word | `crates/host/src/host.rs` (split out of one file in C1, #312) |
 | The report keeper | keeps each translator's last report between visits, and asks again when a book changes or a kept report no longer reads | `owner/cache.rs` |
-| The edit desk | carries an edit to a translator, waits for its answer and reads it back | `owner/edits.rs` holds the edit; the waiting and checking still sit in `core.rs` (track C step C2) |
+| The edit desk | carries an edit to a translator, waits for its answer and reads it back, then hands the librarian the page to swap in | `owner/edits.rs` (track C step C2) |
 | The town crier | announces each change once, in order, to whoever listens | still in `core.rs` (`broadcast`, `tell`; track C step C3) |
 | The archivist | keeps every page the librarian replaces | not hired yet (#305, after track C) |
 | The logbook keeper | writes down every change, who asked and which translator wrote it | not hired yet (#306, after track C) |
@@ -84,9 +84,8 @@ for the same reason.
   some files itself (`crates/cold-lava/tests/one_door.rs` lists each), and track B (#270)
   closes those. The GUI scans the workspace itself, beside the core, and is outside that test's
   lists (#277 deletes it until the GUI is real).
-- The librarian keeps some state machines that belong to clerks of their own: the owned-file edit
-  and rename, and the nine places it both sends events to subscribers and keeps them for `poll`.
-  Track C (#271) moves them out, so
+- The librarian keeps a state machine that belongs to a clerk of its own: the nine places it
+  both sends events to subscribers and keeps them for `poll`. Track C (#271) moves it out, so
   the librarian only calls on its clerks in order.
 - Features live inside the library: tasks, daily notes, recipes, and the shapes and bindings
   that draw data (`shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`) share the engine's crate with

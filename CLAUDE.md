@@ -220,8 +220,10 @@ A Cargo workspace of six crates, plus the GUI beside it. The version lives in th
   and change notes through the owner. An extension
   can own another kind: `owner/given.rs` reads its `file/read` answer (pieces, Markdown
   pieces, typed items, links) into items and refs, `owner/cache.rs` keeps answers by `rev` (on disk under
-  `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` holds an edit while
-  its owner answers `file/edit` and reads the new text back. `Core::set_owners`, `take_reads`,
+  `~/.cache/cold-lava/owners/`) and says what to ask, `owner/edits.rs` (the edit desk, a tool
+  with private state) holds an edit while its owner answers `file/edit` and reads the new text
+  back, then hands the core what to write (`ToWrite`): the desk never writes a file or tells a
+  subscriber, the core does both. `Core::set_owners`, `take_reads`,
   `take_file_edits` and `file_given` run it and never wait; an `items/edit` of an owned file
   is answered `Later` (`take_edited`). Owned files are `Workspace::owned`, beside the notes,
   and the index, the gateway, the graph and tidy read them too. `owner/canvas.rs` is the
