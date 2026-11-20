@@ -331,7 +331,8 @@ fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
 /// Carry out a merge: refuse if any file changed since it was planned, or a file another owner
 /// reads has no new text from it yet (`Core::relink`), write the target and every file whose links
 /// change (putting back the ones written if one fails), then send the source to the trash.
-/// `system` is the system trash (`trash::system_bin()`; tests pass their own).
+/// `system` is the system trash: the core's (`Core::set_system_trash`), which `Core::apply`
+/// passes; tests pass their own.
 pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     rename::check_answered(&m.edits)?;
     let source = Seen::kept(&m.source_path, m.source_text.as_bytes());
