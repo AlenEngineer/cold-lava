@@ -5,13 +5,13 @@
 use crate::app::{ACCENT, HIT, MUTED, NOTE};
 use crate::commands::{Keymap, Match, MenuCommand};
 use crate::line_input::CtrlU;
-use crate::pick_list::{self, Picked};
+use crate::pick_list::{self, End, Measure, Picked, Piece, Row};
 use crate::popup;
 use crate::words::plural;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -68,68 +68,44 @@ impl Palette {
     pub fn draw(&self, f: &mut Frame, area: Rect, hits: &[Match], keys: &Keymap<MenuCommand>) {
         let inner = popup::picker(f, area, " Commands ", " ↑↓ choose · ⏎ run · Esc close ");
         let query = &self.query;
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(
-                    if query.is_empty() {
-                        "  type a command's name or id".to_string()
-                    } else {
-                        format!("  {}", plural(hits.len(), "command"))
-                    },
-                    Style::new().fg(MUTED),
-                ),
-            ]),
-            Line::raw(""),
-        ];
-        let rows = inner.height.saturating_sub(2) as usize;
-        let start = self.sel.saturating_sub(rows.saturating_sub(1));
-        let width = inner.width as usize;
-        for (i, m) in hits.iter().enumerate().skip(start).take(rows) {
-            let selected = i == self.sel;
-            let base = if selected {
-                Style::new().fg(Color::Black).bg(ACCENT)
-            } else {
-                Style::new().fg(NOTE)
-            };
-            let dim = if selected {
-                base
-            } else {
-                Style::new().fg(MUTED)
-            };
-            let hl = if selected {
-                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
-            };
+        let typed = Line::from(vec![
+            Span::styled(" ▸ ", Style::new().fg(HIT)),
+            Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+            Span::styled(
+                if query.is_empty() {
+                    "  type a command's name or id".to_string()
+                } else {
+                    format!("  {}", plural(hits.len(), "command"))
+                },
+                Style::new().fg(MUTED),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(typed), inner);
+        let rows = Rect {
+            y: inner.y + 2,
+            height: inner.height.saturating_sub(2),
+            ..inner
+        };
+        let list = pick_list::List {
+            len: hits.len(),
+            sel: self.sel,
+            none: " no commands match",
+            measure: Measure::Chars,
+        };
+        pick_list::draw(f.buffer_mut(), rows, list, |i| {
+            let (m, plain) = (&hits[i], Style::new().fg(NOTE));
             let c = m.command;
-            let mut spans = vec![Span::styled(" ", base)];
-            let mut push = |text: &str, hits: &[usize], style: Style| {
-                for (ci, ch) in text.chars().enumerate() {
-                    let st = if hits.contains(&ci) { hl } else { style };
-                    spans.push(Span::styled(ch.to_string(), st));
-                }
-            };
-            push(&c.title, &m.title_hits, base);
-            push("  ", &[], base);
-            push(&c.id, &m.id_hits, dim);
             let right = format!("{} ", keys.label(&c.id));
-            let used = 3 + c.title.chars().count() + c.id.chars().count();
-            let pad = width.saturating_sub(used + right.chars().count());
-            spans.push(Span::styled(" ".repeat(pad), base));
-            let keys = if selected {
-                base
-            } else {
-                Style::new().fg(ACCENT)
-            };
-            spans.push(Span::styled(right, keys));
-            lines.push(Line::from(spans));
-        }
-        if hits.is_empty() {
-            lines.push(Line::styled(" no commands match", Style::new().fg(MUTED)));
-        }
-        f.render_widget(Paragraph::new(lines), inner);
+            Row {
+                text: vec![
+                    Piece::plain(" ", plain),
+                    Piece::matched(c.title.as_str(), &m.title_hits, plain),
+                    Piece::plain("  ", plain),
+                    Piece::matched(c.id.as_str(), &m.id_hits, Style::new().fg(MUTED)),
+                ],
+                end: End::Right(Piece::plain(right, Style::new().fg(ACCENT))),
+            }
+        });
     }
 }
 
