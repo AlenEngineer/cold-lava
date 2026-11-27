@@ -608,6 +608,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #397: an undo whose source's folder became a symlink to a folder outside the workspace
+    /// is refused, naming the link: the source stays in the trash and nothing lands outside.
+    #[cfg(unix)]
+    #[test]
+    fn an_undo_through_a_folder_that_became_a_symlink_is_refused() {
+        let files = [("Lava.md", "# Lava\n"), ("Notes/Pāhoehoe.md", "Smooth.\n")];
+        let (dir, ix) = workspace_with("undo-through-link", &files);
+        let done = apply(&merge(&ix, "Notes/Pāhoehoe", "Lava"), None).unwrap();
+        let outside = dir.join("outside");
+        std::fs::rename(dir.join("workspace/Notes"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("workspace/Notes")).unwrap();
+        let refused = undo(&done).unwrap_err().to_string();
+        assert!(refused.contains("Notes is a symbolic link"), "{refused}");
+        assert_eq!(read(&dir, ".trash/Pāhoehoe.md"), "Smooth.\n");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_refused_merge_or_undo_says_why_in_its_words() {
         let files = [

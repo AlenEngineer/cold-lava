@@ -1367,4 +1367,55 @@ mod tests {
         assert!(is_link(&at), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// #397: a rename, a folder's move or a marked move into a folder that is a symlink is
+    /// refused when planned, naming the link, and nothing moves out of the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn nothing_moves_into_a_folder_that_is_a_symlink() {
+        let files = [("Lava.md", "hot"), ("Rock/Basalt.md", "")];
+        let (dir, ix) = workspace_with("into-link", &files);
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Alias")).unwrap();
+        let lava = ix.by_rel("Lava").unwrap();
+        let items = ["Lava.md".to_string(), "Rock".to_string()];
+        let refusals = [
+            plan(&ix, lava, "Alias/Lava.md").unwrap_err(),
+            plan(&ix, lava, "Alias/Deep/Lava.md").unwrap_err(),
+            plan_folder(&ix, "Rock", "Alias/Rock").unwrap_err(),
+            plan_into(&ix, &items, "Alias").unwrap_err(),
+        ];
+        for refused in refusals {
+            let refused = refused.to_string();
+            assert!(refused.contains("Alias is a symbolic link"), "{refused}");
+        }
+        assert_eq!(read(&dir, "Lava.md"), "hot");
+        assert!(dir.join("Rock/Basalt.md").exists());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// #397: a folder on the new path that became a symlink after the plan is refused by
+    /// `apply` before anything moves or is written.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_put_in_after_the_plan_is_refused_before_the_move() {
+        let files = [("Lava.md", "hot"), ("Rocky.md", "[[Lava]]\n")];
+        let (dir, ix) = workspace_with("link-later", &files);
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let p = plan(&ix, ix.by_rel("Lava").unwrap(), "Later/Lava.md").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Later")).unwrap();
+        let refused = apply(&p).unwrap_err().to_string();
+        assert!(refused.contains("Later is a symbolic link"), "{refused}");
+        assert_eq!(read(&dir, "Lava.md"), "hot");
+        assert_eq!(read(&dir, "Rocky.md"), "[[Lava]]\n");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
 }
