@@ -284,8 +284,7 @@ impl Files {
             .collect();
         let root = &workspace.root;
         let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-            let n = e.file_name().to_string_lossy();
-            e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
+            e.depth() == 0 || !crate::workspace::is_skipped(&e.file_name().to_string_lossy())
         });
         for e in walker.filter_map(|e| e.ok()) {
             if e.file_type().is_file() && e.path().extension().is_none_or(|x| x != "md") {

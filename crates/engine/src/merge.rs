@@ -79,6 +79,10 @@ impl Merge {
 /// A merge that was made: enough to undo it.
 #[derive(Clone, Debug)]
 pub struct Merged {
+    root: PathBuf,
+    /// Workspace-relative, with `.md`: what `undo` restores to, through `files::resolve`.
+    source: String,
+    /// Where the source was, for the menu to show and open; `undo` never acts on it.
     pub source_path: PathBuf,
     pub target_path: PathBuf,
     pub trashed: Trashed,
@@ -334,6 +338,8 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     let written = Written::all(m.writes())?;
     match trash::delete(&m.root, &source, system) {
         Ok(trashed) => Ok(Merged {
+            root: m.root.clone(),
+            source: m.source.clone(),
             source_path: m.source_path.clone(),
             target_path: m.target_path.clone(),
             trashed,
@@ -356,17 +362,25 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
 }
 
 /// Undo a merge: the source comes back from the trash and every file written goes back to what it
-/// held. Refused, with nothing changed, if one of them was edited since or the source's path is
-/// taken.
+/// held. Refused, with nothing changed, if one of them was edited since, the source's path is
+/// taken, or a folder on the way to it is now a symlink (`files::resolve`, #397).
 pub fn undo(m: &Merged) -> Result<()> {
     m.written.check("merge")?;
-    if write::taken(&m.source_path) {
+    let path = crate::files::resolve(&m.root, &m.source);
+    let there = path
+        .as_ref()
+        .map_or_else(|_| m.root.join(&m.source), Clone::clone);
+    if write::taken(&there) {
         bail!(
             "{} exists again; the merge can't be undone",
-            m.source_path.display()
+            there.display()
         );
     }
-    trash::restore(&m.trashed, &m.source_path)?;
+    let path = match path {
+        Ok(path) => path,
+        Err(e) => bail!("{e}; the merge can't be undone"),
+    };
+    trash::restore(&m.trashed, &path)?;
     m.written.put_back().context("putting the files back")?;
     Ok(())
 }
@@ -639,6 +653,25 @@ mod tests {
         );
         assert_eq!(read(&dir, "Lava.md"), "# Lava\n");
         assert_eq!(read(&dir, "Pāhoehoe.md"), "Smooth.\n");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #397: an undo whose source's folder became a symlink to a folder outside the workspace
+    /// is refused, naming the link: the source stays in the trash and nothing lands outside.
+    #[cfg(unix)]
+    #[test]
+    fn an_undo_through_a_folder_that_became_a_symlink_is_refused() {
+        let files = [("Lava.md", "# Lava\n"), ("Notes/Pāhoehoe.md", "Smooth.\n")];
+        let (dir, ix) = workspace_with("undo-through-link", &files);
+        let done = apply(&merge(&ix, "Notes/Pāhoehoe", "Lava"), None).unwrap();
+        let outside = dir.join("outside");
+        std::fs::rename(dir.join("workspace/Notes"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("workspace/Notes")).unwrap();
+        let refused = undo(&done).unwrap_err().to_string();
+        let link = "Notes/Pāhoehoe.md: Notes is a symbolic link, which the gateway never follows";
+        assert_eq!(refused, format!("{link}; the merge can't be undone"));
+        assert_eq!(read(&dir, ".trash/Pāhoehoe.md"), "Smooth.\n");
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }

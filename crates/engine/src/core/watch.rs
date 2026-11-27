@@ -1,6 +1,7 @@
 //! The watch on a workspace's folder: the one file watcher (CLAUDE.md, `core.rs`). It hears
 //! what changed in the folder, and in the folder a linked `.obsidian` leads to, and gives back
-//! each path by its names in the workspace (`named`). What a path is, is `classify`'s.
+//! each path by its names in the workspace (`named`) and what it is (`classify`), which
+//! leaves out what the scan doesn't read (`workspace::is_scanned`).
 
 use crate::workspace;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -33,17 +34,23 @@ impl Watch {
         self.heard.is_some()
     }
 
-    /// The paths heard since the last call, each by its names in the workspace (`named`).
-    pub fn heard(&self) -> Vec<PathBuf> {
+    /// The paths heard since the last call, each by its names in the workspace (`named`), with
+    /// what it is (`classify`). What the core doesn't read (`Kind::Ignored`) is left out.
+    pub fn heard(&self) -> Vec<(PathBuf, Kind)> {
         let Some(rx) = &self.heard else {
             return Vec::new();
         };
         let obsidian = self.linked_obsidian.as_deref();
-        let mut paths = Vec::new();
+        let mut heard = Vec::new();
         for path in rx.try_iter().flat_map(|ev| ev.paths) {
-            paths.extend(named(&self.root, obsidian, &path));
+            for path in named(&self.root, obsidian, &path) {
+                match classify(&self.root, &path) {
+                    Kind::Ignored => {}
+                    kind => heard.push((path, kind)),
+                }
+            }
         }
-        paths
+        heard
     }
 
     /// Hear only what is sent on `heard` from now on, instead of the folder: the news harness
@@ -75,11 +82,8 @@ pub fn classify(root: &Path, path: &Path) -> Kind {
     if rel_s == ".obsidian/graph.json" {
         return Kind::GraphSettings;
     }
-    if rel
-        .components()
-        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-    {
-        return Kind::Ignored; // .obsidian, .trash, .git, our own temporary files…
+    if !workspace::is_scanned(rel) {
+        return Kind::Ignored;
     }
     if workspace::is_note_path(rel) {
         return Kind::Note;

@@ -910,10 +910,10 @@ impl Core {
 
     /// Take what the watcher heard, to read once things settle.
     fn heard(&mut self) {
-        let root = self.root().to_path_buf();
-        let mut any = false;
-        for p in self.watch.heard() {
-            match classify(&root, &p) {
+        let heard = self.watch.heard();
+        let any = !heard.is_empty();
+        for (p, kind) in heard {
+            match kind {
                 Kind::Note => self.changed.push(p),
                 Kind::Board(rel) => {
                     if !self.boards.contains(&rel) {
@@ -927,9 +927,8 @@ impl Core {
                 }
                 Kind::GraphSettings => self.graph_settings = true,
                 Kind::Folder => self.rescan = true,
-                Kind::Ignored => continue,
+                Kind::Ignored => {}
             }
-            any = true;
         }
         if any {
             self.schedule(SETTLE);
@@ -1703,7 +1702,10 @@ mod tests {
         let mut p = plan(&core, "Krakatoa", "Krakatau");
         let owned = p.edits.iter().find(|e| e.file == "Eruptions.csv").unwrap();
         assert_eq!(owned.links, 1, "listed in the plan");
-        assert!(rename::apply(&p).is_err(), "not before the owner answered");
+        assert!(
+            rename::apply(&p, core.root()).is_err(),
+            "not before the owner answered"
+        );
         let Applying::Later(ticket) = core.apply(&mut p) else {
             panic!("waits for the owner");
         };
