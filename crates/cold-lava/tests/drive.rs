@@ -233,6 +233,26 @@ fn a_symlinked_note_is_deleted_as_a_link_and_its_target_is_left_alone() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A symlink to nothing takes a name: a new note of that name is refused with a notice, the
+/// menu goes on (#389), and the link is left as it was.
+#[cfg(unix)]
+#[test]
+fn a_new_note_where_a_symlink_to_nothing_is_is_refused_and_the_menu_goes_on() {
+    let dir = sandbox("new-note-link");
+    let nowhere = dir.join("outside/nothing.md");
+    let link = dir.join("example-workspace/Inbox/Ghost.md");
+    std::os::unix::fs::symlink(&nowhere, &link).unwrap();
+    let out = drive("new-note-link.drive", &dir);
+    assert_passed(&out);
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        nowhere,
+        "the link is kept"
+    );
+    assert!(!nowhere.exists(), "nothing was made through the link");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Needs python3, which CI's runners have.
 #[test]
 fn a_subscriber_hears_the_menus_delete_and_undo_once_each() {
