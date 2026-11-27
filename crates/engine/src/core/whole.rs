@@ -215,7 +215,8 @@ impl Core {
 
     /// After a rename, merge or recipe was made, before reading the workspace again: what the
     /// owners read in their files' new texts (`answers`) is kept as their answer for the version
-    /// each read back, where each of `edits` is now (`moved`), so they aren't asked again.
+    /// each read back, which is on disk now, where each of `edits` is now (`moved`), so they
+    /// aren't asked again.
     fn relinked(
         &mut self,
         edits: &[FileEdit],
@@ -229,7 +230,8 @@ impl Core {
             let path = moved(&e.path);
             let rel = path.strip_prefix(self.root()).unwrap_or(&path);
             let rel = rel.to_string_lossy().replace('\\', "/");
-            self.owners.answered(&a.owner, &rel, &a.rev, Some(&a.after));
+            let rev = a.rev.as_str();
+            (self.owners).answered(&a.owner, &rel, rev, Some(&a.after), Some(rev));
         }
     }
 }

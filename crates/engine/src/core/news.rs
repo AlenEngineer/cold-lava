@@ -341,6 +341,11 @@ impl Harness {
         self.core.take_relinked()
     }
 
+    /// The menu stops waiting for the owners of the rename under `ticket` (Esc).
+    pub(crate) fn cancel(&mut self, ticket: Ticket) {
+        self.call(|core| core.cancel_relink(ticket));
+    }
+
     /// The rename that waited under `ticket` is made with its owners' answer
     /// (`Core::apply_answered`), and everything is read again; or why it isn't.
     pub(crate) fn renamed(
@@ -405,12 +410,22 @@ impl Harness {
 
     /// The owner answers the `file/read` requests waiting for it. How many there were.
     pub(crate) fn owner_reads(&mut self) -> usize {
-        let reads = self.core.take_reads();
-        for (owner, read) in &reads {
+        let reads = self.take_reads();
+        self.owner_answers(&reads);
+        reads.len()
+    }
+
+    /// The `file/read` requests waiting for the owner, for it to answer later (`owner_answers`).
+    pub(crate) fn take_reads(&mut self) -> Vec<(String, FileRead)> {
+        self.call(Core::take_reads)
+    }
+
+    /// The owner answers `reads`, which the core handed out earlier (`take_reads`).
+    pub(crate) fn owner_answers(&mut self, reads: &[(String, FileRead)]) {
+        for (owner, read) in reads {
             let given = lines_given(&read.text);
             self.call(|core| core.file_given(owner, &read.path, &read.rev, Ok(given)));
         }
-        reads.len()
     }
 
     /// Everything the core has to say now. The watcher's events are read without waiting for
@@ -1045,6 +1060,94 @@ fn a_rename_one_owner_refuses_changes_nothing_anywhere() {
     let answer = h.edit("agenda", &tick(&check));
     assert!(matches!(answer, Ok(Answer::Later(_))), "{:?}", answer.err());
     assert!(matches!(&h.deliver().edited[..], [(_, _, Ok(_))]));
+}
+
+/// #369. A rename is cancelled while the extension reads its file's new text back, and the
+/// read-back comes in after: that text was never written, so what the owner read in it is not
+/// the file's, and what it read in the file as it is stays. The menu reads the workspace again
+/// before it plans: the file still shows its task, and the next rename finds its link and
+/// relinks it. A read-back not yet sent when its rename is cancelled isn't sent.
+#[test]
+fn a_read_back_after_its_rename_was_cancelled_is_not_the_file_s_reading() {
+    let mut h = linked("late-read-back");
+    h.follow("agenda", tasks());
+    let mut plan = h.plan_rename("Ash", "Tephra");
+    let ticket = h
+        .apply_rename(&mut plan)
+        .expect("the extension answers later");
+    assert_eq!(h.owner_edits(), 1);
+    let back = h.take_reads();
+    assert_eq!(back.len(), 1, "asked to read its new text back");
+    h.cancel(ticket);
+    h.owner_answers(&back);
+    assert_eq!(
+        h.read("Reading.lines"),
+        LINKED_READING,
+        "nothing was written"
+    );
+    assert!(h.deliver().is_empty(), "nor is anything said");
+
+    h.rescan();
+    assert_eq!(h.deliver().names("agenda"), ["items/reset"]);
+    assert_eq!(h.count("agenda", "Read the report"), 1, "as it is on disk");
+    let mut plan = h.plan_rename("Ash", "Tephra");
+    let files: Vec<&str> = plan.edits.iter().map(|e| e.file.as_str()).collect();
+    assert_eq!(files, ["Plan.md", "Board.canvas", "Reading.lines"]);
+    assert_eq!(h.owner_reads(), 0, "what its owner read in it is kept");
+
+    let ticket = h
+        .apply_rename(&mut plan)
+        .expect("the extension answers later");
+    assert_eq!(h.owner_edits(), 1);
+    h.cancel(ticket);
+    assert_eq!(h.owner_reads(), 0, "its read-back is dropped with it");
+
+    let ticket = h
+        .apply_rename(&mut plan)
+        .expect("the extension answers later");
+    h.owner_edits();
+    h.owner_reads();
+    assert_eq!(h.relinked(), [ticket]);
+    h.renamed(&mut plan, ticket).unwrap();
+    let reading = "- [ ] Read the report on [[Tephra]]\n";
+    assert_eq!(h.read("Reading.lines"), reading);
+}
+
+/// An owner's answer for a path that became a symlink while it read, of the text the link
+/// leads to, is not the file's: the core reads no link, as the scan doesn't
+/// (`workspace::first_link`), so the answer isn't kept. A file put back at the path with that
+/// text is read by its owner again.
+#[cfg(unix)]
+#[test]
+fn an_answer_for_a_path_that_is_a_symlink_is_not_kept() {
+    let outside = temp("linked-answer-outside");
+    let mut h = Harness::with("linked-answer", &[("Reading.lines", READING)]);
+    h.follow("agenda", tasks());
+    let theirs = "- [ ] Read the report twice\n";
+    h.write("Reading.lines", theirs);
+    h.saw("Reading.lines");
+    h.deliver();
+    let asked = h.take_reads();
+    assert_eq!(asked.len(), 1, "its owner is asked to read the new text");
+
+    let link = h.core.root().join("Reading.lines");
+    std::fs::write(outside.join("Reading.lines"), theirs).unwrap();
+    h.remove("Reading.lines");
+    std::os::unix::fs::symlink(outside.join("Reading.lines"), &link).unwrap();
+    h.saw("Reading.lines");
+    h.deliver();
+    assert_eq!(h.count("agenda", "Read the report"), 0, "a link is no file");
+    h.owner_answers(&asked);
+    assert!(h.deliver().is_empty(), "nor is its answer news");
+
+    h.remove("Reading.lines");
+    h.write("Reading.lines", theirs);
+    h.saw("Reading.lines");
+    h.deliver();
+    assert_eq!(h.owner_reads(), 1, "its answer for the link wasn't kept");
+    h.deliver();
+    assert_eq!(h.count("agenda", "Read the report twice"), 1);
+    let _ = std::fs::remove_dir_all(&outside);
 }
 
 /// A slow owner. Another program writes the file, and the owner reads that, before it answers
