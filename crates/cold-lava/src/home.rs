@@ -2449,7 +2449,8 @@ impl Home {
             return Ok(());
         }
         if matches!(self.mode, Mode::NewNote(_)) {
-            return self.new_note_key(k);
+            self.new_note_key(k);
+            return Ok(());
         }
         if matches!(self.mode, Mode::ConfirmRename { .. }) {
             self.rename_key(k);
@@ -3550,9 +3551,9 @@ impl Home {
         }
     }
 
-    fn new_note_key(&mut self, k: KeyEvent) -> Result<()> {
+    fn new_note_key(&mut self, k: KeyEvent) {
         let Mode::NewNote(n) = &mut self.mode else {
-            return Ok(());
+            return;
         };
         match n.key(k) {
             new_note::Action::Stay => {}
@@ -3569,7 +3570,6 @@ impl Home {
                 }
             }
         }
-        Ok(())
     }
 
     fn rename_key(&mut self, k: KeyEvent) {
