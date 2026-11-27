@@ -357,10 +357,20 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
 /// taken, or a folder on the way to it is now a symlink (`files::resolve`, #397).
 pub fn undo(m: &Merged) -> Result<()> {
     m.written.check("merge")?;
-    let path = crate::files::resolve(&m.root, &m.source)?;
-    if write::taken(&path) {
-        bail!("{} exists again; the merge can't be undone", path.display());
+    let path = crate::files::resolve(&m.root, &m.source);
+    let there = path
+        .as_ref()
+        .map_or_else(|_| m.root.join(&m.source), Clone::clone);
+    if write::taken(&there) {
+        bail!(
+            "{} exists again; the merge can't be undone",
+            there.display()
+        );
     }
+    let path = match path {
+        Ok(path) => path,
+        Err(e) => bail!("{e}; the merge can't be undone"),
+    };
     trash::restore(&m.trashed, &path)?;
     m.written.put_back().context("putting the files back")?;
     Ok(())
@@ -624,7 +634,8 @@ mod tests {
         std::fs::rename(dir.join("workspace/Notes"), &outside).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("workspace/Notes")).unwrap();
         let refused = undo(&done).unwrap_err().to_string();
-        assert!(refused.contains("Notes is a symbolic link"), "{refused}");
+        let link = "Notes/Pāhoehoe.md: Notes is a symbolic link, which the gateway never follows";
+        assert_eq!(refused, format!("{link}; the merge can't be undone"));
         assert_eq!(read(&dir, ".trash/Pāhoehoe.md"), "Smooth.\n");
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
