@@ -1,7 +1,8 @@
 //! Daily notes, following the workspace's Obsidian "Daily notes" settings
 //! (`.obsidian/daily-notes.json`: folder, moment.js date format, template).
 
-use anyhow::{Context, Result};
+use crate::files;
+use anyhow::{Context, Result, anyhow};
 use chrono::{Datelike, Local, NaiveDate, NaiveTime, Timelike, Weekday};
 use regex::Regex;
 use std::collections::HashMap;
@@ -72,18 +73,31 @@ pub fn parse_cli_date(s: &str) -> Result<NaiveDate> {
     })
 }
 
-/// Create the daily note for `date` if needed (from the template). Returns its path.
+/// Create the daily note for `date` if needed (from the template). Returns its path. Another
+/// program may have written the settings, so the note goes only where a new file may
+/// (`files::new_path`) and the template is read only where the gateway reads (`files::resolve`).
 pub fn ensure(root: &Path, date: NaiveDate) -> Result<PathBuf> {
     let s = Settings::load(root);
-    let rel = s.rel_path(date);
-    let path = root.join(&rel);
-    if path.exists() {
+    let refused = |what: &str, e: crate::gateway::Error| {
+        anyhow!(
+            "{what} in .obsidian/daily-notes.json is refused: {}",
+            e.message
+        )
+    };
+    if !s.folder.is_empty() {
+        files::new_path(root, &s.folder).map_err(|e| refused("the daily note's folder", e))?;
+    }
+    let new = files::new_path(root, &s.rel_path(date))
+        .map_err(|e| refused("the daily note's path from the folder and format", e))?;
+    let path = new.path().to_path_buf();
+    if crate::write::taken(&path) {
         return Ok(path);
     }
+    let rel = new.rel();
     let title = rel
         .rsplit('/')
         .next()
-        .unwrap_or(&rel)
+        .unwrap_or(rel)
         .trim_end_matches(".md")
         .to_string();
     let body = match &s.template {
@@ -93,7 +107,9 @@ pub fn ensure(root: &Path, date: NaiveDate) -> Result<PathBuf> {
             } else {
                 format!("{t}.md")
             };
-            let text = std::fs::read_to_string(root.join(&t))
+            let at =
+                files::resolve(root, &t).map_err(|e| refused("the daily note's template", e))?;
+            let text = std::fs::read_to_string(at)
                 .with_context(|| format!("reading the daily-note template {t}"))?;
             let now = date.and_time(Local::now().time());
             crate::templates::fill(&text, &title, now, "YYYY-MM-DD", "HH:mm")
@@ -400,6 +416,96 @@ mod tests {
         assert_eq!(s.date_of("Journal/2026/01-09.md"), Some(d(2026, 1, 9)));
         assert_eq!(s.date_of("Other/2026/01-09.md"), None);
         assert_eq!(s.date_of("Journal/notes.md"), None);
+    }
+
+    /// A workspace, `ws`, for `ensure` with its daily-notes settings, in a folder that holds
+    /// nothing else but an empty `outside`.
+    fn beside(name: &str, settings: &str) -> (PathBuf, PathBuf) {
+        let base =
+            std::env::temp_dir().join(format!("cold-lava-daily-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("ws");
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(base.join("outside")).unwrap();
+        std::fs::write(root.join(".obsidian/daily-notes.json"), settings).unwrap();
+        (base, root)
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The daily note stays inside the workspace and its template is read only from inside it
+    /// (#418): nothing is read or written outside, and the refusal names the setting.
+    #[test]
+    fn the_daily_note_and_its_template_stay_inside_the_workspace() {
+        let day = d(2026, 11, 27);
+        let (base, root) = beside("folder", r#"{"folder": "../outside"}"#);
+        let refused = ensure(&root, day).unwrap_err().to_string();
+        assert!(
+            refused.contains("daily note's folder in .obsidian/daily-notes.json"),
+            "{refused}"
+        );
+        assert_eq!(names(&base.join("outside")), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&base);
+
+        let (base, root) = beside("template", r#"{"template": "../outside/t"}"#);
+        std::fs::write(base.join("outside/t.md"), "secret").unwrap();
+        let refused = ensure(&root, day).unwrap_err().to_string();
+        assert!(
+            refused.contains("daily note's template in .obsidian/daily-notes.json"),
+            "{refused}"
+        );
+        assert_eq!(names(&root), [".obsidian"], "no note made from it");
+        let _ = std::fs::remove_dir_all(&base);
+
+        let settings = r#"{"folder": "Journal/", "template": "Templates/Daily"}"#;
+        let (base, root) = beside("inside", settings);
+        std::fs::create_dir_all(root.join("Templates")).unwrap();
+        std::fs::write(root.join("Templates/Daily.md"), "# {{title}}\n").unwrap();
+        let path = ensure(&root, day).unwrap();
+        assert_eq!(path, root.join("Journal/2026-11-27.md"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# 2026-11-27\n");
+        assert_eq!(ensure(&root, day).unwrap(), path, "made once, then opened");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A symlink on the way to the daily note, at its path or at its template's is refused by
+    /// name and not followed (#418, #410).
+    #[cfg(unix)]
+    #[test]
+    fn the_daily_note_follows_no_link() {
+        let day = d(2026, 11, 27);
+        let (base, root) = beside("linked-folder", r#"{"folder": "Journal"}"#);
+        std::os::unix::fs::symlink(base.join("outside"), root.join("Journal")).unwrap();
+        let refused = ensure(&root, day).unwrap_err().to_string();
+        assert!(refused.contains("Journal is a symbolic link"), "{refused}");
+        assert_eq!(names(&base.join("outside")), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&base);
+
+        let (base, root) = beside("linked-template", r#"{"template": "Daily"}"#);
+        std::fs::write(base.join("outside/t.md"), "secret").unwrap();
+        std::os::unix::fs::symlink(base.join("outside/t.md"), root.join("Daily.md")).unwrap();
+        let refused = ensure(&root, day).unwrap_err().to_string();
+        assert!(refused.contains("daily note's template"), "{refused}");
+        assert!(!root.join("2026-11-27.md").exists());
+        let _ = std::fs::remove_dir_all(&base);
+
+        let (base, root) = beside("broken-link", "{}");
+        let gone = base.join("outside/gone.md");
+        std::os::unix::fs::symlink(&gone, root.join("2026-11-27.md")).unwrap();
+        let refused = ensure(&root, day).unwrap_err().to_string();
+        assert!(
+            refused.contains("2026-11-27.md is a symbolic link"),
+            "{refused}"
+        );
+        assert_eq!(names(&base.join("outside")), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
