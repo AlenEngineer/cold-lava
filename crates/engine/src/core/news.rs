@@ -430,6 +430,16 @@ impl Harness {
         }
     }
 
+    /// The owner refuses the `file/read` requests waiting for it. How many there were.
+    pub(crate) fn owner_cannot_read(&mut self, why: &str) -> usize {
+        let reads = self.take_reads();
+        for (owner, read) in &reads {
+            let refusal = Err(why.to_string());
+            self.call(|core| core.file_given(owner, &read.path, &read.rev, refusal));
+        }
+        reads.len()
+    }
+
     /// Everything the core has to say now. The watcher's events are read without waiting for
     /// them to settle: the wait is moved to now.
     fn take(&mut self) -> Batch {
@@ -1702,6 +1712,33 @@ fn an_owned_file_that_cannot_be_read_is_said_once_a_version() {
         "said again after a version that read"
     );
     assert_eq!(h.count("agenda", "Check the seismograph"), 1);
+}
+
+/// #431, #303's rule. An extension's refusal to read a version of its file is said once, as
+/// the engine's own trouble is: a rescan asks the owner again, and the same refusal of the
+/// same bytes says nothing. Another version refused is said.
+#[test]
+fn an_owner_s_refusal_to_read_a_version_is_said_once() {
+    let mut h = workspace("refusal-once");
+    h.follow("agenda", tasks());
+    let said = |b: &Batch| {
+        let trouble = |e: &&Event| matches!(e, Event::OwnerTrouble { .. });
+        let n = |events: &[Event]| events.iter().filter(trouble).count();
+        (n(&b.events), n(&b.channel))
+    };
+    h.write("Reading.lines", "- [ ] Read the appendix\n");
+    h.rescan();
+    assert_eq!(h.owner_cannot_read("no"), 1);
+    assert_eq!(said(&h.deliver()), (1, 1), "the first refusal is said");
+    h.rescan();
+    assert_eq!(h.owner_cannot_read("no"), 1, "a rescan asks again");
+    assert_eq!(said(&h.deliver()), (0, 0), "the same version refused again");
+    assert_eq!(h.count("agenda", "Read the report"), 1);
+
+    h.write("Reading.lines", "- [ ] Read the index\n");
+    h.rescan();
+    assert_eq!(h.owner_cannot_read("no"), 1);
+    assert_eq!(said(&h.deliver()), (1, 1), "another version refused");
 }
 
 /// #363. On a rescan, the listing of the workspace's files is the one rule for what is gone:
