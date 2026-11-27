@@ -1716,9 +1716,11 @@ bookmarks, a saved list, are removed instead, #373), so each doesn't invent one:
   workspace's types applies at once. The watcher's `FileChanged` for an owned kind reads the
   `rev` again and asks again when it changed; a file removed leaves the index and the cache.
 - **Answers arrive later.** `Process` sends `file/read` as a request and hands the answer to
-  `Host::file_given`, which only the file's owner may call; the core installs it when the file
-  is still that `rev` (else asks again), resolves links again and queues `items/changed` and
-  `Event::OwnedChanged`, which the menu reads before it draws (backlinks, counts, news). An
+  `Host::file_given`, which only the file's owner may call; the core keeps it and installs it
+  only when the file on disk is still that `rev` (else asks again), so a read-back that comes
+  after its rename was cancelled, of a text never written, is never the file's (#369). It
+  resolves links again and queues `items/changed` and `Event::OwnedChanged`, which the menu
+  reads before it draws (backlinks, counts, news). An
   error, an answer that doesn't parse, no answer in 10 s or an owner that stopped is
   `Event::OwnerTrouble`, said on the status line at once, and the file keeps what it had.
   What an answer leaves out is `Event::OwnedLeavesOut`, decided in one place, `owned_news`

@@ -320,9 +320,14 @@ impl Core {
         self.edits.take_edited()
     }
 
-    /// `owner` answered `file/read` for `path` at `rev`: its items and links join the workspace
-    /// when the file is still that version; else it is asked again. An error is reported and
-    /// leaves the file's items as they were. Its events come from the next `poll`.
+    /// `owner` answered `file/read` for `path` at `rev`: what it gave is kept, and its items and
+    /// links join the workspace, only when the file on disk is still that version. The owners'
+    /// cache holds one answer a file, and an answer for another version would take the place of
+    /// the one for the file as it is: a version the file had before, or a new text the edit
+    /// desk asked about for an edit that was cancelled or failed, and never written (#369). Its
+    /// owner is then asked for the version on disk, unless it gave something for it already.
+    /// An error is reported and leaves the file's items as they were. Its events come from the
+    /// next `poll`.
     pub fn file_given(&mut self, owner: &str, path: &str, rev: &str, given: Result<Given, String>) {
         if self.owners.owner_of(path) != Some(owner) {
             return;
@@ -333,7 +338,9 @@ impl Core {
             Ok(Some(write)) => return self.write_edit(write),
             Ok(None) => return,
         };
-        self.owners.answered(owner, path, rev, given.as_ref().ok());
+        let on_disk = read::rev_at(self.root(), path).as_deref() == Some(rev);
+        let kept = given.as_ref().ok().filter(|_| on_disk);
+        self.owners.answered(owner, path, rev, kept);
         let events = match given {
             Ok(_) => self.owned_changed(&[path.to_string()]),
             Err(message) => vec![Event::OwnerTrouble {
