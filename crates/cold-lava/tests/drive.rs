@@ -1397,9 +1397,9 @@ fn scripts_wait_after_esc_before_the_next_key() {
 }
 
 /// A check right after a key, a click or a write can read the screen before the program has
-/// drawn what the step did: on a slow machine it fails, or passes on the screen from before
-/// (#234). A wait comes between them, for what the step shows where it shows something
-/// (`wait-for`, `wait-for-in`). The program's start counts as a step.
+/// drawn what the step did: on a slow machine it fails, or it passes on the screen from before
+/// (#234). So a wait comes first, best for what the step shows (`wait-for`, `wait-for-in`).
+/// The program's start counts as a step.
 #[test]
 fn scripts_wait_before_they_check_what_a_step_did() {
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive");

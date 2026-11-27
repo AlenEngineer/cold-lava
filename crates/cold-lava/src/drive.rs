@@ -314,17 +314,17 @@ fn read(src: &str) -> Result<Script, ParseError> {
                     }
                 }
             }
-            "expect-in" => match Region::and_text(rest) {
-                Some((at, text)) => Some(Action::ExpectIn {
-                    at,
-                    text: text.to_string(),
-                }),
-                None => {
+            "expect-in" => {
+                let Some((at, text)) = Region::and_text(rest) else {
                     return Err(err(format!(
                         "expect-in wants ROW COL ROW2 COL2 TEXT (from 1, top left first): {rest}"
                     )));
-                }
-            },
+                };
+                Some(Action::ExpectIn {
+                    at,
+                    text: text.to_string(),
+                })
+            }
             "wait-for-in" => {
                 let (timeout, region) = timeout_and(rest);
                 let Some((at, text)) = Region::and_text(region) else {
