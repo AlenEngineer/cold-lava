@@ -6,6 +6,7 @@ wait-for example-workspace 3
 keys p
 wait-for Go to note
 type Zqxjw
+wait-for Zqxjw▏
 wait-for 0 notes
 keys enter
 wait-for created Zqxjw.md
@@ -15,6 +16,7 @@ wait-gone reading · Esc / q back
 keys p
 wait-for Go to note
 type Zq\xjw
+wait-for Zq\xjw▏
 wait-for 0 notes
 keys enter
 wait-for created Zq\xjw.md
@@ -24,6 +26,7 @@ wait-gone reading · Esc / q back
 keys p
 wait-for Go to note
 type Zqxjw.md/Inside
+wait-for Zqxjw.md/Inside▏
 wait-for 0 notes
 keys enter
 wait-for couldn't create Zqxjw.md/Inside.md
