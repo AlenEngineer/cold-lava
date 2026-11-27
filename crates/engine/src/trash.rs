@@ -368,6 +368,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A `.trash` that is a symlink is never followed: a delete into it is refused and the
+    /// note stays, and a file trashed before `.trash` became a link isn't fetched back
+    /// through it (#435).
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_trash_that_is_a_link_is_refused() {
+        for option in ["local", "none", "system"] {
+            let (d, workspace) = sandbox(&format!("linked-{option}"), Some(option));
+            let outside = d.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, workspace.join(".trash")).unwrap();
+            let lava = workspace.join("Concepts/Lava.md");
+            assert!(
+                matches!(
+                    delete(&workspace, &Seen::kept(&lava, "hot"), None),
+                    Err(WriteError::Link(p)) if p == workspace.join(".trash")
+                ),
+                "{option}"
+            );
+            assert_eq!(std::fs::read(&lava).unwrap(), b"hot", "{option}");
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "{option}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        let (d, workspace) = sandbox("linked-after", Some("local"));
+        let lava = workspace.join("Concepts/Lava.md");
+        let t = delete(&workspace, &Seen::kept(&lava, "hot"), None).unwrap();
+        let outside = d.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Lava.md"), "not ours").unwrap();
+        std::fs::rename(workspace.join(".trash"), d.join("moved-trash")).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".trash")).unwrap();
+        assert!(matches!(
+            restore(&t, &lava),
+            Err(WriteError::Link(p)) if p == workspace.join(".trash")
+        ));
+        assert!(!lava.exists());
+        assert_eq!(std::fs::read(outside.join("Lava.md")).unwrap(), b"not ours");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn a_folder_goes_to_the_trash_whole_and_comes_back() {
         let (d, workspace) = sandbox("folder", None);
