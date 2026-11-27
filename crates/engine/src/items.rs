@@ -1207,56 +1207,33 @@ fn finish(
 fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
     let lines: Vec<&str> = text.lines().collect();
     let mut keys: Vec<String> = Vec::with_capacity(raws.len());
-    // How long each key's anchor is, and the item it is keyed under.
-    let mut anchors: Vec<(usize, Option<usize>)> = Vec::with_capacity(raws.len());
+    // What each key's anchor is made of (`anchor_of`).
+    let mut anchors: Vec<(Option<usize>, String)> = Vec::with_capacity(raws.len());
     let mut seen: HashMap<(String, String), usize> = HashMap::new();
-    let mut counted = false;
     let mut items: Vec<Item> = Vec::with_capacity(raws.len());
     // An item's own lines, joined, reused from item to item.
-    let mut own = String::new();
+    let mut joined = String::new();
     for raw in raws {
         let kind = raw.data.kind();
-        let parent_key = raw.parent.map_or("", |p| keys[p].as_str());
-        let (anchor, under) = match (&raw.block_id, &raw.data) {
-            (Some(id), _) => (format!("^{id}"), None),
-            (None, Data::Heading { text, .. }) => {
-                let mut path = raw.section.join("#");
-                if !raw.section.is_empty() {
-                    path.push('#');
-                }
-                path.push_str(text);
-                (path, None)
-            }
-            (None, Data::List { text }) => {
-                let hash = identity::hash(text.as_bytes());
-                (format!("{parent_key}/{hash}"), raw.parent)
-            }
-            (None, Data::Typed(_)) if raw.key.is_empty() => (parent_key.to_string(), raw.parent),
-            (None, Data::Typed(_)) => {
-                let hash = identity::hash(raw.key.as_bytes());
-                (format!("{parent_key}/{hash}"), raw.parent)
-            }
-            (None, Data::Block) => (String::new(), None),
-        };
-        anchors.push((anchor.len(), under));
+        let (under, own) = anchor_of(&raw);
+        let anchor = format!("{}{own}", under.map_or("", |p| keys[p].as_str()));
         let n = seen.entry((kind.to_string(), anchor.clone())).or_default();
-        counted |= *n > 0;
         let key = match *n {
             0 => anchor,
             n => format!("{anchor}.{n}"),
         };
         *n += 1;
         let id = identity::id(&[note, kind, &key]);
-        own.clear();
+        joined.clear();
         for (i, line) in (lines.get(raw.line - 1..raw.end_line.min(lines.len())))
             .unwrap_or_default()
             .iter()
             .enumerate()
         {
             if i > 0 {
-                own.push('\n');
+                joined.push('\n');
             }
-            own.push_str(line);
+            joined.push_str(line);
         }
         items.push(Item {
             id,
@@ -1266,39 +1243,67 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
             section: raw.section,
             parent: raw.parent.map(|p| items[p].id.clone()),
             block_id: raw.block_id,
-            rev: identity::line_id(&own),
+            rev: identity::line_id(&joined),
             data: raw.data,
         });
         keys.push(key);
+        anchors.push((under, own));
     }
-    // No count, no twins: most notes have none, and skip this.
-    if counted {
-        twin_revs(&mut items, &keys, &anchors);
-    }
+    twin_revs(&mut items, &anchors);
     items.sort_by_key(|i| i.line);
     items
 }
 
-/// Gives the items one of whose twins has the same lines a twin's rev (`twins`): `items`,
-/// their keys and their anchors as `identify` made them, a parent before its children.
-fn twin_revs(items: &mut [Item], keys: &[String], anchors: &[(usize, Option<usize>)]) {
-    let found = {
-        let keyed: Vec<twins::Keyed> = (items.iter().zip(keys).zip(anchors))
-            .map(|((item, key), &(anchor, under))| twins::Keyed {
+/// What an item's anchor, its key before `identify` counts it, is made of: the item it is
+/// keyed under, whose key the anchor starts with, and what the anchor has after that key (all
+/// of it, under none).
+fn anchor_of(raw: &Raw) -> (Option<usize>, String) {
+    let hashed = |text: &str| format!("/{}", identity::hash(text.as_bytes()));
+    match (&raw.block_id, &raw.data) {
+        (Some(id), _) => (None, format!("^{id}")),
+        (None, Data::Heading { text, .. }) => {
+            let mut path = raw.section.join("#");
+            if !raw.section.is_empty() {
+                path.push('#');
+            }
+            path.push_str(text);
+            (None, path)
+        }
+        (None, Data::List { text }) => (raw.parent, hashed(text)),
+        (None, Data::Typed(_)) if raw.key.is_empty() => (raw.parent, String::new()),
+        (None, Data::Typed(_)) => (raw.parent, hashed(&raw.key)),
+        (None, Data::Block) => (None, String::new()),
+    }
+}
+
+/// Gives the items one of whose twins has the same lines a twin's rev (`twins`): `items` as
+/// `identify` made them, a parent before its children, and what their anchors are made of.
+fn twin_revs(items: &mut [Item], anchors: &[(Option<usize>, String)]) {
+    let revs = {
+        let keyed: Vec<twins::Keyed> = (items.iter().zip(anchors))
+            .map(|(item, (under, own))| twins::Keyed {
                 kind: item.data.kind(),
-                key,
-                anchor,
-                under,
+                under: *under,
+                own,
                 rev: &item.rev,
             })
             .collect();
-        twins::of(&keyed)
+        // A twin's rev for each twin. The item it is under comes before it, so that one's rev
+        // is here when it is a twin's, and else is the rev of its lines.
+        let mut revs: Vec<Option<String>> = Vec::with_capacity(keyed.len());
+        for (item, twin) in keyed.iter().zip(twins::of(&keyed)) {
+            let rev = twin.map(|twin| {
+                let under = (twin.under).map(|p| revs[p].as_deref().unwrap_or(keyed[p].rev));
+                identity::twin_rev(item.rev, twin.twins, under)
+            });
+            revs.push(rev);
+        }
+        revs
     };
-    // In order, so the item a twin is under has its own rev already.
-    for (i, twin) in found.into_iter().enumerate() {
-        let Some(twin) = twin else { continue };
-        let under = twin.under.map(|p| items[p].rev.clone());
-        items[i].rev = identity::twin_rev(&items[i].rev, twin.twins, under.as_deref());
+    for (item, rev) in items.iter_mut().zip(revs) {
+        if let Some(rev) = rev {
+            item.rev = rev;
+        }
     }
 }
 

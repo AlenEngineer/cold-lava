@@ -7,21 +7,18 @@
 //! an item one of whose twins has the same lines has a rev that also says how many there are
 //! of it and its twins, and, when the item it is keyed under has twins too, that item's rev
 //! (`identity::twin_rev`): such an edit is refused as changed. Every other item keeps the rev
-//! of its lines, a twin whose lines tell it apart included. A leaf: it reads keys and revs,
-//! and says nothing to anyone.
+//! of its lines, a twin whose lines tell it apart included. A leaf: it reads what each anchor
+//! is made of and the revs, and says nothing to anyone.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// An item of a note as `identify` keyed it.
 pub(super) struct Keyed<'a> {
     pub kind: &'a str,
-    /// Its anchor, then `.n` when n items of its kind with that anchor come before it.
-    pub key: &'a str,
-    /// How long its anchor is.
-    pub anchor: usize,
-    /// The item whose key its anchor starts with: its parent, when it is keyed under it.
+    /// The item it is keyed under: its anchor is that item's key, then `own`.
     pub under: Option<usize>,
+    /// What its anchor has after the key of the item it is under; under none, all of it.
+    pub own: &'a str,
     /// The rev of its own lines.
     pub rev: &'a str,
 }
@@ -40,30 +37,23 @@ pub(super) struct Twin {
 pub(super) fn of(items: &[Keyed]) -> Vec<Option<Twin>> {
     // Each key without the counts in it, those of the items it is under included: what an
     // item and its twins share.
-    let mut bare: Vec<Cow<str>> = Vec::with_capacity(items.len());
+    let mut bare: Vec<String> = Vec::with_capacity(items.len());
     for item in items {
-        let anchor = &item.key[..item.anchor];
-        // What its anchor holds after the key of the item it is under.
-        let after =
-            (item.under).and_then(|p| anchor.strip_prefix(items[p].key).map(|after| (p, after)));
-        bare.push(match after {
-            Some((p, after)) if bare[p] != items[p].key => {
-                Cow::Owned(format!("{}{after}", bare[p]))
-            }
-            _ => Cow::Borrowed(anchor),
-        });
+        let under = item.under.map_or("", |p| bare[p].as_str());
+        let key = format!("{under}{}", item.own);
+        bare.push(key);
     }
     let mut twins: HashMap<(&str, &str), usize> = HashMap::new();
     let mut alike: HashMap<(&str, &str, &str), usize> = HashMap::new();
     for (item, key) in items.iter().zip(&bare) {
-        let key: &str = key;
+        let key = key.as_str();
         *twins.entry((item.kind, key)).or_default() += 1;
         *alike.entry((item.kind, key, item.rev)).or_default() += 1;
     }
-    let count = |i: usize| twins[&(items[i].kind, &*bare[i])];
+    let count = |i: usize| twins[&(items[i].kind, bare[i].as_str())];
     (items.iter().enumerate())
         .map(|(i, item)| {
-            let alone = alike[&(item.kind, &*bare[i], item.rev)] == 1;
+            let alone = alike[&(item.kind, bare[i].as_str(), item.rev)] == 1;
             (!alone).then(|| Twin {
                 twins: count(i),
                 under: item.under.filter(|&p| count(p) > 1),
@@ -76,14 +66,13 @@ pub(super) fn of(items: &[Keyed]) -> Vec<Option<Twin>> {
 mod tests {
     use super::*;
 
-    /// `(kind, key, anchor, under, rev)`, as `identify` keys items.
-    fn of_these(items: &[(&str, &str, usize, Option<usize>, &str)]) -> Vec<Option<Twin>> {
+    /// `(kind, under, own, rev)`, as `identify` keys items.
+    fn of_these(items: &[(&str, Option<usize>, &str, &str)]) -> Vec<Option<Twin>> {
         let keyed: Vec<Keyed> = (items.iter())
-            .map(|&(kind, key, anchor, under, rev)| Keyed {
+            .map(|&(kind, under, own, rev)| Keyed {
                 kind,
-                key,
-                anchor,
                 under,
+                own,
                 rev,
             })
             .collect();
@@ -97,19 +86,19 @@ mod tests {
     #[test]
     fn twins_with_the_same_lines_are_counted_and_twins_told_apart_by_theirs_are_not() {
         let same = of_these(&[
-            ("task", "/a", 2, None, "r"),
-            ("task", "/a.1", 2, None, "r"),
-            ("task", "/a.2", 2, None, "r"),
-            ("list", "/a", 2, None, "r"),
+            ("task", None, "/a", "r"),
+            ("task", None, "/a", "r"),
+            ("task", None, "/a", "r"),
+            ("list", None, "/a", "r"),
         ]);
         assert_eq!(same, [twin(3, None), twin(3, None), twin(3, None), None]);
         let told_apart = of_these(&[
-            ("task", "/a", 2, None, "r"),
-            ("task", "/a.1", 2, None, "s"),
-            ("task", "/a.2", 2, None, "r"),
+            ("task", None, "/a", "r"),
+            ("task", None, "/a", "s"),
+            ("task", None, "/a", "r"),
         ]);
         assert_eq!(told_apart, [twin(3, None), None, twin(3, None)]);
-        let alone = of_these(&[("task", "/a", 2, None, "r"), ("task", "/b", 2, None, "r")]);
+        let alone = of_these(&[("task", None, "/a", "r"), ("task", None, "/b", "r")]);
         assert_eq!(alone, [None, None]);
     }
 
@@ -118,28 +107,28 @@ mod tests {
     #[test]
     fn what_is_keyed_under_twins_is_twins_and_says_which_it_is_under() {
         let under_twins = of_these(&[
-            ("task", "/p", 2, None, "p1"),
-            ("task", "/p/c", 4, Some(0), "c"),
-            ("task", "/p.1", 2, None, "p2"),
-            ("task", "/p.1/c", 6, Some(2), "c"),
+            ("task", None, "/p", "p1"),
+            ("task", Some(0), "/c", "c"),
+            ("task", None, "/p", "p2"),
+            ("task", Some(2), "/c", "c"),
         ]);
         let want = [None, twin(2, Some(0)), None, twin(2, Some(2))];
         assert_eq!(under_twins, want);
         let under_one = of_these(&[
-            ("task", "/p", 2, None, "p"),
-            ("list", "/p/c", 4, Some(0), "c"),
-            ("list", "/p/c.1", 4, Some(0), "c"),
+            ("task", None, "/p", "p"),
+            ("list", Some(0), "/c", "c"),
+            ("list", Some(0), "/c", "c"),
         ]);
         assert_eq!(under_one, [None, twin(2, None), twin(2, None)]);
         // Three deep: under twins whose own lines differ, what is under each is told apart
         // by its parent's rev.
         let deep = of_these(&[
-            ("list", "/p", 2, None, "p"),
-            ("list", "/p/c", 4, Some(0), "c1"),
-            ("list", "/p/c/g", 6, Some(1), "g"),
-            ("list", "/p.1", 2, None, "p"),
-            ("list", "/p.1/c", 6, Some(3), "c2"),
-            ("list", "/p.1/c/g", 8, Some(4), "g"),
+            ("list", None, "/p", "p"),
+            ("list", Some(0), "/c", "c1"),
+            ("list", Some(1), "/g", "g"),
+            ("list", None, "/p", "p"),
+            ("list", Some(3), "/c", "c2"),
+            ("list", Some(4), "/g", "g"),
         ]);
         let want = [
             twin(2, None),
