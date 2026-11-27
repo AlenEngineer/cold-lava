@@ -18,8 +18,9 @@ pub enum WriteError {
     /// A symlink that leads to no file, to nothing or to a folder: a write never puts a file
     /// where a link is, and never makes one through it (`landing`).
     NotAFile(PathBuf),
-    /// A symlink at the path of a write that never follows one (`replace`): refused, so a link
-    /// is never turned into a file without a word.
+    /// A symlink at the path, or on the way to it, of a write or a move that never follows one
+    /// (`replace`; the workspace's `.trash`): refused, so a link is never turned into a file or
+    /// gone through without a word.
     Link(PathBuf),
     Io(PathBuf, io::Error),
 }

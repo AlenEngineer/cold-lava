@@ -79,6 +79,8 @@ pub struct Trashed {
     pub went: Went,
     /// The freedesktop `.trashinfo` written for it.
     info: Option<PathBuf>,
+    /// The workspace whose `.trash` it went into, checked again before it comes back.
+    workspace: Option<PathBuf>,
 }
 
 /// Move what was `seen` (a file or a folder) to the trash `trashOption` names, if the entry at
@@ -87,20 +89,35 @@ pub struct Trashed {
 pub fn delete(root: &Path, seen: &Seen, system: Option<&Bin>) -> Result<Trashed, WriteError> {
     seen.unchanged_entry()?;
     let path = seen.path();
-    if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system)
-        && let Ok(t) = put(path, bin, Went::System)
-    {
-        return Ok(t);
+    let mut tried = None;
+    if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system) {
+        match put(path, bin, Went::System) {
+            Ok(t) => return Ok(t),
+            Err(e) => tried = Some(e),
+        }
     }
-    put(
-        path,
-        &Bin::Folder(workspace_trash(root)?),
-        Went::WorkspaceTrash,
-    )
+    let dir = match (workspace_trash(root), tried) {
+        (Ok(dir), _) => dir,
+        // Neither trash can take it: say both, so the system trash's reason isn't lost.
+        (Err(WriteError::Link(dir)), Some(system)) => {
+            let why = format!(
+                "the system trash couldn't take it ({system}), and .trash is a symbolic link, \
+                 which a delete never follows"
+            );
+            return Err(WriteError::Io(dir, io::Error::other(why)));
+        }
+        (Err(e), _) => return Err(e),
+    };
+    let mut t = put(path, &Bin::Folder(dir), Went::WorkspaceTrash)?;
+    t.workspace = Some(root.to_path_buf());
+    Ok(t)
 }
 
 /// The workspace's `.trash`, refused (`Link`) when it is a symlink: following it would send
 /// deleted files out of the workspace (`workspace::first_link`, the one rule).
+///
+/// Checked, then acted on: a `.trash` swapped for a link between this check and the move
+/// after it is still followed (#366).
 fn workspace_trash(root: &Path) -> Result<PathBuf, WriteError> {
     let dir = root.join(".trash");
     match first_link(root, ".trash") {
@@ -126,6 +143,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                 at,
                 went,
                 info: None,
+                workspace: None,
             })
         }
         Bin::Freedesktop(dir) => {
@@ -164,6 +182,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                     at,
                     went,
                     info: Some(info),
+                    workspace: None,
                 });
             }
             unreachable!()
@@ -174,9 +193,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
 /// Put a trashed file back at `to` (its old path, or another the user chose); refused if
 /// something is there now, or if the workspace's `.trash` it is in has become a symlink.
 pub fn restore(t: &Trashed, to: &Path) -> Result<(), WriteError> {
-    if t.went == Went::WorkspaceTrash
-        && let Some(root) = t.at.parent().and_then(Path::parent)
-    {
+    if let Some(root) = &t.workspace {
         workspace_trash(root)?;
     }
     move_file(&t.at, to)?;
