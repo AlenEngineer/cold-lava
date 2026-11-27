@@ -1,7 +1,7 @@
 //! `replace`'s one job: put a new text in over a file only if it still holds what the caller
 //! read, so that another program's write landing after the compare is never replaced unseen
 //! (#395). A caller of `os_rename` and of `write.rs`'s staging; what it can't put back it keeps
-//! under a name of its own (`kept_name`) and names (`WriteError::Kept`).
+//! under a name of its own (`kept::keep`) and names (`WriteError::Kept`).
 //!
 //! The rule throughout: the engine deletes only its own staged bytes, or a text it took out that
 //! is exactly what the caller read (`expected`) or what the path holds as it is deleted. Every
@@ -16,10 +16,11 @@
 //! the moved file holds the new text: no text is lost.
 
 use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-use super::{WriteError, beside, io_err, lock, os_rename, reserved, staged, unstaged};
+use super::kept::keep;
+use super::name::{beside, reserved};
+use super::{WriteError, io_err, lock, os_rename, staged, unstaged};
 
 /// Where a test lands another write in `checked`: after the compare (`compared`), and after the
 /// swap took out another write's text, before each round that puts one back (`swapped`, with
@@ -37,13 +38,14 @@ pub(super) struct Hooks<A, B> {
 /// `file` after the caller's check is compared by what it leads to, and is what comes out, so
 /// it is removed or put back as a link and never written through. Left open, as on any POSIX
 /// system: a program that opened the file before the swap and writes into it after what came
-/// out was compared. An open still under way counts: the system finds the file by its path
-/// before the swap, then empties it (`O_TRUNC`) and the program writes after the compare, into
-/// the text the swap took out, which is then removed as the caller's. Under load such an open
-/// takes milliseconds: a whiteboard saving every 25 ms beside a script that rewrites the file
-/// in place every 15 ms lost 3 of the script's 363 writes in one run, each opened 0.6 to 6 ms
-/// after what came out was compared (#443; 15 to 17 a run before #425, none without load). A
-/// program that saves by renaming a new file over the path never loses a write this way.
+/// out was compared. An open still under way seems to count too: a whiteboard saving every
+/// 25 ms beside a script that rewrites the file in place every 15 ms lost 3 of the script's
+/// 363 writes in one run under load, each open returning 0.6 to 6 ms after what came out was
+/// compared (#443; 15 to 17 a run before #425, none without load). That the system found the
+/// file by its path before the swap, then emptied it (`O_TRUNC`) so the script wrote into the
+/// text the swap took out, which was removed as the caller's, is inferred from the trace: it
+/// shows when each open returned, not when its path was looked up. A program that saves by
+/// renaming a new file over the path never loses a write this way.
 /// Another cold-lava's replace of a file in the same folder waits until
 /// this one is done, from the compare to the last swap (`lock::take`); the new text is staged
 /// (written and synced) before the turn is taken, so the turn holds no write to disk. Errors
@@ -208,49 +210,6 @@ pub(super) fn aside(
             kept => Err(kept),
         },
     }
-}
-
-/// The refusal for a text this write took out of `file` (where `path` lands) and holds in
-/// `out`, a name of its own beside it that nothing else writes. When it is one of `droppable`
-/// (this write's bytes, or what the caller read) nobody's text is lost: it is removed, and the
-/// refusal is `Changed`. Otherwise it is another program's text: moved to a name that says it
-/// is kept (`kept_name`) and named by `Kept`; if that move fails, it stays in `out`, which is
-/// named instead.
-pub(super) fn keep(path: &Path, file: &Path, out: &Path, droppable: &[&[u8]]) -> WriteError {
-    if std::fs::read(out).is_ok_and(|now| droppable.contains(&now.as_slice())) {
-        let _ = std::fs::remove_file(out);
-        return WriteError::Changed(path.to_path_buf());
-    }
-    let kept = match reserved(file, kept_name) {
-        Ok(kept) => match std::fs::rename(out, &kept) {
-            Ok(()) => kept,
-            Err(_) => {
-                let _ = std::fs::remove_file(&kept);
-                out.to_path_buf()
-            }
-        },
-        Err(_) => out.to_path_buf(),
-    };
-    WriteError::Kept(path.to_path_buf(), kept)
-}
-
-/// The name a kept text goes under: `.Name.cold-lava-kept-SECONDS-N.ext` beside the file (the
-/// file's stem and extension, the Unix time it was kept, a count), hidden, so the scan and
-/// Obsidian pass it by, and apart from a staged write's `.Name.cold-lava-PID-N.tmp`, so the
-/// clearing of staged files a killed save left (`stale`) never takes it. Where the user is
-/// shown kept texts is #427.
-fn kept_name(file: &Path) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-    let ext = file
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
-    file.with_file_name(format!(".{stem}.cold-lava-kept-{secs}-{n}{ext}"))
 }
 
 /// `Changed` when the file is no longer there, as a write that removed it changed it.

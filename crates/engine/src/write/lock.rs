@@ -6,6 +6,8 @@
 //! editor, a sync tool) still go through `replace`'s exchange and check, which is what keeps
 //! their writes. cold-lava's own moves and deletes (`move_file`, `trash::delete`) take no turn
 //! either: one during a turn makes the swap fail, or the moved file holds the new text.
+//! The clearing of staged files a killed save left (`stale`) takes the same turn, so it never
+//! takes a staged file from a turn under way, and clears nothing where the turn can't be had.
 //!
 //! Why the folder and how: `flock` on the folder's own descriptor (opened read-only) leaves no
 //! file anywhere, so nothing new shows in the workspace, in Obsidian or in the scan, and no
@@ -36,7 +38,7 @@ use std::time::Duration;
 /// the whole `WAIT` again, on the caller's thread (the TUI's one thread for the menu's saves).
 /// The trade is stated: a stopped holder is rare, and remembering it would need state shared
 /// across writes that could go stale.
-const WAIT: Duration = Duration::from_secs(5);
+pub(super) const WAIT: Duration = Duration::from_secs(5);
 
 /// A writer's turn on a folder: the lock, held until this is dropped. Empty when the write went
 /// ahead without it (`take`).

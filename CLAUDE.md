@@ -191,7 +191,12 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   (`os_rename::by_link`), which `create`, `move_file` and `replace`'s aside all go through.
   A save killed halfway leaves its staged `.Name.cold-lava-PID-N.tmp`: the first write a
   process stages in a folder clears those of dead PIDs (`write/stale.rs`: removed when a copy
-  of the file, kept under a kept name otherwise; a kept text never). Never call
+  of the file or empty, kept under a kept name otherwise; a kept text never). It holds the
+  folder's turn while it does (`lock.rs`), so a live `replace` it can't see by PID (another
+  container's, another machine's) keeps its staged file; where the turn can't be had (NFS, a
+  wait run out) it clears nothing there. A staged file changed or renamed within a minute
+  (`AGE`, by the later of mtime and ctime) stays too. The staged name is made and read in
+  one place (`write/name.rs`); `keep` is `write/kept.rs`. Never call
   `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it

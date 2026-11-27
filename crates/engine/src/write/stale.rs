@@ -6,50 +6,89 @@
 //! text (before the swap), the text the swap took out (after it), or another program's text
 //! `put_back` was handing back. So one is removed only when it holds what its file holds now,
 //! or nothing (a kill before the bytes went in); any other is kept beside the file under a
-//! kept name (`replace::keep`), never removed.
+//! kept name (`kept::keep`), never removed.
 //!
-//! Which files are a dead cold-lava's is told by the name alone: `.Name.cold-lava-PID-N.tmp`
-//! with digits for PID and N (`staged_for`), where no process has that PID (`dead`), last written
-//! more than `AGE` ago. A kept text's name (`.Name.cold-lava-kept-…`) never reads as one. A
-//! staged file of a live cold-lava is never touched, this process's own included.
+//! Which files are a dead cold-lava's is told by the name (`name::staged_for`: no kept text's
+//! name reads as one), the PID in it (no process has it here, `dead`) and its age (`AGE`). A
+//! PID can't tell a live cold-lava this process can't see (in a container, on another machine
+//! sharing the folder) from a dead one, so what keeps such a save's staged file from being
+//! taken is this:
+//!
+//! - From its compare to its last swap, a `replace` holds its turn on the folder
+//!   (`lock::take`), and the staged name then holds the file's old text, whose time can be
+//!   years old. The clearing takes the same turn, so it never runs inside one: it waits for
+//!   it (`lock::WAIT`), and when the turn can't be had (the wait ran out, a file system without
+//!   the lock, as NFS is, a system without `flock`) nothing is cleared in that folder. That
+//!   holds across processes and containers on one machine; across machines, only as far as the
+//!   file system shares the lock.
+//! - Before that, while it is written and synced (and in `write_atomic` and `create`, which
+//!   take no turn, until their rename), a staged file holds the new text and was just written:
+//!   `AGE` keeps it, by the later of when it was written and when it last changed name.
+//!
+//! This process's own staged files have a live PID, and are never touched.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use super::replace;
+use super::name::staged_for;
+use super::{kept, lock};
 
-/// How long ago a dead cold-lava's staged file must have been written before it is cleared. A
-/// save holds a staged file for milliseconds (seconds while its turn waits, `lock::WAIT`); the
-/// age keeps a file from being taken from a save under way in a process this one can't see (a
-/// container's, another machine's on a shared folder), whose PID reads as dead here.
+/// How long ago a dead cold-lava's staged file must have been written, or renamed, before it
+/// is cleared: what keeps a file staged by a save this process can't see before that save
+/// takes its turn on the folder (`replace`), or renames it into place (`write_atomic`,
+/// `create`). Such a save holds it for milliseconds (the time to write and sync its text). It
+/// says nothing once a `replace` has swapped (the name then holds the old text, as old as
+/// that text): the folder's turn covers that. A clock more than this apart between two
+/// machines sharing a folder defeats it.
 const AGE: Duration = Duration::from_secs(60);
 
 /// Clear the staged files dead cold-lavas left in `dir`, the first time this process stages a
-/// write there. The folders already cleared are remembered so a folder is listed once per
-/// process, not on every save (a rename writes hundreds of files in one folder); a folder
-/// that still held one too young to clear is listed again on the next write.
+/// write there. The folders already swept are remembered so a folder is listed once per
+/// process, not on every save (a rename writes hundreds of files in one folder); one that held
+/// a file too young to clear is swept again by a later write, and one whose turn couldn't be
+/// had, or whose file's age can't be read or is ahead of the clock, is not. The memory is
+/// locked only to check and mark a folder: the listing runs outside it, so a sweep holds up
+/// only the writes in its own folder (by the turn it holds), not every write in the process.
 pub(super) fn once(dir: &Path) {
-    static CLEARED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
-    let Ok(mut cleared) = CLEARED.lock() else {
-        return;
+    static SWEPT: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+    let mark = |claim: bool| {
+        SWEPT.lock().is_ok_and(|mut swept| {
+            let swept = swept.get_or_insert_default();
+            match claim {
+                true => swept.insert(dir.to_path_buf()),
+                false => swept.remove(dir),
+            }
+        })
     };
-    let cleared = cleared.get_or_insert_default();
-    if cleared.contains(dir) {
+    if !mark(true) {
         return;
     }
-    if clear(dir) {
-        cleared.insert(dir.to_path_buf());
+    if clear(dir, lock::WAIT, AGE) == Swept::Again {
+        mark(false);
     }
 }
 
-/// Clear `dir`'s staged files left by dead cold-lavas; false when one was too young to clear.
-fn clear(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return true;
+/// What a sweep of a folder leaves for later.
+#[derive(Debug, PartialEq)]
+enum Swept {
+    /// Nothing: the folder is not swept again in this process.
+    Done,
+    /// A dead cold-lava's staged file too young to clear: a later write sweeps again.
+    Again,
+}
+
+/// Clear `dir`'s staged files left by dead cold-lavas older than `age`, holding the folder's
+/// turn (waiting for it at most `wait`); when the turn can't be had, nothing.
+fn clear(dir: &Path, wait: Duration, age: Duration) -> Swept {
+    let Some(_turn) = lock::locked(dir, wait) else {
+        return Swept::Done;
     };
-    let mut done = true;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Swept::Done;
+    };
+    let mut swept = Swept::Done;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some((file, pid)) = name.to_str().and_then(staged_for) else {
@@ -61,33 +100,37 @@ fn clear(dir: &Path) -> bool {
         if !meta.is_file() || !dead(pid) {
             continue;
         }
-        let old = meta
-            .modified()
-            .ok()
-            .and_then(|m| SystemTime::now().duration_since(m).ok())
-            .is_some_and(|age| age > AGE);
-        if !old {
-            done = false;
-            continue;
+        match since_changed(&meta) {
+            Some(ago) if ago > age => {}
+            Some(_) => {
+                swept = Swept::Again;
+                continue;
+            }
+            None => continue,
         }
         let file = dir.join(file);
         let now = std::fs::read(&file).unwrap_or_default();
-        replace::keep(&file, &file, &entry.path(), &[now.as_slice(), b""]);
+        kept::keep(&file, &file, &entry.path(), &[now.as_slice(), b""]);
     }
-    done
+    swept
 }
 
-/// The file a staged file's name is for, and the PID of the cold-lava that staged it:
-/// `.Name.cold-lava-PID-N.tmp` (`write::beside`) gives `Name` and PID.
-fn staged_for(name: &str) -> Option<(&str, u32)> {
-    let inner = name.strip_prefix('.')?.strip_suffix(".tmp")?;
-    let (file, ids) = inner.rsplit_once(".cold-lava-")?;
-    let (pid, n) = ids.split_once('-')?;
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if file.is_empty() || !digits(pid) || !digits(n) {
-        return None;
-    }
-    Some((file, pid.parse().ok()?))
+/// How long ago a file was last written or renamed: the later of its mtime and its ctime
+/// (which a rename sets on ext4, btrfs, xfs and APFS). None when that can't be read, or is
+/// ahead of the clock.
+fn since_changed(meta: &std::fs::Metadata) -> Option<Duration> {
+    let written = meta.modified().ok()?;
+    #[cfg(unix)]
+    let written = {
+        use std::os::unix::fs::MetadataExt;
+        let secs = u64::try_from(meta.ctime()).ok();
+        let nanos = u32::try_from(meta.ctime_nsec()).ok();
+        match secs.zip(nanos) {
+            Some((s, n)) => written.max(SystemTime::UNIX_EPOCH + Duration::new(s, n)),
+            None => written,
+        }
+    };
+    SystemTime::now().duration_since(written).ok()
 }
 
 /// Whether no process has `pid` (`kill(pid, 0)` says there is none). Where that can't be asked,
@@ -106,27 +149,128 @@ fn dead(_: u32) -> bool {
     false
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
 mod tests {
-    use super::staged_for;
+    use super::{AGE, Swept, clear, lock};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
 
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("cold-lava-stale-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn files(d: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A PID no process has: one past the largest Linux gives out.
+    fn dead() -> u32 {
+        i32::MAX as u32
+    }
+
+    /// `name` in `d`, holding `text`, written `ago` (its ctime stays now).
+    fn leave(d: &Path, name: &str, text: &str, ago: Duration) {
+        std::fs::write(d.join(name), text).unwrap();
+        let f = std::fs::File::options()
+            .write(true)
+            .open(d.join(name))
+            .unwrap();
+        f.set_modified(SystemTime::now() - ago).unwrap();
+    }
+
+    /// A cold-lava killed during a save leaves its staged file (#443). A sweep takes it away:
+    /// removed when it holds what its file holds or nothing, kept under a kept name otherwise
+    /// (it may be the killed save's text, or another program's it took out). One renamed or
+    /// written within `AGE` stays, even when its mtime is old (a staged name a live `replace`
+    /// swapped the file's old text into); so does a staged file of a live cold-lava and a kept
+    /// text.
     #[test]
-    fn a_staged_name_reads_and_a_kept_one_doesnt() {
-        assert_eq!(staged_for(".N.md.cold-lava-12-0.tmp"), Some(("N.md", 12)));
+    fn a_staged_file_a_killed_save_left_is_cleared() {
+        let d = dir("cleared");
+        let dead = dead();
+        let live = std::process::id();
+        let long = Duration::from_secs(600);
+        std::fs::write(d.join("N.md"), "now").unwrap();
+        let copy = format!(".N.md.cold-lava-{dead}-0.tmp");
+        let other = format!(".N.md.cold-lava-{dead}-1.tmp");
+        let empty = format!(".N.md.cold-lava-{dead}-3.tmp");
+        let alive = format!(".N.md.cold-lava-{live}-900.tmp");
+        let kept = ".N.cold-lava-kept-5-0.md".to_string();
+        leave(&d, &copy, "now", long);
+        leave(&d, &other, "the killed save", long);
+        leave(&d, &empty, "", long);
+        leave(&d, &alive, "a save under way", long);
+        leave(&d, &kept, "kept", long);
+        let all = files(&d);
+        assert_eq!(clear(&d, lock::WAIT, AGE), Swept::Again);
         assert_eq!(
-            staged_for(".a.cold-lava-b.md.cold-lava-7-3.tmp"),
-            Some(("a.cold-lava-b.md", 7))
+            files(&d),
+            all,
+            "changed within AGE (ctime), so nothing goes"
         );
-        for not in [
-            ".N.cold-lava-kept-5-0.md",
-            ".N.cold-lava-kept-5-0.tmp",
-            ".N.md.cold-lava-12-.tmp",
-            ".N.md.cold-lava--0.tmp",
-            ".N.md.cold-lava-1x-0.tmp",
-            "N.md.cold-lava-12-0.tmp",
-            "..cold-lava-12-0.tmp",
-        ] {
-            assert_eq!(staged_for(not), None, "{not}");
+        assert_eq!(clear(&d, lock::WAIT, Duration::ZERO), Swept::Done);
+        let left = files(&d);
+        assert!(!left.contains(&copy), "a copy is removed: {left:?}");
+        assert!(!left.contains(&empty), "an empty one is removed: {left:?}");
+        assert!(!left.contains(&other), "{left:?}");
+        let keeps: Vec<_> = left
+            .iter()
+            .filter(|f| f.starts_with(".N.cold-lava-kept-") && **f != kept)
+            .collect();
+        assert_eq!(keeps.len(), 1, "{left:?}");
+        assert_eq!(std::fs::read(d.join(keeps[0])).unwrap(), b"the killed save");
+        for stays in [&alive, &kept] {
+            assert!(left.contains(stays), "{stays} stays: {left:?}");
         }
+        assert_eq!(std::fs::read(d.join("N.md")).unwrap(), b"now");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A staged file under a turn held on its folder (a `replace` between its compare and its
+    /// last swap, in a process whose PID reads as dead here) is never touched: the sweep waits
+    /// for the turn and, when it can't have it, clears nothing. Once the turn is over, it does.
+    #[test]
+    fn a_staged_file_a_live_turn_holds_is_not_touched() {
+        let d = dir("turn");
+        std::fs::write(d.join("N.md"), "the new text").unwrap();
+        let staged = format!(".N.md.cold-lava-{}-0.tmp", dead());
+        leave(
+            &d,
+            &staged,
+            "the old text, swapped out",
+            Duration::from_secs(600),
+        );
+        let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let turn = {
+            let d = d.clone();
+            let (held, release) = (held.0, release.1);
+            std::thread::spawn(move || {
+                let folder = lock::locked(&d, lock::WAIT);
+                held.send(folder.is_some()).unwrap();
+                let _ = release.recv();
+                drop(folder);
+            })
+        };
+        assert!(held.1.recv().unwrap(), "the turn is held");
+        let swept = clear(&d, Duration::from_millis(50), Duration::ZERO);
+        assert_eq!(swept, Swept::Done);
+        assert!(files(&d).contains(&staged), "{:?}", files(&d));
+        assert_eq!(
+            std::fs::read(d.join(&staged)).unwrap(),
+            b"the old text, swapped out"
+        );
+        release.0.send(()).unwrap();
+        turn.join().unwrap();
+        clear(&d, lock::WAIT, Duration::ZERO);
+        assert!(!files(&d).contains(&staged), "{:?}", files(&d));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

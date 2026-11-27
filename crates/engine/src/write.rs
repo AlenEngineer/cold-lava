@@ -7,7 +7,9 @@
 //! the new file goes in by a swap or a rename that never replaces (`os_rename`), and what came
 //! out is checked.
 
+mod kept;
 mod lock;
+mod name;
 mod os_rename;
 mod replace;
 mod stale;
@@ -15,7 +17,8 @@ mod stale;
 use std::fmt;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+
+use name::{beside, reserved};
 
 #[derive(Debug)]
 pub enum WriteError {
@@ -23,7 +26,7 @@ pub enum WriteError {
     Changed(PathBuf),
     /// Another write landed at the path (the first) while this one was under way, and a text
     /// taken out of the file couldn't be put back: it is kept in the second path, a hidden
-    /// file beside it named `.Name.cold-lava-kept-…` (`replace::kept_name`). It is never the
+    /// file beside it named `.Name.cold-lava-kept-…` (`kept::kept_name`). It is never the
     /// caller's own old text or this write's. Read the file again: this write may or may not
     /// be in it. Not "read again" alone: a text now sits outside the file (gateway `kept`).
     Kept(PathBuf, PathBuf),
@@ -172,8 +175,9 @@ fn folder_made(file: &Path) -> Result<(), WriteError> {
 
 /// A new file beside `file` holding `bytes`, on disk and with `file`'s permissions: what a
 /// write renames into place. It makes no folder: one that isn't there is `Io`. The first one
-/// in a folder clears what dead cold-lavas' saves left staged there (`stale::once`). Errors
-/// name `path`.
+/// in a folder clears what dead cold-lavas' saves left staged there (`stale::once`): here,
+/// where every write stages, so no write can forget it, and before `replace` takes its turn
+/// on the folder, which the clearing takes too. Errors name `path`.
 fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError> {
     if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
         stale::once(dir);
@@ -189,28 +193,6 @@ fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError>
         let _ = std::fs::set_permissions(&new, meta.permissions());
     }
     Ok(new)
-}
-
-/// A new, empty file beside `file`, at the first name `name` gives where nothing is
-/// (`create_new`): a name no other file has, so only this write ever writes over it.
-fn reserved(file: &Path, name: fn(&Path) -> PathBuf) -> io::Result<PathBuf> {
-    loop {
-        let at = name(file);
-        match std::fs::File::create_new(&at) {
-            Ok(_) => return Ok(at),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-/// A staged write's name beside `file`: hidden, so file watchers (ours and Obsidian's) ignore
-/// it, and new each time this process asks (`reserved` makes sure no one else has it).
-fn beside(file: &Path) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let name = file.file_name().unwrap_or_default().to_string_lossy();
-    file.with_file_name(format!(".{name}.cold-lava-{}-{n}.tmp", std::process::id()))
 }
 
 /// `e`, once the file `staged` made is removed: it holds only this write's bytes.
@@ -413,7 +395,8 @@ pub(crate) mod lands {
 
 #[cfg(test)]
 mod tests {
-    use super::replace::{Hooks, aside, checked, keep, put_back};
+    use super::kept::keep;
+    use super::replace::{Hooks, aside, checked, put_back};
     use super::*;
     use std::time::Duration;
 
@@ -1038,66 +1021,6 @@ mod tests {
             "nothing made through a link to nothing"
         );
         assert!(files(&d.join("Folder")).is_empty());
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// A cold-lava killed during a save leaves its staged file (#443). The next write in that
-    /// folder takes it away: removed when it holds what its file holds or nothing, kept under a
-    /// kept name otherwise (it may be the killed save's text, or another program's it took
-    /// out). A staged file of a live cold-lava, one staged moments ago, and a kept text are
-    /// left alone.
-    #[test]
-    fn a_staged_file_a_killed_save_left_is_cleared_by_the_next_write() {
-        let d = dir("stale");
-        let dead = {
-            let mut child = std::process::Command::new("true").spawn().unwrap();
-            let pid = child.id();
-            child.wait().unwrap();
-            pid
-        };
-        let live = std::process::id();
-        let long_ago = std::time::SystemTime::now() - Duration::from_secs(600);
-        let leave = |name: &str, text: &str, when: Option<std::time::SystemTime>| {
-            std::fs::write(d.join(name), text).unwrap();
-            if let Some(when) = when {
-                let f = std::fs::File::options()
-                    .write(true)
-                    .open(d.join(name))
-                    .unwrap();
-                f.set_modified(when).unwrap();
-            }
-        };
-        std::fs::write(d.join("N.md"), "now").unwrap();
-        let copy = format!(".N.md.cold-lava-{dead}-0.tmp");
-        let other = format!(".N.md.cold-lava-{dead}-1.tmp");
-        let empty = format!(".N.md.cold-lava-{dead}-3.tmp");
-        let alive = format!(".N.md.cold-lava-{live}-900.tmp");
-        let young = format!(".N.md.cold-lava-{dead}-2.tmp");
-        let kept = ".N.cold-lava-kept-5-0.md";
-        leave(&copy, "now", Some(long_ago));
-        leave(&other, "the killed save", Some(long_ago));
-        leave(&empty, "", Some(long_ago));
-        leave(&alive, "a save under way", Some(long_ago));
-        leave(&young, "staged just now", None);
-        leave(kept, "kept", Some(long_ago));
-        write_atomic(&d.join("Other.md"), b"x").unwrap();
-        let left = files(&d);
-        assert!(
-            !left.contains(&copy),
-            "a copy of the file is removed: {left:?}"
-        );
-        assert!(!left.contains(&empty), "an empty one is removed: {left:?}");
-        assert!(!left.contains(&other), "{left:?}");
-        let keeps: Vec<_> = left
-            .iter()
-            .filter(|f| f.starts_with(".N.cold-lava-kept-") && *f != kept)
-            .collect();
-        assert_eq!(keeps.len(), 1, "{left:?}");
-        assert_eq!(std::fs::read(d.join(keeps[0])).unwrap(), b"the killed save");
-        for stays in [&alive, &young, &kept.to_string()] {
-            assert!(left.contains(stays), "{stays} stays: {left:?}");
-        }
-        assert_eq!(std::fs::read(d.join("N.md")).unwrap(), b"now");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
