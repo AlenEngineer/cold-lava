@@ -79,8 +79,7 @@ pub struct Owned {
     /// wherever the file is read, a canvas read by the scan included.
     pub problems: Vec<crate::problem::Problem>,
     /// The version on disk that couldn't be read at all, once that was said
-    /// (`core::Event::OwnerTrouble`): it is said once a version, so a rescan doesn't say it
-    /// again. Reading a version clears it.
+    /// (`core::Event::OwnerTrouble`, `fails`). Reading a version clears it.
     pub failed: Option<String>,
 }
 
@@ -126,6 +125,16 @@ impl Owned {
     /// another answer for a version a file already shows (`owner::cache::Owners::kept`).
     pub fn shows(&self, rev: &str, kept: Option<&crate::owner::given::Given>) -> bool {
         self.rev.as_deref() == Some(rev) && kept.is_none_or(|given| *given == self.given)
+    }
+
+    /// Version `rev` couldn't be read: whether that is news. True only the first time it
+    /// fails, so a rescan that reads the same bytes again says nothing (#303's rule).
+    pub fn fails(&mut self, rev: &str) -> bool {
+        if self.failed.as_deref() == Some(rev) {
+            return false;
+        }
+        self.failed = Some(rev.to_string());
+        true
     }
 
     /// What didn't read in what its owner gave, on one line, as it is reported
