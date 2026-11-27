@@ -428,15 +428,60 @@ pub fn restore(root: &Path, trashed: &Trashed, to: Option<&str>) -> Result<Resto
     Ok(Restored { path: rel })
 }
 
-/// `workspace/create-folder`, through `write::create_dir`, under a name links can point into
-/// (`rename::check_path`).
+/// `workspace/create-folder`, through `write::create_dir`, at a `NewPath`.
 pub fn create_folder(root: &Path, rel: &str) -> Result<Folder, Error> {
-    let rel = &normal(rel)?;
-    crate::rename::check_path(rel).map_err(|e| Error::new(Reason::Refused, e.to_string()))?;
-    let path = resolve(root, rel)?;
-    write::create_dir(&path).map_err(moved(rel))?;
-    let path = rel.to_string();
+    let new = new_path(root, rel)?;
+    write::create_dir(new.path()).map_err(moved(new.rel()))?;
+    let path = new.rel;
     Ok(Folder { path })
+}
+
+/// Where a new file or folder goes, checked: only `new_path` makes one, so whoever holds one
+/// was given a path inside the workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewPath {
+    rel: String,
+    path: PathBuf,
+}
+
+impl NewPath {
+    /// Relative to the workspace, in `normal`'s one spelling.
+    pub fn rel(&self) -> &str {
+        &self.rel
+    }
+
+    /// Under the workspace's root.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// `rel` as a new file or folder in the workspace at `root`: refused unless it is relative
+/// with no `..`, `.` or hidden part (`normal`), a name links can point into
+/// (`rename::check_path`), and neither it nor a folder on the way to it is a symlink
+/// (`resolve`), so the path stays inside the workspace. Checked, then acted on (#366).
+pub fn new_path(root: &Path, rel: &str) -> Result<NewPath, Error> {
+    let rel = normal(rel)?;
+    crate::rename::check_path(&rel).map_err(|e| Error::new(Reason::Refused, e.to_string()))?;
+    let path = resolve(root, &rel)?;
+    Ok(NewPath { rel, path })
+}
+
+/// Where a new note named `name` goes (`resolver::new_note_path`: the folder its name names,
+/// else Obsidian's new-note location), as a `NewPath`. A name that leads out of the workspace
+/// (`..`, an absolute path) is refused.
+pub fn new_note(index: &Index, name: &str, from: Option<usize>) -> Result<NewPath, Error> {
+    let root = &index.workspace.root;
+    let path = crate::resolver::new_note_path(index, name, from);
+    let rel = path.strip_prefix(root).ok().and_then(Path::to_str);
+    let Some(rel) = rel else {
+        let message = format!(
+            "{}: a path relative to the workspace is needed",
+            name.trim()
+        );
+        return Err(Error::new(Reason::Refused, message));
+    };
+    new_path(root, &rel.replace('\\', "/"))
 }
 
 /// How many deletes of one client the core keeps tokens for.
@@ -1066,6 +1111,52 @@ mod tests {
         let made = core.create_folder("tidy", "Guide/Field Notes").unwrap();
         assert_eq!(made.path, "Guide/Field Notes");
         assert!(dir.join("Guide/Field Notes").is_dir());
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A new note's or folder's path stays inside the workspace (#411): no `..`, no absolute
+    /// path, no folder on the way that is a symlink to one outside it. Nothing is written.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_path_stays_inside_the_workspace() {
+        let dir = workspace("new-path");
+        let outside = dir.with_extension("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Data/Alias")).unwrap();
+        let core = Core::open(&dir).unwrap();
+        let root = core.root();
+        for rel in [
+            "../x.md",
+            "Data/../../x.md",
+            "/tmp/x.md",
+            "Data/Alias/x.md",
+            "a#b.md",
+        ] {
+            let refused = new_path(root, rel).unwrap_err();
+            assert_eq!(refused.reason, Reason::Refused, "{rel}");
+        }
+        let linked = new_path(root, "Data/Alias/x.md").unwrap_err();
+        assert!(linked.message.contains("Data/Alias is a symbolic link"));
+        let new = new_path(root, "Data//Field/Notes.md").unwrap();
+        assert_eq!(new.rel(), "Data/Field/Notes.md");
+        assert_eq!(new.path(), root.join("Data/Field/Notes.md"));
+
+        let ix = &core.index;
+        for name in ["../x", "Data/../../x", "/tmp/x", "Data/Alias/x"] {
+            let refused = new_note(ix, name, None).unwrap_err();
+            assert_eq!(refused.reason, Reason::Refused, "{name}");
+        }
+        assert_eq!(
+            new_note(ix, "Data/Idea", None).unwrap().rel(),
+            "Data/Idea.md"
+        );
+        assert_eq!(new_note(ix, " Idea.md ", None).unwrap().rel(), "Idea.md");
+        assert_eq!(
+            names(&outside),
+            Vec::<String>::new(),
+            "nothing went outside"
+        );
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,0 +1,16 @@
+# A note the quick switcher offers to create, named out of the workspace (`..` in it), is
+# refused, and the menu goes on (#411). tests/drive.rs checks nothing was written outside it.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 3
+keys p
+wait-for Go to note
+type ../Zqxjw
+wait-for 0 notes
+keys enter
+wait-for ../Zqxjw.md: a path can't have
+keys p
+wait-for Go to note
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

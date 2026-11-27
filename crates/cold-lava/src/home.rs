@@ -1626,15 +1626,16 @@ impl Home {
                 let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
                     return;
                 };
-                let path = crate::resolver::new_note_path(ix, &name, ix.by_path(from));
+                // Another program may have written the link: its name can lead anywhere.
+                let new = match files::new_note(ix, &name, ix.by_path(from)) {
+                    Ok(new) => new,
+                    Err(e) => return self.flash(e.to_string()),
+                };
+                let path = new.path().to_path_buf();
                 if let Err(e) = crate::write::create_if_missing(&path, b"") {
                     return self.flash(format!("couldn't create the note: {e}"));
                 }
-                let rel = path
-                    .strip_prefix(self.root.as_deref().unwrap_or(Path::new("")))
-                    .map(|r| r.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.flash(format!("created {rel}"));
+                self.flash(format!("created {}", new.rel()));
                 self.reload_tree();
                 self.leave(here, &path, None);
                 self.show_at(&path, None);
@@ -3310,17 +3311,22 @@ impl Home {
                         .unwrap();
                     self.open_found(from, &path, None);
                 } else if self.offers_create(&q) {
-                    // Same place a new note from a link goes (Obsidian's new-note location setting).
-                    let path = self.core.as_ref().map(|c| &c.index).map(|ix| {
+                    // Same place a new note from a link goes (Obsidian's new-note location
+                    // setting), refused when the name leads out of the workspace.
+                    let new = self.core.as_ref().map(|c| &c.index).map(|ix| {
                         let from = self.shown.as_ref().and_then(|p| ix.by_path(p));
-                        crate::resolver::new_note_path(ix, q.trim(), from)
+                        files::new_note(ix, q.trim(), from)
                     });
-                    if let Some(path) = path
-                        && crate::write::create_if_missing(&path, b"").is_ok()
-                    {
-                        self.flash(format!("created {}", q.trim()));
-                        self.reload_tree();
-                        self.open_found(from, &path, None);
+                    match new {
+                        Some(Err(e)) => self.flash(e.to_string()),
+                        Some(Ok(new))
+                            if crate::write::create_if_missing(new.path(), b"").is_ok() =>
+                        {
+                            self.flash(format!("created {}", q.trim()));
+                            self.reload_tree();
+                            self.open_found(from, new.path(), None);
+                        }
+                        _ => {}
                     }
                 }
                 self.back_to_editor = false;
@@ -3565,8 +3571,12 @@ impl Home {
             } => {
                 self.mode = Mode::Normal;
                 let rel = in_folder.new_note(&name);
-                if self.still_here(&in_folder.at(format!("create {rel}"))) {
-                    self.create_note(&in_folder, &name, template.as_deref());
+                if !self.still_here(&in_folder.at(format!("create {rel}"))) {
+                    return;
+                }
+                match files::new_path(&in_folder.root, &rel) {
+                    Ok(new) => self.create_note(&in_folder, &new, &name, template.as_deref()),
+                    Err(e) => self.flash(e.to_string()),
                 }
             }
         }
@@ -4539,11 +4549,17 @@ impl Home {
                 let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
                     return;
                 };
-                let path = crate::resolver::new_note_path(ix, &target, ix.by_rel(&from));
-                let created = crate::write::create_if_missing(&path, b"");
+                let new = match files::new_note(ix, &target, ix.by_rel(&from)) {
+                    Ok(new) => new,
+                    Err(e) => {
+                        self.mode = Mode::Tidy(view);
+                        return self.flash(e.to_string());
+                    }
+                };
+                let created = crate::write::create_if_missing(new.path(), b"");
                 self.reload_tree();
                 self.show_tidy(view);
-                let rel = path.strip_prefix(&root).unwrap_or(&path).display();
+                let rel = new.rel();
                 match created {
                     Ok(_) => self.flash(format!("created {rel}")),
                     Err(e) => self.flash(format!("couldn't create {rel}: {e}")),
@@ -5475,12 +5491,18 @@ impl Home {
         found
     }
 
-    /// Create the note `name` in `in_folder`, from `template` (workspace-relative, without
+    /// Create the note at `new` (only `files::new_path` makes one, so it is inside the
+    /// workspace) named `name` in `in_folder`, from `template` (workspace-relative, without
     /// `.md`) if one is given, and open it.
-    fn create_note(&mut self, in_folder: &Folder, name: &str, template: Option<&str>) {
-        let rel = in_folder.new_note(name);
+    fn create_note(
+        &mut self,
+        in_folder: &Folder,
+        new: &files::NewPath,
+        name: &str,
+        template: Option<&str>,
+    ) {
         let root = in_folder.root.clone();
-        let path = root.join(&rel);
+        let (rel, path) = (new.rel(), new.path());
         let title = name.trim_end_matches(".md");
         let filled = template
             .map(|t| templates::new_note(&root, t, title.rsplit('/').next().unwrap_or(title)));
@@ -5494,7 +5516,7 @@ impl Home {
         };
         // `create` is the one test of whether the name is free: a symlink to nothing takes
         // it too, which `Path::exists` would call free.
-        match crate::write::create(&path, body.as_bytes()) {
+        match crate::write::create(path, body.as_bytes()) {
             Ok(()) => {
                 if !in_folder.rel.is_empty() {
                     self.expanded.insert(in_folder.rel.clone());
@@ -5516,7 +5538,7 @@ impl Home {
         if let Some(r) = self.rows.iter().position(|&i| self.items[i].rel == rel) {
             self.nsel = r;
             self.pending = None;
-            self.show(&path);
+            self.show(path);
             self.focus_pane();
         }
     }

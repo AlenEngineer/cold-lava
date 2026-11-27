@@ -186,7 +186,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `resolver.rs`: the link resolver, both directions, with Obsidian's rules (path, then name,
   shallowest wins; attachments beside the note; `./` and `../`). Resolve: `Resolver` (the
   index's), `Files::resolve`, `split_link`, `attachment`, `file`. Write: `Files::write` in a
-  `Style`, `Rewriter` (renames and merges), `new_note_path`/`new_file_path`. Don't write another
+  `Style`, `Rewriter` (renames and merges), `new_note_path`/`new_file_path` (the engine's own:
+  a frontend asks `files::new_note`). Don't write another
   link resolver: ask this one (docs/extensions.md, "Link resolver").
 - `style.rs`: the workspace's style (how its notes are written). The Markdown owner counts link
   syntax as it reads (`Read::written`); `count_with()` counts the rest of a note the first time
@@ -454,7 +455,11 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `workspace/delete` (to the trash, refused unless still that `rev`; answers a random token that
   only the client it was given to can use, kept in the core's `Trash` and gone with the core),
   `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
-  `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
+  `new_path` is the one check of where a new file or folder goes (`normal`, then
+  `rename::check_path`, then `resolve`: inside the workspace, no symlink on the way), and a
+  `NewPath` only it makes: `create-folder`, the menu's new note, the switcher's, a link
+  followed to nowhere and tidy's create (`files::new_note`, over `resolver::new_note_path`)
+  write only at one (#411, #421). `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
   folder on the way to it may be one (`resolve_entry`). A
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or

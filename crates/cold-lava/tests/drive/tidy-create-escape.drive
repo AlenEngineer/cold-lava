@@ -1,0 +1,22 @@
+# Tidy's create (n on an unresolved link) refuses a note named out of the workspace (`..` in
+# it) or a hidden one (a trailing slash, #331), whoever wrote the link (#421). tests/drive.rs
+# writes Inbox/Escape.md and checks nothing was written outside the workspace.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys T
+wait-for Unresolved links · 5
+expect ? ../../Escaped
+# Orphans (3), then the unresolved targets by name: `../../Escaped` is the first.
+keys home down down down
+keys n
+wait-for ../../Escaped.md: a path can't have
+expect ? ../../Escaped
+# Its link, Iceland and its link, Lahar and its three links, then `Nothing.csv/`.
+keys down down down down down down down down
+keys n
+wait-for Nothing.csv/.md: a path can't have
+expect ? Nothing.csv/
+keys esc
+wait-gone Unresolved links
+keys q
+exits 0
