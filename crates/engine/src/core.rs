@@ -227,24 +227,18 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch. Returns what an owned file leaves out, where
-    /// that is news since the file was read before (`owned_news`), for the files the scan no
-    /// longer finds too, for the caller to say with its `Rescanned`.
+    /// After the workspace was read from scratch: every owned file is read again over what it
+    /// held before, so what it leaves out is news only against that. Returns what went wrong
+    /// reading one, and what an owned file leaves out where that is news (`owned_news`), for
+    /// the files the scan no longer finds too, for the caller to say with its `Rescanned`.
     fn rescanned(&mut self, index: Index) -> Vec<Event> {
-        let before = std::mem::replace(&mut self.index, index).workspace.owned;
+        self.index.workspace.owned = std::mem::replace(&mut self.index, index).workspace.owned;
         self.changed.clear();
-        if !self.owners.kinds().is_empty() {
-            let _ = self.owned_scan();
-            self.index.relink();
-        }
-        let now = &self.index.workspace.owned;
-        let gone = (before.iter()).filter(|b| owned_at(now, &b.rel).is_none());
-        let gone = gone.map(|b| owned_news(Some(b), None));
-        let found = (now.iter()).map(|f| owned_news(owned_at(&before, &f.rel), Some(f)));
-        let leaves_out: Vec<Event> = gone.chain(found).flatten().collect();
+        let (_, events) = self.owned_scan(Reread::All);
+        self.index.relink();
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
-        leaves_out
+        events
     }
 
     /// The extensions that own these kinds of file: their files' items and links join the
@@ -256,7 +250,8 @@ impl Core {
         let before = owned.len();
         owned.retain(|f| crate::owner::built_in(&f.rel).is_some());
         let dropped = before != owned.len();
-        let events = self.owned_scan();
+        let (changed, mut events) = self.owned_scan(Reread::Changed);
+        events.extend(changed.into_iter().map(Event::OwnedChanged));
         if dropped || !events.is_empty() {
             self.index.relink();
             let news = self.items.reset(&self.index.workspace);
@@ -268,9 +263,10 @@ impl Core {
 
     /// Find every file of an owned kind again, the built-in owners' included, and read each the
     /// way `owned_changed` does, without telling subscribers (after a scan, which is a reset).
-    /// Returns its events.
-    fn owned_scan(&mut self) -> Vec<Event> {
-        let mut rels = Vec::new();
+    /// A file it held and no longer finds is gone. Returns the files whose items or links
+    /// changed, and what went wrong.
+    fn owned_scan(&mut self, reread: Reread) -> (Vec<String>, Vec<Event>) {
+        let mut found = Vec::new();
         let built_in = crate::owner::BUILT_IN.iter().map(|(x, _)| *x);
         for x in self
             .owners
@@ -279,12 +275,12 @@ impl Core {
             .map(|k| k.extension.as_str())
             .chain(built_in)
         {
-            rels.extend(files::list(&self.index, x).files);
+            found.extend(files::list(&self.index, x).files);
         }
-        (self.index.workspace.owned).retain(|f| rels.contains(&f.rel));
-        let (changed, mut events) = self.owned_read(&rels);
-        events.extend(changed.into_iter().map(Event::OwnedChanged));
-        events
+        let held = self.index.workspace.owned.iter().map(|f| &f.rel);
+        let mut rels: Vec<String> = held.filter(|r| !found.contains(r)).cloned().collect();
+        rels.extend(found);
+        self.owned_read(&rels, reread)
     }
 
     /// `file/read` requests for the owners, each with its owner's name: files whose version
@@ -356,7 +352,7 @@ impl Core {
 
     /// Owned files at `rels` may have changed on disk: read them again, and tell subscribers.
     fn owned_changed(&mut self, rels: &[String]) -> Vec<Event> {
-        let (changed, mut events) = self.owned_read(rels);
+        let (changed, mut events) = self.owned_read(rels, Reread::Changed);
         if !changed.is_empty() {
             self.index.relink();
             let news = self.items.changed(&self.index.workspace, &changed);
@@ -370,7 +366,7 @@ impl Core {
     /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
     /// items or links changed, and what went wrong. Links are not resolved again here. A file
     /// at a symlink, or behind one, is gone (`owned_bytes`).
-    fn owned_read(&mut self, rels: &[String]) -> (Vec<String>, Vec<Event>) {
+    fn owned_read(&mut self, rels: &[String], reread: Reread) -> (Vec<String>, Vec<Event>) {
         let root = self.root().to_path_buf();
         let (mut changed, mut events) = (Vec::new(), Vec::new());
         for rel in rels {
@@ -390,7 +386,12 @@ impl Core {
             };
             let rev = read::rev(&bytes);
             let i = match at {
-                Ok(i) if owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) => continue,
+                Ok(i)
+                    if reread == Reread::Changed
+                        && owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) =>
+                {
+                    continue;
+                }
                 Ok(i) => i,
                 Err(i) => {
                     owned.insert(i, Owned::new(rel.clone(), root.join(rel), &owner));
@@ -931,14 +932,14 @@ impl Core {
     }
 
     /// Read the whole workspace again right away (after cold-lava itself moved files around).
-    /// Subscribers get what owned files leave out, if that is news, then `Rescanned`; the next
-    /// `poll` returns the first.
+    /// Subscribers get what went wrong reading an owned file and what one leaves out, if that is
+    /// news, then `Rescanned`; the next `poll` returns the first.
     pub fn rescan_now(&mut self) {
         if let Ok(v) = workspace::scan(&self.index.workspace.root) {
-            let leaves_out = self.rescanned(Index::build(v));
-            self.broadcast(&leaves_out);
+            let reports = self.rescanned(Index::build(v));
+            self.broadcast(&reports);
             self.broadcast(&[Event::Rescanned]);
-            self.unseen.extend(leaves_out);
+            self.unseen.extend(reports);
         }
     }
 
@@ -1057,8 +1058,8 @@ fn classify(root: &Path, path: &Path) -> Kind {
 
 /// What an owned file leaves out (`Event::OwnedLeavesOut`), when that is news between
 /// `before`, the file as it was, and `now`, as it is (`None`: it wasn't there, or it is
-/// gone). The one place the core decides it, whoever read the file: `owned_read`,
-/// `rescanned`, or the scan as the core opens (which reads a canvas and says nothing).
+/// gone). The one place the core decides it, whoever read the file: `owned_read` (a rescan's
+/// too), or the scan as the core opens (which reads a canvas and says nothing).
 ///
 /// It is news when what the file leaves out changed, `None` once all of it reads or the file
 /// is gone, and when an answer for another version leaves something out, from an owner that
@@ -1077,10 +1078,14 @@ fn owned_news(before: Option<&Owned>, now: Option<&Owned>) -> Option<Event> {
     })
 }
 
-/// The file at `rel` among `owned`, which is in the order of their paths.
-fn owned_at<'a>(owned: &'a [Owned], rel: &str) -> Option<&'a Owned> {
-    let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
-    i.ok().map(|i| &owned[i])
+/// Which owned files `Core::owned_read` reads again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reread {
+    /// Those that don't show what their owner gave for the version on disk.
+    Changed,
+    /// Every one, as a rescan reads every note: the workspace's settings (the Tasks plugin's
+    /// statuses) may read a version a file already shows otherwise.
+    All,
 }
 
 /// The bytes of the owned file at `rel`, read as the scan reads files: none when it is gone,
