@@ -245,22 +245,11 @@ fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
     move |e| Error::new(Reason::Io, format!("{rel}: {e}"))
 }
 
-/// `Kept` in its one wording (`write::kept_words`), naming the hidden file that holds the text
-/// taken out of `rel` by its workspace path: it is beside `rel`.
-fn kept_beside(rel: &str, kept: &Path) -> String {
-    let name = kept.file_name().unwrap_or_default().to_string_lossy();
-    let at = match rel.rsplit_once('/') {
-        Some((folder, _)) => format!("{folder}/{name}"),
-        None => name.into_owned(),
-    };
-    write::kept_words(rel, at)
-}
-
 fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
     move |e| {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
-            WriteError::Kept(_, kept) => kept_beside(rel, kept),
+            WriteError::Kept(_, kept) => write::kept_beside(rel, kept),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Link(_) => never_followed(rel),
@@ -361,7 +350,7 @@ fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
     move |e| {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
-            WriteError::Kept(_, kept) => kept_beside(rel, kept),
+            WriteError::Kept(_, kept) => write::kept_beside(rel, kept),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Link(_) => never_followed(rel),

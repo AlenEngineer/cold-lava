@@ -232,7 +232,15 @@ impl std::error::Error for Error {}
 /// An edit's write refused or failed, read as `Reason::of` reads it, in the write's words.
 impl From<write::WriteError> for EditError {
     fn from(e: write::WriteError) -> EditError {
-        let words = e.to_string();
+        EditError::written(e, Path::new(""))
+    }
+}
+
+impl EditError {
+    /// An edit's write refused or failed, as `From<WriteError>` reads it, with a kept text
+    /// named from the workspace's `root` (`WriteError::named_from`).
+    pub fn written(e: write::WriteError, root: &Path) -> EditError {
+        let words = e.named_from(root);
         match Reason::of(&e) {
             Reason::Changed => EditError::Changed(words),
             Reason::Kept => EditError::Kept(words),
@@ -790,7 +798,7 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
     }?;
     if made.changed {
         write::replace(&path, text.as_bytes(), made.text.as_bytes())
-            .map_err(|e| Error::new(Reason::of(&e), e.to_string()))?;
+            .map_err(|e| Error::new(Reason::of(&e), e.named_from(root)))?;
     }
     Ok(Written {
         note,

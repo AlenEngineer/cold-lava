@@ -94,7 +94,8 @@ pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Resu
     let set = plan(note, &text, &Settings::load(root), &style, req)?;
     if set.changed && !dry_run {
         let seen = crate::read::Seen::kept(&path, text.as_bytes());
-        seen.replace(set.text.as_bytes()).map_err(EditError::from)?;
+        seen.replace(set.text.as_bytes())
+            .map_err(|e| EditError::written(e, root))?;
     }
     Ok(set)
 }

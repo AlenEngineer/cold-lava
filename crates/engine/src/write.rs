@@ -7,6 +7,7 @@
 //! the new file goes in by a swap or a rename that never replaces (`os_rename`), and what came
 //! out is checked.
 
+mod lock;
 mod os_rename;
 mod replace;
 
@@ -61,8 +62,35 @@ pub(crate) fn not_a_file(name: impl fmt::Display) -> String {
 }
 
 /// `Kept` in its one wording, naming the file and where its text is kept as the caller does.
+/// The kept file comes first, so a status line cut at 100 columns still shows where it is.
 pub(crate) fn kept_words(name: impl fmt::Display, kept: impl fmt::Display) -> String {
-    format!("{name} changed while it was being written: the text taken out of it is kept in {kept}")
+    format!("other text kept in {kept} · {name} changed while saving")
+}
+
+/// `Kept`'s words naming the file by `rel`, its workspace path, and the kept text by the
+/// workspace path of the hidden file beside it, as a write that follows no link keeps it.
+pub(crate) fn kept_beside(rel: &str, kept: &Path) -> String {
+    let name = kept.file_name().unwrap_or_default().to_string_lossy();
+    let at = match rel.rsplit_once('/') {
+        Some((folder, _)) => format!("{folder}/{name}"),
+        None => name.into_owned(),
+    };
+    kept_words(rel, at)
+}
+
+impl WriteError {
+    /// The error's words, with a kept text's two paths named from `root`, the workspace's
+    /// (`rel_path::or_whole`: a path outside it, as a link's target may be, is named whole).
+    /// What a person is shown; the other refusals read as `Display` says them.
+    pub fn named_from(&self, root: &Path) -> String {
+        match self {
+            WriteError::Kept(p, kept) => kept_words(
+                crate::rel_path::or_whole(root, p),
+                crate::rel_path::or_whole(root, kept),
+            ),
+            _ => self.to_string(),
+        }
+    }
 }
 
 fn io_err(path: &Path) -> impl Fn(io::Error) -> WriteError + '_ {
@@ -304,6 +332,7 @@ fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
 mod tests {
     use super::replace::{Hooks, aside, checked, keep, put_back};
     use super::*;
+    use std::time::Duration;
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("cold-lava-write-{}-{name}", std::process::id()));
@@ -543,22 +572,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Two cold-lava writers on one file. B compared, another program saved, and B's swap took
-    /// that save out; before B puts it back, C reads the file (B's text), replaces it and is
-    /// told it is done. B's swap back never undoes C's save: C's text stays at the path, the
-    /// other program's is kept beside it, and B's own is gone.
+    /// Another program saves twice. B compared, the program saved, and B's swap took that save
+    /// out; before B puts it back, the program reads the file (B's text) and saves again over
+    /// it. B's swap back never undoes the later save: it stays at the path, the earlier one is
+    /// kept beside it, and B's own text is gone.
     #[test]
-    fn a_save_another_replace_reported_done_is_never_undone() {
+    fn a_later_save_is_never_undone_by_the_swap_back() {
         let d = dir("two-writers");
         let p = d.join("N.md");
         std::fs::write(&p, "v1").unwrap();
+        let later = |p: &Path| {
+            let other = p.with_file_name("later.tmp");
+            std::fs::write(&other, "c").unwrap();
+            std::fs::rename(&other, p).unwrap();
+        };
         let hooks = Hooks {
             compared: || theirs_by_a_rename(&p),
             swapped: |round| {
                 if round == 0 {
-                    let seen = std::fs::read(&p).unwrap();
-                    assert_eq!(seen, b"b");
-                    replace(&p, &seen, b"c").unwrap();
+                    assert_eq!(std::fs::read(&p).unwrap(), b"b");
+                    later(&p);
                 }
             },
         };
@@ -570,8 +603,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The same two writers, C after B's swap back: B put the other program's text back, so
-    /// C, which read B's text, is refused too, and nothing is kept.
+    /// Three cold-lava writers replace one file at once, each over the text all three read
+    /// (#425: three `cold-lava item set` on one task). They take turns (`lock`): the one told it
+    /// is done is the one at the path, the other two are refused as changed, and nothing is
+    /// kept. Each waits after its compare, so without turns all three would swap at once.
+    #[test]
+    fn of_three_cold_lava_writers_the_one_told_done_is_at_the_path() {
+        let d = dir("three-writers");
+        let p = d.join("N.md");
+        for round in 0..5 {
+            std::fs::write(&p, "v1").unwrap();
+            let start = std::sync::Barrier::new(3);
+            let results: Vec<(&[u8], Result<(), WriteError>)> = std::thread::scope(|s| {
+                let writers: Vec<_> = [&b"a"[..], &b"b"[..], &b"c"[..]]
+                    .into_iter()
+                    .map(|ours| {
+                        let (p, start) = (&p, &start);
+                        s.spawn(move || {
+                            start.wait();
+                            let hooks = Hooks {
+                                compared: || std::thread::sleep(Duration::from_millis(30)),
+                                swapped: |_| {},
+                            };
+                            (ours, checked(p, p, b"v1", ours, hooks))
+                        })
+                    })
+                    .collect();
+                writers.into_iter().map(|w| w.join().unwrap()).collect()
+            });
+            let done: Vec<&[u8]> = (results.iter())
+                .filter(|(_, r)| r.is_ok())
+                .map(|(ours, _)| *ours)
+                .collect();
+            assert_eq!(done.len(), 1, "round {round}: {results:?}");
+            assert_eq!(std::fs::read(&p).unwrap(), done[0], "round {round}");
+            for (_, r) in &results {
+                let told = matches!(r, Ok(()) | Err(WriteError::Changed(_)));
+                assert!(told, "round {round}: {r:?}");
+            }
+            assert_eq!(files(&d), ["N.md"], "round {round}: nothing kept");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A writer's turn holds the folder until it is dropped; another waits for it at most as
+    /// long as it is told, then goes ahead without the lock instead of hanging.
+    #[test]
+    fn a_turn_is_waited_for_and_never_forever() {
+        let d = dir("turn");
+        let turn = lock::take(&d.join("N.md"));
+        assert!(turn.held());
+        let started = std::time::Instant::now();
+        assert!(lock::locked(&d, Duration::from_millis(50)).is_none());
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        drop(turn);
+        assert!(lock::locked(&d, Duration::from_millis(50)).is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// B as above, then another cold-lava writer, C, after B's swap back: B put the other
+    /// program's text back, so C, which read B's text, is refused too, and nothing is kept.
     #[test]
     fn a_replace_after_the_swap_back_is_refused() {
         let d = dir("two-writers-after");

@@ -8,12 +8,15 @@
 //! swap checks what came out, and a text put back over a newer one is swapped out again
 //! (`put_back`). Where that can't go on (a writer that doesn't stop, a swap that fails), the
 //! path may hold an older text: the newer one is never removed then, but kept beside it, named.
+//!
+//! cold-lava's own writers never race here: each holds its turn on the file's folder through
+//! all of it (`lock`), so the other writers `checked` meets are other programs.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{WriteError, beside, io_err, os_rename, reserved, staged, unstaged};
+use super::{WriteError, beside, io_err, lock, os_rename, reserved, staged, unstaged};
 
 /// Where a test lands another write in `checked`: after the compare (`compared`), and after the
 /// swap took out another write's text, before each round that puts one back (`swapped`, with
@@ -31,7 +34,8 @@ pub(super) struct Hooks<A, B> {
 /// `file` after the caller's check is compared by what it leads to, and is what comes out, so
 /// it is removed or put back as a link and never written through. Left open, as on any POSIX
 /// system: a program that opened the file before the swap and writes into it after what came
-/// out was compared. Errors name `path`.
+/// out was compared. Another cold-lava's replace of a file in the same folder waits until
+/// this one is done, from the compare to the last swap (`lock::take`). Errors name `path`.
 pub(super) fn checked(
     path: &Path,
     file: &Path,
@@ -39,6 +43,7 @@ pub(super) fn checked(
     bytes: &[u8],
     hooks: Hooks<impl FnOnce(), impl FnMut(usize)>,
 ) -> Result<(), WriteError> {
+    let _turn = lock::take(file);
     let now = std::fs::read(file).map_err(io_err(path))?;
     if now != expected {
         return Err(WriteError::Changed(path.to_path_buf()));
@@ -71,17 +76,25 @@ fn settle(
 
 /// Swap another write's text in `out` back into `file`, and refuse (`Changed`). The swap back
 /// is checked as the first swap was: what comes out should be what this write put in. When it
-/// isn't, a newer write landed at the path in the moment between (another program's save, or
-/// another cold-lava's replace, which may already have said it was done), and the text just put
-/// back is older than it: so the newer one is swapped in once more, and the older one comes
-/// out. That repeats while each round takes out a text newer than the one it put in
-/// (`swap_back`). When a round settles (`Ours`, `Same`), the newest text is at the path, and
-/// what is left in `out` is removed only when it is this write's own `bytes`, `expected`, or
-/// the text the path now holds; anything else is kept (`keep`). When the rounds run out
-/// (`ROUNDS`) or a round stops (`Stopped`: a swap or a read failed), the path may hold an older
-/// text than the one in `out`: nothing is removed then, and what is in `out` is kept beside the
-/// path and named, whatever it holds. `between` runs before each round, with its number: tests
-/// land writes there.
+/// isn't, another program wrote the path in the moment between, and the text just put back is
+/// older than it: so the newer one is swapped in once more, and the older one comes out. That
+/// repeats while each round takes out a text it didn't put in (`swap_back`). When a round
+/// settles (`Ours`, `Same`), the last text another program wrote is at the path, and what is
+/// left in `out` is removed only when it is this write's own `bytes`, `expected`, or the text
+/// the path now holds; anything else is kept (`keep`). When the rounds run out (`ROUNDS`) or a
+/// round stops (`Stopped`: a swap or a read failed), the path may hold an older text than the
+/// one in `out`: nothing is removed then, and what is in `out` is kept beside the path and
+/// named, whatever it holds. `between` runs before each round, with its number: tests land
+/// writes there.
+///
+/// What this can't tell apart is a text written later from one written earlier that another
+/// writer swapped back in: every text it didn't put in counts as newer. Another cold-lava is
+/// never that writer while it holds its turn (`lock`), but one that went ahead without it (its
+/// wait ran out, or the lock couldn't be taken), or another program that also swaps a file out
+/// and back, can be: then a save that writer was told was done may end up beside the path in a
+/// kept file, and the path may hold a text whose writer was refused. No text is removed either
+/// way: each is at the path or kept beside it, named. A program that writes into the file it
+/// opened before the swap is the gap `checked` leaves open.
 pub(super) fn put_back(
     path: &Path,
     file: &Path,

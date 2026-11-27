@@ -1289,7 +1289,9 @@ impl Board {
                          are kept and saved once it can",
                     ),
                     crate::gateway::Reason::Kept => self.flash(format!(
-                        "not saved: {e}. Your edits are kept and saved once the file can be read"
+                        "not saved: {}. Your edits stay here and are saved once the file can \
+                         be read",
+                        e.named_from(&self.workspace_root)
                     )),
                     _ => self.flash(format!("save failed: {e}")),
                 }

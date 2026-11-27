@@ -165,7 +165,14 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   named, never removed. Where the file system can't swap, the file is moved aside
   by one rename onto a name it reserved and compared there. A text the engine took out is
   removed only when it is the caller's old text, the write's own, or what the path then
-  holds, and after a swap back only when its rounds settled. Every caller classifies a `WriteError` through `Reason::of` (`EditError::from` for
+  holds, and after a swap back only when its rounds settled. cold-lava's own replaces take
+  turns (`write/lock.rs`): each holds `flock` on its file's folder (the link's target's, for
+  `replace_through_link`) from the compare to the last swap, so only other programs race the
+  swap; the lock leaves no file, and a write that waits 5 s goes ahead without it. A swap back
+  can't tell a later text from an earlier one another swapper put back, so with a writer that
+  went ahead unlocked a done save may end up kept beside the path (never removed). The words
+  a person sees name the kept file first, by its workspace path (`kept_words`,
+  `WriteError::named_from`, `kept_beside`). Every caller classifies a `WriteError` through `Reason::of` (`EditError::from` for
   an edit, `EditError::from(gateway::Error)` back), never by matching its variants. `create`
   and `move_file` rename with `no_replace`, refused when something is there by then. Left
   open: a program that opened the file before the swap and writes into it after the
