@@ -83,7 +83,9 @@ impl Folder {
         self.join(name.trim_matches('/'))
     }
 
-    /// A new note named `name` in it, workspace-relative.
+    /// A new note named `name` in it, workspace-relative, as typed and not checked: `..`, a
+    /// leading `/` or a symlinked folder in `name` would lead out of the workspace, so the
+    /// note is written only at the path `files::new_path` makes of it.
     pub fn new_note(&self, name: &str) -> String {
         match name.ends_with(".md") {
             true => self.join(name),

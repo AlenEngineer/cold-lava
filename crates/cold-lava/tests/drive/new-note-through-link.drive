@@ -1,0 +1,25 @@
+# A new note named through a folder that is a symlink to a folder outside the workspace is
+# refused, and the menu goes on (#411). tests/drive.rs makes the link, Inbox/Alias, and
+# checks nothing was written where it leads.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 3
+keys p loose
+wait-for Loose thought
+keys enter
+wait-for Inbox/Loose thought  reading
+keys esc
+wait-gone reading · Esc / q back
+keys n
+wait-for new note in Inbox/
+type Alias/Through
+keys enter
+wait-for Inbox/Alias is a symbolic link
+keys n
+wait-for new note in Inbox/
+type Kept
+keys enter
+wait-for created Inbox/Kept.md
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0
