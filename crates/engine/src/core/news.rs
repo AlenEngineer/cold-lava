@@ -410,12 +410,17 @@ impl Harness {
 
     /// The owner answers the `file/read` requests waiting for it. How many there were.
     pub(crate) fn owner_reads(&mut self) -> usize {
-        let reads = self.core.take_reads();
+        let reads = self.take_reads();
         self.owner_answers(&reads);
         reads.len()
     }
 
-    /// The owner answers `reads`, which the core handed out earlier (`Core::take_reads`).
+    /// The `file/read` requests waiting for the owner, for it to answer later (`owner_answers`).
+    pub(crate) fn take_reads(&mut self) -> Vec<(String, FileRead)> {
+        self.call(Core::take_reads)
+    }
+
+    /// The owner answers `reads`, which the core handed out earlier (`take_reads`).
     pub(crate) fn owner_answers(&mut self, reads: &[(String, FileRead)]) {
         for (owner, read) in reads {
             let given = lines_given(&read.text);
@@ -1071,7 +1076,7 @@ fn a_read_back_after_its_rename_was_cancelled_is_not_the_file_s_reading() {
         .apply_rename(&mut plan)
         .expect("the extension answers later");
     assert_eq!(h.owner_edits(), 1);
-    let back = h.core.take_reads();
+    let back = h.take_reads();
     assert_eq!(back.len(), 1, "asked to read its new text back");
     h.cancel(ticket);
     h.owner_answers(&back);
@@ -1106,6 +1111,43 @@ fn a_read_back_after_its_rename_was_cancelled_is_not_the_file_s_reading() {
     h.renamed(&mut plan, ticket).unwrap();
     let reading = "- [ ] Read the report on [[Tephra]]\n";
     assert_eq!(h.read("Reading.lines"), reading);
+}
+
+/// An owner's answer for a path that became a symlink while it read, of the text the link
+/// leads to, is not the file's: the core reads no link, as the scan doesn't
+/// (`workspace::first_link`), so the answer isn't kept. A file put back at the path with that
+/// text is read by its owner again.
+#[cfg(unix)]
+#[test]
+fn an_answer_for_a_path_that_is_a_symlink_is_not_kept() {
+    let outside = temp("linked-answer-outside");
+    let mut h = Harness::with("linked-answer", &[("Reading.lines", READING)]);
+    h.follow("agenda", tasks());
+    let theirs = "- [ ] Read the report twice\n";
+    h.write("Reading.lines", theirs);
+    h.saw("Reading.lines");
+    h.deliver();
+    let asked = h.take_reads();
+    assert_eq!(asked.len(), 1, "its owner is asked to read the new text");
+
+    let link = h.core.root().join("Reading.lines");
+    std::fs::write(outside.join("Reading.lines"), theirs).unwrap();
+    h.remove("Reading.lines");
+    std::os::unix::fs::symlink(outside.join("Reading.lines"), &link).unwrap();
+    h.saw("Reading.lines");
+    h.deliver();
+    assert_eq!(h.count("agenda", "Read the report"), 0, "a link is no file");
+    h.owner_answers(&asked);
+    assert!(h.deliver().is_empty(), "nor is its answer news");
+
+    h.remove("Reading.lines");
+    h.write("Reading.lines", theirs);
+    h.saw("Reading.lines");
+    h.deliver();
+    assert_eq!(h.owner_reads(), 1, "its answer for the link wasn't kept");
+    h.deliver();
+    assert_eq!(h.count("agenda", "Read the report twice"), 1);
+    let _ = std::fs::remove_dir_all(&outside);
 }
 
 /// A slow owner. Another program writes the file, and the owner reads that, before it answers

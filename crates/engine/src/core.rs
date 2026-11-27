@@ -320,14 +320,15 @@ impl Core {
         self.edits.take_edited()
     }
 
-    /// `owner` answered `file/read` for `path` at `rev`: what it gave is kept, and its items and
-    /// links join the workspace, only when the file on disk is still that version. The owners'
-    /// cache holds one answer a file, and an answer for another version would take the place of
-    /// the one for the file as it is: a version the file had before, or a new text the edit
-    /// desk asked about for an edit that was cancelled or failed, and never written (#369). Its
-    /// owner is then asked for the version on disk, unless it gave something for it already.
-    /// An error is reported and leaves the file's items as they were. Its events come from the
-    /// next `poll`.
+    /// `owner` answered `file/read` for `path` at `rev`, or couldn't (`Err`). A read-back the
+    /// edit desk waits for is the desk's. Any other answer is the file's only when it is for the
+    /// file on disk, read as the scan reads it (`owned_bytes`): what it gave is kept
+    /// (`Owners::answered`), and an error is reported and leaves the file's items as they were.
+    /// An answer for another version (a text the file had before, or a read-back that came
+    /// after its rename was cancelled, of a text never written: #369) is neither kept nor said.
+    /// Unless an error is reported, the file is read again: what its owner gave for the version
+    /// on disk joins the workspace, else it is asked for it. Its events come from the next
+    /// `poll`.
     pub fn file_given(&mut self, owner: &str, path: &str, rev: &str, given: Result<Given, String>) {
         if self.owners.owner_of(path) != Some(owner) {
             return;
@@ -338,16 +339,16 @@ impl Core {
             Ok(Some(write)) => return self.write_edit(write),
             Ok(None) => return,
         };
-        let on_disk = read::rev_at(self.root(), path).as_deref() == Some(rev);
-        let kept = given.as_ref().ok().filter(|_| on_disk);
-        self.owners.answered(owner, path, rev, kept);
+        let on_disk = owned_bytes(self.root(), path).map(|bytes| read::rev(&bytes));
+        let gave = given.as_ref().ok();
+        let current = (self.owners).answered(owner, path, rev, gave, on_disk.as_deref());
         let events = match given {
-            Ok(_) => self.owned_changed(&[path.to_string()]),
-            Err(message) => vec![Event::OwnerTrouble {
+            Err(message) if current => vec![Event::OwnerTrouble {
                 owner: owner.to_string(),
                 path: path.to_string(),
                 message,
             }],
+            _ => self.owned_changed(&[path.to_string()]),
         };
         self.broadcast(&events);
         self.unseen.extend(events);
@@ -368,7 +369,7 @@ impl Core {
     /// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
     /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
     /// items or links changed, and what went wrong. Links are not resolved again here. A file
-    /// at a symlink, or behind one, is gone, as the scan reads none (`workspace::first_link`).
+    /// at a symlink, or behind one, is gone (`owned_bytes`).
     fn owned_read(&mut self, rels: &[String]) -> (Vec<String>, Vec<Event>) {
         let root = self.root().to_path_buf();
         let (mut changed, mut events) = (Vec::new(), Vec::new());
@@ -378,9 +379,7 @@ impl Core {
             };
             let owned = &mut self.index.workspace.owned;
             let at = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
-            let unlinked = matches!(workspace::first_link(&root, rel), Ok(None));
-            let read = unlinked.then(|| std::fs::read(root.join(rel)).ok());
-            let Some(bytes) = read.flatten() else {
+            let Some(bytes) = owned_bytes(&root, rel) else {
                 if let Ok(i) = at {
                     let gone = owned.remove(i);
                     events.extend(owned_news(Some(&gone), None));
@@ -675,7 +674,8 @@ impl Core {
         let written = w.before.replace(w.after.as_bytes());
         let mut events = Vec::new();
         if written.is_ok() {
-            self.owners.answered(&w.owner, path, &w.rev, Some(&w.given));
+            let rev = w.rev.as_str();
+            (self.owners).answered(&w.owner, path, rev, Some(&w.given), Some(rev));
             events = self.owned_changed(&[path.to_string()]);
             events.push(Event::ItemEdited {
                 note: path.to_string(),
@@ -1083,6 +1083,15 @@ fn owned_at<'a>(owned: &'a [Owned], rel: &str) -> Option<&'a Owned> {
     i.ok().map(|i| &owned[i])
 }
 
+/// The bytes of the owned file at `rel`, read as the scan reads files: none when it is gone,
+/// can't be read, or is a symlink or behind one (`workspace::first_link`).
+fn owned_bytes(root: &Path, rel: &str) -> Option<Vec<u8>> {
+    if !matches!(workspace::first_link(root, rel), Ok(None)) {
+        return None;
+    }
+    std::fs::read(root.join(rel)).ok()
+}
+
 /// `.obsidian`'s own folder, when `.obsidian` is a symlink to a folder: outside the workspace,
 /// as people link one set of Obsidian settings into several workspaces, or in it. The watch of
 /// the workspace follows no link, so `watch` watches one outside on its own, and `names` names
@@ -1460,13 +1469,19 @@ mod tests {
         }
         assert_eq!(reads.len(), 1);
         assert_eq!(query(&again, "task").len(), 1);
+
+        // An error for a version the file no longer has is no news of it; one for the version
+        // on disk is, and what it gave stays.
+        let trouble = |core: &mut Core| {
+            let events = core.poll();
+            (events.iter()).any(|e| matches!(e, Event::OwnerTrouble { .. }))
+        };
         again.file_given("csv-table", "Eruptions.csv", "old", Err("it broke".into()));
-        assert!(
-            again
-                .poll()
-                .iter()
-                .any(|e| matches!(e, Event::OwnerTrouble { .. }))
-        );
+        assert!(!trouble(&mut again), "not for the file on disk");
+        let rev = &reads[0].1.rev;
+        again.file_given("csv-table", "Eruptions.csv", rev, Err("it broke".into()));
+        assert!(trouble(&mut again));
+        assert_eq!(query(&again, "task").len(), 1);
         std::fs::remove_file(again.root().join("Eruptions.csv")).unwrap();
         let events = changed(&mut again);
         assert!(events.contains(&Event::OwnedChanged("Eruptions.csv".into())));
