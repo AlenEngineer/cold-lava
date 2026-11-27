@@ -1256,27 +1256,16 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
     }
     // Skipped for speed (#327): it cost every note about 40 µs, though with no anchor counted
     // twice every key is its anchor and no two of a kind share one, so no item has a twin.
-    if repeated || always_twin_revs() {
+    // A debug build runs it anyway and checks that it changes nothing, on every note a test reads.
+    if repeated {
         twin_revs(&mut items, &anchors);
+    } else if cfg!(debug_assertions) {
+        let mut passed = items.clone();
+        twin_revs(&mut passed, &anchors);
+        assert_eq!(passed, items, "the skipped twin pass would change {note}");
     }
     items.sort_by_key(|i| i.line);
     items
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Set by a test to run `twin_revs` on every note, to check the skip changes nothing.
-    static ALWAYS_TWIN_REVS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-fn always_twin_revs() -> bool {
-    ALWAYS_TWIN_REVS.get()
-}
-
-#[cfg(not(test))]
-fn always_twin_revs() -> bool {
-    false
 }
 
 /// What an item's anchor, its key before `identify` counts it, is made of: the item it is
@@ -1817,8 +1806,9 @@ Setext
     }
 
     /// A note in which no anchor is counted twice skips the twin pass (`identify`, for
-    /// speed): its ids and revs are what the pass would give, on every note of the example
-    /// workspace, the corpus and the tricky cases, and on notes with no twins at all.
+    /// speed), and a debug build checks there that the pass would change nothing. This reads
+    /// every note of the example workspace, the corpus and the tricky cases, and a note with
+    /// no twins at all, so that check runs on each.
     #[test]
     fn a_note_without_twins_gets_the_same_ids_and_revs_without_the_twin_pass() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
@@ -1837,14 +1827,8 @@ Setext
         let alone = "# Bills\n- [ ] Pay rent 📅 2026-11-12\n  - [ ] Transfer\n- milk\n- eggs\n";
         notes.push(("Alone.md".into(), alone.into()));
         let s = every_type("obsidian");
-        let read = |name: &str, text: &str, always: bool| -> Vec<(String, String)> {
-            ALWAYS_TWIN_REVS.set(always);
-            let all = extract(name, text, &s);
-            ALWAYS_TWIN_REVS.set(false);
-            all.into_iter().map(|i| (i.id, i.rev)).collect()
-        };
         for (name, text) in &notes {
-            assert_eq!(read(name, text, false), read(name, text, true), "{name}");
+            extract(name, text, &s);
         }
     }
 
