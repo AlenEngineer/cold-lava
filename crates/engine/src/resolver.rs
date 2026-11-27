@@ -271,7 +271,7 @@ impl Files {
     }
 
     /// The paths `of_workspace` holds, without the tables links are looked up in.
-    pub fn rels_of_workspace(ix: &Index) -> Vec<String> {
+    pub(crate) fn rels_of_workspace(ix: &Index) -> Vec<String> {
         let mut rels: Vec<String> = ix
             .workspace
             .notes

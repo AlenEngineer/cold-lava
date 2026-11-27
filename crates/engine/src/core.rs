@@ -429,46 +429,26 @@ impl Core {
                 Reread::All { scanned } => scanned.remove(rel),
                 Reread::Changed => None,
             };
-            let before = match scanned.filter(|f| f.rev.as_ref() == Some(&rev)) {
-                Some(file) => std::mem::replace(&mut owned[i], file),
-                None => {
-                    let given = match self.owners.kept(&owner, rel, &rev, &bytes) {
-                        Some(given) => Ok(given),
-                        None => match String::from_utf8(bytes) {
-                            Err(_) => Err("it isn't UTF-8 text".to_string()),
-                            Ok(text) => match crate::owner::give(&owner, rel, &text) {
-                                Some(given) => given,
-                                None => {
-                                    let read = FileRead {
-                                        path: rel.clone(),
-                                        rev,
-                                        text,
-                                    };
-                                    self.owners.ask(&owner, read);
-                                    continue;
-                                }
-                            },
-                        },
-                    };
-                    let file = &mut self.index.workspace.owned[i];
-                    let given = match given {
-                        Ok(given) => given,
-                        Err(message) => {
-                            if file.failed.as_ref() != Some(&rev) {
-                                file.failed = Some(rev);
-                                let path = rel.clone();
-                                events.push(Event::OwnerTrouble {
-                                    owner,
-                                    path,
-                                    message,
-                                });
-                            }
-                            continue;
-                        }
-                    };
+            let before = match owner_gave(&mut self.owners, &owner, rel, &rev, bytes, scanned) {
+                Gave::Scanned(file) => std::mem::replace(&mut owned[i], *file),
+                Gave::Given(given) => {
                     let read = given::read(rel, &given, self.index.workspace.item_settings());
                     self.index.workspace.owned[i].take(rev, given, read)
                 }
+                Gave::Failed(message) => {
+                    let file = &mut self.index.workspace.owned[i];
+                    if file.failed.as_ref() != Some(&rev) {
+                        file.failed = Some(rev);
+                        let path = rel.clone();
+                        events.push(Event::OwnerTrouble {
+                            owner,
+                            path,
+                            message,
+                        });
+                    }
+                    continue;
+                }
+                Gave::Asked => continue,
             };
             let now = &self.index.workspace.owned[i];
             events.extend(owned_news(Some(&before), Some(now)));
@@ -1115,6 +1095,53 @@ fn owned_news(before: Option<&Owned>, now: Option<&Owned>) -> Option<Event> {
         path: file.rel.clone(),
         message: now.and_then(Owned::trouble),
     })
+}
+
+/// What an owner gave for one version of an owned file, as `owner_gave` found it.
+enum Gave {
+    /// The scan's own reading of that version, taken whole (`Reread::All`).
+    Scanned(Box<Owned>),
+    /// What the owner gave: kept for that version, or read by a built-in owner now.
+    Given(Given),
+    /// The version can't be read, and why.
+    Failed(String),
+    /// Its owner, an extension, was asked; the answer comes to `Core::file_given`.
+    Asked,
+}
+
+/// What `owner` gave for the version `rev` of `rel`, whose bytes are `bytes`: the scan's
+/// reading of that version, else what the owners keep for it, else a built-in owner's reading
+/// of its text, else the owner is asked.
+fn owner_gave(
+    owners: &mut Owners,
+    owner: &str,
+    rel: &str,
+    rev: &str,
+    bytes: Vec<u8>,
+    scanned: Option<Owned>,
+) -> Gave {
+    if let Some(file) = scanned.filter(|f| f.rev.as_deref() == Some(rev)) {
+        return Gave::Scanned(Box::new(file));
+    }
+    if let Some(given) = owners.kept(owner, rel, rev, &bytes) {
+        return Gave::Given(given);
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Gave::Failed("it isn't UTF-8 text".to_string());
+    };
+    match crate::owner::give(owner, rel, &text) {
+        Some(Ok(given)) => Gave::Given(given),
+        Some(Err(message)) => Gave::Failed(message),
+        None => {
+            let read = FileRead {
+                path: rel.to_string(),
+                rev: rev.to_string(),
+                text,
+            };
+            owners.ask(owner, read);
+            Gave::Asked
+        }
+    }
 }
 
 /// Which owned files `Core::owned_read` reads again.
