@@ -451,7 +451,10 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `workspace/delete` (to the trash, refused unless still that `rev`; answers a random token that
   only the client it was given to can use, kept in the core's `Trash` and gone with the core),
   `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
-  `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
+  `new_path` is the one check of where a new file or folder goes (`normal`, then
+  `rename::check_path`, then `resolve`: inside the workspace, no symlink on the way), and a
+  `NewPath` only it makes: `create-folder`, the menu's new note and the switcher's
+  (`files::new_note`, over `resolver::new_note_path`) write only at one (#411). `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
   folder on the way to it may be one (`resolve_entry`). A
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or

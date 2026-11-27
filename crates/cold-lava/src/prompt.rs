@@ -83,16 +83,14 @@ impl Folder {
         self.join(name.trim_matches('/'))
     }
 
-    /// A new note named `name` in it, workspace-relative, refused unless it is a path a note
-    /// can have inside the workspace (`rename::check_path`): `..` or a leading `/` in a name
-    /// would lead out of it.
-    pub fn new_note(&self, name: &str) -> anyhow::Result<String> {
-        let rel = match name.ends_with(".md") {
+    /// A new note named `name` in it, workspace-relative, as typed and not checked: `..`, a
+    /// leading `/` or a symlinked folder in `name` would lead out of the workspace, so the
+    /// note is written only at the path `files::new_path` makes of it.
+    pub fn new_note(&self, name: &str) -> String {
+        match name.ends_with(".md") {
             true => self.join(name),
             false => self.join(&format!("{name}.md")),
-        };
-        crate::rename::check_path(&rel)?;
-        Ok(rel)
+        }
     }
 
     /// Where a prompt opened on it acts, `doing` what: in its workspace, the folder still there.
@@ -278,23 +276,6 @@ mod tests {
             root: PathBuf::from("/w"),
             path: PathBuf::from("/w/Volcanoes/Krakatoa.md"),
             moving,
-        }
-    }
-
-    #[test]
-    fn a_new_note_stays_inside_the_workspace() {
-        let inbox = in_folder("Inbox");
-        assert_eq!(inbox.new_note("Ash fall").unwrap(), "Inbox/Ash fall.md");
-        assert_eq!(
-            inbox.new_note("Field/Notes.md").unwrap(),
-            "Inbox/Field/Notes.md"
-        );
-        for name in ["../x", "a/../../x", "../../Escaped", "/tmp/x"] {
-            assert!(inbox.new_note(name).is_err(), "{name} is refused in Inbox");
-            assert!(
-                in_folder("").new_note(name).is_err(),
-                "{name} is refused at the root"
-            );
         }
     }
 

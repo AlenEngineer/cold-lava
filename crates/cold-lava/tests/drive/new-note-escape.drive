@@ -12,12 +12,12 @@ keys n
 wait-for new note in Inbox/
 type ../../Escaped
 keys enter
-wait-for inside the workspace: Inbox/../../Escaped.md
+wait-for Inbox/../../Escaped.md: a path can't have
 keys n
 wait-for new note in Inbox/
 type a/../../../Deeper
 keys enter
-wait-for inside the workspace: Inbox/a/../../../Deeper.md
+wait-for Inbox/a/../../../Deeper.md: a path can't have
 keys n
 wait-for new note in Inbox/
 type Kept
