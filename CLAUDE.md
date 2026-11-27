@@ -615,8 +615,10 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   (`can_create_in`), and never makes a target again. Each says what closing it would lose
   (`unsaved`).
 - `line_input.rs`, `pick_list.rs`, `popup.rs`, `words.rs`: leaves the menu and its overlays
-  call: what a key does to a typed line, to a picked list's query and cursor, where a popup
-  goes and its frame, and `plural` (the app's one "1 note" / "2 notes").
+  call: what a key does to a typed line, to a picked list's query and cursor, and how the
+  list's rows are drawn (`pick_list::draw`, from the pieces each caller writes: the rows
+  shown around the chosen one, its colours, the characters a match hit), where a popup goes
+  and its frame, and `plural` (the app's one "1 note" / "2 notes").
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
   plans and undoes through `recipe.rs`, and the core makes it (`Core::apply`), as a merge.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a

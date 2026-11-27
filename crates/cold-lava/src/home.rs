@@ -5868,43 +5868,33 @@ impl Home {
             Some(_) => Vec::new(),
         };
         let create = merging.is_none() && self.offers_create(query);
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(
-                    if query.is_empty() {
-                        "  type a name (letters in order are enough)".to_string()
-                    } else {
-                        format!("  {} notes", hits.len() + files.len())
-                    },
-                    Style::new().fg(MUTED),
-                ),
-            ]),
-            Line::raw(""),
-        ];
-        let rows = inner.height.saturating_sub(2) as usize;
-        let total = hits.len() + files.len() + create as usize;
-        let start = sel.saturating_sub(rows.saturating_sub(1));
-        let width = inner.width as usize;
-        for i in start..(start + rows).min(total) {
-            let selected = i == *sel;
-            let base = if selected {
-                Style::new().fg(Color::Black).bg(ACCENT)
-            } else {
-                Style::new().fg(NOTE)
-            };
-            let hl = if selected {
-                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
-            };
+        let typed = Line::from(vec![
+            Span::styled(" ▸ ", Style::new().fg(HIT)),
+            Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+            Span::styled(
+                if query.is_empty() {
+                    "  type a name (letters in order are enough)".to_string()
+                } else {
+                    format!("  {} notes", hits.len() + files.len())
+                },
+                Style::new().fg(MUTED),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(typed), inner);
+        let list = pick_list::List {
+            len: hits.len() + files.len() + create as usize,
+            sel: *sel,
+            none: " no notes match",
+            measure: pick_list::Measure::Chars,
+        };
+        let rows = pick_list::under_query(inner);
+        pick_list::draw(f.buffer_mut(), rows, list, |i| {
             if i == hits.len() + files.len() {
-                lines.push(Line::styled(
-                    format!(" + Create note \"{}\"", query.trim()),
-                    if selected { base } else { Style::new().fg(HIT) },
-                ));
-                continue;
+                let label = format!(" + Create note \"{}\"", query.trim());
+                return pick_list::Row {
+                    text: vec![pick_list::Piece::plain(label, Style::new().fg(HIT))],
+                    end: pick_list::End::Nothing,
+                };
             }
             let (label, positions, extra, right) = match hits.get(i) {
                 Some(hit) => {
@@ -5931,29 +5921,16 @@ impl Home {
                     (it.name.clone(), &fuzzy.positions, String::new(), right)
                 }
             };
-            let mut spans = vec![Span::styled(" ", base)];
-            for (ci, ch) in label.chars().enumerate() {
-                spans.push(Span::styled(
-                    ch.to_string(),
-                    if positions.contains(&ci) { hl } else { base },
-                ));
+            let (plain, muted) = (Style::new().fg(NOTE), Style::new().fg(MUTED));
+            pick_list::Row {
+                text: vec![
+                    pick_list::Piece::plain(" ", plain),
+                    pick_list::Piece::matched(label, positions, plain),
+                    pick_list::Piece::plain(extra, muted),
+                ],
+                end: pick_list::End::Right(pick_list::Piece::plain(right, muted)),
             }
-            let used = 1 + label.chars().count() + extra.chars().count();
-            let pad = width.saturating_sub(used + right.chars().count());
-            let dim = if selected {
-                base
-            } else {
-                Style::new().fg(MUTED)
-            };
-            spans.push(Span::styled(extra, dim));
-            spans.push(Span::styled(" ".repeat(pad), base));
-            spans.push(Span::styled(right, dim));
-            lines.push(Line::from(spans));
-        }
-        if total == 0 {
-            lines.push(Line::styled(" no notes match", Style::new().fg(MUTED)));
-        }
-        f.render_widget(Paragraph::new(lines), inner);
+        });
     }
 
     fn draw_search(&self, f: &mut Frame, area: Rect) {
@@ -5980,17 +5957,16 @@ impl Home {
                 matches
             )
         };
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(summary, Style::new().fg(MUTED)),
-            ]),
-            Line::raw(""),
-        ];
-        let rows = inner.height.saturating_sub(2) as usize;
-        let start = sel.saturating_sub(rows.saturating_sub(1));
-        let width = inner.width as usize;
+        let typed = Line::from(vec![
+            Span::styled(" ▸ ", Style::new().fg(HIT)),
+            Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+            Span::styled(summary, Style::new().fg(MUTED)),
+        ]);
+        f.render_widget(Paragraph::new(typed), inner);
+        let list = pick_list::under_query(inner);
+        let (rows, width) = (list.height as usize, list.width as usize);
+        let start = pick_list::first(*sel, rows);
+        let mut lines = Vec::new();
         for (i, row) in self.result_rows.iter().enumerate().skip(start).take(rows) {
             let selected = i == *sel;
             match *row {
@@ -5998,10 +5974,7 @@ impl Home {
                     let res = &self.results[ri];
                     let note = &ix.workspace.notes[res.note];
                     let st = if selected {
-                        Style::new()
-                            .fg(Color::Black)
-                            .bg(ACCENT)
-                            .add_modifier(Modifier::BOLD)
+                        pick_list::CHOSEN.add_modifier(Modifier::BOLD)
                     } else {
                         Style::new().fg(ACCENT_SOFT).add_modifier(Modifier::BOLD)
                     };
@@ -6025,12 +5998,12 @@ impl Home {
                     let l = &self.results[ri].lines[li];
                     let num = format!("   {:>4}  ", l.line);
                     let base = if selected {
-                        Style::new().fg(Color::Black).bg(ACCENT)
+                        pick_list::CHOSEN
                     } else {
                         Style::new().fg(NOTE)
                     };
                     let hl = if selected {
-                        base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                        pick_list::CHOSEN_HIT
                     } else {
                         Style::new().fg(Color::Black).bg(HIT)
                     };
@@ -6049,7 +6022,7 @@ impl Home {
                 }
             }
         }
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(Paragraph::new(lines), list);
     }
 
     fn draw_workspaces(&self, f: &mut Frame, area: Rect) {
