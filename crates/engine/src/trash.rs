@@ -89,28 +89,14 @@ pub struct Trashed {
 pub fn delete(root: &Path, seen: &Seen, system: Option<&Bin>) -> Result<Trashed, WriteError> {
     seen.unchanged_entry()?;
     let path = seen.path();
-    let mut tried = None;
     if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system) {
-        match put(path, bin, Went::System) {
-            Ok(t) => return Ok(t),
-            Err(e) => tried = Some(e),
+        if let Ok(t) = put(path, bin, Went::System, None) {
+            return Ok(t);
         }
+        // Its reason is dropped: the workspace trash's answer is the one returned.
     }
-    let dir = match (workspace_trash(root), tried) {
-        (Ok(dir), _) => dir,
-        // Neither trash can take it: say both, so the system trash's reason isn't lost.
-        (Err(WriteError::Link(dir)), Some(system)) => {
-            let why = format!(
-                "the system trash couldn't take it ({system}), and .trash is a symbolic link, \
-                 which a delete never follows"
-            );
-            return Err(WriteError::Io(dir, io::Error::other(why)));
-        }
-        (Err(e), _) => return Err(e),
-    };
-    let mut t = put(path, &Bin::Folder(dir), Went::WorkspaceTrash)?;
-    t.workspace = Some(root.to_path_buf());
-    Ok(t)
+    let dir = workspace_trash(root)?;
+    put(path, &Bin::Folder(dir), Went::WorkspaceTrash, Some(root))
 }
 
 /// The workspace's `.trash`, refused (`Link`) when it is a symlink: following it would send
@@ -127,7 +113,13 @@ fn workspace_trash(root: &Path) -> Result<PathBuf, WriteError> {
     }
 }
 
-fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
+/// Move `path` into `bin`; `workspace` is the workspace whose `.trash` that is, if it is one.
+fn put(
+    path: &Path,
+    bin: &Bin,
+    went: Went,
+    workspace: Option<&Path>,
+) -> Result<Trashed, WriteError> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -143,7 +135,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                 at,
                 went,
                 info: None,
-                workspace: None,
+                workspace: workspace.map(Path::to_path_buf),
             })
         }
         Bin::Freedesktop(dir) => {
@@ -182,7 +174,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                     at,
                     went,
                     info: Some(info),
-                    workspace: None,
+                    workspace: workspace.map(Path::to_path_buf),
                 });
             }
             unreachable!()

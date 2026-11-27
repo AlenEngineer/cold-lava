@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::gateway::{Error, Reason};
 use crate::index::Index;
 use crate::read::{Seen, rev};
+use crate::rel_path;
 use crate::trash::{self, Bin, Trashed, Went};
 use crate::workspace;
 use crate::write::{self, WriteError};
@@ -248,10 +249,7 @@ fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
 /// The refusal of a symlink a write or a move met at `link`: the request's own path `rel`, or
 /// another on the way (the workspace's `.trash`), named as the workspace names it.
 fn link_refused(root: &Path, rel: &str, link: &Path) -> String {
-    let named = match link.strip_prefix(root) {
-        Ok(inside) => inside.to_string_lossy().replace('\\', "/"),
-        Err(_) => link.display().to_string(),
-    };
+    let named = rel_path::or_whole(root, link);
     if named == rel {
         never_followed(rel)
     } else {
@@ -259,10 +257,16 @@ fn link_refused(root: &Path, rel: &str, link: &Path) -> String {
     }
 }
 
-fn written<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a {
+/// A `WriteError` met on the way to `rel`, as the gateway says it; `changed` says when the
+/// file changed ("while writing", "since it was read").
+fn as_refused<'a>(
+    root: &'a Path,
+    rel: &'a str,
+    changed: &'a str,
+) -> impl Fn(WriteError) -> Error + 'a {
     move |e| {
         let message = match &e {
-            WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
+            WriteError::Changed(_) => format!("{rel} changed {changed}: read it again"),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Link(link) => link_refused(root, rel, link),
@@ -270,6 +274,10 @@ fn written<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + '
         };
         Error::new(Reason::of(&e), message)
     }
+}
+
+fn written<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a {
+    as_refused(root, rel, "while writing")
 }
 
 /// `workspace/read`
@@ -360,16 +368,7 @@ fn contents(root: &Path, rel: &str) -> Result<Seen, Error> {
 }
 
 fn moved<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a {
-    move |e| {
-        let message = match &e {
-            WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
-            WriteError::Exists(_) => format!("{rel} already exists"),
-            WriteError::NotAFile(_) => write::not_a_file(rel),
-            WriteError::Link(link) => link_refused(root, rel, link),
-            WriteError::Io(_, e) => format!("{rel}: {e}"),
-        };
-        Error::new(Reason::of(&e), message)
-    }
+    as_refused(root, rel, "since it was read")
 }
 
 /// `workspace/stat`
@@ -1047,8 +1046,8 @@ mod tests {
     }
 
     /// A `.trash` that is a symlink is named in the refusal, never the note (#435): a delete
-    /// into it and a restore out of it are refused and nothing moves; when the system trash was
-    /// tried first, its reason is said too.
+    /// into it and a restore out of it are refused and nothing moves, also when the system trash
+    /// was tried first and couldn't take it.
     #[cfg(unix)]
     #[test]
     fn a_trash_that_is_a_link_is_named_in_the_refusal() {
@@ -1096,14 +1095,10 @@ mod tests {
         std::fs::write(&blocked, "a file, not a folder\n").unwrap();
         core.set_system_trash(Some(Bin::Freedesktop(blocked.join("Trash"))));
         let refused = core.delete_file("tidy", csv, &seen.rev).unwrap_err();
-        let message = &refused.message;
-        assert!(
-            message.starts_with("Data/Eruptions.csv: the system trash couldn't take it ("),
-            "{message}"
-        );
-        assert!(
-            message.ends_with("), and .trash is a symbolic link, which a delete never follows"),
-            "{message}"
+        assert_eq!(refused.reason, Reason::Refused, "a link stays refused");
+        assert_eq!(
+            refused.message,
+            "Data/Eruptions.csv: .trash is a symbolic link, which the gateway never follows"
         );
         assert!(dir.join(csv).exists(), "the table stays");
         assert_eq!(
