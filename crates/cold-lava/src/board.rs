@@ -1193,13 +1193,13 @@ impl Board {
             self.sel = None;
         }
         // Write back only if our side added something the file doesn't have yet.
-        if serde_json::to_value(&self.doc).ok() != Some(t) {
+        if !same_canvas(&self.doc, &theirs) {
             self.write_file();
         }
         self.flash(if conflicts > 0 {
             format!("merged changes from disk ({conflicts} conflicting edits: kept yours)")
         } else {
-            "merged changes made outside cold-lava".to_string()
+            "merged changes made elsewhere".to_string()
         });
         if !lost.is_empty() {
             let n = lost.len();
