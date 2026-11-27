@@ -471,7 +471,8 @@ Then, for all three:
   is kept under `~/.cache/cold-lava/owners/`, by workspace, your name and your `version`, so a
   workspace opens with your files' items before you have started. Change `version` when you
   change what you give. Answer within 10 s; an error, a late answer or an answer that doesn't
-  read is said on the status line, and the file keeps what you gave before.
+  read is said on the status line, and the file keeps what you gave before. An answer or an
+  error for a `rev` the file doesn't have by the time it comes is neither kept nor said.
 - **An answer is checked, one item at a time.** A piece with an empty place, a place another
   piece has or a `checkbox` that isn't one of the four words is reported and left out, and
   the rest is read. So is an item with a key or a role cold-lava doesn't know: the status

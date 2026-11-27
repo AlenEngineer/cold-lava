@@ -227,9 +227,9 @@ pub fn note_paths(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
 
 /// The first part of `rel` under `root` that is a symlink: `rel` itself or a folder on the way
 /// to it, `rel` being parts joined by `/`. The scan reads no link (`note_paths`, which never
-/// follows one), and neither do the watcher's reads (`Workspace::refresh_path`,
-/// `Core::owned_read`) nor the gateway (`files::resolve`). Below a part that isn't there,
-/// nothing is a link.
+/// follows one), and neither do the watcher's reads (`Workspace::refresh_path`, and
+/// `core::owned_bytes` for owned files and their owners' answers) nor the gateway
+/// (`files::resolve`). Below a part that isn't there, nothing is a link.
 pub fn first_link<'a>(root: &Path, rel: &'a str) -> std::io::Result<Option<&'a str>> {
     let ends = rel.match_indices('/').map(|(end, _)| end);
     for end in ends.chain([rel.len()]).filter(|&end| end > 0) {

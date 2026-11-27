@@ -23,7 +23,7 @@ type , for the trip
 write Inbox/Gestures.canvas {"nodes":[\n{"id":"venn","type":"text","text":"Simple Venn diagram","x":-100,"y":0,"width":600,"height":600,"cold-lava":{"shape":"venn2","inputs":{"a":{"query":{"kind":"volcano","filter":{"tag":"eruption"},"title":"Erupted"}},"b":{"query":{"kind":"volcano","filter":{"tag":"volcano/strato"},"title":"Stratovolcanoes"}}}}},\n{"id":"sticky","type":"text","text":"Ash masks\u000aTwo per person","x":700,"y":0,"width":300,"height":140,"cold-lava":{"shape":"sticky","node":"text"}}\n],"edges":[],"cold-lava-version":1}\n
 wait 500ms
 keys esc
-wait-for merged changes made outside cold-lava
+wait-for merged changes made elsewhere
 wait-for the trip
 keys esc
 wait-for  Inbox/Gestures.canvas
