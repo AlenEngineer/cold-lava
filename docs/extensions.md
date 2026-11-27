@@ -115,8 +115,16 @@ then a query and a view, not a parser of its own.
   a property's key, a heading's path, else a hash of its text without status and dates (and the
   nth identical one). It survives ticking, re-dating, re-indenting and lines added above, and it
   is the same after a restart and in every process. Editing a task's words reads as one removed
-  and one added. Separately, `rev` hashes only the item's own lines: it says *which version*, and
-  edits refuse a stale one. The core adds a `^id` only when asked to keep a reference to an
+  and one added. Separately, `rev` hashes the item's own lines: it says *which version*, and
+  edits refuse a stale one. Identical ones (twins) are told apart by which comes first, so when
+  one comes or goes, the next takes its address. A twin whose lines another twin has too hashes
+  how many twins there are as well, and, under a twin, which twin it is under, so an edit held by
+  an address another twin took is refused as `changed` and doesn't land on it
+  (`items/twins.rs`, #327). Two limits: a change that keeps the count and the lines keeps the
+  revs, so twins with the same lines and different items under them, moved past each other,
+  swap addresses unrefused (an anchor is what holds one item); and an edit to one twin changes
+  the revs of the twins with its lines, so a client that edits two of them reads again between
+  the two edits, or the second is refused. The core adds a `^id` only when asked to keep a reference to an
   item ("Anchors, as built").
 - **Reading.** `items/query` takes a `kind` and a fixed filter (notes under a folder or with a
   tag, status, a date range on `due`, `scheduled`, `start`, `done` or `agenda`, text, a property
@@ -741,8 +749,8 @@ style.minutes = { badge = true, icon = "⏱" }
   code. `cold-lava types --check` lists blocks two types wanted, and which won.
 - **Identity.** The same scheme as tasks today: an author's `^block-id`, else the shape's `key`
   fields under the parent's key; `rev` hashes the item's own lines (a row's line, a note's
-  frontmatter, a fence). An inline item's parent is the block it sits in. Existing ids don't
-  change.
+  frontmatter, a fence), and counts its twins as a task's does. An inline item's parent is the
+  block it sits in. Existing ids don't change.
 - **Where definitions live,** in load order: built in (`types/*.toml` in the binary), extension
   manifests (`[[types]]`, each with its id `<extension>.<name>`), `[types.*]` in `config.toml`, and
   `<workspace>/.cold-lava/types.toml`, which travels with the workspace. Built-in names can be extended

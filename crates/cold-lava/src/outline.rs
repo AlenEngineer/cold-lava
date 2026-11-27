@@ -3,14 +3,14 @@
 
 use crate::app::{ACCENT, HIT, MUTED, NOTE};
 use crate::line_input::CtrlU;
-use crate::pick_list::{self, Picked};
+use crate::pick_list::{self, End, Measure, Picked, Piece, Row};
 use crate::popup;
 use crate::reader::{Heading, Reader};
 use crate::search::{self, Fuzzy};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -66,56 +66,46 @@ impl Outline {
     /// one being read marked.
     pub fn draw(&self, f: &mut Frame, area: Rect, reader: &Reader) {
         let inner = popup::picker(f, area, " Outline ", " ↑↓ choose · ⏎ jump · Esc close ");
-        let (query, sel) = (&self.query, &self.sel);
+        let query = &self.query;
         let headings = reader.headings();
         let hits = hits(headings, query);
         let reading = reader.section().last().copied();
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(
-                    format!("  {} of {} headings", hits.len(), headings.len()),
-                    Style::new().fg(MUTED),
-                ),
-            ]),
-            Line::raw(""),
-        ];
+        let typed = Line::from(vec![
+            Span::styled(" ▸ ", Style::new().fg(HIT)),
+            Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+            Span::styled(
+                format!("  {} of {} headings", hits.len(), headings.len()),
+                Style::new().fg(MUTED),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(typed), inner);
         let top = headings.iter().map(|h| h.level).min().unwrap_or(1);
-        let rows = inner.height.saturating_sub(2) as usize;
-        let start = sel.saturating_sub(rows.saturating_sub(1));
-        for (row, (i, m)) in hits.iter().enumerate().skip(start).take(rows) {
+        let list = pick_list::List {
+            len: hits.len(),
+            sel: self.sel,
+            none: " no headings match",
+            measure: Measure::Columns,
+        };
+        let rows = pick_list::under_query(inner);
+        pick_list::draw(f.buffer_mut(), rows, list, |row| {
+            let (i, m) = &hits[row];
             let h = &headings[*i];
-            let selected = row == *sel;
             let here = Some(*i) == reading;
-            let base = match (selected, here) {
-                (true, _) => Style::new().fg(Color::Black).bg(ACCENT),
-                (false, true) => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                (false, false) => Style::new().fg(NOTE),
-            };
-            let hl = if selected {
-                base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            let look = if here {
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(HIT).add_modifier(Modifier::BOLD)
+                Style::new().fg(NOTE)
             };
             let indent = "  ".repeat((h.level - top) as usize);
             let mark = if here { "▸ " } else { "  " };
-            let mut spans = vec![Span::styled(format!(" {indent}{mark}"), base)];
-            for (ci, ch) in h.text.chars().enumerate() {
-                let style = if m.positions.contains(&ci) { hl } else { base };
-                spans.push(Span::styled(ch.to_string(), style));
+            Row {
+                text: vec![
+                    Piece::plain(format!(" {indent}{mark}"), look),
+                    Piece::matched(h.text.as_str(), &m.positions, look),
+                ],
+                end: End::Bar,
             }
-            if selected {
-                let used: usize = spans.iter().map(Span::width).sum();
-                let pad = (inner.width as usize).saturating_sub(used);
-                spans.push(Span::styled(" ".repeat(pad), base));
-            }
-            lines.push(Line::from(spans));
-        }
-        if hits.is_empty() {
-            lines.push(Line::styled(" no headings match", Style::new().fg(MUTED)));
-        }
-        f.render_widget(Paragraph::new(lines), inner);
+        });
     }
 }
 
