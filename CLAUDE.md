@@ -145,7 +145,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read; the engine's only, `Seen::replace` outside it), `create`,
   `move_file`. `replace` never follows a symlink: a link at the path is refused (`Link`), and
-  one swapped in after that check is replaced by the rename; a folder swapped in on the way
+  one swapped in after that check is compared by what it leads to, then swapped out as a link
+  and removed, never written through; a folder swapped in on the way
   is still followed (#366). It is every write over a file the engine found by its scan or
   the gateway let through. `replace_through_link` (`Seen::replace_through_link`) is the
   exception, by name: the user's own save of a file they opened by its path (the board's
@@ -157,7 +158,37 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `create`, `create_dir`, `files::free_name` and `trash::free_path` ask it, and so does a
   merge's undo. `may_move` is the one test of whether a move may go ahead: nothing is at
   the new path, or it differs only in case and is the very entry that moves (#388);
-  `move_file` and a rename's checks ask it. Never call `std::fs::write` on workspace files.
+  `move_file` and a rename's checks ask it. No other program's write that lands while one of
+  these is under way is replaced (#395, #230): `replace` (`write/replace.rs`) swaps its new
+  file in (`write/os_rename.rs`, `exchange`: renameat2 or renameatx_np) and compares what
+  came out, putting another write's text back and refusing (`Changed`). The swap back checks
+  what comes out too: a newer text that landed in between is swapped in again, so the newest
+  stays at the path and the older is kept beside the file as
+  `.Name.cold-lava-kept-SECONDS-N.ext` and named (`Kept`, the gateway's `kept`; where the
+  user sees kept texts is #427). After 16 rounds (`ROUNDS`, a writer that doesn't stop) or a
+  swap that fails, the path may hold an older text: the newer one is then kept beside it and
+  named, never removed. Where the file system can't swap, the file is moved aside
+  by one rename onto a name it reserved and compared there. A text the engine took out is
+  removed only when it is the caller's old text, the write's own, or what the path then
+  holds, and after a swap back only when its rounds settled. cold-lava's own replaces take
+  turns (`write/lock.rs`): each holds `flock` on its file's folder (the link's target's, for
+  `replace_through_link`) from the compare to the last swap (the new text is staged before),
+  so no two replaces that hold their turn race the swap; other programs, and cold-lava's own moves and deletes
+  (`move_file`, `trash::delete`, which take no turn), still can. The lock leaves no file, a
+  write that waits 5 s goes ahead without it (each later save in that folder waits the 5 s
+  again while the holder is stopped), and on NFS it is never held. A swap back
+  can't tell a later text from an earlier one another swapper put back, so with a writer that
+  went ahead unlocked a done save may end up kept beside the path (never removed). The words
+  a person sees name the kept file first, by its workspace path (`kept_words`, from the root:
+  `WriteError::named_from`, or `named_in` for an error passed on; `kept_beside` only where no
+  root is known, the edit desk). Every caller classifies a `WriteError` through `Reason::of`
+  (`EditError::written(e, root)` for an edit, with no `From<WriteError>` so the root can't be
+  left out; `EditError::from(gateway::Error)` back), never by matching its variants. `create`
+  and `move_file` rename with `no_replace`, refused when something is there by then. Left
+  open: a program that opened the file before the swap and writes into it after the
+  compare; and, on a file system with neither rename flags nor hard links, `no_replace`'s
+  check-then-rename (`os_rename::by_link`), which `create`, `move_file` and `replace`'s
+  aside all go through. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call

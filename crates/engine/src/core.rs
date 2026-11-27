@@ -1816,7 +1816,10 @@ mod tests {
             recipe::plan(&core.index, recipe::find("rename-tag").unwrap(), options).unwrap();
         let files: Vec<_> = p.edits.iter().map(|e| e.file.as_str()).collect();
         assert_eq!(files, ["Note.md", "Samples.csv"]);
-        assert!(recipe::apply(&p).is_err(), "not before the owner answered");
+        assert!(
+            recipe::apply(&p, core.root()).is_err(),
+            "not before the owner answered"
+        );
         let Applying::Later(ticket) = core.apply(&mut p) else {
             panic!("waits for the owner");
         };

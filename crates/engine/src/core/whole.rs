@@ -120,8 +120,8 @@ impl Sealed for recipe::Plan {
 impl Planned for recipe::Plan {
     type Made = Applied;
 
-    fn write(&self, _: Door<'_>) -> anyhow::Result<Applied> {
-        recipe::apply(self)
+    fn write(&self, door: Door<'_>) -> anyhow::Result<Applied> {
+        recipe::apply(self, door.root)
     }
 }
 

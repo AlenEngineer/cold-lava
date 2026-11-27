@@ -369,16 +369,9 @@ pub fn toggle_in(
         expect_id,
         today,
     )?;
-    match crate::read::Seen::kept(&path, text.as_bytes()).replace(t.text.as_bytes()) {
-        Err(crate::write::WriteError::Changed(_)) => {
-            return Err(Changed(format!(
-                "{} changed while the task was being toggled; refresh and try again",
-                path.display()
-            ))
-            .into());
-        }
-        r => r?,
-    }
+    crate::read::Seen::kept(&path, text.as_bytes())
+        .replace(t.text.as_bytes())
+        .map_err(|e| crate::edit::EditError::written(e, &root))?;
     Ok(t)
 }
 

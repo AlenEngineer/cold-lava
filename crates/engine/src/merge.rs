@@ -335,7 +335,7 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
         ),
     }
     rename::check_unchanged(m.writes(), "merge")?;
-    let written = Written::all(m.writes())?;
+    let written = Written::all(&m.root, m.writes())?;
     match trash::delete(&m.root, &source, system) {
         Ok(trashed) => Ok(Merged {
             root: m.root.clone(),
@@ -346,7 +346,7 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
             written,
         }),
         Err(err) => {
-            let _ = written.put_back();
+            let undone = written.put_back();
             // A link on the way (`.trash`) is named as the workspace names it, so a status line
             // shows it before it is cut.
             let err = match err {
@@ -355,8 +355,13 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
                 }
                 err => err,
             };
-            Err(err)
-                .with_context(|| format!("moving {} to the trash; nothing was changed", m.source))
+            Err(err).with_context(|| match undone {
+                Ok(()) => format!("moving {} to the trash; nothing was changed", m.source),
+                Err(back) => format!(
+                    "moving {} to the trash; some files couldn't be put back: {back}",
+                    m.source
+                ),
+            })
         }
     }
 }

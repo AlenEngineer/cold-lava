@@ -206,7 +206,12 @@ then a query and a view, not a parser of its own.
   a toggle on no task, an anchor on an item with no place for one), `read-back` (the note wouldn't read back as asked; nothing was
   written), `io`, `forbidden` (the manifest doesn't ask for the permission), `no-workspace` and
   `exists` (`workspace/create`, `workspace/create-folder` or `workspace/restore` at a path
-  where something is).
+  where something is), and `kept`: another program wrote the file while this write was under
+  way, and a text taken out of it couldn't be put back, so it is kept in a hidden file beside
+  it (`.Name.cold-lava-kept-SECONDS-N.ext`), which the message names. Read the file again,
+  as for `changed`, and show the message: it is the only place that says where the text is
+  (#427 is where kept texts become visible). The list can grow without a new version: a
+  client treats a reason it doesn't know as a refusal and shows its message.
 - **Edits are made during the call, not queued.** An extension's reads and edits both need an
   answer (the new `rev`, or why it was refused), and a later edit in the same call must see the
   first one, so the core edits and reads the note again before `edit_item` returns. An item of
@@ -1042,7 +1047,9 @@ style.minutes = { badge = true, icon = "⏱" }
   function. `Set` carries the new text, the item as it reads back, and `changed` (false when the
   note already said this; nothing is written then).
 - **Finding the item.** By id in the note as it is now; gone, or a `rev` that differs, is
-  `Changed` (exit code 3, like a stale `task toggle`). Only typed items, which tasks now are.
+  `Changed` (exit code 3, like a stale `task toggle`); a text kept beside the note while it
+  was written is `Kept` (exit code 4, `"kept": true` with `--json`). Only typed items, which
+  tasks now are.
 - **Which source.** Each typed item carries, off the wire, its shape, which source gave each
   field its value, its block's text and a row's cells (`matcher::Place`). The value is written
   through the source that gave it; when that one is read-only, through a writable source before

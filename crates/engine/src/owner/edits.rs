@@ -473,6 +473,10 @@ impl Edits {
         let by = edit.by.clone();
         let answer = match written {
             Ok(items) => edit.answer(path, items),
+            Err(WriteError::Kept(_, kept)) => Err(Error::new(
+                Reason::Kept,
+                crate::write::kept_beside(path, &kept),
+            )),
             Err(e) => Err(Error::new(Reason::of(&e), format!("{path}: {e}"))),
         };
         self.done.push((by, ticket, answer));

@@ -19,6 +19,7 @@ use indexmap::IndexMap;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::Path;
 
 /// One option a recipe takes, by name: always text.
 #[derive(Serialize, Clone, Copy, Debug)]
@@ -244,14 +245,14 @@ pub fn plan(ix: &Index, recipe: &'static Recipe, options: Options) -> Result<Pla
 
 /// Carry out a plan: refuse if a file changed since it was planned, or a file another owner
 /// reads has no new text from it yet, then write every file (putting back the ones written if one
-/// fails).
-pub(crate) fn apply(plan: &Plan) -> Result<Applied> {
+/// fails). A kept text is named from `root`, the workspace's.
+pub(crate) fn apply(plan: &Plan, root: &Path) -> Result<Applied> {
     rename::check_answered(&plan.edits)?;
     rename::check_unchanged(&plan.edits, "recipe")?;
     Ok(Applied {
         title: plan.title(),
         files: plan.edits.len(),
-        written: Written::all(&plan.edits)?,
+        written: Written::all(root, &plan.edits)?,
     })
 }
 
@@ -654,7 +655,7 @@ mod tests {
         );
         assert_eq!(p.changes(), 2);
         assert_eq!(read(&dir, "A.md"), "---\ntags: [lava]\n---\n#lava/flow\n");
-        let done = apply(&p).unwrap();
+        let done = apply(&p, &dir).unwrap();
         assert_eq!(read(&dir, "A.md"), "---\ntags: [magma]\n---\n#magma/flow\n");
         let ix = Index::build(workspace::scan(&dir).unwrap());
         assert_eq!(ix.workspace.notes[0].tags, ["magma", "magma/flow"]);
@@ -668,7 +669,7 @@ mod tests {
         let (dir, ix) = workspace_with("refused", &[("A.md", "#lava\n"), ("B.md", "#lava too\n")]);
         let p = rename(&ix, "lava", "magma").unwrap();
         std::fs::write(dir.join("B.md"), "#lava changed\n").unwrap();
-        let err = apply(&p).unwrap_err().to_string();
+        let err = apply(&p, &dir).unwrap_err().to_string();
         assert!(
             err.contains("B.md changed since the recipe was planned"),
             "{err}"
@@ -681,7 +682,7 @@ mod tests {
     #[test]
     fn undo_refuses_a_file_changed_since() {
         let (dir, ix) = workspace_with("undo-refused", &[("A.md", "#lava\n")]);
-        let done = apply(&rename(&ix, "lava", "magma").unwrap()).unwrap();
+        let done = apply(&rename(&ix, "lava", "magma").unwrap(), &dir).unwrap();
         std::fs::write(dir.join("A.md"), "#magma edited\n").unwrap();
         assert!(undo(&done).is_err());
         assert_eq!(read(&dir, "A.md"), "#magma edited\n");
@@ -710,7 +711,7 @@ mod tests {
 
         let p = rename(&ix, "lava", "magma").unwrap();
         swap("B.md", "#lava too\n");
-        let err = format!("{:#}", apply(&p).unwrap_err());
+        let err = format!("{:#}", apply(&p, &dir).unwrap_err());
         assert!(err.contains("B.md is a symbolic link"), "{err}");
         assert_eq!(read(&dir, ".git/config"), "#lava too\n");
         assert!(is_link("B.md"), "the link stays");
@@ -722,7 +723,7 @@ mod tests {
 
         std::fs::remove_file(dir.join("B.md")).unwrap();
         let ix = Index::build(workspace::scan(&dir).unwrap());
-        let done = apply(&rename(&ix, "lava", "magma").unwrap()).unwrap();
+        let done = apply(&rename(&ix, "lava", "magma").unwrap(), &dir).unwrap();
         swap("A.md", "#magma\n");
         assert!(undo(&done).is_err());
         assert_eq!(read(&dir, ".git/config"), "#magma\n");

@@ -20,6 +20,10 @@ toml = { workspace = true, features = ["preserve_order"] }
 unicode-normalization.workspace = true
 walkdir.workspace = true
 
+# The renames that never replace unseen (src/write/os_rename.rs): renameat2, renameatx_np.
+[target.'cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 # The oracle of two tests: the reader's `Doc` and the items as pulldown-cmark read them
 # (markdown/pulldown.rs, items/pulldown.rs). Nothing the engine ships uses it.
