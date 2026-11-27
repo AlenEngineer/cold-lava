@@ -16,7 +16,7 @@ keys left A
 wait-for Read the Royal Society report on Krakatoa
 keys G k x
 wait-for 12s done: Read the Royal Society report on Krakatoa
-expect ☑ Read the Royal Society report on Krakatoa
+wait-for ☑ Read the Royal Society report on Krakatoa
 keys esc
 wait-for cold-lava workspaces
 # The table sets the VEI of the CSV's Krakatoa row.
@@ -36,7 +36,7 @@ keys ctrl+u
 type 7
 keys enter
 wait-for 12s Volcanoes/Eruptions.csv: vei set to 7
-expect   7   ·
+wait-for 7   ·
 screen
 keys esc esc
 wait-for cold-lava workspaces

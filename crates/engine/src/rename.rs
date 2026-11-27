@@ -351,8 +351,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
                 false => bail!("{} can't move into {}: it moves too", m.from, f.from),
             }
         }
-        // A case-only rename of the same file is fine; anything else that exists isn't.
-        if m.to_path.exists() && lower(&m.to) != lower(&m.from) {
+        if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
     }
@@ -672,7 +671,7 @@ pub(crate) fn apply(plan: &Plan) -> Result<()> {
         if !m.from_path.exists() {
             bail!("{} no longer exists", m.from);
         }
-        if m.to_path.exists() && m.to.to_lowercase() != m.from.to_lowercase() {
+        if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
     }
@@ -782,6 +781,35 @@ mod tests {
              Also [md](../Geology/Hot%20Rock.md) and [abs](Geology/Hot%20Rock.md#Textures).\n\
              Code `[[Lava]]` stays.\n```\n[[Lava]]\n```\n[[Lavender]] too.\n"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #388: where case tells names apart, a case-only rename onto another note is refused
+    /// when planned and when applied, and one with nothing at the new spelling goes ahead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_case_only_rename_never_replaces_another_note() {
+        let (dir, ix) = workspace_with("case", &[("Lava.md", "upper"), ("lava.md", "lower")]);
+        let upper = (ix.workspace.notes.iter())
+            .position(|n| n.rel == "Lava")
+            .unwrap();
+        let refused = plan(&ix, upper, "lava").unwrap_err().to_string();
+        assert_eq!(refused, "lava.md already exists");
+
+        std::fs::remove_file(dir.join("lava.md")).unwrap();
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let upper = ix.by_rel("Lava").unwrap();
+        let p = plan(&ix, upper, "lava").unwrap();
+        std::fs::write(dir.join("lava.md"), "lower").unwrap();
+        let refused = apply(&p).unwrap_err().to_string();
+        assert_eq!(refused, "lava.md already exists");
+        assert_eq!(read(&dir, "Lava.md"), "upper");
+        assert_eq!(read(&dir, "lava.md"), "lower");
+
+        std::fs::remove_file(dir.join("lava.md")).unwrap();
+        apply(&p).unwrap();
+        assert!(!dir.join("Lava.md").exists());
+        assert_eq!(read(&dir, "lava.md"), "upper");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1284,6 +1312,33 @@ mod tests {
         assert_eq!(read(&dir, "Ash.md"), "[[Lava]]\n", "no link updated");
         assert_eq!(read(&dir, ".git/Kilauea.md"), "[[Lava]]\n");
         assert!(is_link(&dir.join("Kilauea.md")), "the link stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rename onto a symlink to nothing is refused as onto any other entry, whether the link
+    /// was there when the rename was planned or came after: nothing moves, no link is rewritten,
+    /// and the link stays (#356).
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_onto_a_symlink_to_nothing_is_refused_and_the_link_stays() {
+        let (dir, ix) = workspace_with(
+            "onto-dangling",
+            &[("Rock/Lava.md", "x"), ("Ash.md", "[[Lava]]\n")],
+        );
+        let lava = ix.by_rel("Rock/Lava").unwrap();
+        std::os::unix::fs::symlink("Gone.md", dir.join("Rock/Basalt.md")).unwrap();
+        let planned = plan(&ix, lava, "Rock/Basalt.md").unwrap_err();
+        assert_eq!(planned.to_string(), "Rock/Basalt.md already exists");
+        let p = plan(&ix, lava, "Rock/Pumice.md").unwrap();
+        std::os::unix::fs::symlink("Gone.md", dir.join("Rock/Pumice.md")).unwrap();
+        let applied = apply(&p).unwrap_err();
+        assert_eq!(format!("{applied:#}"), "Rock/Pumice.md already exists");
+        assert_eq!(read(&dir, "Rock/Lava.md"), "x", "nothing moved");
+        assert_eq!(read(&dir, "Ash.md"), "[[Lava]]\n", "no link rewritten");
+        for at in ["Rock/Basalt.md", "Rock/Pumice.md"] {
+            let led = std::fs::read_link(dir.join(at)).unwrap();
+            assert_eq!(led, Path::new("Gone.md"), "{at} is still a link");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

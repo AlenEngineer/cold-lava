@@ -173,25 +173,47 @@ pub fn create_if_missing(path: &Path, bytes: &[u8]) -> Result<bool, WriteError> 
     }
 }
 
-/// Create a new, empty folder (and any missing parents); refused if it already exists.
+/// Create a new, empty folder (and any missing parents); refused if something is already
+/// there (`taken`).
 pub fn create_dir(path: &Path) -> Result<(), WriteError> {
-    if path.exists() {
+    if taken(path) {
         return Err(WriteError::Exists(path.to_path_buf()));
     }
     std::fs::create_dir_all(path).map_err(io_err(path))
 }
 
-/// Move a file or folder, refusing to overwrite an existing one (except a case-only rename of itself).
+/// Move a file, a folder or a symlink (the link itself); refused unless it `may_move`.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), WriteError> {
-    let same_file_case_change =
-        to.exists() && from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
-    if to.exists() && !same_file_case_change {
+    if !may_move(from, to) {
         return Err(WriteError::Exists(to.to_path_buf()));
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
     std::fs::rename(from, to).map_err(io_err(from))
+}
+
+/// Whether `from` may move to `to`: nothing is there (`taken`), or `to` differs from `from`
+/// only in case and names the very entry `from` does, as on a file system that ignores case.
+/// Where case tells names apart, that spelling can be another file, which a move would replace.
+pub(crate) fn may_move(from: &Path, to: &Path) -> bool {
+    let Ok(there) = std::fs::symlink_metadata(to) else {
+        return true;
+    };
+    let case_only = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
+    case_only && std::fs::symlink_metadata(from).is_ok_and(|here| same_entry(&here, &there))
+}
+
+#[cfg(unix)]
+fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
+}
+
+/// Windows' std gives no stable file id yet; its file systems ignore case by default.
+#[cfg(not(unix))]
+fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -259,6 +281,38 @@ mod tests {
             create_dir(&d.join("x/Empty")),
             Err(WriteError::Exists(_))
         ));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Where case tells names apart, `lava.md` beside `Lava.md` is another entry: a case-only
+    /// move onto it is refused, and with nothing there it goes ahead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_case_only_move_never_replaces_another_entry() {
+        let d = dir("case");
+        let (upper, lower) = (d.join("Lava.md"), d.join("lava.md"));
+        std::fs::write(&upper, "upper").unwrap();
+        std::fs::write(&lower, "lower").unwrap();
+        let refused = move_file(&upper, &lower);
+        assert!(
+            matches!(&refused, Err(WriteError::Exists(p)) if *p == lower),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read(&upper).unwrap(), b"upper");
+        assert_eq!(std::fs::read(&lower).unwrap(), b"lower");
+
+        std::fs::remove_file(&lower).unwrap();
+        std::os::unix::fs::symlink("nowhere.md", &lower).unwrap();
+        assert!(
+            matches!(move_file(&upper, &lower), Err(WriteError::Exists(_))),
+            "a link to nothing at the new spelling is another entry too"
+        );
+        assert!(is_link(&lower));
+
+        std::fs::remove_file(&lower).unwrap();
+        move_file(&upper, &lower).unwrap();
+        assert_eq!(files(&d), ["lava.md"]);
+        assert_eq!(std::fs::read(&lower).unwrap(), b"upper");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -365,17 +419,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A move onto a link, or a folder made at one, finds the path `taken` as a new file does,
+    /// a link to nothing included (#356).
     #[cfg(unix)]
     #[test]
     fn nothing_is_written_over_a_symlink_to_nothing_or_to_a_folder() {
         let d = dir("not-through");
         std::fs::create_dir(d.join("Folder")).unwrap();
+        let note = d.join("Note.md");
+        std::fs::write(&note, "kept").unwrap();
         std::os::unix::fs::symlink("Gone.md", d.join("Dangling.md")).unwrap();
         std::os::unix::fs::symlink("Folder", d.join("Folder.md")).unwrap();
         for name in ["Dangling.md", "Folder.md"] {
             let at = d.join(name);
             let refused =
                 |e: Result<(), WriteError>| matches!(e, Err(WriteError::NotAFile(p)) if p == at);
+            let there =
+                |e: Result<(), WriteError>| matches!(e, Err(WriteError::Exists(p)) if p == at);
             assert!(refused(write_atomic(&at, b"x")), "write {name}");
             assert!(
                 refused(replace_through_link(&at, b"", b"x")),
@@ -386,11 +446,10 @@ mod tests {
                 "replace {name}"
             );
             assert!(taken(&at), "{name} is taken");
-            assert!(
-                matches!(create(&at, b"x"), Err(WriteError::Exists(_))),
-                "create {name}"
-            );
+            assert!(there(create(&at, b"x")), "create {name}");
             assert!(!create_if_missing(&at, b"x").unwrap(), "{name}");
+            assert!(there(create_dir(&at)), "folder {name}");
+            assert!(there(move_file(&note, &at)), "move onto {name}");
             assert!(is_link(&at), "{name} is still a link");
         }
         let said = write_atomic(&d.join("Dangling.md"), b"x").unwrap_err();
@@ -399,9 +458,10 @@ mod tests {
             d.join("Dangling.md").display()
         );
         assert_eq!(said.to_string(), words);
+        assert_eq!(std::fs::read(&note).unwrap(), b"kept", "nothing moved");
         assert_eq!(
             files(&d),
-            ["Dangling.md", "Folder", "Folder.md"],
+            ["Dangling.md", "Folder", "Folder.md", "Note.md"],
             "nothing made through a link to nothing"
         );
         assert!(files(&d.join("Folder")).is_empty());

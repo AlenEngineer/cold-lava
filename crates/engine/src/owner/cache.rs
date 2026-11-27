@@ -291,22 +291,34 @@ impl Owners {
         std::mem::take(&mut self.wanted)
     }
 
-    /// The owner answered for `path` at `rev` (`None`: it couldn't): keep what it gave, and
-    /// forget that it was asked, so a change asks again.
-    pub fn answered(&mut self, owner: &str, path: &str, rev: &str, given: Option<&Given>) {
+    /// The owner answered for `path` at `rev` (`None`: it couldn't), and the file on disk is at
+    /// `on_disk` (`None`: there is none): forget that it was asked, so a change asks again, and
+    /// keep what it gave when it is for the file on disk. The cache holds one answer a file, and
+    /// one for another version, a text the file had before or one never written (#369), would
+    /// take the place of the answer for the file as it is. Whether it is for the file on disk.
+    pub fn answered(
+        &mut self,
+        owner: &str,
+        path: &str,
+        rev: &str,
+        given: Option<&Given>,
+        on_disk: Option<&str>,
+    ) -> bool {
         if self.asked.get(path).is_some_and(|r| r == rev) {
             self.asked.remove(path);
         }
-        let (Some(given), Some(cache)) = (given, self.cache(owner)) else {
-            return;
-        };
-        let answer = Answer {
-            rev: rev.to_string(),
-            given: given.clone(),
-            as_read: None,
-        };
-        cache.files.insert(path.to_string(), answer);
-        cache.dirty = true;
+        let current = on_disk == Some(rev);
+        let given = given.filter(|_| current);
+        if let (Some(given), Some(cache)) = (given, self.cache(owner)) {
+            let answer = Answer {
+                rev: rev.to_string(),
+                given: given.clone(),
+                as_read: None,
+            };
+            cache.files.insert(path.to_string(), answer);
+            cache.dirty = true;
+        }
+        current
     }
 
     /// The file at `rel` is gone.
@@ -393,7 +405,8 @@ mod tests {
         assert_eq!(o.take_wanted().len(), 1, "asked once per version");
         o.ask("csv-table", read("r1"));
         assert!(o.take_wanted().is_empty(), "still being asked");
-        o.answered("csv-table", "B.csv", "r1", Some(&given("- [ ] one")));
+        let one = given("- [ ] one");
+        o.answered("csv-table", "B.csv", "r1", Some(&one), Some("r1"));
         o.save();
 
         let again = Owners::new(root, vec![kind()], Some(&dir));
@@ -425,6 +438,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An answer is kept only when it is for the file on disk: one for another version would
+    /// take the place of what the owner read in the file as it is (#369). Either way its owner
+    /// is no longer waited for, so it is asked again when the file has that version.
+    #[test]
+    fn only_an_answer_for_the_file_on_disk_is_kept() {
+        let mut o = Owners::new(Path::new("/some/workspace"), vec![kind()], None);
+        let (one, two) = (given("- [ ] one"), given("- [ ] two"));
+        assert!(o.answered("csv-table", "B.csv", "r1", Some(&one), Some("r1")));
+        let read = FileRead {
+            path: "B.csv".into(),
+            rev: "r2".into(),
+            text: String::new(),
+        };
+        o.ask("csv-table", read.clone());
+        o.take_wanted();
+        assert!(!o.answered("csv-table", "B.csv", "r2", Some(&two), Some("r1")));
+        assert_eq!(o.given("csv-table", "B.csv", "r1"), Some(&one));
+        assert_eq!(o.given("csv-table", "B.csv", "r2"), None);
+        assert!(!o.is_reading(), "not waited for");
+        o.ask("csv-table", read);
+        assert_eq!(o.take_wanted().len(), 1, "asked again");
+        assert!(!o.answered("csv-table", "B.csv", "r2", Some(&two), None));
+        assert_eq!(o.given("csv-table", "B.csv", "r2"), None);
+    }
+
     /// What an owner gave that didn't read is kept with its answer through any number of
     /// loads and saves: saving the cache again (another file of the same owner changed)
     /// must not drop it, or the file's bad item stops being reported and an edit that
@@ -441,14 +479,15 @@ mod tests {
         .unwrap();
         assert_eq!(bad.left_out.len(), 1);
         let mut o = Owners::new(root, vec![kind()], Some(&dir));
-        o.answered("csv-table", "A.csv", "r1", Some(&bad));
+        o.answered("csv-table", "A.csv", "r1", Some(&bad), Some("r1"));
         o.save();
+        let two = given("- [ ] two");
         for round in 0..3 {
             let mut again = Owners::new(root, vec![kind()], Some(&dir));
             let kept = again.given("csv-table", "A.csv", "r1").cloned();
             assert_eq!(kept.as_ref(), Some(&bad), "load {round}");
             let other = format!("B{round}.csv");
-            again.answered("csv-table", &other, "r1", Some(&given("- [ ] two")));
+            again.answered("csv-table", &other, "r1", Some(&two), Some("r1"));
             again.save();
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -502,7 +541,7 @@ mod tests {
         }))
         .unwrap();
         let mut o = Owners::new(root, vec![kind()], Some(&dir));
-        o.answered("csv-table", "A.csv", "r1", Some(&answer));
+        o.answered("csv-table", "A.csv", "r1", Some(&answer), Some("r1"));
         o.save();
         let saved = std::fs::read_to_string(dir.join(file_name(root, &kind()))).unwrap();
         let golden = format!(
