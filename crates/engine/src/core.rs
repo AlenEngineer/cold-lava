@@ -910,10 +910,10 @@ impl Core {
 
     /// Take what the watcher heard, to read once things settle.
     fn heard(&mut self) {
-        let root = self.root().to_path_buf();
-        let mut any = false;
-        for p in self.watch.heard() {
-            match classify(&root, &p) {
+        let heard = self.watch.heard();
+        let any = !heard.is_empty();
+        for (p, kind) in heard {
+            match kind {
                 Kind::Note => self.changed.push(p),
                 Kind::Board(rel) => {
                     if !self.boards.contains(&rel) {
@@ -927,9 +927,8 @@ impl Core {
                 }
                 Kind::GraphSettings => self.graph_settings = true,
                 Kind::Folder => self.rescan = true,
-                Kind::Ignored => continue,
+                Kind::Ignored => {}
             }
-            any = true;
         }
         if any {
             self.schedule(SETTLE);

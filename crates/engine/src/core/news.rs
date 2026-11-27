@@ -1714,6 +1714,34 @@ fn an_owned_file_that_cannot_be_read_is_said_once_a_version() {
     assert_eq!(h.count("agenda", "Check the seismograph"), 1);
 }
 
+/// #423. The watcher reads what the scan reads (`workspace::is_scanned`): a board, a note, an
+/// extension's file and the folder itself, heard under `node_modules`, are no news, no owner is
+/// asked, and nothing of theirs joins the workspace.
+#[test]
+fn what_the_watcher_hears_where_the_scan_does_not_look_is_not_read() {
+    let mut h = workspace("watch-skips");
+    h.follow("agenda", tasks());
+    std::fs::create_dir_all(h.dir.join("node_modules")).unwrap();
+    let board = BOARD.replace("Check the seismograph", "Mind the board");
+    h.write("node_modules/Mod.canvas", &board);
+    h.write("node_modules/Mod.md", "- [ ] Mind the note\n");
+    h.write("node_modules/Mod.lines", "- [ ] Mind the lines\n");
+    for rel in [
+        "node_modules/Mod.canvas",
+        "node_modules/Mod.md",
+        "node_modules/Mod.lines",
+    ] {
+        h.saw(rel);
+    }
+    h.saw("node_modules");
+    let batch = h.deliver();
+    assert!(batch.is_empty(), "{batch:?}");
+    assert_eq!(h.owner_reads(), 0, "its owner isn't asked");
+    assert_eq!(h.count("agenda", "Mind the"), 0);
+    let owned = &h.core.index.workspace.owned;
+    assert!(owned.iter().all(|f| !f.rel.starts_with("node_modules/")));
+}
+
 /// #431, #303's rule. An extension's refusal to read a version of its file is said once, as
 /// the engine's own trouble is: a rescan asks the owner again, and the same refusal of the
 /// same bytes says nothing. Another version refused is said.
@@ -1742,27 +1770,28 @@ fn an_owner_s_refusal_to_read_a_version_is_said_once() {
 }
 
 /// #363. On a rescan, the listing of the workspace's files is the one rule for what is gone:
-/// a board the watcher reported where the scan doesn't look (`node_modules`) leaves with its
-/// items, though its bytes are still there.
+/// a board whose folder became one the scan doesn't look in (`node_modules`), while the
+/// watcher heard nothing, leaves with its items, though its bytes are still there.
 #[test]
 fn a_rescan_drops_an_owned_file_the_scan_does_not_list() {
     let mut h = workspace("rescan-unlisted");
     h.follow("agenda", tasks());
-    std::fs::create_dir_all(h.dir.join("node_modules")).unwrap();
+    std::fs::create_dir_all(h.dir.join("Mods")).unwrap();
     let board = BOARD.replace("Check the seismograph", "Mind the modules");
-    h.write("node_modules/Mod.canvas", &board);
-    h.saw("node_modules/Mod.canvas");
+    h.write("Mods/Mod.canvas", &board);
+    h.saw("Mods/Mod.canvas");
     h.deliver();
     assert_eq!(
         h.count("agenda", "Mind the modules"),
         1,
         "the watcher heard it"
     );
+    std::fs::rename(h.dir.join("Mods"), h.dir.join("node_modules")).unwrap();
     h.rescan();
     h.deliver();
     assert_eq!(h.count("agenda", "Mind the modules"), 0);
     let owned = &h.core.index.workspace.owned;
-    assert!(owned.iter().all(|f| f.rel != "node_modules/Mod.canvas"));
+    assert!(owned.iter().all(|f| !f.rel.ends_with("Mod.canvas")));
     assert_eq!(h.count("agenda", "Check the seismograph"), 1);
 }
 

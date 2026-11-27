@@ -231,7 +231,7 @@ fn empty_folders(root: &Path, settings: &Settings) -> Vec<String> {
     let mut walker = walkdir::WalkDir::new(root).sort_by_file_name().into_iter();
     while let Some(Ok(e)) = walker.next() {
         let name = e.file_name().to_string_lossy();
-        let hidden = e.depth() > 0 && (name.starts_with('.') || name == "node_modules");
+        let hidden = e.depth() > 0 && crate::workspace::is_skipped(&name);
         if hidden && e.file_type().is_dir() {
             walker.skip_current_dir();
         }
