@@ -22,7 +22,9 @@
 //!   read (`OwnerTrouble`, #363), is said once, just before
 //!   its `Rescanned`, to `poll` and to a channel alike: in the poll that rescans when the
 //!   watcher reported a folder, and inside the call for a folder's delete or restore (#338).
-//!   `rescan_now` says it to a channel at the call and to `poll` at the next.
+//!   `rescan_now` says it to a channel at the call and to `poll` at the next. A version of a
+//!   file that can't be read is said once, whoever reads it again: a later rescan of the same
+//!   bytes says nothing, since every file action in the menu rescans.
 //! - Not so yet: an item that moves without its own lines changing (a line added above it)
 //!   is no news, since its `rev` is the same. A subscriber that applies `items/changed` keeps
 //!   its old `line`; one that queries again hears nothing to query on. The tests here leave
@@ -1652,6 +1654,80 @@ fn a_rescan_says_which_owned_files_it_could_not_read() {
     assert_eq!(h.count("agenda", "Check the seismograph"), 1);
     assert_eq!(h.count("agenda", "Read the report"), 1);
     assert!(h.deliver().is_empty(), "said once");
+}
+
+/// #363, #303's rule. A file that can't be read is said once a version: every file action in
+/// the menu rescans, and saying an unchanged broken board again would take the place of what
+/// the user just did. Another version that can't be read is said, and so is one said before
+/// once a version between them read.
+#[test]
+fn an_owned_file_that_cannot_be_read_is_said_once_a_version() {
+    let mut h = workspace("trouble-once");
+    h.follow("agenda", tasks());
+    let said = |b: &Batch| {
+        let trouble = |e: &&Event| matches!(e, Event::OwnerTrouble { .. });
+        let n = |events: &[Event]| events.iter().filter(trouble).count();
+        (n(&b.events), n(&b.channel))
+    };
+    h.write("Board.canvas", "{");
+    std::fs::write(h.dir.join("Reading.lines"), [0xff, 0xfe]).unwrap();
+    h.rescan();
+    assert_eq!(said(&h.deliver()), (2, 2), "the first rescan says both");
+    h.rescan();
+    h.rescan();
+    assert_eq!(
+        said(&h.deliver()),
+        (0, 0),
+        "two more rescans, nothing changed"
+    );
+    h.saw("Board.canvas");
+    assert_eq!(said(&h.deliver()), (0, 0), "the watcher, nothing changed");
+    assert_eq!(h.count("agenda", "Check the seismograph"), 1);
+
+    h.write("Board.canvas", "{}{");
+    h.rescan();
+    assert_eq!(
+        said(&h.deliver()),
+        (1, 1),
+        "another version that can't be read"
+    );
+
+    h.write("Board.canvas", BOARD);
+    h.rescan();
+    assert_eq!(said(&h.deliver()), (0, 0));
+    h.write("Board.canvas", "{");
+    h.rescan();
+    assert_eq!(
+        said(&h.deliver()),
+        (1, 1),
+        "said again after a version that read"
+    );
+    assert_eq!(h.count("agenda", "Check the seismograph"), 1);
+}
+
+/// #363. On a rescan, the listing of the workspace's files is the one rule for what is gone:
+/// a board the watcher reported where the scan doesn't look (`node_modules`) leaves with its
+/// items, though its bytes are still there.
+#[test]
+fn a_rescan_drops_an_owned_file_the_scan_does_not_list() {
+    let mut h = workspace("rescan-unlisted");
+    h.follow("agenda", tasks());
+    std::fs::create_dir_all(h.dir.join("node_modules")).unwrap();
+    let board = BOARD.replace("Check the seismograph", "Mind the modules");
+    h.write("node_modules/Mod.canvas", &board);
+    h.saw("node_modules/Mod.canvas");
+    h.deliver();
+    assert_eq!(
+        h.count("agenda", "Mind the modules"),
+        1,
+        "the watcher heard it"
+    );
+    h.rescan();
+    h.deliver();
+    assert_eq!(h.count("agenda", "Mind the modules"), 0);
+    let owned = &h.core.index.workspace.owned;
+    assert!(owned.iter().all(|f| f.rel != "node_modules/Mod.canvas"));
+    assert_eq!(h.count("agenda", "Check the seismograph"), 1);
 }
 
 fn anchor(item: &Item) -> Edit {
