@@ -1202,37 +1202,45 @@ fn finish(
     identify(note, text, raws)
 }
 
-/// Gives each item its id and rev, in document order (a parent before its children).
+/// Gives each item its id and rev, in document order (a parent before its children): the rev
+/// of its lines, or a twin's (`twins`).
 fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
     let lines: Vec<&str> = text.lines().collect();
     let mut keys: Vec<String> = Vec::with_capacity(raws.len());
+    // How long each key's anchor is, and the item it is keyed under.
+    let mut anchors: Vec<(usize, Option<usize>)> = Vec::with_capacity(raws.len());
     let mut seen: HashMap<(String, String), usize> = HashMap::new();
+    let mut counted = false;
     let mut items: Vec<Item> = Vec::with_capacity(raws.len());
     // An item's own lines, joined, reused from item to item.
     let mut own = String::new();
     for raw in raws {
         let kind = raw.data.kind();
         let parent_key = raw.parent.map_or("", |p| keys[p].as_str());
-        let anchor = match (&raw.block_id, &raw.data) {
-            (Some(id), _) => format!("^{id}"),
+        let (anchor, under) = match (&raw.block_id, &raw.data) {
+            (Some(id), _) => (format!("^{id}"), None),
             (None, Data::Heading { text, .. }) => {
                 let mut path = raw.section.join("#");
                 if !raw.section.is_empty() {
                     path.push('#');
                 }
                 path.push_str(text);
-                path
+                (path, None)
             }
             (None, Data::List { text }) => {
-                format!("{parent_key}/{}", identity::hash(text.as_bytes()))
+                let hash = identity::hash(text.as_bytes());
+                (format!("{parent_key}/{hash}"), raw.parent)
             }
-            (None, Data::Typed(_)) if raw.key.is_empty() => parent_key.to_string(),
+            (None, Data::Typed(_)) if raw.key.is_empty() => (parent_key.to_string(), raw.parent),
             (None, Data::Typed(_)) => {
-                format!("{parent_key}/{}", identity::hash(raw.key.as_bytes()))
+                let hash = identity::hash(raw.key.as_bytes());
+                (format!("{parent_key}/{hash}"), raw.parent)
             }
-            (None, Data::Block) => String::new(),
+            (None, Data::Block) => (String::new(), None),
         };
+        anchors.push((anchor.len(), under));
         let n = seen.entry((kind.to_string(), anchor.clone())).or_default();
+        counted |= *n > 0;
         let key = match *n {
             0 => anchor,
             n => format!("{anchor}.{n}"),
@@ -1263,8 +1271,35 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
         });
         keys.push(key);
     }
+    // No count, no twins: most notes have none, and skip this.
+    if counted {
+        twin_revs(&mut items, &keys, &anchors);
+    }
     items.sort_by_key(|i| i.line);
     items
+}
+
+/// Gives the items one of whose twins has the same lines a twin's rev (`twins`): `items`,
+/// their keys and their anchors as `identify` made them, a parent before its children.
+fn twin_revs(items: &mut [Item], keys: &[String], anchors: &[(usize, Option<usize>)]) {
+    let found = {
+        let keyed: Vec<twins::Keyed> = (items.iter().zip(keys).zip(anchors))
+            .map(|((item, key), &(anchor, under))| twins::Keyed {
+                kind: item.data.kind(),
+                key,
+                anchor,
+                under,
+                rev: &item.rev,
+            })
+            .collect();
+        twins::of(&keyed)
+    };
+    // In order, so the item a twin is under has its own rev already.
+    for (i, twin) in found.into_iter().enumerate() {
+        let Some(twin) = twin else { continue };
+        let under = twin.under.map(|p| items[p].rev.clone());
+        items[i].rev = identity::twin_rev(&items[i].rev, twin.twins, under.as_deref());
+    }
 }
 
 /// A heading's words in the source: ATX without its `#`s, setext without its underline.
@@ -1388,6 +1423,7 @@ fn list_text(first: &str) -> String {
 }
 
 pub mod anchors;
+mod twins;
 
 #[cfg(test)]
 mod pulldown;
@@ -1704,6 +1740,50 @@ Setext
             two[0].rev,
             identity::line_id("- [ ] Pay rent\n  by transfer")
         );
+    }
+
+    /// Twins (#327, `twins`): where a twin has an item's lines, the item's rev says how many
+    /// there are of them, so it changes when one comes or goes, and, under twins, which one it
+    /// is under. Twins told apart by their lines keep the revs of their lines.
+    #[test]
+    fn a_twins_rev_says_how_many_twins_there_are_and_which_twin_it_is_under() {
+        let line = "- [ ] Pay rent";
+        let lines = identity::line_id(line);
+        let read = |n: usize| items(&format!("{line}\n").repeat(n));
+        let (one, two, three) = (read(1), read(2), read(3));
+        assert_eq!(one[0].rev, lines, "no twin");
+        for (n, all) in [(2, &two), (3, &three)] {
+            let revs: Vec<&str> = all.iter().map(|i| i.rev.as_str()).collect();
+            assert_eq!(revs, vec![identity::twin_rev(&lines, n, None); n]);
+        }
+        assert_eq!((&two[0].id, &two[1].id), (&three[0].id, &three[1].id));
+        let dated = items("- [ ] Pay rent 📅 2026-11-12\n- [ ] Pay rent 📅 2026-12-12\n");
+        let want = identity::line_id("- [ ] Pay rent 📅 2026-12-12");
+        assert_eq!(dated[1].rev, want, "told apart by its lines");
+
+        let block = |date: &str| format!("- [ ] Rent 📅 {date}\n  - [ ] Transfer\n");
+        let (nov, dec) = (block("2026-11-01"), block("2026-12-01"));
+        let transfer = |text: &str| -> Item {
+            let mut all = items(text).into_iter();
+            all.find(|i| field(i, "text") == "Transfer").unwrap()
+        };
+        let first = transfer(&format!("{nov}{dec}"));
+        let under = identity::line_id("- [ ] Rent 📅 2026-11-01");
+        let own = identity::line_id("  - [ ] Transfer");
+        assert_eq!(first.rev, identity::twin_rev(&own, 2, Some(&under)));
+        // The first block gone, or the two swapped: another item holds the first's address.
+        for after in [format!("{dec}{nov}"), dec] {
+            let now = transfer(&after);
+            assert_eq!(now.id, first.id, "{after}");
+            assert_ne!(now.rev, first.rev, "{after}");
+        }
+        // Under an item with no twins, twins are told apart by their place under it alone: a
+        // tick of it leaves their revs.
+        let milk = |status: &str| items(&format!("- [{status}] Shop\n  - milk\n  - milk\n"));
+        let (open, done) = (milk(" "), milk("x"));
+        let own = identity::line_id("  - milk");
+        assert_eq!(open[1].rev, identity::twin_rev(&own, 2, None));
+        assert_eq!((&open[1].rev, &open[2].rev), (&done[1].rev, &done[2].rev));
     }
 
     #[test]
