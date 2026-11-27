@@ -93,7 +93,7 @@ pub struct Row<'a> {
 pub enum End<'a> {
     /// On the chosen row, its colour on to the right edge.
     Bar,
-    /// This piece against the right edge, after a gap in the row's colour.
+    /// This piece against the right edge. On the chosen row, the gap before it takes its colour.
     Right(Piece<'a>),
     /// Nothing: the chosen row's colour stops with its text (#365).
     Nothing,
