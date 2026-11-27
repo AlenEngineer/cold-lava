@@ -1002,7 +1002,7 @@ fn a_rename_relinks_a_canvas_and_an_extension_s_file_in_one_plan() {
     let files: Vec<&str> = plan.edits.iter().map(|e| e.file.as_str()).collect();
     assert_eq!(files, ["Plan.md", "Board.canvas", "Reading.lines"]);
     assert!(
-        rename::apply(&plan).is_err(),
+        rename::apply(&plan, h.core.root()).is_err(),
         "not before the owners answered"
     );
 
@@ -1054,7 +1054,7 @@ fn a_rename_one_owner_refuses_changes_nothing_anywhere() {
     };
     assert_eq!(why, "lines didn't edit Reading.lines: it is read-only");
     assert!(
-        rename::apply(&plan).is_err(),
+        rename::apply(&plan, h.core.root()).is_err(),
         "nor can it be made after all"
     );
     let before = [

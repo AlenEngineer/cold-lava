@@ -99,12 +99,40 @@ impl Move {
 
     /// Where a file at `path` is after this move, if it moves with it.
     fn moved(&self, path: &Path) -> Option<PathBuf> {
-        let rest = path.strip_prefix(&self.from_path).ok()?;
-        Some(match rest.as_os_str().is_empty() {
-            true => self.to_path.clone(),
-            false => self.to_path.join(rest),
-        })
+        moved_by(&self.from_path, &self.to_path, path)
     }
+
+    /// What moves, checked under `root`: the entry at `from` itself (a link there is the link,
+    /// and moves as one), with no symlink among the folders on the way to it, which would move
+    /// a file from outside the workspace into it (`files::resolve_entry`, #397). The move acts
+    /// on the path this returns.
+    fn source(&self, root: &Path) -> Result<PathBuf> {
+        Ok(crate::files::resolve_entry(root, &self.from)?)
+    }
+
+    /// Where it lands, checked under `root`: nothing there already (`write::may_move`, so a
+    /// case-only rename is one, #393), and no symlink at `to` or on the way to it, which would
+    /// take it out of the workspace (`files::resolve`, #397). `from` is `source`'s path. The
+    /// plan and `apply` both ask this, and the move goes to the path it returns.
+    fn target(&self, root: &Path, from: &Path) -> Result<PathBuf> {
+        let to = crate::files::resolve(root, &self.to);
+        let there = to
+            .as_ref()
+            .map_or_else(|_| root.join(&self.to), Clone::clone);
+        if !crate::write::may_move(from, &there) {
+            bail!("{} already exists", self.to);
+        }
+        Ok(to?)
+    }
+}
+
+/// Where a file at `path` is once `from` moved to `to`, if it moves with it.
+fn moved_by(from: &Path, to: &Path, path: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(from).ok()?;
+    Some(match rest.as_os_str().is_empty() {
+        true => to.to_path_buf(),
+        false => to.join(rest),
+    })
 }
 
 /// Everything moving some notes and folders at once changes. Every link is resolved once
@@ -332,7 +360,9 @@ fn check_folder(ix: &Index, from: &str) -> Result<()> {
 }
 
 /// The plan for `moves`: refused if two land on the same path, one is inside a moving folder or
-/// lands in one, or a target exists; otherwise every link resolved before and after them all.
+/// lands in one, a target exists, or a folder on the way to what moves or to where it lands is a
+/// symlink (`Move::source`, `Move::target`, #397); otherwise every link resolved before and
+/// after them all.
 fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
     let lower = |s: &str| s.to_lowercase();
     let inside = |rel: &str, folder: &Move| {
@@ -351,9 +381,8 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
                 false => bail!("{} can't move into {}: it moves too", m.from, f.from),
             }
         }
-        if !crate::write::may_move(&m.from_path, &m.to_path) {
-            bail!("{} already exists", m.to);
-        }
+        let root = &ix.workspace.root;
+        m.target(root, &m.source(root)?)?;
     }
     let before = Files::of_workspace(ix);
     let mut moving = Vec::new();
@@ -661,32 +690,41 @@ impl Written {
     }
 }
 
-/// Carry out a plan: refuse if any file changed since it was made, or a file another owner reads
-/// has no new text from it yet (`Core::relink`), then make the moves (undoing the ones made if one
-/// fails) and write each changed file atomically.
-pub(crate) fn apply(plan: &Plan) -> Result<()> {
+/// Carry out a plan in the workspace at `root` (the core's, from `Door`): refuse if any file
+/// changed since it was made, or a file another owner reads has no new text from it yet
+/// (`Core::relink`), or a move's source or target is no longer one it may take (`Move::source`,
+/// `Move::target`: a folder on the way became a symlink, #397), then make the moves on the paths
+/// those checks gave (undoing the ones made if one fails) and write each changed file
+/// atomically. Checked, then acted on (#366).
+pub(crate) fn apply(plan: &Plan, root: &Path) -> Result<()> {
     check_answered(&plan.edits)?;
     check_unchanged(&plan.edits, "rename")?;
+    let mut paths = Vec::new();
     for m in &plan.moves {
-        if !m.from_path.exists() {
+        let from = m.source(root)?;
+        if std::fs::symlink_metadata(&from).is_err() {
             bail!("{} no longer exists", m.from);
         }
-        if !crate::write::may_move(&m.from_path, &m.to_path) {
-            bail!("{} already exists", m.to);
-        }
+        let to = m.target(root, &from)?;
+        paths.push((from, to));
     }
-    for (i, m) in plan.moves.iter().enumerate() {
-        if let Err(e) = crate::write::move_file(&m.from_path, &m.to_path) {
-            for done in plan.moves[..i].iter().rev() {
-                let _ = crate::write::move_file(&done.to_path, &done.from_path);
+    for (i, ((from, to), m)) in paths.iter().zip(&plan.moves).enumerate() {
+        if let Err(e) = crate::write::move_file(from, to) {
+            for (from, to) in paths[..i].iter().rev() {
+                let _ = crate::write::move_file(to, from);
             }
             return Err(e).with_context(|| format!("moving {} to {}", m.from, m.to));
         }
     }
+    let moved = |path: &Path| {
+        (paths.iter())
+            .find_map(|(from, to)| moved_by(from, to, path))
+            .unwrap_or_else(|| path.to_path_buf())
+    };
     let mut failed = Vec::new();
     for e in &plan.edits {
         // Still guarded: a file edited between the check above and now is left alone.
-        let path = plan.moved(&e.path);
+        let path = moved(&e.path);
         let seen = Seen::kept(&path, e.old_text.as_bytes());
         if let Err(err) = seen.replace(e.new_text.as_bytes()) {
             failed.push(format!("{} ({err})", e.file));
@@ -772,7 +810,7 @@ mod tests {
         let lava = ix.by_rel("Concepts/Lava").unwrap();
         let p = plan(&ix, lava, "Geology/Hot Rock.md").unwrap();
         assert_eq!(p.links(), 7);
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert!(!dir.join("Concepts/Lava.md").exists());
         assert!(dir.join("Geology/Hot Rock.md").exists());
         assert_eq!(
@@ -801,13 +839,13 @@ mod tests {
         let upper = ix.by_rel("Lava").unwrap();
         let p = plan(&ix, upper, "lava").unwrap();
         std::fs::write(dir.join("lava.md"), "lower").unwrap();
-        let refused = apply(&p).unwrap_err().to_string();
+        let refused = apply(&p, &dir).unwrap_err().to_string();
         assert_eq!(refused, "lava.md already exists");
         assert_eq!(read(&dir, "Lava.md"), "upper");
         assert_eq!(read(&dir, "lava.md"), "lower");
 
         std::fs::remove_file(dir.join("lava.md")).unwrap();
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert!(!dir.join("Lava.md").exists());
         assert_eq!(read(&dir, "lava.md"), "upper");
         let _ = std::fs::remove_dir_all(&dir);
@@ -834,7 +872,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.links(), 3);
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(
             read(&dir, "Notes.md"),
             "[a](Lava/%CA%BBA%CA%BB%C4%81%20flow.md) [b](Lava/%CA%BBA%CA%BB%C4%81%20flow.md#Top) \
@@ -846,7 +884,7 @@ mod tests {
             .and_then(|n| crate::resolver::attachment(&ix, "Lava/flow map.png", Some(n)));
         assert!(png.is_some_and(|p| p.ends_with("Lava/flow map.png")));
         let p = plan_folder(&ix, "Lava", "Rock flows").unwrap();
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(
             read(&dir, "Notes.md"),
             "[a](Rock%20flows/%CA%BBA%CA%BB%C4%81%20flow.md) \
@@ -863,7 +901,7 @@ mod tests {
             &[("Hot Rock.md", "x"), ("Notes.md", "[a](Hot%20Rock.md)\n")],
         );
         let p = plan(&ix, ix.by_rel("Hot Rock").unwrap(), "Pāhoehoe lava.md").unwrap();
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(read(&dir, "Notes.md"), "[a](Pāhoehoe%20lava.md)\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -882,7 +920,7 @@ mod tests {
         );
         let m = ix.by_rel("A/Moving").unwrap();
         let p = plan(&ix, m, "B/C/Moving.md").unwrap();
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(
             read(&dir, "B/C/Moving.md"),
             "[up](../../Top.md) [[../../Top]] [[Top]] [self](Moving.md)\n"
@@ -907,7 +945,7 @@ mod tests {
         );
         let p = plan(&ix, ix.by_rel("Old").unwrap(), "Archive/New.md").unwrap();
         assert_eq!(p.warnings.len(), 1);
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(read(&dir, "Linker.md"), "[[Archive/New]]\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -917,7 +955,10 @@ mod tests {
         let canvas = "{\n\t\"nodes\":[\n\t\t{\"id\":\"a\",\"type\":\"file\",\"file\":\"Lava.md\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},\n\t\t{\"id\":\"b\",\"type\":\"text\",\"text\":\"About [[Lava]] \\\"hot\\\"\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[]\n}";
         let (dir, ix) = workspace_with("canvas", &[("Lava.md", "x"), ("Board.canvas", canvas)]);
         let p = plan(&ix, ix.by_rel("Lava").unwrap(), "Magma.md").unwrap();
-        assert!(apply(&p).is_err(), "not before the canvas owner answered");
+        assert!(
+            apply(&p, &dir).is_err(),
+            "not before the canvas owner answered"
+        );
         apply_through_owners(&ix, p).unwrap();
         let out = read(&dir, "Board.canvas");
         assert_eq!(
@@ -934,7 +975,7 @@ mod tests {
         let (dir, ix) = workspace_with("guard", &[("A.md", "x"), ("B.md", "[[A]]\n")]);
         let p = plan(&ix, ix.by_rel("A").unwrap(), "Z.md").unwrap();
         std::fs::write(dir.join("B.md"), "[[A]] edited elsewhere\n").unwrap();
-        assert!(apply(&p).is_err());
+        assert!(apply(&p, &dir).is_err());
         assert!(
             dir.join("A.md").exists() && !dir.join("Z.md").exists(),
             "nothing moved"
@@ -1014,10 +1055,10 @@ mod tests {
             format!("{uses}edited elsewhere\n"),
         )
         .unwrap();
-        assert!(apply(&p).is_err());
+        assert!(apply(&p, &dir).is_err());
         assert!(dir.join("Concepts/Lava.md").exists(), "nothing moved");
         std::fs::write(dir.join("Notes/Uses.md"), uses).unwrap();
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(
             read(&dir, "Notes/Uses.md"),
             "See [molten rock][lava] and [Lava].\n\n[lava]: ../Geology/Hot%20Rock.md \"Hot\"\n[abs]: <Geology/Hot%20Rock.md#Lava>\n",
@@ -1089,7 +1130,7 @@ mod tests {
 
         let (dir, ix) = workspace_with("shallow", &files);
         let p = plan_folder(&ix, "A", "X/Y/A").unwrap();
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(
             read(&dir, "Notes.md"),
             "[[X/Y/A/Lava]] [[B/C/Lava]]\n",
@@ -1108,7 +1149,8 @@ mod tests {
                 ("A/Note.md", "[x](../B/Top.md) [[../B/Top]]\n"),
             ],
         );
-        apply(&plan(&ix, ix.by_rel("B/Top").unwrap(), "A/Top.md").unwrap()).unwrap();
+        let p = plan(&ix, ix.by_rel("B/Top").unwrap(), "A/Top.md").unwrap();
+        apply(&p, &dir).unwrap();
         assert_eq!(
             read(&dir, "A/Note.md"),
             "[x](./Top.md) [[./Top]]\n",
@@ -1152,7 +1194,7 @@ mod tests {
         let (dir, ix) = workspace_with("folder-guard", &[("A/a.md", "x"), ("B.md", "[[A/a]]\n")]);
         let p = plan_folder(&ix, "A", "Z").unwrap();
         std::fs::write(dir.join("B.md"), "[[A/a]] edited elsewhere\n").unwrap();
-        assert!(apply(&p).is_err());
+        assert!(apply(&p, &dir).is_err());
         assert!(dir.join("A/a.md").exists() && !dir.join("Z").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1259,7 +1301,7 @@ mod tests {
         let items = ["A/a.md", "B/b.md"].map(String::from);
         let p = plan_into(&ix, &items, "Z").unwrap();
         std::fs::write(dir.join("Links.md"), "edited elsewhere\n").unwrap();
-        assert!(apply(&p).is_err());
+        assert!(apply(&p, &dir).is_err());
         assert!(dir.join("A/a.md").exists() && dir.join("B/b.md").exists());
         assert!(!dir.join("Z").exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1274,7 +1316,7 @@ mod tests {
         );
         let p = plan_folder(&ix, "Rock", "Earth/Stone").unwrap();
         assert!(p.edits.is_empty(), "{:?}", p.edits);
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert!(dir.join("Earth/Stone/Lava.md").exists());
         assert_eq!(read(&dir, ".obsidian/bookmarks.json"), marks);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1305,7 +1347,7 @@ mod tests {
         let link = dir.join("Kilauea.link");
         std::os::unix::fs::symlink(dir.join(".git/Kilauea.md"), &link).unwrap();
         std::fs::rename(&link, dir.join("Kilauea.md")).unwrap();
-        let err = format!("{:#}", apply(&p).unwrap_err());
+        let err = format!("{:#}", apply(&p, &dir).unwrap_err());
         assert!(err.contains("Kilauea.md is a symbolic link"), "{err}");
         assert!(dir.join("Rock/Lava.md").exists(), "nothing moved");
         assert!(!dir.join("Rock/Basalt.md").exists(), "nothing moved");
@@ -1331,7 +1373,7 @@ mod tests {
         assert_eq!(planned.to_string(), "Rock/Basalt.md already exists");
         let p = plan(&ix, lava, "Rock/Pumice.md").unwrap();
         std::os::unix::fs::symlink("Gone.md", dir.join("Rock/Pumice.md")).unwrap();
-        let applied = apply(&p).unwrap_err();
+        let applied = apply(&p, &dir).unwrap_err();
         assert_eq!(format!("{applied:#}"), "Rock/Pumice.md already exists");
         assert_eq!(read(&dir, "Rock/Lava.md"), "x", "nothing moved");
         assert_eq!(read(&dir, "Ash.md"), "[[Lava]]\n", "no link rewritten");
@@ -1360,11 +1402,118 @@ mod tests {
         let at = dir.join(".obsidian/bookmarks.json");
         std::os::unix::fs::symlink("../.shared/bookmarks.json", &at).unwrap();
         let p = plan(&ix, ix.by_rel("Rock/Lava").unwrap(), "Rock/Basalt.md").unwrap();
-        apply(&p).unwrap();
+        apply(&p, &dir).unwrap();
         assert!(dir.join("Rock/Basalt.md").exists());
         assert_eq!(read(&dir, "Rocky.md"), "[[Basalt]]\n");
         assert_eq!(read(&dir, ".shared/bookmarks.json"), marks);
         assert!(is_link(&at), "the link stays");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #397: a rename, a folder's move or a marked move into a folder that is a symlink is
+    /// refused when planned, naming the link, and nothing moves out of the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn nothing_moves_into_a_folder_that_is_a_symlink() {
+        let files = [("Lava.md", "hot"), ("Rock/Basalt.md", "")];
+        let (dir, ix) = workspace_with("into-link", &files);
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Alias")).unwrap();
+        let lava = ix.by_rel("Lava").unwrap();
+        let items = ["Lava.md".to_string(), "Rock".to_string()];
+        let refusals = [
+            plan(&ix, lava, "Alias/Lava.md").unwrap_err(),
+            plan(&ix, lava, "Alias/Deep/Lava.md").unwrap_err(),
+            plan_folder(&ix, "Rock", "Alias/Rock").unwrap_err(),
+            plan_into(&ix, &items, "Alias").unwrap_err(),
+        ];
+        for refused in refusals {
+            let refused = refused.to_string();
+            assert!(refused.contains("Alias is a symbolic link"), "{refused}");
+        }
+        assert_eq!(read(&dir, "Lava.md"), "hot");
+        assert!(dir.join("Rock/Basalt.md").exists());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// #397: a folder on the new path that became a symlink after the plan is refused by
+    /// `apply` before anything moves or is written.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_put_in_after_the_plan_is_refused_before_the_move() {
+        let files = [("Lava.md", "hot"), ("Rocky.md", "[[Lava]]\n")];
+        let (dir, ix) = workspace_with("link-later", &files);
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let p = plan(&ix, ix.by_rel("Lava").unwrap(), "Later/Lava.md").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Later")).unwrap();
+        let refused = apply(&p, &dir).unwrap_err().to_string();
+        assert!(refused.contains("Later is a symbolic link"), "{refused}");
+        assert_eq!(read(&dir, "Lava.md"), "hot");
+        assert_eq!(read(&dir, "Rocky.md"), "[[Lava]]\n");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// #397, the source side: what moves can't be reached through a symlinked folder either,
+    /// or the move would pull a folder or file from outside into the workspace and take it
+    /// from where it was. Refused when planned and, for a link put in after the plan, by
+    /// `apply`, naming the link; nothing moves.
+    #[cfg(unix)]
+    #[test]
+    fn nothing_moves_out_of_a_folder_that_is_a_symlink() {
+        let files = [("Lava.md", "hot"), ("Deep/Rock/Basalt.md", "dense")];
+        let (dir, ix) = workspace_with("from-link", &files);
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(outside.join("Sub")).unwrap();
+        std::fs::write(outside.join("Sub/Pumice.md"), "light").unwrap();
+        std::fs::write(outside.join("Ash.md"), "fine").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Alias")).unwrap();
+        let items = ["Alias/Sub".to_string(), "Alias/Ash.md".to_string()];
+        let refusals = [
+            plan_folder(&ix, "Alias/Sub", "Sub").unwrap_err(),
+            plan_into(&ix, &items[..1], "").unwrap_err(),
+            plan_into(&ix, &items[1..], "").unwrap_err(),
+        ];
+        for refused in refusals {
+            let refused = refused.to_string();
+            assert!(refused.contains("Alias is a symbolic link"), "{refused}");
+        }
+
+        // Planned while Deep was a folder; Deep is a link to a folder outside by the time
+        // the plan is applied.
+        let p = plan_folder(&ix, "Deep/Rock", "Rock").unwrap();
+        let away = dir.with_extension("away");
+        let _ = std::fs::remove_dir_all(&away);
+        std::fs::rename(dir.join("Deep"), &away).unwrap();
+        std::os::unix::fs::symlink(&away, dir.join("Deep")).unwrap();
+        let refused = apply(&p, &dir).unwrap_err().to_string();
+        assert!(refused.contains("Deep is a symbolic link"), "{refused}");
+
+        assert_eq!(
+            std::fs::read_to_string(outside.join("Sub/Pumice.md")).unwrap(),
+            "light"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("Ash.md")).unwrap(),
+            "fine"
+        );
+        assert_eq!(
+            std::fs::read_to_string(away.join("Rock/Basalt.md")).unwrap(),
+            "dense"
+        );
+        for moved in ["Sub", "Ash.md", "Rock"] {
+            assert!(!dir.join(moved).exists(), "{moved} stays outside");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&away);
     }
 }

@@ -1702,7 +1702,10 @@ mod tests {
         let mut p = plan(&core, "Krakatoa", "Krakatau");
         let owned = p.edits.iter().find(|e| e.file == "Eruptions.csv").unwrap();
         assert_eq!(owned.links, 1, "listed in the plan");
-        assert!(rename::apply(&p).is_err(), "not before the owner answered");
+        assert!(
+            rename::apply(&p, core.root()).is_err(),
+            "not before the owner answered"
+        );
         let Applying::Later(ticket) = core.apply(&mut p) else {
             panic!("waits for the owner");
         };
