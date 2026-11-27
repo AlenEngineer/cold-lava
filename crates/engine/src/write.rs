@@ -142,10 +142,21 @@ pub(crate) fn replace_through_link(
 }
 
 fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
+    replace_with(path, file, expected, bytes, || {})
+}
+
+fn replace_with(
+    path: &Path,
+    file: &Path,
+    expected: &[u8],
+    bytes: &[u8],
+    between: impl FnOnce(),
+) -> Result<(), WriteError> {
     let now = std::fs::read(file).map_err(io_err(path))?;
     if now != expected {
         return Err(WriteError::Changed(path.to_path_buf()));
     }
+    between();
     write_at(path, file, bytes)
 }
 
@@ -184,12 +195,17 @@ pub fn create_dir(path: &Path) -> Result<(), WriteError> {
 
 /// Move a file, a folder or a symlink (the link itself); refused unless it `may_move`.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), WriteError> {
+    move_with(from, to, || {})
+}
+
+fn move_with(from: &Path, to: &Path, between: impl FnOnce()) -> Result<(), WriteError> {
     if !may_move(from, to) {
         return Err(WriteError::Exists(to.to_path_buf()));
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
+    between();
     std::fs::rename(from, to).map_err(io_err(from))
 }
 
@@ -257,6 +273,58 @@ mod tests {
             Err(WriteError::Changed(_))
         ));
         assert_eq!(std::fs::read(&p).unwrap(), b"v2");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn theirs_in_place(p: &Path) {
+        std::fs::write(p, "theirs").unwrap();
+    }
+
+    fn theirs_by_a_rename(p: &Path) {
+        let other = p.with_file_name("theirs.tmp");
+        std::fs::write(&other, "theirs").unwrap();
+        std::fs::rename(&other, p).unwrap();
+    }
+
+    const THEIRS: [(&str, fn(&Path)); 2] = [
+        ("in place", theirs_in_place),
+        ("by a rename", theirs_by_a_rename),
+    ];
+
+    /// Another program saves the file after `replace` compared it and before the new text is
+    /// in place (#395): the replace is refused, the other program's text stays, and nothing
+    /// of ours is left beside it.
+    #[test]
+    fn a_save_that_lands_while_a_replace_writes_is_kept() {
+        let d = dir("race");
+        let p = d.join("N.md");
+        for (how, theirs) in THEIRS {
+            std::fs::write(&p, "v1").unwrap();
+            let refused = replace_with(&p, &p, b"v1", b"ours", || theirs(&p));
+            assert!(
+                matches!(&refused, Err(WriteError::Changed(at)) if *at == p),
+                "{how}: {refused:?}"
+            );
+            assert_eq!(std::fs::read(&p).unwrap(), b"theirs", "{how}");
+            assert_eq!(files(&d), ["N.md"], "{how}: nothing left beside it");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Another program makes a file where a move goes, after `move_file` found nothing there
+    /// (#230): the move is refused, and both files keep their text.
+    #[test]
+    fn a_file_made_where_a_move_goes_is_never_replaced() {
+        let d = dir("move-race");
+        let (a, b) = (d.join("A.md"), d.join("B.md"));
+        std::fs::write(&a, "ours").unwrap();
+        let refused = move_with(&a, &b, || std::fs::write(&b, "theirs").unwrap());
+        assert!(
+            matches!(&refused, Err(WriteError::Exists(at)) if *at == b),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read(&a).unwrap(), b"ours");
+        assert_eq!(std::fs::read(&b).unwrap(), b"theirs");
         let _ = std::fs::remove_dir_all(&d);
     }
 
