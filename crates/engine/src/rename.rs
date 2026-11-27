@@ -118,6 +118,9 @@ pub struct Plan {
     /// Files whose links change, moving ones included (under their path as it is now).
     pub edits: Vec<FileEdit>,
     pub warnings: Vec<String>,
+    /// The workspace's root, which every move's new path is checked under.
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 impl Plan {
@@ -332,7 +335,9 @@ fn check_folder(ix: &Index, from: &str) -> Result<()> {
 }
 
 /// The plan for `moves`: refused if two land on the same path, one is inside a moving folder or
-/// lands in one, or a target exists; otherwise every link resolved before and after them all.
+/// lands in one, a target exists, or a folder on the way to one is a symlink (`files::resolve`:
+/// a move through it would leave the workspace, #397); otherwise every link resolved before and
+/// after them all.
 fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
     let lower = |s: &str| s.to_lowercase();
     let inside = |rel: &str, folder: &Move| {
@@ -354,6 +359,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
         if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
+        crate::files::resolve(&ix.workspace.root, &m.to)?;
     }
     let before = Files::of_workspace(ix);
     let mut moving = Vec::new();
@@ -388,6 +394,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
         moving,
         edits,
         warnings,
+        root: ix.workspace.root.clone(),
     })
 }
 
@@ -662,8 +669,9 @@ impl Written {
 }
 
 /// Carry out a plan: refuse if any file changed since it was made, or a file another owner reads
-/// has no new text from it yet (`Core::relink`), then make the moves (undoing the ones made if one
-/// fails) and write each changed file atomically.
+/// has no new text from it yet (`Core::relink`), or a folder on the way to a new path became a
+/// symlink, then make the moves (undoing the ones made if one fails) and write each changed file
+/// atomically. Checked, then acted on (#366).
 pub(crate) fn apply(plan: &Plan) -> Result<()> {
     check_answered(&plan.edits)?;
     check_unchanged(&plan.edits, "rename")?;
@@ -674,6 +682,7 @@ pub(crate) fn apply(plan: &Plan) -> Result<()> {
         if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
+        crate::files::resolve(&plan.root, &m.to)?;
     }
     for (i, m) in plan.moves.iter().enumerate() {
         if let Err(e) = crate::write::move_file(&m.from_path, &m.to_path) {

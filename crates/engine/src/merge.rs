@@ -78,6 +78,9 @@ impl Merge {
 /// A merge that was made: enough to undo it.
 #[derive(Clone, Debug)]
 pub struct Merged {
+    root: PathBuf,
+    /// Workspace-relative, with `.md`.
+    source: String,
     pub source_path: PathBuf,
     pub target_path: PathBuf,
     pub trashed: Trashed,
@@ -333,6 +336,8 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     let written = Written::all(m.writes())?;
     match trash::delete(&m.root, &source, system) {
         Ok(trashed) => Ok(Merged {
+            root: m.root.clone(),
+            source: m.source.clone(),
             source_path: m.source_path.clone(),
             target_path: m.target_path.clone(),
             trashed,
@@ -347,8 +352,8 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
 }
 
 /// Undo a merge: the source comes back from the trash and every file written goes back to what it
-/// held. Refused, with nothing changed, if one of them was edited since or the source's path is
-/// taken.
+/// held. Refused, with nothing changed, if one of them was edited since, the source's path is
+/// taken, or a folder on the way to it is now a symlink (`files::resolve`, #397).
 pub fn undo(m: &Merged) -> Result<()> {
     m.written.check("merge")?;
     if write::taken(&m.source_path) {
@@ -357,6 +362,7 @@ pub fn undo(m: &Merged) -> Result<()> {
             m.source_path.display()
         );
     }
+    crate::files::resolve(&m.root, &m.source)?;
     trash::restore(&m.trashed, &m.source_path)?;
     m.written.put_back().context("putting the files back")?;
     Ok(())
