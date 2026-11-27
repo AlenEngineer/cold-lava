@@ -10,6 +10,7 @@
 mod lock;
 mod os_rename;
 mod replace;
+mod stale;
 
 use std::fmt;
 use std::io::{self, Write as _};
@@ -170,9 +171,13 @@ fn folder_made(file: &Path) -> Result<(), WriteError> {
 }
 
 /// A new file beside `file` holding `bytes`, on disk and with `file`'s permissions: what a
-/// write renames into place. It makes no folder: one that isn't there is `Io`. Errors name
-/// `path`.
+/// write renames into place. It makes no folder: one that isn't there is `Io`. The first one
+/// in a folder clears what dead cold-lavas' saves left staged there (`stale::once`). Errors
+/// name `path`.
 fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError> {
+    if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
+        stale::once(dir);
+    }
     let new = reserved(file, beside).map_err(io_err(path))?;
     let mut f = std::fs::OpenOptions::new()
         .write(true)

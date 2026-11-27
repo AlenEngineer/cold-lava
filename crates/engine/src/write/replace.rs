@@ -37,7 +37,14 @@ pub(super) struct Hooks<A, B> {
 /// `file` after the caller's check is compared by what it leads to, and is what comes out, so
 /// it is removed or put back as a link and never written through. Left open, as on any POSIX
 /// system: a program that opened the file before the swap and writes into it after what came
-/// out was compared. Another cold-lava's replace of a file in the same folder waits until
+/// out was compared. An open still under way counts: the system finds the file by its path
+/// before the swap, then empties it (`O_TRUNC`) and the program writes after the compare, into
+/// the text the swap took out, which is then removed as the caller's. Under load such an open
+/// takes milliseconds: a whiteboard saving every 25 ms beside a script that rewrites the file
+/// in place every 15 ms lost 3 of the script's 363 writes in one run, each opened 0.6 to 6 ms
+/// after what came out was compared (#443; 15 to 17 a run before #425, none without load). A
+/// program that saves by renaming a new file over the path never loses a write this way.
+/// Another cold-lava's replace of a file in the same folder waits until
 /// this one is done, from the compare to the last swap (`lock::take`); the new text is staged
 /// (written and synced) before the turn is taken, so the turn holds no write to disk. Errors
 /// name `path`.
@@ -229,8 +236,9 @@ pub(super) fn keep(path: &Path, file: &Path, out: &Path, droppable: &[&[u8]]) ->
 
 /// The name a kept text goes under: `.Name.cold-lava-kept-SECONDS-N.ext` beside the file (the
 /// file's stem and extension, the Unix time it was kept, a count), hidden, so the scan and
-/// Obsidian pass it by, and apart from a staged write's `.Name.cold-lava-PID-N.tmp`, so a sweep
-/// of staged files left by a crash never takes it. Where the user is shown kept texts is #427.
+/// Obsidian pass it by, and apart from a staged write's `.Name.cold-lava-PID-N.tmp`, so the
+/// clearing of staged files a killed save left (`stale`) never takes it. Where the user is
+/// shown kept texts is #427.
 fn kept_name(file: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
