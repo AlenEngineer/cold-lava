@@ -47,15 +47,21 @@ fn flagged(_: &Path, _: &Path, _: How) -> io::Result<()> {
 
 /// `no_replace` where the file system has no such rename. A file or a link is hard-linked at
 /// `to`, which is refused when something is there, then unlinked at `from`; a save of `from`
-/// landing between the two is lost, the one window left. A folder can't be linked: it is
+/// landing between the two is lost. When the unlink fails, the link at `to` is taken back only
+/// while `to` is still the entry this call linked (`linked`), so a save that replaced it is
+/// kept; one landing between that check and the unlink is lost. A folder can't be linked: it is
 /// renamed after a check, which can replace no more than an empty folder made in between.
-/// Without hard links either (some FUSE mounts), a file is checked and renamed as a folder is.
+/// Without hard links either (some FUSE mounts), a file is checked and renamed as a folder is:
+/// a file made at `to` between the check and the rename is replaced, the old window, left open
+/// there for every caller (`replace`'s `aside` included).
 pub(super) fn by_link(from: &Path, to: &Path) -> io::Result<()> {
     if !std::fs::symlink_metadata(from)?.is_dir() {
         match std::fs::hard_link(from, to) {
             Ok(()) => {
                 return std::fs::remove_file(from).inspect_err(|_| {
-                    let _ = std::fs::remove_file(to);
+                    if linked(from, to) {
+                        let _ = std::fs::remove_file(to);
+                    }
                 });
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
@@ -66,4 +72,23 @@ pub(super) fn by_link(from: &Path, to: &Path) -> io::Result<()> {
         return Err(io::ErrorKind::AlreadyExists.into());
     }
     std::fs::rename(from, to)
+}
+
+/// Whether `to` is still the entry `from` is: the same device and inode, as a hard link makes.
+/// Never true where that can't be told.
+#[cfg(unix)]
+fn linked(from: &Path, to: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (
+        std::fs::symlink_metadata(from),
+        std::fs::symlink_metadata(to),
+    ) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn linked(_: &Path, _: &Path) -> bool {
+    false
 }

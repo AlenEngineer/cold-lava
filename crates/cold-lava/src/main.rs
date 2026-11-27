@@ -135,6 +135,11 @@ Options:
   -V, --version        print the version
   -h, --help           this help
 
+Exit codes (task toggle, item set): 3 when the task or item changed since it was read
+(refresh and retry); 4 when another program wrote the note while it was written and a text
+taken out of it is kept in a hidden file beside it, which the message names (refresh, and
+look there); 1 for any other error. With --json the error line says \"changed\" and \"kept\".
+
 DATE is YYYY-MM-DD, today, tomorrow or yesterday. Press ? inside the app for keys.
 Keys are set by command id under [keys] in ~/.config/cold-lava/config.toml.
 COLD_LAVA_EDITOR=none opens notes in the reader even when Neovim is installed.";
@@ -253,17 +258,48 @@ fn main() {
             Some(p) => say::problem_lines(p, "", "cold-lava: "),
             None => problem!("cold-lava: {e:#}"),
         }
-        // Exit code 3 means "the task line or item changed": callers can refresh and retry.
-        let changed_item = matches!(
-            e.downcast_ref::<edit::EditError>(),
-            Some(edit::EditError::Changed(_))
-        );
-        let code = if e.downcast_ref::<tasks::Changed>().is_some() || changed_item {
-            3
-        } else {
-            1
-        };
-        std::process::exit(code);
+        std::process::exit(Refusal::of(&e).code());
+    }
+}
+
+/// What a failed command tells its caller beyond its words: the one reading of an error that
+/// the exit code and `--json`'s `changed` and `kept` share (USAGE, "Exit codes").
+#[derive(Clone, Copy, PartialEq)]
+enum Refusal {
+    /// The task line or item changed since it was read: refresh and retry (exit code 3).
+    Changed,
+    /// The note changed while it was written, and a text taken out of it is kept beside it,
+    /// which the message names (exit code 4).
+    Kept,
+    Other,
+}
+
+impl Refusal {
+    fn of(e: &anyhow::Error) -> Refusal {
+        match e.downcast_ref::<edit::EditError>() {
+            Some(edit::EditError::Changed(_)) => Refusal::Changed,
+            Some(edit::EditError::Kept(_)) => Refusal::Kept,
+            _ if e.downcast_ref::<tasks::Changed>().is_some() => Refusal::Changed,
+            _ => Refusal::Other,
+        }
+    }
+
+    fn code(self) -> i32 {
+        match self {
+            Refusal::Changed => 3,
+            Refusal::Kept => 4,
+            Refusal::Other => 1,
+        }
+    }
+
+    /// The error line `--json` prints for `e`.
+    fn json(e: &anyhow::Error) -> serde_json::Value {
+        let r = Refusal::of(e);
+        serde_json::json!({
+            "error": format!("{e:#}"),
+            "changed": r != Refusal::Other,
+            "kept": r == Refusal::Kept,
+        })
     }
 }
 
@@ -797,14 +833,7 @@ fn run() -> Result<()> {
                     }
                 }
                 (Err(e), true) => {
-                    let changed = e.downcast_ref::<tasks::Changed>().is_some()
-                        || matches!(
-                            e.downcast_ref::<edit::EditError>(),
-                            Some(edit::EditError::Changed(_))
-                        );
-                    say::json_line(
-                        &serde_json::json!({"error": format!("{e:#}"), "changed": changed}),
-                    )?;
+                    say::json_line(&Refusal::json(&e))?;
                     if let Some(n) = guessed_note(&root, found) {
                         problem!("{n}");
                     }
@@ -860,11 +889,7 @@ fn run() -> Result<()> {
                             changed: e.changed,
                             item: e.item,
                         })
-                        .map_err(|e| match e.reason {
-                            gateway::Reason::Changed => edit::EditError::Changed(e.message),
-                            gateway::Reason::Kept => edit::EditError::Kept(e.message),
-                            _ => edit::EditError::Refused(e.message),
-                        })
+                        .map_err(edit::EditError::from)
                 }
                 None => edit::set_field(&root, &note, &req, dry),
             };
@@ -890,14 +915,12 @@ fn run() -> Result<()> {
                     }
                 }
                 (Err(e), true) => {
-                    let changed = matches!(e, edit::EditError::Changed(_));
-                    say::json_line(
-                        &serde_json::json!({"error": e.to_string(), "changed": changed}),
-                    )?;
+                    let e = anyhow::Error::from(e);
+                    say::json_line(&Refusal::json(&e))?;
                     if let Some(n) = guessed_note(&root, found) {
                         problem!("{n}");
                     }
-                    return Err(e.into());
+                    return Err(e);
                 }
                 (Err(e), false) => {
                     if let Some(n) = guessed_note(&root, found) {

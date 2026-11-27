@@ -241,6 +241,28 @@ impl From<write::WriteError> for EditError {
     }
 }
 
+/// A refusal the gateway gave read back as an edit's error (the CLI's `item set` on an owned
+/// file): `From<EditError> for Error` the other way, beside it. Every reason is named, so a
+/// new one is decided here. A read-back said in an edit's `ReadBack` words is that again; one
+/// in its own words is an `Anchor`, which shows them as they are.
+impl From<Error> for EditError {
+    fn from(e: Error) -> EditError {
+        let m = e.message;
+        match e.reason {
+            Reason::Changed => EditError::Changed(m),
+            Reason::Kept => EditError::Kept(m),
+            Reason::Io => EditError::Io(m),
+            Reason::ReadBack => match m.strip_prefix(crate::edit::READ_BACK) {
+                Some(why) => EditError::ReadBack(why.to_string()),
+                None => EditError::Anchor(m),
+            },
+            Reason::Refused | Reason::Forbidden | Reason::NoWorkspace | Reason::Exists => {
+                EditError::Refused(m)
+            }
+        }
+    }
+}
+
 impl From<EditError> for Error {
     fn from(e: EditError) -> Error {
         let reason = match e {
@@ -1709,6 +1731,20 @@ fields.text = { rest = true }
             "an anchor's refusal is a read-back"
         );
         assert_eq!(anchor.message, "^rent would go", "in its own words");
+        let edits = [
+            EditError::Changed("c".into()),
+            EditError::Kept("k".into()),
+            EditError::Refused("r".into()),
+            EditError::ReadBack("due".into()),
+            EditError::Anchor("^rent would go".into()),
+            EditError::Io("io".into()),
+        ];
+        for e in edits {
+            let back = EditError::from(Error::from(e.clone()));
+            assert_eq!(back, e, "an edit's error comes back as it went");
+        }
+        let exists = EditError::from(Error::new(Reason::Exists, "there"));
+        assert_eq!(exists, EditError::Refused("there".into()));
         wire(
             News::Changed {
                 subscription: SubId(1),

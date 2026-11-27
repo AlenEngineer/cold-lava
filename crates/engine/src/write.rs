@@ -188,7 +188,11 @@ pub(crate) fn replace_through_link(
 }
 
 fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
-    replace::checked(path, file, expected, bytes, || {})
+    let hooks = replace::Hooks {
+        compared: || {},
+        swapped: || {},
+    };
+    replace::checked(path, file, expected, bytes, hooks)
 }
 
 /// Whether something is at `path`: a file, a folder or a symlink, a link to nothing included.
@@ -298,7 +302,7 @@ fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::replace::{aside, checked as replace_with, keep, put_back};
+    use super::replace::{Hooks, aside, checked, keep, put_back};
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
@@ -367,7 +371,11 @@ mod tests {
         let p = d.join("N.md");
         for (how, theirs) in THEIRS {
             std::fs::write(&p, "v1").unwrap();
-            let refused = replace_with(&p, &p, b"v1", b"ours", || theirs(&p));
+            let hooks = Hooks {
+                compared: || theirs(&p),
+                swapped: || {},
+            };
+            let refused = checked(&p, &p, b"v1", b"ours", hooks);
             assert!(
                 matches!(&refused, Err(WriteError::Changed(at)) if *at == p),
                 "{how}: {refused:?}"
@@ -403,32 +411,121 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A third write lands on the new text in the moment before the other write's text goes
-    /// back: the other text is put back, and the third, which is neither, is kept beside the
-    /// file under a kept text's name (never a staged write's) and named.
+    /// The kept text `refused` names, checked to be beside `p` under a kept text's name (never
+    /// a staged write's), and its file name.
+    fn kept_beside(refused: &Result<(), WriteError>, p: &Path) -> (PathBuf, String) {
+        let Err(WriteError::Kept(at, beside)) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(at, p);
+        let name = beside.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with(".N.cold-lava-kept-") && name.ends_with(".md"),
+            "{name}"
+        );
+        (beside.clone(), name)
+    }
+
+    fn third_in_place(p: &Path) {
+        std::fs::write(p, "third").unwrap();
+    }
+
+    fn third_by_a_rename(p: &Path) {
+        let other = p.with_file_name("third.tmp");
+        std::fs::write(&other, "third").unwrap();
+        std::fs::rename(&other, p).unwrap();
+    }
+
+    /// A third write lands on the new text after the swap took another write's text out and
+    /// before it goes back. The swap back takes the third out, sees it isn't this write's text,
+    /// and swaps it in again: the newest text stays at the path, the older one is kept beside
+    /// it and named, and nothing of ours is left.
+    #[test]
+    fn a_write_between_the_swap_and_the_swap_back_stays_at_the_path() {
+        let d = dir("between-swaps");
+        let p = d.join("N.md");
+        let thirds: [(&str, Theirs); 2] = [
+            ("in place", third_in_place),
+            ("by a rename", third_by_a_rename),
+        ];
+        for (how, third) in thirds {
+            std::fs::write(&p, "v1").unwrap();
+            let hooks = Hooks {
+                compared: || theirs_by_a_rename(&p),
+                swapped: || third(&p),
+            };
+            let refused = checked(&p, &p, b"v1", b"ours", hooks);
+            let (beside, name) = kept_beside(&refused, &p);
+            assert_eq!(std::fs::read(&p).unwrap(), b"third", "{how}");
+            assert_eq!(std::fs::read(&beside).unwrap(), b"theirs", "{how}");
+            assert_eq!(files(&d), [name.as_str(), "N.md"], "{how}");
+            std::fs::remove_file(&beside).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// `put_back` on its own: the text in `out` goes in, the newer text that comes out goes in
+    /// again, and the older one is kept under a kept text's name; the staged name is gone.
     #[test]
     fn a_text_that_cant_be_put_back_is_kept_and_named() {
         let d = dir("put-back");
         let p = d.join("N.md");
         std::fs::write(&p, "third").unwrap();
         let out = staged(&p, &p, b"theirs").unwrap();
-        let kept = put_back(&p, &p, &out, b"v1", b"ours");
-        let Err(WriteError::Kept(at, beside)) = &kept else {
-            panic!("{kept:?}");
-        };
-        assert_eq!(*at, p);
-        let name = beside.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(
-            name.starts_with(".N.cold-lava-kept-") && name.ends_with(".md"),
-            "{name}"
-        );
-        assert_eq!(std::fs::read(&p).unwrap(), b"theirs");
-        assert_eq!(std::fs::read(beside).unwrap(), b"third");
+        let kept = put_back(&p, &p, &out, b"v1", b"ours", || {});
+        let (beside, name) = kept_beside(&kept, &p);
+        assert_eq!(std::fs::read(&p).unwrap(), b"third");
+        assert_eq!(std::fs::read(beside).unwrap(), b"theirs");
         assert_eq!(
             files(&d),
             [name.as_str(), "N.md"],
             "the staged name is gone"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Two cold-lava writers on one file. B compared, another program saved, and B's swap took
+    /// that save out; before B puts it back, C reads the file (B's text), replaces it and is
+    /// told it is done. B's swap back never undoes C's save: C's text stays at the path, the
+    /// other program's is kept beside it, and B's own is gone.
+    #[test]
+    fn a_save_another_replace_reported_done_is_never_undone() {
+        let d = dir("two-writers");
+        let p = d.join("N.md");
+        std::fs::write(&p, "v1").unwrap();
+        let hooks = Hooks {
+            compared: || theirs_by_a_rename(&p),
+            swapped: || {
+                let seen = std::fs::read(&p).unwrap();
+                assert_eq!(seen, b"b");
+                replace(&p, &seen, b"c").unwrap();
+            },
+        };
+        let refused = checked(&p, &p, b"v1", b"b", hooks);
+        let (beside, name) = kept_beside(&refused, &p);
+        assert_eq!(std::fs::read(&p).unwrap(), b"c");
+        assert_eq!(std::fs::read(&beside).unwrap(), b"theirs");
+        assert_eq!(files(&d), [name.as_str(), "N.md"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The same two writers, C after B's swap back: B put the other program's text back, so
+    /// C, which read B's text, is refused too, and nothing is kept.
+    #[test]
+    fn a_replace_after_the_swap_back_is_refused() {
+        let d = dir("two-writers-after");
+        let p = d.join("N.md");
+        std::fs::write(&p, "v1").unwrap();
+        let hooks = Hooks {
+            compared: || theirs_by_a_rename(&p),
+            swapped: || {},
+        };
+        let b = checked(&p, &p, b"v1", b"b", hooks);
+        assert!(matches!(&b, Err(WriteError::Changed(_))), "{b:?}");
+        let c = replace(&p, b"b", b"c");
+        assert!(matches!(&c, Err(WriteError::Changed(_))), "{c:?}");
+        assert_eq!(std::fs::read(&p).unwrap(), b"theirs");
+        assert_eq!(files(&d), ["N.md"]);
         let _ = std::fs::remove_dir_all(&d);
     }
 

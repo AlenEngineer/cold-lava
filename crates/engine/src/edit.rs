@@ -43,6 +43,9 @@ pub enum EditError {
     Io(String),
 }
 
+/// The words a `ReadBack` is said after.
+pub(crate) const READ_BACK: &str = "refused, the note would not read back: ";
+
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -51,7 +54,7 @@ impl fmt::Display for EditError {
             | EditError::Refused(m)
             | EditError::Anchor(m)
             | EditError::Io(m) => f.write_str(m),
-            EditError::ReadBack(m) => write!(f, "refused, the note would not read back: {m}"),
+            EditError::ReadBack(m) => write!(f, "{READ_BACK}{m}"),
         }
     }
 }
