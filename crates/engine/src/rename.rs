@@ -351,8 +351,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
                 false => bail!("{} can't move into {}: it moves too", m.from, f.from),
             }
         }
-        // A case-only rename of the same file is fine; anything else at the path isn't.
-        if crate::write::taken(&m.to_path) && lower(&m.to) != lower(&m.from) {
+        if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
     }
@@ -672,7 +671,7 @@ pub(crate) fn apply(plan: &Plan) -> Result<()> {
         if !m.from_path.exists() {
             bail!("{} no longer exists", m.from);
         }
-        if crate::write::taken(&m.to_path) && m.to.to_lowercase() != m.from.to_lowercase() {
+        if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
     }

@@ -182,17 +182,38 @@ pub fn create_dir(path: &Path) -> Result<(), WriteError> {
     std::fs::create_dir_all(path).map_err(io_err(path))
 }
 
-/// Move a file, a folder or a symlink (the link itself); refused if something is at `to`
-/// (`taken`), except a case-only rename of itself.
+/// Move a file, a folder or a symlink (the link itself); refused unless it `may_move`.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), WriteError> {
-    let case_only = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
-    if taken(to) && !case_only {
+    if !may_move(from, to) {
         return Err(WriteError::Exists(to.to_path_buf()));
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
     std::fs::rename(from, to).map_err(io_err(from))
+}
+
+/// Whether `from` may move to `to`: nothing is there (`taken`), or `to` differs from `from`
+/// only in case and names the very entry `from` does, as on a file system that ignores case.
+/// Where case tells names apart, that spelling can be another file, which a move would replace.
+pub(crate) fn may_move(from: &Path, to: &Path) -> bool {
+    let Ok(there) = std::fs::symlink_metadata(to) else {
+        return true;
+    };
+    let case_only = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
+    case_only && std::fs::symlink_metadata(from).is_ok_and(|here| same_entry(&here, &there))
+}
+
+#[cfg(unix)]
+fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
+}
+
+/// Windows' std gives no stable file id yet; its file systems ignore case by default.
+#[cfg(not(unix))]
+fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    true
 }
 
 #[cfg(test)]
