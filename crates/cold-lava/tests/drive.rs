@@ -1382,7 +1382,7 @@ fn scripts_wait_after_esc_before_the_next_key() {
                     in_step || next
                 }
                 Some(&("type" | "click" | "drag" | "scroll")) => std::mem::take(&mut after_esc),
-                Some(&("wait-for" | "wait-gone" | "wait" | "exits")) => {
+                Some(&("wait-for" | "wait-for-in" | "wait-gone" | "wait" | "exits")) => {
                     after_esc = false;
                     false
                 }
@@ -1390,6 +1390,35 @@ fn scripts_wait_after_esc_before_the_next_key() {
             };
             if hurries {
                 hurried.push(format!("{}:{}: {line}", path.display(), i + 1));
+            }
+        }
+    }
+    assert_eq!(hurried, Vec::<String>::new());
+}
+
+/// A check right after a key, a click or a write can read the screen before the program has
+/// drawn what the step did: on a slow machine it fails, or passes on the screen from before
+/// (#234). A wait comes between them, for what the step shows where it shows something
+/// (`wait-for`, `wait-for-in`). The program's start counts as a step.
+#[test]
+fn scripts_wait_before_they_check_what_a_step_did() {
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive");
+    let mut hurried = Vec::new();
+    for entry in std::fs::read_dir(&scripts).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension() != Some(std::ffi::OsStr::new("drive")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut acted = true;
+        for (i, line) in text.lines().enumerate() {
+            match line.split_whitespace().next() {
+                Some("keys" | "type" | "click" | "drag" | "scroll" | "write") => acted = true,
+                Some("wait-for" | "wait-for-in" | "wait-gone" | "wait" | "exits") => acted = false,
+                Some("expect" | "expect-in" | "expect-not") if acted => {
+                    hurried.push(format!("{}:{}: {line}", path.display(), i + 1));
+                }
+                _ => {}
             }
         }
     }

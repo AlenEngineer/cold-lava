@@ -71,13 +71,16 @@ pub enum Action {
         at: (u16, u16),
         count: u16,
     },
-    /// The screen shows TEXT inside rows `top`..=`bottom`, columns `left`..=`right` (1-based).
+    /// The screen shows TEXT inside `at`.
     ExpectIn {
-        top: u16,
-        left: u16,
-        bottom: u16,
-        right: u16,
+        at: Region,
         text: String,
+    },
+    /// Until the screen shows TEXT inside `at`.
+    WaitForIn {
+        at: Region,
+        text: String,
+        timeout: Duration,
     },
     /// Replace a file in the workspace, as another program (Obsidian, git) would.
     Write {
@@ -90,6 +93,52 @@ pub enum Action {
 pub enum Input {
     Key(Key),
     Text(String),
+}
+
+/// Rows `top`..=`bottom`, columns `left`..=`right`, counted from 1 as the terminal counts its
+/// cells.
+#[derive(Debug, PartialEq)]
+pub struct Region {
+    pub top: u16,
+    pub left: u16,
+    pub bottom: u16,
+    pub right: u16,
+}
+
+impl Region {
+    /// "2 3 20 80 TEXT" → the region and "TEXT"; none unless four cells, the top left first,
+    /// and a text.
+    fn and_text(rest: &str) -> Option<(Region, &str)> {
+        let mut words = rest.splitn(5, ' ');
+        let nums: Vec<&str> = words.by_ref().take(4).collect();
+        let text = words.next().unwrap_or("").trim();
+        match cells(&nums.join(" ")).as_deref() {
+            Some(&[top, left, bottom, right])
+                if !text.is_empty() && top <= bottom && left <= right =>
+            {
+                let at = Region {
+                    top,
+                    left,
+                    bottom,
+                    right,
+                };
+                Some((at, text))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Region {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Region {
+            top,
+            left,
+            bottom,
+            right,
+        } = self;
+        write!(f, "within rows {top}–{bottom}, columns {left}–{right}")
+    }
 }
 
 /// Why a line of a script isn't a step: which line, what is wrong, and what to say after it.
@@ -118,6 +167,8 @@ scroll up|down ROW COL [N]
                         turn the mouse wheel N notches (default 1) over ROW COL
 expect-in ROW COL ROW2 COL2 TEXT
                         the screen shows TEXT within rows ROW–ROW2 and columns COL–COL2 now
+wait-for-in [10s] ROW COL ROW2 COL2 TEXT
+                        until TEXT shows within rows ROW–ROW2 and columns COL–COL2 (default 5s)
 write FILE TEXT         replace FILE in the workspace (the last argument) with TEXT, as another
                         program would; \\n in TEXT is a line break
 exits [10s] CODE        the program exits with CODE
@@ -263,28 +314,29 @@ fn read(src: &str) -> Result<Script, ParseError> {
                     }
                 }
             }
-            "expect-in" => {
-                let mut words = rest.splitn(5, ' ');
-                let nums: Vec<&str> = words.by_ref().take(4).collect();
-                let text = words.next().unwrap_or("").trim();
-                match cells(&nums.join(" ")).as_deref() {
-                    Some(&[top, left, bottom, right])
-                        if !text.is_empty() && top <= bottom && left <= right =>
-                    {
-                        Some(Action::ExpectIn {
-                            top,
-                            left,
-                            bottom,
-                            right,
-                            text: text.to_string(),
-                        })
-                    }
-                    _ => {
-                        return Err(err(format!(
-                            "expect-in wants ROW COL ROW2 COL2 TEXT (from 1, top left first): {rest}"
-                        )));
-                    }
+            "expect-in" => match Region::and_text(rest) {
+                Some((at, text)) => Some(Action::ExpectIn {
+                    at,
+                    text: text.to_string(),
+                }),
+                None => {
+                    return Err(err(format!(
+                        "expect-in wants ROW COL ROW2 COL2 TEXT (from 1, top left first): {rest}"
+                    )));
                 }
+            },
+            "wait-for-in" => {
+                let (timeout, region) = timeout_and(rest);
+                let Some((at, text)) = Region::and_text(region) else {
+                    return Err(err(format!(
+                        "wait-for-in wants [10s] ROW COL ROW2 COL2 TEXT (from 1, top left first): {rest}"
+                    )));
+                };
+                Some(Action::WaitForIn {
+                    at,
+                    text: text.to_string(),
+                    timeout,
+                })
             }
             "write" => match rest.split_once(' ') {
                 Some((file, text)) if Path::new(file).is_relative() => Some(Action::Write {
@@ -541,14 +593,33 @@ impl Session {
         rows.join("\n")
     }
 
-    /// Rows `top`..=`bottom`, columns `left`..=`right` (1-based), one line each.
-    fn region(&self, top: u16, left: u16, bottom: u16, right: u16) -> String {
-        let rows = self.parser.screen().rows(left - 1, right - left + 1);
+    /// The screen inside `at`, a line for each row.
+    fn region(&self, at: &Region) -> String {
+        let rows = self
+            .parser
+            .screen()
+            .rows(at.left - 1, at.right - at.left + 1);
         let rows: Vec<String> = rows
-            .skip(top as usize - 1)
-            .take((bottom - top) as usize + 1)
+            .skip(at.top as usize - 1)
+            .take((at.bottom - at.top) as usize + 1)
             .collect();
         rows.join("\n")
+    }
+
+    fn shows_in(&self, at: &Region, text: &str) -> bool {
+        self.region(at).contains(text)
+    }
+
+    /// None once the screen shows `text` inside `at`; what it waited for, if it doesn't within
+    /// `timeout`.
+    fn wait_for_in(&mut self, at: &Region, text: &str, timeout: Duration) -> Option<String> {
+        (!self.until(timeout, |s| s.shows_in(at, text))).then(|| {
+            format!(
+                "waited {} for {text:?} {at}{}",
+                secs(timeout),
+                self.exited()
+            )
+        })
     }
 
     /// Send what `events` makes (SGR mouse reports), if the program listens to the mouse.
@@ -747,23 +818,11 @@ pub fn run(
                 let button = if *up { 64 } else { 65 };
                 format!("\x1b[<{button};{};{}M", at.1, at.0).repeat(*count as usize)
             }),
-            Action::ExpectIn {
-                top,
-                left,
-                bottom,
-                right,
-                text,
-            } => {
+            Action::ExpectIn { at, text } => {
                 s.settle();
-                (!s.region(*top, *left, *bottom, *right)
-                    .contains(text.as_str()))
-                .then(|| {
-                    format!(
-                        "expected {text:?} within rows {top}–{bottom}, columns {left}–{right}{}",
-                        s.exited()
-                    )
-                })
+                (!s.shows_in(at, text)).then(|| format!("expected {text:?} {at}{}", s.exited()))
             }
+            Action::WaitForIn { at, text, timeout } => s.wait_for_in(at, text, *timeout),
         };
         if let Some(message) = failure {
             told!("{name}:{}: {message}", step.line);
@@ -941,14 +1000,33 @@ mod tests {
             drag((3, 7), (5, 8)),
             "\x1b[<0;7;3M\x1b[<32;7;4M\x1b[<32;8;5M\x1b[<0;8;5m"
         );
+        let at = || Region {
+            top: 2,
+            left: 3,
+            bottom: 20,
+            right: 80,
+        };
         assert_eq!(
             step("expect-in 2 3 20 80 Start  Here"),
             Action::ExpectIn {
-                top: 2,
-                left: 3,
-                bottom: 20,
-                right: 80,
+                at: at(),
                 text: "Start  Here".into()
+            }
+        );
+        assert_eq!(
+            step("wait-for-in 2 3 20 80 Start  Here"),
+            Action::WaitForIn {
+                at: at(),
+                text: "Start  Here".into(),
+                timeout: Duration::from_secs(5)
+            }
+        );
+        assert_eq!(
+            step("wait-for-in 10s 2 3 20 80 Start"),
+            Action::WaitForIn {
+                at: at(),
+                text: "Start".into(),
+                timeout: Duration::from_secs(10)
             }
         );
         for bad in [
@@ -958,6 +1036,10 @@ mod tests {
             "scroll up 1",
             "expect-in 1 2 3 4",
             "expect-in 5 1 2 4 x",
+            "wait-for-in 1 2 3 4",
+            "wait-for-in 5 1 2 4 x",
+            "wait-for-in 10s 1 2 3 4",
+            "wait-for-in 10s",
         ] {
             assert!(read(bad).is_err(), "{bad}");
         }
@@ -1010,6 +1092,37 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    /// The program draws LATE in row 3 after 300 ms: the wait there sees it once it is drawn,
+    /// and a wait above it gives up when its time is out, though LATE is on the screen.
+    #[cfg(unix)]
+    #[test]
+    fn waits_for_text_in_a_region() {
+        let program = "sleep 0.3; printf '\\033[3;5HLATE'; sleep 5";
+        let args = ["-c".to_string(), program.to_string()];
+        let script = read("size 20x5").unwrap();
+        let mut s = Session::spawn(&script, Path::new("/bin/sh"), &args, None).unwrap();
+        let row_3 = Region {
+            top: 3,
+            left: 1,
+            bottom: 3,
+            right: 20,
+        };
+        assert_eq!(s.wait_for_in(&row_3, "LATE", DEFAULT_TIMEOUT), None);
+        let above = Region {
+            top: 1,
+            left: 1,
+            bottom: 2,
+            right: 20,
+        };
+        let asked = Instant::now();
+        assert_eq!(
+            s.wait_for_in(&above, "LATE", Duration::from_millis(300))
+                .as_deref(),
+            Some("waited 300ms for \"LATE\" within rows 1–2, columns 1–20")
+        );
+        assert!(asked.elapsed() >= Duration::from_millis(300));
     }
 
     #[test]

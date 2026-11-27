@@ -28,11 +28,11 @@ expect Bravo, checked
 # wait until it has read the drag: the press selects Alpha, which gives it the heavy border.
 drag 12 20 20 20
 wait-for ┃Alpha
-expect-in 20 13 21 42 Alpha
+wait-for-in 20 13 21 42 Alpha
 # Dragging empty space pans. The press there selects nothing, so the heavy border goes.
 drag 2 50 4 60
 wait-gone ┃Alpha
-expect-in 22 20 24 50 │Alpha
+wait-for-in 22 20 24 50 │Alpha
 expect-in 13 64 15 100 │Bravo, checked
 # The wheel zooms out and back in.
 scroll down 15 50 2
