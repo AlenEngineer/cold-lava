@@ -221,6 +221,11 @@ pub struct Board {
     drag: Option<Drag>,
     undo: Vec<Doc>,
     redo: Vec<Doc>,
+    /// Undo steps were dropped where the board took in a change made elsewhere
+    /// (`cut_history`): undo says so when it gets there.
+    undo_cut: bool,
+    /// Redo steps were dropped there, and no step has been taken since: redo says so.
+    redo_cut: bool,
     /// What the second status line says for 3 seconds, and since when it has shown: `None`
     /// while an alert or a mode's hint has the line, under which it waits (`draw_status`).
     msg: Option<(Notice, Option<Instant>)>,
@@ -458,6 +463,8 @@ impl Board {
             drag: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            undo_cut: false,
+            redo_cut: false,
             msg: None,
             twins: twins.into_iter().collect(),
             refusals: Default::default(),
@@ -1142,12 +1149,14 @@ impl Board {
         self.sync_from_disk();
     }
 
-    /// If the file changed outside cold-lava, merge those changes into ours.
+    /// If the file holds a change made elsewhere, merge it into ours.
     /// Returns true when something was merged in.
     fn sync_from_disk(&mut self) -> bool {
         let Ok(bytes) = std::fs::read(&self.path) else {
             return false;
         };
+        // Most checks find the bytes the board last read or wrote, which `take_in` would find
+        // nothing new in: they aren't parsed again.
         if bytes == self.disk {
             return false;
         }
@@ -1155,24 +1164,21 @@ impl Board {
         let Ok((theirs, twins)) = parse(&bytes, &self.path) else {
             return false;
         };
-        self.twins.extend(twins);
-        self.disk = bytes;
+        let Some(base) = self.take_in(bytes, &theirs, twins) else {
+            return false;
+        };
         let (Ok(b), Ok(o), Ok(t)) = (
-            serde_json::to_value(&self.base),
+            serde_json::to_value(&base),
             serde_json::to_value(&self.doc),
             serde_json::to_value(&theirs),
         ) else {
             return false;
         };
-        if t == b {
-            return false; // same content, just rewritten
-        }
         let (mut merged, conflicts) = merge3(&b, &o, &t);
         // A program that rewrote the file without cold-lava's fields would turn placed shapes
         // into plain cards: keep ours, and say so where it can't be missed.
         let lost = placed::lost(&b, &t);
         placed::restore(&mut merged, &o, &lost);
-        self.base = theirs;
         match serde_json::from_value::<Doc>(merged) {
             Ok(d) => self.doc = d,
             Err(e) => {
@@ -1187,13 +1193,13 @@ impl Board {
             self.sel = None;
         }
         // Write back only if our side added something the file doesn't have yet.
-        if serde_json::to_value(&self.doc).ok() != Some(t) {
+        if !same_canvas(&self.doc, &theirs) {
             self.write_file();
         }
         self.flash(if conflicts > 0 {
             format!("merged changes from disk ({conflicts} conflicting edits: kept yours)")
         } else {
-            "merged changes made outside cold-lava".to_string()
+            "merged changes made elsewhere".to_string()
         });
         if !lost.is_empty() {
             let n = lost.len();
@@ -1204,6 +1210,49 @@ impl Board {
             ));
         }
         true
+    }
+
+    /// Takes in the file's version, just read, the one place an open board does: the `bytes`,
+    /// the canvas `theirs` in them and their `twins` become the version it last read. When they
+    /// hold a change made elsewhere (not the bytes the board last read or wrote, nor the same
+    /// canvas written again), the history is cut there, and the version the board had comes
+    /// back, for a merge.
+    fn take_in(
+        &mut self,
+        bytes: Vec<u8>,
+        theirs: &Doc,
+        twins: Vec<(String, String)>,
+    ) -> Option<Doc> {
+        let elsewhere = bytes != self.disk && !same_canvas(theirs, &self.base);
+        self.twins.extend(twins);
+        self.disk = bytes;
+        let base = std::mem::replace(&mut self.base, theirs.clone());
+        if !elsewhere {
+            return None;
+        }
+        self.cut_history();
+        Some(base)
+    }
+
+    /// Reads the file again in place of what the board holds. Undo brings the board back,
+    /// unless the file held a change made elsewhere: then the reload takes no step, since the
+    /// board from before it would be written over that change.
+    fn reload(&mut self) {
+        match std::fs::read(&self.path)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| Ok((parse(&b, &self.path)?, b)))
+        {
+            Ok(((theirs, twins), bytes)) => {
+                if self.take_in(bytes, &theirs, twins).is_none() {
+                    self.checkpoint();
+                }
+                self.doc = theirs;
+                self.previews.clear();
+                self.notes = None;
+                self.flash("reloaded from disk");
+            }
+            Err(e) => self.flash(format!("reload failed: {e}")),
+        }
     }
 
     // ---------- persistence ----------
@@ -1256,12 +1305,22 @@ impl Board {
         }
     }
 
-    /// The board as it is now, as the next undo step.
+    /// The board as it is now, as the next undo step. The redo steps go, as after any edit.
     fn checkpoint(&mut self) {
         self.undo.push(self.doc.clone());
         if self.undo.len() > 300 {
             self.undo.remove(0);
         }
+        self.redo.clear();
+        self.redo_cut = false;
+    }
+
+    /// The board took in a change made elsewhere to its file: the undo and redo steps from
+    /// before it go, since each would write the board as it was over that change.
+    fn cut_history(&mut self) {
+        self.undo_cut |= !self.undo.is_empty();
+        self.redo_cut |= !self.redo.is_empty();
+        self.undo.clear();
         self.redo.clear();
     }
 
@@ -1295,24 +1354,30 @@ impl Board {
         }
     }
 
+    /// Undo and redo first take in a change made elsewhere since the board last looked, which
+    /// cuts the history there: no step from before it is written over it.
     fn undo(&mut self) {
+        self.sync_from_disk();
         match self.undo.pop() {
             Some(d) => {
                 self.redo.push(std::mem::replace(&mut self.doc, d));
                 self.save();
                 self.flash("undone");
             }
+            None if self.undo_cut => self.refused("can't undo past the changes made elsewhere"),
             None => self.flash("nothing to undo"),
         }
     }
 
     fn redo(&mut self) {
+        self.sync_from_disk();
         match self.redo.pop() {
             Some(d) => {
                 self.undo.push(std::mem::replace(&mut self.doc, d));
                 self.save();
                 self.flash("redone");
             }
+            None if self.redo_cut => self.refused("can't redo past the changes made elsewhere"),
             None => self.flash("nothing to redo"),
         }
     }
@@ -2347,22 +2412,7 @@ impl Board {
             BoardAction::Delete => self.delete_selected(),
             BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
             BoardAction::ColourClear => self.set_color(None),
-            BoardAction::Reload => match std::fs::read(&self.path)
-                .map_err(anyhow::Error::from)
-                .and_then(|b| Ok((parse(&b, &self.path)?, b)))
-            {
-                Ok(((d, twins), bytes)) => {
-                    self.checkpoint();
-                    self.twins.extend(twins);
-                    self.base = d.clone();
-                    self.disk = bytes;
-                    self.doc = d;
-                    self.previews.clear();
-                    self.notes = None;
-                    self.flash("reloaded from disk");
-                }
-                Err(e) => self.flash(format!("reload failed: {e}")),
-            },
+            BoardAction::Reload => self.reload(),
         }
         Ok(())
     }
@@ -3242,6 +3292,15 @@ fn as_written(doc: &Doc, twins: &HashMap<String, String>) -> Doc {
         theirs(&mut e.to_node);
     }
     doc
+}
+
+/// Whether two canvases say the same, whatever bytes each was read from. Two that can't be
+/// compared don't.
+fn same_canvas(a: &Doc, b: &Doc) -> bool {
+    match (serde_json::to_value(a), serde_json::to_value(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 // ---------- three-way merge ----------
@@ -4319,6 +4378,178 @@ mod tests {
             before,
             "and then the colour: the empty card took no step"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What the board says it refused, now.
+    fn refusal(b: &Board) -> Option<String> {
+        b.refusals
+            .shown(Instant::now())
+            .map(|said| said.to_string())
+    }
+
+    /// Two edits, one undone, then another program removes cards: neither undo nor redo
+    /// writes them back (#348), and each says why it stops. An edit made after the change
+    /// undoes.
+    #[test]
+    fn undo_and_redo_keep_what_another_program_removed() {
+        let cards = vec![
+            card("a", 0, "Alpha"),
+            card("b", 300, "Bravo"),
+            card("c", 600, "Charlie"),
+        ];
+        let (dir, path, mut core) = workspace("board-undo-outside", cards);
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.sel = Some("a".into());
+        b.set_color(Some("3"));
+        b.move_selected(20.0, 0.0);
+        b.undo();
+
+        let mut alpha = card("a", 0, "Alpha");
+        alpha["color"] = json!("3");
+        std::fs::write(&path, canvas(vec![alpha])).unwrap();
+        b.noticed(&core, &[CoreEvent::BoardChanged("B.canvas".into())]);
+        b.tick(&mut core, &mut registry);
+        let kept = || {
+            let saved = on_disk(&path);
+            (ids(&saved, "nodes"), saved["nodes"][0]["color"].clone())
+        };
+        let theirs = (vec!["a".to_string()], json!("3"));
+        assert_eq!(kept(), theirs);
+
+        b.undo();
+        assert_eq!(kept(), theirs, "undo brings back no card");
+        assert_eq!(
+            refusal(&b).as_deref(),
+            Some("can't undo past the changes made elsewhere")
+        );
+        b.redo();
+        assert_eq!(kept(), theirs, "nor does redo");
+        assert_eq!(
+            refusal(&b).as_deref(),
+            Some("can't redo past the changes made elsewhere (2 requests refused)")
+        );
+
+        b.set_color(Some("5"));
+        b.undo();
+        assert_eq!(kept(), theirs);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A change made elsewhere after an undo drops only the redo step. Redo says why it has
+    /// nothing until an edit takes the step's place; undo, which lost nothing, doesn't.
+    #[test]
+    fn redo_says_why_it_stops_at_a_change_made_elsewhere() {
+        let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
+        let (dir, path, mut core) = workspace("board-redo-outside", cards);
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.sel = Some("a".into());
+        b.set_color(Some("3"));
+        b.undo();
+        std::fs::write(&path, canvas(vec![card("a", 0, "Alpha")])).unwrap();
+        b.noticed(&core, &[CoreEvent::BoardChanged("B.canvas".into())]);
+        b.tick(&mut core, &mut registry);
+        let said = |b: &Board| b.msg.as_ref().map(|(m, _)| m.to_string());
+
+        b.redo();
+        let theirs = json!([card("a", 0, "Alpha")]);
+        assert_eq!(
+            on_disk(&path)["nodes"],
+            theirs,
+            "the colour isn't redone over it"
+        );
+        let cut = Some("can't redo past the changes made elsewhere");
+        assert_eq!(refusal(&b).as_deref(), cut);
+        b.undo();
+        assert_eq!(said(&b).as_deref(), Some("nothing to undo"));
+
+        b.set_color(Some("4"));
+        b.redo();
+        assert_eq!(said(&b).as_deref(), Some("nothing to redo"));
+        assert_eq!(refusal(&b).as_deref(), cut, "refused once");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Another program empties the board while a new card is typed: the card is saved into
+    /// the emptied file, and undo brings back nothing from before.
+    #[test]
+    fn a_card_typed_while_another_program_empties_the_board_undoes_nothing_before_it() {
+        let (dir, path, mut core) = workspace("board-undo-emptied", vec![card("a", 0, "Alpha")]);
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.sel = Some("a".into());
+        b.set_color(Some("3"));
+        b.new_text_card(None, None);
+        if let Mode::Edit { buf, .. } = &mut b.mode {
+            buf.push_str("Delta");
+        }
+        std::fs::write(&path, canvas(Vec::new())).unwrap();
+        b.noticed(&core, &[CoreEvent::BoardChanged("B.canvas".into())]);
+        b.tick(&mut core, &mut registry);
+        b.finish_edit();
+        let saved = on_disk(&path);
+        assert_eq!(texts(&saved), ["Delta"]);
+
+        b.undo();
+        let saved = on_disk(&path);
+        assert_eq!(texts(&saved), ["Delta"], "Alpha stays gone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A reload is a step undo takes back, unless it takes in a change made elsewhere: the
+    /// board from before would be written over that change, so neither undo nor redo goes
+    /// there.
+    #[test]
+    fn undoing_a_reload_keeps_what_another_program_removed() {
+        let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
+        let (dir, path, _core) = workspace("board-undo-reload", cards);
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.doc.nodes[1].text = Some("Bravo, not saved".into());
+        b.reload();
+        b.undo();
+        let saved = on_disk(&path);
+        assert_eq!(
+            texts(&saved),
+            ["Alpha", "Bravo, not saved"],
+            "the file held nothing new"
+        );
+
+        std::fs::write(&path, canvas(vec![card("a", 0, "Alpha")])).unwrap();
+        b.reload();
+        b.undo();
+        b.redo();
+        assert_eq!(ids(&on_disk(&path), "nodes"), ["a"], "Bravo stays gone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Undo and redo before the board has looked at the file again: what another program
+    /// changed comes in first, so neither brings back the card it removed, though the step
+    /// changed that card.
+    #[test]
+    fn undo_and_redo_take_in_what_another_program_changed_first() {
+        let cards = vec![
+            card("a", 0, "Alpha"),
+            card("b", 300, "Bravo"),
+            card("c", 600, "Charlie"),
+        ];
+        let (dir, path, _core) = workspace("board-undo-unseen", cards);
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let cards_now = || ids(&on_disk(&path), "nodes");
+        b.sel = Some("a".into());
+        b.set_color(Some("3"));
+        let theirs = vec![card("b", 300, "Bravo"), card("c", 600, "Charlie")];
+        std::fs::write(&path, canvas(theirs)).unwrap();
+        b.undo();
+        assert_eq!(cards_now(), ["b", "c"], "undo brings back no card");
+
+        b.sel = Some("b".into());
+        b.set_color(Some("4"));
+        b.undo();
+        std::fs::write(&path, canvas(vec![card("c", 600, "Charlie")])).unwrap();
+        b.redo();
+        assert_eq!(cards_now(), ["c"], "nor does redo");
         let _ = std::fs::remove_dir_all(dir);
     }
 

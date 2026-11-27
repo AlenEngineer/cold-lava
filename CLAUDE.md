@@ -149,7 +149,10 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   A link to nothing or to a folder is `NotAFile`. The gateway never lets a link through
   (`files::resolve`).
   `taken` is the one test of whether something is at a path, a link to nothing included:
-  `create` and `files::free_name` ask it. Never call `std::fs::write` on workspace files.
+  `create`, `create_dir`, `files::free_name` and `trash::free_path` ask it, and so does a
+  merge's undo. `may_move` is the one test of whether a move may go ahead: nothing is at
+  the new path, or it differs only in case and is the very entry that moves (#388);
+  `move_file` and a rename's checks ask it. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call

@@ -41,7 +41,7 @@ type erup
 wait-for 1 of 4 rows · /erup
 keys enter
 wait-for 4 rows
-expect vei  example
+wait-for vei  example
 expect  6   [[Krakatoa]] 1883
 screen
 keys q i

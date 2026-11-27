@@ -1392,9 +1392,11 @@ mod tests {
         );
 
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(None, h));
+        let path = "Volcanoes/Eruptions.csv";
+        // For the file as it is: trouble with a version it doesn't have is no news of it.
         let read = crate::owner::cache::FileRead {
-            path: "Volcanoes/Eruptions.csv".into(),
-            rev: "0".into(),
+            path: path.into(),
+            rev: core.stat_file(path).unwrap().rev,
             text: String::new(),
         };
         r.call(ExtId(0), Some(&mut core), |e, h| e.read_file(read, h));

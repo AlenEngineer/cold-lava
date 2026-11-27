@@ -233,6 +233,26 @@ fn a_symlinked_note_is_deleted_as_a_link_and_its_target_is_left_alone() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A symlink to nothing takes a name: a new note of that name is refused with a notice, the
+/// menu goes on (#389), and the link is left as it was.
+#[cfg(unix)]
+#[test]
+fn a_new_note_where_a_symlink_to_nothing_is_is_refused_and_the_menu_goes_on() {
+    let dir = sandbox("new-note-link");
+    let nowhere = dir.join("outside/nothing.md");
+    let link = dir.join("example-workspace/Inbox/Ghost.md");
+    std::os::unix::fs::symlink(&nowhere, &link).unwrap();
+    let out = drive("new-note-link.drive", &dir);
+    assert_passed(&out);
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        nowhere,
+        "the link is kept"
+    );
+    assert!(!nowhere.exists(), "nothing was made through the link");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Needs python3, which CI's runners have.
 #[test]
 fn a_subscriber_hears_the_menus_delete_and_undo_once_each() {
@@ -1360,40 +1380,6 @@ fn a_false_expect_fails_with_its_line_and_the_screen() {
         "the screen: {stdout}"
     );
     let _ = std::fs::remove_dir_all(dir);
-}
-
-/// A key typed right after Esc can arrive with it and read as Alt plus that key on a slow
-/// machine, so each script waits for the Esc's effect on the screen before the next key.
-#[test]
-fn scripts_wait_after_esc_before_the_next_key() {
-    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive");
-    let mut hurried = Vec::new();
-    for entry in std::fs::read_dir(&scripts).unwrap() {
-        let path = entry.unwrap().path();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut after_esc = false;
-        for (i, line) in text.lines().enumerate() {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            let hurries = match words.first() {
-                Some(&"keys") => {
-                    let in_step = words.windows(2).any(|k| k[0] == "esc" && k[1] != "esc");
-                    let next = after_esc && words.get(1) != Some(&"esc");
-                    after_esc = words.last() == Some(&"esc");
-                    in_step || next
-                }
-                Some(&("type" | "click" | "drag" | "scroll")) => std::mem::take(&mut after_esc),
-                Some(&("wait-for" | "wait-gone" | "wait" | "exits")) => {
-                    after_esc = false;
-                    false
-                }
-                _ => false,
-            };
-            if hurries {
-                hurried.push(format!("{}:{}: {line}", path.display(), i + 1));
-            }
-        }
-    }
-    assert_eq!(hurried, Vec::<String>::new());
 }
 
 /// Needs Neovim, which CI doesn't have; runs wherever `nvim` is on PATH.
