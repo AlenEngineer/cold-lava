@@ -125,7 +125,9 @@ pub struct Item {
     pub parent: Option<String>,
     /// The author's `^id`.
     pub block_id: Option<String>,
-    /// Fingerprint of the item's own lines: which version of it this is.
+    /// Fingerprint of the item's own lines: which version of it this is. For a twin whose lines
+    /// another twin has, it also holds how many twins there are and the rev of the twin it is
+    /// under (`items/twins.rs`, `identity::twin_rev`), so a twin that moves changes its rev.
     pub rev: String,
     #[serde(flatten)]
     pub data: Data,
