@@ -1206,6 +1206,26 @@ impl Board {
         true
     }
 
+    /// Reads the file again in place of what the board holds.
+    fn reload(&mut self) {
+        match std::fs::read(&self.path)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| Ok((parse(&b, &self.path)?, b)))
+        {
+            Ok(((d, twins), bytes)) => {
+                self.checkpoint();
+                self.twins.extend(twins);
+                self.base = d.clone();
+                self.disk = bytes;
+                self.doc = d;
+                self.previews.clear();
+                self.notes = None;
+                self.flash("reloaded from disk");
+            }
+            Err(e) => self.flash(format!("reload failed: {e}")),
+        }
+    }
+
     // ---------- persistence ----------
 
     fn save(&mut self) {
@@ -2347,22 +2367,7 @@ impl Board {
             BoardAction::Delete => self.delete_selected(),
             BoardAction::Colour(n) => self.set_color(Some(&n.to_string())),
             BoardAction::ColourClear => self.set_color(None),
-            BoardAction::Reload => match std::fs::read(&self.path)
-                .map_err(anyhow::Error::from)
-                .and_then(|b| Ok((parse(&b, &self.path)?, b)))
-            {
-                Ok(((d, twins), bytes)) => {
-                    self.checkpoint();
-                    self.twins.extend(twins);
-                    self.base = d.clone();
-                    self.disk = bytes;
-                    self.doc = d;
-                    self.previews.clear();
-                    self.notes = None;
-                    self.flash("reloaded from disk");
-                }
-                Err(e) => self.flash(format!("reload failed: {e}")),
-            },
+            BoardAction::Reload => self.reload(),
         }
         Ok(())
     }
@@ -4319,6 +4324,122 @@ mod tests {
             before,
             "and then the colour: the empty card took no step"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Two edits, one undone, then another program removes cards: neither redo nor undo
+    /// writes them back (#348). Undo says why it stops; an edit made after the change undoes.
+    #[test]
+    fn undo_and_redo_keep_what_another_program_removed() {
+        let cards = vec![
+            card("a", 0, "Alpha"),
+            card("b", 300, "Bravo"),
+            card("c", 600, "Charlie"),
+        ];
+        let (dir, path, mut core) = workspace("board-undo-outside", cards);
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.sel = Some("a".into());
+        b.set_color(Some("3"));
+        b.move_selected(20.0, 0.0);
+        b.undo();
+
+        let mut alpha = card("a", 0, "Alpha");
+        alpha["color"] = json!("3");
+        std::fs::write(&path, canvas(vec![alpha])).unwrap();
+        b.noticed(&core, &[CoreEvent::BoardChanged("B.canvas".into())]);
+        b.tick(&mut core, &mut registry);
+        let kept = || {
+            let saved = on_disk(&path);
+            (ids(&saved, "nodes"), saved["nodes"][0]["color"].clone())
+        };
+        let theirs = (vec!["a".to_string()], json!("3"));
+        assert_eq!(kept(), theirs);
+
+        b.redo();
+        assert_eq!(kept(), theirs, "redo brings back no card");
+        b.undo();
+        assert_eq!(kept(), theirs, "nor does undo");
+        assert_eq!(
+            b.refusals
+                .shown(Instant::now())
+                .map(|said| said.to_string())
+                .as_deref(),
+            Some("can't undo past the changes made outside cold-lava")
+        );
+
+        b.set_color(Some("5"));
+        b.undo();
+        assert_eq!(kept(), theirs);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Another program empties the board while a new card is typed: the card is saved into
+    /// the emptied file, and undo brings back nothing from before.
+    #[test]
+    fn a_card_typed_while_another_program_empties_the_board_undoes_nothing_before_it() {
+        let (dir, path, mut core) = workspace("board-undo-emptied", vec![card("a", 0, "Alpha")]);
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        b.sel = Some("a".into());
+        b.set_color(Some("3"));
+        b.new_text_card(None, None);
+        if let Mode::Edit { buf, .. } = &mut b.mode {
+            buf.push_str("Delta");
+        }
+        std::fs::write(&path, canvas(Vec::new())).unwrap();
+        b.noticed(&core, &[CoreEvent::BoardChanged("B.canvas".into())]);
+        b.tick(&mut core, &mut registry);
+        b.finish_edit();
+        let saved = on_disk(&path);
+        assert_eq!(texts(&saved), ["Delta"]);
+
+        b.undo();
+        let saved = on_disk(&path);
+        assert_eq!(texts(&saved), ["Delta"], "Alpha stays gone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A reload that takes in another program's change: undoing it would write the board from
+    /// before over that change, so it stops there too.
+    #[test]
+    fn undoing_a_reload_keeps_what_another_program_removed() {
+        let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
+        let (dir, path, _core) = workspace("board-undo-reload", cards);
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        std::fs::write(&path, canvas(vec![card("a", 0, "Alpha")])).unwrap();
+        b.reload();
+        b.undo();
+        assert_eq!(ids(&on_disk(&path), "nodes"), ["a"], "Bravo stays gone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Undo and redo before the board has looked at the file again: what another program
+    /// changed comes in first, so neither brings back the card it removed, though the step
+    /// changed that card.
+    #[test]
+    fn undo_and_redo_take_in_what_another_program_changed_first() {
+        let cards = vec![
+            card("a", 0, "Alpha"),
+            card("b", 300, "Bravo"),
+            card("c", 600, "Charlie"),
+        ];
+        let (dir, path, _core) = workspace("board-undo-unseen", cards);
+        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let cards_now = || ids(&on_disk(&path), "nodes");
+        b.sel = Some("a".into());
+        b.set_color(Some("3"));
+        let theirs = vec![card("b", 300, "Bravo"), card("c", 600, "Charlie")];
+        std::fs::write(&path, canvas(theirs)).unwrap();
+        b.undo();
+        assert_eq!(cards_now(), ["b", "c"], "undo brings back no card");
+
+        b.sel = Some("b".into());
+        b.set_color(Some("4"));
+        b.undo();
+        std::fs::write(&path, canvas(vec![card("c", 600, "Charlie")])).unwrap();
+        b.redo();
+        assert_eq!(cards_now(), ["c"], "nor does redo");
         let _ = std::fs::remove_dir_all(dir);
     }
 
