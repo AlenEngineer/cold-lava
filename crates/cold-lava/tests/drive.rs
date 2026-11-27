@@ -253,6 +253,21 @@ fn a_new_note_where_a_symlink_to_nothing_is_is_refused_and_the_menu_goes_on() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn a_new_note_named_out_of_the_workspace_is_refused() {
+    let dir = sandbox("new-note-escape");
+    let out = drive("new-note-escape.drive", &dir);
+    assert_passed(&out);
+    for outside in ["Escaped.md", "Deeper.md"] {
+        assert!(
+            !dir.join(outside).exists(),
+            "{outside} was written beside the workspace"
+        );
+    }
+    assert!(dir.join("example-workspace/Inbox/Kept.md").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Needs python3, which CI's runners have.
 #[test]
 fn a_subscriber_hears_the_menus_delete_and_undo_once_each() {

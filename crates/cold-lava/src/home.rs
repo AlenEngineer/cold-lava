@@ -3564,9 +3564,12 @@ impl Home {
                 template,
             } => {
                 self.mode = Mode::Normal;
-                let rel = in_folder.new_note(&name);
+                let rel = match in_folder.new_note(&name) {
+                    Ok(rel) => rel,
+                    Err(e) => return self.flash(format!("{e:#}")),
+                };
                 if self.still_here(&in_folder.at(format!("create {rel}"))) {
-                    self.create_note(&in_folder, &name, template.as_deref());
+                    self.create_note(&in_folder, &rel, &name, template.as_deref());
                 }
             }
         }
@@ -5475,12 +5478,12 @@ impl Home {
         found
     }
 
-    /// Create the note `name` in `in_folder`, from `template` (workspace-relative, without
-    /// `.md`) if one is given, and open it.
-    fn create_note(&mut self, in_folder: &Folder, name: &str, template: Option<&str>) {
-        let rel = in_folder.new_note(name);
+    /// Create the note `rel` (from `Folder::new_note`, which checked it) named `name` in
+    /// `in_folder`, from `template` (workspace-relative, without `.md`) if one is given, and
+    /// open it.
+    fn create_note(&mut self, in_folder: &Folder, rel: &str, name: &str, template: Option<&str>) {
         let root = in_folder.root.clone();
-        let path = root.join(&rel);
+        let path = root.join(rel);
         let title = name.trim_end_matches(".md");
         let filled = template
             .map(|t| templates::new_note(&root, t, title.rsplit('/').next().unwrap_or(title)));

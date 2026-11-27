@@ -1,0 +1,29 @@
+# A new note whose name leads out of the workspace (`..` in it) is refused, and the menu goes on
+# (#411). tests/drive.rs checks nothing was written outside it.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 3
+keys p loose
+wait-for Loose thought
+keys enter
+wait-for Inbox/Loose thought  reading
+keys esc
+wait-gone reading · Esc / q back
+keys n
+wait-for new note in Inbox/
+type ../../Escaped
+keys enter
+wait-for inside the workspace: Inbox/../../Escaped.md
+keys n
+wait-for new note in Inbox/
+type a/../../../Deeper
+keys enter
+wait-for inside the workspace: Inbox/a/../../../Deeper.md
+keys n
+wait-for new note in Inbox/
+type Kept
+keys enter
+wait-for created Inbox/Kept.md
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0
