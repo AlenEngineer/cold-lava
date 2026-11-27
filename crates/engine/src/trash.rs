@@ -89,11 +89,12 @@ pub struct Trashed {
 pub fn delete(root: &Path, seen: &Seen, system: Option<&Bin>) -> Result<Trashed, WriteError> {
     seen.unchanged_entry()?;
     let path = seen.path();
-    if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system) {
-        if let Ok(t) = put(path, bin, Went::System, None) {
-            return Ok(t);
-        }
-        // Its reason is dropped: the workspace trash's answer is the one returned.
+    // When the system trash can't take it, its reason is dropped: the workspace trash's answer
+    // is the one returned.
+    if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system)
+        && let Ok(t) = put(path, bin, Went::System, None)
+    {
+        return Ok(t);
     }
     let dir = workspace_trash(root)?;
     put(path, &Bin::Folder(dir), Went::WorkspaceTrash, Some(root))
