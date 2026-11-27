@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::gateway::{Error, Reason};
 use crate::index::Index;
 use crate::read::{Seen, rev};
+use crate::rel_path;
 use crate::trash::{self, Bin, Trashed, Went};
 use crate::workspace;
 use crate::write::{self, WriteError};
@@ -182,7 +183,7 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
 /// The entry at `rel` itself, for `workspace/stat` and `workspace/delete`: as `resolve`, but
 /// the last part may be a symlink, and is then the entry, whatever it points to. No folder on
 /// the way to it may be one.
-fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+pub(crate) fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
     let path = normal(rel)?;
     let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
     unlinked(root, &path, folder)?;
@@ -245,18 +246,39 @@ fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
     move |e| Error::new(Reason::Io, format!("{rel}: {e}"))
 }
 
-fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
+/// The refusal of a symlink a write or a move met at `link`: the request's own path `rel`, or
+/// another on the way (the workspace's `.trash`), named as the workspace names it.
+fn link_refused(root: &Path, rel: &str, link: &Path) -> String {
+    let named = rel_path::or_whole(root, link);
+    if named == rel {
+        never_followed(rel)
+    } else {
+        format!("{rel}: {}", never_followed(&named))
+    }
+}
+
+/// A `WriteError` met on the way to `rel`, as the gateway says it; `changed` says when the
+/// file changed ("while writing", "since it was read").
+fn as_refused<'a>(
+    root: &'a Path,
+    rel: &'a str,
+    changed: &'a str,
+) -> impl Fn(WriteError) -> Error + 'a {
     move |e| {
         let message = match &e {
-            WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
+            WriteError::Changed(_) => format!("{rel} changed {changed}: read it again"),
             WriteError::Kept(_, kept) => write::kept_beside(rel, kept),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
-            WriteError::Link(_) => never_followed(rel),
+            WriteError::Link(link) => link_refused(root, rel, link),
             WriteError::Io(_, e) => format!("{rel}: {e}"),
         };
         Error::new(Reason::of(&e), message)
     }
+}
+
+fn written<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a {
+    as_refused(root, rel, "while writing")
 }
 
 /// `workspace/read`
@@ -287,7 +309,7 @@ pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Writt
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
-    now.replace(text.as_bytes()).map_err(written(rel))?;
+    now.replace(text.as_bytes()).map_err(written(root, rel))?;
     Ok(Written {
         rev: rev(text.as_bytes()),
     })
@@ -308,7 +330,7 @@ pub fn create(index: &Index, c: &Create) -> Result<Created, Error> {
         }
     };
     let path = resolve(root, &rel)?;
-    write::create(&path, c.text.as_bytes()).map_err(written(&rel))?;
+    write::create(&path, c.text.as_bytes()).map_err(written(root, &rel))?;
     Ok(Created {
         path: rel,
         rev: rev(c.text.as_bytes()),
@@ -346,18 +368,8 @@ fn contents(root: &Path, rel: &str) -> Result<Seen, Error> {
     })
 }
 
-fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
-    move |e| {
-        let message = match &e {
-            WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
-            WriteError::Kept(_, kept) => write::kept_beside(rel, kept),
-            WriteError::Exists(_) => format!("{rel} already exists"),
-            WriteError::NotAFile(_) => write::not_a_file(rel),
-            WriteError::Link(_) => never_followed(rel),
-            WriteError::Io(_, e) => format!("{rel}: {e}"),
-        };
-        Error::new(Reason::of(&e), message)
-    }
+fn moved<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a {
+    as_refused(root, rel, "since it was read")
 }
 
 /// `workspace/stat`
@@ -403,7 +415,7 @@ pub fn delete(
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
-    trash::delete(root, &now, system).map_err(moved(rel))
+    trash::delete(root, &now, system).map_err(moved(root, rel))
 }
 
 /// `workspace/restore`, through `trash::restore`: back where it was, or at `to`. The answer
@@ -426,14 +438,14 @@ pub fn restore(root: &Path, trashed: &Trashed, to: Option<&str>) -> Result<Resto
         let message = format!("{rel} is no longer in the trash");
         return Err(Error::new(Reason::Changed, message));
     }
-    trash::restore(trashed, &path).map_err(moved(&rel))?;
+    trash::restore(trashed, &path).map_err(moved(root, &rel))?;
     Ok(Restored { path: rel })
 }
 
 /// `workspace/create-folder`, through `write::create_dir`, at a `NewPath`.
 pub fn create_folder(root: &Path, rel: &str) -> Result<Folder, Error> {
     let new = new_path(root, rel)?;
-    write::create_dir(new.path()).map_err(moved(new.rel()))?;
+    write::create_dir(new.path()).map_err(moved(root, new.rel()))?;
     let path = new.rel;
     Ok(Folder { path })
 }
@@ -559,14 +571,14 @@ impl Trash {
 /// `workspace/files`: the workspace's files that end in `.<extension>`, outside hidden folders.
 pub fn list(index: &Index, extension: &str) -> Listed {
     Listed {
-        files: of_kinds(index, &[extension]),
+        files: of_kinds(&index.workspace, &[extension]),
     }
 }
 
 /// The workspace's files of each kind (by its extension) as `list` gives them, each kind's
 /// after the one before it, from one walk of the workspace.
-pub(crate) fn of_kinds(index: &Index, extensions: &[&str]) -> Vec<String> {
-    let all = crate::resolver::Files::rels_of_workspace(index);
+pub(crate) fn of_kinds(workspace: &workspace::Workspace, extensions: &[&str]) -> Vec<String> {
+    let all = crate::resolver::Files::rels_of_workspace(workspace);
     let mut out = Vec::new();
     for x in extensions {
         let want = x.trim_start_matches('.').to_ascii_lowercase();
@@ -1031,6 +1043,73 @@ mod tests {
         let now = std::fs::read_to_string(dir.join(csv)).unwrap();
         assert_eq!(now, "a new table\n", "what took its place is untouched");
         assert_eq!(names(&dir.join(".trash")), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `.trash` that is a symlink is named in the refusal, never the note (#435): a delete
+    /// into it and a restore out of it are refused and nothing moves, also when the system trash
+    /// was tried first and couldn't take it.
+    #[cfg(unix)]
+    #[test]
+    fn a_trash_that_is_a_link_is_named_in_the_refusal() {
+        let dir = workspace("trash-link");
+        let local = r#"{"trashOption": "local"}"#;
+        std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
+        let (mut core, _bin) = core_with_bin(&dir);
+        let seen = core.stat_file("Plan.md").unwrap();
+        let gone = core.delete_file("tidy", "Plan.md", &seen.rev).unwrap();
+        assert_eq!(gone.went, Went::WorkspaceTrash);
+
+        let outside = dir.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Plan.md"), "not ours\n").unwrap();
+        std::fs::rename(dir.join(".trash"), dir.with_extension("moved-trash")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(".trash")).unwrap();
+
+        let refused = core
+            .restore_file("tidy", &back(&gone.trashed, None))
+            .unwrap_err();
+        assert_eq!(refused.reason, Reason::Refused);
+        assert_eq!(
+            refused.message,
+            "Plan.md: .trash is a symbolic link, which the gateway never follows"
+        );
+        assert!(!dir.join("Plan.md").exists(), "nothing came back");
+
+        let csv = "Data/Eruptions.csv";
+        let seen = core.stat_file(csv).unwrap();
+        let refused = core.delete_file("tidy", csv, &seen.rev).unwrap_err();
+        assert_eq!(refused.reason, Reason::Refused);
+        assert_eq!(
+            refused.message,
+            "Data/Eruptions.csv: .trash is a symbolic link, which the gateway never follows"
+        );
+        assert!(dir.join(csv).exists(), "the table stays");
+
+        std::fs::write(
+            dir.join(".obsidian/app.json"),
+            r#"{"trashOption": "system"}"#,
+        )
+        .unwrap();
+        let blocked = dir.with_extension("blocked");
+        std::fs::write(&blocked, "a file, not a folder\n").unwrap();
+        core.set_system_trash(Some(Bin::Freedesktop(blocked.join("Trash"))));
+        let refused = core.delete_file("tidy", csv, &seen.rev).unwrap_err();
+        assert_eq!(refused.reason, Reason::Refused, "a link stays refused");
+        assert_eq!(
+            refused.message,
+            "Data/Eruptions.csv: .trash is a symbolic link, which the gateway never follows"
+        );
+        assert!(dir.join(csv).exists(), "the table stays");
+        assert_eq!(
+            names(&outside),
+            ["Plan.md"],
+            "nothing went through the link"
+        );
+        let _ = std::fs::remove_file(&blocked);
+        let _ = std::fs::remove_dir_all(dir.with_extension("moved-trash"));
+        let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -274,21 +274,17 @@ pub struct Files {
 impl Files {
     /// The workspace's notes, and its other files read from disk.
     pub fn of_workspace(ix: &Index) -> Files {
-        Files::new(Files::rels_of_workspace(ix))
+        Files::new(Files::rels_of_workspace(&ix.workspace))
     }
 
     /// The paths `of_workspace` holds, without the tables links are looked up in.
-    pub(crate) fn rels_of_workspace(ix: &Index) -> Vec<String> {
-        let mut rels: Vec<String> = ix
-            .workspace
-            .notes
-            .iter()
+    pub(crate) fn rels_of_workspace(workspace: &Workspace) -> Vec<String> {
+        let mut rels: Vec<String> = (workspace.notes.iter())
             .map(|n| format!("{}.md", n.rel))
             .collect();
-        let root = &ix.workspace.root;
+        let root = &workspace.root;
         let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-            let n = e.file_name().to_string_lossy();
-            e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
+            e.depth() == 0 || !crate::workspace::is_skipped(&e.file_name().to_string_lossy())
         });
         for e in walker.filter_map(|e| e.ok()) {
             if e.file_type().is_file() && e.path().extension().is_none_or(|x| x != "md") {

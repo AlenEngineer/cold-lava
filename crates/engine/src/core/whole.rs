@@ -57,10 +57,13 @@ mod sealed {
 
 use sealed::Sealed;
 
-/// What writing a plan takes from the core: the system trash a merge's source goes to. Nothing
-/// outside this module can make one, so only the core calls `Planned::write`. The seal
-/// (`Sealed`), not this, is what keeps a frontend's type from being a plan.
+/// What writing a plan takes from the core: the workspace's root, which a rename checks and
+/// makes its moves under (no plan carries one, so no frontend names it), and the system trash a
+/// merge's source goes to. Nothing outside this module can make one, so only the core calls
+/// `Planned::write`. The seal (`Sealed`), not this, is what keeps a frontend's type from being a
+/// plan.
 pub struct Door<'a> {
+    root: &'a Path,
     system: Option<&'a Bin>,
 }
 
@@ -81,8 +84,8 @@ impl Sealed for rename::Plan {
 impl Planned for rename::Plan {
     type Made = ();
 
-    fn write(&self, _: Door<'_>) -> anyhow::Result<()> {
-        rename::apply(self)
+    fn write(&self, door: Door<'_>) -> anyhow::Result<()> {
+        rename::apply(self, door.root)
     }
 }
 
@@ -192,6 +195,7 @@ impl Core {
         answers: &[Relinked],
     ) -> Result<P::Made, NotApplied> {
         let door = Door {
+            root: self.root(),
             system: self.system_trash.as_ref(),
         };
         let made = plan.write(door).map_err(NotApplied::Failed)?;

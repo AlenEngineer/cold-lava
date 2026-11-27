@@ -79,8 +79,7 @@ pub struct Owned {
     /// wherever the file is read, a canvas read by the scan included.
     pub problems: Vec<crate::problem::Problem>,
     /// The version on disk that couldn't be read at all, once that was said
-    /// (`core::Event::OwnerTrouble`): it is said once a version, so a rescan doesn't say it
-    /// again. Reading a version clears it.
+    /// (`core::Event::OwnerTrouble`, `fails`). Reading a version clears it.
     pub failed: Option<String>,
 }
 
@@ -128,6 +127,16 @@ impl Owned {
         self.rev.as_deref() == Some(rev) && kept.is_none_or(|given| *given == self.given)
     }
 
+    /// Version `rev` couldn't be read: whether that is news. True only the first time it
+    /// fails, so a rescan that reads the same bytes again says nothing (#303's rule).
+    pub fn fails(&mut self, rev: &str) -> bool {
+        if self.failed.as_deref() == Some(rev) {
+            return false;
+        }
+        self.failed = Some(rev.to_string());
+        true
+    }
+
     /// What didn't read in what its owner gave, on one line, as it is reported
     /// (`core::Event::OwnedLeavesOut`): `None` when all of it read.
     pub fn trouble(&self) -> Option<String> {
@@ -170,13 +179,24 @@ pub fn attachment_kind(target: &str) -> Option<&'static str> {
         .map(|(kind, _)| *kind)
 }
 
-/// Is this workspace-relative path a note cold-lava reads (a `.md` file outside hidden folders)?
+/// Whether the scan leaves out a file or folder by this name: a hidden one (`.obsidian`,
+/// `.trash`, `.git`, our own temporary files…) or `node_modules`. The one rule for it: the
+/// scan, the listing of files (`resolver::Files::rels_of_workspace`), tidy and the watcher
+/// (`core::watch::classify`) all ask it, so each sees the same files.
+pub fn is_skipped(name: &str) -> bool {
+    name.starts_with('.') || name == "node_modules"
+}
+
+/// Whether the scan reads what is at this workspace-relative path: no part of it is skipped
+/// (`is_skipped`).
+pub fn is_scanned(rel: &Path) -> bool {
+    !rel.components()
+        .any(|c| is_skipped(&c.as_os_str().to_string_lossy()))
+}
+
+/// Is this workspace-relative path a note cold-lava reads (a `.md` file the scan reads)?
 pub fn is_note_path(rel: &Path) -> bool {
-    rel.extension().is_some_and(|e| e == "md")
-        && !rel.components().any(|c| {
-            let c = c.as_os_str().to_string_lossy();
-            c.starts_with('.') || c == "node_modules"
-        })
+    rel.extension().is_some_and(|e| e == "md") && is_scanned(rel)
 }
 
 /// Read and parse one note. `None` if it isn't a note, is outside the workspace, or can't be read.
@@ -218,11 +238,9 @@ pub fn read_note(root: &Path, path: &Path) -> Option<Note> {
 
 /// The notes under `root`, outside hidden folders, in no particular order.
 pub fn note_paths(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
-    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-        let n = e.file_name().to_string_lossy();
-        // Skip .obsidian, .trash, .git and friends.
-        e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
-    });
+    let walker = WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !is_skipped(&e.file_name().to_string_lossy()));
     walker
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
@@ -276,10 +294,9 @@ pub fn scan(root: &Path) -> Result<Workspace> {
 /// with what its owner gave. One that doesn't read is there with nothing (`rev` `None`), and
 /// the core says why when it reads it again.
 fn built_in_owned(v: &Workspace) -> Vec<Owned> {
-    let walker = WalkDir::new(&v.root).into_iter().filter_entry(|e| {
-        let n = e.file_name().to_string_lossy();
-        e.depth() == 0 || !(n.starts_with('.') || n == "node_modules")
-    });
+    let walker = WalkDir::new(&v.root)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !is_skipped(&e.file_name().to_string_lossy()));
     let mut out: Vec<Owned> = (walker.filter_map(|e| e.ok()))
         .filter(|e| e.file_type().is_file())
         .filter_map(|e| {
@@ -288,8 +305,7 @@ fn built_in_owned(v: &Workspace) -> Vec<Owned> {
             let owner = crate::owner::built_in(&rel)?;
             let mut file = Owned::new(rel, e.path().to_path_buf(), owner);
             let bytes = fs::read(e.path()).ok()?;
-            let text = std::str::from_utf8(&bytes).ok();
-            if let Some(Some(Ok(given))) = text.map(|t| crate::owner::give(owner, &file.rel, t)) {
+            if let Some(Ok(given)) = crate::owner::give_bytes(owner, &file.rel, &bytes) {
                 let read = crate::owner::given::read(&file.rel, &given, v.item_settings());
                 file.take(crate::read::rev(&bytes), given, read);
             }

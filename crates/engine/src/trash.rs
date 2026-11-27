@@ -6,6 +6,7 @@
 //! the file (none on this platform, or it is on another disk), it goes to `.trash` too.
 
 use crate::read::Seen;
+use crate::workspace::first_link;
 use crate::write::{WriteError, move_file, taken};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -78,6 +79,8 @@ pub struct Trashed {
     pub went: Went,
     /// The freedesktop `.trashinfo` written for it.
     info: Option<PathBuf>,
+    /// The workspace whose `.trash` it went into, checked again before it comes back.
+    workspace: Option<PathBuf>,
 }
 
 /// Move what was `seen` (a file or a folder) to the trash `trashOption` names, if the entry at
@@ -86,16 +89,38 @@ pub struct Trashed {
 pub fn delete(root: &Path, seen: &Seen, system: Option<&Bin>) -> Result<Trashed, WriteError> {
     seen.unchanged_entry()?;
     let path = seen.path();
-    let local = Bin::Folder(root.join(".trash"));
+    // When the system trash can't take it, its reason is dropped: the workspace trash's answer
+    // is the one returned.
     if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system)
-        && let Ok(t) = put(path, bin, Went::System)
+        && let Ok(t) = put(path, bin, Went::System, None)
     {
         return Ok(t);
     }
-    put(path, &local, Went::WorkspaceTrash)
+    let dir = workspace_trash(root)?;
+    put(path, &Bin::Folder(dir), Went::WorkspaceTrash, Some(root))
 }
 
-fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
+/// The workspace's `.trash`, refused (`Link`) when it is a symlink: following it would send
+/// deleted files out of the workspace (`workspace::first_link`, the one rule).
+///
+/// Checked, then acted on: a `.trash` swapped for a link between this check and the move
+/// after it is still followed (#366).
+fn workspace_trash(root: &Path) -> Result<PathBuf, WriteError> {
+    let dir = root.join(".trash");
+    match first_link(root, ".trash") {
+        Ok(None) => Ok(dir),
+        Ok(Some(_)) => Err(WriteError::Link(dir)),
+        Err(e) => Err(WriteError::Io(dir, e)),
+    }
+}
+
+/// Move `path` into `bin`; `workspace` is the workspace whose `.trash` that is, if it is one.
+fn put(
+    path: &Path,
+    bin: &Bin,
+    went: Went,
+    workspace: Option<&Path>,
+) -> Result<Trashed, WriteError> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -111,6 +136,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                 at,
                 went,
                 info: None,
+                workspace: workspace.map(Path::to_path_buf),
             })
         }
         Bin::Freedesktop(dir) => {
@@ -149,6 +175,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                     at,
                     went,
                     info: Some(info),
+                    workspace: workspace.map(Path::to_path_buf),
                 });
             }
             unreachable!()
@@ -157,8 +184,11 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
 }
 
 /// Put a trashed file back at `to` (its old path, or another the user chose); refused if
-/// something is there now.
+/// something is there now, or if the workspace's `.trash` it is in has become a symlink.
 pub fn restore(t: &Trashed, to: &Path) -> Result<(), WriteError> {
+    if let Some(root) = &t.workspace {
+        workspace_trash(root)?;
+    }
     move_file(&t.at, to)?;
     if let Some(info) = &t.info {
         let _ = std::fs::remove_file(info);
@@ -365,6 +395,47 @@ mod tests {
         assert!(d.join("data/Trash/info/Lava 1.md.trashinfo").exists());
         assert!(!d.join("data/Trash/info/Lava.md.trashinfo").exists());
         stays(&held);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A `.trash` that is a symlink is never followed: a delete into it is refused and the
+    /// note stays, and a file trashed before `.trash` became a link isn't fetched back
+    /// through it (#435).
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_trash_that_is_a_link_is_refused() {
+        for option in ["local", "none", "system"] {
+            let (d, workspace) = sandbox(&format!("linked-{option}"), Some(option));
+            let outside = d.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, workspace.join(".trash")).unwrap();
+            let lava = workspace.join("Concepts/Lava.md");
+            assert!(
+                matches!(
+                    delete(&workspace, &Seen::kept(&lava, "hot"), None),
+                    Err(WriteError::Link(p)) if p == workspace.join(".trash")
+                ),
+                "{option}"
+            );
+            assert_eq!(std::fs::read(&lava).unwrap(), b"hot", "{option}");
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "{option}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        let (d, workspace) = sandbox("linked-after", Some("local"));
+        let lava = workspace.join("Concepts/Lava.md");
+        let t = delete(&workspace, &Seen::kept(&lava, "hot"), None).unwrap();
+        let outside = d.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Lava.md"), "not ours").unwrap();
+        std::fs::rename(workspace.join(".trash"), d.join("moved-trash")).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".trash")).unwrap();
+        assert!(matches!(
+            restore(&t, &lava),
+            Err(WriteError::Link(p)) if p == workspace.join(".trash")
+        ));
+        assert!(!lava.exists());
+        assert_eq!(std::fs::read(outside.join("Lava.md")).unwrap(), b"not ours");
         let _ = std::fs::remove_dir_all(&d);
     }
 
