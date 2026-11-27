@@ -185,10 +185,14 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   (`EditError::written(e, root)` for an edit, with no `From<WriteError>` so the root can't be
   left out; `EditError::from(gateway::Error)` back), never by matching its variants. `create`
   and `move_file` rename with `no_replace`, refused when something is there by then. Left
-  open: a program that opened the file before the swap and writes into it after the
-  compare; and, on a file system with neither rename flags nor hard links, `no_replace`'s
-  check-then-rename (`os_rename::by_link`), which `create`, `move_file` and `replace`'s
-  aside all go through. Never call `std::fs::write` on workspace files.
+  open: a program that opened the file before the swap (an open under way counts: an
+  in-place writer under load, #443) and writes into it after the compare; and, on a file
+  system with neither rename flags nor hard links, `no_replace`'s check-then-rename
+  (`os_rename::by_link`), which `create`, `move_file` and `replace`'s aside all go through.
+  A save killed halfway leaves its staged `.Name.cold-lava-PID-N.tmp`: the first write a
+  process stages in a folder clears those of dead PIDs (`write/stale.rs`: removed when a copy
+  of the file, kept under a kept name otherwise; a kept text never). Never call
+  `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
