@@ -732,8 +732,7 @@ shares them, and the Obsidian ones are that profile's:
 refactor a feature needs is its own PR, merged first; the PR title is the line the release
 notes are written from; two reviews by two agents other than the author (behaviour, and the
 `design-reviewer` agent), where a must-fix from either blocks the merge; merge when CI is
-green and the reviews are clean, asking the owner first for the shared-files code, a release
-or a change to the process. A pushed branch is never rebased or force-pushed. Releases are
+green and the reviews are clean, without asking (unless the owner said to hold it). A pushed branch is never rebased or force-pushed. Releases are
 automatic once a PR sets a new `version` (CONTRIBUTING.md, "Releases").
 
 ## Testing the UI

@@ -56,12 +56,9 @@ each as a new agent. Open an issue for each should-fix and add it to #100.
 
 ## 6. Merge
 
-When CI is green and neither review has a must-fix:
-
-- **Ask the owner first** if the PR changes `crates/engine/src/write.rs`, `trash.rs`,
-  `read.rs`, `files.rs` or `gateway.rs`, is a release, or changes `.github/`,
-  `CONTRIBUTING.md` or this skill. Say what it changes and link both reviews.
-- Otherwise merge: `gh pr merge PR --squash --delete-branch`.
+When CI is green and neither review has a must-fix, merge:
+`gh pr merge PR --squash --delete-branch`. Don't ask first, unless the owner said to hold
+this PR or only to open it.
 
 Then `git switch main && git pull --ff-only`, comment on the issue with what merged and what
 is left, tick its line on #100, and remove any worktree the work used.
