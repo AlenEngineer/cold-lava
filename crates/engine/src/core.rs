@@ -224,7 +224,7 @@ impl Core {
 
     /// After the workspace was read from scratch (`v`): every owned file is read again
     /// over what it held before, so what it leaves out, and that one can't be read, is news
-    /// only against that. Returns what went wrong reading one (once a version: `Owned::failed`)
+    /// only against that. Returns what went wrong reading one (once a version: `Owned::fails`)
     /// and what an owned file leaves out where that is news (`owned_news`), for the files the
     /// scan no longer lists too, for the caller to say with its `Rescanned`.
     ///
@@ -306,7 +306,8 @@ impl Core {
     /// `owner` answered `file/read` for `path` at `rev`, or couldn't (`Err`). A read-back the
     /// edit desk waits for is the desk's. Any other answer is the file's only when it is for the
     /// file on disk, read as the scan reads it (`owned_bytes`): what it gave is kept
-    /// (`Owners::answered`), and an error is reported and leaves the file's items as they were.
+    /// (`Owners::answered`), and an error is reported, once a version (`Owned::fails`), and
+    /// leaves the file's items as they were.
     /// An answer for another version (a text the file had before, or a read-back that came
     /// after its rename was cancelled, of a text never written: #369) is neither kept nor said.
     /// Unless an error is reported, the file is read again: what its owner gave for the version
@@ -326,11 +327,17 @@ impl Core {
         let gave = given.as_ref().ok();
         let current = (self.owners).answered(owner, path, rev, gave, on_disk.as_deref());
         let events = match given {
-            Err(message) if current => vec![Event::OwnerTrouble {
-                owner: owner.to_string(),
-                path: path.to_string(),
-                message,
-            }],
+            Err(message) if current => {
+                let owned = &mut self.index.workspace.owned;
+                let held = owned.binary_search_by(|f| f.rel.as_str().cmp(path));
+                let first = held.ok().is_none_or(|i| owned[i].fails(rev));
+                let trouble = Event::OwnerTrouble {
+                    owner: owner.to_string(),
+                    path: path.to_string(),
+                    message,
+                };
+                first.then_some(trouble).into_iter().collect()
+            }
             _ => self.owned_changed(&[path.to_string()]),
         };
         self.broadcast(&events);
@@ -968,7 +975,7 @@ fn owned_gone(owners: &mut Owners, v: &mut Workspace, rel: &str) -> Option<Event
 /// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
 /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
 /// items or links changed, and what went wrong: a version that can't be read is said once
-/// (`Owned::failed`). Links are not resolved again here. A file at a symlink, or behind
+/// (`Owned::fails`). Links are not resolved again here. A file at a symlink, or behind
 /// one, is gone (`owned_bytes`).
 fn owned_read(
     owners: &mut Owners,
@@ -1017,9 +1024,7 @@ fn owned_read(
                 v.owned[i].take(rev, given, read)
             }
             Gave::Failed(message) => {
-                let file = &mut v.owned[i];
-                if file.failed.as_ref() != Some(&rev) {
-                    file.failed = Some(rev);
+                if v.owned[i].fails(&rev) {
                     let path = rel.clone();
                     events.push(Event::OwnerTrouble {
                         owner,
