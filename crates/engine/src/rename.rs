@@ -120,7 +120,7 @@ pub struct Plan {
     pub warnings: Vec<String>,
     /// The workspace's root, which every move's new path is checked under.
     #[serde(skip)]
-    root: PathBuf,
+    pub root: PathBuf,
 }
 
 impl Plan {
