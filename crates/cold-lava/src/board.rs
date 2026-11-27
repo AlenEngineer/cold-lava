@@ -221,6 +221,9 @@ pub struct Board {
     drag: Option<Drag>,
     undo: Vec<Doc>,
     redo: Vec<Doc>,
+    /// Undo steps were dropped where the board took in another program's change
+    /// (`cut_history`): undo says so when it gets there.
+    undo_cut: bool,
     /// What the second status line says for 3 seconds, and since when it has shown: `None`
     /// while an alert or a mode's hint has the line, under which it waits (`draw_status`).
     msg: Option<(Notice, Option<Instant>)>,
@@ -458,6 +461,7 @@ impl Board {
             drag: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            undo_cut: false,
             msg: None,
             twins: twins.into_iter().collect(),
             refusals: Default::default(),
@@ -1180,6 +1184,7 @@ impl Board {
                 return false;
             }
         }
+        self.cut_history();
         self.previews.clear();
         if let Some(s) = &self.sel
             && self.doc.node(s).is_none()
@@ -1206,18 +1211,24 @@ impl Board {
         true
     }
 
-    /// Reads the file again in place of what the board holds.
+    /// Reads the file again in place of what the board holds. Undo brings the board back,
+    /// unless the file held a change the board hadn't taken in.
     fn reload(&mut self) {
         match std::fs::read(&self.path)
             .map_err(anyhow::Error::from)
             .and_then(|b| Ok((parse(&b, &self.path)?, b)))
         {
             Ok(((d, twins), bytes)) => {
+                let outside = bytes != self.disk
+                    && serde_json::to_value(&d).ok() != serde_json::to_value(&self.base).ok();
                 self.checkpoint();
                 self.twins.extend(twins);
                 self.base = d.clone();
                 self.disk = bytes;
                 self.doc = d;
+                if outside {
+                    self.cut_history();
+                }
                 self.previews.clear();
                 self.notes = None;
                 self.flash("reloaded from disk");
@@ -1285,6 +1296,14 @@ impl Board {
         self.redo.clear();
     }
 
+    /// The board took in a change another program made to its file: the undo and redo steps
+    /// from before it go, since each would write the board as it was over that change.
+    fn cut_history(&mut self) {
+        self.undo_cut |= !self.undo.is_empty();
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     /// Changes the board, undoably, and saves it.
     fn change(&mut self, f: impl FnOnce(&mut Doc)) {
         self.checkpoint();
@@ -1315,18 +1334,25 @@ impl Board {
         }
     }
 
+    /// Undo and redo first take in what another program changed since the board last looked,
+    /// which cuts the history there: no step from before it is written over it.
     fn undo(&mut self) {
+        self.sync_from_disk();
         match self.undo.pop() {
             Some(d) => {
                 self.redo.push(std::mem::replace(&mut self.doc, d));
                 self.save();
                 self.flash("undone");
             }
+            None if self.undo_cut => {
+                self.refused("can't undo past the changes made outside cold-lava")
+            }
             None => self.flash("nothing to undo"),
         }
     }
 
     fn redo(&mut self) {
+        self.sync_from_disk();
         match self.redo.pop() {
             Some(d) => {
                 self.undo.push(std::mem::replace(&mut self.doc, d));

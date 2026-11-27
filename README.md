@@ -257,7 +257,9 @@ line per board.
 cold-lava merges instead of overwriting: cards and arrows are matched by id and merged field
 by field. If Obsidian moves a card while you edit its text, both changes are kept. If the same
 field changed in both places, your cold-lava version wins and you get a notice. A card deleted
-on one side but edited on the other is kept.
+on one side but edited on the other is kept. Undo and redo stop at the last change made outside
+cold-lava, since going past it would write the old board over that change; `u` says so when it
+gets there.
 
 **Quick switcher and search.** `p` opens the quick switcher: type a few letters of a note's
 name or one of its `aliases` (in order is enough: `msh` finds Mount St. Helens), `Enter` opens
