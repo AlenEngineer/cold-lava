@@ -56,7 +56,7 @@ wait-gone reading · Esc / q back
 keys p
 type erupt
 wait-for Eruptions.csv
-expect Volcanoes  CSV table
+wait-for Volcanoes  CSV table
 keys enter
 wait-for 1 of 5 rows · /tamb
 wait-for Ctrl-o ⟵ Start Here

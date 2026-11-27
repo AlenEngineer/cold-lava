@@ -1050,11 +1050,12 @@ exits 0
 ```
 
 After a lone Esc (`keys esc q`), drive waits for the program to answer before typing on, so the
-`q` can't arrive with the Esc as Alt-q. `expect`, `expect-not` and `screen` first read the output until the program pauses, so they see the whole frame a `wait-for` matched. `#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
+`q` can't arrive with the Esc as Alt-q. `expect`, `expect-not` and `screen` first read the output until the program pauses, so they see the whole frame a `wait-for` matched. They don't wait for anything more: right after a key, a click or a write, wait for what it shows first, since the program may not have drawn it yet. `#` starts a comment only at the beginning of a line. A failing step prints `SCRIPT:LINE:` and what it expected, then the screen, and exits 1.
 The mouse has `click ROW COL`, `drag ROW COL ROW2 COL2` (press, move through the cells on the
-way, release) and `scroll up|down ROW COL [N]`, counted from 1 like the terminal's cells, and
-`expect-in ROW COL ROW2 COL2 TEXT` checks that TEXT shows inside that part of the screen (where
-the graph drew a label after a drag, say).
+way, release) and `scroll up|down ROW COL [N]`, counted from 1 like the terminal's cells.
+`expect-in ROW COL ROW2 COL2 TEXT` checks that TEXT shows inside that part of the screen, and
+`wait-for-in ROW COL ROW2 COL2 TEXT` waits until it does (where the graph draws a label after a
+drag, say).
 `cold-lava --help` lists every step. Without a SCRIPT, the script is read from stdin.
 The program runs with an empty home folder, so your `config.toml`, your Neovim config and your
 list of workspaces stay out of it; `cold-lava drive --real-home` uses yours, and

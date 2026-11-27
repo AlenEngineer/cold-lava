@@ -75,8 +75,8 @@ click 11 59
 wait-for at right.top
 type ${b.title}
 keys enter
-expect-in 9 30 10 50 a.title
-expect-in 9 50 10 70 b.title
+wait-for-in 9 30 10 50 a.title
+wait-for-in 9 50 10 70 b.title
 keys n
 click 23 39
 wait-for name the anchor
