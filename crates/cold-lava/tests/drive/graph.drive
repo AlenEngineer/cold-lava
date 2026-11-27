@@ -17,10 +17,10 @@ wait-for obsidian groups · paused · braille
 keys tab
 wait-for ● Start Here  ←6 in  7→ out  Guide/Start Here  [path:Guide]
 keys c
-expect-in 15 40 17 62 Start Here
+wait-for-in 15 40 17 62 Start Here
 # Dragging a node moves it, selected.
 drag 15 51 24 80
-expect-in 24 70 26 92 Start Here
+wait-for-in 24 70 26 92 Start Here
 keys esc
 wait-for nothing selected
 click 24 80
@@ -30,7 +30,7 @@ keys esc
 wait-for nothing selected
 expect-not Start Here
 scroll up 24 80 15
-expect-in 24 66 28 94 Start Here
+wait-for-in 24 66 28 94 Start Here
 scroll down 24 80 15
 wait-gone Start Here
 # The local graph around the selection, one link deep, then two.
@@ -46,9 +46,9 @@ keys [
 wait-for local graph depth 1
 # Dragging empty space pans the view.
 keys c
-expect-in 15 40 17 62 Start Here
+wait-for-in 15 40 17 62 Start Here
 drag 2 2 9 19
-expect-in 22 57 24 79 Start Here
+wait-for-in 22 57 24 79 Start Here
 keys esc
 wait-for 38 nodes · 100 links
 expect ● Start Here

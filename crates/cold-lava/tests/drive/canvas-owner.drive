@@ -25,7 +25,7 @@ keys enter
 wait-for 1 of 16 rows · /two per
 keys j x
 wait-for done: Two per person, for the trip to Krakatoa
-expect ☑ Two per person
+wait-for ☑ Two per person
 # Enter opens the drawing in the whiteboard with the task's sticky selected, and Ctrl-o comes
 # back.
 keys enter

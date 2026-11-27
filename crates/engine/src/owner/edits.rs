@@ -374,8 +374,9 @@ impl Edits {
     /// `owner` read the file at `path` at version `rev` (`given`). When that is the new text an
     /// edit of the file waits for that owner to read back, the desk takes it: an item edit's new
     /// text is handed back to be written and a relink's is kept, when it reads as asked; else
-    /// the edit fails, and nothing is written. Any other version, or another owner's reading,
-    /// is the file as that owner found it, not the desk's: `given` is handed back.
+    /// the edit fails, and nothing is written. Anything else isn't the desk's, and `given` is
+    /// handed back: another owner's reading, or another version, such as a read-back that came
+    /// after its edit was cancelled or failed, of a text that was never written.
     pub fn read_back(
         &mut self,
         owner: &str,
@@ -624,7 +625,8 @@ impl Edits {
     }
 
     /// Stop waiting for the owners of the rename, merge or recipe `ticket`. Their answers are
-    /// dropped, the ones in already too.
+    /// dropped, the ones in already too, and what is still to be sent to them isn't sent. A
+    /// read-back that comes after is no longer the desk's (`read_back`).
     pub fn cancel_relink(&mut self, ticket: Ticket) {
         self.relinks.remove(&ticket);
         let ours = |p: &Pending| matches!(p.goal, Goal::Relink(t) if t == ticket);
