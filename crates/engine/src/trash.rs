@@ -6,7 +6,7 @@
 //! the file (none on this platform, or it is on another disk), it goes to `.trash` too.
 
 use crate::read::Seen;
-use crate::write::{WriteError, move_file};
+use crate::write::{WriteError, move_file, taken};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -123,7 +123,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                 let candidate = suffixed(&name, n);
                 let info = infos.join(format!("{candidate}.trashinfo"));
                 let at = files.join(&candidate);
-                if at.exists() {
+                if taken(&at) {
                     continue;
                 }
                 let mut f = match std::fs::File::create_new(&info) {
@@ -166,7 +166,7 @@ pub fn restore(t: &Trashed, to: &Path) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// `path`, or the first of `name 1.ext`, `name 2.ext`… that doesn't exist.
+/// `path`, or the first of `name 1.ext`, `name 2.ext`… that nothing is at (`write::taken`).
 pub fn free_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
@@ -174,7 +174,7 @@ pub fn free_path(path: &Path) -> PathBuf {
         .unwrap_or_default();
     (0..)
         .map(|n| path.with_file_name(suffixed(&name, n)))
-        .find(|p| !p.exists())
+        .find(|p| !taken(p))
         .unwrap()
 }
 
@@ -317,6 +317,54 @@ mod tests {
         restore(&t, &free).unwrap();
         assert_eq!(std::fs::read(&free).unwrap(), b"hot");
         assert_eq!(std::fs::read(&lava).unwrap(), b"a new Lava");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A name a symlink to nothing holds is taken, in either trash and where a file comes
+    /// back: the delete takes the next name, the restore is refused, and the link stays
+    /// (#356).
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_nothing_holds_its_name() {
+        let dangling = |at: &Path| {
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("Gone.md", at).unwrap();
+        };
+        let stays = |at: &Path| {
+            let led = std::fs::read_link(at).unwrap();
+            assert_eq!(
+                led,
+                Path::new("Gone.md"),
+                "{} is still a link",
+                at.display()
+            );
+        };
+
+        let (d, workspace) = sandbox("dangling-local", Some("local"));
+        let lava = workspace.join("Concepts/Lava.md");
+        let held = workspace.join(".trash/Lava.md");
+        dangling(&held);
+        let t = delete(&workspace, &Seen::kept(&lava, "hot"), None).unwrap();
+        assert_eq!(t.at, workspace.join(".trash/Lava 1.md"));
+        assert_eq!(std::fs::read(&t.at).unwrap(), b"hot");
+        stays(&held);
+        dangling(&lava);
+        assert!(matches!(restore(&t, &lava), Err(WriteError::Exists(_))));
+        stays(&lava);
+        assert_eq!(std::fs::read(&t.at).unwrap(), b"hot", "still in the trash");
+        let _ = std::fs::remove_dir_all(&d);
+
+        let (d, workspace) = sandbox("dangling-system", None);
+        let bin = Bin::Freedesktop(d.join("data/Trash"));
+        let lava = workspace.join("Concepts/Lava.md");
+        let held = d.join("data/Trash/files/Lava.md");
+        dangling(&held);
+        let t = delete(&workspace, &Seen::kept(&lava, "hot"), Some(&bin)).unwrap();
+        assert_eq!(t.went, Went::System);
+        assert_eq!(t.at, d.join("data/Trash/files/Lava 1.md"));
+        assert!(d.join("data/Trash/info/Lava 1.md.trashinfo").exists());
+        assert!(!d.join("data/Trash/info/Lava.md.trashinfo").exists());
+        stays(&held);
         let _ = std::fs::remove_dir_all(&d);
     }
 

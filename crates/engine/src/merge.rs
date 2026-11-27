@@ -351,7 +351,7 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
 /// taken.
 pub fn undo(m: &Merged) -> Result<()> {
     m.written.check("merge")?;
-    if m.source_path.exists() {
+    if write::taken(&m.source_path) {
         bail!(
             "{} exists again; the merge can't be undone",
             m.source_path.display()
@@ -587,6 +587,24 @@ mod tests {
             at.symlink_metadata().unwrap().is_symlink(),
             "the link stays"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An undo is refused when a symlink to nothing holds the source's path, as when any other
+    /// entry does: the link stays, and the source stays in the trash (#356).
+    #[cfg(unix)]
+    #[test]
+    fn an_undo_onto_a_symlink_to_nothing_is_refused_and_the_link_stays() {
+        let files = [("Lava.md", "# Lava\n"), ("Pāhoehoe.md", "Smooth.\n")];
+        let (dir, ix) = workspace_with("undo-dangling", &files);
+        let done = apply(&merge(&ix, "Pāhoehoe", "Lava"), None).unwrap();
+        std::os::unix::fs::symlink("Gone.md", &done.source_path).unwrap();
+        let refused = undo(&done).unwrap_err().to_string();
+        let words = "exists again; the merge can't be undone";
+        assert_eq!(refused, format!("{} {words}", done.source_path.display()));
+        let led = std::fs::read_link(&done.source_path).unwrap();
+        assert_eq!(led, Path::new("Gone.md"), "the link stays");
+        assert_eq!(read(&dir, ".trash/Pāhoehoe.md"), "Smooth.\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
