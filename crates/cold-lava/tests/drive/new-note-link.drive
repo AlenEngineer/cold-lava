@@ -1,0 +1,27 @@
+# A new note named where a symlink to nothing is: the menu says the name is taken and goes on
+# (#389). tests/drive.rs makes the link, Inbox/Ghost.md, and checks it is still a link to
+# nothing afterwards.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 3
+keys p loose
+wait-for Loose thought
+keys enter
+wait-for Inbox/Loose thought  reading
+keys esc
+wait-gone reading · Esc / q back
+keys n
+wait-for new note in Inbox/
+type Ghost
+keys enter
+wait-for Inbox/Ghost.md already exists
+keys esc
+wait-gone reading · Esc / q back
+keys n
+wait-for new note in Inbox/
+type Ghost town
+keys enter
+wait-for created Inbox/Ghost town.md
+keys esc
+wait-for ? help  q quit
+keys q
+exits 0

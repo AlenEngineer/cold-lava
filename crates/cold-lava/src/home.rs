@@ -2449,7 +2449,8 @@ impl Home {
             return Ok(());
         }
         if matches!(self.mode, Mode::NewNote(_)) {
-            return self.new_note_key(k);
+            self.new_note_key(k);
+            return Ok(());
         }
         if matches!(self.mode, Mode::ConfirmRename { .. }) {
             self.rename_key(k);
@@ -3550,9 +3551,9 @@ impl Home {
         }
     }
 
-    fn new_note_key(&mut self, k: KeyEvent) -> Result<()> {
+    fn new_note_key(&mut self, k: KeyEvent) {
         let Mode::NewNote(n) = &mut self.mode else {
-            return Ok(());
+            return;
         };
         match n.key(k) {
             new_note::Action::Stay => {}
@@ -3565,11 +3566,10 @@ impl Home {
                 self.mode = Mode::Normal;
                 let rel = in_folder.new_note(&name);
                 if self.still_here(&in_folder.at(format!("create {rel}"))) {
-                    self.create_note(&in_folder, &name, template.as_deref())?;
+                    self.create_note(&in_folder, &name, template.as_deref());
                 }
             }
         }
-        Ok(())
     }
 
     fn rename_key(&mut self, k: KeyEvent) {
@@ -5477,37 +5477,38 @@ impl Home {
 
     /// Create the note `name` in `in_folder`, from `template` (workspace-relative, without
     /// `.md`) if one is given, and open it.
-    fn create_note(
-        &mut self,
-        in_folder: &Folder,
-        name: &str,
-        template: Option<&str>,
-    ) -> Result<()> {
+    fn create_note(&mut self, in_folder: &Folder, name: &str, template: Option<&str>) {
         let rel = in_folder.new_note(name);
         let root = in_folder.root.clone();
         let path = root.join(&rel);
-        if path.exists() {
-            self.flash(format!("{rel} already exists"));
-        } else {
-            let title = name.trim_end_matches(".md");
-            let filled = template
-                .map(|t| templates::new_note(&root, t, title.rsplit('/').next().unwrap_or(title)));
-            let body = match filled {
-                Some(Ok(body)) => body,
-                Some(Err(e)) => {
-                    self.flash(format!("{e:#}"));
-                    return Ok(());
-                }
-                None => format!("# {title}\n\n"),
-            };
-            crate::write::create(&path, body.as_bytes())?;
-            if !in_folder.rel.is_empty() {
-                self.expanded.insert(in_folder.rel.clone());
+        let title = name.trim_end_matches(".md");
+        let filled = template
+            .map(|t| templates::new_note(&root, t, title.rsplit('/').next().unwrap_or(title)));
+        let body = match filled {
+            Some(Ok(body)) => body,
+            Some(Err(e)) => {
+                self.flash(format!("{e:#}"));
+                return;
             }
-            self.flash(match template {
-                Some(t) => format!("created {rel} from {}", t.rsplit('/').next().unwrap_or(t)),
-                None => format!("created {rel}"),
-            });
+            None => format!("# {title}\n\n"),
+        };
+        // `create` is the one test of whether the name is free: a symlink to nothing takes
+        // it too, which `Path::exists` would call free.
+        match crate::write::create(&path, body.as_bytes()) {
+            Ok(()) => {
+                if !in_folder.rel.is_empty() {
+                    self.expanded.insert(in_folder.rel.clone());
+                }
+                self.flash(match template {
+                    Some(t) => format!("created {rel} from {}", t.rsplit('/').next().unwrap_or(t)),
+                    None => format!("created {rel}"),
+                });
+            }
+            Err(crate::write::WriteError::Exists(_)) => self.flash(format!("{rel} already exists")),
+            Err(e) => {
+                self.flash(format!("can't create {rel}: {e}"));
+                return;
+            }
         }
         // Make sure the new note is visible, even if a filter was active.
         self.filter.clear();
@@ -5518,7 +5519,6 @@ impl Home {
             self.show(&path);
             self.focus_pane();
         }
-        Ok(())
     }
 
     /// Where new notes and folders go: the selected folder, or the selected note's, in the
