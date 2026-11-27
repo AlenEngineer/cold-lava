@@ -39,7 +39,9 @@ pub struct Step {
 #[derive(Debug, PartialEq)]
 pub enum Action {
     Send(Vec<Input>),
+    /// Until the screen shows TEXT, inside `at` if there is one.
     WaitFor {
+        at: Option<Region>,
         text: String,
         timeout: Duration,
     },
@@ -48,7 +50,11 @@ pub enum Action {
         timeout: Duration,
     },
     Wait(Duration),
-    Expect(String),
+    /// The screen shows TEXT now, inside `at` if there is one.
+    Expect {
+        at: Option<Region>,
+        text: String,
+    },
     ExpectNot(String),
     Screen,
     Exits {
@@ -71,17 +77,6 @@ pub enum Action {
         at: (u16, u16),
         count: u16,
     },
-    /// The screen shows TEXT inside `at`.
-    ExpectIn {
-        at: Region,
-        text: String,
-    },
-    /// Until the screen shows TEXT inside `at`.
-    WaitForIn {
-        at: Region,
-        text: String,
-        timeout: Duration,
-    },
     /// Replace a file in the workspace, as another program (Obsidian, git) would.
     Write {
         file: PathBuf,
@@ -99,13 +94,23 @@ pub enum Input {
 /// cells.
 #[derive(Debug, PartialEq)]
 pub struct Region {
-    pub top: u16,
-    pub left: u16,
-    pub bottom: u16,
-    pub right: u16,
+    top: u16,
+    left: u16,
+    bottom: u16,
+    right: u16,
 }
 
 impl Region {
+    /// None unless the cells count from 1 and the top left comes first.
+    fn new(top: u16, left: u16, bottom: u16, right: u16) -> Option<Region> {
+        (top > 0 && left > 0 && top <= bottom && left <= right).then_some(Region {
+            top,
+            left,
+            bottom,
+            right,
+        })
+    }
+
     /// "2 3 20 80 TEXT" → the region and "TEXT"; none unless four cells, the top left first,
     /// and a text.
     fn and_text(rest: &str) -> Option<(Region, &str)> {
@@ -113,16 +118,8 @@ impl Region {
         let nums: Vec<&str> = words.by_ref().take(4).collect();
         let text = words.next().unwrap_or("").trim();
         match cells(&nums.join(" ")).as_deref() {
-            Some(&[top, left, bottom, right])
-                if !text.is_empty() && top <= bottom && left <= right =>
-            {
-                let at = Region {
-                    top,
-                    left,
-                    bottom,
-                    right,
-                };
-                Some((at, text))
+            Some(&[top, left, bottom, right]) if !text.is_empty() => {
+                Region::new(top, left, bottom, right).map(|at| (at, text))
             }
             _ => None,
         }
@@ -251,7 +248,11 @@ fn read(src: &str) -> Result<Script, ParseError> {
                 }
                 let text = text.to_string();
                 Some(if word == "wait-for" {
-                    Action::WaitFor { text, timeout }
+                    Action::WaitFor {
+                        at: None,
+                        text,
+                        timeout,
+                    }
                 } else {
                     Action::WaitGone { text, timeout }
                 })
@@ -259,7 +260,10 @@ fn read(src: &str) -> Result<Script, ParseError> {
             "wait" => Some(Action::Wait(duration(rest).ok_or_else(|| {
                 err(format!("wait wants a duration, like 500ms or 2s: {rest}"))
             })?)),
-            "expect" => Some(Action::Expect(needs_text("the text to look for")?)),
+            "expect" => Some(Action::Expect {
+                at: None,
+                text: needs_text("the text to look for")?,
+            }),
             "expect-not" => Some(Action::ExpectNot(needs_text("the text to look for")?)),
             "screen" => Some(Action::Screen),
             "exits" => {
@@ -320,8 +324,8 @@ fn read(src: &str) -> Result<Script, ParseError> {
                         "expect-in wants ROW COL ROW2 COL2 TEXT (from 1, top left first): {rest}"
                     )));
                 };
-                Some(Action::ExpectIn {
-                    at,
+                Some(Action::Expect {
+                    at: Some(at),
                     text: text.to_string(),
                 })
             }
@@ -332,8 +336,8 @@ fn read(src: &str) -> Result<Script, ParseError> {
                         "wait-for-in wants [10s] ROW COL ROW2 COL2 TEXT (from 1, top left first): {rest}"
                     )));
                 };
-                Some(Action::WaitForIn {
-                    at,
+                Some(Action::WaitFor {
+                    at: Some(at),
                     text: text.to_string(),
                     timeout,
                 })
@@ -426,7 +430,8 @@ struct Session {
     child: Box<dyn Child + Send + Sync>,
     output: Receiver<Vec<u8>>,
     status: Option<ExitStatus>,
-    cols: u16,
+    /// Where a step that names no region looks.
+    whole: Region,
 }
 
 impl Session {
@@ -436,6 +441,8 @@ impl Session {
         args: &[String],
         home: Option<&Path>,
     ) -> Result<Session> {
+        let whole = Region::new(1, 1, script.rows, script.cols)
+            .context("the screen needs a row and a column")?;
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: script.rows,
@@ -483,7 +490,7 @@ impl Session {
             child,
             output,
             status: None,
-            cols: script.cols,
+            whole,
         })
     }
 
@@ -588,13 +595,9 @@ impl Session {
         let _ = self.writer.flush();
     }
 
-    fn text(&self) -> String {
-        let rows: Vec<String> = self.parser.screen().rows(0, self.cols).collect();
-        rows.join("\n")
-    }
-
-    /// The screen inside `at`, a line for each row.
-    fn region(&self, at: &Region) -> String {
+    /// The screen inside `at`, or all of it, a line for each row.
+    fn text(&self, at: Option<&Region>) -> String {
+        let at = at.unwrap_or(&self.whole);
         let rows = self
             .parser
             .screen()
@@ -606,19 +609,33 @@ impl Session {
         rows.join("\n")
     }
 
-    fn shows_in(&self, at: &Region, text: &str) -> bool {
-        self.region(at).contains(text)
+    fn shows(&self, at: Option<&Region>, text: &str) -> bool {
+        self.text(at).contains(text)
     }
 
-    /// None once the screen shows `text` inside `at`; what it waited for, if it doesn't within
-    /// `timeout`.
-    fn wait_for_in(&mut self, at: &Region, text: &str, timeout: Duration) -> Option<String> {
-        (!self.until(timeout, |s| s.shows_in(at, text))).then(|| {
+    /// None once the screen shows `text`, inside `at` if there is one; what it waited for, if
+    /// it doesn't within `timeout`.
+    fn wait_for(&mut self, at: Option<&Region>, text: &str, timeout: Duration) -> Option<String> {
+        (!self.until(timeout, |s| s.shows(at, text))).then(|| {
+            let within = at.map(|at| format!(" within {at}")).unwrap_or_default();
             format!(
-                "waited {} for {text:?} within {at}{}",
+                "waited {} for {text:?}{within}{}",
                 secs(timeout),
                 self.exited()
             )
+        })
+    }
+
+    /// None if the screen shows `text`, inside `at` if there is one, once the program has
+    /// paused; what it expected, if not.
+    fn expect(&mut self, at: Option<&Region>, text: &str) -> Option<String> {
+        self.settle();
+        (!self.shows(at, text)).then(|| {
+            let place = match at {
+                Some(at) => format!("within {at}"),
+                None => "on the screen".to_string(),
+            };
+            format!("expected {text:?} {place}{}", self.exited())
         })
     }
 
@@ -631,14 +648,10 @@ impl Session {
         None
     }
 
-    fn shows(&self, text: &str) -> bool {
-        self.text().contains(text)
-    }
-
     fn print_screen(&self, title: &str) {
         let (rows, cols) = self.parser.screen().size();
         out!("--- {title} ({cols}x{rows}) ---");
-        for row in self.text().lines() {
+        for row in self.text(None).lines() {
             out!("{}", row.trim_end());
         }
         out!("---");
@@ -768,21 +781,17 @@ pub fn run(
                     None
                 }
             }
-            Action::WaitFor { text, timeout } => (!s.until(*timeout, |s| s.shows(text)))
-                .then(|| format!("waited {} for {text:?}{}", secs(*timeout), s.exited())),
-            Action::WaitGone { text, timeout } => (!s.until(*timeout, |s| !s.shows(text)))
+            Action::WaitFor { at, text, timeout } => s.wait_for(at.as_ref(), text, *timeout),
+            Action::WaitGone { text, timeout } => (!s.until(*timeout, |s| !s.shows(None, text)))
                 .then(|| format!("waited {} for {text:?} to go away", secs(*timeout))),
             Action::Wait(d) => {
                 s.until(*d, |_| false);
                 None
             }
-            Action::Expect(text) => {
-                s.settle();
-                (!s.shows(text)).then(|| format!("expected {text:?} on the screen{}", s.exited()))
-            }
+            Action::Expect { at, text } => s.expect(at.as_ref(), text),
             Action::ExpectNot(text) => {
                 s.settle();
-                s.shows(text)
+                s.shows(None, text)
                     .then(|| format!("expected no {text:?} on the screen"))
             }
             Action::Screen => {
@@ -818,12 +827,6 @@ pub fn run(
                 let button = if *up { 64 } else { 65 };
                 format!("\x1b[<{button};{};{}M", at.1, at.0).repeat(*count as usize)
             }),
-            Action::ExpectIn { at, text } => {
-                s.settle();
-                (!s.shows_in(at, text))
-                    .then(|| format!("expected {text:?} within {at}{}", s.exited()))
-            }
-            Action::WaitForIn { at, text, timeout } => s.wait_for_in(at, text, *timeout),
         };
         if let Some(message) = failure {
             told!("{name}:{}: {message}", step.line);
@@ -933,6 +936,7 @@ mod tests {
         assert_eq!(
             step("wait-for Mauna Loa"),
             Action::WaitFor {
+                at: None,
                 text: "Mauna Loa".into(),
                 timeout: Duration::from_secs(5)
             }
@@ -1001,22 +1005,17 @@ mod tests {
             drag((3, 7), (5, 8)),
             "\x1b[<0;7;3M\x1b[<32;7;4M\x1b[<32;8;5M\x1b[<0;8;5m"
         );
-        let at = || Region {
-            top: 2,
-            left: 3,
-            bottom: 20,
-            right: 80,
-        };
+        let at = || Region::new(2, 3, 20, 80);
         assert_eq!(
             step("expect-in 2 3 20 80 Start  Here"),
-            Action::ExpectIn {
+            Action::Expect {
                 at: at(),
                 text: "Start  Here".into()
             }
         );
         assert_eq!(
             step("wait-for-in 2 3 20 80 Start  Here"),
-            Action::WaitForIn {
+            Action::WaitFor {
                 at: at(),
                 text: "Start  Here".into(),
                 timeout: Duration::from_secs(5)
@@ -1024,7 +1023,7 @@ mod tests {
         );
         assert_eq!(
             step("wait-for-in 10s 2 3 20 80 Start"),
-            Action::WaitForIn {
+            Action::WaitFor {
                 at: at(),
                 text: "Start".into(),
                 timeout: Duration::from_secs(10)
@@ -1043,6 +1042,14 @@ mod tests {
             "wait-for-in 10s",
         ] {
             assert!(read(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_region_counts_from_1_and_starts_at_its_top_left() {
+        assert!(Region::new(1, 1, 1, 1).is_some());
+        for (top, left, bottom, right) in [(0, 1, 2, 2), (1, 0, 2, 2), (3, 1, 2, 2), (1, 3, 2, 2)] {
+            assert_eq!(Region::new(top, left, bottom, right), None);
         }
     }
 
@@ -1095,77 +1102,171 @@ mod tests {
         );
     }
 
-    /// A check right after a key, a click or a write can read the screen before the program
-    /// has drawn what the step did: on a slow machine it fails, or it passes on the screen from
-    /// before (#234). So every script waits first, best for what the step shows (`wait-for`,
-    /// `wait-for-in`). The program's start counts as a step. Every step is named below, so a
-    /// new one is sorted before it is used.
-    #[test]
-    fn scripts_wait_before_they_check_what_a_step_did() {
+    /// What a step is to the rules every script keeps: it acts on the program, through its
+    /// terminal (with the keys it types; none for the mouse) or through a file, waits for it,
+    /// checks the screen, or none of these.
+    enum Does<'a> {
+        Types(&'a [Input]),
+        Writes,
+        Waits,
+        Checks,
+        Neither,
+    }
+
+    /// Every step is named here, so a new one is sorted before a script can use it.
+    fn does(action: &Action) -> Does<'_> {
+        match action {
+            Action::Send(inputs) => Does::Types(inputs),
+            Action::Click { .. } | Action::Drag { .. } | Action::Scroll { .. } => Does::Types(&[]),
+            Action::Write { .. } => Does::Writes,
+            Action::WaitFor { .. }
+            | Action::WaitGone { .. }
+            | Action::Wait(_)
+            | Action::Exits { .. } => Does::Waits,
+            Action::Expect { .. } | Action::ExpectNot(_) => Does::Checks,
+            Action::Screen => Does::Neither,
+        }
+    }
+
+    /// The lines of the checks right after a step that acts, with no wait between. The
+    /// program's start counts as such a step.
+    fn checks_before_a_wait(script: &Script) -> Vec<usize> {
+        let mut acted = true;
+        let mut found = Vec::new();
+        for step in &script.steps {
+            match does(&step.action) {
+                Does::Types(_) | Does::Writes => acted = true,
+                Does::Waits => acted = false,
+                Does::Checks if acted => found.push(step.line),
+                Does::Checks | Does::Neither => {}
+            }
+        }
+        found
+    }
+
+    /// A key `run` sends as a lone Esc.
+    fn lone_esc(input: &Input) -> bool {
+        matches!(input, Input::Key(k) if k.bytes(false) == b"\x1b")
+    }
+
+    /// The lines of the steps that type into the terminal right after a lone Esc, in the same
+    /// step or the next with no wait between. Another Esc may follow one.
+    fn typed_after_a_lone_esc(script: &Script) -> Vec<usize> {
+        let mut after_esc = false;
+        let mut found = Vec::new();
+        for step in &script.steps {
+            let hurries = match does(&step.action) {
+                Does::Types(keys) => {
+                    let in_step = keys.windows(2).any(|k| lone_esc(&k[0]) && !lone_esc(&k[1]));
+                    let next = after_esc && !keys.first().is_some_and(lone_esc);
+                    after_esc = keys.last().is_some_and(lone_esc);
+                    in_step || next
+                }
+                Does::Waits => {
+                    after_esc = false;
+                    false
+                }
+                Does::Writes | Does::Checks | Does::Neither => false,
+            };
+            if hurries {
+                found.push(step.line);
+            }
+        }
+        found
+    }
+
+    /// What `rule` finds in the scripts of tests/drive, each read as `cold-lava drive` reads
+    /// it: a line for each step, with the script, the line and the step as written.
+    fn in_the_scripts(rule: fn(&Script) -> Vec<usize>) -> Vec<String> {
         let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive");
-        let mut hurried = Vec::new();
+        let mut found = Vec::new();
         for entry in std::fs::read_dir(&scripts).unwrap() {
             let path = entry.unwrap().path();
             if path.extension() != Some(std::ffi::OsStr::new("drive")) {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            let script = read(&text).unwrap();
-            let mut acted = true;
-            for step in &script.steps {
-                match step.action {
-                    Action::Send(_)
-                    | Action::Click { .. }
-                    | Action::Drag { .. }
-                    | Action::Scroll { .. }
-                    | Action::Write { .. } => acted = true,
-                    Action::WaitFor { .. }
-                    | Action::WaitForIn { .. }
-                    | Action::WaitGone { .. }
-                    | Action::Wait(_)
-                    | Action::Exits { .. } => acted = false,
-                    Action::Expect(_) | Action::ExpectIn { .. } | Action::ExpectNot(_) => {
-                        if acted {
-                            let line = text.lines().nth(step.line - 1).unwrap_or_default();
-                            hurried.push(format!("{}:{}: {line}", path.display(), step.line));
-                        }
-                    }
-                    Action::Screen => {}
-                }
+            for line in rule(&read(&text).unwrap()) {
+                let step = text.lines().nth(line - 1).unwrap_or_default();
+                found.push(format!("{}:{line}: {step}", path.display()));
             }
         }
-        assert_eq!(hurried, Vec::<String>::new());
+        found
     }
 
-    /// The program draws LATE in row 3 after 300 ms: the wait there sees it once it is drawn,
-    /// and a wait above it gives up when its time is out, though LATE is on the screen.
+    /// A check right after a key, a click or a write can read the screen before the program
+    /// has drawn what the step did: on a slow machine it fails, or it passes on the screen from
+    /// before (#234). So every script waits first, best for what the step shows (`wait-for`,
+    /// `wait-for-in`).
+    #[test]
+    fn scripts_wait_before_they_check_what_a_step_did() {
+        assert_eq!(in_the_scripts(checks_before_a_wait), Vec::<String>::new());
+    }
+
+    /// A key typed right after Esc can arrive with it and read as Alt plus that key on a slow
+    /// machine, so each script waits for the Esc's effect on the screen before the next key.
+    #[test]
+    fn scripts_wait_after_esc_before_the_next_key() {
+        assert_eq!(in_the_scripts(typed_after_a_lone_esc), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_rules_on_scripts_find_what_they_guard_against() {
+        let checks = |src: &str| checks_before_a_wait(&read(src).unwrap());
+        assert_eq!(checks("expect a"), [1]);
+        assert_eq!(checks("keys x\nexpect-not b"), [2]);
+        assert_eq!(checks("write a.md z\nscreen\nexpect-in 1 1 2 2 z"), [3]);
+        assert_eq!(
+            checks("scroll up 1 1\nwait-for-in 1 1 2 2 c\nexpect c\nexpect-not d"),
+            Vec::<usize>::new()
+        );
+        let typed = |src: &str| typed_after_a_lone_esc(&read(src).unwrap());
+        assert_eq!(typed("keys esc q"), [1]);
+        assert_eq!(typed("keys ESC\nexpect a\nwrite a.md z\ntype q"), [4]);
+        assert_eq!(typed("keys esc\nclick 1 1"), [2]);
+        assert_eq!(
+            typed("keys q esc esc\nkeys esc\nwait-for a\nkeys q"),
+            Vec::<usize>::new()
+        );
+    }
+
+    /// The program draws LATE in row 3 after 300 ms. A wait there, or on the whole screen, sees
+    /// it once it is drawn; a wait above it gives up when its time is out, though LATE is on
+    /// the screen. A check reads the same places. A failure names its region, and on the whole
+    /// screen says what `wait-for` and `expect` said before there were regions.
     #[cfg(unix)]
     #[test]
-    fn waits_for_text_in_a_region() {
+    fn waits_and_checks_on_the_screen_or_in_a_region() {
         let program = "sleep 0.3; printf '\\033[3;5HLATE'; sleep 5";
         let args = ["-c".to_string(), program.to_string()];
         let script = read("size 20x5").unwrap();
         let mut s = Session::spawn(&script, Path::new("/bin/sh"), &args, None).unwrap();
-        let row_3 = Region {
-            top: 3,
-            left: 1,
-            bottom: 3,
-            right: 20,
-        };
-        assert_eq!(s.wait_for_in(&row_3, "LATE", DEFAULT_TIMEOUT), None);
-        let above = Region {
-            top: 1,
-            left: 1,
-            bottom: 2,
-            right: 20,
-        };
+        let row_3 = Region::new(3, 1, 3, 20).unwrap();
+        let above = Region::new(1, 1, 2, 20).unwrap();
+        assert_eq!(s.wait_for(Some(&row_3), "LATE", DEFAULT_TIMEOUT), None);
+        assert_eq!(s.wait_for(None, "LATE", DEFAULT_TIMEOUT), None);
         let asked = Instant::now();
         assert_eq!(
-            s.wait_for_in(&above, "LATE", Duration::from_millis(300))
+            s.wait_for(Some(&above), "LATE", Duration::from_millis(300))
                 .as_deref(),
             Some("waited 300ms for \"LATE\" within rows 1–2, columns 1–20")
         );
         assert!(asked.elapsed() >= Duration::from_millis(300));
+        assert_eq!(
+            s.wait_for(None, "EARLY", Duration::from_millis(300))
+                .as_deref(),
+            Some("waited 300ms for \"EARLY\"")
+        );
+        assert_eq!(s.expect(Some(&row_3), "LATE"), None);
+        assert_eq!(s.expect(None, "LATE"), None);
+        assert_eq!(
+            s.expect(Some(&above), "LATE").as_deref(),
+            Some("expected \"LATE\" within rows 1–2, columns 1–20")
+        );
+        assert_eq!(
+            s.expect(None, "EARLY").as_deref(),
+            Some("expected \"EARLY\" on the screen")
+        );
     }
 
     #[test]
